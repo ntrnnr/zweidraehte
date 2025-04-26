@@ -1,0 +1,14 @@
+[package]
+name = "zweidraehte"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zerocopy = { workspace = true }
+const-bitfield = { workspace = true }
+const-default = { workspace = true }
+
+embassy-sync = { workspace = true }
+
+[features]
+defmt = []

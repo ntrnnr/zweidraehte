@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "stack",
+]
+
+[workspace.package]
+authors = ["Andreas Galauner <andreas@galauner.de>"]
+keywords = ["knx"]
+categories = ["knx"]
+edition = "2024"
+license = "Proprietary"
+
+[workspace.dependencies]
+zerocopy = { version = "0.8", features = ["derive"] }
+const-bitfield = "0.2"
+const-default = { version = "1.0", features = ["derive"] }
+
+embassy-executor = { version = "0.7", features = ["log", "nightly"] }
+embassy-time = { version = "0.4", features = ["std", "defmt-timestamp-uptime"] }
+embassy-sync = { version = "0.6", features = ["std"] }
+embassy-futures = { version = "0.1", features = [] }
