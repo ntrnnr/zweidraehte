@@ -8,6 +8,7 @@
 mod macros;
 
 pub mod address;
+pub mod bcus;
 pub mod buffers;
 pub mod dpt;
 pub mod error;

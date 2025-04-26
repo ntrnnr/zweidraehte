@@ -218,5 +218,6 @@ impl<T: MemoryBackedTable> MemoryBackedTable for Table<T> {
 }
 
 pub mod addr7;
+pub mod app;
 pub mod asso6;
 pub mod co7;

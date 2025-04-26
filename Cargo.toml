@@ -15,6 +15,7 @@ license = "Proprietary"
 zerocopy = { version = "0.8", features = ["derive"] }
 const-bitfield = "0.2"
 const-default = { version = "1.0", features = ["derive"] }
+bitflags = "2.9"
 
 embassy-executor = { version = "0.7", features = ["log", "nightly"] }
 embassy-time = { version = "0.4", features = ["std", "defmt-timestamp-uptime"] }
