@@ -19,9 +19,9 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ComObjectFlags: u8 {
         const READ_REQUEST   = 0b0000_0100;
-        const UPDATE_FLAG    = 0b0000_1000;
-        const VALUE_CHANGED  = 0b0001_0000;
-        const VALUE_VALID    = 0b0010_0000;
+        const UPDATE_FLAG    = 0b0000_1000;     /// Flag that indicated the value has been updated by a remote device via a KNX bus transaction
+        const VALUE_CHANGED  = 0b0001_0000;     ///
+        const VALUE_VALID    = 0b0010_0000;     /// Flag that indicates the value is valid, either by setting it explicitly or by receiving a valid value from the bus
         const FLAG_USER2     = 0b0100_0000;
         const FLAG_USER1     = 0b1000_0000;
     }
@@ -239,380 +239,399 @@ macro_rules! define_com_objects {
             ),* $(,)?
         }
     ) => {
-        // FIXME: rename this and somehow get $struct_name in this
-        /// Enum with all communication object names and their indices
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum ComObjectIndex {
-            $(
-                $obj_name = $idx,
-            )*
-        }
-
-        impl ComObjectIndex {
-            /// Convert from usize index to enum if valid
-            pub fn from_index(idx: usize) -> Option<Self> {
-                match idx {
-                    $(
-                        $idx => Some(Self::$obj_name),
-                    )*
-                    _ => None,
-                }
-            }
-
-            /// Get the index value
-            pub fn index(self) -> usize {
-                self as usize
-            }
-        }
-
-        // FIXME: make NoopRawMutex a generic?
-        /// The communication objects
-        $(#[$struct_meta])*
-        pub struct $struct_name {
-            $(
-                $(#[$field_meta])*
-                pub $obj_name: Mutex<NoopRawMutex, ComObject<$type>>,
-            )*
-            pub notifier: ComObjectEventChannel<ComObjectIndex>,
-        }
-
-        impl ComObjects for $struct_name {
-            fn new() -> Self {
-                Self {
-                    $(
-                        $obj_name: Mutex::new(ComObject::new($default)),
-                    )*
-                    notifier: ComObjectEventChannel::new(),
-                }
-            }
-        }
-
-        impl $struct_name {
-            /// Get the ComObjectIndex from a string name
-            pub fn get_name(&self, name: &str) -> Option<ComObjectIndex> {
-                match name {
-                    $(
-                        stringify!($obj_name) => Some(ComObjectIndex::$obj_name),
-                    )*
-                    _ => None,
-                }
-            }
-
-            /// Count the number of objects
-            pub const fn count() -> usize {
-                let mut count = 0;
+        paste::paste! {
+            // FIXME: rename this and somehow get $struct_name in this
+            /// Enum with all communication object names and their indices
+            #[allow(dead_code)]
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            pub enum ComObjectIndex {
                 $(
-                    // Count each object
-                    let _ = stringify!($obj_name);
-                    count += 1;
+                    [<$obj_name:camel>] = $idx,
                 )*
-                count
             }
 
-            // // Type-safe access methods for each object
-            // $(
-            //     /// Get the value of $obj_name
-            //     pub async fn $obj_name(&self) -> $type {
-            //         self.$obj_name.lock().await.value().clone()
-            //     }
+            #[allow(dead_code)]
+            impl ComObjectIndex {
+                /// Convert from usize index to enum if valid
+                pub fn from_index(idx: usize) -> Option<Self> {
+                    match idx {
+                        $(
+                            $idx => Some(Self::[<$obj_name:camel>]),
+                        )*
+                        _ => None,
+                    }
+                }
 
-            //     /// Set the value of $obj_name
-            //     pub async fn set_$obj_name(&self, value: $type, request_tx: bool) {
-            //         let mut obj = self.$obj_name.lock().await;
-            //         let changed = !obj.value().as_ref().eq(value.as_ref());
-            //         obj.set_value(value, request_tx);
-
-            //         if changed {
-            //             // Send notification
-            //             self.notifier.notify(ComObjectEvent {
-            //                 object: ComObjectIndex::$obj_name,
-            //                 event: EventType::ValueChanged,
-            //             });
-            //         }
-            //     }
-            // )*
-
-            // Generic methods that work with the ComObjectIndex enum
-
-            // /// Get an object value as bytes using ComObjectIndex
-            // pub async fn get_value_bytes(&self, name: ComObjectIndex) -> Vec<u8, 20> {
-            //     match name {
-            //         $(
-            //             ComObjectIndex::$obj_name => {
-            //                 let obj = self.$obj_name.lock().await;
-            //                 let bytes = obj.as_bytes();
-            //                 let mut vec = Vec::new();
-            //                 vec.extend_from_slice(bytes).ok();
-            //                 vec
-            //             },
-            //         )*
-            //     }
-            // }
-
-            // /// Set an object value using ComObjectIndex
-            // pub async fn set_value(&self, name: ComObjectIndex, data: &[u8], request_tx: bool) -> bool {
-            //     match name {
-            //         $(
-            //             ComObjectIndex::$obj_name => {
-            //                 let mut obj = self.$obj_name.lock().await;
-            //                 let result = obj.update_from_bytes(data);
-            //                 if result && request_tx {
-            //                     obj.set_transmission_state(TransmissionState::TransmitRequest);
-            //                 }
-
-            //                 if result {
-            //                     // Send notification
-            //                     self.notifier.notify(ComObjectEvent {
-            //                         object: name,
-            //                         event: EventType::ValueChanged,
-            //                     });
-            //                 }
-
-            //                 result
-            //             },
-            //         )*
-            //     }
-            // }
-
-            // /// Update an object value by index
-            // pub async fn update_value(&self, idx: usize, data: &[u8]) -> bool {
-            //     match idx {
-            //         $(
-            //             $idx => {
-            //                 let mut obj = self.$obj_name.lock().await;
-            //                 let result = obj.update_from_bytes(data);
-
-            //                 if result {
-            //                     // Send notification
-            //                     self.notifier.notify(ComObjectEvent {
-            //                         object: ComObjectIndex::$obj_name,
-            //                         event: EventType::ValueChanged,
-            //                     });
-            //                 }
-
-            //                 result
-            //             },
-            //         )*
-            //         _ => false,
-            //     }
-            // }
-
-            // /// Get status byte by index
-            // pub async fn get_status_byte(&self, idx: usize) -> Option<u8> {
-            //     match idx {
-            //         $(
-            //             $idx => {
-            //                 let obj = self.$obj_name.lock().await;
-            //                 Some(obj.status_byte())
-            //             },
-            //         )*
-            //         _ => None,
-            //     }
-            // }
-
-            // /// Get status byte by name
-            // pub async fn get_status_byte_by_name(&self, name: ComObjectIndex) -> u8 {
-            //     match name {
-            //         $(
-            //             ComObjectIndex::$obj_name => {
-            //                 self.$obj_name.lock().await.status_byte()
-            //             },
-            //         )*
-            //     }
-            // }
-
-            // /// Set status byte by index
-            // pub async fn set_status_byte(&self, idx: usize, status: u8) -> bool {
-            //     match idx {
-            //         $(
-            //             $idx => {
-            //                 let mut obj = self.$obj_name.lock().await;
-            //                 obj.set_status_byte(status);
-            //                 true
-            //             },
-            //         )*
-            //         _ => false,
-            //     }
-            // }
-
-            // /// Set status byte by name
-            // pub async fn set_status_byte_by_name(&self, name: ComObjectIndex, status: u8) {
-            //     match name {
-            //         $(
-            //             ComObjectIndex::$obj_name => {
-            //                 self.$obj_name.lock().await.set_status_byte(status);
-            //             },
-            //         )*
-            //     }
-            // }
-
-            // /// Set flag by index
-            // pub async fn set_flag(&self, idx: usize, flag: ComObjectFlags, value: bool) -> bool {
-            //     match idx {
-            //         $(
-            //             $idx => {
-            //                 let mut obj = self.$obj_name.lock().await;
-            //                 let changed = obj.flags().contains(flag) != value;
-            //                 obj.set_flag(flag, value);
-
-            //                 if changed {
-            //                     // Send notification
-            //                     self.notifier.notify(ComObjectEvent {
-            //                         object: ComObjectIndex::$obj_name,
-            //                         event: EventType::FlagsChanged,
-            //                     });
-            //                 }
-
-            //                 true
-            //             },
-            //         )*
-            //         _ => false,
-            //     }
-            // }
-
-            // /// Set flag by name
-            // pub async fn set_flag_by_name(&self, name: ComObjectIndex, flag: ComObjectFlags, value: bool) {
-            //     match name {
-            //         $(
-            //             ComObjectIndex::$obj_name => {
-            //                 let mut obj = self.$obj_name.lock().await;
-            //                 let changed = obj.flags().contains(flag) != value;
-            //                 obj.set_flag(flag, value);
-
-            //                 if changed {
-            //                     // Send notification
-            //                     self.notifier.notify(ComObjectEvent {
-            //                         object: name,
-            //                         event: EventType::FlagsChanged,
-            //                     });
-            //                 }
-            //             },
-            //         )*
-            //     }
-            // }
-
-            // /// Check flag by index
-            // pub async fn check_flag(&self, idx: usize, flag: ComObjectFlags) -> Option<bool> {
-            //     match idx {
-            //         $(
-            //             $idx => {
-            //                 let obj = self.$obj_name.lock().await;
-            //                 Some(obj.flags().contains(flag))
-            //             },
-            //         )*
-            //         _ => None,
-            //     }
-            // }
-
-            // /// Check flag by name
-            // pub async fn check_flag_by_name(&self, name: ComObjectIndex, flag: ComObjectFlags) -> bool {
-            //     match name {
-            //         $(
-            //             ComObjectIndex::$obj_name => {
-            //                 self.$obj_name.lock().await.flags().contains(flag)
-            //             },
-            //         )*
-            //     }
-            // }
-
-            // /// Get transmission state by index
-            // pub async fn get_transmission_state(&self, idx: usize) -> Option<TransmissionState> {
-            //     match idx {
-            //         $(
-            //             $idx => {
-            //                 let obj = self.$obj_name.lock().await;
-            //                 Some(obj.transmission_state())
-            //             },
-            //         )*
-            //         _ => None,
-            //     }
-            // }
-
-            // /// Get transmission state by name
-            // pub async fn get_transmission_state_by_name(&self, name: ComObjectIndex) -> TransmissionState {
-            //     match name {
-            //         $(
-            //             ComObjectIndex::$obj_name => {
-            //                 self.$obj_name.lock().await.transmission_state()
-            //             },
-            //         )*
-            //     }
-            // }
-
-            // /// Set transmission state by index
-            // pub async fn set_transmission_state(&self, idx: usize, state: TransmissionState) -> bool {
-            //     match idx {
-            //         $(
-            //             $idx => {
-            //                 let mut obj = self.$obj_name.lock().await;
-            //                 obj.set_transmission_state(state);
-            //                 true
-            //             },
-            //         )*
-            //         _ => false,
-            //     }
-            // }
-
-            // /// Set transmission state by name
-            // pub async fn set_transmission_state_by_name(&self, name: ComObjectIndex, state: TransmissionState) {
-            //     match name {
-            //         $(
-            //             ComObjectIndex::$obj_name => {
-            //                 self.$obj_name.lock().await.set_transmission_state(state);
-            //             },
-            //         )*
-            //     }
-            // }
-
-            // /// Get the next object that has a transmission request
-            // pub async fn get_next_transmission_request(&self) -> Option<(ComObjectIndex, Vec<u8, 20>)> {
-            //     $(
-            //         {
-            //             let mut obj = self.$obj_name.lock().await;
-            //             if obj.transmission_state() == TransmissionState::TransmitRequest {
-            //                 obj.set_transmission_state(TransmissionState::Transmitting);
-            //                 let bytes = obj.as_bytes();
-            //                 let mut vec = Vec::new();
-            //                 vec.extend_from_slice(bytes).ok();
-            //                 return Some((ComObjectIndex::$obj_name, vec));
-            //             }
-            //         }
-            //     )*
-
-            //     None
-            // }
-
-            // /// Update transmission state
-            // pub async fn update_transmission_state(&self, name: ComObjectIndex, success: bool) {
-            //     let state = self.get_transmission_state_by_name(name).await;
-            //     if state == TransmissionState::Transmitting {
-            //         self.set_transmission_state_by_name(
-            //             name,
-            //             if success {
-            //                 TransmissionState::IdleOk
-            //             } else {
-            //                 TransmissionState::IdleError
-            //             }
-            //         ).await;
-
-            //         self.set_flag_by_name(name, ComObjectFlags::VALUE_VALID, success).await;
-
-            //         // Send notification for transmission completion
-            //         self.notifier.notify(ComObjectEvent {
-            //             object: name,
-            //             event: EventType::TransmissionCompleted(success),
-            //         });
-            //     }
-            // }
-
-            /// Wait for any notification
-            pub async fn wait_for_any_change(&self) -> ComObjectEvent<ComObjectIndex> {
-                self.notifier.next_notification().await
+                /// Get the index value
+                pub fn index(self) -> usize {
+                    self as usize
+                }
             }
 
-            /// Wait for a specific object to change
-            pub async fn wait_for_change(&self, object: ComObjectIndex) -> ComObjectEvent<ComObjectIndex> {
-                self.notifier.wait_for(object).await
+            // FIXME: make NoopRawMutex a generic?
+            /// The communication objects
+            $(#[$struct_meta])*
+            pub struct $struct_name {
+                $(
+                    $(#[$field_meta])*
+                    pub $obj_name: Mutex<NoopRawMutex, ComObject<$type>>,
+                )*
+                //pub notifier: ComObjectEventChannel<ComObjectIndex>,
+            }
+
+            impl ComObjects for $struct_name {
+                fn new() -> Self {
+                    Self {
+                        $(
+                            $obj_name: Mutex::new(ComObject::new($default)),
+                        )*
+                        //notifier: ComObjectEventChannel::new(),
+                    }
+                }
+            }
+
+            impl $struct_name {
+                // /// Get the ComObjectIndex from a string name
+                // pub fn get_name(&self, name: &str) -> Option<ComObjectIndex> {
+                //     match name {
+                //         $(
+                //             stringify!($obj_name) => Some(ComObjectIndex::$obj_name),
+                //         )*
+                //         _ => None,
+                //     }
+                // }
+
+                // /// Count the number of objects
+                // pub const fn count() -> usize {
+                //     let mut count = 0;
+                //     $(
+                //         // Count each object
+                //         let _ = stringify!($obj_name);
+                //         count += 1;
+                //     )*
+                //     count
+                // }
+
+                // /// Type-safe access methods for each object
+                // $(
+                //     /// Get the value of $obj_name
+                //     pub async fn $obj_name(&self) -> $type {
+                //         self.$obj_name.lock().await.value().clone()
+                //     }
+
+                //     /// Set the value of $obj_name
+                //     pub async fn [<set_ $obj_name>](&self, value: $type, request_tx: bool) {
+                //         let mut obj = self.$obj_name.lock().await;
+                //         let changed = !obj.value().as_ref().eq(value.as_ref());
+                //         obj.set_value(value, request_tx);
+
+                //         if changed {
+                //             // Send notification
+                //             self.notifier.notify(ComObjectEvent {
+                //                 object: ComObjectIndex::$obj_name,
+                //                 event: EventType::ValueChanged,
+                //             });
+                //         }
+                //     }
+                // )*
+
+                // // Generic methods that work with the ComObjectIndex enum
+
+                // // /// Get an object value as bytes using ComObjectIndex
+                // // pub async fn get_value_bytes(&self, name: ComObjectIndex) -> heapless::Vec<u8, 20> {
+                // //     match name {
+                // //         $(
+                // //             ComObjectIndex::$obj_name => {
+                // //                 let obj = self.$obj_name.lock().await;
+                // //                 let bytes = obj.as_bytes();
+                // //                 let mut vec = heapless::Vec::new();
+                // //                 vec.extend_from_slice(bytes).ok();
+                // //                 vec
+                // //             },
+                // //         )*
+                // //     }
+                // // }
+
+                // /// Set an object value using ComObjectIndex
+                // pub async fn set_value(&self, name: ComObjectIndex, data: &[u8], request_tx: bool) -> bool {
+                //     match name {
+                //         $(
+                //             ComObjectIndex::$obj_name => {
+                //                 let mut obj = self.$obj_name.lock().await;
+                //                 let result = obj.update_from_bytes(data);
+                //                 if result && request_tx {
+                //                     obj.set_transmission_state(TransmissionState::TransmitRequest);
+                //                 }
+
+                //                 if result {
+                //                     // Send notification
+                //                     self.notifier.notify(ComObjectEvent {
+                //                         object: name,
+                //                         event: EventType::ValueChanged,
+                //                     });
+                //                 }
+
+                //                 result
+                //             },
+                //         )*
+                //     }
+                // }
+
+                // /// Update an object value by index
+                // pub async fn update_value(&self, idx: usize, data: &[u8]) -> bool {
+                //     match idx {
+                //         $(
+                //             $idx => {
+                //                 let mut obj = self.$obj_name.lock().await;
+                //                 let result = obj.update_from_bytes(data);
+
+                //                 if result {
+                //                     // Send notification
+                //                     self.notifier.notify(ComObjectEvent {
+                //                         object: ComObjectIndex::$obj_name,
+                //                         event: EventType::ValueChanged,
+                //                     });
+                //                 }
+
+                //                 result
+                //             },
+                //         )*
+                //         _ => false,
+                //     }
+                // }
+
+                // /// Get status byte by index
+                // pub async fn get_status_byte(&self, idx: usize) -> Option<u8> {
+                //     match idx {
+                //         $(
+                //             $idx => {
+                //                 let obj = self.$obj_name.lock().await;
+                //                 Some(obj.status_byte())
+                //             },
+                //         )*
+                //         _ => None,
+                //     }
+                // }
+
+                // /// Get status byte by name
+                // pub async fn get_status_byte_by_name(&self, name: ComObjectIndex) -> u8 {
+                //     match name {
+                //         $(
+                //             ComObjectIndex::$obj_name => {
+                //                 self.$obj_name.lock().await.status_byte()
+                //             },
+                //         )*
+                //     }
+                // }
+
+                // /// Set status byte by index
+                // pub async fn set_status_byte(&self, idx: usize, status: u8) -> bool {
+                //     match idx {
+                //         $(
+                //             $idx => {
+                //                 let mut obj = self.$obj_name.lock().await;
+                //                 obj.set_status_byte(status);
+                //                 true
+                //             },
+                //         )*
+                //         _ => false,
+                //     }
+                // }
+
+                // /// Set status byte by name
+                // pub async fn set_status_byte_by_name(&self, name: ComObjectIndex, status: u8) {
+                //     match name {
+                //         $(
+                //             ComObjectIndex::$obj_name => {
+                //                 self.$obj_name.lock().await.set_status_byte(status);
+                //             },
+                //         )*
+                //     }
+                // }
+
+                // /// Set flag by index
+                // pub async fn set_flag(&self, idx: usize, flag: ComObjectFlags, value: bool) -> bool {
+                //     match idx {
+                //         $(
+                //             $idx => {
+                //                 let mut obj = self.$obj_name.lock().await;
+                //                 let changed = obj.flags().contains(flag) != value;
+                //                 obj.set_flag(flag, value);
+
+                //                 if changed {
+                //                     // Send notification
+                //                     self.notifier.notify(ComObjectEvent {
+                //                         object: ComObjectIndex::$obj_name,
+                //                         event: EventType::FlagsChanged,
+                //                     });
+                //                 }
+
+                //                 true
+                //             },
+                //         )*
+                //         _ => false,
+                //     }
+                // }
+
+                // /// Set flag by name
+                // pub async fn set_flag_by_name(&self, name: ComObjectIndex, flag: ComObjectFlags, value: bool) {
+                //     match name {
+                //         $(
+                //             ComObjectIndex::$obj_name => {
+                //                 let mut obj = self.$obj_name.lock().await;
+                //                 let changed = obj.flags().contains(flag) != value;
+                //                 obj.set_flag(flag, value);
+
+                //                 if changed {
+                //                     // Send notification
+                //                     self.notifier.notify(ComObjectEvent {
+                //                         object: name,
+                //                         event: EventType::FlagsChanged,
+                //                     });
+                //                 }
+                //             },
+                //         )*
+                //     }
+                // }
+
+                // /// Check flag by index
+                // pub async fn check_flag(&self, idx: usize, flag: ComObjectFlags) -> Option<bool> {
+                //     match idx {
+                //         $(
+                //             $idx => {
+                //                 let obj = self.$obj_name.lock().await;
+                //                 Some(obj.flags().contains(flag))
+                //             },
+                //         )*
+                //         _ => None,
+                //     }
+                // }
+
+                // /// Check flag by name
+                // pub async fn check_flag_by_name(&self, name: ComObjectIndex, flag: ComObjectFlags) -> bool {
+                //     match name {
+                //         $(
+                //             ComObjectIndex::$obj_name => {
+                //                 self.$obj_name.lock().await.flags().contains(flag)
+                //             },
+                //         )*
+                //     }
+                // }
+
+                // /// Get transmission state by index
+                // pub async fn get_transmission_state(&self, idx: usize) -> Option<TransmissionState> {
+                //     match idx {
+                //         $(
+                //             $idx => {
+                //                 let obj = self.$obj_name.lock().await;
+                //                 Some(obj.transmission_state())
+                //             },
+                //         )*
+                //         _ => None,
+                //     }
+                // }
+
+                // /// Get transmission state by name
+                // pub async fn get_transmission_state_by_name(&self, name: ComObjectIndex) -> TransmissionState {
+                //     match name {
+                //         $(
+                //             ComObjectIndex::$obj_name => {
+                //                 self.$obj_name.lock().await.transmission_state()
+                //             },
+                //         )*
+                //     }
+                // }
+
+                // /// Set transmission state by index
+                // pub async fn set_transmission_state(&self, idx: usize, state: TransmissionState) -> bool {
+                //     match idx {
+                //         $(
+                //             $idx => {
+                //                 let mut obj = self.$obj_name.lock().await;
+                //                 obj.set_transmission_state(state);
+                //                 true
+                //             },
+                //         )*
+                //         _ => false,
+                //     }
+                // }
+
+                // /// Set transmission state by name
+                // pub async fn set_transmission_state_by_name(&self, name: ComObjectIndex, state: TransmissionState) {
+                //     match name {
+                //         $(
+                //             ComObjectIndex::$obj_name => {
+                //                 self.$obj_name.lock().await.set_transmission_state(state);
+                //             },
+                //         )*
+                //     }
+                // }
+
+                // // /// Get the next object that has a transmission request
+                // // pub async fn get_next_transmission_request(&self) -> Option<(ComObjectIndex, heapless::Vec<u8, 20>)> {
+                // //     $(
+                // //         {
+                // //             let mut obj = self.$obj_name.lock().await;
+                // //             if obj.transmission_state() == TransmissionState::TransmitRequest {
+                // //                 obj.set_transmission_state(TransmissionState::Transmitting);
+                // //                 let bytes = obj.as_bytes();
+                // //                 let mut vec = heapless::Vec::new();
+                // //                 vec.extend_from_slice(bytes).ok();
+                // //                 return Some((ComObjectIndex::$obj_name, vec));
+                // //             }
+                // //         }
+                // //     )*
+
+                // //     None
+                // // }
+
+                // /// Update transmission state
+                // pub async fn update_transmission_state(&self, name: ComObjectIndex, success: bool) {
+                //     let state = self.get_transmission_state_by_name(name).await;
+                //     if state == TransmissionState::Transmitting {
+                //         self.set_transmission_state_by_name(
+                //             name,
+                //             if success {
+                //                 TransmissionState::IdleOk
+                //             } else {
+                //                 TransmissionState::IdleError
+                //             }
+                //         ).await;
+
+                //         self.set_flag_by_name(name, ComObjectFlags::VALUE_VALID, success).await;
+
+                //         // Send notification for transmission completion
+                //         self.notifier.notify(ComObjectEvent {
+                //             object: name,
+                //             event: EventType::TransmissionCompleted(success),
+                //         });
+                //     }
+                // }
+
+                // /// Wait for any notification
+                // pub async fn wait_for_any_change(&self) -> ComObjectEvent<ComObjectIndex> {
+                //     self.notifier.next_notification().await
+                // }
+
+                // /// Wait for a specific object to change
+                // pub async fn wait_for_change(&self, object: ComObjectIndex) -> ComObjectEvent<ComObjectIndex> {
+                //     self.notifier.wait_for(object).await
+                // }
+
+                // /// Check if an object has the READ_REQUEST flag set
+                // pub async fn has_read_request(&self, obj_idx: ComObjectIndex) -> bool {
+                //     self.check_flag_by_name(obj_idx, ComObjectFlags::READ_REQUEST).await
+                // }
+
+                // /// Clear the READ_REQUEST flag for an object
+                // pub async fn clear_read_request_flag(&self, obj_idx: ComObjectIndex) {
+                //     self.set_flag_by_name(obj_idx, ComObjectFlags::READ_REQUEST, false).await;
+                // }
+
+                // /// Set the READ_REQUEST flag for an object
+                // pub async fn set_read_request_flag(&self, obj_idx: ComObjectIndex) {
+                //     self.set_flag_by_name(obj_idx, ComObjectFlags::READ_REQUEST, true).await;
+                // }
             }
         }
     };
@@ -624,6 +643,7 @@ mod tests {
 
     define_com_objects! {
         /// My application's communication objects
+        #[allow(dead_code)]
         pub struct MyComObjects {
             0 => pub switch1: DPT_Switch = DPT_Switch::from(false),
             1 => pub version: DPT_Version = DPT_Version::from(KNXVersion::from_triplet(0, 1, 0)),
@@ -633,7 +653,7 @@ mod tests {
 
     #[test]
     fn test_comm_objs() {
-        let c = MyComObjects::new();
+        let _c = MyComObjects::new();
     }
 }
 

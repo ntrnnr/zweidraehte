@@ -8,6 +8,7 @@ zerocopy = { workspace = true }
 const-bitfield = { workspace = true }
 const-default = { workspace = true }
 bitflags = { workspace = true }
+paste = { workspace = true }
 
 embassy-sync = { workspace = true }
 

@@ -4,7 +4,7 @@ use super::{MemoryBackedTable, Table};
 
 #[derive(Debug, ConstDefault)]
 pub struct ApplicationImpl<D: ConstDefault> {
-    data: D,
+    _data: D,
 }
 
 impl<D: ConstDefault> Table<ApplicationImpl<D>> {}
@@ -22,9 +22,9 @@ impl<D: ConstDefault> MemoryBackedTable for ApplicationImpl<D> {
         core::mem::size_of::<D>()
     }
 
-    fn read(&self, offset: usize, data: &mut [u8]) {}
+    fn read(&self, _offset: usize, _data: &mut [u8]) {}
 
-    fn write(&mut self, offset: usize, data: &[u8]) {}
+    fn write(&mut self, _offset: usize, _data: &[u8]) {}
 }
 
 pub type Application<D> = Table<ApplicationImpl<D>>;
