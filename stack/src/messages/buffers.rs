@@ -38,6 +38,14 @@ impl Drop for Buffer<'_> {
     }
 }
 
+impl core::fmt::Debug for Buffer<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Buffer")
+            .field("buffer", &self.buffer)
+            .finish()
+    }
+}
+
 /// A dynamic [`BufferManager`] with generics elided.
 #[derive(Clone, Copy)]
 pub struct DynBufferManager<'a> {

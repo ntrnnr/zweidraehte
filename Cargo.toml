@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "stack",
+    "testutil",
 ]
 
 [workspace.package]
@@ -17,8 +18,10 @@ const-bitfield = "0.2"
 const-default = { version = "1.0", features = ["derive"] }
 bitflags = "2.9"
 paste = "1.0"
+static_cell = { version = "2.1", features = ["nightly"] }
+ector = "0.7"
 
-embassy-executor = { version = "0.7", features = ["log", "nightly"] }
-embassy-time = { version = "0.4", features = ["std", "defmt-timestamp-uptime"] }
-embassy-sync = { version = "0.6", features = ["std"] }
-embassy-futures = { version = "0.1", features = [] }
+embassy-executor = { version = "0.7", default-features = false }
+embassy-time = { version = "0.4", default-features = false }
+embassy-sync = { version = "0.6", default-features = false }
+embassy-futures = { version = "0.1", default-features = false }

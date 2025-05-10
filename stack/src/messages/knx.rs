@@ -1,0 +1,759 @@
+use std::ops::{Deref, DerefMut};
+
+use crate::address::{GroupAddress, IndividualAddress};
+
+// Message offsets based on the KAIstack constants
+// This is essentially the TP1 frame format
+// FIXME: What about the length fied in 5[0..3]?
+pub mod offsets {
+    pub const MSG_CONTROL: usize = 0;
+    pub const MSG_SOURCE_ADDR: usize = 1;
+    pub const MSG_DEST_ADDR: usize = 3;
+    pub const MSG_CONN_NR: usize = MSG_DEST_ADDR;
+    pub const MSG_NPDU: usize = 5;
+    pub const MSG_ADDR_TYPE: usize = 5; // address type (bit 7)
+    pub const MSG_ROUTE_CNT: usize = 5; // routing count (bit 4-6)
+    pub const MSG_TPCI: usize = 6;
+    pub const MSG_APCI: usize = 6;
+    pub const MSG_APDU: usize = 8;
+}
+
+create_protocol_enum!(
+    /// KNX service types
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    #[allow(non_camel_case_types)]
+    pub enum ServiceType: u8 {
+        L_Data_Req,                 0x11,   "L_Data.req";
+        L_Data_Ind,                 0x29,   "L_Data.ind";
+        L_Data_Con,                 0x2e,   "L_Data.con";
+        N_GroupData_Req,            0x22,   "N_GroupData.req";
+        N_GroupData_Ind,            0x3a,   "N_GroupData.ind";
+        N_GroupData_Con,            0x3e,   "N_GroupData.con";
+        N_Data_Req,                 0x21,   "N_Data.req";
+        N_Data_Ind,                 0x49,   "N_Data.ind";
+        N_Data_Con,                 0x4e,   "N_Data.con";
+        N_Broadcast_Req,            0x2c,   "N_Broadcast.req";
+        N_Broadcast_Ind,            0x4d,   "N_Broadcast.ind";
+        N_Broadcast_Con,            0x4f,   "N_Broadcast.con";
+        N_SystemBroadcast_Req,      0x27,   "N_SystemBroadcast.req";
+        N_SystemBroadcast_Ind,      0x48,   "N_SystemBroadcast.ind";
+        N_SystemBroadcast_Con,      0x45,   "N_SystemBroadcast.con";
+        T_Data_Req,                 0x41,   "T_Data.req";
+        T_Data_Ind,                 0x89,   "T_Data.ind";
+        T_Data_Con,                 0x8e,   "T_Data.con";
+        T_GroupData_Req,            0x32,   "T_GroupData.req";
+        T_GroupData_Ind,            0x7a,   "T_GroupData.ind";
+        T_GroupData_Con,            0x7e,   "T_GroupData.con";
+        T_Broadcast_Req,            0x4c,   "T_Broadcast.req";
+        T_Broadcast_Ind,            0x8d,   "T_Broadcast.ind";
+        T_Broadcast_Con,            0x8f,   "T_Broadcast.con";
+        T_SystemBroadcast_Req,      0x47,   "T_SystemBroadcast.req";
+        T_SystemBroadcast_Ind,      0x98,   "T_SystemBroadcast.ind";
+        T_SystemBroadcast_Con,      0x95,   "T_SystemBroadcast.con";
+        T_DataUnack_Req,            0x4a,   "T_DataUnack.req";
+        T_DataUnack_Ind,            0x94,   "T_DataUnack.ind";
+        T_DataUnack_Con,            0x9c,   "T_DataUnack.con";
+        T_Connect_Req,              0x43,   "T_Connect.req";
+        T_Connect_Ind,              0x85,   "T_Connect.ind";
+        T_Connect_Con,              0x86,   "T_Connect.con";
+        T_Disconnect_Req,           0x44,   "T_Disconnect.req";
+        T_Disconnect_Ind,           0x87,   "T_Disconnect.ind";
+        T_Disconnect_Con,           0x88,   "T_Disconnect.con";
+        _,                                  "Unknown service type 0x{:x}";
+    }
+);
+
+create_protocol_enum!(
+    /// Priority levels
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum Priority: u8 {
+        System,                     0,      "System";
+        High,                       1,      "High";
+        Alarm,                      2,      "Alarm";
+        Low,                        3,      "Low";
+        _,                                  "Unknown priority 0x{:x}";
+    }
+);
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum Tpci {
+    DataBroadcast,
+    DataSystemBroadcast,
+    DataGroup,
+    DataTagGroup,
+    DataIndividual,
+    DataConnected(u8),
+    Connect,
+    Disconnect,
+    Ack(u8),
+    Nack(u8),
+}
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum DestinationAddress {
+    Individual(IndividualAddress),
+    Group(GroupAddress),
+    Broadcast,
+    SystemBroadcast,
+}
+
+create_protocol_enum!(
+    /// System error types
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum ApciCode: u8 {
+        GroupValueRead,             0,      "A_GroupValue_Read";
+        GroupValueResponse,         1,      "A_GroupValue_Response";
+        GroupValueWrite,            2,      "A_GroupValue_Write";
+        IndividualAddressWrite,     3,      "A_IndividualAddress_Write";
+        IndividualAddressRead,      4,      "A_IndividualAddress_Read";
+        IndividualAddressResponse,  5,      "A_IndividualAddress_Response";
+        AdcRead,                    6,      "A_ADC_Read";
+        AdcResponse,                7,      "A_ADC_Response";
+        MemoryRead,                 8,      "A_Memory_Read";
+        MemoryReadResponse,         9,      "A_Memory_Response";
+        MemoryWrite,                0x0a,   "A_Memory_Write";
+        UserMessage,                0x0b,   "A_UserMsg";
+        DeviceDescriptorRead,       0x0c,   "A_DeviceDescriptor_Read";
+        DeviceDescriptorResponse,   0x0d,   "A_DeviceDescriptor_Response";
+        Restart,                    0x0e,   "A_Restart";
+        Escape,                     0x0f,   "A_Escape";
+        SystemNetworkParameterRead, 0x48,   "A_SystemNetworkParameter_Read";
+        FunctionPropertyCommand,    0x87,   "A_FunctionPropertyCommand";
+        PropertyValueRead,          0xd5,   "A_PropertyValue_Read";
+        _,                                  "Unknown APCI code 0x{:x}";
+    }
+);
+
+create_protocol_enum!(
+    /// Address types
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum AddressType: u8 {
+        Individual,                 0,      "Individual address";
+        Broadcast,                  0x90,   "Broadcast address";
+        SystemBroadcast,            0x91,   "System broadcast address";
+        Group,                      0x80,   "Group address";
+        _,                                  "Unknown address type 0x{:x}";
+    }
+);
+
+create_protocol_enum!(
+    /// Hop count types
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum HopCountType: u8 {
+        Unlimited,                  7,      "Hop count = 7 (unlimited)";
+        Default,                    0,      "Default hop count as set by network layer";
+        _,                                  "Unknown address type 0x{:x}";
+    }
+);
+
+create_protocol_enum!(
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum FrameType: bool {
+        Standard, true, "Standard";
+        Extended, false, "Extended";
+    }
+);
+
+create_protocol_enum!(
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum Repetition: bool {
+        WasNotRepeated, true, "not repeated";
+        WasRepeated, false, "repeated";
+
+        AllowRepetition, true, "Allow repetitions";
+        DoNotRepeat, false, "Do not repeat";
+    }
+);
+
+create_protocol_enum!(
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum SystemBroadcast: bool {
+        NoSysBroadcast, true, "No System Broadcast";
+        SysBroadcast, false, "System Broadcast";
+    }
+);
+
+create_protocol_enum!(
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum AckType: bool {
+        AckRequested, true, "ACK requested";
+        AckDontCare, false, "ACK don't care";
+    }
+);
+
+create_protocol_enum!(
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum Confirm: bool {
+        Err, true, "Error";
+        NoError, false, "No error";
+    }
+);
+
+/// A KNX message CTRL1 field.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct Ctrl1Field(u8);
+
+impl Ctrl1Field {
+    const FT_FLAG_MASK: u8 = 0b10000000;
+    const R_FLAG_MASK: u8 = 0b00100000;
+    const SB_FLAG_MASK: u8 = 0b00010000;
+    const A_FLAG_MASK: u8 = 0b00000010;
+    const C_FLAG_MASK: u8 = 0b00000001;
+
+    const P_SHIFT: u8 = 2;
+    const P_LEN: u8 = 2;
+    const P_MAX: u8 = (1 << Self::P_LEN) - 1;
+    const P_MASK: u8 = (Self::P_MAX as u8) << Self::P_SHIFT;
+
+    pub fn new(flags: u8) -> Self {
+        Self(flags)
+    }
+
+    fn get_flag(&self, mask: u8) -> bool {
+        self.0 & mask > 0
+    }
+
+    fn set_flag(&mut self, mask: u8, set: bool) {
+        let v = self.0;
+        self.0 = if set { v | mask } else { v & !mask };
+    }
+
+    pub fn ft(&self) -> FrameType {
+        self.get_flag(Self::FT_FLAG_MASK).try_into().unwrap()
+    }
+
+    pub fn set_ft<FT: Into<bool>>(&mut self, ft: FT) {
+        self.set_flag(Self::FT_FLAG_MASK, ft.into());
+    }
+
+    pub fn r(&self) -> Repetition {
+        self.get_flag(Self::R_FLAG_MASK).try_into().unwrap()
+    }
+
+    pub fn set_r<R: Into<bool>>(&mut self, r: R) {
+        self.set_flag(Self::R_FLAG_MASK, r.into());
+    }
+
+    pub fn sb(&self) -> SystemBroadcast {
+        self.get_flag(Self::SB_FLAG_MASK).try_into().unwrap()
+    }
+
+    pub fn set_sb<SB: Into<bool>>(&mut self, sb: SB) {
+        self.set_flag(Self::SB_FLAG_MASK, sb.into());
+    }
+
+    pub fn priority(&self) -> Priority {
+        ((self.0 & Self::P_MASK) >> Self::P_SHIFT)
+            .try_into()
+            .unwrap()
+    }
+
+    pub fn set_priority<P: Into<u8>>(&mut self, priority: P) {
+        let priority: u8 = priority.into();
+        debug_assert!(priority <= Self::P_MAX);
+        let v = self.0;
+        self.0 = (v & !Self::P_MASK) | (priority) << Self::P_SHIFT;
+    }
+
+    // FIXME: A should only be valid for L_Data.req
+    pub fn a(&self) -> AckType {
+        self.get_flag(Self::A_FLAG_MASK).try_into().unwrap()
+    }
+
+    pub fn set_a<A: Into<bool>>(&mut self, a: A) {
+        self.set_flag(Self::A_FLAG_MASK, a.into());
+    }
+
+    // FIXME: C should only be valid for L_Data.con
+    pub fn c(&self) -> Confirm {
+        self.get_flag(Self::C_FLAG_MASK).try_into().unwrap()
+    }
+
+    pub fn set_c(&mut self, c: Confirm) {
+        self.set_flag(Self::C_FLAG_MASK, c.into());
+    }
+}
+
+impl From<u8> for Ctrl1Field {
+    fn from(value: u8) -> Self {
+        Ctrl1Field(value)
+    }
+}
+
+#[derive(Debug)]
+pub struct KnxMessageBuffer<B: Deref<Target = [u8]>> {
+    service_type: ServiceType,
+    len: u8,
+    buf: B,
+}
+
+impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
+    pub fn new(buf: B, service_type: ServiceType, len: u8) -> Self {
+        KnxMessageBuffer {
+            service_type,
+            len,
+            buf,
+        }
+    }
+
+    pub fn service_type(&self) -> ServiceType {
+        self.service_type
+    }
+
+    pub fn set_service_type(&mut self, service_type: ServiceType) {
+        self.service_type = service_type;
+    }
+
+    pub fn len(&self) -> u8 {
+        self.len
+    }
+
+    pub fn set_len(&mut self, len: u8) {
+        if len > self.buf.len() as u8 {
+            panic!("Length exceeds buffer size");
+        }
+
+        self.len = len;
+    }
+
+    /// Helper function to get an integer from a byte array
+    fn read_u16_be(&self, pos: usize) -> u16 {
+        u16::from_be_bytes([self.buf[pos], self.buf[pos + 1]])
+    }
+
+    // /// Helper function to set an integer in a byte array
+    // fn set_integer(&mut self, pos: usize, value: u16) {
+    //     let bytes = value.to_be_bytes();
+    //     self.buf[pos] = bytes[0];
+    //     self.buf[pos + 1] = bytes[1];
+    // }
+
+    pub fn ctrl_field(&self) -> &Ctrl1Field {
+        use offsets::*;
+        unsafe { &*(self.buf[MSG_CONTROL] as *const u8 as *const Ctrl1Field) }
+    }
+
+    /// Get the APCI value from the message as an enum
+    pub fn get_apci_code(&self) -> ApciCode {
+        use offsets::*;
+
+        // The first six bits of the APCI field either directlu contain the
+        // short APCIs or an escape code for the extended and user codes.
+        let apci_raw = ((self.read_u16_be(MSG_APCI) & 0x03C0) >> 6) as u8;
+
+        if apci_raw == ApciCode::UserMessage.into() {
+            // User messages
+            ApciCode::from(self.buf[MSG_APCI + 1] & 0xbf)
+        } else if apci_raw == ApciCode::Escape.into() {
+            // Escaped messages
+            ApciCode::from(self.buf[MSG_APCI + 1])
+        } else if apci_raw == 7 && ((self.buf[MSG_APCI + 1] & 0x3f) > 7) {
+            // Extended messages
+            ApciCode::from(self.buf[MSG_APCI + 1] & 0x7f)
+        } else {
+            // Short messages
+            ApciCode::from(apci_raw)
+        }
+    }
+
+    /// Get the source address from the message
+    pub fn get_source_addr(&self) -> IndividualAddress {
+        use offsets::*;
+
+        IndividualAddress::from_bytes(&self.buf[MSG_SOURCE_ADDR..MSG_SOURCE_ADDR + 2])
+    }
+
+    /// Get the destination address from the message
+    pub fn get_dest_addr(&self) -> DestinationAddress {
+        use offsets::*;
+
+        let addr_type = self.buf[MSG_ADDR_TYPE] & 0x80;
+
+        if addr_type != 0 && self.read_u16_be(MSG_DEST_ADDR) == 0 {
+            if (self.buf[MSG_CONTROL] & 0x10) == 0 {
+                return DestinationAddress::SystemBroadcast;
+            } else {
+                return DestinationAddress::Broadcast;
+            }
+        } else if addr_type != 0 {
+            return DestinationAddress::Group(GroupAddress::from_bytes(
+                &self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2],
+            ));
+        } else {
+            return DestinationAddress::Individual(IndividualAddress::from_bytes(
+                &self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2],
+            ));
+        }
+    }
+
+    /// Get the address type from the message as an enum based on the address type and system broadcast flags
+    pub fn get_address_type(&self) -> AddressType {
+        use offsets::*;
+
+        let addr_type = self.buf[MSG_ADDR_TYPE] & 0x80;
+
+        if addr_type != 0 && self.read_u16_be(MSG_DEST_ADDR) == 0 {
+            if (self.buf[MSG_CONTROL] & 0x10) == 0 {
+                return AddressType::SystemBroadcast;
+            } else {
+                return AddressType::Broadcast;
+            }
+        } else if addr_type != 0 {
+            return AddressType::Group;
+        } else {
+            return AddressType::Individual;
+        }
+    }
+
+    /// Get the TPCI from the message as an enum
+    pub fn get_tpci(&self) -> Option<Tpci> {
+        use offsets::*;
+
+        let addr_type = (self.buf[MSG_ADDR_TYPE] & 0x80) != 0;
+        let system_broadcast = (self.buf[MSG_CONTROL] & 0x10) == 0;
+        let dst_addr_zero = self.read_u16_be(MSG_DEST_ADDR) == 0;
+
+        let control = (self.buf[MSG_TPCI] & 0x80) != 0;
+        let numbered = (self.buf[MSG_TPCI] & 0x40) != 0;
+        let seqno = (self.buf[MSG_TPCI] & 0x3c) >> 2;
+        let ctrl_type = self.buf[MSG_TPCI] & 0x03;
+
+        match (
+            addr_type,
+            dst_addr_zero,
+            control,
+            numbered,
+            seqno,
+            ctrl_type,
+        ) {
+            (true, true, false, false, 0, _) => {
+                if system_broadcast {
+                    Some(Tpci::DataSystemBroadcast)
+                } else {
+                    Some(Tpci::DataBroadcast)
+                }
+            }
+            (true, false, false, false, 0, _) => Some(Tpci::DataGroup),
+            (false, _, false, false, 0, _) => Some(Tpci::DataIndividual),
+            (false, _, false, true, _, _) => Some(Tpci::DataConnected(seqno)),
+            (false, _, true, false, 0, 0x00) => Some(Tpci::Connect),
+            (false, _, true, false, 0, 0x01) => Some(Tpci::Disconnect),
+            (false, _, true, true, _, 0x02) => Some(Tpci::Ack(seqno)),
+            (false, _, true, true, _, 0x03) => Some(Tpci::Nack(seqno)),
+            _ => None,
+        }
+    }
+
+    /// Get the hop count from the message
+    pub fn get_hop_count(&self) -> u8 {
+        use offsets::*;
+        (self.buf[MSG_ROUTE_CNT] & 0x70) >> 4
+    }
+
+    /// Get the hop count type from the message as a HopCountType enum
+    pub fn get_hop_count_type(&self) -> HopCountType {
+        use offsets::*;
+        HopCountType::from(self.buf[MSG_ROUTE_CNT] & 0x70 >> 4)
+    }
+}
+
+impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
+    /// Get a mutable reference to the CTRL1 field
+    pub fn ctrl_field_mut(&mut self) -> &mut Ctrl1Field {
+        use offsets::*;
+        unsafe { &mut *(self.buf[MSG_CONTROL] as *const u8 as *mut Ctrl1Field) }
+    }
+
+    /// Set the source address in the message
+    pub fn set_source_addr(&mut self, addr: IndividualAddress) {
+        use offsets::*;
+        self.buf[MSG_SOURCE_ADDR..MSG_SOURCE_ADDR + 2].copy_from_slice(addr.as_bytes());
+    }
+
+    /// Set the destination address in the message
+    /// This also sets the appropriate flags for the address type and system broadcast
+    pub fn set_dest_addr(&mut self, addr: DestinationAddress) {
+        use offsets::*;
+
+        match addr {
+            DestinationAddress::Individual(a) => {
+                self.buf[MSG_ADDR_TYPE] &= !0x80;
+                self.buf[MSG_CONTROL] &= !0x10;
+                self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(a.as_bytes());
+            }
+            DestinationAddress::Group(a) => {
+                self.buf[MSG_ADDR_TYPE] |= 0x80;
+                self.buf[MSG_CONTROL] &= !0x10;
+                self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(a.as_bytes());
+            }
+            DestinationAddress::Broadcast => {
+                self.buf[MSG_ADDR_TYPE] &= !0x80;
+                self.buf[MSG_CONTROL] &= !0x10;
+                self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(&[0, 0]);
+            }
+            DestinationAddress::SystemBroadcast => {
+                self.buf[MSG_ADDR_TYPE] &= !0x80;
+                self.buf[MSG_CONTROL] |= 0x10;
+                self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(&[0, 0]);
+            }
+        }
+    }
+
+    /// Set the destination address without touching the address type or system broadcast flags
+    pub fn set_dest_addr_raw(&mut self, addr: &[u8; 2]) {
+        use offsets::*;
+        self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(addr);
+    }
+
+    /// Set the address type and system broadcast flags in the message
+    pub fn set_address_type(&mut self, addr_type: AddressType) {
+        use offsets::*;
+
+        match addr_type {
+            AddressType::Individual => self.buf[MSG_ADDR_TYPE] &= !0x80,
+            AddressType::Group => self.buf[MSG_ADDR_TYPE] |= 0x80,
+            AddressType::Broadcast => {
+                self.buf[MSG_ADDR_TYPE] &= !0x80;
+                self.buf[MSG_CONTROL] &= !0x10;
+            }
+            AddressType::SystemBroadcast => {
+                self.buf[MSG_ADDR_TYPE] &= !0x80;
+                self.buf[MSG_CONTROL] |= 0x10;
+            }
+            _ => panic!("Invalid address type"),
+        }
+    }
+
+    /// Set the hop count in the message
+    pub fn set_hop_count(&mut self, hop_count: u8) {
+        use offsets::*;
+        self.buf[MSG_ROUTE_CNT] = (self.buf[MSG_ROUTE_CNT] & 0x8f) | ((hop_count & 0x07) << 4);
+    }
+
+    /// Set the hop count type in the message using the HopCountType enum
+    pub fn set_hop_count_type(&mut self, hop_count_type: HopCountType) {
+        use offsets::*;
+
+        let hop_count_type: u8 = hop_count_type.into();
+        self.buf[MSG_ROUTE_CNT] = (self.buf[MSG_ROUTE_CNT] & 0x8f) | (hop_count_type << 4);
+    }
+
+    /// Convert an incoming hop count to a HopCountType according to the KNX network layer specification
+    pub fn convert_hop_count_to_hop_count_type(&mut self) {
+        if self.get_hop_count() == 7 {
+            self.set_hop_count_type(HopCountType::Unlimited);
+        } else {
+            self.set_hop_count_type(HopCountType::Default);
+        }
+    }
+
+    /// Convert an incoming HopCountType to a hop count according to the KNX network layer specification
+    pub fn convert_hop_count_type_to_hop_count(&mut self, default_hop_count: u8) {
+        if self.get_hop_count_type() == HopCountType::Unlimited {
+            self.set_hop_count(7);
+        } else {
+            self.set_hop_count(default_hop_count);
+        }
+    }
+}
+
+// /// Set the APCI value in the message from an enum
+// pub fn set_apci(&mut self, apci: Apci) {
+//     use offsets::*;
+
+//     let apci_value = apci.to_raw();
+//     let code = (apci_value & 0xc0) as u8;
+
+//     match code {
+//         0x40 => {
+//             self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 1;
+//             self.buf[MSG_APDU] = (apci_value | !0x3F) as u8;
+//         }
+//         0x80 => {
+//             self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 2;
+//             self.buf[MSG_APDU] = (apci_value | !0x3F) as u8;
+//         }
+//         0xc0 => {
+//             self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 3;
+//             self.buf[MSG_APDU] = apci_value as u8;
+//         }
+//         _ => {
+//             let tmp = self.get_integer(MSG_APCI);
+//             self.set_integer(MSG_APCI, (tmp & !0x3C0) | (apci_value << 6));
+//         }
+//     }
+// }
+
+// /// Set the TPCI value in the message from an enum
+// pub fn set_tpci(&mut self, tpci: Tpci) {
+//     use offsets::*;
+
+//     // Determine the mask based on TPCI value
+//     let tpci_value = tpci as u8;
+//     let mask = match tpci_value {
+//         0x00 => 0x3f, // UnnumberedData
+//         0x40 => 0x3f, // NumberedData
+//         _ => 0x3c,    // Control types
+//     };
+
+//     self.buf[MSG_TPCI] = tpci_value | (mask & self.buf[MSG_TPCI]);
+// }
+
+// /// Get the sequence number from the message
+// pub fn get_sequence_nr(&self) -> u8 {
+//     (self.buf[8] & 0x3c) >> 2
+// }
+
+// /// Set the sequence number in the message
+// pub fn set_sequence_nr(&mut self, seq_nr: u8) {
+//     self.buf[8] = (self.buf[8] & 0xc3) | ((seq_nr & 0x0F) << 2);
+// }
+
+// /// Set the source address in the message
+// pub fn set_source_addr(&mut self, addr: IndividualAddress) {
+//     use offsets::*;
+
+//     self.buf[MSG_SOURCE_ADDR..MSG_SOURCE_ADDR + 2].copy_from_slice(addr.as_bytes());
+// }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 1. Standard Group Value Write frame (switching off a light)
+    // Format: Length + Service code + Control byte 1/2 + Destination address + Source address + NPDU length + TPCI/APCI + Data
+    const GROUP_VALUE_WRITE: &[u8] = &[
+        0xBC, // Control byte 1: 10111100 (Standard frame, priority 3, no repetition, broadcast)
+        0x11, 0x22, // Source address: 1.1.34 (physical address)
+        0x11, 0x01, // Destination address: 1/1/1 (group address in 3-level format)
+        0x80, // Control byte 2: 10000000 (AT: Group address, default hop count, no eff)
+        0x00, // TPCI: 000000 (Unnumbered data packet), short APCI + data (binary value 0)
+        0x80,
+    ];
+
+    // 2. Group Value Read frame (reading the state of a group address)
+    const GROUP_VALUE_READ: &[u8] = &[
+        0xBC, // Control byte 1: 10111100 (Standard frame, priority 3, no repetition, broadcast)
+        0x11, 0x02, // Destination address: 1/1/2 (group address)
+        0x11, 0x22, // Source address: 1.1.34 (physical address)
+        0x80, // Control byte 2: 10000000 (AT: Group address, default hop count, no eff)
+        0x00, // TPCI: 000000 (Unnumbered data packet), short APCI + data (binary value 0)
+        0x00,
+    ];
+
+    // 3. Memory write
+    const MEMORY_WRITE: &[u8] = &[
+        0xBC, // Control byte 1: 10111100 (Standard frame, priority 3, no repetition, broadcast)
+        0x11, 0x22, // Source address: 1.1.34 (physical address)
+        0x11, 0x23, // Destination address: 1.1.35 (physical address)
+        0x00, // Control byte 2: 00000000 (AT: Individual address, default hop count, no eff)
+        0x46, // TPCI: 010001 (Numbered data packet, seqno 1), first 2 bits of APCI: 10 (Memory write)
+        0x84, // APCI: (10) 10 (Memory write) 000100 (4 bytes)
+        0x80, 0x00, // Address: 0x8000
+        0x01, 0x02, 0x03, 0x04, // Data: 0x01020304
+    ];
+
+    // 4. Property value read
+    const PROPERTY_VALUE_READ: &[u8] = &[
+        0xBC, // Control byte 1: 10111100 (Standard frame, priority 3, no repetition, broadcast)
+        0x11, 0x22, // Source address: 1.1.34 (physical address)
+        0x11, 0x23, // Destination address: 1.1.35 (physical address)
+        0x00, // Control byte 2: 00000000 (AT: Individual address, default hop count, no eff)
+        0x47, // TPCI: 010001 (Numbered data packet, seqno 1), first 2 bits of APCI: 11 (Escape)
+        0xD5, // APCI: (11) 11 (Escape) 010101 (Property Value Read)
+        0x01, // Object index: 1
+        0x02, // Property ID: 2
+        0x10, // Number of elements: 1, start index upper 4 bits: 0
+        0x00, // Start index lower 8 bits: 0
+        0x01, 0x02, 0x03, 0x04, // Data: 0x01020304
+    ];
+
+    // 5. System network parameter read
+    const SYSTEM_NETWORK_PARAMETER_READ: &[u8] = &[
+        0xAC, // Control byte 1: 10101100 (Standard frame, priority 3, no repetition, system broadcast)
+        0x11, 0x22, // Source address: 1.1.34 (physical address)
+        0x00, 0x00, // Destination address: 0/0/0 (broadcast)
+        0x80, // Control byte 2: 10000000 (AT: Group address, default hop count, no eff)
+        0x01, // TPCI: 000000 (Unnumbered data packet), first 2 bits of APCI: 01 (Extended)
+        0xC8, // APCI: (01) 11 (Extended) 001000 (System Network Parameter Read)
+        0x00, 0x01, // Object type: 1
+        0x00, 0x00, // PID: 0
+        0x55, // Operand: 0x55
+    ];
+
+    // 6. Function property command
+    const FUNCTION_PROPERTY_COMMAND: &[u8] = &[
+        0xBC, // Control byte 1: 10101100 (Standard frame, priority 3, no repetition, system broadcast)
+        0x11, 0x22, // Source address: 1.1.34 (physical address)
+        0x11, 0x23, // Destination address: 1.1.35 (physical address)
+        0x00, // Control byte 2: 00000000 (AT: Individual address, default hop count, no eff)
+        0x46, // TPCI: 010001 (Numbered data packet, seqno 1), first 2 bits of APCI: 10 (User)
+        0xC7, // APCI: (10) 11 (User) 000111 (Function Property Command)
+        0x01, // Object index: 1
+        0x02, // Property ID: 2
+        0x01, 0x02, 0x03, 0x04, // Data: 0x01020304
+    ];
+
+    // Collection of all KNX TP1 test frames for easy iteration
+    pub const KNX_TP1_TEST_FRAMES: &[&[u8]] = &[
+        GROUP_VALUE_WRITE,
+        GROUP_VALUE_READ,
+        MEMORY_WRITE,
+        PROPERTY_VALUE_READ,
+        SYSTEM_NETWORK_PARAMETER_READ,
+        FUNCTION_PROPERTY_COMMAND,
+    ];
+
+    #[test]
+    fn test_apci() {
+        const EXPECTED_APCIS: &[ApciCode] = &[
+            ApciCode::GroupValueWrite,
+            ApciCode::GroupValueRead,
+            ApciCode::MemoryWrite,
+            ApciCode::PropertyValueRead,
+            ApciCode::SystemNetworkParameterRead,
+            ApciCode::FunctionPropertyCommand,
+        ];
+
+        for (t, e) in KNX_TP1_TEST_FRAMES.iter().zip(EXPECTED_APCIS.iter()) {
+            let msg = KnxMessageBuffer {
+                buf: *t,
+                service_type: ServiceType::L_Data_Ind,
+                len: t.len() as u8,
+            };
+            assert_eq!(
+                msg.get_apci_code(),
+                *e,
+                "APCI code mismatch for test frame: {:x?}",
+                t
+            );
+        }
+    }
+
+    #[test]
+    fn test_tpci() {
+        const EXPECTED_TPCIS: &[Option<Tpci>] = &[
+            Some(Tpci::DataGroup),
+            Some(Tpci::DataGroup),
+            Some(Tpci::DataConnected(1)),
+            Some(Tpci::DataConnected(1)),
+            Some(Tpci::DataSystemBroadcast),
+            Some(Tpci::DataConnected(1)),
+        ];
+
+        for (t, e) in KNX_TP1_TEST_FRAMES.iter().zip(EXPECTED_TPCIS.iter()) {
+            let msg = KnxMessageBuffer {
+                buf: *t,
+                service_type: ServiceType::L_Data_Ind,
+                len: t.len() as u8,
+            };
+            assert_eq!(
+                msg.get_tpci(),
+                *e,
+                "TPCI code mismatch for test frame: {:x?}",
+                t
+            );
+        }
+    }
+}

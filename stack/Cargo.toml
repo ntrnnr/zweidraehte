@@ -9,8 +9,10 @@ const-bitfield = { workspace = true }
 const-default = { workspace = true }
 bitflags = { workspace = true }
 paste = { workspace = true }
-
+static_cell = { workspace = true }
+ector = { workspace = true }
 embassy-sync = { workspace = true }
+embassy-futures = { workspace = true }
 
 [features]
 defmt = []
