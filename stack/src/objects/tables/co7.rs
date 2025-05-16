@@ -1,7 +1,7 @@
 use const_default::ConstDefault;
 use zerocopy::big_endian::U16;
 
-use super::{MemoryBackedTable, Table};
+use super::{Table, TableMemory};
 
 bitflags::bitflags! {
     /// Communication object configuration flags (according to KNX specification)
@@ -252,7 +252,7 @@ impl<const N: usize> Table<CoTab7Impl<N>> {
     }
 }
 
-impl<const N: usize> MemoryBackedTable for CoTab7Impl<N> {
+impl<const N: usize> TableMemory for CoTab7Impl<N> {
     fn max_size() -> usize {
         N
     }
@@ -278,7 +278,7 @@ pub type CoTab7<const MAX_ENTRIES: usize> = Table<CoTab7Impl<{ (MAX_ENTRIES + 1)
 
 #[cfg(test)]
 mod test {
-    use crate::objects::tables::{LoadEvent, LoadState, MemoryBackedTable};
+    use crate::objects::tables::{LoadEvent, LoadState, LoadableTable, TableMemory};
 
     use super::{CoTab7, ComObjectFlags, ComObjectType};
 

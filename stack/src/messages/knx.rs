@@ -77,10 +77,12 @@ create_protocol_enum!(
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum Tpci {
+    // FIXME: Individual, Group, Broadcast, SystemBroadcast are network layer things to be precise
+    //        Change this to unnumbered/numbered control/data packets??
     DataBroadcast,
     DataSystemBroadcast,
     DataGroup,
-    DataTagGroup,
+    //DataTagGroup,
     DataIndividual,
     DataConnected(u8),
     Connect,
@@ -281,6 +283,107 @@ impl From<u8> for Ctrl1Field {
     }
 }
 
+create_protocol_enum!(
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum DataControl: bool {
+        Control, true, "Control";
+        Data, false, "Data";
+    }
+);
+
+create_protocol_enum!(
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum Numbered: bool {
+        Numbered, true, "Numbered";
+        Unnumbered, false, "Unnumbered";
+    }
+);
+
+create_protocol_enum!(
+    /// TPCI Control Type
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum ControlType: u8 {
+        Connect,    0,  "Connect";
+        Disconnect, 1,  "Disconnect";
+        ACK,        2,  "ACK";
+        NACK,       3,  "NACK";
+        _,              "Unknown control type 0x{:x}";
+    }
+);
+
+/// A KNX message TPCI field.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct TpciField(u8);
+
+impl TpciField {
+    const DC_FLAG_MASK: u8 = 0b10000000;
+    const N_FLAG_MASK: u8 = 0b01000000;
+
+    const SEQNO_SHIFT: u8 = 2;
+    const SEQNO_LEN: u8 = 4;
+    const SEQNO_MAX: u8 = (1 << Self::SEQNO_LEN) - 1;
+    const SEQNO_MASK: u8 = (Self::SEQNO_MAX as u8) << Self::SEQNO_SHIFT;
+
+    const CTRLT_SHIFT: u8 = 0;
+    const CTRLT_LEN: u8 = 2;
+    const CTRLT_MAX: u8 = (1 << Self::CTRLT_LEN) - 1;
+    const CTRLT_MASK: u8 = (Self::CTRLT_MAX as u8) << Self::CTRLT_SHIFT;
+
+    pub fn new(flags: u8) -> Self {
+        Self(flags)
+    }
+
+    fn get_flag(&self, mask: u8) -> bool {
+        self.0 & mask > 0
+    }
+
+    fn set_flag(&mut self, mask: u8, set: bool) {
+        let v = self.0;
+        self.0 = if set { v | mask } else { v & !mask };
+    }
+
+    pub fn dc(&self) -> DataControl {
+        self.get_flag(Self::DC_FLAG_MASK).try_into().unwrap()
+    }
+
+    pub fn set_dc<DC: Into<bool>>(&mut self, dc: DC) {
+        self.set_flag(Self::DC_FLAG_MASK, dc.into());
+    }
+
+    pub fn n(&self) -> Numbered {
+        self.get_flag(Self::N_FLAG_MASK).try_into().unwrap()
+    }
+
+    pub fn set_n<N: Into<bool>>(&mut self, n: N) {
+        self.set_flag(Self::N_FLAG_MASK, n.into());
+    }
+
+    pub fn seqno(&self) -> u8 {
+        ((self.0 & Self::SEQNO_MASK) >> Self::SEQNO_SHIFT)
+            .try_into()
+            .unwrap()
+    }
+
+    pub fn set_seqno<S: Into<u8>>(&mut self, seqno: S) {
+        let seqno: u8 = seqno.into();
+        debug_assert!(seqno <= Self::SEQNO_MAX);
+        let v = self.0;
+        self.0 = (v & !Self::SEQNO_MASK) | (seqno) << Self::SEQNO_SHIFT;
+    }
+
+    pub fn ctrl_type(&self) -> ControlType {
+        ((self.0 & Self::CTRLT_MASK) >> Self::CTRLT_SHIFT).into()
+    }
+
+    pub fn set_ctrl_type<C: Into<u8>>(&mut self, ctrl_type: C) {
+        let ctrl_type: u8 = ctrl_type.into();
+        debug_assert!(ctrl_type <= Self::CTRLT_MAX);
+        let v = self.0;
+        self.0 = (v & !Self::CTRLT_MASK) | (ctrl_type) << Self::CTRLT_SHIFT;
+    }
+}
+
 #[derive(Debug)]
 pub struct KnxMessageBuffer<B: Deref<Target = [u8]>> {
     service_type: ServiceType,
@@ -331,7 +434,12 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
 
     pub fn ctrl_field(&self) -> &Ctrl1Field {
         use offsets::*;
-        unsafe { &*(self.buf[MSG_CONTROL] as *const u8 as *const Ctrl1Field) }
+        unsafe { &*(&self.buf[MSG_CONTROL] as *const u8 as *const Ctrl1Field) }
+    }
+
+    pub fn tpci_field(&self) -> &TpciField {
+        use offsets::*;
+        unsafe { &*(&self.buf[MSG_TPCI] as *const u8 as *const TpciField) }
     }
 
     /// Get the APCI value from the message as an enum
@@ -360,7 +468,6 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
     /// Get the source address from the message
     pub fn get_source_addr(&self) -> IndividualAddress {
         use offsets::*;
-
         IndividualAddress::from_bytes(&self.buf[MSG_SOURCE_ADDR..MSG_SOURCE_ADDR + 2])
     }
 
@@ -394,7 +501,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
         let addr_type = self.buf[MSG_ADDR_TYPE] & 0x80;
 
         if addr_type != 0 && self.read_u16_be(MSG_DEST_ADDR) == 0 {
-            if (self.buf[MSG_CONTROL] & 0x10) == 0 {
+            if self.ctrl_field().sb() == SystemBroadcast::SysBroadcast {
                 return AddressType::SystemBroadcast;
             } else {
                 return AddressType::Broadcast;
@@ -408,39 +515,59 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
 
     /// Get the TPCI from the message as an enum
     pub fn get_tpci(&self) -> Option<Tpci> {
-        use offsets::*;
+        // FIXME: Strictly speaking, the address type is part of the network layer
 
-        let addr_type = (self.buf[MSG_ADDR_TYPE] & 0x80) != 0;
-        let system_broadcast = (self.buf[MSG_CONTROL] & 0x10) == 0;
-        let dst_addr_zero = self.read_u16_be(MSG_DEST_ADDR) == 0;
+        let addr_type = self.get_address_type();
+        let control = self.tpci_field().dc();
+        let numbered = self.tpci_field().n();
+        let seqno = self.tpci_field().seqno();
+        let ctrl_type = self.tpci_field().ctrl_type();
 
-        let control = (self.buf[MSG_TPCI] & 0x80) != 0;
-        let numbered = (self.buf[MSG_TPCI] & 0x40) != 0;
-        let seqno = (self.buf[MSG_TPCI] & 0x3c) >> 2;
-        let ctrl_type = self.buf[MSG_TPCI] & 0x03;
-
-        match (
-            addr_type,
-            dst_addr_zero,
-            control,
-            numbered,
-            seqno,
-            ctrl_type,
-        ) {
-            (true, true, false, false, 0, _) => {
-                if system_broadcast {
-                    Some(Tpci::DataSystemBroadcast)
-                } else {
-                    Some(Tpci::DataBroadcast)
-                }
+        match (addr_type, control, numbered, seqno, ctrl_type) {
+            (AddressType::Broadcast, DataControl::Data, Numbered::Unnumbered, 0, _) => {
+                Some(Tpci::DataBroadcast)
             }
-            (true, false, false, false, 0, _) => Some(Tpci::DataGroup),
-            (false, _, false, false, 0, _) => Some(Tpci::DataIndividual),
-            (false, _, false, true, _, _) => Some(Tpci::DataConnected(seqno)),
-            (false, _, true, false, 0, 0x00) => Some(Tpci::Connect),
-            (false, _, true, false, 0, 0x01) => Some(Tpci::Disconnect),
-            (false, _, true, true, _, 0x02) => Some(Tpci::Ack(seqno)),
-            (false, _, true, true, _, 0x03) => Some(Tpci::Nack(seqno)),
+            (AddressType::SystemBroadcast, DataControl::Data, Numbered::Unnumbered, 0, _) => {
+                Some(Tpci::DataSystemBroadcast)
+            }
+
+            (AddressType::Group, DataControl::Data, Numbered::Unnumbered, 0, _) => {
+                Some(Tpci::DataGroup)
+            }
+            (AddressType::Individual, DataControl::Data, Numbered::Unnumbered, 0, _) => {
+                Some(Tpci::DataIndividual)
+            }
+            (AddressType::Individual, DataControl::Data, Numbered::Numbered, _, _) => {
+                Some(Tpci::DataConnected(seqno))
+            }
+            (
+                AddressType::Individual,
+                DataControl::Control,
+                Numbered::Unnumbered,
+                0,
+                ControlType::Connect,
+            ) => Some(Tpci::Connect),
+            (
+                AddressType::Individual,
+                DataControl::Control,
+                Numbered::Unnumbered,
+                0,
+                ControlType::Disconnect,
+            ) => Some(Tpci::Disconnect),
+            (
+                AddressType::Individual,
+                DataControl::Control,
+                Numbered::Numbered,
+                _,
+                ControlType::ACK,
+            ) => Some(Tpci::Ack(seqno)),
+            (
+                AddressType::Individual,
+                DataControl::Control,
+                Numbered::Numbered,
+                _,
+                ControlType::NACK,
+            ) => Some(Tpci::Nack(seqno)),
             _ => None,
         }
     }
@@ -462,7 +589,13 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
     /// Get a mutable reference to the CTRL1 field
     pub fn ctrl_field_mut(&mut self) -> &mut Ctrl1Field {
         use offsets::*;
-        unsafe { &mut *(self.buf[MSG_CONTROL] as *const u8 as *mut Ctrl1Field) }
+        unsafe { &mut *(&mut self.buf[MSG_CONTROL] as *const u8 as *mut Ctrl1Field) }
+    }
+
+    /// Get a mutable reference to the TPCI field
+    pub fn tpci_field_mut(&mut self) -> &mut TpciField {
+        use offsets::*;
+        unsafe { &mut *(&mut self.buf[MSG_TPCI] as *const u8 as *mut TpciField) }
     }
 
     /// Set the source address in the message
@@ -472,30 +605,26 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
     }
 
     /// Set the destination address in the message
+    ///
     /// This also sets the appropriate flags for the address type and system broadcast
+    /// In case of Broadcast and SystemBroadcast the destination address is set to 0
     pub fn set_dest_addr(&mut self, addr: DestinationAddress) {
         use offsets::*;
 
         match addr {
             DestinationAddress::Individual(a) => {
-                self.buf[MSG_ADDR_TYPE] &= !0x80;
-                self.buf[MSG_CONTROL] &= !0x10;
+                self.set_address_type(AddressType::Individual);
                 self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(a.as_bytes());
             }
             DestinationAddress::Group(a) => {
-                self.buf[MSG_ADDR_TYPE] |= 0x80;
-                self.buf[MSG_CONTROL] &= !0x10;
+                self.set_address_type(AddressType::Group);
                 self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(a.as_bytes());
             }
             DestinationAddress::Broadcast => {
-                self.buf[MSG_ADDR_TYPE] &= !0x80;
-                self.buf[MSG_CONTROL] &= !0x10;
-                self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(&[0, 0]);
+                self.set_address_type(AddressType::Broadcast);
             }
             DestinationAddress::SystemBroadcast => {
-                self.buf[MSG_ADDR_TYPE] &= !0x80;
-                self.buf[MSG_CONTROL] |= 0x10;
-                self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(&[0, 0]);
+                self.set_address_type(AddressType::SystemBroadcast);
             }
         }
     }
@@ -507,21 +636,113 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
     }
 
     /// Set the address type and system broadcast flags in the message
+    ///
+    /// In case of Broadcast and SystemBroadcast the destination address is set to 0
     pub fn set_address_type(&mut self, addr_type: AddressType) {
         use offsets::*;
 
         match addr_type {
-            AddressType::Individual => self.buf[MSG_ADDR_TYPE] &= !0x80,
-            AddressType::Group => self.buf[MSG_ADDR_TYPE] |= 0x80,
+            AddressType::Individual => {
+                self.buf[MSG_ADDR_TYPE] &= !0x80;
+                self.ctrl_field_mut()
+                    .set_sb(SystemBroadcast::NoSysBroadcast);
+            }
+            AddressType::Group => {
+                self.buf[MSG_ADDR_TYPE] |= 0x80;
+                self.ctrl_field_mut()
+                    .set_sb(SystemBroadcast::NoSysBroadcast);
+            }
             AddressType::Broadcast => {
                 self.buf[MSG_ADDR_TYPE] &= !0x80;
-                self.buf[MSG_CONTROL] &= !0x10;
+                self.ctrl_field_mut()
+                    .set_sb(SystemBroadcast::NoSysBroadcast);
+                self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(&[0, 0]);
             }
             AddressType::SystemBroadcast => {
                 self.buf[MSG_ADDR_TYPE] &= !0x80;
-                self.buf[MSG_CONTROL] |= 0x10;
+                self.ctrl_field_mut().set_sb(SystemBroadcast::SysBroadcast);
+                self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(&[0, 0]);
             }
             _ => panic!("Invalid address type"),
+        }
+    }
+
+    /// Set the TPCI value in the message from an enum
+    pub fn set_tpci(&mut self, tpci: Tpci) {
+        // FIXME: Strictly speaking, the address type is part of the network layer
+
+        let (addr_type, control, numbered, seqno, ctrl_type) = match tpci {
+            Tpci::DataBroadcast => (
+                AddressType::Broadcast,
+                DataControl::Data,
+                Numbered::Unnumbered,
+                0,
+                None,
+            ),
+            Tpci::DataSystemBroadcast => (
+                AddressType::SystemBroadcast,
+                DataControl::Data,
+                Numbered::Unnumbered,
+                0,
+                None,
+            ),
+            Tpci::DataGroup => (
+                AddressType::Group,
+                DataControl::Data,
+                Numbered::Unnumbered,
+                0,
+                None,
+            ),
+            Tpci::DataIndividual => (
+                AddressType::Individual,
+                DataControl::Data,
+                Numbered::Unnumbered,
+                0,
+                None,
+            ),
+            Tpci::DataConnected(seqno) => (
+                AddressType::Individual,
+                DataControl::Data,
+                Numbered::Numbered,
+                seqno,
+                None,
+            ),
+            Tpci::Connect => (
+                AddressType::Individual,
+                DataControl::Control,
+                Numbered::Unnumbered,
+                0,
+                Some(ControlType::Connect),
+            ),
+            Tpci::Disconnect => (
+                AddressType::Individual,
+                DataControl::Control,
+                Numbered::Unnumbered,
+                0,
+                Some(ControlType::Disconnect),
+            ),
+            Tpci::Ack(seqno) => (
+                AddressType::Individual,
+                DataControl::Control,
+                Numbered::Numbered,
+                seqno,
+                Some(ControlType::ACK),
+            ),
+            Tpci::Nack(seqno) => (
+                AddressType::Individual,
+                DataControl::Control,
+                Numbered::Numbered,
+                seqno,
+                Some(ControlType::NACK),
+            ),
+        };
+
+        self.set_address_type(addr_type);
+        self.tpci_field_mut().set_dc(control);
+        self.tpci_field_mut().set_n(numbered);
+        self.tpci_field_mut().set_seqno(seqno);
+        if let Some(ctrl_type) = ctrl_type {
+            self.tpci_field_mut().set_ctrl_type(ctrl_type);
         }
     }
 
@@ -585,21 +806,6 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
 //     }
 // }
 
-// /// Set the TPCI value in the message from an enum
-// pub fn set_tpci(&mut self, tpci: Tpci) {
-//     use offsets::*;
-
-//     // Determine the mask based on TPCI value
-//     let tpci_value = tpci as u8;
-//     let mask = match tpci_value {
-//         0x00 => 0x3f, // UnnumberedData
-//         0x40 => 0x3f, // NumberedData
-//         _ => 0x3c,    // Control types
-//     };
-
-//     self.buf[MSG_TPCI] = tpci_value | (mask & self.buf[MSG_TPCI]);
-// }
-
 // /// Get the sequence number from the message
 // pub fn get_sequence_nr(&self) -> u8 {
 //     (self.buf[8] & 0x3c) >> 2
@@ -608,13 +814,6 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
 // /// Set the sequence number in the message
 // pub fn set_sequence_nr(&mut self, seq_nr: u8) {
 //     self.buf[8] = (self.buf[8] & 0xc3) | ((seq_nr & 0x0F) << 2);
-// }
-
-// /// Set the source address in the message
-// pub fn set_source_addr(&mut self, addr: IndividualAddress) {
-//     use offsets::*;
-
-//     self.buf[MSG_SOURCE_ADDR..MSG_SOURCE_ADDR + 2].copy_from_slice(addr.as_bytes());
 // }
 
 #[cfg(test)]

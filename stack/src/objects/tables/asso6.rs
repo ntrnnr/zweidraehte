@@ -1,7 +1,7 @@
 use const_default::ConstDefault;
 use zerocopy::big_endian::U16;
 
-use super::{MemoryBackedTable, Table};
+use super::{Table, TableMemory};
 
 #[derive(Debug, ConstDefault)]
 pub struct AssoTab6Impl<const N: usize> {
@@ -214,7 +214,7 @@ impl<'a, const N: usize> Iterator for AsapIterator<'a, N> {
     }
 }
 
-impl<const N: usize> MemoryBackedTable for AssoTab6Impl<N> {
+impl<const N: usize> TableMemory for AssoTab6Impl<N> {
     fn max_size() -> usize {
         N
     }
@@ -240,7 +240,7 @@ pub type AssoTab6<const MAX_ENTRIES: usize> = Table<AssoTab6Impl<{ (MAX_ENTRIES 
 
 #[cfg(test)]
 mod test {
-    use crate::objects::tables::{LoadEvent, LoadState, MemoryBackedTable};
+    use crate::objects::tables::{LoadEvent, LoadState, LoadableTable, TableMemory};
 
     use super::AssoTab6;
 

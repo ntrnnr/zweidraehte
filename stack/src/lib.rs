@@ -18,91 +18,132 @@ pub mod messages;
 pub mod objects;
 pub mod util;
 
+use core::marker::PhantomData;
+use core::pin::Pin;
+
 use address::IndividualAddress;
 use const_default::ConstDefault;
-use ector::ActorContext;
-use layers::{network::NetworkLayer, transport::TransportLayer};
-use messages::buffers::{Buffer, BufferManager};
+use ector::mutex::NoopRawMutex;
+use embassy_sync::channel::Channel;
+use layers::{
+    Layer, application::ApplicationLayer, network::NetworkLayer, transport::TransportLayer,
+};
+use messages::buffers::Buffer;
 use objects::{
     comm::ComObjects,
-    tables::{MemoryBackedTable, app::Application},
+    tables::{AddressTable, TableMemory, app::Application},
 };
 
-static NL_CTX: ActorContext<NetworkLayer<Buffer<'static>>> = ActorContext::new();
-static TL_CTX: ActorContext<TransportLayer<Buffer<'static>>> = ActorContext::new();
+// FIXME: Introduce traits for AST, COT
+pub trait StackDefinition {
+    type ADT: AddressTable;
+    type AST: TableMemory;
+    type COT: TableMemory;
+    type P: ConstDefault;
+    type R: ComObjects;
+}
 
-// FIXME: Introduce traits for ADT, AST, COT
-pub struct StackResources<
-    const NUM_BUFS: usize,
-    ADT: MemoryBackedTable,
-    AST: MemoryBackedTable,
-    COT: MemoryBackedTable,
-    P: ConstDefault,
-    R: ComObjects,
-> {
-    pub buffer_manager: BufferManager<NUM_BUFS>,
+pub struct StackResources<D: StackDefinition> {
     pub ind_addr: IndividualAddress,
-    pub adt: ADT,
-    pub ast: AST,
-    pub cot: COT,
-    pub app: Application<P>,
-    pub ram: R,
+    pub adt: D::ADT,
+    pub ast: D::AST,
+    pub cot: D::COT,
+    pub app: Application<D::P>,
+    pub ram: D::R,
 }
 
-impl<
-    const NUM_BUFS: usize,
-    ADT: MemoryBackedTable,
-    AST: MemoryBackedTable,
-    COT: MemoryBackedTable,
-    P: ConstDefault,
-    R: ComObjects,
-> StackResources<NUM_BUFS, ADT, AST, COT, P, R>
-{
-    pub fn bootstrap(self) -> (ProtocolStack<NUM_BUFS, ADT, AST, COT, P, R>, StackRunner) {
-        let _allocator = self.buffer_manager.dyn_buffer_manager();
+pub struct StackRunner<D: StackDefinition> {
+    ind_addr: IndividualAddress,
+    adt: D::ADT,
+    _phantom: PhantomData<D>,
+}
 
-        let nl_addr = NL_CTX.dyn_address();
-        let tl_addr = TL_CTX.dyn_address();
-
-        let network_layer = NetworkLayer::<Buffer<'static>>::new(self.ind_addr, 6, tl_addr);
-        let transport_layer = TransportLayer::<Buffer<'static>>::new();
-
-        (
-            ProtocolStack { resources: self },
-            StackRunner {
-                network_layer,
-                transport_layer,
-            },
-        )
+impl<D: StackDefinition> StackRunner<D> {
+    pub fn new(resources: StackResources<D>) -> Self {
+        StackRunner {
+            ind_addr: resources.ind_addr,
+            adt: resources.adt,
+            _phantom: std::marker::PhantomData,
+        }
     }
-}
 
-pub struct StackRunner {
-    network_layer: NetworkLayer<Buffer<'static>>,
-    transport_layer: TransportLayer<Buffer<'static>>,
-}
-
-impl StackRunner {
     /// Run the KNX stack.
     ///
     /// You must call this in a background task, to process KNX messages.
-    pub async fn run(self) -> ! {
-        let nl_task = NL_CTX.mount(self.network_layer);
-        let tl_task = TL_CTX.mount(self.transport_layer);
+    pub async fn run(mut self) -> ! {
+        // SAFETY: The SharedCell can be used here because the StackRunner
+        //         is not Sync. The SharedCell can share data between async
+        //         tasks as long as all of them run in the same thread.
+        let mut adt_ref = SharedCell::new(&mut self.adt);
 
-        let tasks = embassy_futures::join::join(nl_task, tl_task);
+        // Create all the channels for layer to layer communication
+        let nl_channel: Channel<NoopRawMutex, _, 1> = Channel::new();
+        let tl_channel: Channel<NoopRawMutex, _, 1> = Channel::new();
+        let al_channel: Channel<NoopRawMutex, _, 1> = Channel::new();
+
+        // Create a network layer
+        let mut network_layer = NetworkLayer::new(self.ind_addr, 6, tl_channel.sender().into());
+
+        // Create a transport layer
+        let mut tl_adt = core::pin::pin!(unsafe { adt_ref.duplicate() });
+        let mut transport_layer = TransportLayer::<'_, Buffer<'_>, D>::new(
+            &mut tl_adt,
+            nl_channel.sender().into(),
+            al_channel.sender().into(),
+        );
+
+        // Create an application layer
+        let mut application_layer =
+            ApplicationLayer::<'_, Buffer<'_>, D>::new(tl_channel.sender().into());
+
+        // Spawn and await all the tasks
+        let nl_task = network_layer.process(nl_channel.receiver());
+        let tl_task = transport_layer.process(tl_channel.receiver());
+        let al_task = application_layer.process(al_channel.receiver());
+        let tasks = embassy_futures::join::join3(nl_task, tl_task, al_task);
         tasks.await;
+
         unreachable!();
     }
 }
 
-pub struct ProtocolStack<
-    const NUM_BUFS: usize,
-    ADT: MemoryBackedTable,
-    AST: MemoryBackedTable,
-    COT: MemoryBackedTable,
-    P: ConstDefault,
-    R: ComObjects,
-> {
-    pub resources: StackResources<NUM_BUFS, ADT, AST, COT, P, R>,
+// pub struct ProtocolStack<D: StackDefinition> {
+//     _phantom: std::marker::PhantomData<D>,
+// }
+
+use core::cell::Cell;
+use core::marker::PhantomPinned;
+
+pub type Shared<'a, T> = Pin<&'a mut SharedCell<'a, T>>;
+
+pub struct SharedCell<'a, T: ?Sized>(&'a Cell<T>, PhantomPinned);
+
+impl<'a, T: ?Sized> SharedCell<'a, T> {
+    /// Create a new [`SharedCell`].
+    pub fn new(value: &'a mut T) -> Self {
+        Self(Cell::from_mut(value), PhantomPinned)
+    }
+
+    /// Duplicate the [`SharedCell`].
+    ///
+    /// # Safety
+    ///
+    ///  - The duplicated [`SharedCell`] may only be used in a scope where no
+    ///    other [`SharedCell`] instance is used.
+    ///  - The scope containing the duplicated [`SharedCell`] must not have the
+    ///    ability to resume execution of an asynchronous task that holds onto
+    ///    another [`SharedCell`].
+    pub unsafe fn duplicate(&mut self) -> Self {
+        Self(self.0, PhantomPinned)
+    }
+
+    /// Acquire a mutable reference to the cell's interior value.
+    pub fn with<R>(self: &mut Pin<&mut Self>, f: impl FnOnce(&mut T) -> R) -> R {
+        // SAFETY: By isolating the `SharedCell` to one instance per scope, we
+        // prevent reëntrant calls to `with()`.
+        //
+        // SAFETY: Cannot yield to code that could call `with()` due to safety
+        // invariant on `duplicate()`.
+        unsafe { f(&mut *self.0.as_ptr()) }
+    }
 }

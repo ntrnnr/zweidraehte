@@ -1,28 +1,30 @@
 use std::ops::{Deref, DerefMut};
 
-use ector::{Actor, DynamicAddress, Inbox};
+use embassy_sync::channel::DynamicSender;
+
+use super::{Inbox, Layer};
 
 use crate::address::IndividualAddress;
 use crate::messages::knx::*;
 
 /// Network layer for the KNX stack
-pub struct NetworkLayer<B: Deref<Target = [u8]> + 'static> {
+pub struct NetworkLayer<'a, B: Deref<Target = [u8]>> {
     device_addr: IndividualAddress,
     default_hop_count: u8,
 
     _phantom: std::marker::PhantomData<B>,
     //link_layer: DynamicAddress<KnxMessageBuffer<B>>,
-    transport_layer: DynamicAddress<KnxMessageBuffer<B>>,
+    transport_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
 }
 
-impl<B: DerefMut<Target = [u8]>> NetworkLayer<B> {
+impl<'a, B: DerefMut<Target = [u8]>> NetworkLayer<'a, B> {
     /// Create a new Network Layer with the device's individual address
     pub fn new(
         device_addr: IndividualAddress,
         default_hop_count: u8,
 
         //link_layer: DynamicAddress<KnxMessageBuffer<B>>,
-        transport_layer: DynamicAddress<KnxMessageBuffer<B>>,
+        transport_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
     ) -> Self {
         Self {
             device_addr,
@@ -34,10 +36,10 @@ impl<B: DerefMut<Target = [u8]>> NetworkLayer<B> {
     }
 }
 
-impl<B: DerefMut<Target = [u8]> + std::fmt::Debug> Actor for NetworkLayer<B> {
+impl<'a, B: DerefMut<Target = [u8]> + std::fmt::Debug> Layer<'a> for NetworkLayer<'a, B> {
     type Message = KnxMessageBuffer<B>;
 
-    async fn on_mount<M>(&mut self, _: DynamicAddress<Self::Message>, mut inbox: M) -> !
+    async fn process<M>(&mut self, mut inbox: M) -> !
     where
         M: Inbox<Self::Message>,
     {
@@ -101,7 +103,7 @@ impl<B: DerefMut<Target = [u8]> + std::fmt::Debug> Actor for NetworkLayer<B> {
                     }
 
                     // Send message down to link layer
-                    //self.transport_layer.send(msg).await;
+                    // self.link_layer.send(msg).await;
                 }
 
                 // Everything else is unhandled

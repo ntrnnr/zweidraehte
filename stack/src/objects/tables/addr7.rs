@@ -1,9 +1,9 @@
 use const_default::ConstDefault;
 use zerocopy::big_endian::U16;
 
-use crate::address::GroupAddress as KNXGroupAddress;
+use crate::address::GroupAddress;
 
-use super::{MemoryBackedTable, Table};
+use super::{AddressTable, Table, TableMemory};
 
 #[derive(Debug, ConstDefault)]
 pub struct AddrTab7Impl<const N: usize> {
@@ -11,20 +11,44 @@ pub struct AddrTab7Impl<const N: usize> {
 }
 
 impl<const N: usize> Table<AddrTab7Impl<N>> {
-    pub fn max_entries(&self) -> usize {
+    fn addr(&self, idx: usize) -> GroupAddress {
+        // NOTE: idx is 1-indexed!
+        GroupAddress::from_bytes(&self.table.data[idx * 2..(idx + 1) * 2])
+    }
+}
+
+impl<const N: usize> TableMemory for AddrTab7Impl<N> {
+    fn max_size() -> usize {
+        N
+    }
+
+    fn data_ref(&self) -> &[u8] {
+        &self.data
+    }
+
+    fn data_ref_mut(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+
+    fn read(&self, offset: usize, data: &mut [u8]) {
+        data.copy_from_slice(&self.data[offset..offset + data.len()]);
+    }
+
+    fn write(&mut self, offset: usize, data: &[u8]) {
+        self.data[offset..offset + data.len()].copy_from_slice(data);
+    }
+}
+
+impl<const N: usize> AddressTable for Table<AddrTab7Impl<N>> {
+    fn max_entries(&self) -> usize {
         (N / 2) - 1
     }
 
-    pub fn entry_count(&self) -> u16 {
+    fn entry_count(&self) -> u16 {
         U16::from_bytes(self.table.data[0..2].try_into().unwrap()).get()
     }
 
-    fn addr(&self, idx: usize) -> KNXGroupAddress {
-        // NOTE: idx is 1-indexed!
-        KNXGroupAddress::from_bytes(&self.table.data[idx * 2..(idx + 1) * 2])
-    }
-
-    pub fn get_address(&self, tsap: u16) -> Option<KNXGroupAddress> {
+    fn get_address(&self, tsap: u16) -> Option<GroupAddress> {
         if tsap == 0 || tsap > self.entry_count() {
             return None;
         }
@@ -32,7 +56,7 @@ impl<const N: usize> Table<AddrTab7Impl<N>> {
         Some(self.addr(tsap as usize))
     }
 
-    pub fn get_tsap(&self, address: KNXGroupAddress) -> Option<u16> {
+    fn get_tsap(&self, address: GroupAddress) -> Option<u16> {
         let mut low = 1;
         let mut high = self.entry_count();
 
@@ -54,30 +78,8 @@ impl<const N: usize> Table<AddrTab7Impl<N>> {
         None
     }
 
-    pub fn contains(&self, address: KNXGroupAddress) -> bool {
+    fn contains(&self, address: GroupAddress) -> bool {
         self.get_tsap(address) != None
-    }
-}
-
-impl<const N: usize> MemoryBackedTable for AddrTab7Impl<N> {
-    fn max_size() -> usize {
-        N
-    }
-
-    fn data_ref(&self) -> &[u8] {
-        &self.data
-    }
-
-    fn data_ref_mut(&mut self) -> &mut [u8] {
-        &mut self.data
-    }
-
-    fn read(&self, offset: usize, data: &mut [u8]) {
-        data.copy_from_slice(&self.data[offset..offset + data.len()]);
-    }
-
-    fn write(&mut self, offset: usize, data: &[u8]) {
-        self.data[offset..offset + data.len()].copy_from_slice(data);
     }
 }
 
@@ -179,7 +181,7 @@ pub type AddrTab7<const MAX_ENTRIES: usize> = Table<AddrTab7Impl<{ (MAX_ENTRIES 
 mod test {
     use crate::{
         address::GroupAddress as KNXGroupAddress,
-        objects::tables::{LoadEvent, LoadState, MemoryBackedTable},
+        objects::tables::{LoadEvent, LoadState, LoadableTable, TableMemory},
     };
 
     use super::AddrTab7;

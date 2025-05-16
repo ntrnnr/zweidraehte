@@ -1,6 +1,6 @@
 use const_default::ConstDefault;
 
-use super::{MemoryBackedTable, Table};
+use super::{TableMemory, Table};
 
 #[derive(Debug, ConstDefault)]
 pub struct ApplicationImpl<D: ConstDefault> {
@@ -9,7 +9,7 @@ pub struct ApplicationImpl<D: ConstDefault> {
 
 impl<D: ConstDefault> Table<ApplicationImpl<D>> {}
 
-impl<D: ConstDefault> MemoryBackedTable for ApplicationImpl<D> {
+impl<D: ConstDefault> TableMemory for ApplicationImpl<D> {
     fn data_ref(&self) -> &[u8] {
         &[]
     }

@@ -4,14 +4,28 @@ use zerocopy::{
     big_endian::{U16, U32},
 };
 
-use crate::{dpt::PDT_Generic08, util::buffer::*, util::crc::crc16_ccitt};
+use crate::{address::GroupAddress, dpt::PDT_Generic08, util::buffer::*, util::crc::crc16_ccitt};
 
-pub trait MemoryBackedTable: ConstDefault + Sized {
+pub trait TableMemory: ConstDefault + Sized {
     fn max_size() -> usize;
     fn data_ref(&self) -> &[u8];
     fn data_ref_mut(&mut self) -> &mut [u8];
     fn read(&self, offset: usize, data: &mut [u8]);
     fn write(&mut self, offset: usize, data: &[u8]);
+}
+
+pub trait LoadableTable: TableMemory {
+    fn write_lsm(&mut self, buf: &[u8]);
+    fn read_lsm(&self) -> [u8; 1];
+    fn is_loaded(&self) -> bool;
+}
+
+pub trait AddressTable: LoadableTable {
+    fn max_entries(&self) -> usize;
+    fn entry_count(&self) -> u16;
+    fn get_address(&self, tsap: u16) -> Option<GroupAddress>;
+    fn get_tsap(&self, address: GroupAddress) -> Option<u16>;
+    fn contains(&self, address: GroupAddress) -> bool;
 }
 
 create_protocol_enum!(
@@ -77,21 +91,21 @@ pub struct McbData {
 // TODO: Add trait called InterfaceObject?
 //       This can contain all the properties for this object
 // TODO: Add trait MemoryAccessible which uses pointers of the objects and checks bounds when reading/writing raw?
-//       Maybe not necessary as w already have MemoryBackedTable which could do this
+//       Maybe not necessary as w already have TableMemory which could do this
 
 #[derive(Debug)]
-pub struct Table<T: MemoryBackedTable> {
-    // TODO: add alloc() and free() to MemoryBackedTable and use these instead of directly filling them? Would allow for Boxed Tables etc.
+pub struct Table<T: TableMemory> {
+    // TODO: add alloc() and free() to TableMemory and use these instead of directly filling them? Would allow for Boxed Tables etc.
     pub(super) table: T,
     pub(super) state: LoadState,
     pub(super) mcb_table: PDT_Generic08,
 }
 
-impl<T: MemoryBackedTable> ConstDefault for Table<T> {
+impl<T: TableMemory> ConstDefault for Table<T> {
     const DEFAULT: Self = Table::new();
 }
 
-impl<T: MemoryBackedTable> Table<T> {
+impl<T: TableMemory> Table<T> {
     pub const fn new() -> Self {
         Self {
             table: T::DEFAULT,
@@ -100,7 +114,45 @@ impl<T: MemoryBackedTable> Table<T> {
         }
     }
 
-    pub fn write_lsm(&mut self, mut buf: &[u8]) {
+    fn next_state(event: LoadEvent, cur_state: LoadState) -> (LoadState, LoadAction) {
+        match event {
+            LoadEvent::NoOp => match cur_state {
+                LoadState::Unloaded => (LoadState::Unloaded, LoadAction::None),
+                LoadState::Loaded => (LoadState::Loaded, LoadAction::None),
+                LoadState::Loading => (LoadState::Loading, LoadAction::None),
+                LoadState::Err => (LoadState::Err, LoadAction::None),
+            },
+            LoadEvent::StartLoading => match cur_state {
+                LoadState::Unloaded => (LoadState::Loading, LoadAction::LoadStart),
+                LoadState::Loaded => (LoadState::Loading, LoadAction::LoadStart),
+                LoadState::Loading => (LoadState::Loading, LoadAction::None),
+                LoadState::Err => (LoadState::Err, LoadAction::None),
+            },
+            LoadEvent::LoadCompleted => match cur_state {
+                LoadState::Unloaded => (LoadState::Unloaded, LoadAction::None),
+                LoadState::Loaded => (LoadState::Loaded, LoadAction::None),
+                LoadState::Loading => (LoadState::Loaded, LoadAction::LoadEnd),
+                LoadState::Err => (LoadState::Err, LoadAction::None),
+            },
+            LoadEvent::AdditionalLoadControls => match cur_state {
+                LoadState::Unloaded => (LoadState::Unloaded, LoadAction::None),
+                LoadState::Loaded => (LoadState::Err, LoadAction::None),
+                LoadState::Loading => (LoadState::Loading, LoadAction::Alloc),
+                LoadState::Err => (LoadState::Err, LoadAction::None),
+            },
+            LoadEvent::Unload => match cur_state {
+                LoadState::Unloaded => (LoadState::Unloaded, LoadAction::Unload),
+                LoadState::Loaded => (LoadState::Unloaded, LoadAction::Unload),
+                LoadState::Loading => (LoadState::Unloaded, LoadAction::Unload),
+                LoadState::Err => (LoadState::Unloaded, LoadAction::Unload),
+            },
+            _ => panic!("Invalid event for load state machine"),
+        }
+    }
+}
+
+impl<T: TableMemory> LoadableTable for Table<T> {
+    fn write_lsm(&mut self, mut buf: &[u8]) {
         let mut buf = &mut buf;
         let (mut new_state, action) =
             Self::next_state(buf.take_front(1).unwrap()[0].into(), self.state);
@@ -154,48 +206,16 @@ impl<T: MemoryBackedTable> Table<T> {
         self.state = new_state;
     }
 
-    pub fn read_lsm(&self) -> [u8; 1] {
+    fn read_lsm(&self) -> [u8; 1] {
         [self.state.into()]
     }
 
-    fn next_state(event: LoadEvent, cur_state: LoadState) -> (LoadState, LoadAction) {
-        match event {
-            LoadEvent::NoOp => match cur_state {
-                LoadState::Unloaded => (LoadState::Unloaded, LoadAction::None),
-                LoadState::Loaded => (LoadState::Loaded, LoadAction::None),
-                LoadState::Loading => (LoadState::Loading, LoadAction::None),
-                LoadState::Err => (LoadState::Err, LoadAction::None),
-            },
-            LoadEvent::StartLoading => match cur_state {
-                LoadState::Unloaded => (LoadState::Loading, LoadAction::LoadStart),
-                LoadState::Loaded => (LoadState::Loading, LoadAction::LoadStart),
-                LoadState::Loading => (LoadState::Loading, LoadAction::None),
-                LoadState::Err => (LoadState::Err, LoadAction::None),
-            },
-            LoadEvent::LoadCompleted => match cur_state {
-                LoadState::Unloaded => (LoadState::Unloaded, LoadAction::None),
-                LoadState::Loaded => (LoadState::Loaded, LoadAction::None),
-                LoadState::Loading => (LoadState::Loaded, LoadAction::LoadEnd),
-                LoadState::Err => (LoadState::Err, LoadAction::None),
-            },
-            LoadEvent::AdditionalLoadControls => match cur_state {
-                LoadState::Unloaded => (LoadState::Unloaded, LoadAction::None),
-                LoadState::Loaded => (LoadState::Err, LoadAction::None),
-                LoadState::Loading => (LoadState::Loading, LoadAction::Alloc),
-                LoadState::Err => (LoadState::Err, LoadAction::None),
-            },
-            LoadEvent::Unload => match cur_state {
-                LoadState::Unloaded => (LoadState::Unloaded, LoadAction::Unload),
-                LoadState::Loaded => (LoadState::Unloaded, LoadAction::Unload),
-                LoadState::Loading => (LoadState::Unloaded, LoadAction::Unload),
-                LoadState::Err => (LoadState::Unloaded, LoadAction::Unload),
-            },
-            _ => panic!("Invalid event for load state machine"),
-        }
+    fn is_loaded(&self) -> bool {
+        self.state == LoadState::Loaded
     }
 }
 
-impl<T: MemoryBackedTable> MemoryBackedTable for Table<T> {
+impl<T: TableMemory> TableMemory for Table<T> {
     fn data_ref(&self) -> &[u8] {
         self.table.data_ref()
     }

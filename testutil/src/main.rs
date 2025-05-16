@@ -3,14 +3,14 @@
 use const_default::ConstDefault;
 use embassy_executor::Spawner;
 use zweidraehte::{
-    StackResources, StackRunner, define_com_objects,
+    StackDefinition, StackResources, StackRunner, define_com_objects,
     dpt::DPT_Switch,
     messages::buffers::BufferManager,
     objects::tables::{addr7::AddrTab7, app::Application, asso6::AssoTab6, co7::CoTab7},
 };
 
 #[derive(Debug, ConstDefault)]
-struct AppParameters {
+pub struct AppParameters {
     _delay_time: u16,
 }
 
@@ -31,19 +31,27 @@ define_com_objects! {
     }
 }
 
+pub struct MyKnxStack;
+impl StackDefinition for MyKnxStack {
+    type ADT = AddrTab7<30>;
+    type AST = AssoTab6<30>;
+    type COT = CoTab7<30>;
+    type P = AppParameters;
+    type R = AppComObjects;
+}
+
 #[embassy_executor::task]
-async fn run_stack(runner: StackRunner) {
+async fn run_stack(runner: StackRunner<MyKnxStack>) {
     println!("Running stack...");
     runner.run().await;
 }
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let mut buffers: [[u8; _]; _] = [[0u8; 32]; 10];
-    let buffer_manager = unsafe { BufferManager::new(&mut buffers) };
+    //let mut buffers: [[u8; _]; _] = [[0u8; 32]; 10];
+    //let buffer_manager = unsafe { BufferManager::new(&mut buffers) };
 
-    let resources = StackResources {
-        buffer_manager,
+    let resources: StackResources<MyKnxStack> = StackResources {
         ind_addr: zweidraehte::address::IndividualAddress::new(1, 0, 1),
         adt: AddrTab7::<30>::new(),
         ast: AssoTab6::<30>::new(),
@@ -52,7 +60,9 @@ async fn main(spawner: Spawner) {
         ram: AppComObjects::new(),
     };
 
-    let (_stack, runner) = resources.bootstrap();
+    let runner = StackRunner::<MyKnxStack>::new(resources);
+
+    //let (_stack, runner) = resources.bootstrap();
 
     spawner.spawn(run_stack(runner)).unwrap();
 }
