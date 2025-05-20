@@ -40,7 +40,7 @@ pub trait StackDefinition {
     type AST: TableMemory;
     type COT: TableMemory;
     type P: ConstDefault;
-    type R: ComObjects;
+    type COMM_OBJS: ComObjects;
 }
 
 pub struct StackResources<D: StackDefinition> {
@@ -49,23 +49,34 @@ pub struct StackResources<D: StackDefinition> {
     pub ast: D::AST,
     pub cot: D::COT,
     pub app: Application<D::P>,
-    pub ram: D::R,
+    pub comm_objs: D::COMM_OBJS,
 }
 
 pub struct StackRunner<D: StackDefinition> {
     ind_addr: IndividualAddress,
     adt: D::ADT,
+    ast: D::AST,
+    comm_objs: D::COMM_OBJS,
     _phantom: PhantomData<D>,
 }
 
 impl<D: StackDefinition> StackRunner<D> {
-    pub fn new(resources: StackResources<D>) -> Self {
-        StackRunner {
-            ind_addr: resources.ind_addr,
-            adt: resources.adt,
-            _phantom: std::marker::PhantomData,
-        }
+    pub fn new(resources: StackResources<D>) -> (Self, ProtocolStack<D>) {
+        (
+            StackRunner {
+                ind_addr: resources.ind_addr,
+                adt: resources.adt,
+                ast: resources.ast,
+                comm_objs: resources.comm_objs,
+                _phantom: std::marker::PhantomData,
+            },
+            ProtocolStack {
+                _phantom: std::marker::PhantomData,
+            },
+        )
     }
+
+    // FIXME: I think we can replace the SharedCell with a blocking_mutex::Mutex<NoopRawMutex>
 
     /// Run the KNX stack.
     ///
@@ -75,6 +86,8 @@ impl<D: StackDefinition> StackRunner<D> {
         //         is not Sync. The SharedCell can share data between async
         //         tasks as long as all of them run in the same thread.
         let mut adt_ref = SharedCell::new(&mut self.adt);
+        let mut ast_ref = SharedCell::new(&mut self.ast);
+        let mut comm_objs_ref = SharedCell::new(&mut self.comm_objs);
 
         // Create all the channels for layer to layer communication
         let nl_channel: Channel<NoopRawMutex, _, 1> = Channel::new();
@@ -93,8 +106,13 @@ impl<D: StackDefinition> StackRunner<D> {
         );
 
         // Create an application layer
-        let mut application_layer =
-            ApplicationLayer::<'_, Buffer<'_>, D>::new(tl_channel.sender().into());
+        let mut al_comm_objs = core::pin::pin!(unsafe { comm_objs_ref.duplicate() });
+        let mut al_ast = core::pin::pin!(unsafe { ast_ref.duplicate() });
+        let mut application_layer = ApplicationLayer::<'_, Buffer<'_>, D>::new(
+            &mut al_ast,
+            &mut al_comm_objs,
+            tl_channel.sender().into(),
+        );
 
         // Spawn and await all the tasks
         let nl_task = network_layer.process(nl_channel.receiver());
@@ -107,9 +125,13 @@ impl<D: StackDefinition> StackRunner<D> {
     }
 }
 
-// pub struct ProtocolStack<D: StackDefinition> {
-//     _phantom: std::marker::PhantomData<D>,
-// }
+pub struct ProtocolStack<D: StackDefinition> {
+    _phantom: std::marker::PhantomData<D>,
+}
+
+impl<D: StackDefinition> ProtocolStack<D> {
+    pub fn transmit_comm_obj(&self, idx: usize) {}
+}
 
 use core::cell::Cell;
 use core::marker::PhantomPinned;
