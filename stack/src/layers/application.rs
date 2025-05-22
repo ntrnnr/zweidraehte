@@ -1,15 +1,19 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    cell::RefCell,
+    ops::{Deref, DerefMut},
+};
 
-use embassy_sync::channel::DynamicSender;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::{blocking_mutex::Mutex, channel::DynamicSender};
 
 use super::{Inbox, Layer};
 
-use crate::{Shared, StackDefinition, messages::knx::*};
+use crate::{StackDefinition, messages::knx::*};
 
 /// Application layer for the KNX stack
 pub struct ApplicationLayer<'a, B: Deref<Target = [u8]>, D: StackDefinition> {
-    ast: &'a mut Shared<'a, D::AST>,
-    comm_objects: &'a mut Shared<'a, D::COMM_OBJS>,
+    ast: &'a Mutex<NoopRawMutex, RefCell<D::AST>>,
+    comm_objects: &'a Mutex<NoopRawMutex, RefCell<D::COMM_OBJS>>,
     _transport_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
     _phantom: std::marker::PhantomData<(B, D)>,
 }
@@ -17,8 +21,8 @@ pub struct ApplicationLayer<'a, B: Deref<Target = [u8]>, D: StackDefinition> {
 impl<'a, B: DerefMut<Target = [u8]>, D: StackDefinition> ApplicationLayer<'a, B, D> {
     /// Create a new Application Layer with the device's individual address
     pub fn new(
-        ast: &'a mut Shared<'a, D::AST>,
-        comm_objects: &'a mut Shared<'a, D::COMM_OBJS>,
+        ast: &'a Mutex<NoopRawMutex, RefCell<D::AST>>,
+        comm_objects: &'a Mutex<NoopRawMutex, RefCell<D::COMM_OBJS>>,
         transport_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
     ) -> Self {
         Self {

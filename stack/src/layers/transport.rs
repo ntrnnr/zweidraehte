@@ -1,18 +1,22 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    cell::RefCell,
+    ops::{Deref, DerefMut},
+};
 
-use embassy_sync::channel::DynamicSender;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::{blocking_mutex::Mutex, channel::DynamicSender};
 
 use super::{Inbox, Layer};
 
 use crate::{
-    Shared, StackDefinition,
+    StackDefinition,
     messages::knx::*,
     objects::tables::{AddressTable, LoadableTable},
 };
 
 /// Transport layer for the KNX stack
 pub struct TransportLayer<'a, B: Deref<Target = [u8]>, D: StackDefinition> {
-    adt: &'a mut Shared<'a, D::ADT>,
+    adt: &'a Mutex<NoopRawMutex, RefCell<D::ADT>>,
     network_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
     application_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
     _phantom: std::marker::PhantomData<B>,
@@ -21,7 +25,7 @@ pub struct TransportLayer<'a, B: Deref<Target = [u8]>, D: StackDefinition> {
 impl<'a, B: DerefMut<Target = [u8]>, D: StackDefinition> TransportLayer<'a, B, D> {
     /// Create a new Transport Layer with the device's individual address
     pub fn new(
-        adt: &'a mut Shared<'a, D::ADT>,
+        adt: &'a Mutex<NoopRawMutex, RefCell<D::ADT>>,
         network_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
         application_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
     ) -> Self {
@@ -56,9 +60,12 @@ impl<'a, B: DerefMut<Target = [u8]> + std::fmt::Debug, D: StackDefinition> Layer
                     //   3. Group address needs to be converted to connection number using ADT
                     if let Some(Tpci::DataGroup) = msg.get_tpci()
                         && let DestinationAddress::Group(g) = msg.get_dest_addr()
-                        && let Some(conn_nr) = self
-                            .adt
-                            .with(|x| x.is_loaded().then_some(()).and_then(|_| x.get_tsap(g)))
+                        && let Some(conn_nr) = self.adt.lock(|x| {
+                            x.borrow()
+                                .is_loaded()
+                                .then_some(())
+                                .and_then(|_| x.borrow().get_tsap(g))
+                        })
                     {
                         // TODO: set connection number
 
