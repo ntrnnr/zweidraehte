@@ -1,4 +1,7 @@
-use std::ops::{Deref, DerefMut};
+use core::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 use embassy_sync::channel::DynamicSender;
 
@@ -12,7 +15,7 @@ pub struct NetworkLayer<'a, B: Deref<Target = [u8]>> {
     device_addr: IndividualAddress,
     default_hop_count: u8,
 
-    _phantom: std::marker::PhantomData<B>,
+    _phantom: PhantomData<B>,
     //link_layer: DynamicAddress<KnxMessageBuffer<B>>,
     transport_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
 }
@@ -29,14 +32,14 @@ impl<'a, B: DerefMut<Target = [u8]>> NetworkLayer<'a, B> {
         Self {
             device_addr,
             default_hop_count,
-            _phantom: std::marker::PhantomData,
+            _phantom: PhantomData,
             //link_layer,
             transport_layer,
         }
     }
 }
 
-impl<'a, B: DerefMut<Target = [u8]> + std::fmt::Debug> Layer<'a> for NetworkLayer<'a, B> {
+impl<'a, B: DerefMut<Target = [u8]> + core::fmt::Debug> Layer<'a> for NetworkLayer<'a, B> {
     type Message = KnxMessageBuffer<B>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
@@ -45,7 +48,7 @@ impl<'a, B: DerefMut<Target = [u8]> + std::fmt::Debug> Layer<'a> for NetworkLaye
     {
         loop {
             let mut msg = inbox.next().await;
-            println!("Network Layer received message: {:x?}", msg);
+            //println!("Network Layer received message: {:x?}", msg);
 
             match msg.service_type() {
                 // Incoming indication message from link layer

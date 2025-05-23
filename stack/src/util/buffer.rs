@@ -232,7 +232,7 @@ impl<'a> BufferView<&'a [u8]> for Buf<&'a [u8]> {
 //     }
 // }
 
-impl<B: std::ops::Deref<Target = [u8]>> AsRef<[u8]> for Buf<B> {
+impl<B: core::ops::Deref<Target = [u8]>> AsRef<[u8]> for Buf<B> {
     fn as_ref(&self) -> &[u8] {
         &self.buf[self.body.clone()]
     }

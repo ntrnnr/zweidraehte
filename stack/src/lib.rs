@@ -1,3 +1,4 @@
+#![no_std]
 #![feature(slice_as_array)]
 #![feature(const_trait_impl)]
 #![feature(adt_const_params)]
@@ -188,13 +189,12 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         self.app_request_sender
             .request(ApplicationLayerService::GroupValueWriteRequest(asap))
             .await
-            .unwrap()
     }
 
     pub fn something(&self) {
         self.inner.adt.lock(|adt| {
             let adt = adt.borrow();
-            println!("Max ADT entries: {}", adt.max_entries());
+            //println!("Max ADT entries: {}", adt.max_entries());
         });
     }
 }

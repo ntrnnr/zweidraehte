@@ -1,5 +1,6 @@
-use std::{
+use core::{
     cell::RefCell,
+    marker::PhantomData,
     ops::{Deref, DerefMut},
 };
 
@@ -28,7 +29,7 @@ pub struct ApplicationLayer<'a, B: Deref<Target = [u8]>, D: StackDefinition> {
     app_request_receiver:
         DynamicReceiver<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     _transport_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
-    _phantom: std::marker::PhantomData<(B, D)>,
+    _phantom: PhantomData<(B, D)>,
 }
 
 impl<'a, B: DerefMut<Target = [u8]>, D: StackDefinition> ApplicationLayer<'a, B, D> {
@@ -47,12 +48,12 @@ impl<'a, B: DerefMut<Target = [u8]>, D: StackDefinition> ApplicationLayer<'a, B,
             comm_objects,
             app_request_receiver,
             _transport_layer: transport_layer,
-            _phantom: std::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<'a, B: DerefMut<Target = [u8]> + std::fmt::Debug, D: StackDefinition> Layer<'a>
+impl<'a, B: DerefMut<Target = [u8]> + core::fmt::Debug, D: StackDefinition> Layer<'a>
     for ApplicationLayer<'a, B, D>
 {
     type Message = KnxMessageBuffer<B>;
@@ -65,7 +66,7 @@ impl<'a, B: DerefMut<Target = [u8]> + std::fmt::Debug, D: StackDefinition> Layer
             match select(inbox.next(), self.app_request_receiver.receive()).await {
                 Either::First(msg) => {
                     let msg = inbox.next().await;
-                    println!("Application Layer received message: {:x?}", msg);
+                    //println!("Application Layer received message: {:x?}", msg);
 
                     match msg.service_type() {
                         // Everything else is unhandled
@@ -74,7 +75,7 @@ impl<'a, B: DerefMut<Target = [u8]> + std::fmt::Debug, D: StackDefinition> Layer
                 }
                 Either::Second(request) => match request.get() {
                     r @ ApplicationLayerService::GroupValueWriteRequest(_group_address) => {
-                        println!("Application Layer received request: {:?}", r);
+                        //println!("Application Layer received request: {:?}", r);
                         request
                             .reply(ApplicationLayerServiceResponse::GroupValueWriteResponse)
                             .await;

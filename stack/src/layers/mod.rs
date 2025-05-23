@@ -114,11 +114,11 @@ impl<M, R> AsMut<M> for Request<M, R> {
 
 pub trait ActorRequest<M, R> {
     /// Attempts to send a message and wait for the response
-    async fn request(&self, message: M) -> Option<R>;
+    async fn request(&self, message: M) -> R;
 }
 
 impl<M, R> ActorRequest<M, R> for DynamicSender<'static, Request<M, R>> {
-    async fn request(&self, message: M) -> Option<R> {
+    async fn request(&self, message: M) -> R {
         let channel: Channel<NoopRawMutex, R, 1> = Channel::new();
         let sender: DynamicSender<'_, R> = channel.sender().into();
         let bomb = DropBomb::new();
@@ -136,12 +136,12 @@ impl<M, R> ActorRequest<M, R> for DynamicSender<'static, Request<M, R>> {
         let res = channel.receive().await;
 
         bomb.defuse();
-        Some(res)
+        res
     }
 }
 
 impl<M, R, const N: usize> ActorRequest<M, R> for Sender<'static, NoopRawMutex, Request<M, R>, N> {
-    async fn request(&self, message: M) -> Option<R> {
+    async fn request(&self, message: M) -> R {
         let channel: Channel<NoopRawMutex, R, 1> = Channel::new();
         let sender: DynamicSender<'_, R> = channel.sender().into();
         let bomb = DropBomb::new();
@@ -159,7 +159,7 @@ impl<M, R, const N: usize> ActorRequest<M, R> for Sender<'static, NoopRawMutex, 
         let res = channel.receive().await;
 
         bomb.defuse();
-        Some(res)
+        res
     }
 }
 

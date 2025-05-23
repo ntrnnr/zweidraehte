@@ -1,5 +1,6 @@
-use std::{
+use core::{
     cell::RefCell,
+    marker::PhantomData,
     ops::{Deref, DerefMut},
 };
 
@@ -19,7 +20,7 @@ pub struct TransportLayer<'a, B: Deref<Target = [u8]>, D: StackDefinition> {
     adt: &'a Mutex<NoopRawMutex, RefCell<D::ADT>>,
     network_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
     application_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
-    _phantom: std::marker::PhantomData<B>,
+    _phantom: PhantomData<B>,
 }
 
 impl<'a, B: DerefMut<Target = [u8]>, D: StackDefinition> TransportLayer<'a, B, D> {
@@ -33,12 +34,12 @@ impl<'a, B: DerefMut<Target = [u8]>, D: StackDefinition> TransportLayer<'a, B, D
             adt,
             network_layer,
             application_layer,
-            _phantom: std::marker::PhantomData,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<'a, B: DerefMut<Target = [u8]> + std::fmt::Debug, D: StackDefinition> Layer<'a>
+impl<'a, B: DerefMut<Target = [u8]> + core::fmt::Debug, D: StackDefinition> Layer<'a>
     for TransportLayer<'a, B, D>
 {
     type Message = KnxMessageBuffer<B>;
@@ -49,7 +50,7 @@ impl<'a, B: DerefMut<Target = [u8]> + std::fmt::Debug, D: StackDefinition> Layer
     {
         loop {
             let mut msg = inbox.next().await;
-            println!("Transport Layer received message: {:x?}", msg);
+            //println!("Transport Layer received message: {:x?}", msg);
 
             match msg.service_type() {
                 // Incoming indication and confirmation message from network layer
