@@ -11,6 +11,7 @@ embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"
 embassy-time = { workspace = true, features = ["std"] }
 
 const-default = { workspace = true }
+static_cell = { workspace = true }
 
 # FIXME: reexport from stack?
 paste = { workspace = true }

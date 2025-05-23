@@ -3,8 +3,10 @@
 
 use const_default::ConstDefault;
 use embassy_executor::Spawner;
+use embassy_time::Timer;
+use static_cell::StaticCell;
 use zweidraehte::{
-    StackDefinition, StackResources, StackRunner, define_com_objects,
+    Runner, StackDefinition, StackResources, define_com_objects,
     messages::buffers::BufferManager,
     objects::{
         comm::ComObjects,
@@ -36,6 +38,7 @@ define_com_objects! {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct MyKnxStack;
 impl StackDefinition for MyKnxStack {
     type ADT = AddrTab7<30>;
@@ -46,28 +49,43 @@ impl StackDefinition for MyKnxStack {
 }
 
 #[embassy_executor::task]
-async fn run_stack(runner: StackRunner<MyKnxStack>) {
+async fn run_stack(runner: Runner<'static, MyKnxStack>) {
     println!("Running stack...");
     runner.run().await;
 }
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    //let mut buffers: [[u8; _]; _] = [[0u8; 32]; 10];
-    //let buffer_manager = unsafe { BufferManager::new(&mut buffers) };
+    // //let mut buffers: [[u8; _]; _] = [[0u8; 32]; 10];
+    // //let buffer_manager = unsafe { BufferManager::new(&mut buffers) };
 
-    let resources: StackResources<MyKnxStack> = StackResources {
-        ind_addr: zweidraehte::address::IndividualAddress::new(1, 0, 1),
-        adt: AddrTab7::<30>::new(),
-        ast: AssoTab6::<30>::new(),
-        cot: CoTab7::<30>::new(),
-        app: Application::<AppParameters>::new(),
-        comm_objs: CommObjs::AppComObjects::new(),
-    };
+    // let resources: StackResources<MyKnxStack> = StackResources {
+    //     ind_addr: zweidraehte::address::IndividualAddress::new(1, 0, 1),
+    //     adt: AddrTab7::<30>::new(),
+    //     ast: AssoTab6::<30>::new(),
+    //     cot: CoTab7::<30>::new(),
+    //     app: Application::<AppParameters>::new(),
+    //     comm_objs: CommObjs::AppComObjects::new(),
+    // };
 
-    let (runner, stack) = StackRunner::<MyKnxStack>::new(resources);
+    // let (runner, stack) = StackRunner::<MyKnxStack>::new(resources);
 
-    //let (_stack, runner) = resources.bootstrap();
+    // //let (_stack, runner) = resources.bootstrap();
+
+    static RESOURCES: StaticCell<StackResources<MyKnxStack>> = StaticCell::new();
+
+    let (stack, runner) = zweidraehte::new(
+        RESOURCES.init(StackResources::new()),
+        AddrTab7::<30>::new(),
+        AssoTab6::<30>::new(),
+        CommObjs::AppComObjects::new(),
+    );
 
     spawner.spawn(run_stack(runner)).unwrap();
+
+    loop {
+        Timer::after_millis(1000).await;
+        let a = stack.comm_obj_write_request(1).await;
+        println!("{:?}", a);
+    }
 }

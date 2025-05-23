@@ -436,6 +436,7 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "paste",
+ "static_cell",
  "zweidraehte",
 ]
 

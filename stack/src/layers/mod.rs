@@ -28,116 +28,140 @@ pub trait Layer<'a>: Sized {
 
 // ############################################################################
 
-// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-// use embassy_sync::channel::{Channel, DynamicSender, Sender};
+// The following part has been taken from `ector`: https://github.com/drogue-iot/ector
+// Original Apache License 2.0 and Copyright of the original authors applies
 
-// pub struct Request<'a, M, R> {
-//     message: Option<M>,
-//     reply_to: &'a DynamicSender<'a, R>,
-// }
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::channel::{Channel, DynamicSender, Sender};
 
-// unsafe impl<'a, M, R> Send for Request<'a, M, R> {}
+/// Panics if it is improperly disposed of.
+///
+/// This is to forbid cancelling a future/request.
+///
+/// To properly dispose, call the [defuse](Self::defuse) method before this object is dropped.
+#[must_use = "to delay the drop bomb invokation to the end of the scope"]
+pub struct DropBomb(());
+impl DropBomb {
+    pub fn new() -> Self {
+        Self(())
+    }
 
-// impl<'a, M, R> Request<'a, M, R> {
-//     fn new(message: M, reply_to: &'a DynamicSender<'a, R>) -> Self {
-//         Self {
-//             message: Some(message),
-//             reply_to,
-//         }
-//     }
+    /// Defuses the bomb, rendering it safe to drop.
+    pub fn defuse(self) {
+        core::mem::forget(self)
+    }
+}
 
-//     /// Process the message using a closure.
-//     ///
-//     /// The return value of the closure is used as the response.
-//     pub async fn process<F: FnOnce(M) -> R>(mut self, f: F) {
-//         let reply = f(self.message.take().unwrap());
-//         self.reply_to.send(reply).await;
-//     }
+impl Drop for DropBomb {
+    fn drop(&mut self) {
+        panic!("Dropped before the request completed. You  cannot cancel an ongoing request")
+    }
+}
 
-//     /// Reply to the request using the provided value.
-//     pub async fn reply(self, value: R) {
-//         self.reply_to.send(value).await
-//     }
+pub struct Request<M, R>
+where
+    R: 'static,
+{
+    message: Option<M>,
+    reply_to: &'static DynamicSender<'static, R>,
+}
 
-//     /// Get a reference to the underlying message
-//     pub fn get(&self) -> &M {
-//         self.message.as_ref().unwrap()
-//     }
+unsafe impl<M, R> Send for Request<M, R> {}
 
-//     /// Get a mutable reference to the underlying message
-//     pub fn get_mut(&mut self) -> &mut M {
-//         self.message.as_mut().unwrap()
-//     }
-// }
+impl<M, R> Request<M, R> {
+    fn new(message: M, reply_to: &'static DynamicSender<'static, R>) -> Self {
+        Self {
+            message: Some(message),
+            reply_to,
+        }
+    }
 
-// impl<'a, M, R> AsRef<M> for Request<'a, M, R> {
-//     fn as_ref(&self) -> &M {
-//         self.message.as_ref().unwrap()
-//     }
-// }
+    /// Process the message using a closure.
+    ///
+    /// The return value of the closure is used as the response.
+    pub async fn process<F: FnOnce(M) -> R>(mut self, f: F) {
+        let reply = f(self.message.take().unwrap());
+        self.reply_to.send(reply).await;
+    }
 
-// impl<'a, M, R> AsMut<M> for Request<'a, M, R> {
-//     fn as_mut(&mut self) -> &mut M {
-//         self.message.as_mut().unwrap()
-//     }
-// }
+    /// Reply to the request using the provided value.
+    pub async fn reply(self, value: R) {
+        self.reply_to.send(value).await
+    }
 
-// pub trait ActorRequest<M, R> {
-//     /// Attempts to send a message and wait for the response
-//     async fn request(&self, message: M) -> Option<R>;
-// }
+    /// Get a reference to the underlying message
+    pub fn get(&self) -> &M {
+        self.message.as_ref().unwrap()
+    }
 
-// impl<'a, M, R> ActorRequest<M, R> for DynamicSender<'a, Request<'a, M, R>> {
-//     async fn request(&self, message: M) -> Option<R> {
-//         // let channel: Channel<NoopRawMutex, R, 1> = Channel::new();
-//         // let sender: DynamicSender<'_, R> = channel.sender().into();
-//         // //let bomb = DropBomb::new();
+    /// Get a mutable reference to the underlying message
+    pub fn get_mut(&mut self) -> &mut M {
+        self.message.as_mut().unwrap()
+    }
+}
 
-//         // // We guarantee that channel lives until we've been notified on it, at which
-//         // // point its out of reach for the replier.
-//         // let reply_to = unsafe {
-//         //     core::mem::transmute::<
-//         //         &embassy_sync::channel::DynamicSender<'_, R>,
-//         //         &embassy_sync::channel::DynamicSender<'_, R>,
-//         //     >(&sender)
-//         // };
-//         // let message = Request::new(message, reply_to);
-//         // self.notify(message).await;
-//         // let res = channel.receive().await;
+impl<M, R> AsRef<M> for Request<M, R> {
+    fn as_ref(&self) -> &M {
+        self.message.as_ref().unwrap()
+    }
+}
 
-//         // //bomb.defuse();
-//         // res
+impl<M, R> AsMut<M> for Request<M, R> {
+    fn as_mut(&mut self) -> &mut M {
+        self.message.as_mut().unwrap()
+    }
+}
 
-//         None
-//     }
-// }
+pub trait ActorRequest<M, R> {
+    /// Attempts to send a message and wait for the response
+    async fn request(&self, message: M) -> Option<R>;
+}
 
-// impl<'a, M, R, const N: usize> ActorRequest<M, R>
-//     for Sender<'a, NoopRawMutex, Request<'a, M, R>, N>
-// {
-//     async fn request(&self, message: M) -> Option<R> {
-//         // let channel: Channel<NoopRawMutex, R, 1> = Channel::new();
-//         // let sender: DynamicSender<'_, R> = channel.sender().into();
-//         // //let bomb = DropBomb::new();
+impl<M, R> ActorRequest<M, R> for DynamicSender<'static, Request<M, R>> {
+    async fn request(&self, message: M) -> Option<R> {
+        let channel: Channel<NoopRawMutex, R, 1> = Channel::new();
+        let sender: DynamicSender<'_, R> = channel.sender().into();
+        let bomb = DropBomb::new();
 
-//         // // We guarantee that channel lives until we've been notified on it, at which
-//         // // point its out of reach for the replier.
-//         // let reply_to = unsafe {
-//         //     core::mem::transmute::<
-//         //         &embassy_sync::channel::DynamicSender<'_, R>,
-//         //         &embassy_sync::channel::DynamicSender<'_, R>,
-//         //     >(&sender)
-//         // };
-//         // let message = Request::new(message, reply_to);
-//         // self.notify(message).await;
-//         // let res = channel.receive().await;
+        // We guarantee that channel lives until we've been notified on it, at which
+        // point its out of reach for the replier.
+        let reply_to = unsafe {
+            core::mem::transmute::<
+                &embassy_sync::channel::DynamicSender<'_, R>,
+                &embassy_sync::channel::DynamicSender<'_, R>,
+            >(&sender)
+        };
+        let message = Request::new(message, reply_to);
+        self.send(message).await;
+        let res = channel.receive().await;
 
-//         // //bomb.defuse();
-//         // res
+        bomb.defuse();
+        Some(res)
+    }
+}
 
-//         None
-//     }
-// }
+impl<M, R, const N: usize> ActorRequest<M, R> for Sender<'static, NoopRawMutex, Request<M, R>, N> {
+    async fn request(&self, message: M) -> Option<R> {
+        let channel: Channel<NoopRawMutex, R, 1> = Channel::new();
+        let sender: DynamicSender<'_, R> = channel.sender().into();
+        let bomb = DropBomb::new();
+
+        // We guarantee that channel lives until we've been notified on it, at which
+        // point its out of reach for the replier.
+        let reply_to = unsafe {
+            core::mem::transmute::<
+                &embassy_sync::channel::DynamicSender<'_, R>,
+                &embassy_sync::channel::DynamicSender<'_, R>,
+            >(&sender)
+        };
+        let message = Request::new(message, reply_to);
+        self.send(message).await;
+        let res = channel.receive().await;
+
+        bomb.defuse();
+        Some(res)
+    }
+}
 
 // ############################################################################
 
