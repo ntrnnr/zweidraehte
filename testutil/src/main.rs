@@ -1,16 +1,20 @@
 #![feature(generic_arg_infer)]
 #![feature(adt_const_params)]
 
+use std::fs::File;
+
 use const_default::ConstDefault;
 use embassy_executor::Spawner;
 use embassy_time::Timer;
+use env_logger::Env;
+use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
 use zweidraehte::{
     Runner, StackDefinition, StackResources, define_com_objects,
-    messages::buffers::BufferManager,
+    dpt::DPT_Switch,
     objects::{
         comm::ComObjects,
-        tables::{addr7::AddrTab7, app::Application, asso6::AssoTab6, co7::CoTab7},
+        tables::{addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7},
     },
 };
 
@@ -19,12 +23,8 @@ pub struct AppParameters {
     _delay_time: u16,
 }
 
-// FIXME: reexport these from stack?
-// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-// use embassy_sync::mutex::Mutex;
-// use zweidraehte::objects::comm::{ComObject, ComObjects};
 define_com_objects! {
-    pub mod CommObjs {
+    pub mod comm_objs {
         pub struct AppComObjects {
             0 => pub co_in0: DPT_Switch = DPT_Switch::from(false),
             1 => pub co_in1: DPT_Switch = DPT_Switch::from(false),
@@ -38,6 +38,13 @@ define_com_objects! {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct MyKnxStackStoredData {
+    addr_tab: AddrTab7<30>,
+    asso_tab: AssoTab6<30>,
+    co_tab: CoTab7<30>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct MyKnxStack;
 impl StackDefinition for MyKnxStack {
@@ -45,7 +52,7 @@ impl StackDefinition for MyKnxStack {
     type AST = AssoTab6<30>;
     type COT = CoTab7<30>;
     type P = AppParameters;
-    type COMM_OBJS = CommObjs::AppComObjects;
+    type CO = comm_objs::AppComObjects;
 }
 
 #[embassy_executor::task]
@@ -56,36 +63,45 @@ async fn run_stack(runner: Runner<'static, MyKnxStack>) {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // //let mut buffers: [[u8; _]; _] = [[0u8; 32]; 10];
-    // //let buffer_manager = unsafe { BufferManager::new(&mut buffers) };
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    // let resources: StackResources<MyKnxStack> = StackResources {
-    //     ind_addr: zweidraehte::address::IndividualAddress::new(1, 0, 1),
-    //     adt: AddrTab7::<30>::new(),
-    //     ast: AssoTab6::<30>::new(),
-    //     cot: CoTab7::<30>::new(),
-    //     app: Application::<AppParameters>::new(),
-    //     comm_objs: CommObjs::AppComObjects::new(),
-    // };
+    // let mut buffers: [[u8; _]; _] = [[0u8; 32]; 10];
+    // let buffer_manager = unsafe { BufferManager::new(&mut buffers) };
 
-    // let (runner, stack) = StackRunner::<MyKnxStack>::new(resources);
+    let stored_data = File::open("stack_data.json")
+        .map_err(|_| ())
+        .and_then(|f| serde_json::from_reader::<File, MyKnxStackStoredData>(f).map_err(|_| ()))
+        .unwrap_or_else(|_| MyKnxStackStoredData {
+            addr_tab: AddrTab7::<30>::new(),
+            asso_tab: AssoTab6::<30>::new(),
+            co_tab: CoTab7::<30>::new(),
+        });
 
-    // //let (_stack, runner) = resources.bootstrap();
+    //serde_json::to_writer(File::create("stack_data.json").unwrap(), &stored_data).unwrap();
 
     static RESOURCES: StaticCell<StackResources<MyKnxStack>> = StaticCell::new();
 
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
-        AddrTab7::<30>::new(),
-        AssoTab6::<30>::new(),
-        CommObjs::AppComObjects::new(),
+        stored_data.addr_tab,
+        stored_data.asso_tab,
+        stored_data.co_tab,
+        comm_objs::AppComObjects::new(),
     );
 
     spawner.spawn(run_stack(runner)).unwrap();
 
     loop {
         Timer::after_millis(1000).await;
-        let a = stack.comm_obj_write_request(1).await;
-        println!("{:?}", a);
+
+        stack
+            .update_comm_obj(
+                comm_objs::ComObjectIndex::CoIn0.index(),
+                DPT_Switch::from(true),
+            )
+            .await;
+
+        //let a = stack.comm_obj_write_request(1).await;
+        //println!("{:?}", a);
     }
 }

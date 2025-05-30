@@ -100,7 +100,19 @@ pub enum DestinationAddress {
 }
 
 create_protocol_enum!(
-    /// System error types
+    /// APCI codes
+    ///
+    /// This uses an internal coding scheme which is converted to the actual
+    /// codes in the `get_apci_code` and `set_apci_code` methods.
+    ///
+    /// The code itself is just the lower 6 bits, the upper 2 bits are used fo
+    /// a category which is then blown up to the remaining 4 bits in the encoded
+    /// message. They are also weirdly split among multiple bytes - see spec. 03/03/07
+    ///
+    /// 0000 xxxx   - Short APCI codes (opcode is only the lower 4 bits)
+    /// 01xx xxxx   - Extended APCI codes
+    /// 10xx xxxx   - User APCI codes
+    /// 11xx xxxx   - Escaped APCI codes
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum ApciCode: u8 {
         GroupValueRead,             0,      "A_GroupValue_Read";
@@ -119,8 +131,11 @@ create_protocol_enum!(
         DeviceDescriptorResponse,   0x0d,   "A_DeviceDescriptor_Response";
         Restart,                    0x0e,   "A_Restart";
         Escape,                     0x0f,   "A_Escape";
+
         SystemNetworkParameterRead, 0x48,   "A_SystemNetworkParameter_Read";
+
         FunctionPropertyCommand,    0x87,   "A_FunctionPropertyCommand";
+
         PropertyValueRead,          0xd5,   "A_PropertyValue_Read";
         _,                                  "Unknown APCI code 0x{:x}";
     }
@@ -400,6 +415,10 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
         }
     }
 
+    pub fn buf(&self) -> &B {
+        &self.buf
+    }
+
     pub fn service_type(&self) -> ServiceType {
         self.service_type
     }
@@ -425,13 +444,6 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
         u16::from_be_bytes([self.buf[pos], self.buf[pos + 1]])
     }
 
-    // /// Helper function to set an integer in a byte array
-    // fn set_integer(&mut self, pos: usize, value: u16) {
-    //     let bytes = value.to_be_bytes();
-    //     self.buf[pos] = bytes[0];
-    //     self.buf[pos + 1] = bytes[1];
-    // }
-
     pub fn ctrl_field(&self) -> &Ctrl1Field {
         use offsets::*;
         unsafe { &*(&self.buf[MSG_CONTROL] as *const u8 as *const Ctrl1Field) }
@@ -446,7 +458,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
     pub fn get_apci_code(&self) -> ApciCode {
         use offsets::*;
 
-        // The first six bits of the APCI field either directlu contain the
+        // The first six bits of the APCI field either directly contain the
         // short APCIs or an escape code for the extended and user codes.
         let apci_raw = ((self.read_u16_be(MSG_APCI) & 0x03C0) >> 6) as u8;
 
@@ -492,6 +504,16 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
                 &self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2],
             ));
         }
+    }
+
+    /// Get the connection nr from the message
+    ///
+    /// This is stored instead of the destination address in the message and
+    /// is replaced by the transport layer with the real group address through
+    /// the grouap address table (ADT).
+    pub fn get_connection_nr(&self) -> u16 {
+        use offsets::*;
+        self.read_u16_be(MSG_DEST_ADDR)
     }
 
     /// Get the address type from the message as an enum based on the address type and system broadcast flags
@@ -586,6 +608,17 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
 }
 
 impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
+    /// Helper function to set an integer in a byte array
+    fn write_u16_be(&mut self, pos: usize, value: u16) {
+        let bytes = value.to_be_bytes();
+        self.buf[pos] = bytes[0];
+        self.buf[pos + 1] = bytes[1];
+    }
+
+    pub fn buf_mut(&mut self) -> &mut B {
+        &mut self.buf
+    }
+
     /// Get a mutable reference to the CTRL1 field
     pub fn ctrl_field_mut(&mut self) -> &mut Ctrl1Field {
         use offsets::*;
@@ -596,6 +629,37 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
     pub fn tpci_field_mut(&mut self) -> &mut TpciField {
         use offsets::*;
         unsafe { &mut *(&mut self.buf[MSG_TPCI] as *const u8 as *mut TpciField) }
+    }
+
+    /// Set the APCI value in the message from an enum
+    pub fn set_apci_code(&mut self, apci: ApciCode) {
+        use offsets::*;
+
+        let apci_value: u8 = apci.into();
+        let category = (apci_value & 0xc0) as u8;
+
+        match category {
+            // Extended
+            0x40 => {
+                self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 1;
+                self.buf[MSG_APCI + 1] = (apci_value | 0xc0) as u8;
+            }
+            // User
+            0x80 => {
+                self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 2;
+                self.buf[MSG_APCI + 1] = (apci_value | 0xc0) as u8;
+            }
+            // Escaped
+            0xc0 => {
+                self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 3;
+                self.buf[MSG_APCI + 1] = apci_value as u8;
+            }
+            // Short
+            _ => {
+                let tmp = self.read_u16_be(MSG_APCI);
+                self.write_u16_be(MSG_APCI, (tmp & !0x3C0) | ((apci_value as u16) << 6));
+            }
+        }
     }
 
     /// Set the source address in the message
@@ -633,6 +697,16 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
     pub fn set_dest_addr_raw(&mut self, addr: &[u8; 2]) {
         use offsets::*;
         self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(addr);
+    }
+
+    /// Set the connection nr int the message
+    ///
+    /// This is stored instead of the destination address in the message and
+    /// is replaced by the transport layer with the real group address through
+    /// the grouap address table (ADT).
+    pub fn set_connection_nr(&mut self, conn_nr: u16) {
+        use offsets::*;
+        self.write_u16_be(MSG_DEST_ADDR, conn_nr);
     }
 
     /// Set the address type and system broadcast flags in the message
@@ -778,43 +852,6 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
         }
     }
 }
-
-// /// Set the APCI value in the message from an enum
-// pub fn set_apci(&mut self, apci: Apci) {
-//     use offsets::*;
-
-//     let apci_value = apci.to_raw();
-//     let code = (apci_value & 0xc0) as u8;
-
-//     match code {
-//         0x40 => {
-//             self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 1;
-//             self.buf[MSG_APDU] = (apci_value | !0x3F) as u8;
-//         }
-//         0x80 => {
-//             self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 2;
-//             self.buf[MSG_APDU] = (apci_value | !0x3F) as u8;
-//         }
-//         0xc0 => {
-//             self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 3;
-//             self.buf[MSG_APDU] = apci_value as u8;
-//         }
-//         _ => {
-//             let tmp = self.get_integer(MSG_APCI);
-//             self.set_integer(MSG_APCI, (tmp & !0x3C0) | (apci_value << 6));
-//         }
-//     }
-// }
-
-// /// Get the sequence number from the message
-// pub fn get_sequence_nr(&self) -> u8 {
-//     (self.buf[8] & 0x3c) >> 2
-// }
-
-// /// Set the sequence number in the message
-// pub fn set_sequence_nr(&mut self, seq_nr: u8) {
-//     self.buf[8] = (self.buf[8] & 0xc3) | ((seq_nr & 0x0F) << 2);
-// }
 
 #[cfg(test)]
 mod tests {

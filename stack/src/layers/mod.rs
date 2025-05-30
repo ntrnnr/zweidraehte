@@ -167,4 +167,5 @@ impl<M, R, const N: usize> ActorRequest<M, R> for Sender<'static, NoopRawMutex, 
 
 pub mod application;
 pub mod network;
+pub mod test_linklayer;
 pub mod transport;

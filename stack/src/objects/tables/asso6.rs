@@ -1,37 +1,28 @@
 use const_default::ConstDefault;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use zerocopy::big_endian::U16;
 
-use super::{Table, TableMemory};
+use super::{AssociationTable, Table, TableMemory};
 
-#[derive(Debug, ConstDefault)]
+#[serde_as]
+#[derive(Debug, ConstDefault, Serialize, Deserialize)]
 pub struct AssoTab6Impl<const N: usize> {
+    #[serde_as(as = "[_; N]")]
     data: [u8; N],
 }
 
 impl<const N: usize> Table<AssoTab6Impl<N>> {
-    pub fn max_entries(&self) -> usize {
-        (N / 2) - 1
-    }
-
-    pub fn entry_count(&self) -> u16 {
-        U16::from_bytes(self.table.data[0..2].try_into().unwrap()).get()
-    }
-
-    pub fn tsap(&self, idx: usize) -> u16 {
+    fn tsap(&self, idx: u16) -> u16 {
         // NOTE: idx is 1-indexed!
-        let start = (2 * (idx - 1) + 1) * 2;
+        let start = (2 * ((idx as usize) - 1) + 1) * 2;
         U16::from_bytes(self.table.data[start..start + 2].try_into().unwrap()).get()
     }
 
-    pub fn asap(&self, idx: usize) -> u16 {
+    fn asap(&self, idx: u16) -> u16 {
         // NOTE: idx is 1-indexed!
-        let start = (2 * (idx - 1) + 2) * 2;
+        let start = (2 * ((idx as usize) - 1) + 2) * 2;
         U16::from_bytes(self.table.data[start..start + 2].try_into().unwrap()).get()
-    }
-
-    /// Check if the association table is empty
-    pub fn is_empty(&self) -> bool {
-        self.entry_count() == 0
     }
 
     /// Find the next ASAP number associated with a given TSAP
@@ -43,8 +34,8 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
     /// or `None` if no matching entry is found.
     ///
     /// When the table is empty, it assumes a default mapping where ASAP = TSAP.
-    pub fn find_next_asap(&self, tsap: u16, start_idx: &mut usize) -> Option<(u16, usize)> {
-        let count = self.entry_count() as usize;
+    fn find_next_asap(&self, tsap: u16, start_idx: &mut u16) -> Option<(u16, u16)> {
+        let count = self.entry_count();
 
         if count > 0 {
             // Search through the table for entries matching the TSAP
@@ -72,28 +63,6 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
         }
     }
 
-    /// Gets the sending TSAP for a given ASAP
-    ///
-    /// Returns `Some(tsap)` if a match is found, `None` otherwise.
-    /// When the table is empty, it assumes a default mapping where TSAP = ASAP + 1.
-    pub fn get_tsap_for_asap(&self, asap: u16) -> Option<u16> {
-        let count = self.entry_count() as usize;
-
-        if count == 0 {
-            // Table is empty, assume default table where TSAP = ASAP + 1
-            return Some(asap + 1);
-        }
-
-        // Find the first association where ASAP matches (asap + 1 since table stores 1-indexed values)
-        for i in 1..=count {
-            if self.asap(i) == asap + 1 {
-                return Some(self.tsap(i));
-            }
-        }
-
-        None
-    }
-
     /// Find the next TSAP associated with a given ASAP
     ///
     /// Iterates through the association table entries starting from `start_idx`
@@ -103,8 +72,8 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
     /// or `None` if no matching entry is found.
     ///
     /// When the table is empty, it assumes a default mapping where TSAP = ASAP + 1.
-    pub fn find_next_tsap(&self, asap: u16, start_idx: &mut usize) -> Option<(u16, usize)> {
-        let count = self.entry_count() as usize;
+    fn find_next_tsap(&self, asap: u16, start_idx: &mut u16) -> Option<(u16, u16)> {
+        let count = self.entry_count();
 
         if count > 0 {
             // Search through the table for entries matching the ASAP
@@ -130,57 +99,37 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
         }
     }
 
-    /// Gets the association index for a given ASAP
-    ///
-    /// Returns `Some(index)` with the first association index where ASAP matches,
-    /// or `None` if no match is found.
-    ///
-    /// When the table is empty, it assumes a default mapping and returns index 0.
-    pub fn get_association_index_for_asap(&self, asap: u16) -> Option<usize> {
-        let count = self.entry_count() as usize;
+    // /// Gets the association index for a given ASAP
+    // ///
+    // /// Returns `Some(index)` with the first association index where ASAP matches,
+    // /// or `None` if no match is found.
+    // ///
+    // /// When the table is empty, it assumes a default mapping and returns index 0.
+    // pub fn get_association_index_for_asap(&self, asap: u16) -> Option<usize> {
+    //     let count = self.entry_count() as usize;
 
-        if count > 0 {
-            // Search through the table for an entry matching the ASAP
-            for i in 1..=count {
-                if self.asap(i) == asap + 1 {
-                    return Some(i);
-                }
-            }
+    //     if count > 0 {
+    //         // Search through the table for an entry matching the ASAP
+    //         for i in 1..=count {
+    //             if self.asap(i) == asap + 1 {
+    //                 return Some(i);
+    //             }
+    //         }
 
-            // No match found
-            None
-        } else {
-            // Table is empty, assume default table
-            Some(0)
-        }
-    }
-
-    /// Iterator over all TSAPs associated with a given ASAP
-    pub fn tsaps_for_asap(&self, asap: u16) -> impl Iterator<Item = u16> + '_ {
-        TsapIterator {
-            table: self,
-            asap,
-            current_idx: 0,
-        }
-    }
-
-    /// Iterator over all ASAPs associated with a given TSAP
-    pub fn asaps_for_tsap(&self, tsap: u16) -> impl Iterator<Item = u16> + '_ {
-        AsapIterator {
-            table: self,
-            tsap,
-            current_idx: 0,
-        }
-    }
-
-    // TODO: implement further methods we need like for example an iterator to go from a TSAP to all ASAPs and other things we need
+    //         // No match found
+    //         None
+    //     } else {
+    //         // Table is empty, assume default table
+    //         Some(0)
+    //     }
+    // }
 }
 
 /// Iterator for TSAPs associated with a given ASAP
 pub struct TsapIterator<'a, const N: usize> {
     table: &'a Table<AssoTab6Impl<N>>,
     asap: u16,
-    current_idx: usize,
+    current_idx: u16,
 }
 
 impl<'a, const N: usize> Iterator for TsapIterator<'a, N> {
@@ -199,7 +148,7 @@ impl<'a, const N: usize> Iterator for TsapIterator<'a, N> {
 pub struct AsapIterator<'a, const N: usize> {
     table: &'a Table<AssoTab6Impl<N>>,
     tsap: u16,
-    current_idx: usize,
+    current_idx: u16,
 }
 
 impl<'a, const N: usize> Iterator for AsapIterator<'a, N> {
@@ -236,11 +185,73 @@ impl<const N: usize> TableMemory for AssoTab6Impl<N> {
     }
 }
 
+impl<const N: usize> AssociationTable for Table<AssoTab6Impl<N>> {
+    fn max_entries(&self) -> usize {
+        (N / 2) - 1
+    }
+
+    fn entry_count(&self) -> u16 {
+        U16::from_bytes(self.table.data[0..2].try_into().unwrap()).get()
+    }
+
+    /// Gets the sending TSAP for a given ASAP
+    ///
+    /// Returns `Some(tsap)` if a match is found, `None` otherwise.
+    /// When the table is empty, it assumes a default mapping where TSAP == ASAP.
+    fn get_sending_tsap(&self, asap: u16) -> Option<u16> {
+        trace!("Finding sending TSAP for ASAP {}", asap);
+
+        let count = self.entry_count();
+
+        if count == 0 {
+            // Table is empty, assume default table where TSAP == ASAP
+            trace!(
+                "Table is empty, assuming default TSAP {} for ASAP {}",
+                asap + 1,
+                asap
+            );
+            return Some(asap + 1);
+        }
+
+        // Find the first association where ASAP matches (asap + 1 since table stores 1-indexed values)
+        for i in 1..=count {
+            if self.asap(i) == asap + 1 {
+                let tsap = self.tsap(i);
+                trace!("Found sending TSAP {} for ASAP {}", tsap, asap);
+                return Some(tsap);
+            }
+        }
+
+        trace!("No sending TSAP found for ASAP {}", asap);
+        None
+    }
+
+    /// Iterator over all TSAPs associated with a given ASAP
+    fn tsaps_for_asap(&self, asap: u16) -> impl Iterator<Item = u16> + '_ {
+        TsapIterator {
+            table: self,
+            asap,
+            current_idx: 0,
+        }
+    }
+
+    /// Iterator over all ASAPs associated with a given TSAP
+    fn asaps_for_tsap(&self, tsap: u16) -> impl Iterator<Item = u16> + '_ {
+        AsapIterator {
+            table: self,
+            tsap,
+            current_idx: 0,
+        }
+    }
+}
+
 pub type AssoTab6<const MAX_ENTRIES: usize> = Table<AssoTab6Impl<{ (MAX_ENTRIES + 1) * 2 }>>;
 
 #[cfg(test)]
 mod test {
-    use crate::objects::tables::{LoadEvent, LoadState, LoadableTable, TableMemory};
+    use crate::objects::tables::{
+        AssociationTable, LoadEvent, LoadState, LoadableTable, TableMemory,
+    };
 
     use super::AssoTab6;
 
@@ -335,8 +346,8 @@ mod test {
         // Check get_tsap_for_asap
         assert_eq!(ast.get_tsap_for_asap(10), Some(11));
 
-        // Check get_association_index_for_asap
-        assert_eq!(ast.get_association_index_for_asap(3), Some(0));
+        // // Check get_association_index_for_asap
+        // assert_eq!(ast.get_association_index_for_asap(3), Some(0));
 
         // Check iterators with empty table
         assert_eq!(ast.tsaps_for_asap(12).collect::<Vec<_>>(), vec![13]);
@@ -486,48 +497,48 @@ mod test {
         assert_eq!(ast.get_tsap_for_asap(10), None);
     }
 
-    #[test]
-    fn asso6_get_association_index() {
-        // Test the get_association_index_for_asap function
-        let mut ast = AssoTab6::<20>::new();
+    // #[test]
+    // fn asso6_get_association_index() {
+    //     // Test the get_association_index_for_asap function
+    //     let mut ast = AssoTab6::<20>::new();
 
-        // Setup table with multiple mappings:
-        // ASAP 1 ← TSAP 2
-        // ASAP 3 ← TSAP 4
-        // ASAP 5 ← TSAP 6
-        // ASAP 5 ← TSAP 7 (multiple TSAPs for same ASAP - should return first match)
-        ast.write_lsm(&[LoadEvent::StartLoading.into()]);
-        ast.write_lsm(&[
-            LoadEvent::AdditionalLoadControls.into(),
-            0x0B,
-            0x00,
-            0x00,
-            0x00,
-            0x10,
-            0x01,
-            0xff,
-            0x00,
-            0x00,
-        ]);
-        ast.write(0, &[0x00, 0x04]); // 4 entries
-        ast.write(2, &[0x00, 0x02]); // Entry 1: TSAP = 2
-        ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 1+1 (stored as 2)
-        ast.write(6, &[0x00, 0x04]); // Entry 2: TSAP = 4
-        ast.write(8, &[0x00, 0x04]); // Entry 2: ASAP = 3+1 (stored as 4)
-        ast.write(10, &[0x00, 0x06]); // Entry 3: TSAP = 6
-        ast.write(12, &[0x00, 0x06]); // Entry 3: ASAP = 5+1 (stored as 6)
-        ast.write(14, &[0x00, 0x07]); // Entry 4: TSAP = 7
-        ast.write(16, &[0x00, 0x06]); // Entry 4: ASAP = 5+1 (stored as 6) (duplicate)
-        ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+    //     // Setup table with multiple mappings:
+    //     // ASAP 1 ← TSAP 2
+    //     // ASAP 3 ← TSAP 4
+    //     // ASAP 5 ← TSAP 6
+    //     // ASAP 5 ← TSAP 7 (multiple TSAPs for same ASAP - should return first match)
+    //     ast.write_lsm(&[LoadEvent::StartLoading.into()]);
+    //     ast.write_lsm(&[
+    //         LoadEvent::AdditionalLoadControls.into(),
+    //         0x0B,
+    //         0x00,
+    //         0x00,
+    //         0x00,
+    //         0x10,
+    //         0x01,
+    //         0xff,
+    //         0x00,
+    //         0x00,
+    //     ]);
+    //     ast.write(0, &[0x00, 0x04]); // 4 entries
+    //     ast.write(2, &[0x00, 0x02]); // Entry 1: TSAP = 2
+    //     ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 1+1 (stored as 2)
+    //     ast.write(6, &[0x00, 0x04]); // Entry 2: TSAP = 4
+    //     ast.write(8, &[0x00, 0x04]); // Entry 2: ASAP = 3+1 (stored as 4)
+    //     ast.write(10, &[0x00, 0x06]); // Entry 3: TSAP = 6
+    //     ast.write(12, &[0x00, 0x06]); // Entry 3: ASAP = 5+1 (stored as 6)
+    //     ast.write(14, &[0x00, 0x07]); // Entry 4: TSAP = 7
+    //     ast.write(16, &[0x00, 0x06]); // Entry 4: ASAP = 5+1 (stored as 6) (duplicate)
+    //     ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
 
-        // Test finding association index for each ASAP
-        assert_eq!(ast.get_association_index_for_asap(1), Some(1)); // Index for ASAP 1
-        assert_eq!(ast.get_association_index_for_asap(3), Some(2)); // Index for ASAP 3
-        assert_eq!(ast.get_association_index_for_asap(5), Some(3)); // Index for first ASAP 5
+    //     // Test finding association index for each ASAP
+    //     assert_eq!(ast.get_association_index_for_asap(1), Some(1)); // Index for ASAP 1
+    //     assert_eq!(ast.get_association_index_for_asap(3), Some(2)); // Index for ASAP 3
+    //     assert_eq!(ast.get_association_index_for_asap(5), Some(3)); // Index for first ASAP 5
 
-        // Test finding association index for non-existent ASAP
-        assert_eq!(ast.get_association_index_for_asap(10), None);
-    }
+    //     // Test finding association index for non-existent ASAP
+    //     assert_eq!(ast.get_association_index_for_asap(10), None);
+    // }
 
     #[test]
     fn asso6_iterators() {

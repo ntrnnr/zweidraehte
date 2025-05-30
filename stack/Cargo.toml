@@ -7,12 +7,16 @@ edition = "2024"
 zerocopy = { workspace = true }
 const-bitfield = { workspace = true }
 const-default = { workspace = true }
-bitflags = { workspace = true }
 paste = { workspace = true }
 static_cell = { workspace = true }
-#ector = { workspace = true }
+serde = { workspace = true }
+serde_with = { workspace = true }
 embassy-sync = { workspace = true }
 embassy-futures = { workspace = true }
+defmt = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
+
 
 [features]
-defmt = []
+defmt = ["dep:defmt"]
+log = ["dep:log"]

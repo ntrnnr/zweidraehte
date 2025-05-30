@@ -1,18 +1,22 @@
 use const_default::ConstDefault;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use zerocopy::big_endian::U16;
 
 use crate::address::GroupAddress;
 
 use super::{AddressTable, Table, TableMemory};
 
-#[derive(Debug, ConstDefault)]
+#[serde_as]
+#[derive(Debug, ConstDefault, Serialize, Deserialize)]
 pub struct AddrTab7Impl<const N: usize> {
+    #[serde_as(as = "[_; N]")]
     data: [u8; N],
 }
 
 impl<const N: usize> Table<AddrTab7Impl<N>> {
     fn addr(&self, idx: usize) -> GroupAddress {
-        // NOTE: idx is 1-indexed!
+        // NOTE: idx is 1-indexed and first member is current length!
         GroupAddress::from_bytes(&self.table.data[idx * 2..(idx + 1) * 2])
     }
 }
@@ -49,7 +53,10 @@ impl<const N: usize> AddressTable for Table<AddrTab7Impl<N>> {
     }
 
     fn get_address(&self, tsap: u16) -> Option<GroupAddress> {
+        trace!("Getting address for TSAP {}", tsap);
+
         if tsap == 0 || tsap > self.entry_count() {
+            trace!("TSAP {} is out of bounds (1..{})", tsap, self.entry_count());
             return None;
         }
 
@@ -181,7 +188,7 @@ pub type AddrTab7<const MAX_ENTRIES: usize> = Table<AddrTab7Impl<{ (MAX_ENTRIES 
 mod test {
     use crate::{
         address::GroupAddress as KNXGroupAddress,
-        objects::tables::{LoadEvent, LoadState, LoadableTable, TableMemory},
+        objects::tables::{AddressTable, LoadEvent, LoadState, LoadableTable, TableMemory},
     };
 
     use super::AddrTab7;

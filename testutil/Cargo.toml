@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-zweidraehte = { path = "../stack" }
+zweidraehte = { path = "../stack", features = ["log"] }
 
 embassy-sync = { workspace = true, features = ["std"] }
 embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"] }
@@ -13,5 +13,14 @@ embassy-time = { workspace = true, features = ["std"] }
 const-default = { workspace = true }
 static_cell = { workspace = true }
 
+serde = { workspace = true }
+serde_json = { workspace = true }
+
 # FIXME: reexport from stack?
 paste = { workspace = true }
+
+env_logger = "0.11"
+
+[[bin]]
+name = "testutil"
+path = "src/main.rs"

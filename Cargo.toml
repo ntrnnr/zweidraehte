@@ -16,9 +16,13 @@ license = "Proprietary"
 zerocopy = { version = "0.8", features = ["derive"] }
 const-bitfield = "0.2"
 const-default = { version = "1.0", features = ["derive"] }
-bitflags = "2.9"
 paste = "1.0"
 static_cell = { version = "2.1", features = ["nightly"] }
+defmt = "1.0"
+log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_with = { version = "3.12", features = ["macros"] }
+serde_json = "1.0"
 
 embassy-executor = { version = "0.7", default-features = false }
 embassy-time = { version = "0.4", default-features = false }

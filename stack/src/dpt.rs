@@ -4,6 +4,8 @@ use core::convert::TryInto;
 use core::fmt;
 use core::marker::PhantomData;
 
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned, big_endian};
 
 // Datapoint types: 3.7.2
@@ -15,6 +17,7 @@ pub trait PropertyDataDefinition {
     const ID: u8;
 }
 
+#[serde_as]
 #[derive(
     Clone,
     Copy,
@@ -27,11 +30,15 @@ pub trait PropertyDataDefinition {
     IntoBytes,
     KnownLayout,
     Unaligned,
+    Serialize,
+    Deserialize,
 )]
 #[repr(C)]
 pub struct PropertyData<T, const ID: u8, const N: usize> {
+    #[serde_as(as = "[_; N]")]
     data: [u8; N],
-    p: PhantomData<T>,
+    #[serde(skip)]
+    _p: PhantomData<T>,
 }
 
 // FIXME: remove this and implement specific Debug outputs for each PDT
@@ -45,10 +52,55 @@ impl<T, const ID: u8, const N: usize> Default for PropertyData<T, ID, N> {
     fn default() -> Self {
         Self {
             data: [0; N],
-            p: PhantomData,
+            _p: PhantomData,
         }
     }
 }
+
+// impl<T, const ID: u8, const N: usize> Serialize for PropertyData<T, ID, N> {
+//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+//     where
+//         S: serde::Serializer,
+//     {
+//         serializer.serialize_bytes(&self.data)
+//     }
+// }
+
+// impl<'de, T, const ID: u8, const N: usize> Deserialize<'de> for PropertyData<T, ID, N> {
+//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+//     where
+//         D: serde::Deserializer<'de>,
+//     {
+//         struct PropertyDataVisitor<T, const ID: u8, const N: usize>(PhantomData<T>);
+
+//         impl<'de, T, const ID: u8, const N: usize> Visitor<'de> for PropertyDataVisitor<T, ID, N> {
+//             type Value = PropertyData<T, ID, N>;
+
+//             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+//                 formatter.write_str("a byte array of the correct size")
+//             }
+
+//             fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
+//             where
+//                 E: serde::de::Error,
+//             {
+//                 if value.len() != N {
+//                     return Err(E::invalid_length(value.len(), &self));
+//                 }
+
+//                 let mut data = [0; N];
+//                 data.copy_from_slice(value);
+
+//                 Ok(PropertyData {
+//                     data,
+//                     p: PhantomData,
+//                 })
+//             }
+//         }
+
+//         deserializer.deserialize_bytes(PropertyDataVisitor(PhantomData))
+//     }
+// }
 
 impl<T, const ID: u8, const N: usize> const PropertyDataDefinition for PropertyData<T, ID, N> {
     const ID: u8 = ID;
@@ -73,7 +125,7 @@ macro_rules! impl_primitive_pdt {
             pub const fn with_value(value: $typ) -> Self {
                 Self {
                     data: *(&value).to_be_bytes().as_array().unwrap(),
-                    p: PhantomData,
+                    _p: PhantomData,
                 }
             }
 
@@ -119,7 +171,7 @@ macro_rules! impl_array_pdt {
             pub const fn with_value(value: $typ) -> Self {
                 Self {
                     data: *(&value).as_array().unwrap(),
-                    p: PhantomData,
+                    _p: PhantomData,
                 }
             }
 
@@ -209,7 +261,7 @@ impl<const ID: u8, const N: usize> PropertyData<KNXVersion, ID, N> {
         let value: u16 = value.0;
         Self {
             data: (&value.to_be_bytes()[0..N]).try_into().unwrap(),
-            p: PhantomData,
+            _p: PhantomData,
         }
     }
 

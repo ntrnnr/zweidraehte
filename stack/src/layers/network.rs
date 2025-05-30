@@ -1,46 +1,39 @@
-use core::{
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-};
-
 use embassy_sync::channel::DynamicSender;
 
 use super::{Inbox, Layer};
 
-use crate::address::IndividualAddress;
 use crate::messages::knx::*;
+use crate::{address::IndividualAddress, messages::buffers::Buffer};
 
 /// Network layer for the KNX stack
-pub struct NetworkLayer<'a, B: Deref<Target = [u8]>> {
+pub struct NetworkLayer<'a> {
     device_addr: IndividualAddress,
     default_hop_count: u8,
 
-    _phantom: PhantomData<B>,
-    //link_layer: DynamicAddress<KnxMessageBuffer<B>>,
-    transport_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
+    link_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
+    transport_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
 }
 
-impl<'a, B: DerefMut<Target = [u8]>> NetworkLayer<'a, B> {
+impl<'a> NetworkLayer<'a> {
     /// Create a new Network Layer with the device's individual address
     pub fn new(
         device_addr: IndividualAddress,
         default_hop_count: u8,
 
-        //link_layer: DynamicAddress<KnxMessageBuffer<B>>,
-        transport_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
+        link_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
+        transport_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
     ) -> Self {
         Self {
             device_addr,
             default_hop_count,
-            _phantom: PhantomData,
-            //link_layer,
+            link_layer,
             transport_layer,
         }
     }
 }
 
-impl<'a, B: DerefMut<Target = [u8]> + core::fmt::Debug> Layer<'a> for NetworkLayer<'a, B> {
-    type Message = KnxMessageBuffer<B>;
+impl<'a> Layer<'a> for NetworkLayer<'a> {
+    type Message = KnxMessageBuffer<Buffer<'static>>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
     where
@@ -48,7 +41,11 @@ impl<'a, B: DerefMut<Target = [u8]> + core::fmt::Debug> Layer<'a> for NetworkLay
     {
         loop {
             let mut msg = inbox.next().await;
-            //println!("Network Layer received message: {:x?}", msg);
+            trace!(
+                "Network Layer received message: {:?} {:x?}",
+                msg,
+                &msg.buf()[..]
+            );
 
             match msg.service_type() {
                 // Incoming indication message from link layer
@@ -106,7 +103,8 @@ impl<'a, B: DerefMut<Target = [u8]> + core::fmt::Debug> Layer<'a> for NetworkLay
                     }
 
                     // Send message down to link layer
-                    // self.link_layer.send(msg).await;
+                    trace!("Network Layer sending to Link layer: {:x?}", &msg.buf()[..]);
+                    self.link_layer.send(msg).await;
                 }
 
                 // Everything else is unhandled

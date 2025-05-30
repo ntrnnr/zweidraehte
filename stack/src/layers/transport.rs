@@ -1,48 +1,39 @@
-use core::{
-    cell::RefCell,
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-};
+use core::cell::RefCell;
 
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::{blocking_mutex::Mutex, channel::DynamicSender};
+use embassy_sync::channel::DynamicSender;
 
 use super::{Inbox, Layer};
 
 use crate::{
     StackDefinition,
-    messages::knx::*,
+    messages::{buffers::Buffer, knx::*},
     objects::tables::{AddressTable, LoadableTable},
 };
 
 /// Transport layer for the KNX stack
-pub struct TransportLayer<'a, B: Deref<Target = [u8]>, D: StackDefinition> {
-    adt: &'a Mutex<NoopRawMutex, RefCell<D::ADT>>,
-    network_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
-    application_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
-    _phantom: PhantomData<B>,
+pub struct TransportLayer<'a, D: StackDefinition> {
+    adt: &'a RefCell<D::ADT>,
+    network_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
+    application_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
 }
 
-impl<'a, B: DerefMut<Target = [u8]>, D: StackDefinition> TransportLayer<'a, B, D> {
+impl<'a, D: StackDefinition> TransportLayer<'a, D> {
     /// Create a new Transport Layer with the device's individual address
     pub fn new(
-        adt: &'a Mutex<NoopRawMutex, RefCell<D::ADT>>,
-        network_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
-        application_layer: DynamicSender<'a, KnxMessageBuffer<B>>,
+        adt: &'a RefCell<D::ADT>,
+        network_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
+        application_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
     ) -> Self {
         Self {
             adt,
             network_layer,
             application_layer,
-            _phantom: PhantomData,
         }
     }
 }
 
-impl<'a, B: DerefMut<Target = [u8]> + core::fmt::Debug, D: StackDefinition> Layer<'a>
-    for TransportLayer<'a, B, D>
-{
-    type Message = KnxMessageBuffer<B>;
+impl<'a, D: StackDefinition> Layer<'a> for TransportLayer<'a, D> {
+    type Message = KnxMessageBuffer<Buffer<'static>>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
     where
@@ -50,7 +41,11 @@ impl<'a, B: DerefMut<Target = [u8]> + core::fmt::Debug, D: StackDefinition> Laye
     {
         loop {
             let mut msg = inbox.next().await;
-            //println!("Transport Layer received message: {:x?}", msg);
+            trace!(
+                "Transport Layer received message: {:?} {:x?}",
+                msg,
+                &msg.buf()[..]
+            );
 
             match msg.service_type() {
                 // Incoming indication and confirmation message from network layer
@@ -61,14 +56,10 @@ impl<'a, B: DerefMut<Target = [u8]> + core::fmt::Debug, D: StackDefinition> Laye
                     //   3. Group address needs to be converted to connection number using ADT
                     if let Some(Tpci::DataGroup) = msg.get_tpci()
                         && let DestinationAddress::Group(g) = msg.get_dest_addr()
-                        && let Some(conn_nr) = self.adt.lock(|x| {
-                            x.borrow()
-                                .is_loaded()
-                                .then_some(())
-                                .and_then(|_| x.borrow().get_tsap(g))
-                        })
+                        && self.adt.borrow().is_loaded()
+                        && let Some(conn_nr) = self.adt.borrow().get_tsap(g)
                     {
-                        // TODO: set connection number
+                        msg.set_connection_nr(conn_nr);
 
                         match t {
                             ServiceType::N_GroupData_Ind => {
@@ -121,18 +112,34 @@ impl<'a, B: DerefMut<Target = [u8]> + core::fmt::Debug, D: StackDefinition> Laye
                 ServiceType::N_Data_Con => {}
 
                 // Incoming requests from application layer
+                // ADT must be loaded and the TSAP must be converted to a group address
                 ServiceType::T_GroupData_Req => {
-                    // if ADT loaded && ConnNrToGroupAddr(&GroupAddr) conversion success {
-                    //      TPCI = 0
-                    //      SequNr = 0
-                    //      DestAddr = GroupAddr
-                    //      msg.set_service_type(ServiceType::N_GroupData_Req);
-                    //      self.network_layer.send(msg).await;
-                    //} else {
-                    //      msg.set_service_type(ServiceType::T_GroupData_Con);
-                    //      msgPtr[MSG_CONTROL] |= CF_CONFIRM;
-                    //      self.application_layer.send(msg).await;
-                    //}
+                    trace!("Received T_GroupData_Req: {:?}", msg);
+
+                    if self.adt.borrow().is_loaded()
+                        && let Some(dst_addr) =
+                            self.adt.borrow().get_address(msg.get_connection_nr())
+                    {
+                        trace!(
+                            "Converting connection number to group address: {}",
+                            dst_addr
+                        );
+
+                        msg.set_tpci(Tpci::DataGroup);
+                        msg.set_dest_addr(DestinationAddress::Group(dst_addr));
+                        msg.set_service_type(ServiceType::N_GroupData_Req);
+
+                        self.network_layer.send(msg).await;
+                    } else {
+                        trace!(
+                            "ADT not loaded or invalid connection number: {}",
+                            msg.get_connection_nr()
+                        );
+
+                        msg.set_service_type(ServiceType::T_GroupData_Con);
+                        msg.ctrl_field_mut().set_c(Confirm::Err);
+                        self.application_layer.send(msg).await;
+                    }
                 }
 
                 ServiceType::T_Broadcast_Req => {

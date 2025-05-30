@@ -17,7 +17,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
     KnownLayout,
     Immutable,
 )]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+//#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(transparent)]
 pub struct IndividualAddress(pub [u8; 2]);
 
@@ -114,7 +114,7 @@ impl defmt::Format for IndividualAddress {
     KnownLayout,
     Immutable,
 )]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+//#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct GroupAddress(pub [u8; 2]);
 
 impl GroupAddress {

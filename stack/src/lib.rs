@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 #![feature(slice_as_array)]
 #![feature(const_trait_impl)]
 #![feature(adt_const_params)]
@@ -6,6 +6,8 @@
 #![feature(generic_arg_infer)]
 #![feature(type_alias_impl_trait)]
 #![feature(never_type)]
+
+mod fmt;
 
 #[macro_use]
 mod macros;
@@ -21,47 +23,56 @@ pub mod util;
 
 use core::{cell::RefCell, mem::MaybeUninit};
 
-use address::IndividualAddress;
 use const_default::ConstDefault;
 use embassy_sync::{
-    blocking_mutex::{Mutex, raw::NoopRawMutex},
+    blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, DynamicReceiver, DynamicSender, Receiver, Sender},
 };
-use layers::{
+use messages::knx::KnxMessageBuffer;
+use objects::tables::AssociationTable;
+
+use crate::address::IndividualAddress;
+use crate::layers::{
     ActorRequest, Layer, Request,
     application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
     network::NetworkLayer,
+    test_linklayer::LinkLayer,
     transport::TransportLayer,
 };
-use messages::buffers::Buffer;
-use objects::{
-    comm::{self, ComObjects},
-    tables::{AddressTable, TableMemory, app::Application},
+use crate::messages::buffers::{Buffer, BufferManager, DynBufferManager};
+use crate::objects::{
+    comm::{ComObjectStatus, ComObjects},
+    tables::{AddressTable, CommunicationObjectTable, TableMemory},
 };
 
-// FIXME: Introduce traits for AST, COT
 pub trait StackDefinition {
     type ADT: AddressTable;
-    type AST: TableMemory;
-    type COT: TableMemory;
+    type AST: AssociationTable;
+    type COT: CommunicationObjectTable;
     type P: ConstDefault;
-    type COMM_OBJS: ComObjects;
+    type CO: ComObjects;
 }
 
-pub struct StackResources<D: StackDefinition> {
+pub struct StackResources<D: StackDefinition, const BUF_SZ: usize = 128, const NUM_BUFS: usize = 4>
+where
+    D::ADT: AddressTable,
+    D::AST: TableMemory,
+    D::COT: CommunicationObjectTable,
+    D::CO: ComObjects,
+{
     inner: MaybeUninit<Inner<D>>,
-    // pub ind_addr: IndividualAddress,
-    // pub adt: D::ADT,
-    // pub ast: D::AST,
-    // pub cot: D::COT,
-    // pub app: Application<D::P>,
-    // pub comm_objs: D::COMM_OBJS,
+    buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
+    buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
 }
 
-impl<D: StackDefinition> StackResources<D> {
+impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize>
+    StackResources<D, BUF_SZ, NUM_BUFS>
+{
     pub fn new() -> Self {
         Self {
             inner: MaybeUninit::uninit(),
+            buffers: MaybeUninit::uninit(),
+            buffer_manager: MaybeUninit::uninit(),
         }
     }
 }
@@ -87,28 +98,40 @@ pub struct Stack<'d, D: StackDefinition> {
 }
 
 pub(crate) struct Inner<D: StackDefinition> {
+    buffer_manager: RefCell<DynBufferManager<'static>>,
     app_service_channel:
         Channel<NoopRawMutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
-    adt: Mutex<NoopRawMutex, RefCell<D::ADT>>,
-    ast: Mutex<NoopRawMutex, RefCell<D::AST>>,
-    comm_objs: Mutex<NoopRawMutex, RefCell<D::COMM_OBJS>>,
+    adt: RefCell<D::ADT>,
+    ast: RefCell<D::AST>,
+    cot: RefCell<D::COT>,
+    comm_objs: RefCell<D::CO>,
 }
 
 fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'a, D> {
     x
 }
 
-pub fn new<'d, D: StackDefinition + Copy>(
-    resources: &'d mut StackResources<D>,
+pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
+    resources: &'d mut StackResources<D, BUF_SZ, NUM_BUFS>,
     adt: D::ADT,
     ast: D::AST,
-    comm_objs: D::COMM_OBJS,
+    cot: D::COT,
+    comm_objs: D::CO,
 ) -> (Stack<'d, D>, Runner<'d, D>) {
+    // SAFETY: We are creating a reference to the buffers that are stored in the `StackResources` struct,
+    //         which lives at least as long as `Inner`
+    let buffers = resources.buffers.write([[0; _]; _]);
+    let buffer_manager: &'static mut BufferManager<NUM_BUFS> = unsafe {
+        core::mem::transmute(resources.buffer_manager.write(BufferManager::new(buffers)))
+    };
+
     let inner = Inner {
+        buffer_manager: RefCell::new(buffer_manager.dyn_buffer_manager()),
         app_service_channel: Channel::new(),
-        adt: Mutex::new(RefCell::new(adt)),
-        ast: Mutex::new(RefCell::new(ast)),
-        comm_objs: Mutex::new(RefCell::new(comm_objs)),
+        adt: RefCell::new(adt),
+        ast: RefCell::new(ast),
+        cot: RefCell::new(cot),
+        comm_objs: RefCell::new(comm_objs),
     };
 
     let inner = &*resources.inner.write(inner);
@@ -150,34 +173,45 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let ind_addr = IndividualAddress::new(1, 0, 1);
 
         // Create all the channels for layer to layer communication
-        let nl_channel: Channel<NoopRawMutex, _, 1> = Channel::new();
-        let tl_channel: Channel<NoopRawMutex, _, 1> = Channel::new();
-        let al_channel: Channel<NoopRawMutex, _, 1> = Channel::new();
+        let ll_channel: Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'_>>, 1> = Channel::new();
+        let nl_channel: Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'_>>, 1> = Channel::new();
+        let tl_channel: Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'_>>, 1> = Channel::new();
+        let al_channel: Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'_>>, 1> = Channel::new();
+
+        // Create a link layer
+        let mut link_layer = LinkLayer::new(ind_addr.clone(), nl_channel.sender().into());
 
         // Create a network layer
-        let mut network_layer = NetworkLayer::new(ind_addr, 6, tl_channel.sender().into());
+        let mut network_layer = NetworkLayer::new(
+            ind_addr,
+            6,
+            ll_channel.sender().into(),
+            tl_channel.sender().into(),
+        );
 
         // Create a transport layer
-        //let mut tl_adt = core::pin::pin!(unsafe { adt_ref.duplicate() });
-        let mut transport_layer = TransportLayer::<'_, Buffer<'_>, D>::new(
+        let mut transport_layer = TransportLayer::<'_, D>::new(
             &self.stack.inner.adt,
             nl_channel.sender().into(),
             al_channel.sender().into(),
         );
 
         // Create an application layer
-        let mut application_layer = ApplicationLayer::<'_, Buffer<'_>, D>::new(
+        let mut application_layer = ApplicationLayer::<'_, D>::new(
+            &self.stack.inner.buffer_manager,
             &self.stack.inner.ast,
+            &self.stack.inner.cot,
             &self.stack.inner.comm_objs,
             self.app_request_receiver,
             tl_channel.sender().into(),
         );
 
         // Spawn and await all the tasks
+        let ll_task = link_layer.process(ll_channel.receiver());
         let nl_task = network_layer.process(nl_channel.receiver());
         let tl_task = transport_layer.process(tl_channel.receiver());
         let al_task = application_layer.process(al_channel.receiver());
-        let tasks = embassy_futures::join::join3(nl_task, tl_task, al_task);
+        let tasks = embassy_futures::join::join4(ll_task, nl_task, tl_task, al_task);
         tasks.await;
 
         unreachable!();
@@ -185,16 +219,24 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 }
 
 impl<'d, D: StackDefinition> Stack<'d, D> {
-    pub async fn comm_obj_write_request(&self, asap: u16) -> ApplicationLayerServiceResponse {
+    pub async fn update_comm_obj<T: AsRef<[u8]>>(&self, asap: u16, value: T) {
+        // FIXME: check if app is running, if not, don't do anything?
+        // FIXME: check if transmission state is not transmitting yet
+
+        // Make sure the mutable borrow is dropped before sending the request
+        // FIXME: Introduce a with()-closure to avoid this?
+        {
+            let mut comm_objs = self.inner.comm_objs.borrow_mut();
+            comm_objs.set_status(asap, ComObjectStatus::WriteRequest);
+
+            comm_objs
+                .info_mut(asap)
+                .value
+                .copy_from_slice(value.as_ref());
+        }
+
         self.app_request_sender
             .request(ApplicationLayerService::GroupValueWriteRequest(asap))
-            .await
-    }
-
-    pub fn something(&self) {
-        self.inner.adt.lock(|adt| {
-            let adt = adt.borrow();
-            //println!("Max ADT entries: {}", adt.max_entries());
-        });
+            .await;
     }
 }
