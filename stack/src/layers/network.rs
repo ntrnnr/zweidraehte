@@ -23,12 +23,7 @@ impl<'a> NetworkLayer<'a> {
         link_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
         transport_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
     ) -> Self {
-        Self {
-            device_addr,
-            default_hop_count,
-            link_layer,
-            transport_layer,
-        }
+        Self { device_addr, default_hop_count, link_layer, transport_layer }
     }
 }
 
@@ -41,30 +36,39 @@ impl<'a> Layer<'a> for NetworkLayer<'a> {
     {
         loop {
             let mut msg = inbox.next().await;
-            trace!(
-                "Network Layer received message: {:?} {:x?}",
-                msg,
-                &msg.buf()[..]
-            );
+            trace!("Network Layer received message: {:?}", msg);
 
             match msg.service_type() {
                 // Incoming indication message from link layer
                 ServiceType::L_Data_Ind => {
                     match msg.get_address_type() {
                         AddressType::Group => msg.set_service_type(ServiceType::N_GroupData_Ind),
-                        AddressType::Broadcast => {
-                            msg.set_service_type(ServiceType::N_Broadcast_Ind)
-                        }
+                        AddressType::Broadcast => msg.set_service_type(ServiceType::N_Broadcast_Ind),
                         AddressType::Individual => msg.set_service_type(ServiceType::N_Data_Ind),
-                        AddressType::SystemBroadcast => {
-                            msg.set_service_type(ServiceType::N_SystemBroadcast_Ind)
-                        }
+                        AddressType::SystemBroadcast => msg.set_service_type(ServiceType::N_SystemBroadcast_Ind),
                         _ => unreachable!(),
                     }
 
                     msg.convert_hop_count_to_hop_count_type();
 
                     // Send message up to transport layer
+                    trace!("Network Layer sending to Transport layer: {:x?}", msg);
+                    self.transport_layer.send(msg).await;
+                }
+
+                ServiceType::L_Data_Con => {
+                    match msg.get_address_type() {
+                        AddressType::Group => msg.set_service_type(ServiceType::N_GroupData_Con),
+                        AddressType::Broadcast => msg.set_service_type(ServiceType::N_Broadcast_Con),
+                        AddressType::Individual => msg.set_service_type(ServiceType::N_Data_Con),
+                        AddressType::SystemBroadcast => msg.set_service_type(ServiceType::N_SystemBroadcast_Con),
+                        _ => unreachable!(),
+                    }
+
+                    msg.convert_hop_count_to_hop_count_type();
+
+                    // Send message up to transport layer
+                    trace!("Network Layer sending to Transport layer: {:x?}", msg);
                     self.transport_layer.send(msg).await;
                 }
 
@@ -76,7 +80,7 @@ impl<'a> Layer<'a> for NetworkLayer<'a> {
                     // Build a proper control field, this essentially only leaves the priority untouched
                     let ctrl = msg.ctrl_field_mut();
                     ctrl.set_ft(FrameType::Standard);
-                    ctrl.set_r(Repetition::WasNotRepeated);
+                    ctrl.set_r(Repetition::AllowRepetition);
                     ctrl.set_a(AckType::AckDontCare);
                     ctrl.set_c(Confirm::NoError);
 
@@ -103,7 +107,7 @@ impl<'a> Layer<'a> for NetworkLayer<'a> {
                     }
 
                     // Send message down to link layer
-                    trace!("Network Layer sending to Link layer: {:x?}", &msg.buf()[..]);
+                    trace!("Network Layer sending to Link layer: {:x?}", msg);
                     self.link_layer.send(msg).await;
                 }
 

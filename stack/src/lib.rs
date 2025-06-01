@@ -25,7 +25,7 @@ use core::{cell::RefCell, mem::MaybeUninit};
 
 use const_default::ConstDefault;
 use embassy_sync::{
-    blocking_mutex::raw::NoopRawMutex,
+    blocking_mutex::raw::{NoopRawMutex, RawMutex},
     channel::{Channel, DynamicReceiver, DynamicSender, Receiver, Sender},
 };
 use messages::knx::KnxMessageBuffer;
@@ -65,15 +65,9 @@ where
     buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
 }
 
-impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize>
-    StackResources<D, BUF_SZ, NUM_BUFS>
-{
+impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResources<D, BUF_SZ, NUM_BUFS> {
     pub fn new() -> Self {
-        Self {
-            inner: MaybeUninit::uninit(),
-            buffers: MaybeUninit::uninit(),
-            buffer_manager: MaybeUninit::uninit(),
-        }
+        Self { inner: MaybeUninit::uninit(), buffers: MaybeUninit::uninit(), buffer_manager: MaybeUninit::uninit() }
     }
 }
 
@@ -82,8 +76,7 @@ impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize>
 /// You must call [`Runner::run()`] in a background task for the KNX stack to work.
 pub struct Runner<'d, D: StackDefinition> {
     stack: Stack<'d, D>,
-    app_request_receiver:
-        DynamicReceiver<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+    app_request_receiver: DynamicReceiver<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
 }
 
 /// KNX stack handle
@@ -93,14 +86,12 @@ pub struct Runner<'d, D: StackDefinition> {
 #[derive(Copy, Clone)]
 pub struct Stack<'d, D: StackDefinition> {
     inner: &'d Inner<D>,
-    app_request_sender:
-        DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+    app_request_sender: DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
 }
 
 pub(crate) struct Inner<D: StackDefinition> {
     buffer_manager: RefCell<DynBufferManager<'static>>,
-    app_service_channel:
-        Channel<NoopRawMutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
+    app_service_channel: Channel<NoopRawMutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
     adt: RefCell<D::ADT>,
     ast: RefCell<D::AST>,
     cot: RefCell<D::COT>,
@@ -109,6 +100,14 @@ pub(crate) struct Inner<D: StackDefinition> {
 
 fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'a, D> {
     x
+}
+
+fn create_request_response_pair<M: RawMutex, MSG, RESP, const N: usize>(
+    channel: &'static Channel<M, Request<MSG, RESP>, N>,
+) -> (DynamicSender<'static, Request<MSG, RESP>>, DynamicReceiver<'static, Request<MSG, RESP>>) {
+    let sender: DynamicSender<'_, Request<MSG, RESP>> = channel.sender().into();
+    let receiver: DynamicReceiver<'_, Request<MSG, RESP>> = channel.receiver().into();
+    (sender.into(), receiver.into())
 }
 
 pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
@@ -121,9 +120,8 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     // SAFETY: We are creating a reference to the buffers that are stored in the `StackResources` struct,
     //         which lives at least as long as `Inner`
     let buffers = resources.buffers.write([[0; _]; _]);
-    let buffer_manager: &'static mut BufferManager<NUM_BUFS> = unsafe {
-        core::mem::transmute(resources.buffer_manager.write(BufferManager::new(buffers)))
-    };
+    let buffer_manager: &'static mut BufferManager<NUM_BUFS> =
+        unsafe { core::mem::transmute(resources.buffer_manager.write(BufferManager::new(buffers))) };
 
     let inner = Inner {
         buffer_manager: RefCell::new(buffer_manager.dyn_buffer_manager()),
@@ -138,29 +136,12 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
 
     // SAFETY: We are creating a static reference to the channel held by the `Inner` struct,
     //         which is safe because it is guaranteed to live as long as the `Stack` or the `Runner`.
-    let app_request_sender: Sender<
-        'static,
-        NoopRawMutex,
-        Request<ApplicationLayerService, ApplicationLayerServiceResponse>,
-        1,
-    > = unsafe { core::mem::transmute(inner.app_service_channel.sender()) };
+    let (app_request_sender, app_request_receiver) = create_request_response_pair::<NoopRawMutex, _, _, 1>(unsafe {
+        core::mem::transmute(&inner.app_service_channel)
+    });
 
-    let app_request_receiver: Receiver<
-        'static,
-        NoopRawMutex,
-        Request<ApplicationLayerService, ApplicationLayerServiceResponse>,
-        1,
-    > = unsafe { core::mem::transmute(inner.app_service_channel.receiver()) };
-
-    let stack = Stack {
-        inner,
-        app_request_sender: app_request_sender.into(),
-    };
-
-    let runner = Runner {
-        stack,
-        app_request_receiver: app_request_receiver.into(),
-    };
+    let stack = Stack { inner, app_request_sender: app_request_sender.into() };
+    let runner = Runner { stack, app_request_receiver: app_request_receiver.into() };
 
     (stack, runner)
 }
@@ -182,19 +163,11 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let mut link_layer = LinkLayer::new(ind_addr.clone(), nl_channel.sender().into());
 
         // Create a network layer
-        let mut network_layer = NetworkLayer::new(
-            ind_addr,
-            6,
-            ll_channel.sender().into(),
-            tl_channel.sender().into(),
-        );
+        let mut network_layer = NetworkLayer::new(ind_addr, 6, ll_channel.sender().into(), tl_channel.sender().into());
 
         // Create a transport layer
-        let mut transport_layer = TransportLayer::<'_, D>::new(
-            &self.stack.inner.adt,
-            nl_channel.sender().into(),
-            al_channel.sender().into(),
-        );
+        let mut transport_layer =
+            TransportLayer::<'_, D>::new(&self.stack.inner.adt, nl_channel.sender().into(), al_channel.sender().into());
 
         // Create an application layer
         let mut application_layer = ApplicationLayer::<'_, D>::new(
@@ -229,14 +202,9 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
             let mut comm_objs = self.inner.comm_objs.borrow_mut();
             comm_objs.set_status(asap, ComObjectStatus::WriteRequest);
 
-            comm_objs
-                .info_mut(asap)
-                .value
-                .copy_from_slice(value.as_ref());
+            comm_objs.info_mut(asap).value.copy_from_slice(value.as_ref());
         }
 
-        self.app_request_sender
-            .request(ApplicationLayerService::GroupValueWriteRequest(asap))
-            .await;
+        self.app_request_sender.request(ApplicationLayerService::GroupValueWriteRequest(asap)).await;
     }
 }

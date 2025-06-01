@@ -24,11 +24,7 @@ impl<'a, D: StackDefinition> TransportLayer<'a, D> {
         network_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
         application_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
     ) -> Self {
-        Self {
-            adt,
-            network_layer,
-            application_layer,
-        }
+        Self { adt, network_layer, application_layer }
     }
 }
 
@@ -41,11 +37,7 @@ impl<'a, D: StackDefinition> Layer<'a> for TransportLayer<'a, D> {
     {
         loop {
             let mut msg = inbox.next().await;
-            trace!(
-                "Transport Layer received message: {:?} {:x?}",
-                msg,
-                &msg.buf()[..]
-            );
+            trace!("Transport Layer received message: {:?}", msg);
 
             match msg.service_type() {
                 // Incoming indication and confirmation message from network layer
@@ -62,15 +54,12 @@ impl<'a, D: StackDefinition> Layer<'a> for TransportLayer<'a, D> {
                         msg.set_connection_nr(conn_nr);
 
                         match t {
-                            ServiceType::N_GroupData_Ind => {
-                                msg.set_service_type(ServiceType::T_GroupData_Ind)
-                            }
-                            ServiceType::N_GroupData_Con => {
-                                msg.set_service_type(ServiceType::T_GroupData_Con)
-                            }
+                            ServiceType::N_GroupData_Ind => msg.set_service_type(ServiceType::T_GroupData_Ind),
+                            ServiceType::N_GroupData_Con => msg.set_service_type(ServiceType::T_GroupData_Con),
                             _ => unreachable!(),
                         };
 
+                        trace!("Transport layer sending to Application layer: {:x?}", msg);
                         self.application_layer.send(msg).await;
                     }
                 }
@@ -78,15 +67,12 @@ impl<'a, D: StackDefinition> Layer<'a> for TransportLayer<'a, D> {
                 t @ (ServiceType::N_Broadcast_Ind | ServiceType::N_Broadcast_Con) => {
                     if let Some(Tpci::DataBroadcast) = msg.get_tpci() {
                         match t {
-                            ServiceType::N_Broadcast_Ind => {
-                                msg.set_service_type(ServiceType::T_Broadcast_Ind)
-                            }
-                            ServiceType::N_Broadcast_Con => {
-                                msg.set_service_type(ServiceType::T_Broadcast_Con)
-                            }
+                            ServiceType::N_Broadcast_Ind => msg.set_service_type(ServiceType::T_Broadcast_Ind),
+                            ServiceType::N_Broadcast_Con => msg.set_service_type(ServiceType::T_Broadcast_Con),
                             _ => unreachable!(),
                         };
 
+                        trace!("Transport layer sending to Application layer: {:x?}", msg);
                         self.application_layer.send(msg).await;
                     }
                 }
@@ -103,6 +89,7 @@ impl<'a, D: StackDefinition> Layer<'a> for TransportLayer<'a, D> {
                             _ => unreachable!(),
                         };
 
+                        trace!("Transport layer sending to Application layer: {:x?}", msg);
                         self.application_layer.send(msg).await;
                     }
                 }
@@ -117,27 +104,22 @@ impl<'a, D: StackDefinition> Layer<'a> for TransportLayer<'a, D> {
                     trace!("Received T_GroupData_Req: {:?}", msg);
 
                     if self.adt.borrow().is_loaded()
-                        && let Some(dst_addr) =
-                            self.adt.borrow().get_address(msg.get_connection_nr())
+                        && let Some(dst_addr) = self.adt.borrow().get_address(msg.get_connection_nr())
                     {
-                        trace!(
-                            "Converting connection number to group address: {}",
-                            dst_addr
-                        );
+                        trace!("Converting connection number to group address: {}", dst_addr);
 
                         msg.set_tpci(Tpci::DataGroup);
                         msg.set_dest_addr(DestinationAddress::Group(dst_addr));
                         msg.set_service_type(ServiceType::N_GroupData_Req);
 
+                        trace!("Transport layer sending to Network layer: {:x?}", msg);
                         self.network_layer.send(msg).await;
                     } else {
-                        trace!(
-                            "ADT not loaded or invalid connection number: {}",
-                            msg.get_connection_nr()
-                        );
+                        trace!("ADT not loaded or invalid connection number: {}", msg.get_connection_nr());
 
                         msg.set_service_type(ServiceType::T_GroupData_Con);
                         msg.ctrl_field_mut().set_c(Confirm::Err);
+                        trace!("Transport layer sending to Application layer: {:x?}", msg);
                         self.application_layer.send(msg).await;
                     }
                 }
@@ -145,12 +127,14 @@ impl<'a, D: StackDefinition> Layer<'a> for TransportLayer<'a, D> {
                 ServiceType::T_Broadcast_Req => {
                     msg.set_tpci(Tpci::DataBroadcast);
                     msg.set_service_type(ServiceType::N_Broadcast_Req);
+                    trace!("Transport layer sending to Network layer: {:x?}", msg);
                     self.network_layer.send(msg).await;
                 }
 
                 ServiceType::T_SystemBroadcast_Req => {
                     msg.set_tpci(Tpci::DataSystemBroadcast);
                     msg.set_service_type(ServiceType::N_SystemBroadcast_Req);
+                    trace!("Transport layer sending to Network layer: {:x?}", msg);
                     self.network_layer.send(msg).await;
                 }
 

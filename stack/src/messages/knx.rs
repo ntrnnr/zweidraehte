@@ -399,11 +399,22 @@ impl TpciField {
     }
 }
 
-#[derive(Debug)]
+//#[derive(Debug)]
 pub struct KnxMessageBuffer<B: Deref<Target = [u8]>> {
     service_type: ServiceType,
     len: u8,
     buf: B,
+}
+
+impl<B: Deref<Target = [u8]>> core::fmt::Debug for KnxMessageBuffer<B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "KnxMessage {{ {:?}: {:x?} }}",
+            self.service_type,
+            &self.buf[..self.len as usize]
+        )
+    }
 }
 
 impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
