@@ -370,11 +370,8 @@ impl ComObjectFlags {
     // const CONFIG_WU: u8 = Self::CE_FLAG_MASK | Self::WE_FLAG_MASK | Self::UE_FLAG_MASK;
 
     /// Common group object configuration: Transmit to bus, receive, read from bus (RTWU)
-    const CONFIG_RTWU: u8 = Self::CE_FLAG_MASK
-        | Self::TE_FLAG_MASK
-        | Self::WE_FLAG_MASK
-        | Self::UE_FLAG_MASK
-        | Self::RE_FLAG_MASK;
+    const CONFIG_RTWU: u8 =
+        Self::CE_FLAG_MASK | Self::TE_FLAG_MASK | Self::WE_FLAG_MASK | Self::UE_FLAG_MASK | Self::RE_FLAG_MASK;
 }
 
 impl Default for ComObjectFlags {
@@ -516,11 +513,7 @@ impl<T: TableMemory> ConstDefault for Table<T> {
 
 impl<T: TableMemory> Table<T> {
     pub const fn new() -> Self {
-        Self {
-            table: T::DEFAULT,
-            state: LoadState::Unloaded,
-            mcb_table: PDT_Generic08::with_value([0; 8]),
-        }
+        Self { table: T::DEFAULT, state: LoadState::Unloaded, mcb_table: PDT_Generic08::with_value([0; 8]) }
     }
 
     fn next_state(event: LoadEvent, cur_state: LoadState) -> (LoadState, LoadAction) {
@@ -563,8 +556,7 @@ impl<T: TableMemory> Table<T> {
 impl<T: TableMemory> LoadableTable for Table<T> {
     fn write_lsm(&mut self, mut buf: &[u8]) {
         let mut buf = &mut buf;
-        let (mut new_state, action) =
-            Self::next_state(buf.take_front(1).unwrap()[0].into(), self.state);
+        let (mut new_state, action) = Self::next_state(buf.take_front(1).unwrap()[0].into(), self.state);
 
         match action {
             LoadAction::LoadStart => {}
@@ -584,8 +576,7 @@ impl<T: TableMemory> LoadableTable for Table<T> {
 
                             // Store the length in the MCB table
                             // CRC will be calculated later on LoadEnd
-                            let stored_mcb =
-                                McbData::mut_from_bytes(self.mcb_table.as_mut_bytes()).unwrap();
+                            let stored_mcb = McbData::mut_from_bytes(self.mcb_table.as_mut_bytes()).unwrap();
                             stored_mcb.requested_memory_size = data.requested_memory_size;
                             stored_mcb.mode = 0x00;
                             stored_mcb.fill = 0xFF;
@@ -599,9 +590,9 @@ impl<T: TableMemory> LoadableTable for Table<T> {
             }
             LoadAction::LoadEnd => {
                 let stored_mcb = McbData::mut_from_bytes(self.mcb_table.as_mut_bytes()).unwrap();
-                stored_mcb.crc.set(crc16_ccitt(
-                    &self.table.data_ref()[0..(stored_mcb.requested_memory_size.get() as usize)],
-                ));
+                stored_mcb
+                    .crc
+                    .set(crc16_ccitt(&self.table.data_ref()[0..(stored_mcb.requested_memory_size.get() as usize)]));
             }
             LoadAction::Unload => {
                 self.mcb_table.set_value([0; 8]);

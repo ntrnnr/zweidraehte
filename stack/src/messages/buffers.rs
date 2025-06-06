@@ -40,9 +40,7 @@ impl Drop for Buffer<'_> {
 
 impl core::fmt::Debug for Buffer<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Buffer")
-            .field("buffer", &self.buffer)
-            .finish()
+        f.debug_struct("Buffer").field("buffer", &self.buffer).finish()
     }
 }
 
@@ -57,10 +55,7 @@ impl<'a> DynBufferManager<'a> {
     ///
     /// In case no free buffers are available, this function will asynchronously block.
     pub async fn alloc(&self) -> Buffer<'a> {
-        Buffer {
-            buffer: self.buffer_receiver.receive().await,
-            sender: self.buffer_sender,
-        }
+        Buffer { buffer: self.buffer_receiver.receive().await, sender: self.buffer_sender }
     }
 }
 
@@ -72,9 +67,7 @@ pub struct BufferManager<const NUM_BUFS: usize> {
 
 impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
     /// Create a new [`BufferManager`] which managed the provided buffers.
-    pub unsafe fn new<const BUFFER_SIZE: usize>(
-        buffers: &mut [[u8; BUFFER_SIZE]; NUM_BUFS],
-    ) -> Self {
+    pub unsafe fn new<const BUFFER_SIZE: usize>(buffers: &mut [[u8; BUFFER_SIZE]; NUM_BUFS]) -> Self {
         let queue = Channel::new();
 
         for buffer in buffers {
@@ -87,10 +80,7 @@ impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
     ///
     /// This allows you to allocate buffers from the manager.
     pub fn dyn_buffer_manager(&self) -> DynBufferManager<'_> {
-        DynBufferManager {
-            buffer_sender: self.buffers.dyn_sender(),
-            buffer_receiver: self.buffers.dyn_receiver(),
-        }
+        DynBufferManager { buffer_sender: self.buffers.dyn_sender(), buffer_receiver: self.buffers.dyn_receiver() }
     }
 }
 

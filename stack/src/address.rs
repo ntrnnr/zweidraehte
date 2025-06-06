@@ -3,19 +3,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// A KNX individual address.
 #[derive(
-    Hash,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Clone,
-    Copy,
-    Default,
-    FromBytes,
-    IntoBytes,
-    Unaligned,
-    KnownLayout,
-    Immutable,
+    Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default, FromBytes, IntoBytes, Unaligned, KnownLayout, Immutable,
 )]
 //#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(transparent)]
@@ -87,32 +75,14 @@ impl fmt::Debug for IndividualAddress {
 impl defmt::Format for IndividualAddress {
     fn format(&self, f: defmt::Formatter) {
         let bytes = self.0;
-        defmt::write!(
-            f,
-            "{=u8}.{=u8}.{=u8}",
-            bytes[0] >> 4,
-            bytes[0] & 0xf,
-            bytes[1]
-        );
+        defmt::write!(f, "{=u8}.{=u8}.{=u8}", bytes[0] >> 4, bytes[0] & 0xf, bytes[1]);
     }
 }
 
 /// A KNX group address.
 #[repr(transparent)]
 #[derive(
-    Hash,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Clone,
-    Copy,
-    Default,
-    FromBytes,
-    IntoBytes,
-    Unaligned,
-    KnownLayout,
-    Immutable,
+    Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default, FromBytes, IntoBytes, Unaligned, KnownLayout, Immutable,
 )]
 //#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct GroupAddress(pub [u8; 2]);
@@ -125,10 +95,7 @@ impl GroupAddress {
 
     /// Construct a KNX individual address from two parts.
     pub const fn from_two_level(main_group: u8, sub_group: u16) -> Self {
-        Self([
-            ((main_group & 0x1f) << 3) | ((sub_group & 0x700) >> 8) as u8,
-            (sub_group & 0xff) as u8,
-        ])
+        Self([((main_group & 0x1f) << 3) | ((sub_group & 0x700) >> 8) as u8, (sub_group & 0xff) as u8])
     }
 
     /// Construct an Individual address from a sequence of octets, in big-endian.
@@ -169,38 +136,20 @@ impl GroupAddress {
 
 impl fmt::Display for GroupAddress {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}/{}/{}",
-            self.main_group(),
-            self.middle_group(),
-            self.sub_group8()
-        )
+        write!(f, "{}/{}/{}", self.main_group(), self.middle_group(), self.sub_group8())
     }
 }
 
 impl fmt::Debug for GroupAddress {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}/{}/{}",
-            self.main_group(),
-            self.middle_group(),
-            self.sub_group8()
-        )
+        write!(f, "{}/{}/{}", self.main_group(), self.middle_group(), self.sub_group8())
     }
 }
 
 #[cfg(feature = "defmt")]
 impl defmt::Format for GroupAddress {
     fn format(&self, f: defmt::Formatter) {
-        defmt::write!(
-            f,
-            "{=u8}/{=u8}/{=u8}",
-            self.main_group(),
-            self.middle_group(),
-            self.sub_group8()
-        )
+        defmt::write!(f, "{=u8}/{=u8}/{=u8}", self.main_group(), self.middle_group(), self.sub_group8())
     }
 }
 

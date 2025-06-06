@@ -94,12 +94,7 @@ async fn main(spawner: Spawner) {
     loop {
         Timer::after_millis(1000).await;
 
-        stack
-            .update_comm_obj(
-                comm_objs::ComObjectIndex::CoIn0.index(),
-                DPT_Switch::from(true),
-            )
-            .await;
+        stack.update_comm_obj(comm_objs::ComObjectIndex::CoIn0.index(), DPT_Switch::from(true)).await;
 
         //let a = stack.comm_obj_write_request(1).await;
         //println!("{:?}", a);

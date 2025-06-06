@@ -17,10 +17,7 @@ impl<'a> LinkLayer<'a> {
         device_addr: IndividualAddress,
         network_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
     ) -> Self {
-        Self {
-            device_addr,
-            network_layer,
-        }
+        Self { device_addr, network_layer }
     }
 }
 

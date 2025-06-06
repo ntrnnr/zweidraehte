@@ -7,10 +7,7 @@
 use core::mem;
 use core::ops::{Bound, Range, RangeBounds};
 
-use zerocopy::{
-    ByteSlice, ByteSliceMut, FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout, Ref,
-    Unaligned,
-};
+use zerocopy::{ByteSlice, ByteSliceMut, FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
 pub trait BufferView<B: ByteSlice>: Sized + AsRef<[u8]> {
     fn len(&self) -> usize {
@@ -48,9 +45,7 @@ pub trait BufferView<B: ByteSlice>: Sized + AsRef<[u8]> {
     where
         T: FromBytes + KnownLayout + Immutable + Unaligned,
     {
-        Some(Ref::into_ref(
-            Ref::<_, T>::from_prefix(self.as_ref()).ok()?.0,
-        ))
+        Some(Ref::into_ref(Ref::<_, T>::from_prefix(self.as_ref()).ok()?.0))
     }
 
     fn take_obj_front<T>(&mut self) -> Option<Ref<B, T>>
@@ -76,9 +71,7 @@ pub trait BufferView<B: ByteSlice>: Sized + AsRef<[u8]> {
     where
         T: FromBytes + KnownLayout + Immutable + Unaligned,
     {
-        Some(Ref::into_ref(
-            Ref::<_, T>::from_suffix((&*self).as_ref()).ok()?.1,
-        ))
+        Some(Ref::into_ref(Ref::<_, T>::from_suffix((&*self).as_ref()).ok()?.1))
     }
 
     fn take_obj_back<T>(&mut self) -> Option<Ref<B, T>>
@@ -182,10 +175,7 @@ pub struct Buf<B> {
 impl<B: AsRef<[u8]>> Buf<B> {
     pub fn new<R: RangeBounds<usize>>(buf: B, body: R) -> Buf<B> {
         let len = buf.as_ref().len();
-        Buf {
-            buf,
-            body: canonicalize_range(len, &body),
-        }
+        Buf { buf, body: canonicalize_range(len, &body) }
     }
 }
 
@@ -247,10 +237,7 @@ fn zero(bytes: &mut [u8]) {
 fn canonicalize_range<R: RangeBounds<usize>>(len: usize, range: &R) -> Range<usize> {
     let lower = canonicalize_lower_bound(range.start_bound());
     let upper = canonicalize_upper_bound(len, range.end_bound()).expect("range out of bounds");
-    assert!(
-        lower <= upper,
-        "invalid range: upper bound precedes lower bound"
-    );
+    assert!(lower <= upper, "invalid range: upper bound precedes lower bound");
     lower..upper
 }
 
@@ -384,61 +371,40 @@ mod test {
 
     #[test]
     fn test_bufferview() {
-        let v = vec![
-            0x29, 0x03, 0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C, 0, 1, 2, 3, 3, 4, 5,
-            7, 8, 9,
-        ];
+        let v = vec![0x29, 0x03, 0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C, 0, 1, 2, 3, 3, 4, 5, 7, 8, 9];
 
         let mut b = Buf::new(v.as_slice(), ..);
 
         assert_eq!(b.take_front(2), Some(&[0x29, 0x03][..]));
         assert_eq!(b.take_back(10), Some(&[0, 1, 2, 3, 3, 4, 5, 7, 8, 9][..]));
-        assert_eq!(
-            b.into_rest(),
-            &[0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C][..]
-        );
+        assert_eq!(b.into_rest(), &[0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C][..]);
     }
 
     #[test]
     fn test_ref_to_slice() {
-        let v = [
-            0x29, 0x03, 0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C, 0, 1, 2, 3, 3, 4, 5,
-            7, 8, 9,
-        ];
+        let v = [0x29, 0x03, 0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C, 0, 1, 2, 3, 3, 4, 5, 7, 8, 9];
 
         let mut b = &mut &v[..];
 
         assert_eq!(b.take_front(2), Some(&[0x29, 0x03][..]));
         assert_eq!(b.take_back(10), Some(&[0, 1, 2, 3, 3, 4, 5, 7, 8, 9][..]));
-        assert_eq!(
-            b.into_rest(),
-            &[0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C][..]
-        );
+        assert_eq!(b.into_rest(), &[0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C][..]);
     }
 
     #[test]
     fn test_ref_to_mut_slice() {
-        let v = [
-            0x29, 0x03, 0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C, 0, 1, 2, 3, 3, 4, 5,
-            7, 8, 9,
-        ];
+        let v = [0x29, 0x03, 0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C, 0, 1, 2, 3, 3, 4, 5, 7, 8, 9];
 
         let mut b = &mut &v[..];
 
         assert_eq!(b.take_front(2), Some(&[0x29, 0x03][..]));
         assert_eq!(b.take_back(10), Some(&[0, 1, 2, 3, 3, 4, 5, 7, 8, 9][..]));
-        assert_eq!(
-            b.into_rest(),
-            &mut [0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C][..]
-        );
+        assert_eq!(b.into_rest(), &mut [0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C][..]);
     }
 
     #[test]
     fn test_mut_ref_to_mut_slice() {
-        let mut v = [
-            0x29, 0x03, 0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C, 0, 1, 2, 3, 3, 4, 5,
-            7, 8, 9,
-        ];
+        let mut v = [0x29, 0x03, 0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C, 0, 1, 2, 3, 3, 4, 5, 7, 8, 9];
 
         let mut b = &mut &mut v[..];
 
@@ -451,21 +417,12 @@ mod test {
         f[1] = 4;
 
         assert_eq!(b.take_front(2), Some(&[0x03, 0x01][..]));
-        assert_eq!(
-            b.take_back(10),
-            Some(&[0, 0x0C, 0, 1, 2, 3, 3, 4, 5, 7][..])
-        );
-        assert_eq!(
-            <&mut &mut [u8] as BufferView<&mut [u8]>>::into_rest(b),
-            &mut [0x01, 0x55, 0xAA, 0x00, 0x17][..]
-        );
+        assert_eq!(b.take_back(10), Some(&[0, 0x0C, 0, 1, 2, 3, 3, 4, 5, 7][..]));
+        assert_eq!(<&mut &mut [u8] as BufferView<&mut [u8]>>::into_rest(b), &mut [0x01, 0x55, 0xAA, 0x00, 0x17][..]);
 
         assert_eq!(
             v,
-            &[
-                0x01, 0x02, 0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C, 0, 1, 2, 3, 3, 4,
-                5, 7, 3, 4
-            ][..]
+            &[0x01, 0x02, 0x03, 0x01, 0x01, 0x55, 0xAA, 0x00, 0x17, 0x00, 0x0C, 0, 1, 2, 3, 3, 4, 5, 7, 3, 4][..]
         );
     }
 }

@@ -261,9 +261,7 @@ impl Ctrl1Field {
     }
 
     pub fn priority(&self) -> Priority {
-        ((self.0 & Self::P_MASK) >> Self::P_SHIFT)
-            .try_into()
-            .unwrap()
+        ((self.0 & Self::P_MASK) >> Self::P_SHIFT).try_into().unwrap()
     }
 
     pub fn set_priority<P: Into<u8>>(&mut self, priority: P) {
@@ -375,9 +373,7 @@ impl TpciField {
     }
 
     pub fn seqno(&self) -> u8 {
-        ((self.0 & Self::SEQNO_MASK) >> Self::SEQNO_SHIFT)
-            .try_into()
-            .unwrap()
+        ((self.0 & Self::SEQNO_MASK) >> Self::SEQNO_SHIFT).try_into().unwrap()
     }
 
     pub fn set_seqno<S: Into<u8>>(&mut self, seqno: S) {
@@ -408,22 +404,13 @@ pub struct KnxMessageBuffer<B: Deref<Target = [u8]>> {
 
 impl<B: Deref<Target = [u8]>> core::fmt::Debug for KnxMessageBuffer<B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "KnxMessage {{ {:?}: {:x?} }}",
-            self.service_type,
-            &self.buf[..self.len as usize]
-        )
+        write!(f, "KnxMessage {{ {:?}: {:x?} }}", self.service_type, &self.buf[..self.len as usize])
     }
 }
 
 impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
     pub fn new(buf: B, service_type: ServiceType, len: u8) -> Self {
-        KnxMessageBuffer {
-            service_type,
-            len,
-            buf,
-        }
+        KnxMessageBuffer { service_type, len, buf }
     }
 
     pub fn buf(&self) -> &B {
@@ -507,9 +494,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
                 return DestinationAddress::Broadcast;
             }
         } else if addr_type != 0 {
-            return DestinationAddress::Group(GroupAddress::from_bytes(
-                &self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2],
-            ));
+            return DestinationAddress::Group(GroupAddress::from_bytes(&self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2]));
         } else {
             return DestinationAddress::Individual(IndividualAddress::from_bytes(
                 &self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2],
@@ -557,50 +542,26 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
         let ctrl_type = self.tpci_field().ctrl_type();
 
         match (addr_type, control, numbered, seqno, ctrl_type) {
-            (AddressType::Broadcast, DataControl::Data, Numbered::Unnumbered, 0, _) => {
-                Some(Tpci::DataBroadcast)
-            }
+            (AddressType::Broadcast, DataControl::Data, Numbered::Unnumbered, 0, _) => Some(Tpci::DataBroadcast),
             (AddressType::SystemBroadcast, DataControl::Data, Numbered::Unnumbered, 0, _) => {
                 Some(Tpci::DataSystemBroadcast)
             }
 
-            (AddressType::Group, DataControl::Data, Numbered::Unnumbered, 0, _) => {
-                Some(Tpci::DataGroup)
+            (AddressType::Group, DataControl::Data, Numbered::Unnumbered, 0, _) => Some(Tpci::DataGroup),
+            (AddressType::Individual, DataControl::Data, Numbered::Unnumbered, 0, _) => Some(Tpci::DataIndividual),
+            (AddressType::Individual, DataControl::Data, Numbered::Numbered, _, _) => Some(Tpci::DataConnected(seqno)),
+            (AddressType::Individual, DataControl::Control, Numbered::Unnumbered, 0, ControlType::Connect) => {
+                Some(Tpci::Connect)
             }
-            (AddressType::Individual, DataControl::Data, Numbered::Unnumbered, 0, _) => {
-                Some(Tpci::DataIndividual)
+            (AddressType::Individual, DataControl::Control, Numbered::Unnumbered, 0, ControlType::Disconnect) => {
+                Some(Tpci::Disconnect)
             }
-            (AddressType::Individual, DataControl::Data, Numbered::Numbered, _, _) => {
-                Some(Tpci::DataConnected(seqno))
+            (AddressType::Individual, DataControl::Control, Numbered::Numbered, _, ControlType::ACK) => {
+                Some(Tpci::Ack(seqno))
             }
-            (
-                AddressType::Individual,
-                DataControl::Control,
-                Numbered::Unnumbered,
-                0,
-                ControlType::Connect,
-            ) => Some(Tpci::Connect),
-            (
-                AddressType::Individual,
-                DataControl::Control,
-                Numbered::Unnumbered,
-                0,
-                ControlType::Disconnect,
-            ) => Some(Tpci::Disconnect),
-            (
-                AddressType::Individual,
-                DataControl::Control,
-                Numbered::Numbered,
-                _,
-                ControlType::ACK,
-            ) => Some(Tpci::Ack(seqno)),
-            (
-                AddressType::Individual,
-                DataControl::Control,
-                Numbered::Numbered,
-                _,
-                ControlType::NACK,
-            ) => Some(Tpci::Nack(seqno)),
+            (AddressType::Individual, DataControl::Control, Numbered::Numbered, _, ControlType::NACK) => {
+                Some(Tpci::Nack(seqno))
+            }
             _ => None,
         }
     }
@@ -729,18 +690,15 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
         match addr_type {
             AddressType::Individual => {
                 self.buf[MSG_ADDR_TYPE] &= !0x80;
-                self.ctrl_field_mut()
-                    .set_sb(SystemBroadcast::NoSysBroadcast);
+                self.ctrl_field_mut().set_sb(SystemBroadcast::NoSysBroadcast);
             }
             AddressType::Group => {
                 self.buf[MSG_ADDR_TYPE] |= 0x80;
-                self.ctrl_field_mut()
-                    .set_sb(SystemBroadcast::NoSysBroadcast);
+                self.ctrl_field_mut().set_sb(SystemBroadcast::NoSysBroadcast);
             }
             AddressType::Broadcast => {
                 self.buf[MSG_ADDR_TYPE] &= !0x80;
-                self.ctrl_field_mut()
-                    .set_sb(SystemBroadcast::NoSysBroadcast);
+                self.ctrl_field_mut().set_sb(SystemBroadcast::NoSysBroadcast);
                 self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(&[0, 0]);
             }
             AddressType::SystemBroadcast => {
@@ -757,69 +715,25 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
         // FIXME: Strictly speaking, the address type is part of the network layer
 
         let (addr_type, control, numbered, seqno, ctrl_type) = match tpci {
-            Tpci::DataBroadcast => (
-                AddressType::Broadcast,
-                DataControl::Data,
-                Numbered::Unnumbered,
-                0,
-                None,
-            ),
-            Tpci::DataSystemBroadcast => (
-                AddressType::SystemBroadcast,
-                DataControl::Data,
-                Numbered::Unnumbered,
-                0,
-                None,
-            ),
-            Tpci::DataGroup => (
-                AddressType::Group,
-                DataControl::Data,
-                Numbered::Unnumbered,
-                0,
-                None,
-            ),
-            Tpci::DataIndividual => (
-                AddressType::Individual,
-                DataControl::Data,
-                Numbered::Unnumbered,
-                0,
-                None,
-            ),
-            Tpci::DataConnected(seqno) => (
-                AddressType::Individual,
-                DataControl::Data,
-                Numbered::Numbered,
-                seqno,
-                None,
-            ),
-            Tpci::Connect => (
-                AddressType::Individual,
-                DataControl::Control,
-                Numbered::Unnumbered,
-                0,
-                Some(ControlType::Connect),
-            ),
-            Tpci::Disconnect => (
-                AddressType::Individual,
-                DataControl::Control,
-                Numbered::Unnumbered,
-                0,
-                Some(ControlType::Disconnect),
-            ),
-            Tpci::Ack(seqno) => (
-                AddressType::Individual,
-                DataControl::Control,
-                Numbered::Numbered,
-                seqno,
-                Some(ControlType::ACK),
-            ),
-            Tpci::Nack(seqno) => (
-                AddressType::Individual,
-                DataControl::Control,
-                Numbered::Numbered,
-                seqno,
-                Some(ControlType::NACK),
-            ),
+            Tpci::DataBroadcast => (AddressType::Broadcast, DataControl::Data, Numbered::Unnumbered, 0, None),
+            Tpci::DataSystemBroadcast => {
+                (AddressType::SystemBroadcast, DataControl::Data, Numbered::Unnumbered, 0, None)
+            }
+            Tpci::DataGroup => (AddressType::Group, DataControl::Data, Numbered::Unnumbered, 0, None),
+            Tpci::DataIndividual => (AddressType::Individual, DataControl::Data, Numbered::Unnumbered, 0, None),
+            Tpci::DataConnected(seqno) => (AddressType::Individual, DataControl::Data, Numbered::Numbered, seqno, None),
+            Tpci::Connect => {
+                (AddressType::Individual, DataControl::Control, Numbered::Unnumbered, 0, Some(ControlType::Connect))
+            }
+            Tpci::Disconnect => {
+                (AddressType::Individual, DataControl::Control, Numbered::Unnumbered, 0, Some(ControlType::Disconnect))
+            }
+            Tpci::Ack(seqno) => {
+                (AddressType::Individual, DataControl::Control, Numbered::Numbered, seqno, Some(ControlType::ACK))
+            }
+            Tpci::Nack(seqno) => {
+                (AddressType::Individual, DataControl::Control, Numbered::Numbered, seqno, Some(ControlType::NACK))
+            }
         };
 
         self.set_address_type(addr_type);
@@ -964,17 +878,8 @@ mod tests {
         ];
 
         for (t, e) in KNX_TP1_TEST_FRAMES.iter().zip(EXPECTED_APCIS.iter()) {
-            let msg = KnxMessageBuffer {
-                buf: *t,
-                service_type: ServiceType::L_Data_Ind,
-                len: t.len() as u8,
-            };
-            assert_eq!(
-                msg.get_apci_code(),
-                *e,
-                "APCI code mismatch for test frame: {:x?}",
-                t
-            );
+            let msg = KnxMessageBuffer { buf: *t, service_type: ServiceType::L_Data_Ind, len: t.len() as u8 };
+            assert_eq!(msg.get_apci_code(), *e, "APCI code mismatch for test frame: {:x?}", t);
         }
     }
 
@@ -990,17 +895,8 @@ mod tests {
         ];
 
         for (t, e) in KNX_TP1_TEST_FRAMES.iter().zip(EXPECTED_TPCIS.iter()) {
-            let msg = KnxMessageBuffer {
-                buf: *t,
-                service_type: ServiceType::L_Data_Ind,
-                len: t.len() as u8,
-            };
-            assert_eq!(
-                msg.get_tpci(),
-                *e,
-                "TPCI code mismatch for test frame: {:x?}",
-                t
-            );
+            let msg = KnxMessageBuffer { buf: *t, service_type: ServiceType::L_Data_Ind, len: t.len() as u8 };
+            assert_eq!(msg.get_tpci(), *e, "TPCI code mismatch for test frame: {:x?}", t);
         }
     }
 }

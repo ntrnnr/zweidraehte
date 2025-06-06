@@ -1,6 +1,6 @@
 use const_default::ConstDefault;
 
-use super::{TableMemory, Table};
+use super::{Table, TableMemory};
 
 #[derive(Debug, ConstDefault)]
 pub struct ApplicationImpl<D: ConstDefault> {

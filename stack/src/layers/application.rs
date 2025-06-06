@@ -33,8 +33,7 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     ast: &'a RefCell<D::AST>,
     cot: &'a RefCell<D::COT>,
     comm_objects: &'a RefCell<D::CO>,
-    app_request_receiver:
-        DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+    app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     transport_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
 }
 
@@ -45,20 +44,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         ast: &'a RefCell<D::AST>,
         cot: &'a RefCell<D::COT>,
         comm_objects: &'a RefCell<D::CO>,
-        app_request_receiver: DynamicReceiver<
-            'a,
-            Request<ApplicationLayerService, ApplicationLayerServiceResponse>,
-        >,
+        app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
         transport_layer: DynamicSender<'a, KnxMessageBuffer<Buffer<'static>>>,
     ) -> Self {
-        Self {
-            buffer_manager,
-            ast,
-            cot,
-            comm_objects,
-            app_request_receiver,
-            transport_layer,
-        }
+        Self { buffer_manager, ast, cot, comm_objects, app_request_receiver, transport_layer }
     }
 }
 
@@ -104,15 +93,10 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                         }
 
                         if !cot_info.flags.communication_enable() {
-                            self.comm_objects
-                                .borrow_mut()
-                                .set_status(*asap, ComObjectStatus::IdleOk);
+                            self.comm_objects.borrow_mut().set_status(*asap, ComObjectStatus::IdleOk);
 
                             // FIXME: Tell caller about success?
-                            trace!(
-                                "Communication object {} is not enabled for communication",
-                                asap
-                            );
+                            trace!("Communication object {} is not enabled for communication", asap);
 
                             continue;
                         }
@@ -120,18 +104,15 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                         if cot_info.flags.transmission_enable()
                             && let Some(conn_nr) = self.ast.borrow().get_sending_tsap(*asap)
                         {
-                            self.comm_objects
-                                .borrow_mut()
-                                .set_status(*asap, ComObjectStatus::Busy);
+                            self.comm_objects.borrow_mut().set_status(*asap, ComObjectStatus::Busy);
 
                             // Determine the length of this comm obj and the offset in the message
                             // The offset can be 7 for objects with len <= 6 bits because it fits
                             // into the unused six bits of the short APCI codes.
-                            let (object_size, msg_offset) =
-                                match cot_info.object_type.size_in_bytes() {
-                                    (s, true) => (s, offsets::MSG_APCI + 1),
-                                    (s, false) => (s, offsets::MSG_APDU),
-                                };
+                            let (object_size, msg_offset) = match cot_info.object_type.size_in_bytes() {
+                                (s, true) => (s, offsets::MSG_APCI + 1),
+                                (s, false) => (s, offsets::MSG_APDU),
+                            };
 
                             trace!(
                                 "Preparing GroupValueWrite request for ASAP {} with connection number {}, comm object size {} and message offset {}",
@@ -168,9 +149,7 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                             // FIXME: Store pending TX ASAP nr to react to when confirmation arrived?
                             // message.reply_to is channel to notify application about success
                         } else {
-                            self.comm_objects
-                                .borrow_mut()
-                                .set_status(*asap, ComObjectStatus::IdleError);
+                            self.comm_objects.borrow_mut().set_status(*asap, ComObjectStatus::IdleError);
 
                             error!(
                                 "No sending connection number for or transmission flag not set for ASAP {} - Flags: {:?}",

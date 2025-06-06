@@ -205,11 +205,7 @@ impl<const N: usize> AssociationTable for Table<AssoTab6Impl<N>> {
 
         if count == 0 {
             // Table is empty, assume default table where TSAP == ASAP
-            trace!(
-                "Table is empty, assuming default TSAP {} for ASAP {}",
-                asap + 1,
-                asap
-            );
+            trace!("Table is empty, assuming default TSAP {} for ASAP {}", asap + 1, asap);
             return Some(asap + 1);
         }
 
@@ -228,20 +224,12 @@ impl<const N: usize> AssociationTable for Table<AssoTab6Impl<N>> {
 
     /// Iterator over all TSAPs associated with a given ASAP
     fn tsaps_for_asap(&self, asap: u16) -> impl Iterator<Item = u16> + '_ {
-        TsapIterator {
-            table: self,
-            asap,
-            current_idx: 0,
-        }
+        TsapIterator { table: self, asap, current_idx: 0 }
     }
 
     /// Iterator over all ASAPs associated with a given TSAP
     fn asaps_for_tsap(&self, tsap: u16) -> impl Iterator<Item = u16> + '_ {
-        AsapIterator {
-            table: self,
-            tsap,
-            current_idx: 0,
-        }
+        AsapIterator { table: self, tsap, current_idx: 0 }
     }
 }
 
@@ -249,9 +237,7 @@ pub type AssoTab6<const MAX_ENTRIES: usize> = Table<AssoTab6Impl<{ (MAX_ENTRIES 
 
 #[cfg(test)]
 mod test {
-    use crate::objects::tables::{
-        AssociationTable, LoadEvent, LoadState, LoadableTable, TableMemory,
-    };
+    use crate::objects::tables::{AssociationTable, LoadEvent, LoadState, LoadableTable, TableMemory};
 
     use super::AssoTab6;
 
@@ -294,10 +280,7 @@ mod test {
         ast.write(8, &[0x00, 0x04]); // Entry 2: ASAP = 4
 
         // Verify raw table contents
-        assert_eq!(
-            &ast.data_ref()[0..10],
-            &[0x00, 0x02, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04]
-        );
+        assert_eq!(&ast.data_ref()[0..10], &[0x00, 0x02, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04]);
 
         // Issue load complete
         ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);

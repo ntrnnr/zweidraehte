@@ -40,10 +40,10 @@ use embassy_sync::channel::{Channel, DynamicSender, Sender};
 ///
 /// To properly dispose, call the [defuse](Self::defuse) method before this object is dropped.
 #[must_use = "to delay the drop bomb invokation to the end of the scope"]
-pub struct DropBomb(());
+pub struct DropBomb;
 impl DropBomb {
     pub fn new() -> Self {
-        Self(())
+        Self
     }
 
     /// Defuses the bomb, rendering it safe to drop.
@@ -70,10 +70,7 @@ unsafe impl<M, R> Send for Request<M, R> {}
 
 impl<M, R> Request<M, R> {
     fn new(message: M, reply_to: &'static DynamicSender<'static, R>) -> Self {
-        Self {
-            message: Some(message),
-            reply_to,
-        }
+        Self { message: Some(message), reply_to }
     }
 
     /// Process the message using a closure.

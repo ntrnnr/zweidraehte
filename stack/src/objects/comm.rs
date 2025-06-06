@@ -53,10 +53,7 @@ pub struct ComObject<T: ComObjectValueType> {
 
 impl<T: ComObjectValueType> ComObject<T> {
     pub fn new(value: T) -> Self {
-        Self {
-            value,
-            status: ComObjectStatus::default(),
-        }
+        Self { value, status: ComObjectStatus::default() }
     }
 }
 

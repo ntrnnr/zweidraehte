@@ -50,10 +50,7 @@ impl<T, const ID: u8, const N: usize> core::fmt::Debug for PropertyData<T, ID, N
 
 impl<T, const ID: u8, const N: usize> Default for PropertyData<T, ID, N> {
     fn default() -> Self {
-        Self {
-            data: [0; N],
-            _p: PhantomData,
-        }
+        Self { data: [0; N], _p: PhantomData }
     }
 }
 
@@ -123,10 +120,7 @@ macro_rules! impl_primitive_pdt {
     ($typ:ty) => {
         impl<const ID: u8, const N: usize> PropertyData<$typ, ID, N> {
             pub const fn with_value(value: $typ) -> Self {
-                Self {
-                    data: *(&value).to_be_bytes().as_array().unwrap(),
-                    _p: PhantomData,
-                }
+                Self { data: *(&value).to_be_bytes().as_array().unwrap(), _p: PhantomData }
             }
 
             pub const fn as_const_ref(&self) -> &[u8] {
@@ -169,10 +163,7 @@ macro_rules! impl_array_pdt {
     ($typ:ty) => {
         impl<const ID: u8, const N: usize> PropertyData<$typ, ID, N> {
             pub const fn with_value(value: $typ) -> Self {
-                Self {
-                    data: *(&value).as_array().unwrap(),
-                    _p: PhantomData,
-                }
+                Self { data: *(&value).as_array().unwrap(), _p: PhantomData }
             }
 
             pub const fn as_const_ref(&self) -> &[u8] {
@@ -246,23 +237,14 @@ impl KNXVersion {
 
 impl core::fmt::Debug for KNXVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{:?}.{:?}.{:?}",
-            self.magic(),
-            self.version(),
-            self.revision()
-        )
+        write!(f, "{:?}.{:?}.{:?}", self.magic(), self.version(), self.revision())
     }
 }
 
 impl<const ID: u8, const N: usize> PropertyData<KNXVersion, ID, N> {
     pub fn with_value(value: KNXVersion) -> Self {
         let value: u16 = value.0;
-        Self {
-            data: (&value.to_be_bytes()[0..N]).try_into().unwrap(),
-            _p: PhantomData,
-        }
+        Self { data: (&value.to_be_bytes()[0..N]).try_into().unwrap(), _p: PhantomData }
     }
 
     pub fn value(&self) -> KNXVersion {
@@ -396,9 +378,7 @@ where
     PDT: Default,
 {
     fn default() -> Self {
-        Self {
-            backing: PDT::default(),
-        }
+        Self { backing: PDT::default() }
     }
 }
 
@@ -785,10 +765,7 @@ mod test {
         assert_eq!(id.main(), 7);
         assert_eq!(id.sub(), 010);
 
-        assert_eq!(
-            InterfaceObjectType::from(s),
-            InterfaceObjectType::AddressTable
-        );
+        assert_eq!(InterfaceObjectType::from(s), InterfaceObjectType::AddressTable);
 
         {
             let d = s.as_ref();
@@ -800,23 +777,17 @@ mod test {
 
     #[test]
     fn test_dpt_sernum() {
-        let s: DPT_SerNum = KNXSerialNumber {
-            manufacturer_code: 0x1234.into(),
-            incremented_number: 0x567890AA.into(),
-        }
-        .into();
+        let s: DPT_SerNum =
+            KNXSerialNumber { manufacturer_code: 0x1234.into(), incremented_number: 0x567890AA.into() }.into();
 
         let id = s.id();
         assert_eq!(id.main(), 221);
         assert_eq!(id.sub(), 1);
 
-        assert_eq!(
-            KNXSerialNumber::from(s),
-            KNXSerialNumber {
-                manufacturer_code: 0x1234.into(),
-                incremented_number: 0x567890AA.into()
-            }
-        );
+        assert_eq!(KNXSerialNumber::from(s), KNXSerialNumber {
+            manufacturer_code: 0x1234.into(),
+            incremented_number: 0x567890AA.into()
+        });
         {
             let b = s.backing();
             assert_eq!(b.as_ref(), &[0x12, 0x34, 0x56, 0x78, 0x90, 0xAA]);
