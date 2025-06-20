@@ -31,7 +31,6 @@ use embassy_sync::{
 use messages::knx::KnxMessageBuffer;
 use objects::tables::AssociationTable;
 
-use crate::address::IndividualAddress;
 use crate::layers::{
     ActorRequest, Layer, Request,
     application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
@@ -44,6 +43,7 @@ use crate::objects::{
     comm::{ComObjectStatus, ComObjects},
     tables::{AddressTable, CommunicationObjectTable, TableMemory},
 };
+use crate::{address::IndividualAddress, layers::LayerOp};
 
 pub trait StackDefinition {
     type ADT: AddressTable;
@@ -77,6 +77,7 @@ impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResour
 pub struct Runner<'d, D: StackDefinition> {
     stack: Stack<'d, D>,
     app_request_receiver: DynamicReceiver<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+    linklayer_inject_receiver: DynamicReceiver<'static, KnxMessageBuffer<Buffer<'static>>>,
 }
 
 /// KNX stack handle
@@ -87,11 +88,13 @@ pub struct Runner<'d, D: StackDefinition> {
 pub struct Stack<'d, D: StackDefinition> {
     inner: &'d Inner<D>,
     app_request_sender: DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+    linklayer_inject_sender: DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>,
 }
 
 pub(crate) struct Inner<D: StackDefinition> {
     buffer_manager: RefCell<DynBufferManager<'static>>,
     app_service_channel: Channel<NoopRawMutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
+    linklayer_inject_channel: Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, 1>,
     adt: RefCell<D::ADT>,
     ast: RefCell<D::AST>,
     cot: RefCell<D::COT>,
@@ -102,11 +105,19 @@ fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'
     x
 }
 
-fn create_request_response_pair<M: RawMutex, MSG, RESP, const N: usize>(
-    channel: &'static Channel<M, Request<MSG, RESP>, N>,
-) -> (DynamicSender<'static, Request<MSG, RESP>>, DynamicReceiver<'static, Request<MSG, RESP>>) {
-    let sender: DynamicSender<'_, Request<MSG, RESP>> = channel.sender().into();
-    let receiver: DynamicReceiver<'_, Request<MSG, RESP>> = channel.receiver().into();
+// fn create_request_response_pair<M: RawMutex, MSG, RESP, const N: usize>(
+//     channel: &'static Channel<M, Request<MSG, RESP>, N>,
+// ) -> (DynamicSender<'static, Request<MSG, RESP>>, DynamicReceiver<'static, Request<MSG, RESP>>) {
+//     let sender: DynamicSender<'_, Request<MSG, RESP>> = channel.sender().into();
+//     let receiver: DynamicReceiver<'_, Request<MSG, RESP>> = channel.receiver().into();
+//     (sender.into(), receiver.into())
+// }
+
+fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
+    channel: &'static Channel<M, MSG, N>,
+) -> (DynamicSender<'static, MSG>, DynamicReceiver<'static, MSG>) {
+    let sender: DynamicSender<'_, MSG> = channel.sender().into();
+    let receiver: DynamicReceiver<'_, MSG> = channel.receiver().into();
     (sender.into(), receiver.into())
 }
 
@@ -126,6 +137,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     let inner = Inner {
         buffer_manager: RefCell::new(buffer_manager.dyn_buffer_manager()),
         app_service_channel: Channel::new(),
+        linklayer_inject_channel: Channel::new(),
         adt: RefCell::new(adt),
         ast: RefCell::new(ast),
         cot: RefCell::new(cot),
@@ -136,31 +148,44 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
 
     // SAFETY: We are creating a static reference to the channel held by the `Inner` struct,
     //         which is safe because it is guaranteed to live as long as the `Stack` or the `Runner`.
-    let (app_request_sender, app_request_receiver) = create_request_response_pair::<NoopRawMutex, _, _, 1>(unsafe {
-        core::mem::transmute(&inner.app_service_channel)
-    });
+    let (app_request_sender, app_request_receiver) =
+        create_request_response_pair::<NoopRawMutex, _, 1>(unsafe { core::mem::transmute(&inner.app_service_channel) });
 
-    let stack = Stack { inner, app_request_sender: app_request_sender.into() };
-    let runner = Runner { stack, app_request_receiver: app_request_receiver.into() };
+    let (linklayer_inject_sender, linklayer_inject_receiver) =
+        create_request_response_pair::<NoopRawMutex, _, 1>(unsafe {
+            core::mem::transmute(&inner.linklayer_inject_channel)
+        });
+
+    let stack = Stack {
+        inner,
+        app_request_sender: app_request_sender.into(),
+        linklayer_inject_sender: linklayer_inject_sender.into(),
+    };
+    let runner = Runner {
+        stack,
+        app_request_receiver: app_request_receiver.into(),
+        linklayer_inject_receiver: linklayer_inject_receiver.into(),
+    };
 
     (stack, runner)
 }
 
 impl<'d, D: StackDefinition> Runner<'d, D> {
-    /// Run the KNX stack.
+    /// Run the KNX stack.app_service_channel
     ///
     /// You must call this in a background task, to process KNX messages.
     pub async fn run(self) -> ! {
         let ind_addr = IndividualAddress::new(1, 0, 1);
 
         // Create all the channels for layer to layer communication
-        let ll_channel: Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'_>>, 1> = Channel::new();
-        let nl_channel: Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'_>>, 1> = Channel::new();
-        let tl_channel: Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'_>>, 1> = Channel::new();
-        let al_channel: Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'_>>, 1> = Channel::new();
+        let ll_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 4> = Channel::new();
+        let nl_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 4> = Channel::new();
+        let tl_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 4> = Channel::new();
+        let al_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 4> = Channel::new();
 
         // Create a link layer
-        let mut link_layer = LinkLayer::new(ind_addr.clone(), nl_channel.sender().into());
+        let mut link_layer =
+            LinkLayer::new(ind_addr.clone(), nl_channel.sender().into(), self.linklayer_inject_receiver);
 
         // Create a network layer
         let mut network_layer = NetworkLayer::new(ind_addr, 6, ll_channel.sender().into(), tl_channel.sender().into());
@@ -192,7 +217,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 }
 
 impl<'d, D: StackDefinition> Stack<'d, D> {
-    pub async fn update_comm_obj<T: AsRef<[u8]>>(&self, asap: u16, value: T) {
+    pub async fn group_value_write_request<T: AsRef<[u8]>>(&self, asap: u16, value: T) {
         // FIXME: check if app is running, if not, don't do anything?
         // FIXME: check if transmission state is not transmitting yet
 
@@ -206,5 +231,31 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         }
 
         self.app_request_sender.request(ApplicationLayerService::GroupValueWriteRequest(asap)).await;
+    }
+
+    pub async fn group_value_read_request(&self, asap: u16) {
+        // FIXME: check if app is running, if not, don't do anything?
+        // FIXME: check if transmission state is not transmitting yet
+
+        // Make sure the mutable borrow is dropped before sending the request
+        // FIXME: Introduce a with()-closure to avoid this?
+        {
+            let mut comm_objs = self.inner.comm_objs.borrow_mut();
+            comm_objs.set_status(asap, ComObjectStatus::ReadRequest);
+        }
+
+        self.app_request_sender.request(ApplicationLayerService::GroupValueReadRequest(asap)).await;
+    }
+
+    pub async fn debug_inject_linklayer_message(&self, msg: &[u8]) {
+        use messages::knx::ServiceType;
+
+        debug!("Injecting linklayer message: {:x?}", msg);
+
+        let mut buffer = self.inner.buffer_manager.borrow_mut().alloc().await;
+        buffer[..msg.len()].copy_from_slice(msg);
+
+        let knx_buffer = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind, msg.len().try_into().unwrap());
+        self.linklayer_inject_sender.send(knx_buffer).await;
     }
 }

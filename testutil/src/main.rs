@@ -12,9 +12,12 @@ use static_cell::StaticCell;
 use zweidraehte::{
     Runner, StackDefinition, StackResources, define_com_objects,
     dpt::DPT_Switch,
+    messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
         comm::ComObjects,
-        tables::{addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7},
+        tables::{
+            AddressTable, AssociationTable, CommunicationObjectTable, addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7,
+        },
     },
 };
 
@@ -77,6 +80,22 @@ async fn main(spawner: Spawner) {
             co_tab: CoTab7::<30>::new(),
         });
 
+    println!("Address table contents:");
+    for i in 1..=stored_data.addr_tab.entry_count() {
+        println!("{i}: {:?}", stored_data.addr_tab.get_address(i));
+    }
+
+    println!("Association table contents:");
+    println!("TSAP -> ASAP");
+    for i in 1..=stored_data.asso_tab.entry_count() {
+        println!("{i}: {:?} -> {:?}", stored_data.asso_tab.tsap(i), stored_data.asso_tab.asap(i));
+    }
+
+    println!("Communication table contents:");
+    for i in 0..stored_data.co_tab.entry_count() {
+        println!("{i}: {:?}", stored_data.co_tab.get_object(i));
+    }
+
     //serde_json::to_writer(File::create("stack_data.json").unwrap(), &stored_data).unwrap();
 
     static RESOURCES: StaticCell<StackResources<MyKnxStack>> = StaticCell::new();
@@ -91,10 +110,18 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(run_stack(runner)).unwrap();
 
+    stack.debug_inject_linklayer_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x41][..]).await;
+    stack.debug_inject_linklayer_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x81][..]).await;
+
     loop {
         Timer::after_millis(1000).await;
 
-        stack.update_comm_obj(comm_objs::ComObjectIndex::CoIn0.index(), DPT_Switch::from(true)).await;
+        //stack.group_value_write_request(comm_objs::ComObjectIndex::CoIn0.index(), DPT_Switch::from(true)).await;
+        //stack.group_value_read_request(comm_objs::ComObjectIndex::CoIn0.index()).await;
+
+        // FIXME: stack needs to subscribe on objects and return events on subscribed object:
+        //  - Update (GroupValueResponse)
+        //  - Write (GroupValueWrite)
 
         //let a = stack.comm_obj_write_request(1).await;
         //println!("{:?}", a);

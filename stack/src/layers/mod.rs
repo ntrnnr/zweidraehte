@@ -1,7 +1,9 @@
 #![allow(async_fn_in_trait)]
 
-use embassy_sync::blocking_mutex::raw::RawMutex;
-use embassy_sync::channel::Receiver;
+use core::ops::{Deref, DerefMut};
+
+use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
+use embassy_sync::channel::{Channel, DynamicSender, Receiver, Sender};
 
 pub trait Inbox<M> {
     #[must_use = "Must set response for message"]
@@ -18,21 +20,63 @@ where
     }
 }
 
+pub enum LayerOp<T: 'static> {
+    Indication(T),
+    Request { message: T, response_tx: DynamicSender<'static, T> },
+}
+
+impl<T> core::fmt::Debug for LayerOp<T>
+where
+    T: core::fmt::Debug + 'static,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            LayerOp::Indication(msg) => write!(f, "Indication({:?})", msg),
+            LayerOp::Request { message, response_tx: _ } => write!(f, "Request({:?})", message),
+        }
+    }
+}
+
+// impl<T> Deref for LayerOp<T> {
+//     type Target = T;
+
+//     fn deref(&self) -> &Self::Target {
+//         match self {
+//             LayerOp::Indication(msg) => msg,
+//             LayerOp::Request { message, .. } => message,
+//         }
+//     }
+// }
+
+// impl<T> DerefMut for LayerOp<T> {
+//     fn deref_mut(&mut self) -> &mut Self::Target {
+//         match self {
+//             LayerOp::Indication(msg) => msg,
+//             LayerOp::Request { message, .. } => message,
+//         }
+//     }
+// }
+
+impl<T: 'static> LayerOp<T> {
+    /// Creates a LayerOp::Request using the safe ActorRequest pattern.
+    /// This is used internally by the ActorRequest implementation.
+    fn create_request_internal(message: T, response_tx: DynamicSender<'static, T>) -> Self {
+        LayerOp::Request { message, response_tx }
+    }
+}
+
 pub trait Layer<'a>: Sized {
-    type Message;
+    type Message: 'static;
 
     async fn process<M>(&mut self, _: M) -> !
     where
-        M: Inbox<Self::Message>;
+        M: Inbox<LayerOp<Self::Message>>;
 }
 
 // ############################################################################
 
 // The following part has been taken from `ector`: https://github.com/drogue-iot/ector
 // Original Apache License 2.0 and Copyright of the original authors applies
-
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::{Channel, DynamicSender, Sender};
 
 /// Panics if it is improperly disposed of.
 ///
@@ -153,6 +197,54 @@ impl<M, R, const N: usize> ActorRequest<M, R> for Sender<'static, NoopRawMutex, 
         };
         let message = Request::new(message, reply_to);
         self.send(message).await;
+        let res = channel.receive().await;
+
+        bomb.defuse();
+        res
+    }
+}
+
+/// ActorRequest implementation for LayerOp communication.
+/// This allows layers to make requests to other layers and await responses.
+impl<'a, T: 'static> ActorRequest<T, T> for DynamicSender<'a, LayerOp<T>> {
+    async fn request(&self, message: T) -> T {
+        let channel: Channel<NoopRawMutex, T, 1> = Channel::new();
+        let sender: DynamicSender<'_, T> = channel.sender().into();
+        let bomb = DropBomb::new();
+
+        // We guarantee that channel lives until we've been notified on it, at which
+        // point its out of reach for the replier.
+        let response_tx = unsafe {
+            core::mem::transmute::<
+                &embassy_sync::channel::DynamicSender<'_, T>,
+                &embassy_sync::channel::DynamicSender<'_, T>,
+            >(&sender)
+        };
+        let layer_op = LayerOp::create_request_internal(message, response_tx.clone());
+        self.send(layer_op).await;
+        let res = channel.receive().await;
+
+        bomb.defuse();
+        res
+    }
+}
+
+impl<'a, T: 'static, const N: usize> ActorRequest<T, T> for Sender<'a, NoopRawMutex, LayerOp<T>, N> {
+    async fn request(&self, message: T) -> T {
+        let channel: Channel<NoopRawMutex, T, 1> = Channel::new();
+        let sender: DynamicSender<'_, T> = channel.sender().into();
+        let bomb = DropBomb::new();
+
+        // We guarantee that channel lives until we've been notified on it, at which
+        // point its out of reach for the replier.
+        let response_tx = unsafe {
+            core::mem::transmute::<
+                &embassy_sync::channel::DynamicSender<'_, T>,
+                &embassy_sync::channel::DynamicSender<'_, T>,
+            >(&sender)
+        };
+        let layer_op = LayerOp::create_request_internal(message, response_tx.clone());
+        self.send(layer_op).await;
         let res = channel.receive().await;
 
         bomb.defuse();

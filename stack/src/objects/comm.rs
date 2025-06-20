@@ -2,6 +2,9 @@ use crate::dpt::DatapointType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+/// Status of a communication object
+///
+/// Defined in KNX 03/04/01 3.2 - Communication flags
 pub enum ComObjectStatus {
     /// Update was updated remotely
     Updated,

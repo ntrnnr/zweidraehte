@@ -13,13 +13,15 @@ pub struct AssoTab6Impl<const N: usize> {
 }
 
 impl<const N: usize> Table<AssoTab6Impl<N>> {
-    fn tsap(&self, idx: u16) -> u16 {
+    // FIXME: remove pub, just for debugging
+    pub fn tsap(&self, idx: u16) -> u16 {
         // NOTE: idx is 1-indexed!
         let start = (2 * ((idx as usize) - 1) + 1) * 2;
         U16::from_bytes(self.table.data[start..start + 2].try_into().unwrap()).get()
     }
 
-    fn asap(&self, idx: u16) -> u16 {
+    // FIXME: remove pub, just for debugging
+    pub fn asap(&self, idx: u16) -> u16 {
         // NOTE: idx is 1-indexed!
         let start = (2 * ((idx as usize) - 1) + 2) * 2;
         U16::from_bytes(self.table.data[start..start + 2].try_into().unwrap()).get()

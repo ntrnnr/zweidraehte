@@ -115,6 +115,7 @@ create_protocol_enum!(
     /// 11xx xxxx   - Escaped APCI codes
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum ApciCode: u8 {
+        Empty,                      0,      "<Empty>";
         GroupValueRead,             0,      "A_GroupValue_Read";
         GroupValueResponse,         1,      "A_GroupValue_Response";
         GroupValueWrite,            2,      "A_GroupValue_Write";

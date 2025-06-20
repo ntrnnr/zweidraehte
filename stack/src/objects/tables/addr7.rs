@@ -53,7 +53,7 @@ impl<const N: usize> AddressTable for Table<AddrTab7Impl<N>> {
     }
 
     fn get_address(&self, tsap: u16) -> Option<GroupAddress> {
-        trace!("Getting address for TSAP {}", tsap);
+        //trace!("Getting address for TSAP {}", tsap);
 
         if tsap == 0 || tsap > self.entry_count() {
             trace!("TSAP {} is out of bounds (1..{})", tsap, self.entry_count());

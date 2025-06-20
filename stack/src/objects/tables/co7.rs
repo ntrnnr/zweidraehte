@@ -37,7 +37,7 @@ pub struct CoTab7Impl<const N: usize> {
 impl<const N: usize> Table<CoTab7Impl<N>> {
     /// Get the descriptor for communication object at the given index
     fn com_object(&self, idx: u16) -> Option<ComObjectDescriptor> {
-        trace!("Getting communication object at index {}", idx);
+        //trace!("Getting communication object at index {}", idx);
 
         if idx >= self.entry_count() {
             return None;
