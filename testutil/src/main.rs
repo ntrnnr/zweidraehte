@@ -12,7 +12,6 @@ use static_cell::StaticCell;
 use zweidraehte::{
     Runner, StackDefinition, StackResources, define_com_objects,
     dpt::DPT_Switch,
-    messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
         comm::ComObjects,
         tables::{
@@ -68,9 +67,6 @@ async fn run_stack(runner: Runner<'static, MyKnxStack>) {
 async fn main(spawner: Spawner) {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    // let mut buffers: [[u8; _]; _] = [[0u8; 32]; 10];
-    // let buffer_manager = unsafe { BufferManager::new(&mut buffers) };
-
     let stored_data = File::open("stack_data.json")
         .map_err(|_| ())
         .and_then(|f| serde_json::from_reader::<File, MyKnxStackStoredData>(f).map_err(|_| ()))
@@ -79,6 +75,8 @@ async fn main(spawner: Spawner) {
             asso_tab: AssoTab6::<30>::new(),
             co_tab: CoTab7::<30>::new(),
         });
+
+    //serde_json::to_writer(File::create("stack_data.json").unwrap(), &stored_data).unwrap();
 
     println!("Address table contents:");
     for i in 1..=stored_data.addr_tab.entry_count() {
@@ -95,8 +93,6 @@ async fn main(spawner: Spawner) {
     for i in 0..stored_data.co_tab.entry_count() {
         println!("{i}: {:?}", stored_data.co_tab.get_object(i));
     }
-
-    //serde_json::to_writer(File::create("stack_data.json").unwrap(), &stored_data).unwrap();
 
     static RESOURCES: StaticCell<StackResources<MyKnxStack>> = StaticCell::new();
 
@@ -116,7 +112,7 @@ async fn main(spawner: Spawner) {
     loop {
         Timer::after_millis(1000).await;
 
-        //stack.group_value_write_request(comm_objs::ComObjectIndex::CoIn0.index(), DPT_Switch::from(true)).await;
+        stack.group_value_write_request(comm_objs::ComObjectIndex::CoIn0.index(), DPT_Switch::from(true)).await;
         //stack.group_value_read_request(comm_objs::ComObjectIndex::CoIn0.index()).await;
 
         // FIXME: stack needs to subscribe on objects and return events on subscribed object:

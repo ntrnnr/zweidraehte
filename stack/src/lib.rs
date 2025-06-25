@@ -178,10 +178,10 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let ind_addr = IndividualAddress::new(1, 0, 1);
 
         // Create all the channels for layer to layer communication
-        let ll_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 4> = Channel::new();
-        let nl_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 4> = Channel::new();
-        let tl_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 4> = Channel::new();
-        let al_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 4> = Channel::new();
+        let ll_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 1> = Channel::new();
+        let nl_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 1> = Channel::new();
+        let tl_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 1> = Channel::new();
+        let al_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 1> = Channel::new();
 
         // Create a link layer
         let mut link_layer =
@@ -253,9 +253,11 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         debug!("Injecting linklayer message: {:x?}", msg);
 
         let mut buffer = self.inner.buffer_manager.borrow_mut().alloc().await;
+        // FIXME: add .fill_from_slice() to Buffer which sets the len and fills it?
+        buffer.set_len(msg.len());
         buffer[..msg.len()].copy_from_slice(msg);
 
-        let knx_buffer = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind, msg.len().try_into().unwrap());
+        let knx_buffer = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
         self.linklayer_inject_sender.send(knx_buffer).await;
     }
 }

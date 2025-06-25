@@ -1,0 +1,21 @@
+[package]
+name = "platform"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+defmt = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
+
+embedded-io-async = { workspace = true }
+
+# Linux deps
+serialport = { workspace = true, optional = true }
+async-io = { workspace = true, optional = true }
+nix = { workspace = true, optional = true, features = ["term"] }
+
+[features]
+defmt = ["dep:defmt"]
+log = ["dep:log"]
+std = []
+linux = ["dep:serialport", "dep:async-io", "dep:nix", "std"]

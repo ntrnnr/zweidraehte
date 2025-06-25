@@ -13,9 +13,11 @@ serde = { workspace = true }
 serde_with = { workspace = true }
 embassy-sync = { workspace = true }
 embassy-futures = { workspace = true }
+embassy-time = { workspace = true }
 defmt = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
-
+embedded-io-async = { workspace = true }
+pin-project = { workspace = true }
 
 [features]
 defmt = ["dep:defmt"]

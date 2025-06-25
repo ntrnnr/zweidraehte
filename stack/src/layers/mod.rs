@@ -37,34 +37,6 @@ where
     }
 }
 
-// impl<T> Deref for LayerOp<T> {
-//     type Target = T;
-
-//     fn deref(&self) -> &Self::Target {
-//         match self {
-//             LayerOp::Indication(msg) => msg,
-//             LayerOp::Request { message, .. } => message,
-//         }
-//     }
-// }
-
-// impl<T> DerefMut for LayerOp<T> {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         match self {
-//             LayerOp::Indication(msg) => msg,
-//             LayerOp::Request { message, .. } => message,
-//         }
-//     }
-// }
-
-impl<T: 'static> LayerOp<T> {
-    /// Creates a LayerOp::Request using the safe ActorRequest pattern.
-    /// This is used internally by the ActorRequest implementation.
-    fn create_request_internal(message: T, response_tx: DynamicSender<'static, T>) -> Self {
-        LayerOp::Request { message, response_tx }
-    }
-}
-
 pub trait Layer<'a>: Sized {
     type Message: 'static;
 
@@ -220,7 +192,7 @@ impl<'a, T: 'static> ActorRequest<T, T> for DynamicSender<'a, LayerOp<T>> {
                 &embassy_sync::channel::DynamicSender<'_, T>,
             >(&sender)
         };
-        let layer_op = LayerOp::create_request_internal(message, response_tx.clone());
+        let layer_op = LayerOp::Request { message, response_tx: response_tx.clone() };
         self.send(layer_op).await;
         let res = channel.receive().await;
 
@@ -243,7 +215,7 @@ impl<'a, T: 'static, const N: usize> ActorRequest<T, T> for Sender<'a, NoopRawMu
                 &embassy_sync::channel::DynamicSender<'_, T>,
             >(&sender)
         };
-        let layer_op = LayerOp::create_request_internal(message, response_tx.clone());
+        let layer_op = LayerOp::Request { message, response_tx: response_tx.clone() };
         self.send(layer_op).await;
         let res = channel.receive().await;
 
@@ -255,6 +227,7 @@ impl<'a, T: 'static, const N: usize> ActorRequest<T, T> for Sender<'a, NoopRawMu
 // ############################################################################
 
 pub mod application;
+pub mod linklayers;
 pub mod network;
 pub mod test_linklayer;
 pub mod transport;

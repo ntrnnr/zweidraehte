@@ -12,20 +12,42 @@ use embassy_sync::{
 #[clippy::has_significant_drop]
 pub struct Buffer<'a> {
     buffer: NonNull<[u8]>,
+    len: usize,
     sender: channel::DynamicSender<'a, NonNull<[u8]>>,
+}
+
+impl Buffer<'_> {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn set_len(&mut self, len: usize) {
+        if len > self.buffer.len() {
+            panic!("Length exceeds buffer size");
+        }
+
+        self.len = len;
+    }
+
+    pub fn push(&mut self, byte: u8) {
+        let old_len = self.len();
+        self.set_len(old_len + 1);
+
+        self[old_len] = byte;
+    }
 }
 
 impl Deref for Buffer<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        unsafe { self.buffer.as_ref() }
+        unsafe { &self.buffer.as_ref()[0..self.len] }
     }
 }
 
 impl DerefMut for Buffer<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { self.buffer.as_mut() }
+        unsafe { &mut self.buffer.as_mut()[0..self.len] }
     }
 }
 
@@ -55,7 +77,7 @@ impl<'a> DynBufferManager<'a> {
     ///
     /// In case no free buffers are available, this function will asynchronously block.
     pub async fn alloc(&self) -> Buffer<'a> {
-        Buffer { buffer: self.buffer_receiver.receive().await, sender: self.buffer_sender }
+        Buffer { buffer: self.buffer_receiver.receive().await, len: 0, sender: self.buffer_sender }
     }
 }
 

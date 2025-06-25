@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 zweidraehte = { path = "../stack", features = ["log"] }
+platform = { path = "../platform", features = ["log", "linux"] }
 
 embassy-sync = { workspace = true, features = ["std"] }
 embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"] }
@@ -16,6 +17,8 @@ static_cell = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+embedded-io-async = { workspace = true }
+
 # FIXME: reexport from stack?
 paste = { workspace = true }
 
@@ -24,3 +27,7 @@ env_logger = "0.11"
 [[bin]]
 name = "testutil"
 path = "src/main.rs"
+
+[[bin]]
+name = "tpuart"
+path = "src/tpuart.rs"

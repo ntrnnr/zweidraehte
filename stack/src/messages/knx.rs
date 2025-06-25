@@ -399,19 +399,22 @@ impl TpciField {
 //#[derive(Debug)]
 pub struct KnxMessageBuffer<B: Deref<Target = [u8]>> {
     service_type: ServiceType,
-    len: u8,
     buf: B,
 }
 
 impl<B: Deref<Target = [u8]>> core::fmt::Debug for KnxMessageBuffer<B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "KnxMessage {{ {:?}: {:x?} }}", self.service_type, &self.buf[..self.len as usize])
+        write!(f, "KnxMessage {{ {:?}: {:x?} }}", self.service_type, self.buf.as_ref())
     }
 }
 
 impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
-    pub fn new(buf: B, service_type: ServiceType, len: u8) -> Self {
-        KnxMessageBuffer { service_type, len, buf }
+    pub fn new(buf: B, service_type: ServiceType) -> Self {
+        KnxMessageBuffer { service_type, buf }
+    }
+
+    pub fn into_inner(self) -> B {
+        self.buf
     }
 
     pub fn buf(&self) -> &B {
@@ -426,16 +429,8 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
         self.service_type = service_type;
     }
 
-    pub fn len(&self) -> u8 {
-        self.len
-    }
-
-    pub fn set_len(&mut self, len: u8) {
-        if len > self.buf.len() as u8 {
-            panic!("Length exceeds buffer size");
-        }
-
-        self.len = len;
+    pub fn len(&self) -> usize {
+        self.buf.len()
     }
 
     /// Helper function to get an integer from a byte array
