@@ -396,7 +396,9 @@ impl TpciField {
     }
 }
 
-//#[derive(Debug)]
+/// A KNX message buffer
+///
+/// This represents a KNX message in EMI2 format
 pub struct KnxMessageBuffer<B: Deref<Target = [u8]>> {
     service_type: ServiceType,
     buf: B,

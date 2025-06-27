@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 
 use embassy_executor::Spawner;
+use embassy_futures::select::{Either, select};
+use embassy_time::{Duration, Ticker, Timer};
 use env_logger::Env;
 
 use platform::{
@@ -11,7 +13,10 @@ use platform::{
 use zweidraehte::{
     address::IndividualAddress,
     layers::linklayers::tpuart::{LowerLinkLayer, TpUartLinkLayer},
-    messages::buffers::BufferManager,
+    messages::{
+        buffers::BufferManager,
+        knx::{KnxMessageBuffer, ServiceType},
+    },
 };
 
 #[embassy_executor::main]
@@ -23,26 +28,28 @@ async fn main(_spawner: Spawner) {
     let bm = unsafe { core::mem::transmute(RefCell::new(buffer_manager.dyn_buffer_manager())) };
 
     let s = AsyncSerialPort::open(Options { baud_rate: 19200, parity: Parity::Even, ..Default::default() }).unwrap();
-    let mut ll = TpUartLinkLayer::new(s, Some(IndividualAddress::new(1, 0, 1)), &bm);
+    let mut ll = TpUartLinkLayer::new(s, Some(IndividualAddress::new(15, 15, 1)), &bm);
 
-    // Create a test transmission message first
-    let mut test_buffer = bm.borrow().alloc().await;
-    test_buffer.set_len(8);
-    // Simple KNX group value write frame: BC 11 22 11 01 80 00 80 (switch off light at 1/1/1)
-    test_buffer.clone_from_slice(&[0xBC, 0x11, 0x22, 0x11, 0x01, 0x80, 0x00, 0x80]);
-    let test_msg = zweidraehte::messages::knx::KnxMessageBuffer::new(
-        test_buffer,
-        zweidraehte::messages::knx::ServiceType::L_Data_Req,
-    );
+    ll.initialize().await;
 
-    //println!("Transmitting test message: {:x?}", test_msg.buf());
-    //let confirmation = ll.transmit(test_msg).await;
-    //println!("TX confirmation: {:x?}", confirmation);
+    let mut timer = Ticker::every(Duration::from_millis(1000));
 
     loop {
-        let msg = ll.receive().await;
-        println!("RX: {:x?}", msg);
-    }
+        match select(timer.next(), ll.receive()).await {
+            Either::First(_) => {
+                let mut test_buffer = bm.borrow().alloc().await;
+                test_buffer.set_len(8);
+                test_buffer.clone_from_slice(&[0xbc, 0x10, 0x64, 0x18, 0x00, 0xe1, 0x00, 0x80]);
+                //test_buffer.clone_from_slice(&[0xbc, 0x11, 0x01, 0x09, 0x01, 0xe1, 0x00, 0x81]);
+                let test_msg = KnxMessageBuffer::new(test_buffer, ServiceType::L_Data_Req);
 
-    //tpuart::TpUartLinkLayer::new(uart, individual_addr, buffer_manager)
+                println!("Transmitting test message: {:x?}", test_msg.buf());
+                let confirmation = ll.transmit(test_msg).await;
+                println!("TX confirmation: {:x?}", confirmation);
+            }
+            Either::Second(msg) => {
+                println!("RX: {:x?}", msg);
+            }
+        }
+    }
 }

@@ -1188,6 +1188,7 @@ version = "0.1.0"
 dependencies = [
  "const-default",
  "embassy-executor",
+ "embassy-futures",
  "embassy-sync",
  "embassy-time",
  "embedded-io-async",

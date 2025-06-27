@@ -23,7 +23,7 @@ impl Buffer<'_> {
 
     pub fn set_len(&mut self, len: usize) {
         if len > self.buffer.len() {
-            panic!("Length exceeds buffer size");
+            panic!("Length exceeds buffer size: {} > {}", len, self.buffer.len());
         }
 
         self.len = len;

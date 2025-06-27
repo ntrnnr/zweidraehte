@@ -1,10 +1,11 @@
 use core::{
     cell::RefCell,
+    future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either, select};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, DynamicSender},
@@ -15,10 +16,9 @@ use zerocopy::{FromBytes, Immutable, KnownLayout, Ref, Unaligned};
 
 use crate::{
     address::{GroupAddress, IndividualAddress, KNXAddress},
-    layers::DropBomb,
     messages::{
         buffers::{Buffer, DynBufferManager},
-        knx::KnxMessageBuffer,
+        knx::{KnxMessageBuffer, ServiceType},
     },
 };
 
@@ -26,6 +26,20 @@ pub trait LowerLinkLayer {
     async fn receive(&mut self) -> KnxMessageBuffer<Buffer<'static>>;
     async fn transmit(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) -> KnxMessageBuffer<Buffer<'static>>;
 }
+
+// TODO:
+// * If the length of the LSDU requires an L_Data-Frame with value of the field Length ≥ 255
+//   characters, then no L_Data-Frame shall be transmitted on the bus; the L_Data.req shall
+//   be confirmed by an L_Data.con with l_status = not_ok
+// * If the remote Data Link Layer instance receives an L_Data-Frame, it shall check the Frame correctness.
+//   An L_Data-Frame shall be considered correct if all of the following requirements are fulfilled.
+//       1. The L_Data-Frame is correct according the general KNX TP1 Frame check conditions as
+//          specified in clause 2.5.3 Checking for correct request Frames.
+//       2. The length of the Frame is between 8 and 23 characters for an L_Data_Standard-Frame or
+//          between 9 and 263 for an L_Data_Extended-Frame. (The character counting includes the Check
+//          octet.)
+// * If the received Frame is not correct then it shall not be passed to the Data Link Layer user.
+// * Address checking as per 01/03/02 2.4.2
 
 /// TP-Uart services
 const L_DATA_CON: u8 = 0x0b;
@@ -68,6 +82,10 @@ enum TpUartState {
         expected_len: Option<usize>,
         is_echo: bool,
     },
+
+    /// Transmission completed, waiting for ACK/NACK confirmation.
+    /// During this time, more frames caused by automatic retransmissions may be received.
+    WaitingForConfirmation,
 
     ReceiveTimeout,
     // WaitKeepalive,
@@ -218,7 +236,7 @@ where
         1,
     >,
     message_in: Option<Buffer<'static>>,
-    message_out: Option<(Buffer<'static>, DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>)>,
+    message_out: Option<Buffer<'static>>,
     individual_addr: Option<IndividualAddress>,
 }
 
@@ -243,12 +261,44 @@ where
         }
     }
 
-    async fn handle_incoming_byte(&mut self, incoming: u8) {
+    pub async fn initialize(&mut self) {
+        // Start the interface if necessary
+        if self.state == TpUartState::New {
+            self.state_transition(TpUartState::Start).await;
+        }
+
+        // Wait for initialization to complete
+        while !matches!(self.state, TpUartState::Idle | TpUartState::Error) {
+            let mut buf = [0u8];
+
+            match select(Pin::new(&mut self.state_timeout), self.uart.read(&mut buf)).await {
+                Either::First(timeout_state) => {
+                    trace!("Timeout timer fired during init, transitioning to {:?}", timeout_state);
+                    self.state_timeout.retry();
+                    self.state_transition(timeout_state).await;
+                }
+                Either::Second(_) => {
+                    trace!("TPUART INIT RX: {:x?}", buf[0]);
+                    let _ = self.handle_incoming_byte(buf[0]).await;
+                }
+            }
+        }
+
+        if self.state == TpUartState::Error {
+            error!("TPUART initialization failed");
+        } else {
+            trace!("TPUART initialization completed successfully");
+        }
+    }
+
+    async fn handle_incoming_byte(&mut self, incoming: u8) -> Option<KnxMessageBuffer<Buffer<'static>>> {
         // Are we already in the process of receiving a frame?
-        if self.state != TpUartState::Idle
+        if let TpUartState::Receive { .. } = self.state
             && let Some(message_in) = self.message_in.as_mut()
             && message_in.len() > 0
         {
+            trace!("Adding byte to ongoing receive: {:02x}", incoming);
+
             // Save the byte we just received
             message_in.push(incoming);
 
@@ -259,6 +309,10 @@ where
             match self.header_parse() {
                 ReceiveInfo::None => {}
                 ReceiveInfo::ParsedHeader { ack, expected_len, is_echo } => {
+                    trace!(
+                        "Header for ongoing receive parsed, ack: {}, expected_len: {}, is_echo: {}",
+                        ack, expected_len, is_echo
+                    );
                     // FIXME: if ack is true, we should send an immediate ACK command to TPUART. I think...
                     //        right now our individual addr is auto-acked, we don't handle grp addrs yet, but we need it for that
 
@@ -275,43 +329,27 @@ where
                     self.state_timeout.stop();
                     self.state_transition(TpUartState::Idle).await;
 
-                    // if self.message_in.iter().copied().reduce(|a, b| a ^ b) == Some(0xff) {
-                    //     trace!("Checksum of received frame was correct");
-
-                    //     // FIXME: make tp1_to_cemi work in place on the existing Vec<u8>?
-                    //     let cemi_packet = tp1_to_cemi(&self.message_in, CemiMessageCode::LDataInd, false);
-                    //     // FIXME: no unwrap!
-                    //     let cemi_parsed =
-                    //         CemiPacket::<_, CemiLDataInd>::parse(&mut &cemi_packet[..], ()).unwrap();
-
-                    //     // FIXME: it's weird to check this here. Why not do it in the network layer?
-                    //     //        The LinkLayer spec defines these messages, but eh...
-                    //     if cemi_parsed.message().ctrl1().sb() == SystemBroadcast::SysBroadcast {
-                    //         // Send out the L_SystemBroadcast.ind to the network layer
-                    //         indications
-                    //             .notify(DataLinkLayerInd::LSystemBroadcast(cemi_parsed.into()))
-                    //             .await;
-                    //     } else {
-                    //         // Send out the L_Data.ind to the network layer
-                    //         indications.notify(DataLinkLayerInd::LData(cemi_parsed.into())).await;
-                    //     }
-                    // } else {
-                    //     error!("Checksum of received frame is wrong, discarding");
-                    // }
+                    // Take the received message and return it
+                    // FIXME: need to check if CRC is correct
+                    if let Some(buffer) = self.message_in.take() {
+                        return Some(KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind));
+                    }
                 }
                 ReceiveInfo::TransmitComplete => {
                     trace!("Transmission completed");
 
                     self.state_timeout.stop();
-                    self.state_transition(TpUartState::Idle).await;
+                    self.state_transition(TpUartState::WaitingForConfirmation).await;
                 }
             };
 
-            return;
+            return None;
         }
 
-        // We are receiving the first byte of a new frame
-        if self.state == TpUartState::Idle && (incoming & 0x50) == L_DATA_EXTENDED_IND {
+        // We are receiving the first byte of a new frame or an automatically retransmitted frame
+        if (self.state == TpUartState::Idle || self.state == TpUartState::WaitingForConfirmation)
+            && (incoming & 0x50) == L_DATA_EXTENDED_IND
+        {
             trace!("RX L_Data.ind {:02x}", incoming);
 
             let mut buffer = self.buffer_manager.borrow().alloc().await;
@@ -327,7 +365,7 @@ where
         } else if incoming == U_RESET_IND {
             trace!("RX U_Reset.ind, cur state: {:?}", self.state);
             if self.state == TpUartState::InReset {
-                trace!("Expected U_Reset.ind, attempting to set address now");
+                trace!("Received expected U_Reset.ind, sending config now");
                 self.state_timeout.stop();
                 self.state_transition(TpUartState::InSendConfig).await;
             } else {
@@ -358,6 +396,8 @@ where
                     self.state_transition(TpUartState::Idle).await
                 }
 
+                // FIXME: if we receive this during transmission, something is wrong and we should reset
+                // FIXME: always reset?
                 _ => error!("TpUart state {:?} invalid", self.state),
             }
 
@@ -365,7 +405,6 @@ where
         // That means it's either an ACK or a NACK
         } else if incoming & 0x7F == L_DATA_CON {
             // FIXME: what if no ack is requested in the frame to be transmitted? Does the uart still send this .con?
-            // FIXME: what about a LSystemBroadcast.Con?
             let ack = incoming & 0x80 != 0;
 
             if ack {
@@ -374,35 +413,36 @@ where
                 trace!("L_Data.con NACK");
             }
 
-            // FIXME: Readd once we implemented TX
-            // if let Some((_, con_channel)) = self.message_out.take() {
-            //     // We need to take the received message and relay that back as a cemi confirmation
-            //     // The received message also contains the repeated flag
-            //     trace!("Received L_Data.con: {:x?}", self.message_in);
+            // If we're waiting for confirmation, handle the ACK/NACK
+            if self.state == TpUartState::WaitingForConfirmation {
+                if let Some(mut transmitted_data) = self.message_in.take() {
+                    // Set the error flag in the confirmation based on ACK/NACK
+                    if !ack && transmitted_data.len() > 0 {
+                        transmitted_data[0] |= 0x01;
+                    } else {
+                        transmitted_data[0] &= 0xFE;
+                    }
 
-            //     // NOTE: invert the ACK bit here, because a confirmation with no errors is false
-            //     let cemi_packet = tp1_to_cemi(&self.message_in, CemiMessageCode::LDataCon, !ack);
-            //     // FIXME: no unwrap()!
-            //     let cemi_parsed = CemiPacket::<_, CemiLDataCon>::parse(&mut &cemi_packet[..], ()).unwrap();
+                    self.state_transition(TpUartState::Idle).await;
+                    return Some(KnxMessageBuffer::new(transmitted_data, ServiceType::L_Data_Con));
+                }
+            }
 
-            //     con_channel.send(DataLinkLayerCon::LData(cemi_parsed.into())).await;
-            // } else {
-            //     warn!("Received L_Data.con (N)ACK, but not sending")
-            // }
-
-            // That's BUSMON stuff
-            // //                    ACK                 NACK                BSY
-            // } else if incoming == 0xCC || incoming == 0xC0 || incoming == 0x0C {
-            //     if incoming == 0xCC {
-            //         trace!("L_Ackn.ind ACK");
-            //     } else if incoming == 0xC0 {
-            //         trace!("L_Ackn.ind NACK");
-            //     } else if incoming == 0x0C {
-            //         trace!("L_Ackn.ind BSY");
-            //     }
+        // That's BUSMON stuff
+        //                    ACK                 NACK                BSY
+        } else if incoming == 0xCC || incoming == 0xC0 || incoming == 0x0C {
+            if incoming == 0xCC {
+                trace!("L_Ackn.ind ACK");
+            } else if incoming == 0xC0 {
+                trace!("L_Ackn.ind NACK");
+            } else if incoming == 0x0C {
+                trace!("L_Ackn.ind BSY");
+            }
         } else {
             error!("Unknown TPUart command: {:02x}", incoming);
         }
+
+        None
     }
 
     fn header_parse(&mut self) -> ReceiveInfo {
@@ -425,14 +465,13 @@ where
             if self.message_in.as_ref().unwrap().len() >= min_header_len {
                 trace!("Received enough of a frame to parse the header");
 
-                // FIXME: use if let chains
-                // FIXME: readd
-                // let is_echo = if let Some(message_out) = &self.message_out {
-                //     (self.message_in[0] ^ message_out.0[0]) & !0x20 == 0 && self.message_in[1..5] == message_out.0[1..5]
-                // } else {
-                //     false
-                // };
-                let is_echo = false;
+                // Check if this is an echo of our transmitted message
+                let is_echo = if let Some(message_out) = &self.message_out {
+                    (self.message_in.as_ref().unwrap()[0] ^ message_out[0]) & !0x20 == 0
+                        && self.message_in.as_ref().unwrap()[1..5] == message_out[1..5]
+                } else {
+                    false
+                };
 
                 // Do we have to deal with a individual dst address of a group dst address?
                 // Depending on the extended frame format or the standard format, we
@@ -497,13 +536,13 @@ where
                 ret = ReceiveInfo::ReceiveComplete;
             }
 
-        // If we are receiving an echo, we can expect a TP-UART confirmation byte (positive or negative) at some point.
-        // We need to tell the main loop that it needs to await this confirmation byte or a repeated transmission that
-        // happens automatically because the TP-UART didn't see an ACK yet.
+        // If we are receiving an echo, this means the TP-UART has transmitted our frame onto the bus.
+        // We may receive multiple echo frames (retransmissions) until an ACK is received from the destination.
+        // When we've received a complete echo frame, we signal TransmitComplete so the transmit loop knows
+        // the echo phase is done and can wait for ACK/NACK confirmation.
         } else if let TpUartState::Receive { expected_len: Some(expected_len), is_echo: true, .. } = self.state {
-            // If we received as many bytes as we expect, we can notify the main loop about that
+            // If we received as many bytes as we expect for this echo frame
             if self.message_in.as_ref().unwrap().len() == expected_len {
-                // Grab the last byte which contains the confirmation
                 ret = ReceiveInfo::TransmitComplete;
             }
         }
@@ -577,7 +616,13 @@ where
             TpUartState::ReceiveTimeout => {
                 error!("RX timeout when receiving TP-Uart frame, going back to Idle");
                 self.state_timeout.stop();
+                // Clear any partially received message
+                let _ = self.message_in.take();
                 self.state = TpUartState::Idle;
+            }
+
+            TpUartState::WaitingForConfirmation => {
+                self.state = TpUartState::WaitingForConfirmation;
             }
 
             // TpUartState::WaitKeepalive => {
@@ -603,49 +648,84 @@ where
     U: embedded_io_async::Read + embedded_io_async::Write,
 {
     async fn receive(&mut self) -> KnxMessageBuffer<Buffer<'static>> {
-        // Start the interface if necessary
-        if self.state == TpUartState::New {
-            self.state_transition(TpUartState::Start).await;
+        if self.state != TpUartState::Idle {
+            panic!("TP-Uart is not idle, cannot receive. Current state: {:?}", self.state);
         }
 
         loop {
             let mut buf = [0u8];
 
-            match select3(Pin::new(&mut self.state_timeout), self.uart.read(&mut buf), core::future::pending()).await {
-                Either3::First(timeout_state) => {
+            match select(Pin::new(&mut self.state_timeout), self.uart.read(&mut buf)).await {
+                Either::First(timeout_state) => {
                     trace!("Timeout timer fired, transitioning to {:?}", timeout_state);
                     self.state_timeout.retry();
                     self.state_transition(timeout_state).await;
                 }
-                Either3::Second(_) => {
+                Either::Second(_) => {
                     trace!("TPUART RX: {:x?}", buf[0]);
-                    self.handle_incoming_byte(buf[0]).await;
+                    if let Some(message) = self.handle_incoming_byte(buf[0]).await {
+                        return message;
+                    }
                 }
-                Either3::Third(()) => {}
             }
         }
     }
 
     async fn transmit(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) -> KnxMessageBuffer<Buffer<'static>> {
-        type T = KnxMessageBuffer<Buffer<'static>>;
+        if self.state != TpUartState::Idle {
+            panic!("TP-Uart is not idle, cannot transmit. Current state: {:?}", self.state);
+        }
 
-        let channel: Channel<NoopRawMutex, T, 1> = Channel::new();
-        let sender: DynamicSender<'_, T> = channel.sender().into();
-        let bomb = DropBomb::new();
+        // Get the data from the message
+        let data = msg.into_inner();
 
-        // We guarantee that channel lives until we've been notified on it, at which
-        // point its out of reach for the replier.
-        let con_channel = unsafe {
-            core::mem::transmute::<
-                &embassy_sync::channel::DynamicSender<'_, T>,
-                &embassy_sync::channel::DynamicSender<'_, T>,
-            >(&sender)
-        };
+        trace!("Starting transmission of {} bytes: {:x?}", data.len(), data);
 
-        self.tx_queue.send((msg, con_channel.clone())).await;
-        let res = channel.receive().await;
+        // Calculate checksum: XOR all bytes in the frame
+        let mut checksum = 0u8;
+        for &byte in &data[..] {
+            checksum ^= byte;
+        }
+        // The checksum is XORed with 0xFF so that XORing all bytes including checksum results in 0
+        checksum ^= 0xFF;
+        let checksum = &[checksum];
 
-        bomb.defuse();
-        res
+        // Store the outgoing message for echo detection
+        self.message_out = Some(data);
+
+        let mut it = self.message_out.as_ref().unwrap().iter().chain(checksum).enumerate().peekable();
+        while let Some((i, b)) = it.next() {
+            let cmd = if it.peek().is_some() {
+                [U_L_DATA_START | (i & 0xff) as u8, *b]
+            } else {
+                [U_L_DATA_END | (i & 0xff) as u8, *b]
+            };
+
+            self.uart.write_all(&cmd).await.expect("Unable to write to UART");
+        }
+
+        // Now the TP-UART will buffer and start transmitting on the bus
+        // We transition to waiting for confirmation and echo frames
+        self.state_transition(TpUartState::WaitingForConfirmation).await;
+
+        // Wait for echo frames and final ACK/NACK confirmation
+        loop {
+            let mut buf = [0u8];
+
+            match select(Pin::new(&mut self.state_timeout), self.uart.read(&mut buf)).await {
+                Either::First(timeout_state) => {
+                    trace!("Timeout timer fired during transmit, transitioning to {:?}", timeout_state);
+                    self.state_timeout.retry();
+                    self.state_transition(timeout_state).await;
+                }
+                Either::Second(_) => {
+                    trace!("TPUART RX: {:x?}", buf[0]);
+                    if let Some(confirmation) = self.handle_incoming_byte(buf[0]).await {
+                        // If we received a confirmation message (ACK/NACK), return it
+                        return confirmation;
+                    }
+                }
+            }
+        }
     }
 }
