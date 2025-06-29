@@ -5,11 +5,8 @@ use core::{
     task::{Context, Poll},
 };
 
-use embassy_futures::select::{Either, select};
-use embassy_sync::{
-    blocking_mutex::raw::NoopRawMutex,
-    channel::{Channel, DynamicSender},
-};
+use embassy_futures::select::{Either, Either3, select, select3};
+use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Timer};
 use pin_project::pin_project;
 use zerocopy::{FromBytes, Immutable, KnownLayout, Ref, Unaligned};
@@ -18,14 +15,11 @@ use crate::{
     address::{GroupAddress, IndividualAddress, KNXAddress},
     messages::{
         buffers::{Buffer, DynBufferManager},
-        knx::{KnxMessageBuffer, ServiceType},
+        knx::*,
     },
 };
 
-pub trait LowerLinkLayer {
-    async fn receive(&mut self) -> KnxMessageBuffer<Buffer<'static>>;
-    async fn transmit(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) -> KnxMessageBuffer<Buffer<'static>>;
-}
+use super::super::{Inbox, Layer, LayerOp};
 
 // TODO:
 // * If the length of the LSDU requires an L_Data-Frame with value of the field Length ≥ 255
@@ -230,14 +224,12 @@ where
     buffer_manager: &'a RefCell<DynBufferManager<'static>>,
     state: TpUartState,
     state_timeout: Timeout<TpUartState>,
-    tx_queue: Channel<
-        NoopRawMutex,
-        (KnxMessageBuffer<Buffer<'static>>, DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>),
-        1,
-    >,
+    network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
     message_in: Option<Buffer<'static>>,
-    message_out: Option<Buffer<'static>>,
+    message_out: Option<(Buffer<'static>, DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>)>,
     individual_addr: Option<IndividualAddress>,
+    pending_transmission:
+        Option<(KnxMessageBuffer<Buffer<'static>>, DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>)>,
 }
 
 impl<'a, U> TpUartLinkLayer<'a, U>
@@ -248,16 +240,18 @@ where
         uart: U,
         individual_addr: Option<IndividualAddress>,
         buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+        network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
     ) -> Self {
         Self {
             uart,
             buffer_manager,
             state: TpUartState::New,
             state_timeout: Timeout::new(),
-            tx_queue: Channel::new(),
+            network_layer,
             message_in: None,
             message_out: None,
             individual_addr,
+            pending_transmission: None,
         }
     }
 
@@ -291,7 +285,7 @@ where
         }
     }
 
-    async fn handle_incoming_byte(&mut self, incoming: u8) -> Option<KnxMessageBuffer<Buffer<'static>>> {
+    async fn handle_incoming_byte(&mut self, incoming: u8) -> Option<()> {
         // Are we already in the process of receiving a frame?
         if let TpUartState::Receive { .. } = self.state
             && let Some(message_in) = self.message_in.as_mut()
@@ -327,23 +321,38 @@ where
                     debug!("Received TP1 frame: {:x?}", &self.message_in.as_ref().unwrap()[..]);
 
                     self.state_timeout.stop();
-                    self.state_transition(TpUartState::Idle).await;
+                    // Transition to idle without blocking
+                    self.state = TpUartState::Idle;
+                    trace!("Frame receive complete, transitioned to Idle - ready for new transmissions");
 
-                    // Take the received message and return it
+                    // Take the received message and send it to network layer as indication
                     // FIXME: need to check if CRC is correct
                     if let Some(buffer) = self.message_in.take() {
-                        return Some(KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind));
+                        let indication = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
+                        trace!("Sending L_Data.ind to network layer: {:?}", indication);
+                        self.network_layer.send(LayerOp::Indication(indication)).await;
+                        trace!("L_Data.ind sent to network layer");
                     }
+
+                    trace!(
+                        "State: {:?}, Message In: {:?}, Message out: {:?}, Pending TX: {:?}",
+                        self.state,
+                        self.message_in,
+                        self.message_out.as_ref().map(|(buf, _)| buf),
+                        self.pending_transmission.as_ref().map(|(msg, _)| msg)
+                    );
                 }
                 ReceiveInfo::TransmitComplete => {
                     trace!("Transmission completed");
 
                     self.state_timeout.stop();
-                    self.state_transition(TpUartState::WaitingForConfirmation).await;
+                    // Transition to waiting for confirmation without blocking
+                    self.state = TpUartState::WaitingForConfirmation;
+                    trace!("Echo received, transitioned to WaitingForConfirmation");
                 }
             };
 
-            return None;
+            return Some(());
         }
 
         // We are receiving the first byte of a new frame or an automatically retransmitted frame
@@ -415,7 +424,7 @@ where
 
             // If we're waiting for confirmation, handle the ACK/NACK
             if self.state == TpUartState::WaitingForConfirmation {
-                if let Some(mut transmitted_data) = self.message_in.take() {
+                if let Some((mut transmitted_data, response_tx)) = self.message_out.take() {
                     // Set the error flag in the confirmation based on ACK/NACK
                     if !ack && transmitted_data.len() > 0 {
                         transmitted_data[0] |= 0x01;
@@ -423,8 +432,13 @@ where
                         transmitted_data[0] &= 0xFE;
                     }
 
-                    self.state_transition(TpUartState::Idle).await;
-                    return Some(KnxMessageBuffer::new(transmitted_data, ServiceType::L_Data_Con));
+                    // Transition to idle without blocking
+                    self.state = TpUartState::Idle;
+                    trace!("Transmission complete, transitioned to Idle - ready for new transmissions");
+
+                    // Send confirmation back to the requester
+                    let confirmation = KnxMessageBuffer::new(transmitted_data, ServiceType::L_Data_Con);
+                    response_tx.send(confirmation).await;
                 }
             }
 
@@ -442,7 +456,7 @@ where
             error!("Unknown TPUart command: {:02x}", incoming);
         }
 
-        None
+        Some(())
     }
 
     fn header_parse(&mut self) -> ReceiveInfo {
@@ -466,7 +480,7 @@ where
                 trace!("Received enough of a frame to parse the header");
 
                 // Check if this is an echo of our transmitted message
-                let is_echo = if let Some(message_out) = &self.message_out {
+                let is_echo = if let Some((message_out, _)) = &self.message_out {
                     (self.message_in.as_ref().unwrap()[0] ^ message_out[0]) & !0x20 == 0
                         && self.message_in.as_ref().unwrap()[1..5] == message_out[1..5]
                 } else {
@@ -478,7 +492,7 @@ where
                 // need to check different bytes for the addr type flag
                 let (dst_addr, expected_len) = if ext {
                     let header: Ref<_, TPFrameHeaderExtended> =
-                        Ref::new_unaligned(&self.message_in.as_ref().unwrap()[..min_header_len]).unwrap();
+                        Ref::from_bytes(&self.message_in.as_ref().unwrap()[..min_header_len]).unwrap();
 
                     let addr = if header.ext_ctrl & 0x80 == 0 {
                         KNXAddress::Individual(IndividualAddress::from_bytes(&header.dst_addr))
@@ -492,7 +506,7 @@ where
                     (addr, expected_length)
                 } else {
                     let header: Ref<_, TPFrameHeaderStandard> =
-                        Ref::new_unaligned(&self.message_in.as_ref().unwrap()[..min_header_len]).unwrap();
+                        Ref::from_bytes(&self.message_in.as_ref().unwrap()[..min_header_len]).unwrap();
 
                     let addr = if header.at_length & 0x80 == 0 {
                         KNXAddress::Individual(IndividualAddress::from_bytes(&header.dst_addr))
@@ -597,6 +611,7 @@ where
             // },
             TpUartState::Idle => {
                 self.state = TpUartState::Idle;
+                trace!("Transitioned to Idle state - ready for new transmissions");
             }
 
             s @ TpUartState::Receive { acked: false, .. } => {
@@ -619,6 +634,7 @@ where
                 // Clear any partially received message
                 let _ = self.message_in.take();
                 self.state = TpUartState::Idle;
+                trace!("Cleared receive state due to timeout - ready for new transmissions");
             }
 
             TpUartState::WaitingForConfirmation => {
@@ -641,40 +657,38 @@ where
             _ => unreachable!(),
         }
     }
-}
 
-impl<'a, U> LowerLinkLayer for TpUartLinkLayer<'a, U>
-where
-    U: embedded_io_async::Read + embedded_io_async::Write,
-{
-    async fn receive(&mut self) -> KnxMessageBuffer<Buffer<'static>> {
-        if self.state != TpUartState::Idle {
-            panic!("TP-Uart is not idle, cannot receive. Current state: {:?}", self.state);
+    async fn transmit_frame(
+        &mut self,
+        msg: KnxMessageBuffer<Buffer<'static>>,
+        response_tx: DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>,
+    ) {
+        // If we're idle and no transmission is pending, start transmission immediately
+        if self.state == TpUartState::Idle && self.pending_transmission.is_none() {
+            self.start_transmission(msg, response_tx).await;
+            return;
         }
 
-        loop {
-            let mut buf = [0u8];
-
-            match select(Pin::new(&mut self.state_timeout), self.uart.read(&mut buf)).await {
-                Either::First(timeout_state) => {
-                    trace!("Timeout timer fired, transitioning to {:?}", timeout_state);
-                    self.state_timeout.retry();
-                    self.state_transition(timeout_state).await;
-                }
-                Either::Second(_) => {
-                    trace!("TPUART RX: {:x?}", buf[0]);
-                    if let Some(message) = self.handle_incoming_byte(buf[0]).await {
-                        return message;
-                    }
-                }
-            }
+        // If there's already a pending transmission, replace it with this new one
+        // This implements a "latest wins" policy to avoid blocking
+        if let Some((old_msg, old_response_tx)) = self.pending_transmission.take() {
+            warn!("Replacing pending transmission - sending error for previous request");
+            let mut error_msg = old_msg;
+            error_msg.ctrl_field_mut().set_c(Confirm::Err);
+            old_response_tx.send(error_msg).await;
         }
+
+        // Store the new pending transmission
+        self.pending_transmission = Some((msg, response_tx));
+        trace!("Stored pending transmission (state: {:?})", self.state);
     }
 
-    async fn transmit(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) -> KnxMessageBuffer<Buffer<'static>> {
-        if self.state != TpUartState::Idle {
-            panic!("TP-Uart is not idle, cannot transmit. Current state: {:?}", self.state);
-        }
+    async fn start_transmission(
+        &mut self,
+        msg: KnxMessageBuffer<Buffer<'static>>,
+        response_tx: DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>,
+    ) {
+        trace!("Transmitting frame: {:?}", msg);
 
         // Get the data from the message
         let data = msg.into_inner();
@@ -690,10 +704,10 @@ where
         checksum ^= 0xFF;
         let checksum = &[checksum];
 
-        // Store the outgoing message for echo detection
-        self.message_out = Some(data);
+        // Store the outgoing message for echo detection and response handling
+        self.message_out = Some((data, response_tx));
 
-        let mut it = self.message_out.as_ref().unwrap().iter().chain(checksum).enumerate().peekable();
+        let mut it = self.message_out.as_ref().unwrap().0.iter().chain(checksum).enumerate().peekable();
         while let Some((i, b)) = it.next() {
             let cmd = if it.peek().is_some() {
                 [U_L_DATA_START | (i & 0xff) as u8, *b]
@@ -701,29 +715,98 @@ where
                 [U_L_DATA_END | (i & 0xff) as u8, *b]
             };
 
-            self.uart.write_all(&cmd).await.expect("Unable to write to UART");
+            if let Err(_) = self.uart.write_all(&cmd).await {
+                // // If write fails, send error confirmation
+                // if let Some((mut data, response_tx)) = self.message_out.take() {
+                //     data[0] |= 0x01; // Set error flag
+                //     let error_msg = KnxMessageBuffer::new(data, ServiceType::L_Data_Con);
+                //     response_tx.send(error_msg).await;
+                // }
+                // return;
+                panic!("Failed to write to TP-UART: {:?}", cmd);
+            }
         }
 
         // Now the TP-UART will buffer and start transmitting on the bus
-        // We transition to waiting for confirmation and echo frames
-        self.state_transition(TpUartState::WaitingForConfirmation).await;
+        // Transition to waiting for confirmation - this is non-blocking!
+        // The confirmation will be handled by the main event loop when it reads UART data
+        self.state = TpUartState::WaitingForConfirmation;
+        trace!("Transitioned to WaitingForConfirmation - main loop will handle echo/confirmation");
+    }
+}
 
-        // Wait for echo frames and final ACK/NACK confirmation
+// IMPORTANT: DEADLOCK PREVENTION
+// This implementation prevents deadlocks by ensuring the main event loop never blocks.
+// The main loop MUST always be able to poll:
+// 1. UART RX future (to read confirmations that complete transmissions)
+// 2. Timeout future (to handle state machine timeouts)
+// 3. Inbox future (to receive new requests)
+//
+// We use a simple single-slot pending transmission approach:
+// - If link layer is idle and no pending transmission: start immediately
+// - If link layer is busy or has pending transmission: replace pending with new request
+// - This implements "latest wins" policy and never blocks the main loop
+//
+// The main loop processes pending transmissions only when idle, ensuring proper coordination.
+
+impl<'a, U> Layer<'a> for TpUartLinkLayer<'a, U>
+where
+    U: embedded_io_async::Read + embedded_io_async::Write,
+{
+    type Message = KnxMessageBuffer<Buffer<'static>>;
+
+    async fn process<M>(&mut self, mut inbox: M) -> !
+    where
+        M: Inbox<LayerOp<Self::Message>>,
+    {
+        self.initialize().await;
+
         loop {
             let mut buf = [0u8];
 
-            match select(Pin::new(&mut self.state_timeout), self.uart.read(&mut buf)).await {
-                Either::First(timeout_state) => {
-                    trace!("Timeout timer fired during transmit, transitioning to {:?}", timeout_state);
+            match select3(Pin::new(&mut self.state_timeout), self.uart.read(&mut buf), inbox.next()).await {
+                Either3::First(timeout_state) => {
+                    trace!("Timeout timer fired, transitioning to {:?}", timeout_state);
                     self.state_timeout.retry();
                     self.state_transition(timeout_state).await;
                 }
-                Either::Second(_) => {
+                Either3::Second(_) => {
                     trace!("TPUART RX: {:x?}", buf[0]);
-                    if let Some(confirmation) = self.handle_incoming_byte(buf[0]).await {
-                        // If we received a confirmation message (ACK/NACK), return it
-                        return confirmation;
+                    let _ = self.handle_incoming_byte(buf[0]).await;
+                }
+                Either3::Third(layer_op) => {
+                    trace!("TP-UART Link Layer received layer op: {:?}", layer_op);
+
+                    match layer_op {
+                        LayerOp::Indication(_msg) => {
+                            // Link layer typically doesn't receive indications from upper layers
+                            // This would be unusual in the KNX stack architecture
+                            trace!("TP-UART Link Layer received unexpected indication");
+                        }
+                        LayerOp::Request { message: msg, response_tx } => {
+                            // Handle transmission requests
+                            match msg.service_type() {
+                                ServiceType::L_Data_Req => {
+                                    self.transmit_frame(msg, response_tx).await;
+                                }
+                                _ => {
+                                    // Return error for unsupported service types
+                                    let mut error_msg = msg;
+                                    error_msg.ctrl_field_mut().set_c(Confirm::Err);
+                                    response_tx.send(error_msg).await;
+                                }
+                            }
+                        }
                     }
+                }
+            }
+
+            // IMPORTANT: Only check for pending transmissions AFTER handling all other events
+            // and only when we're in a safe state to start a new transmission
+            if self.state == TpUartState::Idle && self.pending_transmission.is_some() {
+                trace!("Starting pending transmission");
+                if let Some((msg, response_tx)) = self.pending_transmission.take() {
+                    self.start_transmission(msg, response_tx).await;
                 }
             }
         }
