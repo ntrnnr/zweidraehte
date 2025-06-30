@@ -37,3 +37,5 @@ embedded-io-async = { version = "0.6" }
 serialport = "4.7"
 async-io = "2.4"
 nix = { version = "0.30", default-features = false }
+serialport_low_latency = { version = "0.1.1" }
+

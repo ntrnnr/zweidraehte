@@ -56,15 +56,19 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 
 impl AsyncSerialPort {
     pub fn open(options: Options) -> Result<Self> {
-        let t = serialport::new(options.path, options.baud_rate)
+        let mut t = serialport::new(options.path, options.baud_rate)
             .parity(options.parity.into())
             .stop_bits(options.stop_bits.into())
             .data_bits(options.data_bits.into())
             .open_native()?;
 
+        #[cfg(target_os = "linux")]
+        serialport_low_latency::enable_low_latency(&mut t).unwrap();
+
         // SAFETY: We keep the TTYPort around, so the OwnedFd doesn't get invalidated
         let fd = unsafe { OwnedFd::from_raw_fd(t.as_raw_fd()) };
         tcflush(&fd, FlushArg::TCIOFLUSH).unwrap();
+
         Ok(Self { t, s: Async::new(fd)? })
     }
 }

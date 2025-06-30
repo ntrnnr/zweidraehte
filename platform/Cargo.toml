@@ -14,8 +14,11 @@ serialport = { workspace = true, optional = true }
 async-io = { workspace = true, optional = true }
 nix = { workspace = true, optional = true, features = ["term"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+serialport_low_latency = { workspace = true, optional = true }
+
 [features]
 defmt = ["dep:defmt"]
 log = ["dep:log"]
 std = []
-linux = ["dep:serialport", "dep:async-io", "dep:nix", "std"]
+linux = ["dep:serialport", "dep:async-io", "dep:nix", "dep:serialport_low_latency", "std"]

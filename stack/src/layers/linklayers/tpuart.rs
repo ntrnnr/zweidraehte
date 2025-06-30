@@ -321,18 +321,28 @@ where
                     debug!("Received TP1 frame: {:x?}", &self.message_in.as_ref().unwrap()[..]);
 
                     self.state_timeout.stop();
-                    // Transition to idle without blocking
-                    self.state = TpUartState::Idle;
-                    trace!("Frame receive complete, transitioned to Idle - ready for new transmissions");
 
                     // Take the received message and send it to network layer as indication
                     // FIXME: need to check if CRC is correct
                     if let Some(buffer) = self.message_in.take() {
+                        let mut checksum = 0u8;
+                        for &byte in &buffer[..] {
+                            checksum ^= byte;
+                        }
+                        checksum ^= 0xFF;
+
+                        if checksum != 0x00 {
+                            error!("WRRRRRRROOOOOOOOOOOOOOOOOOOOOONG CHECKSUM!");
+                        }
+
                         let indication = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
                         trace!("Sending L_Data.ind to network layer: {:?}", indication);
                         self.network_layer.send(LayerOp::Indication(indication)).await;
                         trace!("L_Data.ind sent to network layer");
                     }
+
+                    self.state = TpUartState::Idle;
+                    trace!("Frame receive complete, transitioned to Idle - ready for new transmissions");
 
                     trace!(
                         "State: {:?}, Message In: {:?}, Message out: {:?}, Pending TX: {:?}",
@@ -355,34 +365,12 @@ where
             return Some(());
         }
 
-        // We are receiving the first byte of a new frame or an automatically retransmitted frame
-        if (self.state == TpUartState::Idle || self.state == TpUartState::WaitingForConfirmation)
-            && (incoming & 0x50) == L_DATA_EXTENDED_IND
+        // We are receiving a state indication
+        if (self.state == TpUartState::Idle
+            || self.state == TpUartState::WaitingForConfirmation
+            || self.state == TpUartState::InGetState)
+            && (incoming & 0x07) == U_STATE_IND
         {
-            trace!("RX L_Data.ind {:02x}", incoming);
-
-            let mut buffer = self.buffer_manager.borrow().alloc().await;
-            buffer.push(incoming);
-            self.message_in = Some(buffer);
-
-            // Start the TX timeout (gets reset when the next byte is received)
-            self.state_timeout.start(TpUartState::ReceiveTimeout, TpUartState::Invalid, Duration::from_secs(1), 0);
-
-            self.state_transition(TpUartState::Receive { acked: false, expected_len: None, is_echo: false }).await;
-
-        // We are receiving reset indication in response to a request request
-        } else if incoming == U_RESET_IND {
-            trace!("RX U_Reset.ind, cur state: {:?}", self.state);
-            if self.state == TpUartState::InReset {
-                trace!("Received expected U_Reset.ind, sending config now");
-                self.state_timeout.stop();
-                self.state_transition(TpUartState::InSendConfig).await;
-            } else {
-                error!("Received spurious U_Reset.ind")
-            }
-
-        // We are receiving a state indication in response to a get state request
-        } else if (incoming & 0x07) == U_STATE_IND {
             trace!(
                 "RX U_State.ind SC: {:?} - RE: {:?} - TE: {:?} - PE: {:?} -  TW: {:?}",
                 incoming & 0x80 != 0,
@@ -391,6 +379,8 @@ where
                 incoming & 0x10 != 0,
                 incoming & 0x08 != 0,
             );
+
+            // FIXME: When transmitting and we get a state indication containing errors, we need to do something, otherwise shit will just hang
 
             match self.state {
                 TpUartState::InReset => {}
@@ -407,12 +397,23 @@ where
 
                 // FIXME: if we receive this during transmission, something is wrong and we should reset
                 // FIXME: always reset?
-                _ => error!("TpUart state {:?} invalid", self.state),
+                _ => error!("TpUart state {:?} invalid - incoming: {:02x?}", self.state, incoming),
             }
-
+        }
+        // We are receiving reset indication in response to a request request
+        else if (self.state == TpUartState::InReset) && incoming == U_RESET_IND {
+            trace!("RX U_Reset.ind, cur state: {:?}", self.state);
+            if self.state == TpUartState::InReset {
+                trace!("Received expected U_Reset.ind, sending config now");
+                self.state_timeout.stop();
+                self.state_transition(TpUartState::InSendConfig).await;
+            } else {
+                error!("Received spurious U_Reset.ind")
+            }
+        }
         // We are receiving a confirmation from a remote device
         // That means it's either an ACK or a NACK
-        } else if incoming & 0x7F == L_DATA_CON {
+        else if (self.state == TpUartState::WaitingForConfirmation) && (incoming & 0x7F == L_DATA_CON) {
             // FIXME: what if no ack is requested in the frame to be transmitted? Does the uart still send this .con?
             let ack = incoming & 0x80 != 0;
 
@@ -441,20 +442,37 @@ where
                     response_tx.send(confirmation).await;
                 }
             }
-
-        // That's BUSMON stuff
-        //                    ACK                 NACK                BSY
-        } else if incoming == 0xCC || incoming == 0xC0 || incoming == 0x0C {
-            if incoming == 0xCC {
-                trace!("L_Ackn.ind ACK");
-            } else if incoming == 0xC0 {
-                trace!("L_Ackn.ind NACK");
-            } else if incoming == 0x0C {
-                trace!("L_Ackn.ind BSY");
-            }
-        } else {
-            error!("Unknown TPUart command: {:02x}", incoming);
         }
+        // Incoming message
+        else if (self.state == TpUartState::Idle || self.state == TpUartState::WaitingForConfirmation)
+            && (incoming & 0x50) == L_DATA_EXTENDED_IND
+        {
+            trace!("RX L_Data.ind {:02x}", incoming);
+
+            let mut buffer = self.buffer_manager.borrow().alloc().await;
+            buffer.push(incoming);
+            self.message_in = Some(buffer);
+
+            // Start the TX timeout (gets reset when the next byte is received)
+            self.state_timeout.start(TpUartState::ReceiveTimeout, TpUartState::Invalid, Duration::from_secs(1), 0);
+
+            self.state_transition(TpUartState::Receive { acked: false, expected_len: None, is_echo: false }).await;
+        }
+        // Error
+        else {
+            error!("Unknown TPUart command: {:02x} in state {:?}", incoming, self.state);
+        }
+
+        // // // That's BUSMON stuff
+        // // //                    ACK                 NACK                BSY
+        // // } else if incoming == 0xCC || incoming == 0xC0 || incoming == 0x0C {
+        // //     if incoming == 0xCC {
+        // //         trace!("L_Ackn.ind ACK");
+        // //     } else if incoming == 0xC0 {
+        // //         trace!("L_Ackn.ind NACK");
+        // //     } else if incoming == 0x0C {
+        // //         trace!("L_Ackn.ind BSY");
+        // //     }
 
         Some(())
     }
