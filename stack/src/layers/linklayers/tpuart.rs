@@ -338,11 +338,9 @@ where
                         let indication = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
                         trace!("Sending L_Data.ind to network layer: {:?}", indication);
                         self.network_layer.send(LayerOp::Indication(indication)).await;
-                        trace!("L_Data.ind sent to network layer");
                     }
 
-                    self.state = TpUartState::Idle;
-                    trace!("Frame receive complete, transitioned to Idle - ready for new transmissions");
+                    self.state_transition(TpUartState::Idle).await;
 
                     trace!(
                         "State: {:?}, Message In: {:?}, Message out: {:?}, Pending TX: {:?}",
@@ -354,11 +352,8 @@ where
                 }
                 ReceiveInfo::TransmitComplete => {
                     trace!("Transmission completed");
-
                     self.state_timeout.stop();
-                    // Transition to waiting for confirmation without blocking
-                    self.state = TpUartState::WaitingForConfirmation;
-                    trace!("Echo received, transitioned to WaitingForConfirmation");
+                    self.state_transition(TpUartState::WaitingForConfirmation).await;
                 }
             };
 
@@ -372,7 +367,7 @@ where
             && (incoming & 0x07) == U_STATE_IND
         {
             trace!(
-                "RX U_State.ind SC: {:?} - RE: {:?} - TE: {:?} - PE: {:?} -  TW: {:?}",
+                "RX U_State.ind SC: {:?} - RE: {:?} - TE: {:?} - PE: {:?} - TW: {:?}",
                 incoming & 0x80 != 0,
                 incoming & 0x40 != 0,
                 incoming & 0x20 != 0,
@@ -380,23 +375,23 @@ where
                 incoming & 0x08 != 0,
             );
 
-            // FIXME: When transmitting and we get a state indication containing errors, we need to do something, otherwise shit will just hang
-
             match self.state {
-                TpUartState::InReset => {}
-
-                TpUartState::InSendConfig => {
-                    self.state_timeout.stop();
-                    self.state_transition(TpUartState::InGetState).await
-                }
-
                 TpUartState::InGetState => {
                     self.state_timeout.stop();
                     self.state_transition(TpUartState::Idle).await
                 }
 
-                // FIXME: if we receive this during transmission, something is wrong and we should reset
-                // FIXME: always reset?
+                TpUartState::Idle => {
+                    // If we have a currently outgoing message and we receive any error
+                    // indication except a temperature warning, reschedule it for transmission again
+                    if let Some((msg, chan)) = self.message_out.take()
+                        && incoming & 0xF0 != 0
+                    {
+                        warn!("Rescheduling failed out message for new send attempt");
+                        self.pending_transmission = Some((KnxMessageBuffer::new(msg, ServiceType::L_Data_Req), chan));
+                    }
+                }
+
                 _ => error!("TpUart state {:?} invalid - incoming: {:02x?}", self.state, incoming),
             }
         }
@@ -629,7 +624,6 @@ where
             // },
             TpUartState::Idle => {
                 self.state = TpUartState::Idle;
-                trace!("Transitioned to Idle state - ready for new transmissions");
             }
 
             s @ TpUartState::Receive { acked: false, .. } => {
@@ -649,10 +643,8 @@ where
             TpUartState::ReceiveTimeout => {
                 error!("RX timeout when receiving TP-Uart frame, going back to Idle");
                 self.state_timeout.stop();
-                // Clear any partially received message
                 let _ = self.message_in.take();
                 self.state = TpUartState::Idle;
-                trace!("Cleared receive state due to timeout - ready for new transmissions");
             }
 
             TpUartState::WaitingForConfirmation => {
@@ -683,6 +675,7 @@ where
     ) {
         // If we're idle and no transmission is pending, start transmission immediately
         if self.state == TpUartState::Idle && self.pending_transmission.is_none() {
+            trace!("TP-UART is idle, starting transmission immediately");
             self.start_transmission(msg, response_tx).await;
             return;
         }
@@ -733,6 +726,7 @@ where
                 [U_L_DATA_END | (i & 0xff) as u8, *b]
             };
 
+            trace!("TPUART TX: {:x?}", &cmd);
             if let Err(_) = self.uart.write_all(&cmd).await {
                 // // If write fails, send error confirmation
                 // if let Some((mut data, response_tx)) = self.message_out.take() {
@@ -745,11 +739,7 @@ where
             }
         }
 
-        // Now the TP-UART will buffer and start transmitting on the bus
-        // Transition to waiting for confirmation - this is non-blocking!
-        // The confirmation will be handled by the main event loop when it reads UART data
-        self.state = TpUartState::WaitingForConfirmation;
-        trace!("Transitioned to WaitingForConfirmation - main loop will handle echo/confirmation");
+        self.state_transition(TpUartState::WaitingForConfirmation).await;
     }
 }
 
@@ -799,7 +789,7 @@ where
                         LayerOp::Indication(_msg) => {
                             // Link layer typically doesn't receive indications from upper layers
                             // This would be unusual in the KNX stack architecture
-                            trace!("TP-UART Link Layer received unexpected indication");
+                            error!("TP-UART Link Layer received unexpected indication");
                         }
                         LayerOp::Request { message: msg, response_tx } => {
                             // Handle transmission requests
