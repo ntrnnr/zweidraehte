@@ -35,6 +35,25 @@ use super::super::{Inbox, Layer, LayerOp};
 // * If the received Frame is not correct then it shall not be passed to the Data Link Layer user.
 // * Address checking as per 01/03/02 2.4.2
 
+// FIXME: if incoming frame is oversized, reject it, don't ACK
+// FIXME: if outgoing frame is oversized, reject it, return error
+// FIXME: turn TP1 into EMI2 when receiving
+// FIXME: turn EMI2 into TP1 when queuing for transmission
+// FIXME: ACK received frames when we handle the destination group address
+// FIXME: Add support for NCN5120/30/31
+// FIXME: Add support for TPUART1?
+// FIXME: Add support for Elmos
+// FIXME: Do we want to support BUSY singalling? Maybe for flash erasure and similar when the CPU stalls on AVRs or other small controllers?
+// FIXME: add support fo bus monitor mode
+// FIXME: add statistics?
+
+// FIXME: right now we detect end of frames by parsing them and checking the length fields
+//        the TPUART datasheet says we should rather detect this by applying a timeout of 2ms to 2.5ms
+//        we can't do that with an FTDI or similar though, do we keep this?
+// FIXME: Do we want a keepalive mechanism with a timer and state requests? Do we are if the bus is okay or not?
+// FIXME: Do we want a timer that handles confirmations when transmitting?
+//        Right now we trust the TPUART to give us a positive or negative confirmation after n retransmissions
+
 /// TP-Uart services
 const L_DATA_CON: u8 = 0x0b;
 const L_DATA_EXTENDED_IND: u8 = 0x10;
@@ -228,8 +247,7 @@ where
     message_in: Option<Buffer<'static>>,
     message_out: Option<(Buffer<'static>, DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>)>,
     individual_addr: Option<IndividualAddress>,
-    pending_transmission:
-        Option<(KnxMessageBuffer<Buffer<'static>>, DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>)>,
+    pending_transmission: Option<(Buffer<'static>, DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>)>,
 }
 
 impl<'a, U> TpUartLinkLayer<'a, U>
@@ -273,7 +291,7 @@ where
                 }
                 Either::Second(_) => {
                     trace!("TPUART INIT RX: {:x?}", buf[0]);
-                    let _ = self.handle_incoming_byte(buf[0]).await;
+                    self.handle_incoming_byte(buf[0]).await;
                 }
             }
         }
@@ -285,7 +303,7 @@ where
         }
     }
 
-    async fn handle_incoming_byte(&mut self, incoming: u8) -> Option<()> {
+    async fn handle_incoming_byte(&mut self, incoming: u8) {
         // Are we already in the process of receiving a frame?
         if let TpUartState::Receive { .. } = self.state
             && let Some(message_in) = self.message_in.as_mut()
@@ -301,7 +319,11 @@ where
 
             // Try to parse the header of the message we partly received
             match self.header_parse() {
+                // Unable to parse the header yet, continue receiving
                 ReceiveInfo::None => {}
+
+                // We received enough of the frame to parse the header
+                // We'll just store the necessary information we gathered from the header in the state now
                 ReceiveInfo::ParsedHeader { ack, expected_len, is_echo } => {
                     trace!(
                         "Header for ongoing receive parsed, ack: {}, expected_len: {}, is_echo: {}",
@@ -317,13 +339,14 @@ where
                     })
                     .await;
                 }
+
+                // We received the complete frame, we can now process it further
                 ReceiveInfo::ReceiveComplete => {
                     debug!("Received TP1 frame: {:x?}", &self.message_in.as_ref().unwrap()[..]);
 
                     self.state_timeout.stop();
 
                     // Take the received message and send it to network layer as indication
-                    // FIXME: need to check if CRC is correct
                     if let Some(buffer) = self.message_in.take() {
                         let mut checksum = 0u8;
                         for &byte in &buffer[..] {
@@ -350,6 +373,9 @@ where
                         self.pending_transmission.as_ref().map(|(msg, _)| msg)
                     );
                 }
+
+                // If we received an echo, we can be sure that we transmitted this frame onto the bus
+                // Now we need to wait for a positive or negative confirmation
                 ReceiveInfo::TransmitComplete => {
                     trace!("Transmission completed");
                     self.state_timeout.stop();
@@ -357,7 +383,7 @@ where
                 }
             };
 
-            return Some(());
+            return;
         }
 
         // We are receiving a state indication
@@ -384,11 +410,11 @@ where
                 TpUartState::Idle => {
                     // If we have a currently outgoing message and we receive any error
                     // indication except a temperature warning, reschedule it for transmission again
-                    if let Some((msg, chan)) = self.message_out.take()
+                    if let Some(msg) = self.message_out.take()
                         && incoming & 0xF0 != 0
                     {
                         warn!("Rescheduling failed out message for new send attempt");
-                        self.pending_transmission = Some((KnxMessageBuffer::new(msg, ServiceType::L_Data_Req), chan));
+                        self.pending_transmission = Some(msg);
                     }
                 }
 
@@ -428,9 +454,7 @@ where
                         transmitted_data[0] &= 0xFE;
                     }
 
-                    // Transition to idle without blocking
-                    self.state = TpUartState::Idle;
-                    trace!("Transmission complete, transitioned to Idle - ready for new transmissions");
+                    self.state_transition(TpUartState::Idle).await;
 
                     // Send confirmation back to the requester
                     let confirmation = KnxMessageBuffer::new(transmitted_data, ServiceType::L_Data_Con);
@@ -468,8 +492,6 @@ where
         // //     } else if incoming == 0x0C {
         // //         trace!("L_Ackn.ind BSY");
         // //     }
-
-        Some(())
     }
 
     fn header_parse(&mut self) -> ReceiveInfo {
@@ -582,8 +604,9 @@ where
 
         match new_state {
             TpUartState::Start | TpUartState::InReset => {
-                // FIXME: clear message_out, message_in and other data that might be useless now?
+                // Clear any pending message in and out
                 let _ = self.message_in.take();
+                let _ = self.message_out.take();
 
                 // Send reset
                 self.uart.write_all(&[U_RESET_REQ]).await.expect("Unable to send reset command to TP-Uart");
@@ -668,15 +691,15 @@ where
         }
     }
 
-    async fn transmit_frame(
+    async fn queue_frame_transmission(
         &mut self,
-        msg: KnxMessageBuffer<Buffer<'static>>,
+        msg: Buffer<'static>,
         response_tx: DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>,
     ) {
         // If we're idle and no transmission is pending, start transmission immediately
         if self.state == TpUartState::Idle && self.pending_transmission.is_none() {
             trace!("TP-UART is idle, starting transmission immediately");
-            self.start_transmission(msg, response_tx).await;
+            self.transmit_frame(msg, response_tx).await;
             return;
         }
 
@@ -684,7 +707,7 @@ where
         // This implements a "latest wins" policy to avoid blocking
         if let Some((old_msg, old_response_tx)) = self.pending_transmission.take() {
             warn!("Replacing pending transmission - sending error for previous request");
-            let mut error_msg = old_msg;
+            let mut error_msg = KnxMessageBuffer::new(old_msg, ServiceType::L_Data_Con);
             error_msg.ctrl_field_mut().set_c(Confirm::Err);
             old_response_tx.send(error_msg).await;
         }
@@ -694,21 +717,16 @@ where
         trace!("Stored pending transmission (state: {:?})", self.state);
     }
 
-    async fn start_transmission(
+    async fn transmit_frame(
         &mut self,
-        msg: KnxMessageBuffer<Buffer<'static>>,
+        msg: Buffer<'static>,
         response_tx: DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>,
     ) {
-        trace!("Transmitting frame: {:?}", msg);
-
-        // Get the data from the message
-        let data = msg.into_inner();
-
-        trace!("Starting transmission of {} bytes: {:x?}", data.len(), data);
+        trace!("Transmitting frame ({} bytes): {:?}", msg.len(), msg);
 
         // Calculate checksum: XOR all bytes in the frame
         let mut checksum = 0u8;
-        for &byte in &data[..] {
+        for &byte in &msg[..] {
             checksum ^= byte;
         }
         // The checksum is XORed with 0xFF so that XORing all bytes including checksum results in 0
@@ -716,7 +734,7 @@ where
         let checksum = &[checksum];
 
         // Store the outgoing message for echo detection and response handling
-        self.message_out = Some((data, response_tx));
+        self.message_out = Some((msg, response_tx));
 
         let mut it = self.message_out.as_ref().unwrap().0.iter().chain(checksum).enumerate().peekable();
         while let Some((i, b)) = it.next() {
@@ -738,8 +756,6 @@ where
                 panic!("Failed to write to TP-UART: {:?}", cmd);
             }
         }
-
-        self.state_transition(TpUartState::WaitingForConfirmation).await;
     }
 }
 
@@ -780,7 +796,7 @@ where
                 }
                 Either3::Second(_) => {
                     trace!("TPUART RX: {:x?}", buf[0]);
-                    let _ = self.handle_incoming_byte(buf[0]).await;
+                    self.handle_incoming_byte(buf[0]).await;
                 }
                 Either3::Third(layer_op) => {
                     trace!("TP-UART Link Layer received layer op: {:?}", layer_op);
@@ -788,14 +804,13 @@ where
                     match layer_op {
                         LayerOp::Indication(_msg) => {
                             // Link layer typically doesn't receive indications from upper layers
-                            // This would be unusual in the KNX stack architecture
                             error!("TP-UART Link Layer received unexpected indication");
                         }
                         LayerOp::Request { message: msg, response_tx } => {
                             // Handle transmission requests
                             match msg.service_type() {
                                 ServiceType::L_Data_Req => {
-                                    self.transmit_frame(msg, response_tx).await;
+                                    self.queue_frame_transmission(msg.into_inner(), response_tx).await;
                                 }
                                 _ => {
                                     // Return error for unsupported service types
@@ -814,7 +829,7 @@ where
             if self.state == TpUartState::Idle && self.pending_transmission.is_some() {
                 trace!("Starting pending transmission");
                 if let Some((msg, response_tx)) = self.pending_transmission.take() {
-                    self.start_transmission(msg, response_tx).await;
+                    self.transmit_frame(msg, response_tx).await;
                 }
             }
         }
