@@ -2,9 +2,7 @@ use core::ops::{Deref, DerefMut};
 
 use crate::address::{GroupAddress, IndividualAddress};
 
-// Message offsets based on the KAIstack constants
-// This is essentially the TP1 frame format
-// FIXME: What about the length fied in 5[0..3]?
+/// Offsets to fields in the KNX message buffers
 pub mod offsets {
     pub const MSG_CONTROL: usize = 0;
     pub const MSG_SOURCE_ADDR: usize = 1;
@@ -91,6 +89,7 @@ pub enum Tpci {
     Nack(u8),
 }
 
+/// Destination address types
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum DestinationAddress {
     Individual(IndividualAddress),
@@ -166,6 +165,7 @@ create_protocol_enum!(
 );
 
 create_protocol_enum!(
+    /// Frame types
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum FrameType: bool {
         Standard, true, "Standard";
@@ -174,6 +174,7 @@ create_protocol_enum!(
 );
 
 create_protocol_enum!(
+    /// Frame repition flag values
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum Repetition: bool {
         WasNotRepeated, true, "not repeated";
@@ -185,6 +186,7 @@ create_protocol_enum!(
 );
 
 create_protocol_enum!(
+    /// System broadcast flag values
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum SystemBroadcast: bool {
         NoSysBroadcast, true, "No System Broadcast";
@@ -193,6 +195,7 @@ create_protocol_enum!(
 );
 
 create_protocol_enum!(
+    /// ACK type flag values
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum AckType: bool {
         AckRequested, true, "ACK requested";
@@ -201,6 +204,7 @@ create_protocol_enum!(
 );
 
 create_protocol_enum!(
+    /// Confirmation flag values
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum Confirm: bool {
         Err, true, "Error";
@@ -208,7 +212,7 @@ create_protocol_enum!(
     }
 );
 
-/// A KNX message CTRL1 field.
+/// A KNX message CTRL1 field
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct Ctrl1Field(u8);
@@ -299,6 +303,7 @@ impl From<u8> for Ctrl1Field {
 }
 
 create_protocol_enum!(
+    /// TPCI Data or Control packet flag
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum DataControl: bool {
         Control, true, "Control";
@@ -307,6 +312,7 @@ create_protocol_enum!(
 );
 
 create_protocol_enum!(
+    /// TPCI Numbered or unnumbered packet flag
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum Numbered: bool {
         Numbered, true, "Numbered";
@@ -326,7 +332,7 @@ create_protocol_enum!(
     }
 );
 
-/// A KNX message TPCI field.
+/// A KNX message TPCI field
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct TpciField(u8);
@@ -397,9 +403,45 @@ impl TpciField {
     }
 }
 
+// FIXME: Introduce a struct for the NPDU field like for Ctrl
+// FIXME: document the usage of bit fields of the NPDU field below
+
 /// A KNX message buffer
 ///
-/// This represents a KNX message in EMI2 format
+/// This represents a KNX message in a format that resembles the TP1 standard
+/// frame format, but with the change that the length field is omitted and
+/// replaced with the EFF field that could be present in the extended control
+/// field in an extended TP1 frame. The length is determined by the size of the
+/// used part of the buffer holding this message and needs to be tracked by the
+/// inner buffer itself.
+///
+///  +--------+---------+---------+--------+---------+--------------------+
+///  | CTRL   | SRC     | DEST    | AT/HC/ | TPCI    | DATA               |
+///  | Field  | Address | Address | EFF    | /APCI   | (variable length)  |
+///  +--------+---------+---------+--------+---------+--------------------+
+///  | 1 byte | 2 bytes | 2 bytes | 1 byte | 1 byte  | 0..(buffer_size-7) |
+///  +--------+---------+---------+--------+---------+--------------------+
+///
+///   Bit breakdown for CTRL field (Ctrl1Field, byte 0):
+///     7   6   5   4   3   2   1   0
+///   +---+---+---+---+---+---+---+---+
+///   |FT | - | R | SB| PR| PR| A | C |
+///   +---+---+---+---+---+---+---+---+
+///   FT  = Frame Type (bit 7, 0: standard, 1: extended)
+///   -   = (bit 6, unused)
+///   R   = Repeat Flag (bit 5)
+///   SB  = System Broadcast (bit 4)
+///   PR  = Priority (bits 3-2, 2 bits)
+///   A   = Acknowledge (bit 1, only valid for L_Data.req)
+///   C   = Confirm (bit 0, only valid for L_Data.con)
+///
+///   Field meanings:
+///   - FT: Frame type (standard/extended)
+///   - R: Repeat flag
+///   - SB: System broadcast
+///   - PR: Priority
+///   - A: Acknowledge (L_Data.req only)
+///   - C: Confirm (L_Data.con only)
 pub struct KnxMessageBuffer<B: Deref<Target = [u8]>> {
     service_type: ServiceType,
     buf: B,
