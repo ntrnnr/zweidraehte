@@ -26,7 +26,7 @@ use core::{cell::RefCell, mem::MaybeUninit};
 use const_default::ConstDefault;
 use embassy_sync::{
     blocking_mutex::raw::{NoopRawMutex, RawMutex},
-    channel::{Channel, DynamicReceiver, DynamicSender, Receiver, Sender},
+    channel::{Channel, DynamicReceiver, DynamicSender},
 };
 use messages::knx::KnxMessageBuffer;
 use objects::tables::AssociationTable;
@@ -252,11 +252,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
 
         debug!("Injecting linklayer message: {:x?}", msg);
 
-        let mut buffer = self.inner.buffer_manager.borrow_mut().alloc().await;
-        // FIXME: add .fill_from_slice() to Buffer which sets the len and fills it?
-        buffer.set_len(msg.len());
-        buffer[..msg.len()].copy_from_slice(msg);
-
+        let buffer = self.inner.buffer_manager.borrow_mut().alloc_from_slice(msg).await;
         let knx_buffer = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
         self.linklayer_inject_sender.send(knx_buffer).await;
     }

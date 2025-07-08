@@ -360,17 +360,17 @@ impl ComObjectFlags {
     const P_MAX: u8 = (1 << Self::P_LEN) - 1; // Max priority value (3)
     const P_MASK: u8 = (Self::P_MAX as u8) << Self::P_SHIFT;
 
-    // /// Common group object configuration: Transmit to bus (T)
-    // const CONFIG_T: u8 = Self::CE_FLAG_MASK | Self::TE_FLAG_MASK;
+    /// Common group object configuration: Transmit to bus (T)
+    pub const CONFIG_T: u8 = Self::CE_FLAG_MASK | Self::TE_FLAG_MASK;
 
-    // /// Common group object configuration: Transmit to bus, read from bus (RT)
-    // const CONFIG_RT: u8 = Self::CE_FLAG_MASK | Self::TE_FLAG_MASK | Self::RE_FLAG_MASK;
+    /// Common group object configuration: Transmit to bus, read from bus (RT)
+    pub const CONFIG_RT: u8 = Self::CE_FLAG_MASK | Self::TE_FLAG_MASK | Self::RE_FLAG_MASK;
 
-    // /// Common group object configuration: Receive from bus (WU)
-    // const CONFIG_WU: u8 = Self::CE_FLAG_MASK | Self::WE_FLAG_MASK | Self::UE_FLAG_MASK;
+    /// Common group object configuration: Receive from bus (WU)
+    pub const CONFIG_WU: u8 = Self::CE_FLAG_MASK | Self::WE_FLAG_MASK | Self::UE_FLAG_MASK;
 
     /// Common group object configuration: Transmit to bus, receive, read from bus (RTWU)
-    const CONFIG_RTWU: u8 =
+    pub const CONFIG_RTWU: u8 =
         Self::CE_FLAG_MASK | Self::TE_FLAG_MASK | Self::WE_FLAG_MASK | Self::UE_FLAG_MASK | Self::RE_FLAG_MASK;
 }
 
@@ -416,6 +416,12 @@ impl ComObjectFlags {
     pub fn priority(&self) -> Priority {
         let p = (self.0 & Self::P_MASK) >> Self::P_SHIFT;
         Priority::from(p)
+    }
+
+    /// Check if flags contain a specific flag pattern
+    #[inline]
+    pub fn contains(&self, flag: u8) -> bool {
+        (self.0 & flag) == flag
     }
 }
 

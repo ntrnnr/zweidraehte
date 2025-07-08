@@ -115,7 +115,6 @@ create_protocol_enum!(
     /// 11xx xxxx   - Escaped APCI codes
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum ApciCode: u8 {
-        Empty,                      0,      "<Empty>";
         GroupValueRead,             0,      "A_GroupValue_Read";
         GroupValueResponse,         1,      "A_GroupValue_Response";
         GroupValueWrite,            2,      "A_GroupValue_Write";
@@ -138,6 +137,8 @@ create_protocol_enum!(
         FunctionPropertyCommand,    0x87,   "A_FunctionPropertyCommand";
 
         PropertyValueRead,          0xd5,   "A_PropertyValue_Read";
+
+        Empty,                      0,      "<Empty>";
         _,                                  "Unknown APCI code 0x{:x}";
     }
 );
@@ -876,7 +877,7 @@ mod tests {
         ];
 
         for (t, e) in KNX_TP1_TEST_FRAMES.iter().zip(EXPECTED_APCIS.iter()) {
-            let msg = KnxMessageBuffer { buf: *t, service_type: ServiceType::L_Data_Ind, len: t.len() as u8 };
+            let msg = KnxMessageBuffer::new(*t, ServiceType::L_Data_Ind);
             assert_eq!(msg.get_apci_code(), *e, "APCI code mismatch for test frame: {:x?}", t);
         }
     }
@@ -893,7 +894,7 @@ mod tests {
         ];
 
         for (t, e) in KNX_TP1_TEST_FRAMES.iter().zip(EXPECTED_TPCIS.iter()) {
-            let msg = KnxMessageBuffer { buf: *t, service_type: ServiceType::L_Data_Ind, len: t.len() as u8 };
+            let msg = KnxMessageBuffer { buf: *t, service_type: ServiceType::L_Data_Ind };
             assert_eq!(msg.get_tpci(), *e, "TPCI code mismatch for test frame: {:x?}", t);
         }
     }

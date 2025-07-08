@@ -1,7 +1,5 @@
 #![allow(async_fn_in_trait)]
 
-use core::ops::{Deref, DerefMut};
-
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 use embassy_sync::channel::{Channel, DynamicSender, Receiver, Sender};
 

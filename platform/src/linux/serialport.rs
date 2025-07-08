@@ -48,11 +48,11 @@ impl Default for Options {
 }
 
 pub struct AsyncSerialPort {
-    t: TTYPort,
+    _t: TTYPort,
     s: Async<OwnedFd>,
 }
 
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
 impl AsyncSerialPort {
     pub fn open(options: Options) -> Result<Self> {
@@ -69,7 +69,7 @@ impl AsyncSerialPort {
         let fd = unsafe { OwnedFd::from_raw_fd(t.as_raw_fd()) };
         tcflush(&fd, FlushArg::TCIOFLUSH).unwrap();
 
-        Ok(Self { t, s: Async::new(fd)? })
+        Ok(Self { _t: t, s: Async::new(fd)? })
     }
 }
 

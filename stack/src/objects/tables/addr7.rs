@@ -188,7 +188,7 @@ pub type AddrTab7<const MAX_ENTRIES: usize> = Table<AddrTab7Impl<{ (MAX_ENTRIES 
 mod test {
     use crate::{
         address::GroupAddress as KNXGroupAddress,
-        objects::tables::{AddressTable, LoadEvent, LoadState, LoadableTable, TableMemory},
+        objects::tables::{LoadEvent, LoadState, LoadableTable, TableMemory},
     };
 
     use super::AddrTab7;

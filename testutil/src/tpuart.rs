@@ -111,9 +111,7 @@ async fn main(spawner: Spawner) {
     loop {
         timer.next().await;
 
-        let mut test_buffer = bm.borrow().alloc().await;
-        test_buffer.set_len(8);
-        test_buffer.clone_from_slice(&[0xbc, 0x10, 0x64, 0x18, 0x00, 0xe1, 0x00, 0x80]);
+        let test_buffer = bm.borrow().alloc_from_slice(&[0xbc, 0x10, 0x64, 0x18, 0x00, 0xe1, 0x00, 0x80]).await;
         let test_msg = KnxMessageBuffer::new(test_buffer, ServiceType::L_Data_Req);
 
         println!("Transmitting test message: {:x?}", test_msg.buf());

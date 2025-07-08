@@ -8,6 +8,49 @@ use embassy_sync::{
     channel::{self, Channel, DynamicReceiver, DynamicSender},
 };
 
+/// Error type for buffer operations
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BufferError {
+    InsufficientCapacity { requested: usize, available: usize },
+}
+
+pub trait MessageBuffer: Deref<Target = [u8]> + DerefMut<Target = [u8]> + Sized {
+    fn with_len(mut self, len: usize) -> Self {
+        self.set_len(len);
+        self
+    }
+
+    fn from_slice(mut self, data: &[u8]) -> Self {
+        self.fill_from_slice(data);
+        self
+    }
+
+    fn fill_from_slice(&mut self, data: &[u8]) {
+        self.set_len(data.len());
+        self[..data.len()].copy_from_slice(data);
+    }
+
+    fn push(&mut self, byte: u8) {
+        let old_len = self.len();
+        self.set_len(old_len + 1);
+
+        self[old_len] = byte;
+    }
+
+    fn try_set_len(&mut self, len: usize) -> Result<(), BufferError> {
+        if len > self.capacity() {
+            return Err(BufferError::InsufficientCapacity { requested: len, available: self.capacity() });
+        }
+        self.set_len(len);
+        Ok(())
+    }
+
+    fn len(&self) -> usize;
+    fn set_len(&mut self, len: usize);
+    fn capacity(&self) -> usize;
+    fn resize(&mut self, new_len: usize, fill_value: u8);
+}
+
 /// A message buffer managed by the [`BufferManager`]
 #[clippy::has_significant_drop]
 pub struct Buffer<'a> {
@@ -16,24 +59,35 @@ pub struct Buffer<'a> {
     sender: channel::DynamicSender<'a, NonNull<[u8]>>,
 }
 
-impl Buffer<'_> {
-    pub fn len(&self) -> usize {
+impl MessageBuffer for Buffer<'_> {
+    fn len(&self) -> usize {
         self.len
     }
 
-    pub fn set_len(&mut self, len: usize) {
-        if len > self.buffer.len() {
-            panic!("Length exceeds buffer size: {} > {}", len, self.buffer.len());
+    fn set_len(&mut self, len: usize) {
+        if len > self.capacity() {
+            panic!("Length exceeds buffer capacity: {} > {}", len, self.capacity());
         }
 
         self.len = len;
     }
 
-    pub fn push(&mut self, byte: u8) {
-        let old_len = self.len();
-        self.set_len(old_len + 1);
+    fn capacity(&self) -> usize {
+        unsafe { self.buffer.as_ref().len() }
+    }
 
-        self[old_len] = byte;
+    fn resize(&mut self, new_len: usize, fill_value: u8) {
+        if new_len > self.capacity() {
+            panic!("Length exceeds buffer capacity: {} > {}", new_len, self.capacity());
+        }
+
+        let old_len = self.len;
+        if new_len > old_len {
+            self.len = new_len;
+            self[old_len..new_len].fill(fill_value);
+        } else {
+            self.len = new_len;
+        }
     }
 }
 
@@ -53,6 +107,11 @@ impl DerefMut for Buffer<'_> {
 
 impl Drop for Buffer<'_> {
     fn drop(&mut self) {
+        // Clear the buffer
+        unsafe {
+            self.buffer.as_mut().fill(0);
+        }
+
         // Send the buffer back to the manager.
         // This operation cannot fail, as we allocated a capacity equal to the
         // number of buffers we create and manage.
@@ -78,6 +137,33 @@ impl<'a> DynBufferManager<'a> {
     /// In case no free buffers are available, this function will asynchronously block.
     pub async fn alloc(&self) -> Buffer<'a> {
         Buffer { buffer: self.buffer_receiver.receive().await, len: 0, sender: self.buffer_sender }
+    }
+
+    /// Allocate a new [`Buffer`] with the specified size.
+    ///
+    /// In case no free buffers are available, this function will asynchronously block.
+    pub async fn alloc_with_size(&self, size: usize) -> Buffer<'a> {
+        let mut buffer = self.alloc().await;
+        buffer.set_len(size);
+        buffer
+    }
+
+    /// Allocate a new [`Buffer`] and fill it with data from a slice.
+    ///
+    /// In case no free buffers are available, this function will asynchronously block.
+    pub async fn alloc_from_slice(&self, data: &[u8]) -> Buffer<'a> {
+        let mut buffer = self.alloc().await;
+        buffer.fill_from_slice(data);
+        buffer
+    }
+
+    /// Allocate a new [`Buffer`] with the specified size, filled with zeros.
+    ///
+    /// In case no free buffers are available, this function will asynchronously block.
+    pub async fn alloc_zeroed(&self, size: usize) -> Buffer<'a> {
+        let mut buffer = self.alloc().await;
+        buffer.resize(size, 0);
+        buffer
     }
 }
 
@@ -106,18 +192,106 @@ impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-//     #[test]
-//     fn test_buffers() {
-//         let mut buffers: [[u8; _]; _] = [[0u8; 32]; 10];
-//         let allocator = unsafe { BufferManager::new(&mut buffers) };
+    #[test]
+    fn test_buffer_api_improvements() {
+        // Create a simple buffer for testing
+        let mut data = [0u8; 64];
+        let buffer_ptr = core::ptr::NonNull::from(data.as_mut_slice());
 
-//         let a = allocator.dyn_buffer_manager();
-//         let b = allocator.dyn_buffer_manager();
+        // Create a mock channel for the buffer
+        let channel = Channel::<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::ptr::NonNull<[u8]>, 1>::new();
+        let sender = channel.sender();
+        let mut buffer = Buffer { buffer: buffer_ptr, len: 0, sender: sender.into() };
 
-//         // FIXME: need proper tests with async runtime
-//     }
-// }
+        // Test basic functionality
+        assert_eq!(buffer.len(), 0);
+        assert_eq!(buffer.capacity(), 64);
+
+        // Test set_len
+        buffer.set_len(10);
+        assert_eq!(buffer.len(), 10);
+
+        // Test try_set_len success
+        assert!(buffer.try_set_len(20).is_ok());
+        assert_eq!(buffer.len(), 20);
+
+        // Test try_set_len failure
+        assert!(buffer.try_set_len(100).is_err());
+        if let Err(BufferError::InsufficientCapacity { requested, available }) = buffer.try_set_len(100) {
+            assert_eq!(requested, 100);
+            assert_eq!(available, 64);
+        }
+
+        // Test fill_from_slice
+        let test_data = [1, 2, 3, 4, 5];
+        buffer.fill_from_slice(&test_data);
+        assert_eq!(buffer.len(), 5);
+        assert_eq!(&buffer[..], &test_data);
+
+        // Test resize with fill
+        buffer.resize(10, 0xFF);
+        assert_eq!(buffer.len(), 10);
+        assert_eq!(&buffer[..5], &test_data);
+        assert_eq!(&buffer[5..], &[0xFF; 5]);
+
+        // Test resize smaller
+        buffer.resize(3, 0x00);
+        assert_eq!(buffer.len(), 3);
+        assert_eq!(&buffer[..], &[1, 2, 3]);
+
+        // Test push
+        buffer.push(42);
+        assert_eq!(buffer.len(), 4);
+        assert_eq!(buffer[3], 42);
+    }
+
+    #[test]
+    fn test_fluent_api() {
+        let mut data = [0u8; 32];
+        let buffer_ptr = core::ptr::NonNull::from(data.as_mut_slice());
+
+        let channel = Channel::<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::ptr::NonNull<[u8]>, 1>::new();
+        let sender = channel.sender();
+        let buffer = Buffer { buffer: buffer_ptr, len: 0, sender: sender.into() };
+
+        // Test with_len
+        let buffer = buffer.with_len(5);
+        assert_eq!(buffer.len(), 5);
+
+        // Test from_slice
+        let test_data = [10, 20, 30];
+        let buffer = buffer.from_slice(&test_data);
+        assert_eq!(buffer.len(), 3);
+        assert_eq!(&buffer[..], &test_data);
+    }
+
+    #[test]
+    #[should_panic(expected = "Length exceeds buffer capacity")]
+    fn test_set_len_panic() {
+        let mut data = [0u8; 16];
+        let buffer_ptr = core::ptr::NonNull::from(data.as_mut_slice());
+
+        let channel = Channel::<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::ptr::NonNull<[u8]>, 1>::new();
+        let sender = channel.sender();
+        let mut buffer = Buffer { buffer: buffer_ptr, len: 0, sender: sender.into() };
+
+        buffer.set_len(32); // Should panic
+    }
+
+    #[test]
+    #[should_panic(expected = "Length exceeds buffer capacity")]
+    fn test_resize_panic() {
+        let mut data = [0u8; 16];
+        let buffer_ptr = core::ptr::NonNull::from(data.as_mut_slice());
+
+        let channel = Channel::<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::ptr::NonNull<[u8]>, 1>::new();
+        let sender = channel.sender();
+        let mut buffer = Buffer { buffer: buffer_ptr, len: 0, sender: sender.into() };
+
+        buffer.resize(32, 0xFF); // Should panic
+    }
+}

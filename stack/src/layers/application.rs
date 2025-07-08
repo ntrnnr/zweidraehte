@@ -218,10 +218,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     msg_offset
                 );
 
-                // Allocate a new message, set its type and length
-                let mut msg_buf = self.buffer_manager.borrow().alloc().await;
-                // FIXME: Nicer API to set len etc.?
-                msg_buf.set_len(object_size + msg_offset);
+                // Allocate a new message with the required size
+                let msg_buf = self.buffer_manager.borrow().alloc_with_size(object_size + msg_offset).await;
                 let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_GroupData_Req);
 
                 // Fill in a few other fields

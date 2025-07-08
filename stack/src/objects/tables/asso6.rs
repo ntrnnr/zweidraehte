@@ -328,8 +328,8 @@ mod test {
         assert_eq!(idx, 1);
         assert_eq!(ast.find_next_tsap(7, &mut idx), None);
 
-        // Check get_tsap_for_asap
-        assert_eq!(ast.get_tsap_for_asap(10), Some(11));
+        // Check tsaps_for_asap
+        assert_eq!(ast.tsaps_for_asap(10).next(), Some(11));
 
         // // Check get_association_index_for_asap
         // assert_eq!(ast.get_association_index_for_asap(3), Some(0));
@@ -440,8 +440,8 @@ mod test {
     }
 
     #[test]
-    fn asso6_get_tsap_for_asap() {
-        // Test the get_tsap_for_asap function
+    fn asso6_tsaps_for_asap() {
+        // Test the tsaps_for_asap function
         let mut ast = AssoTab6::<20>::new();
 
         // Setup table with multiple mappings:
@@ -474,12 +474,12 @@ mod test {
         ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
 
         // Test finding first TSAP for each ASAP
-        assert_eq!(ast.get_tsap_for_asap(1), Some(2));
-        assert_eq!(ast.get_tsap_for_asap(3), Some(4));
-        assert_eq!(ast.get_tsap_for_asap(5), Some(6)); // Returns first match
+        assert_eq!(ast.tsaps_for_asap(1).next(), Some(2));
+        assert_eq!(ast.tsaps_for_asap(3).next(), Some(4));
+        assert_eq!(ast.tsaps_for_asap(5).next(), Some(6)); // Returns first match
 
         // Test finding TSAP for non-existent ASAP
-        assert_eq!(ast.get_tsap_for_asap(10), None);
+        assert_eq!(ast.tsaps_for_asap(10).next(), None);
     }
 
     // #[test]
