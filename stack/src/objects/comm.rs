@@ -1,5 +1,9 @@
 use crate::dpt::DatapointType;
 
+// FIXME: These need to follow the defined standard - rename a few?
+//        Make sure the numeric values match the standard?
+//        Conformance tests will access them to check for certain flags set in different circumstances
+// FIXME: Do we clear Updated? When do we clear it? When do we set it?
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 /// Status of a communication object
@@ -70,30 +74,54 @@ pub struct ComObjectInfoMut<'a> {
     pub value: &'a mut [u8],
 }
 
+#[const_trait]
+pub trait ComObjectIndex: Clone + Sized {
+    fn from_index(idx: u16) -> Option<Self>;
+    fn index(self) -> u16;
+}
+
 pub trait ComObjects {
+    type Index: ComObjectIndex;
+
     fn new() -> Self;
     fn info<'a>(&'a self, idx: u16) -> ComObjectInfo<'a>;
     fn info_mut<'a>(&'a mut self, idx: u16) -> ComObjectInfoMut<'a>;
 
+    #[inline]
     fn status(&self, idx: u16) -> ComObjectStatus {
         let info = self.info(idx);
         *info.status
     }
 
+    #[inline]
     fn set_status(&mut self, idx: u16, status: ComObjectStatus) {
         let info = self.info_mut(idx);
         *info.status = status;
     }
 
+    #[inline]
     fn value(&self, idx: u16) -> &[u8] {
         let info = self.info(idx);
         info.value
     }
 
+    #[inline]
     fn value_mut(&mut self, idx: u16) -> &mut [u8] {
         let info = self.info_mut(idx);
         info.value
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComObjectEvent {
+    /// A communication object was updated remotely by a GroupValueWrite
+    Updated,
+
+    /// A communication object was updated locally
+    LocallyUpdated,
+
+    /// A response to a read request was received
+    ReadResponse,
 }
 
 #[macro_export]
@@ -118,20 +146,26 @@ macro_rules! define_com_objects {
                 #[allow(unused_imports)]
                 use $crate::dpt::*;
 
+                use embassy_sync::{
+                    pubsub::{PubSubChannel, PubSubBehavior, DynSubscriber},
+                    blocking_mutex::raw::NoopRawMutex
+                };
+
+
                 /// Enum with all communication object names and their indices
                 #[allow(dead_code)]
                 #[derive(core::marker::ConstParamTy, Debug, Clone, Copy, PartialEq, Eq)]
                 #[repr(u16)]
-                pub enum ComObjectIndex {
+                pub enum Index {
                     $(
                         [<$obj_name:camel>] = $idx,
                     )*
                 }
 
                 #[allow(dead_code)]
-                impl ComObjectIndex {
+                impl ComObjectIndex for Index {
                     /// Convert from usize index to enum if valid
-                    pub const fn from_index(idx: u16) -> Option<Self> {
+                    fn from_index(idx: u16) -> Option<Self> {
                         match idx {
                             $(
                                 $idx => Some(Self::[<$obj_name:camel>]),
@@ -141,7 +175,7 @@ macro_rules! define_com_objects {
                     }
 
                     /// Get the index value
-                    pub const fn index(self) -> u16 {
+                    fn index(self) -> u16 {
                         self as u16
                     }
                 }
@@ -156,6 +190,8 @@ macro_rules! define_com_objects {
                 }
 
                 impl ComObjects for $struct_name {
+                    type Index = Index;
+
                     fn new() -> Self {
                         Self {
                             $(
@@ -165,9 +201,9 @@ macro_rules! define_com_objects {
                     }
 
                     fn info<'a>(&'a self, idx: u16) -> ComObjectInfo<'a> {
-                        match ComObjectIndex::from_index(idx).unwrap() {
+                        match Index::from_index(idx).unwrap() {
                             $(
-                                ComObjectIndex::[<$obj_name:camel>] => ComObjectInfo {
+                                Index::[<$obj_name:camel>] => ComObjectInfo {
                                     status: &self.[<$obj_name>].status,
                                     value: self.[<$obj_name>].value.as_ref(),
                                 },
@@ -176,15 +212,16 @@ macro_rules! define_com_objects {
                     }
 
                     fn info_mut<'a>(&'a mut self, idx: u16) -> ComObjectInfoMut<'a> {
-                        match ComObjectIndex::from_index(idx).unwrap() {
+                        match Index::from_index(idx).unwrap() {
                             $(
-                                ComObjectIndex::[<$obj_name:camel>] => ComObjectInfoMut {
+                                Index::[<$obj_name:camel>] => ComObjectInfoMut {
                                     status: &mut self.[<$obj_name>].status,
                                     value: self.[<$obj_name>].value.as_mut(),
                                 },
                             )*
                         }
                     }
+
                 }
             }
         }

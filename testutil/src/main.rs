@@ -5,6 +5,8 @@ use std::fs::File;
 
 use const_default::ConstDefault;
 use embassy_executor::Spawner;
+use embassy_futures::select::{Either, select};
+use embassy_sync::pubsub::{PubSubBehavior, WaitResult};
 use embassy_time::Timer;
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
@@ -13,7 +15,7 @@ use zweidraehte::{
     Runner, StackDefinition, StackResources, define_com_objects,
     dpt::DPT_Switch,
     objects::{
-        comm::ComObjects,
+        comm::{ComObjectIndex, ComObjects},
         tables::{
             AddressTable, AssociationTable, CommunicationObjectTable, addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7,
         },
@@ -28,14 +30,14 @@ pub struct AppParameters {
 define_com_objects! {
     pub mod comm_objs {
         pub struct AppComObjects {
-            0 => pub co_in0: DPT_Switch = DPT_Switch::from(false),
-            1 => pub co_in1: DPT_Switch = DPT_Switch::from(false),
-            2 => pub co_in2: DPT_Switch = DPT_Switch::from(false),
-            3 => pub co_in3: DPT_Switch = DPT_Switch::from(false),
-            4 => pub co_out0: DPT_Switch = DPT_Switch::from(false),
-            5 => pub co_out1: DPT_Switch = DPT_Switch::from(false),
-            6 => pub co_out2: DPT_Switch = DPT_Switch::from(false),
-            7 => pub co_out3: DPT_Switch = DPT_Switch::from(false),
+            1 => pub co_in0: DPT_Switch = DPT_Switch::from(false),
+            2 => pub co_in1: DPT_Switch = DPT_Switch::from(false),
+            3 => pub co_in2: DPT_Switch = DPT_Switch::from(false),
+            4 => pub co_in3: DPT_Switch = DPT_Switch::from(false),
+            5 => pub co_out0: DPT_Switch = DPT_Switch::from(false),
+            6 => pub co_out1: DPT_Switch = DPT_Switch::from(false),
+            7 => pub co_out2: DPT_Switch = DPT_Switch::from(false),
+            8 => pub co_out3: DPT_Switch = DPT_Switch::from(false),
         }
     }
 }
@@ -90,7 +92,7 @@ async fn main(spawner: Spawner) {
     }
 
     println!("Communication table contents:");
-    for i in 0..stored_data.co_tab.entry_count() {
+    for i in 1..=stored_data.co_tab.entry_count() {
         println!("{i}: {:?}", stored_data.co_tab.get_object(i));
     }
 
@@ -106,14 +108,27 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(run_stack(runner)).unwrap();
 
+    // GroupValueReadResponse for 1/0/4
     stack.debug_inject_linklayer_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x41][..]).await;
+
+    // GroupValueWrite.Ind for 1/0/4
     stack.debug_inject_linklayer_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x81][..]).await;
 
-    loop {
-        Timer::after_millis(1000).await;
+    let mut events = stack.events();
 
-        stack.group_value_write_request(comm_objs::ComObjectIndex::CoIn0.index(), DPT_Switch::from(true)).await;
-        //stack.group_value_read_request(comm_objs::ComObjectIndex::CoIn0.index()).await;
+    loop {
+        match select(Timer::after_millis(1000), events.next_message()).await {
+            Either::First(_) => {
+                stack.update_object(comm_objs::Index::CoIn0.index(), DPT_Switch::from(true)).await;
+                //stack.read_object(comm_objs::Index::CoIn0.index()).await;
+            }
+            Either::Second(WaitResult::Message((index, event))) => {
+                println!("Event received: {:?} for index {:?}", event, index);
+            }
+            Either::Second(WaitResult::Lagged(x)) => {
+                println!("Event channel lagged by {} messages", x);
+            }
+        }
 
         // FIXME: stack needs to subscribe on objects and return events on subscribed object:
         //  - Update (GroupValueResponse)

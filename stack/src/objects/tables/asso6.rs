@@ -46,8 +46,7 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
 
                 if self.tsap(*start_idx) == tsap {
                     // Found a match, return the associated ASAP
-                    // Subtract 1 to match the C implementation's behavior (AST_GetTabVal(...) - 1)
-                    return Some((self.asap(*start_idx) - 1, *start_idx));
+                    return Some((self.asap(*start_idx), *start_idx));
                 }
             }
 
@@ -57,8 +56,7 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
             // Table is empty, assume default table where ASAP = TSAP
             if *start_idx == 0 {
                 *start_idx = 1;
-                // Subtract 1 to match the C implementation's behavior
-                return Some((tsap - 1, 1));
+                return Some((tsap, 1));
             }
 
             None
@@ -73,7 +71,7 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
     /// Returns `Some((tsap, idx))` with the found TSAP and its index if found,
     /// or `None` if no matching entry is found.
     ///
-    /// When the table is empty, it assumes a default mapping where TSAP = ASAP + 1.
+    /// When the table is empty, it assumes a default mapping where TSAP = ASAP.
     fn find_next_tsap(&self, asap: u16, start_idx: &mut u16) -> Option<(u16, u16)> {
         let count = self.entry_count();
 
@@ -82,7 +80,7 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
             while *start_idx < count {
                 *start_idx += 1;
 
-                if self.asap(*start_idx) == asap + 1 {
+                if self.asap(*start_idx) == asap {
                     // Found a match, return the associated TSAP
                     return Some((self.tsap(*start_idx), *start_idx));
                 }
@@ -91,10 +89,10 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
             // No match found
             None
         } else {
-            // Table is empty, assume default table where TSAP = ASAP + 1
+            // Table is empty, assume default table where TSAP = ASAP
             if *start_idx == 0 {
                 *start_idx = 1;
-                return Some((asap + 1, 1));
+                return Some((asap, 1));
             }
 
             None
@@ -207,13 +205,13 @@ impl<const N: usize> AssociationTable for Table<AssoTab6Impl<N>> {
 
         if count == 0 {
             // Table is empty, assume default table where TSAP == ASAP
-            trace!("Table is empty, assuming default TSAP {} for ASAP {}", asap + 1, asap);
-            return Some(asap + 1);
+            trace!("Table is empty, assuming default TSAP {} for ASAP {}", asap, asap);
+            return Some(asap);
         }
 
-        // Find the first association where ASAP matches (asap + 1 since table stores 1-indexed values)
+        // Find the first association where ASAP matches
         for i in 1..=count {
-            if self.asap(i) == asap + 1 {
+            if self.asap(i) == asap {
                 let tsap = self.tsap(i);
                 trace!("Found sending TSAP {} for ASAP {}", tsap, asap);
                 return Some(tsap);
@@ -316,27 +314,27 @@ mod test {
 
         // Test default mappings with empty table
 
-        // Check TSAP → ASAP mapping: ASAP = TSAP - 1
+        // Check TSAP → ASAP mapping: ASAP = TSAP
         let mut idx = 0;
-        assert_eq!(ast.find_next_asap(5, &mut idx), Some((4, 1)));
+        assert_eq!(ast.find_next_asap(5, &mut idx), Some((5, 1)));
         assert_eq!(idx, 1);
         assert_eq!(ast.find_next_asap(5, &mut idx), None);
 
-        // Check ASAP → TSAP mapping: TSAP = ASAP + 1
+        // Check ASAP → TSAP mapping
         idx = 0;
-        assert_eq!(ast.find_next_tsap(7, &mut idx), Some((8, 1)));
+        assert_eq!(ast.find_next_tsap(7, &mut idx), Some((7, 1)));
         assert_eq!(idx, 1);
         assert_eq!(ast.find_next_tsap(7, &mut idx), None);
 
         // Check tsaps_for_asap
-        assert_eq!(ast.tsaps_for_asap(10).next(), Some(11));
+        assert_eq!(ast.tsaps_for_asap(10).next(), Some(10));
 
         // // Check get_association_index_for_asap
         // assert_eq!(ast.get_association_index_for_asap(3), Some(0));
 
         // Check iterators with empty table
-        assert_eq!(ast.tsaps_for_asap(12).collect::<Vec<_>>(), vec![13]);
-        assert_eq!(ast.asaps_for_tsap(9).collect::<Vec<_>>(), vec![8]);
+        assert_eq!(ast.tsaps_for_asap(12).collect::<Vec<_>>(), vec![12]);
+        assert_eq!(ast.asaps_for_tsap(9).collect::<Vec<_>>(), vec![9]);
     }
 
     #[test]
@@ -375,13 +373,13 @@ mod test {
 
         // Test finding ASAPs for TSAP 5 (which has multiple ASAPs)
         let mut idx = 0;
-        assert_eq!(ast.find_next_asap(5, &mut idx), Some((5, 3))); // First ASAP (idx=3)
-        assert_eq!(ast.find_next_asap(5, &mut idx), Some((6, 4))); // Second ASAP (idx=4)
+        assert_eq!(ast.find_next_asap(5, &mut idx), Some((6, 3))); // First ASAP (idx=3)
+        assert_eq!(ast.find_next_asap(5, &mut idx), Some((7, 4))); // Second ASAP (idx=4)
         assert_eq!(ast.find_next_asap(5, &mut idx), None); // No more ASAPs
 
         // Test finding ASAP for TSAP 1 (which has one ASAP)
         idx = 0;
-        assert_eq!(ast.find_next_asap(1, &mut idx), Some((1, 1))); // First ASAP (idx=1)
+        assert_eq!(ast.find_next_asap(1, &mut idx), Some((2, 1))); // First ASAP (idx=1)
         assert_eq!(ast.find_next_asap(1, &mut idx), None); // No more ASAPs
 
         // Test finding ASAP for TSAP 9 (which doesn't exist in table)
@@ -414,25 +412,25 @@ mod test {
         ]);
         ast.write(0, &[0x00, 0x04]); // 4 entries
         ast.write(2, &[0x00, 0x02]); // Entry 1: TSAP = 2
-        ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 1+1 (stored as 2)
+        ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 2
         ast.write(6, &[0x00, 0x04]); // Entry 2: TSAP = 4
-        ast.write(8, &[0x00, 0x04]); // Entry 2: ASAP = 3+1 (stored as 4)
+        ast.write(8, &[0x00, 0x04]); // Entry 2: ASAP = 4
         ast.write(10, &[0x00, 0x06]); // Entry 3: TSAP = 6
-        ast.write(12, &[0x00, 0x06]); // Entry 3: ASAP = 5+1 (stored as 6)
+        ast.write(12, &[0x00, 0x06]); // Entry 3: ASAP = 6
         ast.write(14, &[0x00, 0x07]); // Entry 4: TSAP = 7
-        ast.write(16, &[0x00, 0x06]); // Entry 4: ASAP = 5+1 (stored as 6) (duplicate)
+        ast.write(16, &[0x00, 0x06]); // Entry 4: ASAP = 6 (duplicate)
         ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
 
-        // Test finding TSAPs for ASAP 5 (which has multiple TSAPs)
+        // Test finding TSAPs for ASAP 6 (which has multiple TSAPs)
         let mut idx = 0;
-        assert_eq!(ast.find_next_tsap(5, &mut idx), Some((6, 3))); // First TSAP (idx=3)
-        assert_eq!(ast.find_next_tsap(5, &mut idx), Some((7, 4))); // Second TSAP (idx=4)
-        assert_eq!(ast.find_next_tsap(5, &mut idx), None); // No more TSAPs
+        assert_eq!(ast.find_next_tsap(6, &mut idx), Some((6, 3))); // First TSAP (idx=3)
+        assert_eq!(ast.find_next_tsap(6, &mut idx), Some((7, 4))); // Second TSAP (idx=4)
+        assert_eq!(ast.find_next_tsap(6, &mut idx), None); // No more TSAPs
 
         // Test finding TSAP for ASAP 1 (which has one TSAP)
         idx = 0;
-        assert_eq!(ast.find_next_tsap(1, &mut idx), Some((2, 1))); // First TSAP (idx=1)
-        assert_eq!(ast.find_next_tsap(1, &mut idx), None); // No more TSAPs
+        assert_eq!(ast.find_next_tsap(2, &mut idx), Some((2, 1))); // First TSAP (idx=1)
+        assert_eq!(ast.find_next_tsap(2, &mut idx), None); // No more TSAPs
 
         // Test finding TSAP for ASAP 9 (which doesn't exist in table)
         idx = 0;
@@ -464,19 +462,19 @@ mod test {
         ]);
         ast.write(0, &[0x00, 0x04]); // 4 entries
         ast.write(2, &[0x00, 0x02]); // Entry 1: TSAP = 2
-        ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 1+1 (stored as 2)
+        ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 2
         ast.write(6, &[0x00, 0x04]); // Entry 2: TSAP = 4
-        ast.write(8, &[0x00, 0x04]); // Entry 2: ASAP = 3+1 (stored as 4)
+        ast.write(8, &[0x00, 0x04]); // Entry 2: ASAP = 3
         ast.write(10, &[0x00, 0x06]); // Entry 3: TSAP = 6
-        ast.write(12, &[0x00, 0x06]); // Entry 3: ASAP = 5+1 (stored as 6)
+        ast.write(12, &[0x00, 0x06]); // Entry 3: ASAP = 6
         ast.write(14, &[0x00, 0x07]); // Entry 4: TSAP = 7
-        ast.write(16, &[0x00, 0x06]); // Entry 4: ASAP = 5+1 (stored as 6) (duplicate)
+        ast.write(16, &[0x00, 0x06]); // Entry 4: ASAP = 6 (duplicate)
         ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
 
         // Test finding first TSAP for each ASAP
-        assert_eq!(ast.tsaps_for_asap(1).next(), Some(2));
-        assert_eq!(ast.tsaps_for_asap(3).next(), Some(4));
-        assert_eq!(ast.tsaps_for_asap(5).next(), Some(6)); // Returns first match
+        assert_eq!(ast.tsaps_for_asap(2).next(), Some(2));
+        assert_eq!(ast.tsaps_for_asap(4).next(), Some(4));
+        assert_eq!(ast.tsaps_for_asap(6).next(), Some(6)); // Returns first match
 
         // Test finding TSAP for non-existent ASAP
         assert_eq!(ast.tsaps_for_asap(10).next(), None);
@@ -548,46 +546,46 @@ mod test {
             0x00,
         ]);
         ast.write(0, &[0x00, 0x06]); // 6 entries
-        // TSAP 1 → ASAP 10
-        ast.write(2, &[0x00, 0x01]);
-        ast.write(4, &[0x00, 0x0B]); // ASAP 10+1=11
         // TSAP 1 → ASAP 11
+        ast.write(2, &[0x00, 0x01]);
+        ast.write(4, &[0x00, 0x0B]); // ASAP 11
+        // TSAP 1 → ASAP 12
         ast.write(6, &[0x00, 0x01]);
-        ast.write(8, &[0x00, 0x0C]); // ASAP 11+1=12
-        // TSAP 2 → ASAP 20
+        ast.write(8, &[0x00, 0x0C]); // ASAP 12
+        // TSAP 2 → ASAP 21
         ast.write(10, &[0x00, 0x02]);
-        ast.write(12, &[0x00, 0x15]); // ASAP 20+1=21
-        // TSAP 3 → ASAP 30
-        ast.write(14, &[0x00, 0x03]);
-        ast.write(16, &[0x00, 0x1F]); // ASAP 30+1=31
+        ast.write(12, &[0x00, 0x15]); // ASAP 21
         // TSAP 3 → ASAP 31
-        ast.write(18, &[0x00, 0x03]);
-        ast.write(20, &[0x00, 0x20]); // ASAP 31+1=32
+        ast.write(14, &[0x00, 0x03]);
+        ast.write(16, &[0x00, 0x1F]); // ASAP 31
         // TSAP 3 → ASAP 32
+        ast.write(18, &[0x00, 0x03]);
+        ast.write(20, &[0x00, 0x20]); // ASAP 32
+        // TSAP 3 → ASAP 33
         ast.write(22, &[0x00, 0x03]);
-        ast.write(24, &[0x00, 0x21]); // ASAP 32+1=33
+        ast.write(24, &[0x00, 0x21]); // ASAP 33
         ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
 
         // Test ASAP iterator for TSAP 1
         let asaps: Vec<u16> = ast.asaps_for_tsap(1).collect();
-        assert_eq!(asaps, vec![10, 11]);
+        assert_eq!(asaps, vec![11, 12]);
 
         // Test ASAP iterator for TSAP 2
         let asaps: Vec<u16> = ast.asaps_for_tsap(2).collect();
-        assert_eq!(asaps, vec![20]);
+        assert_eq!(asaps, vec![21]);
 
         // Test ASAP iterator for TSAP 3
         let asaps: Vec<u16> = ast.asaps_for_tsap(3).collect();
-        assert_eq!(asaps, vec![30, 31, 32]);
+        assert_eq!(asaps, vec![31, 32, 33]);
 
         // Test ASAP iterator for non-existent TSAP
         let asaps: Vec<u16> = ast.asaps_for_tsap(4).collect();
         assert_eq!(asaps, vec![]);
 
         // Test TSAP iterator for specific ASAPs
-        assert_eq!(ast.tsaps_for_asap(10).collect::<Vec<_>>(), vec![1]);
-        assert_eq!(ast.tsaps_for_asap(20).collect::<Vec<_>>(), vec![2]);
-        assert_eq!(ast.tsaps_for_asap(30).collect::<Vec<_>>(), vec![3]);
+        assert_eq!(ast.tsaps_for_asap(11).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(ast.tsaps_for_asap(21).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(ast.tsaps_for_asap(31).collect::<Vec<_>>(), vec![3]);
 
         // Test TSAP iterator for non-existent ASAP
         assert_eq!(ast.tsaps_for_asap(40).collect::<Vec<_>>(), vec![]);

@@ -56,7 +56,7 @@ impl<'a> Layer<'a> for LinkLayer<'a> {
 }
 
 impl<'a> LinkLayer<'a> {
-    async fn handle_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
+    async fn handle_indication(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         trace!("Link Layer received indication: {:?}", msg);
 
         match msg.service_type() {

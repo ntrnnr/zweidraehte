@@ -1,7 +1,11 @@
 use core::cell::RefCell;
 
 use embassy_futures::select::{Either, select};
-use embassy_sync::channel::{DynamicReceiver, DynamicSender};
+use embassy_sync::{
+    blocking_mutex::raw::NoopRawMutex,
+    channel::{DynamicReceiver, DynamicSender},
+    pubsub::{PubSubBehavior, PubSubChannel},
+};
 
 use super::{ActorRequest, Inbox, Layer, LayerOp, Request};
 
@@ -12,7 +16,7 @@ use crate::{
         knx::*,
     },
     objects::{
-        comm::{ComObjectStatus, ComObjects},
+        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
         tables::{AssociationTable, CommunicationObjectTable},
     },
 };
@@ -36,6 +40,8 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     ast: &'a RefCell<D::AST>,
     cot: &'a RefCell<D::COT>,
     comm_objects: &'a RefCell<D::CO>,
+    event_channel:
+        &'a PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
 
     // Receiver for requests from the application to the application layer
     app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
@@ -45,16 +51,23 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
 }
 
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
-    /// Create a new Application Layer with the device's individual address
+    /// Create a new Application Layer
     pub fn new(
         buffer_manager: &'a RefCell<DynBufferManager<'static>>,
         ast: &'a RefCell<D::AST>,
         cot: &'a RefCell<D::COT>,
         comm_objects: &'a RefCell<D::CO>,
+        event_channel: &'a PubSubChannel<
+            NoopRawMutex,
+            (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent),
+            4,
+            2,
+            1,
+        >,
         app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
         transport_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
     ) -> Self {
-        Self { buffer_manager, ast, cot, comm_objects, app_request_receiver, transport_layer }
+        Self { buffer_manager, ast, cot, comm_objects, event_channel, app_request_receiver, transport_layer }
     }
 }
 
@@ -76,7 +89,11 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                                 trace!("Received {:?}", a);
                                 // FIXME: check if application is running (also check if tables are loaded?)
 
+                                trace!("Incoming TSAP: {:?}", ind.get_connection_nr());
+
                                 for asap in self.ast.borrow().asaps_for_tsap(ind.get_connection_nr()) {
+                                    trace!("Processing ASAP: {}", asap);
+
                                     let Some(cot_info) = self.cot.borrow().get_object(asap) else {
                                         error!("Invalid ASAP: {}", asap);
                                         continue;
@@ -118,11 +135,30 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
 
                                         ind.set_apci_code(ApciCode::Empty);
 
-                                        self.comm_objects
-                                            .borrow_mut()
-                                            .value_mut(asap)
-                                            .copy_from_slice(&ind.buf()[msg_offset..msg_offset + object_size]);
-                                        self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::Updated);
+                                        {
+                                            let mut objs = self.comm_objects.borrow_mut();
+
+                                            objs.value_mut(asap)
+                                                .copy_from_slice(&ind.buf()[msg_offset..msg_offset + object_size]);
+                                            objs.set_status(asap, ComObjectStatus::Updated);
+                                        }
+
+                                        // Publish event to the event channel
+                                        if let Some(index) =
+                                            <<D as StackDefinition>::CO as ComObjects>::Index::from_index(asap)
+                                        {
+                                            match a {
+                                                ApciCode::GroupValueWrite => {
+                                                    self.event_channel
+                                                        .publish_immediate((index, ComObjectEvent::Updated));
+                                                }
+                                                ApciCode::GroupValueResponse => {
+                                                    self.event_channel
+                                                        .publish_immediate((index, ComObjectEvent::ReadResponse));
+                                                }
+                                                _ => unreachable!(),
+                                            }
+                                        }
 
                                         trace!(
                                             "ASAP {} updated due to {:?}: {:x?}",
@@ -134,12 +170,10 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                                         error!("Length of telegram not enough to contain object value");
                                     }
                                 }
-
-                                //self.update_group_object_from_indication().await;
                             }
                             _ => unimplemented!(),
                         },
-                        _ => unimplemented!(), //LayerOp::Request { message, response_tx } => {}
+                        _ => unimplemented!(),
                     }
                 }
                 Either::Second(request) => match request.get() {
@@ -206,7 +240,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     (false, (s, false)) => (s, offsets::MSG_APDU),
 
                     // GroupValueRead.req
-                    (true, _) => (0, offsets::MSG_APCI + 1),
+                    // We need at least 1 byte for the lowermost two bits of the APCI code,
+                    // the lowermost six bits of this byte are unused
+                    (true, _) => (1, offsets::MSG_APCI + 1),
                 };
 
                 trace!(

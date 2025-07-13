@@ -37,14 +37,11 @@ pub struct CoTab7Impl<const N: usize> {
 impl<const N: usize> Table<CoTab7Impl<N>> {
     /// Get the descriptor for communication object at the given index
     fn com_object(&self, idx: u16) -> Option<ComObjectDescriptor> {
-        //trace!("Getting communication object at index {}", idx);
-
         if idx == 0 || idx > self.entry_count() {
             return None;
         }
 
         // Each entry is 2 bytes (type + flags)
-        // Convert from 1-based to 0-based indexing
         let offset = 2 + (((idx - 1) as usize) * 2);
         let bytes = [self.table.data[offset], self.table.data[offset + 1]];
 

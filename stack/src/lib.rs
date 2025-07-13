@@ -27,6 +27,7 @@ use const_default::ConstDefault;
 use embassy_sync::{
     blocking_mutex::raw::{NoopRawMutex, RawMutex},
     channel::{Channel, DynamicReceiver, DynamicSender},
+    pubsub::{PubSubBehavior, PubSubChannel},
 };
 use messages::knx::KnxMessageBuffer;
 use objects::tables::AssociationTable;
@@ -40,7 +41,7 @@ use crate::layers::{
 };
 use crate::messages::buffers::{Buffer, BufferManager, DynBufferManager};
 use crate::objects::{
-    comm::{ComObjectStatus, ComObjects},
+    comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
     tables::{AddressTable, CommunicationObjectTable, TableMemory},
 };
 use crate::{address::IndividualAddress, layers::LayerOp};
@@ -99,6 +100,8 @@ pub(crate) struct Inner<D: StackDefinition> {
     ast: RefCell<D::AST>,
     cot: RefCell<D::COT>,
     comm_objs: RefCell<D::CO>,
+    event_channel:
+        PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
 }
 
 fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'a, D> {
@@ -142,6 +145,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         ast: RefCell::new(ast),
         cot: RefCell::new(cot),
         comm_objs: RefCell::new(comm_objs),
+        event_channel: PubSubChannel::new(),
     };
 
     let inner = &*resources.inner.write(inner);
@@ -200,6 +204,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             &self.stack.inner.ast,
             &self.stack.inner.cot,
             &self.stack.inner.comm_objs,
+            &self.stack.inner.event_channel,
             self.app_request_receiver,
             tl_channel.sender().into(),
         );
@@ -217,7 +222,14 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 }
 
 impl<'d, D: StackDefinition> Stack<'d, D> {
-    pub async fn group_value_write_request<T: AsRef<[u8]>>(&self, asap: u16, value: T) {
+    // FIMXE: We cannot use D::CO::Index here for the asap, because the compiler
+    //        doesn't support projections through associated types yet
+    //        Keep an eye on https://github.com/rust-lang/rust/pull/126651
+
+    //type Index = <<D as StackDefinition>::CO as ComObjects>::Index;
+
+    // FIXME: Use D::CO::Index here
+    pub async fn update_object<T: AsRef<[u8]>>(&self, asap: u16, value: T) {
         // FIXME: check if app is running, if not, don't do anything?
         // FIXME: check if transmission state is not transmitting yet
 
@@ -230,10 +242,16 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
             comm_objs.info_mut(asap).value.copy_from_slice(value.as_ref());
         }
 
+        // Publish event directly to the channel
+        if let Some(index) = <<D as StackDefinition>::CO as ComObjects>::Index::from_index(asap) {
+            self.inner.event_channel.publish_immediate((index, ComObjectEvent::LocallyUpdated));
+        }
+
         self.app_request_sender.request(ApplicationLayerService::GroupValueWriteRequest(asap)).await;
     }
 
-    pub async fn group_value_read_request(&self, asap: u16) {
+    // FIXME: Use D::CO::Index here
+    pub async fn read_object(&self, asap: u16) {
         // FIXME: check if app is running, if not, don't do anything?
         // FIXME: check if transmission state is not transmitting yet
 
@@ -245,6 +263,13 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         }
 
         self.app_request_sender.request(ApplicationLayerService::GroupValueReadRequest(asap)).await;
+    }
+
+    pub fn events(
+        &self,
+    ) -> embassy_sync::pubsub::DynSubscriber<'_, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent)>
+    {
+        self.inner.event_channel.dyn_subscriber().unwrap()
     }
 
     pub async fn debug_inject_linklayer_message(&self, msg: &[u8]) {
