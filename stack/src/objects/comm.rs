@@ -77,7 +77,7 @@ pub struct ComObjectInfoMut<'a> {
 #[const_trait]
 pub trait ComObjectIndex: Clone + Sized {
     fn from_index(idx: u16) -> Option<Self>;
-    fn index(self) -> u16;
+    fn index(&self) -> u16;
 }
 
 pub trait ComObjects {
@@ -175,8 +175,8 @@ macro_rules! define_com_objects {
                     }
 
                     /// Get the index value
-                    fn index(self) -> u16 {
-                        self as u16
+                    fn index(&self) -> u16 {
+                        *self as u16
                     }
                 }
 

@@ -29,6 +29,7 @@ use embassy_sync::{
     channel::{Channel, DynamicReceiver, DynamicSender},
     pubsub::{PubSubBehavior, PubSubChannel},
 };
+use embassy_time::{Duration, TimeoutError, with_timeout};
 use messages::knx::KnxMessageBuffer;
 use objects::tables::AssociationTable;
 
@@ -45,6 +46,13 @@ use crate::objects::{
     tables::{AddressTable, CommunicationObjectTable, TableMemory},
 };
 use crate::{address::IndividualAddress, layers::LayerOp};
+
+/// Error type for read object operations with timeout
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadObjectError {
+    /// The read request timed out without receiving a response
+    Timeout,
+}
 
 pub trait StackDefinition {
     type ADT: AddressTable;
@@ -81,10 +89,43 @@ pub struct Runner<'d, D: StackDefinition> {
     linklayer_inject_receiver: DynamicReceiver<'static, KnxMessageBuffer<Buffer<'static>>>,
 }
 
-/// KNX stack handle
+/// KNX stack handle for interacting with the KNX protocol stack.
 ///
-/// Use this to interact with the stack. It's `Copy`, so you can pass
-/// it by value instead of by reference.
+/// This is the main interface for applications to interact with the KNX stack.
+/// It provides methods to update and read communication objects, subscribe to
+/// events, and debug the system. The handle is `Copy`, so you can pass it by
+/// value instead of by reference, making it easy to share across tasks.
+///
+/// # Usage
+/// The Stack handle is obtained by calling [`new()`] along with a [`Runner`].
+/// The Runner must be executed in a background task for the stack to function.
+///
+/// # Example
+/// ```rust,ignore
+/// // Define your stack configuration types that implement the required traits
+/// struct MyStackDefinition;
+/// impl StackDefinition for MyStackDefinition {
+///     type ADT = MyAddressTable;      // implements AddressTable
+///     type AST = MyAssociationTable;  // implements AssociationTable  
+///     type COT = MyComObjectTable;    // implements CommunicationObjectTable
+///     type P = MyParameters;          // implements ConstDefault
+///     type CO = MyComObjects;         // implements ComObjects
+/// }
+/// 
+/// // Create stack resources and configuration
+/// let mut resources = StackResources::<MyStackDefinition>::new();
+/// let (stack, runner) = new(&mut resources, addr_tab, asso_tab, co_tab, comm_objs);
+/// 
+/// // Start the stack runner in a background task
+/// embassy_executor::Spawner::spawn(async { runner.run().await }).unwrap();
+/// 
+/// // Use the stack handle to interact with KNX
+/// stack.update_object(object_index, new_value).await;
+/// stack.read_object(object_index).await;
+/// ```
+/// 
+/// For a complete working example with all the trait implementations, 
+/// see the `testutil` crate in this repository.
 #[derive(Copy, Clone)]
 pub struct Stack<'d, D: StackDefinition> {
     inner: &'d Inner<D>,
@@ -226,10 +267,38 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     //        doesn't support projections through associated types yet
     //        Keep an eye on https://github.com/rust-lang/rust/pull/126651
 
-    //type Index = <<D as StackDefinition>::CO as ComObjects>::Index;
-
-    // FIXME: Use D::CO::Index here
-    pub async fn update_object<T: AsRef<[u8]>>(&self, asap: u16, value: T) {
+    /// Update a communication object with a new value and send it to the KNX bus.
+    ///
+    /// This method updates the local communication object value and sends a GroupValueWrite
+    /// request to the KNX bus to inform other devices of the change.
+    ///
+    /// # Arguments
+    /// * `asap` - The communication object index to update
+    /// * `value` - The new value to set. Must implement `AsRef<[u8]>` to provide the raw bytes
+    ///
+    /// # Behavior
+    /// 1. Sets the communication object status to `WriteRequest`
+    /// 2. Updates the local object value with the provided data
+    /// 3. Publishes a `LocallyUpdated` event to notify subscribers
+    /// 4. Sends a GroupValueWrite request to the KNX bus
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # async fn example(stack: zweidraehte::Stack<'_, MyStackDef>, switch_index: MyComObjectIndex) {
+    /// use zweidraehte::dpt::DPT_Switch;
+    ///
+    /// // Update a boolean switch object
+    /// stack.update_object(switch_index, DPT_Switch::from(true)).await;
+    ///
+    /// // Update with raw bytes
+    /// stack.update_object(switch_index, &[0x01]).await;
+    /// # }
+    /// ```
+    pub async fn update_object<T: AsRef<[u8]>>(
+        &self,
+        asap: <<D as StackDefinition>::CO as ComObjects>::Index,
+        value: T,
+    ) {
         // FIXME: check if app is running, if not, don't do anything?
         // FIXME: check if transmission state is not transmitting yet
 
@@ -237,21 +306,54 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         // FIXME: Introduce a with()-closure to avoid this?
         {
             let mut comm_objs = self.inner.comm_objs.borrow_mut();
-            comm_objs.set_status(asap, ComObjectStatus::WriteRequest);
-
-            comm_objs.info_mut(asap).value.copy_from_slice(value.as_ref());
+            comm_objs.set_status(asap.index(), ComObjectStatus::WriteRequest);
+            comm_objs.info_mut(asap.index()).value.copy_from_slice(value.as_ref());
         }
 
-        // Publish event directly to the channel
-        if let Some(index) = <<D as StackDefinition>::CO as ComObjects>::Index::from_index(asap) {
-            self.inner.event_channel.publish_immediate((index, ComObjectEvent::LocallyUpdated));
-        }
+        self.inner.event_channel.publish_immediate((asap.clone(), ComObjectEvent::LocallyUpdated));
 
-        self.app_request_sender.request(ApplicationLayerService::GroupValueWriteRequest(asap)).await;
+        self.app_request_sender.request(ApplicationLayerService::GroupValueWriteRequest(asap.index())).await;
     }
 
-    // FIXME: Use D::CO::Index here
-    pub async fn read_object(&self, asap: u16) {
+    /// Send a read request for a communication object.
+    ///
+    /// This method sends the read request and returns immediately without waiting for a response.
+    /// Use `read_object_with_timeout` if you need to wait for the response.
+    pub async fn read_object(&self, asap: <<D as StackDefinition>::CO as ComObjects>::Index) {
+        let _ = self.read_object_with_timeout(asap, None).await;
+    }
+
+    /// Send a read request for a communication object and optionally wait for the response.
+    ///
+    /// # Arguments
+    /// * `asap` - The communication object index to read
+    /// * `timeout` - Optional timeout duration. If `None`, the method returns immediately after
+    ///               sending the request (same behavior as `read_object`). If `Some(duration)`,
+    ///               it waits for a `ReadResponse` event for up to the specified duration.
+    ///
+    /// # Returns
+    /// * `Ok(())` - The read request was sent successfully and (if timeout was specified) a response was received
+    /// * `Err(ReadObjectError::Timeout)` - A timeout was specified but no response was received within the timeout period
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use embassy_time::Duration;
+    /// # async fn example(stack: zweidraehte::Stack<'_, MyStackDef>, asap: MyComObjectIndex) {
+    /// // Fire-and-forget read request
+    /// stack.read_object(asap).await;
+    ///
+    /// // Read request with 1 second timeout
+    /// match stack.read_object_with_timeout(asap, Some(Duration::from_secs(1))).await {
+    ///     Ok(()) => println!("Response received!"),
+    ///     Err(zweidraehte::ReadObjectError::Timeout) => println!("No response within timeout"),
+    /// }
+    /// # }
+    /// ```
+    pub async fn read_object_with_timeout(
+        &self,
+        asap: <<D as StackDefinition>::CO as ComObjects>::Index,
+        timeout: Option<Duration>,
+    ) -> Result<(), ReadObjectError> {
         // FIXME: check if app is running, if not, don't do anything?
         // FIXME: check if transmission state is not transmitting yet
 
@@ -259,12 +361,116 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         // FIXME: Introduce a with()-closure to avoid this?
         {
             let mut comm_objs = self.inner.comm_objs.borrow_mut();
-            comm_objs.set_status(asap, ComObjectStatus::ReadRequest);
+            comm_objs.set_status(asap.index(), ComObjectStatus::ReadRequest);
         }
 
-        self.app_request_sender.request(ApplicationLayerService::GroupValueReadRequest(asap)).await;
+        // If no timeout is specified, just send the request and return immediately
+        let Some(timeout_duration) = timeout else {
+            self.app_request_sender.request(ApplicationLayerService::GroupValueReadRequest(asap.index())).await;
+            return Ok(());
+        };
+
+        // Subscribe to events before sending the request to avoid race conditions
+        let mut event_subscriber = self.events();
+
+        // Send the read request
+        self.app_request_sender.request(ApplicationLayerService::GroupValueReadRequest(asap.index())).await;
+
+        // Wait for ReadResponse event with timeout
+        let wait_for_response = async {
+            loop {
+                let event = event_subscriber.next_message_pure().await;
+                let (event_asap, event_type) = event;
+                if event_asap.index() == asap.index() {
+                    match event_type {
+                        ComObjectEvent::ReadResponse => {
+                            return;
+                        }
+                        ComObjectEvent::Updated | ComObjectEvent::LocallyUpdated => {
+                            // Continue waiting - these are not read responses
+                            continue;
+                        }
+                    }
+                }
+                // Event for different object, keep waiting
+            }
+        };
+
+        match with_timeout(timeout_duration, wait_for_response).await {
+            Ok(()) => Ok(()),
+            Err(TimeoutError) => Err(ReadObjectError::Timeout),
+        }
     }
 
+    /// Get access to the communication objects container.
+    ///
+    /// Returns a reference to the `RefCell` containing all communication objects.
+    /// Use this to read object values, check statuses, or perform other operations
+    /// on the communication objects.
+    ///
+    /// # Returns
+    /// A reference to the `RefCell<D::CO>` containing all communication objects
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # fn example(stack: zweidraehte::Stack<'_, MyStackDef>, switch_index: MyComObjectIndex) {
+    /// // Read the current value of a communication object
+    /// let objects = stack.objects();
+    /// let current_value = objects.borrow().value(switch_index.index());
+    ///
+    /// // Check the status of a communication object
+    /// let status = objects.borrow().status(switch_index.index());
+    /// println!("Object status: {:?}", status);
+    /// # }
+    /// ```
+    pub fn objects(&self) -> &RefCell<D::CO> {
+        &self.inner.comm_objs
+    }
+
+    /// Subscribe to communication object events.
+    ///
+    /// Returns a subscriber that receives events when communication objects are updated.
+    /// This is useful for monitoring changes to objects caused by incoming KNX messages
+    /// or local updates.
+    ///
+    /// # Returns
+    /// A `DynSubscriber` that yields tuples of `(object_index, event_type)`
+    ///
+    /// # Events
+    /// * `ComObjectEvent::Updated` - Object was updated by an incoming GroupValueWrite
+    /// * `ComObjectEvent::LocallyUpdated` - Object was updated locally via `update_object`
+    /// * `ComObjectEvent::ReadResponse` - A response to a read request was received
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # async fn example(stack: zweidraehte::Stack<'_, MyStackDef>) {
+    /// use embassy_sync::pubsub::WaitResult;
+    /// use zweidraehte::objects::comm::ComObjectEvent;
+    /// 
+    /// let mut events = stack.events();
+    /// 
+    /// loop {
+    ///     match events.next_message().await {
+    ///         WaitResult::Message((index, event)) => {
+    ///             match event {
+    ///                 ComObjectEvent::Updated => {
+    ///                     println!("Object {:?} was updated remotely", index);
+    ///                 }
+    ///                 ComObjectEvent::LocallyUpdated => {
+    ///                     println!("Object {:?} was updated locally", index);
+    ///                 }
+    ///                 ComObjectEvent::ReadResponse => {
+    ///                     println!("Received read response for object {:?}", index);
+    ///                 }
+    ///             }
+    ///         }
+    ///         WaitResult::Lagged(count) => {
+    ///             println!("Missed {} events due to slow processing", count);
+    ///         }
+    ///     }
+    /// }
+    /// # }
+    /// ```
     pub fn events(
         &self,
     ) -> embassy_sync::pubsub::DynSubscriber<'_, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent)>
@@ -272,6 +478,32 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         self.inner.event_channel.dyn_subscriber().unwrap()
     }
 
+    /// Inject a raw KNX message at the link layer level for debugging and testing.
+    ///
+    /// This method allows bypassing the normal KNX communication flow by directly
+    /// injecting raw message bytes into the link layer. This is primarily useful
+    /// for testing, simulation, and debugging scenarios.
+    ///
+    /// # Arguments
+    /// * `msg` - Raw message bytes to inject into the link layer
+    ///
+    /// # Warning
+    /// This is a debug/testing method and should not be used in production code.
+    /// The injected messages bypass normal KNX protocol validation and may cause
+    /// unexpected behavior if malformed messages are injected.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # async fn example(stack: zweidraehte::Stack<'_, MyStackDef>) {
+    /// // Inject a GroupValueWrite indication for group address 1/0/4 with value 0x01
+    /// let msg = [0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x81];
+    /// stack.debug_inject_linklayer_message(&msg).await;
+    /// 
+    /// // Inject a GroupValueRead response for group address 1/0/4
+    /// let response = [0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x41];
+    /// stack.debug_inject_linklayer_message(&response).await;
+    /// # }
+    /// ```
     pub async fn debug_inject_linklayer_message(&self, msg: &[u8]) {
         use messages::knx::ServiceType;
 

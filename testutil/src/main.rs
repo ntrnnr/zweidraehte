@@ -7,7 +7,7 @@ use const_default::ConstDefault;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::pubsub::{PubSubBehavior, WaitResult};
-use embassy_time::Timer;
+use embassy_time::{Timer, Duration};
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
@@ -114,13 +114,25 @@ async fn main(spawner: Spawner) {
     // GroupValueWrite.Ind for 1/0/4
     stack.debug_inject_linklayer_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x81][..]).await;
 
+    let objects = stack.objects();
     let mut events = stack.events();
 
     loop {
         match select(Timer::after_millis(1000), events.next_message()).await {
             Either::First(_) => {
-                stack.update_object(comm_objs::Index::CoIn0.index(), DPT_Switch::from(true)).await;
-                //stack.read_object(comm_objs::Index::CoIn0.index()).await;
+                stack.update_object(comm_objs::Index::CoIn0, DPT_Switch::from(true)).await;
+                
+                // Test the new read_object_with_timeout functionality
+                println!("Testing read_object_with_timeout...");
+                match stack.read_object_with_timeout(comm_objs::Index::CoIn1, Some(Duration::from_millis(500))).await {
+                    Ok(()) => println!("Read object successful - response received!"),
+                    Err(zweidraehte::ReadObjectError::Timeout) => println!("Read object timed out - no response received"),
+                }
+                
+                // Also test the regular read_object (fire-and-forget)
+                stack.read_object(comm_objs::Index::CoIn0).await;
+
+                println!("CoIn0: {:?}", objects.borrow().co_in0.value);
             }
             Either::Second(WaitResult::Message((index, event))) => {
                 println!("Event received: {:?} for index {:?}", event, index);
