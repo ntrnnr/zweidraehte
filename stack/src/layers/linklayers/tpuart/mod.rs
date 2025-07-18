@@ -39,8 +39,6 @@ mod utils;
 
 // FIXME: if incoming frame is oversized, reject it, don't ACK
 // FIXME: if outgoing frame is oversized, reject it, return error
-// FIXME: turn TP1 into EMI2 when receiving
-// FIXME: turn EMI2 into TP1 when queuing for transmission
 // FIXME: ACK received frames when we handle the destination group address
 // FIXME: Detect repeated frames that we already sent an indication upwards for and ignore them
 // FIXME: Add support for NCN5120/30/31
@@ -364,7 +362,9 @@ where
                             error!("WRRRRRRROOOOOOOOOOOOOOOOOOOOOONG CHECKSUM!");
                         }
 
-                        let indication = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
+                        // Convert TP1 frame to KNX format
+                        let knx_buffer = utils::tp1_to_knx_message(buffer);
+                        let indication = KnxMessageBuffer::new(knx_buffer, ServiceType::L_Data_Ind);
                         trace!("Sending L_Data.ind to network layer: {:?}", indication);
                         self.network_layer.send(LayerOp::Indication(indication)).await;
                     }
@@ -816,7 +816,9 @@ where
                             // Handle transmission requests
                             match msg.service_type() {
                                 ServiceType::L_Data_Req => {
-                                    self.queue_frame_transmission(msg.into_inner(), response_tx).await;
+                                    // Convert KNX frame to TP1 format for transmission
+                                    let tp1_buffer = utils::knx_to_tp1_message(msg.into_inner());
+                                    self.queue_frame_transmission(tp1_buffer, response_tx).await;
                                 }
                                 _ => {
                                     // Return error for unsupported service types

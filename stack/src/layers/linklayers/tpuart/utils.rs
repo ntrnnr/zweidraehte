@@ -116,7 +116,7 @@ fn validate_tp1_checksum(data: &[u8]) -> bool {
     checksum == 0
 }
 
-fn tp1_to_knx_message<B: MessageBuffer>(mut msg: B) -> B {
+pub(super) fn tp1_to_knx_message<B: MessageBuffer>(mut msg: B) -> B {
     if !validate_tp1_checksum(&msg) {
         // For now, we'll proceed but could add error handling here
         // In a real implementation, this might return an error
@@ -152,7 +152,7 @@ fn tp1_to_knx_message<B: MessageBuffer>(mut msg: B) -> B {
     msg
 }
 
-fn knx_to_tp1_message<B: MessageBuffer>(mut msg: B) -> B {
+pub(super) fn knx_to_tp1_message<B: MessageBuffer>(mut msg: B) -> B {
     let len = msg.len();
 
     // Check for standard frame: length <= 23 and lower 4 bits of NPDU are 0
