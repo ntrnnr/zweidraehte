@@ -37,8 +37,10 @@ mod utils;
 // * If the received Frame is not correct then it shall not be passed to the Data Link Layer user.
 // * Address checking as per 01/03/02 2.4.2
 
+// FIXME: if frame is invalid (or oversized), go to invalid state, transition to Idle after timeout of 2ms (2.5ms?) - openknx does this
+//        maybe generally make the state machine simpler like openknx
+// FIXME: can't use an ftdi anymore, because round trip times are too long for timeouts like 2ms
 // FIXME: if incoming frame is oversized, reject it, don't ACK
-// FIXME: if outgoing frame is oversized, reject it, return error
 // FIXME: ACK received frames when we handle the destination group address
 // FIXME: Detect repeated frames that we already sent an indication upwards for and ignore them
 // FIXME: Add support for NCN5120/30/31
@@ -72,6 +74,26 @@ const U_L_DATA_START: u8 = 0x80;
 const U_L_DATA_END: u8 = 0x40;
 const U_MAX_RST_CNT: u8 = 0x24;
 const U_SET_ADDRESS: u8 = 0x28;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TpUartChip {
+    //TpUart1,
+    TpUart2,
+    //Ncn5120,
+    //E981
+}
+
+impl TpUartChip {
+    /// Maximum frame size including control byte and checksum
+    fn max_frame_size(&self) -> usize {
+        match self {
+            //TpUartChip::TpUart1 => 64,
+            TpUartChip::TpUart2 => 64,
+            //TpUartChip::Ncn5120 => 256,
+            //TpUartChip::E981 => 256,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TpUartState {
@@ -231,10 +253,6 @@ enum ReceiveInfo {
     TransmitComplete,
 }
 
-// FIXME: find out proper size based on extended frames
-const MAX_APDU_LEN_STD: usize = 15;
-const MAX_TPUART_LDATA_FRAME_LEN: usize = 64;
-
 // FIXME: retry count dynamic as part of a config?
 const NAK_RETRY_COUNT: u8 = 3;
 const BSY_RETRY_COUNT: u8 = 3;
@@ -245,6 +263,7 @@ where
 {
     uart: U,
     buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+    chip: TpUartChip,
     state: TpUartState,
     state_timeout: Timeout<TpUartState>,
     network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
@@ -267,6 +286,7 @@ where
         Self {
             uart,
             buffer_manager,
+            chip: TpUartChip::TpUart2, // Default to TPUART2
             state: TpUartState::New,
             state_timeout: Timeout::new(),
             network_layer,
@@ -274,6 +294,20 @@ where
             message_out: None,
             individual_addr,
             pending_transmission: None,
+        }
+    }
+
+    /// Calculate the final TP1 frame size without actually converting
+    fn calculate_tp1_frame_size<B: MessageBuffer>(&self, knx_msg: &B) -> usize {
+        let len = knx_msg.len();
+
+        // Check for standard frame: length <= 23 and lower 4 bits of NPDU are 0
+        if (len < 23) && ((knx_msg[5] & 0xf) == 0) {
+            // Standard frame: same size + 1 byte for checksum
+            len + 1
+        } else {
+            // Extended frame: +1 byte for extended control field + 1 byte for checksum
+            len + 2
         }
     }
 
@@ -816,9 +850,23 @@ where
                             // Handle transmission requests
                             match msg.service_type() {
                                 ServiceType::L_Data_Req => {
-                                    // Convert KNX frame to TP1 format for transmission
-                                    let tp1_buffer = utils::knx_to_tp1_message(msg.into_inner());
-                                    self.queue_frame_transmission(tp1_buffer, response_tx).await;
+                                    // Check if frame would exceed maximum size when converted to TP1
+                                    let tp1_size = self.calculate_tp1_frame_size(msg.buf());
+                                    if tp1_size > self.chip.max_frame_size() {
+                                        warn!(
+                                            "Outgoing frame too large ({} bytes > {} max for {:?}), rejecting",
+                                            tp1_size,
+                                            self.chip.max_frame_size(),
+                                            self.chip
+                                        );
+                                        let mut error_msg = msg;
+                                        error_msg.ctrl_field_mut().set_c(Confirm::Err);
+                                        response_tx.send(error_msg).await;
+                                    } else {
+                                        // Convert KNX frame to TP1 format for transmission
+                                        let tp1_buffer = utils::knx_to_tp1_message(msg.into_inner());
+                                        self.queue_frame_transmission(tp1_buffer, response_tx).await;
+                                    }
                                 }
                                 _ => {
                                     // Return error for unsupported service types

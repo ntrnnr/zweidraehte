@@ -1,4 +1,3 @@
-#![feature(generic_arg_infer)]
 #![feature(adt_const_params)]
 
 use std::fs::File;
@@ -6,7 +5,7 @@ use std::fs::File;
 use const_default::ConstDefault;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
-use embassy_sync::pubsub::{PubSubBehavior, WaitResult};
+use embassy_sync::pubsub::WaitResult;
 use embassy_time::{Timer, Duration};
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
@@ -15,7 +14,7 @@ use zweidraehte::{
     Runner, StackDefinition, StackResources, define_com_objects,
     dpt::DPT_Switch,
     objects::{
-        comm::{ComObjectIndex, ComObjects},
+        comm::ComObjects,
         tables::{
             AddressTable, AssociationTable, CommunicationObjectTable, addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7,
         },

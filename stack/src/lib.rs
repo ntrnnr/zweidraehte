@@ -3,7 +3,6 @@
 #![feature(const_trait_impl)]
 #![feature(adt_const_params)]
 #![feature(generic_const_exprs)]
-#![feature(generic_arg_infer)]
 #![feature(type_alias_impl_trait)]
 #![feature(never_type)]
 
