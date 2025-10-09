@@ -261,12 +261,15 @@ pub struct TpUartLinkLayer<'a, U>
 where
     U: embedded_io_async::Read + embedded_io_async::Write,
 {
+    // Interfaces to other components and layers
     uart: U,
     buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+    network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+
+    // Local state
     chip: TpUartChip,
     state: TpUartState,
     state_timeout: Timeout<TpUartState>,
-    network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
     message_in: Option<Buffer<'static>>,
     message_out: Option<(Buffer<'static>, DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>)>,
     individual_addr: Option<IndividualAddress>,
@@ -286,7 +289,7 @@ where
         Self {
             uart,
             buffer_manager,
-            chip: TpUartChip::TpUart2, // Default to TPUART2
+            chip: TpUartChip::TpUart2,
             state: TpUartState::New,
             state_timeout: Timeout::new(),
             network_layer,
@@ -311,7 +314,7 @@ where
         }
     }
 
-    pub async fn initialize(&mut self) {
+    async fn initialize(&mut self) {
         // Start the interface if necessary
         if self.state == TpUartState::New {
             self.state_transition(TpUartState::Start).await;
@@ -425,6 +428,9 @@ where
 
             return;
         }
+
+        // If we get here, we know we are not actively receiving a frame,
+        // so the incoming byte must be a control byte of some sort
 
         // We are receiving a state indication
         if (self.state == TpUartState::Idle

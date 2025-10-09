@@ -10,9 +10,12 @@ log = { workspace = true, optional = true }
 embedded-io-async = { workspace = true }
 
 # Linux deps
+embassy-time = { workspace = true }
 serialport = { workspace = true, optional = true }
 async-io = { workspace = true, optional = true }
-nix = { workspace = true, optional = true, features = ["term"] }
+nix = { workspace = true, optional = true, features = ["term", "socket", "net"] }
+socket2 = { workspace = true, optional = true }
+
 
 [target.'cfg(target_os = "linux")'.dependencies]
 serialport_low_latency = { workspace = true, optional = true }
@@ -21,4 +24,4 @@ serialport_low_latency = { workspace = true, optional = true }
 defmt = ["dep:defmt"]
 log = ["dep:log"]
 std = []
-linux = ["dep:serialport", "dep:async-io", "dep:nix", "dep:serialport_low_latency", "std"]
+linux = ["dep:serialport", "dep:async-io", "dep:nix", "dep:serialport_low_latency", "dep:socket2", "std"]

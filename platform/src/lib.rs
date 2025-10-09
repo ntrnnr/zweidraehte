@@ -1,10 +1,14 @@
+pub mod address;
 pub mod serialport;
 
 #[cfg(feature = "linux")]
 mod linux;
 
 #[cfg(feature = "linux")]
-pub use linux::{AsyncSerialPort, Error as LinuxError, Result as LinuxResult};
+pub use linux::{
+    AsyncSerialPort, AsyncUdpMulticastSocket, Error as LinuxError, Result as LinuxResult, UdpMulticastSocketOptions,
+    get_interface_address,
+};
 
 #[derive(Debug)]
 pub enum Error {
@@ -18,7 +22,7 @@ pub enum Error {
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
-            #[cfg(target_os = "linux")]
+            #[cfg(feature = "linux")]
             Self::LinuxPlatformError(err) => write!(f, "Linux platform error: {:?}", &err),
 
             Self::Timeout => write!(f, "Timeout"),

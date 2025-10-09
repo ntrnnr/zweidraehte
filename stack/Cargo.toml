@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+platform = { path = "../platform", features = ["log"] }
+
 zerocopy = { workspace = true }
 const-bitfield = { workspace = true }
 const-default = { workspace = true }
@@ -18,6 +20,7 @@ defmt = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
 embedded-io-async = { workspace = true }
 pin-project = { workspace = true }
+heapless = { workspace = true }
 
 [features]
 defmt = ["dep:defmt"]

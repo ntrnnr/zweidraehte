@@ -2,6 +2,8 @@
 pub enum Error {
     IOError(std::io::Error),
     SerialportError(serialport::Error),
+    Timeout,
+    Other(String),
 }
 
 impl core::fmt::Display for Error {
@@ -9,6 +11,8 @@ impl core::fmt::Display for Error {
         match self {
             Self::IOError(err) => write!(f, "IO Error: {:?}", &err),
             Self::SerialportError(err) => write!(f, "Serialport Error: {:?}", &err),
+            Self::Timeout => write!(f, "Timeout"),
+            Self::Other(msg) => write!(f, "{}", msg),
         }
     }
 }
@@ -51,8 +55,8 @@ impl From<serialport::Error> for crate::Error {
     }
 }
 
-//impl From<embassy_time::TimeoutError> for crate::Error {
-//    fn from(_: embassy_time::TimeoutError) -> Self {
-//        Self::Timeout
-//    }
-//}
+impl From<embassy_time::TimeoutError> for crate::Error {
+    fn from(_: embassy_time::TimeoutError) -> Self {
+        Self::Timeout
+    }
+}
