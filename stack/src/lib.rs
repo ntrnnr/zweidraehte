@@ -33,10 +33,9 @@ use messages::knx::KnxMessageBuffer;
 use objects::tables::AssociationTable;
 
 use crate::layers::{
-    ActorRequest, Layer, Request,
+    ActorRequest, Layer, LinkLayerBuilder, Request,
     application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
     network::NetworkLayer,
-    test_linklayer::LinkLayer,
     transport::TransportLayer,
 };
 use crate::messages::buffers::{Buffer, BufferManager, DynBufferManager};
@@ -53,12 +52,13 @@ pub enum ReadObjectError {
     Timeout,
 }
 
-pub trait StackDefinition {
+pub trait StackDefinition: Copy {
     type ADT: AddressTable;
     type AST: AssociationTable;
     type COT: CommunicationObjectTable;
     type P: ConstDefault;
     type CO: ComObjects;
+    type LLB: layers::LinkLayerBuilder<Self>;
 }
 
 pub struct StackResources<D: StackDefinition, const BUF_SZ: usize = 128, const NUM_BUFS: usize = 4>
@@ -85,7 +85,7 @@ impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResour
 pub struct Runner<'d, D: StackDefinition> {
     stack: Stack<'d, D>,
     app_request_receiver: DynamicReceiver<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
-    linklayer_inject_receiver: DynamicReceiver<'static, KnxMessageBuffer<Buffer<'static>>>,
+    link_layer_builder: D::LLB,
 }
 
 /// KNX stack handle for interacting with the KNX protocol stack.
@@ -110,37 +110,36 @@ pub struct Runner<'d, D: StackDefinition> {
 ///     type P = MyParameters;          // implements ConstDefault
 ///     type CO = MyComObjects;         // implements ComObjects
 /// }
-/// 
+///
 /// // Create stack resources and configuration
 /// let mut resources = StackResources::<MyStackDefinition>::new();
 /// let (stack, runner) = new(&mut resources, addr_tab, asso_tab, co_tab, comm_objs);
-/// 
+///
 /// // Start the stack runner in a background task
 /// embassy_executor::Spawner::spawn(async { runner.run().await }).unwrap();
-/// 
+///
 /// // Use the stack handle to interact with KNX
 /// stack.update_object(object_index, new_value).await;
 /// stack.read_object(object_index).await;
 /// ```
-/// 
-/// For a complete working example with all the trait implementations, 
+///
+/// For a complete working example with all the trait implementations,
 /// see the `testutil` crate in this repository.
 #[derive(Copy, Clone)]
 pub struct Stack<'d, D: StackDefinition> {
     inner: &'d Inner<D>,
     app_request_sender: DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
-    linklayer_inject_sender: DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>,
 }
 
 pub(crate) struct Inner<D: StackDefinition> {
-    buffer_manager: RefCell<DynBufferManager<'static>>,
-    app_service_channel: Channel<NoopRawMutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
-    linklayer_inject_channel: Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, 1>,
-    adt: RefCell<D::ADT>,
-    ast: RefCell<D::AST>,
-    cot: RefCell<D::COT>,
-    comm_objs: RefCell<D::CO>,
-    event_channel:
+    pub(crate) buffer_manager: RefCell<DynBufferManager<'static>>,
+    pub(crate) app_service_channel:
+        Channel<NoopRawMutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
+    pub(crate) adt: RefCell<D::ADT>,
+    pub(crate) ast: RefCell<D::AST>,
+    pub(crate) cot: RefCell<D::COT>,
+    pub(crate) comm_objs: RefCell<D::CO>,
+    pub(crate) event_channel:
         PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
 }
 
@@ -170,6 +169,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     ast: D::AST,
     cot: D::COT,
     comm_objs: D::CO,
+    link_layer_builder: D::LLB,
 ) -> (Stack<'d, D>, Runner<'d, D>) {
     // SAFETY: We are creating a reference to the buffers that are stored in the `StackResources` struct,
     //         which lives at least as long as `Inner`
@@ -180,7 +180,6 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     let inner = Inner {
         buffer_manager: RefCell::new(buffer_manager.dyn_buffer_manager()),
         app_service_channel: Channel::new(),
-        linklayer_inject_channel: Channel::new(),
         adt: RefCell::new(adt),
         ast: RefCell::new(ast),
         cot: RefCell::new(cot),
@@ -195,21 +194,8 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     let (app_request_sender, app_request_receiver) =
         create_request_response_pair::<NoopRawMutex, _, 1>(unsafe { core::mem::transmute(&inner.app_service_channel) });
 
-    let (linklayer_inject_sender, linklayer_inject_receiver) =
-        create_request_response_pair::<NoopRawMutex, _, 1>(unsafe {
-            core::mem::transmute(&inner.linklayer_inject_channel)
-        });
-
-    let stack = Stack {
-        inner,
-        app_request_sender: app_request_sender.into(),
-        linklayer_inject_sender: linklayer_inject_sender.into(),
-    };
-    let runner = Runner {
-        stack,
-        app_request_receiver: app_request_receiver.into(),
-        linklayer_inject_receiver: linklayer_inject_receiver.into(),
-    };
+    let stack = Stack { inner, app_request_sender: app_request_sender.into() };
+    let runner = Runner { stack, app_request_receiver: app_request_receiver.into(), link_layer_builder };
 
     (stack, runner)
 }
@@ -226,10 +212,6 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let nl_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 1> = Channel::new();
         let tl_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 1> = Channel::new();
         let al_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 1> = Channel::new();
-
-        // Create a link layer
-        let mut link_layer =
-            LinkLayer::new(ind_addr.clone(), nl_channel.sender().into(), self.linklayer_inject_receiver);
 
         // Create a network layer
         let mut network_layer = NetworkLayer::new(ind_addr, 6, ll_channel.sender().into(), tl_channel.sender().into());
@@ -249,8 +231,11 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             tl_channel.sender().into(),
         );
 
-        // Spawn and await all the tasks
-        let ll_task = link_layer.process(ll_channel.receiver());
+        // Build and run the link layer using the provided builder
+        let ll_task =
+            self.link_layer_builder.build_and_run(self.stack.inner, nl_channel.sender().into(), ll_channel.receiver());
+
+        // Spawn and await all the upper layer tasks
         let nl_task = network_layer.process(nl_channel.receiver());
         let tl_task = transport_layer.process(tl_channel.receiver());
         let al_task = application_layer.process(al_channel.receiver());
@@ -445,9 +430,9 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # async fn example(stack: zweidraehte::Stack<'_, MyStackDef>) {
     /// use embassy_sync::pubsub::WaitResult;
     /// use zweidraehte::objects::comm::ComObjectEvent;
-    /// 
+    ///
     /// let mut events = stack.events();
-    /// 
+    ///
     /// loop {
     ///     match events.next_message().await {
     ///         WaitResult::Message((index, event)) => {
@@ -477,39 +462,34 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         self.inner.event_channel.dyn_subscriber().unwrap()
     }
 
-    /// Inject a raw KNX message at the link layer level for debugging and testing.
+    /// Allocate a KNX message buffer from raw bytes.
     ///
-    /// This method allows bypassing the normal KNX communication flow by directly
-    /// injecting raw message bytes into the link layer. This is primarily useful
-    /// for testing, simulation, and debugging scenarios.
+    /// This is useful for testing and debugging, particularly with mock link layers
+    /// where you want to inject messages into the stack.
     ///
     /// # Arguments
-    /// * `msg` - Raw message bytes to inject into the link layer
+    /// * `msg` - Raw message bytes to allocate into a buffer
     ///
-    /// # Warning
-    /// This is a debug/testing method and should not be used in production code.
-    /// The injected messages bypass normal KNX protocol validation and may cause
-    /// unexpected behavior if malformed messages are injected.
+    /// # Returns
+    /// A `KnxMessageBuffer` that can be injected into a mock link layer
     ///
     /// # Example
     /// ```rust,no_run
-    /// # async fn example(stack: zweidraehte::Stack<'_, MyStackDef>) {
-    /// // Inject a GroupValueWrite indication for group address 1/0/4 with value 0x01
-    /// let msg = [0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x81];
-    /// stack.debug_inject_linklayer_message(&msg).await;
-    /// 
-    /// // Inject a GroupValueRead response for group address 1/0/4
-    /// let response = [0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x41];
-    /// stack.debug_inject_linklayer_message(&response).await;
+    /// # async fn example(
+    /// #     stack: zweidraehte::Stack<'_, MyStackDef>,
+    /// #     mock_ll: zweidraehte::layers::linklayers::mock::MockLinkLayerHandle
+    /// # ) {
+    /// use zweidraehte::messages::knx::ServiceType;
+    ///
+    /// // Allocate a message buffer
+    /// let msg = stack.alloc_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x81]).await;
+    ///
+    /// // Inject it into the mock link layer
+    /// mock_ll.inject(msg).await;
     /// # }
     /// ```
-    pub async fn debug_inject_linklayer_message(&self, msg: &[u8]) {
-        use messages::knx::ServiceType;
-
-        debug!("Injecting linklayer message: {:x?}", msg);
-
+    pub async fn alloc_message(&self, msg: &[u8]) -> KnxMessageBuffer<Buffer<'static>> {
         let buffer = self.inner.buffer_manager.borrow_mut().alloc_from_slice(msg).await;
-        let knx_buffer = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
-        self.linklayer_inject_sender.send(knx_buffer).await;
+        KnxMessageBuffer::new(buffer, messages::knx::ServiceType::L_Data_Ind)
     }
 }

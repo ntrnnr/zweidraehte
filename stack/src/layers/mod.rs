@@ -43,6 +43,35 @@ pub trait Layer<'a>: Sized {
         M: Inbox<LayerOp<Self::Message>>;
 }
 
+/// Trait for building link layers
+///
+/// Link layer builders are responsible for constructing configured link layer
+/// instances that can be run in the KNX stack. Different link layer implementations
+/// (TPUART, KNX/IP, Mock, etc.) provide their own builders that implement this trait.
+///
+/// This trait uses a factory pattern where the builder is consumed to produce a link layer.
+/// The link layer must be able to run indefinitely using the `Layer` trait's process method.
+pub trait LinkLayerBuilder<D: crate::StackDefinition>: Sized {
+    /// Build and return the configured link layer instance
+    ///
+    /// # Arguments
+    /// * `inner` - Reference to the stack's inner state (buffer manager, tables, etc.)
+    /// * `network_layer` - Channel sender to communicate with the network layer
+    /// * `inbox` - Channel receiver for layer operations from the network layer
+    ///
+    /// # Returns
+    /// A future that when awaited, runs the link layer to completion (never returns)
+    fn build_and_run<'a>(
+        self,
+        inner: &'a crate::Inner<D>,
+        network_layer: DynamicSender<
+            'a,
+            LayerOp<crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>>,
+        >,
+        inbox: impl Inbox<LayerOp<crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>>> + 'a,
+    ) -> impl core::future::Future<Output = !> + 'a;
+}
+
 // ############################################################################
 
 // The following part has been taken from `ector`: https://github.com/drogue-iot/ector
@@ -227,5 +256,4 @@ impl<'a, T: 'static, const N: usize> ActorRequest<T, T> for Sender<'a, NoopRawMu
 pub mod application;
 pub mod linklayers;
 pub mod network;
-pub mod test_linklayer;
 pub mod transport;

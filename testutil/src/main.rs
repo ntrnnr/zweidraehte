@@ -5,14 +5,16 @@ use std::fs::File;
 use const_default::ConstDefault;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
-use embassy_sync::pubsub::WaitResult;
-use embassy_time::{Timer, Duration};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, pubsub::WaitResult};
+use embassy_time::{Duration, Timer};
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
 use zweidraehte::{
     Runner, StackDefinition, StackResources, define_com_objects,
     dpt::DPT_Switch,
+    layers::linklayers::mock::MockLinkLayerBuilder,
+    messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
         comm::ComObjects,
         tables::{
@@ -56,6 +58,7 @@ impl StackDefinition for MyKnxStack {
     type COT = CoTab7<30>;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
+    type LLB = MockLinkLayerBuilder<8>;
 }
 
 #[embassy_executor::task]
@@ -97,21 +100,34 @@ async fn main(spawner: Spawner) {
 
     static RESOURCES: StaticCell<StackResources<MyKnxStack>> = StaticCell::new();
 
+    // Create a channel for the mock link layer to receive injected messages
+    static INJECTION_CHANNEL: StaticCell<Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, 8>> =
+        StaticCell::new();
+    let injection_channel = INJECTION_CHANNEL.init(Channel::new());
+
+    // Create the mock link layer builder and handle
+    // The builder is consumed when creating the stack, the handle is kept for injection
+    let (link_layer_builder, mock_ll_handle) = MockLinkLayerBuilder::new(injection_channel);
+
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
         stored_data.addr_tab,
         stored_data.asso_tab,
         stored_data.co_tab,
         comm_objs::AppComObjects::new(),
+        link_layer_builder,
     );
 
     spawner.spawn(run_stack(runner)).unwrap();
 
+    // Inject messages using the mock link layer handle
     // GroupValueReadResponse for 1/0/4
-    stack.debug_inject_linklayer_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x41][..]).await;
+    let msg1 = stack.alloc_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x41]).await;
+    mock_ll_handle.inject(msg1).await;
 
     // GroupValueWrite.Ind for 1/0/4
-    stack.debug_inject_linklayer_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x81][..]).await;
+    let msg2 = stack.alloc_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x81]).await;
+    mock_ll_handle.inject(msg2).await;
 
     let objects = stack.objects();
     let mut events = stack.events();
@@ -120,14 +136,32 @@ async fn main(spawner: Spawner) {
         match select(Timer::after_millis(1000), events.next_message()).await {
             Either::First(_) => {
                 stack.update_object(comm_objs::Index::CoIn0, DPT_Switch::from(true)).await;
-                
+
                 // Test the new read_object_with_timeout functionality
                 println!("Testing read_object_with_timeout...");
-                match stack.read_object_with_timeout(comm_objs::Index::CoIn1, Some(Duration::from_millis(500))).await {
+
+                // Start the read request in the background
+                let read_future =
+                    stack.read_object_with_timeout(comm_objs::Index::CoIn1, Some(Duration::from_millis(500)));
+
+                // Simulate a device responding after a delay
+                let inject_response = async {
+                    Timer::after_millis(100).await;
+                    // GroupValueResponse for 1/0/4 with value 0x01 (true)
+                    let response = stack.alloc_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x41]).await;
+                    mock_ll_handle.inject(response).await;
+                };
+
+                // Run both concurrently: inject response while waiting for read to complete
+                let (read_result, _) = embassy_futures::join::join(read_future, inject_response).await;
+
+                match read_result {
                     Ok(()) => println!("Read object successful - response received!"),
-                    Err(zweidraehte::ReadObjectError::Timeout) => println!("Read object timed out - no response received"),
+                    Err(zweidraehte::ReadObjectError::Timeout) => {
+                        println!("Read object timed out - no response received")
+                    }
                 }
-                
+
                 // Also test the regular read_object (fire-and-forget)
                 stack.read_object(comm_objs::Index::CoIn0).await;
 
