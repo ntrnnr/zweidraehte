@@ -51,25 +51,31 @@ pub trait Layer<'a>: Sized {
 ///
 /// This trait uses a factory pattern where the builder is consumed to produce a link layer.
 /// The link layer must be able to run indefinitely using the `Layer` trait's process method.
-pub trait LinkLayerBuilder<D: crate::StackDefinition>: Sized {
+///
+/// The builder accepts a generic context `CTX` that implements the required context traits
+/// (e.g., `BufferManagerContext`). This allows for easy mocking and testing of link layers
+/// without requiring the full stack infrastructure.
+pub trait LinkLayerBuilder: Sized {
     /// Build and return the configured link layer instance
     ///
     /// # Arguments
-    /// * `inner` - Reference to the stack's inner state (buffer manager, tables, etc.)
+    /// * `context` - Reference to a context implementing required traits (e.g., BufferManagerContext)
     /// * `network_layer` - Channel sender to communicate with the network layer
     /// * `inbox` - Channel receiver for layer operations from the network layer
     ///
     /// # Returns
     /// A future that when awaited, runs the link layer to completion (never returns)
-    fn build_and_run<'a>(
+    fn build_and_run<'a, CTX>(
         self,
-        inner: &'a crate::Inner<D>,
+        context: &'a CTX,
         network_layer: DynamicSender<
             'a,
             LayerOp<crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>>,
         >,
         inbox: impl Inbox<LayerOp<crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>>> + 'a,
-    ) -> impl core::future::Future<Output = !> + 'a;
+    ) -> impl core::future::Future<Output = !> + 'a
+    where
+        CTX: crate::context::BufferManagerContext;
 }
 
 // ############################################################################

@@ -25,3 +25,4 @@ heapless = { workspace = true }
 [features]
 defmt = ["dep:defmt"]
 log = ["dep:log"]
+test-util = []

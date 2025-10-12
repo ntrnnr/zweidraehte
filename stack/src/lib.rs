@@ -13,12 +13,16 @@ mod macros;
 
 pub mod address;
 pub mod bcus;
+pub mod context;
 pub mod dpt;
 pub mod error;
 pub mod layers;
 pub mod messages;
 pub mod objects;
 pub mod util;
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;
 
 use core::{cell::RefCell, mem::MaybeUninit};
 
@@ -30,20 +34,22 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, TimeoutError, with_timeout};
 use messages::knx::KnxMessageBuffer;
-use objects::tables::AssociationTable;
 
-use crate::layers::{
-    ActorRequest, Layer, LinkLayerBuilder, Request,
-    application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
-    network::NetworkLayer,
-    transport::TransportLayer,
+use crate::{
+    address::IndividualAddress,
+    context::BufferManagerContext,
+    layers::{
+        ActorRequest, Layer, LayerOp, LinkLayerBuilder, Request,
+        application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
+        network::NetworkLayer,
+        transport::TransportLayer,
+    },
+    messages::buffers::{Buffer, BufferManager, DynBufferManager},
+    objects::{
+        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
+        tables::{AddressTable, AssociationTable, CommunicationObjectTable, TableMemory},
+    },
 };
-use crate::messages::buffers::{Buffer, BufferManager, DynBufferManager};
-use crate::objects::{
-    comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
-    tables::{AddressTable, CommunicationObjectTable, TableMemory},
-};
-use crate::{address::IndividualAddress, layers::LayerOp};
 
 /// Error type for read object operations with timeout
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +64,7 @@ pub trait StackDefinition: Copy {
     type COT: CommunicationObjectTable;
     type P: ConstDefault;
     type CO: ComObjects;
-    type LLB: layers::LinkLayerBuilder<Self>;
+    type LLB: layers::LinkLayerBuilder;
 }
 
 pub struct StackResources<D: StackDefinition, const BUF_SZ: usize = 128, const NUM_BUFS: usize = 4>
@@ -141,6 +147,13 @@ pub(crate) struct Inner<D: StackDefinition> {
     pub(crate) comm_objs: RefCell<D::CO>,
     pub(crate) event_channel:
         PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
+}
+
+// Implement context traits for Inner
+impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
+    fn buffer_manager(&self) -> &RefCell<DynBufferManager<'static>> {
+        &self.buffer_manager
+    }
 }
 
 fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'a, D> {
@@ -233,7 +246,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 
         // Build and run the link layer using the provided builder
         let ll_task =
-            self.link_layer_builder.build_and_run(self.stack.inner, nl_channel.sender().into(), ll_channel.receiver());
+            self.link_layer_builder.build_and_run(&self.stack.inner, nl_channel.sender().into(), ll_channel.receiver());
 
         // Spawn and await all the upper layer tasks
         let nl_task = network_layer.process(nl_channel.receiver());

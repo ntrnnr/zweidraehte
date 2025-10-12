@@ -1,11 +1,18 @@
 use crate::{
-    layers::{Inbox, Layer, LayerOp},
-    messages::{buffers::Buffer, knx::*},
+    context::BufferManagerContext,
+    layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
+    messages::{
+        buffers::{Buffer, DynBufferManager, MessageBuffer},
+        knx::*,
+    },
 };
 
 pub mod servers;
 
-use core::net::Ipv4Addr;
+use core::{cell::RefCell, net::Ipv4Addr, pin::pin};
+use embassy_futures::select::select_slice;
+use embassy_sync::channel::DynamicSender;
+use heapless::Vec;
 use servers::KnxServer;
 
 extern crate alloc;
@@ -130,6 +137,61 @@ pub struct ServerRegistration {
     pub endpoint: EndpointType,
 }
 
+/// Wrapper around a socket that manages receive buffers using the buffer manager
+///
+/// This wrapper implements `Future` for receiving packets and provides a method
+/// for sending packets. Received data is stored in buffers allocated from the
+/// buffer manager.
+pub struct ManagedSocket<'a> {
+    socket: AsyncUdpMulticastSocket,
+    buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+    endpoint: EndpointType,
+}
+
+impl<'a> ManagedSocket<'a> {
+    /// Create a new managed socket
+    pub fn new(
+        socket: AsyncUdpMulticastSocket,
+        buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+        endpoint: EndpointType,
+    ) -> Self {
+        Self { socket, buffer_manager, endpoint }
+    }
+
+    /// Send a packet to the specified destination
+    pub async fn send_to(&self, data: &[u8], addr: Ipv4Address, port: u16) -> Result<usize, platform::Error> {
+        self.socket.send_to(data, addr, port).await
+    }
+
+    /// Get the endpoint this socket is bound to
+    pub fn endpoint(&self) -> &EndpointType {
+        &self.endpoint
+    }
+
+    /// Receive a packet into a buffer allocated from the buffer manager
+    ///
+    /// Returns a tuple of (buffer, source_address, source_port)
+    pub async fn recv_from(&self) -> Result<(Buffer<'static>, Ipv4Address, u16), platform::Error> {
+        // Allocate a buffer for receiving
+        let mut buffer = self.buffer_manager.borrow().alloc().await;
+        buffer.resize(buffer.capacity(), 0);
+
+        // Receive data into the buffer (buffer derefs to &mut [u8])
+        let (len, addr, port) = self.socket.recv_from(&mut buffer[..]).await?;
+
+        // Set buffer length to actual received length
+        buffer.set_len(len);
+
+        Ok((buffer, addr, port))
+    }
+}
+
+impl<'a> core::fmt::Debug for ManagedSocket<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ManagedSocket").field("endpoint", &self.endpoint).finish_non_exhaustive()
+    }
+}
+
 pub struct KnxNetIpBuilder<const N_SERVERS: usize, const N_REGISTRATIONS: usize> {
     servers: [servers::ServerType; N_SERVERS],
     registrations: [ServerRegistration; N_REGISTRATIONS],
@@ -200,12 +262,22 @@ impl<const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIpBuilder<N_SER
         KnxNetIpBuilder { servers: new_servers, registrations: new_registrations, interface_name: self.interface_name }
     }
 
-    /// Build the final KnxNetIp instance with deduplicated endpoints
+    /// Build the final KnxNetIp components with deduplicated endpoints
     ///
     /// This method deduplicates endpoints at build time based on actual bind addresses.
     /// Multiple local HPAIs may map to the same bind address (e.g., 0.0.0.0, 255.255.255.255
     /// both bind to 0.0.0.0).
-    pub fn build(self) -> KnxNetIp<N_SERVERS, N_REGISTRATIONS> {
+    ///
+    /// Returns a tuple of (servers, registrations, managed_sockets) that can be used to construct
+    /// a KnxNetIp instance.
+    fn build<'a>(
+        self,
+        buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+    ) -> (
+        [servers::ServerType; N_SERVERS],
+        [ServerRegistration; N_REGISTRATIONS],
+        Vec<ManagedSocket<'a>, N_REGISTRATIONS>,
+    ) {
         // Deduplicate based on bind addresses (not local HPAIs)
         // Multiple logical endpoints may share the same socket
         let mut local_hpais = [EndpointType::new_udp(Ipv4Addr::new(0, 0, 0, 0), 0); N_REGISTRATIONS];
@@ -214,31 +286,28 @@ impl<const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIpBuilder<N_SER
         let mut endpoint_count = 0;
 
         for reg in &self.registrations {
-            // Determine what bind address this endpoint would use
-            let proposed_bind_address = if reg.endpoint.is_multicast() {
-                // Multicast: bind to the specific multicast address
-                reg.endpoint
-            } else {
-                // All others (unicast, broadcast, any): bind to 0.0.0.0
-                EndpointType::new_udp(Ipv4Addr::new(0, 0, 0, 0), reg.endpoint.port())
-            };
+            // All endpoints bind to 0.0.0.0 for the given port
+            // Multicast groups will be joined on the same socket
+            let proposed_bind_address = EndpointType::new_udp(Ipv4Addr::new(0, 0, 0, 0), reg.endpoint.port());
 
-            // Check if we already have a socket for this bind address
+            // Check if we already have a socket for this port
             let mut found_index = None;
             for i in 0..endpoint_count {
-                if bind_addresses[i].matches(&proposed_bind_address) {
+                if bind_addresses[i].port() == proposed_bind_address.port() {
                     found_index = Some(i);
                     break;
                 }
             }
 
             if let Some(idx) = found_index {
-                // Socket already exists - check if we need to enable broadcast on it
+                // Socket already exists for this port
+                // Track if we need to enable broadcast
                 if reg.endpoint.is_broadcast() {
                     needs_broadcast[idx] = true;
                 }
+                // Multicast groups will be joined later
             } else if endpoint_count < N_REGISTRATIONS {
-                // New unique bind address - add it
+                // New port - create a new socket
                 local_hpais[endpoint_count] = reg.endpoint;
                 bind_addresses[endpoint_count] = proposed_bind_address;
                 needs_broadcast[endpoint_count] = reg.endpoint.is_broadcast();
@@ -246,47 +315,15 @@ impl<const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIpBuilder<N_SER
             }
         }
 
-        info!("KnxNetIp builder found {} unique endpoints from {} registrations", endpoint_count, N_REGISTRATIONS);
+        info!(
+            "KnxNetIp builder: {} registrations consolidated into {} unique port(s)",
+            N_REGISTRATIONS, endpoint_count
+        );
 
-        // Log each unique endpoint with its bind strategy
+        // Log each unique port and what it will handle
         for i in 0..endpoint_count {
-            let local_hpai = &local_hpais[i];
-            let bind_addr = &bind_addresses[i];
-
-            let ep_type = if local_hpai.is_broadcast() {
-                "broadcast"
-            } else if local_hpai.is_multicast() {
-                "multicast"
-            } else if local_hpai.is_any() {
-                "any interface"
-            } else {
-                "unicast"
-            };
-            let protocol = if local_hpai.is_udp() { "UDP" } else { "TCP" };
-
-            if local_hpai.is_multicast() {
-                debug!(
-                    "  Endpoint {}: {} {}:{} ({}) - binding to {} and joining multicast group",
-                    i,
-                    protocol,
-                    local_hpai.address(),
-                    local_hpai.port(),
-                    ep_type,
-                    bind_addr.address()
-                );
-            } else {
-                let broadcast_flag = if needs_broadcast[i] { " with SO_BROADCAST" } else { "" };
-                debug!(
-                    "  Endpoint {}: {} {}:{} ({}) - binding to 0.0.0.0:{}{}",
-                    i,
-                    protocol,
-                    local_hpai.address(),
-                    local_hpai.port(),
-                    ep_type,
-                    bind_addr.port(),
-                    broadcast_flag
-                );
-            }
+            let port = bind_addresses[i].port();
+            debug!("  Port {}: Will bind to 0.0.0.0:{} on interface {}", i, port, self.interface_name);
         }
 
         // Get the interface address for multicast joining
@@ -305,17 +342,37 @@ impl<const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIpBuilder<N_SER
             }
         };
 
-        // Create sockets for each unique endpoint
-        let mut sockets: [Option<AsyncUdpMulticastSocket>; N_REGISTRATIONS] = [const { None }; N_REGISTRATIONS];
+        // Collect all unique multicast groups per port
+        let mut multicast_groups: [Vec<Ipv4Addr, N_REGISTRATIONS>; N_REGISTRATIONS] =
+            [const { Vec::new() }; N_REGISTRATIONS];
+
+        for reg in &self.registrations {
+            if reg.endpoint.is_multicast() {
+                // Find which socket index this port corresponds to
+                for i in 0..endpoint_count {
+                    if bind_addresses[i].port() == reg.endpoint.port() {
+                        let mcast_addr = reg.endpoint.address();
+                        // Only add if not already in the list (deduplicate)
+                        if !multicast_groups[i].contains(&mcast_addr) {
+                            let _ = multicast_groups[i].push(mcast_addr);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Create managed sockets for each unique port
+        let mut managed_sockets: Vec<ManagedSocket<'a>, N_REGISTRATIONS> = Vec::new();
 
         for i in 0..endpoint_count {
             let bind_addr = &bind_addresses[i];
-            let local_hpai = &local_hpais[i];
+            let port = bind_addr.port();
 
-            // Create socket options - bind to 0.0.0.0 (or multicast addr) and use SO_BINDTODEVICE
-            let mut options = UdpMulticastSocketOptions {
-                address: bind_addr.address().into(),
-                port: bind_addr.port(),
+            // Create socket options - bind to 0.0.0.0 and use SO_BINDTODEVICE
+            let options = UdpMulticastSocketOptions {
+                address: Ipv4Address::UNSPECIFIED,
+                port,
                 interface: Some(String::from(self.interface_name)),
                 ..Default::default()
             };
@@ -323,53 +380,82 @@ impl<const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIpBuilder<N_SER
             // Create and configure the socket
             match AsyncUdpMulticastSocket::bind(options) {
                 Ok(socket) => {
-                    // For multicast, join the multicast group using the interface's IP address
-                    if local_hpai.is_multicast() {
-                        debug!(
-                            "  Socket {}: Created multicast socket, joining group {} on interface {} ({})",
-                            i,
-                            local_hpai.address(),
-                            self.interface_name,
-                            interface_addr
-                        );
-                        if let Err(e) = socket.join_multicast(local_hpai.address().into(), interface_addr) {
-                            error!("Failed to join multicast group: {:?}", e);
+                    // Join all multicast groups for this port
+                    if !multicast_groups[i].is_empty() {
+                        for mcast_addr in &multicast_groups[i] {
+                            debug!(
+                                "  Socket {}: Joining multicast group {} on interface {} ({})",
+                                i, mcast_addr, self.interface_name, interface_addr
+                            );
+                            if let Err(e) = socket.join_multicast((*mcast_addr).into(), interface_addr) {
+                                error!("Failed to join multicast group {}: {:?}", mcast_addr, e);
+                            }
                         }
                     }
 
                     if needs_broadcast[i] {
-                        debug!("  Socket {}: Socket will receive broadcast traffic", i);
+                        debug!("  Socket {}: Enabling SO_BROADCAST for broadcast traffic", i);
                         socket.set_broadcast(true).unwrap();
                     }
 
-                    info!(
-                        "  Socket {}: Bound to {}:{} on interface {}",
-                        i,
-                        bind_addr.address(),
-                        bind_addr.port(),
-                        self.interface_name
-                    );
-                    sockets[i] = Some(socket);
+                    // Log socket binding with multicast groups
+                    if multicast_groups[i].is_empty() {
+                        info!(
+                            "  Socket {}: Bound to 0.0.0.0:{} on interface {} (broadcast: {})",
+                            i, port, self.interface_name, needs_broadcast[i]
+                        );
+                    } else {
+                        // Build a comma-separated list of multicast addresses
+                        let mut mcast_list = String::new();
+                        for (idx, addr) in multicast_groups[i].iter().enumerate() {
+                            if idx > 0 {
+                                mcast_list.push_str(", ");
+                            }
+                            use core::fmt::Write;
+                            let _ = write!(mcast_list, "{}", addr);
+                        }
+                        info!(
+                            "  Socket {}: Bound to 0.0.0.0:{} on interface {} (multicast: [{}], broadcast: {})",
+                            i, port, self.interface_name, mcast_list, needs_broadcast[i]
+                        );
+                    }
+
+                    // Wrap the socket in a ManagedSocket and add to the list
+                    // Use the bind address as the endpoint (0.0.0.0:port)
+                    let managed = ManagedSocket::new(socket, buffer_manager, *bind_addr);
+                    let _ = managed_sockets.push(managed);
                 }
                 Err(e) => {
-                    error!("Failed to create socket for endpoint {}: {:?}", i, e);
+                    error!("Failed to create socket for port {}: {:?}", port, e);
                     // Continue without this socket - error will be logged
                 }
             }
         }
 
-        KnxNetIp { servers: self.servers, registrations: self.registrations, sockets }
+        (self.servers, self.registrations, managed_sockets)
     }
 }
 
-#[derive(Debug)]
-pub struct KnxNetIp<const N_SERVERS: usize, const N_REGISTRATIONS: usize> {
+pub struct KnxNetIp<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> {
+    network_layer: embassy_sync::channel::DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
     servers: [servers::ServerType; N_SERVERS],
     registrations: [ServerRegistration; N_REGISTRATIONS],
-    sockets: [Option<AsyncUdpMulticastSocket>; N_REGISTRATIONS],
+    sockets: Vec<ManagedSocket<'a>, N_REGISTRATIONS>,
 }
 
-impl<const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIp<N_SERVERS, N_REGISTRATIONS> {
+impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> core::fmt::Debug
+    for KnxNetIp<'a, N_SERVERS, N_REGISTRATIONS>
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("KnxNetIp")
+            .field("servers", &self.servers)
+            .field("registrations", &self.registrations)
+            .field("sockets", &self.sockets.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIp<'a, N_SERVERS, N_REGISTRATIONS> {
     /// Dispatch a message received on a specific endpoint to interested servers
     fn dispatch_message(&self, service_code: u16, endpoint: &EndpointType, data: &[u8]) {
         let mut dispatched = false;
@@ -392,9 +478,7 @@ impl<const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIp<N_SERVERS, N
     }
 }
 
-use heapless::Vec;
-
-impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> Layer<'a> for KnxNetIp<N_SERVERS, N_REGISTRATIONS> {
+impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> Layer<'a> for KnxNetIp<'a, N_SERVERS, N_REGISTRATIONS> {
     type Message = KnxMessageBuffer<Buffer<'static>>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
@@ -403,6 +487,14 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> Layer<'a> for Knx
     {
         // Endpoints are already deduplicated and sockets created in the builder
         info!("KnxNetIp Link Layer starting with {} servers, {} registrations", N_SERVERS, N_REGISTRATIONS);
+
+        loop {
+            let mut s: Vec<_, N_REGISTRATIONS> = self.sockets.iter_mut().map(|s| s.recv_from()).collect();
+            let a = select_slice(s.as_mut_slice()).await;
+            if let (Ok((buffer, addr, port)), idx) = a {
+                debug!("Received data on socket {}: {}:{} -> {} {:?}", idx, addr, port, buffer.len(), &buffer[..]);
+            }
+        }
 
         loop {
             // TODO: Use select to wait for:
@@ -446,5 +538,30 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> Layer<'a> for Knx
                 }
             }
         }
+    }
+}
+
+// Implement LinkLayerBuilder trait for KnxNetIpBuilder
+impl<const N_SERVERS: usize, const N_REGISTRATIONS: usize> LinkLayerBuilder
+    for KnxNetIpBuilder<N_SERVERS, N_REGISTRATIONS>
+{
+    fn build_and_run<'a, CTX>(
+        self,
+        context: &'a CTX,
+        network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+        inbox: impl Inbox<LayerOp<KnxMessageBuffer<Buffer<'static>>>> + 'a,
+    ) -> impl core::future::Future<Output = !> + 'a
+    where
+        CTX: BufferManagerContext,
+    {
+        // Build the KnxNetIp components with ManagedSockets from the builder configuration
+        let buffer_manager = context.buffer_manager();
+        let (servers, registrations, managed_sockets) = self.build(buffer_manager);
+
+        // Create the KnxNetIp instance directly
+        let mut link_layer = KnxNetIp { network_layer, servers, registrations, sockets: managed_sockets };
+
+        // Return a future that runs the link layer
+        async move { link_layer.process(inbox).await }
     }
 }

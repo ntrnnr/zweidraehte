@@ -141,16 +141,16 @@ impl<const N: usize> MockLinkLayerBuilder<N> {
     }
 }
 
-impl<D, const N: usize> LinkLayerBuilder<D> for MockLinkLayerBuilder<N>
-where
-    D: crate::StackDefinition,
-{
-    fn build_and_run<'a>(
+impl<const N: usize> LinkLayerBuilder for MockLinkLayerBuilder<N> {
+    fn build_and_run<'a, CTX>(
         self,
-        _inner: &'a crate::Inner<D>,
+        _context: &'a CTX,
         network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
         inbox: impl Inbox<LayerOp<KnxMessageBuffer<Buffer<'static>>>> + 'a,
-    ) -> impl Future<Output = !> + 'a {
+    ) -> impl Future<Output = !> + 'a
+    where
+        CTX: crate::context::BufferManagerContext,
+    {
         let mut link_layer = MockLinkLayer::new(network_layer, self.injection_channel.receiver());
         async move { link_layer.process(inbox).await }
     }
