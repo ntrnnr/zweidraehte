@@ -8,11 +8,10 @@ use nix::sys::socket::MsgFlags;
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::Result;
-use crate::address::{IpEndpoint, Ipv4Address};
 
 #[derive(Debug)]
 pub struct Options {
-    pub address: Ipv4Address,
+    pub address: Ipv4Addr,
     pub port: u16,
     pub read_timeout: Option<Duration>,
     pub write_timeout: Option<Duration>,
@@ -24,7 +23,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            address: Ipv4Address::UNSPECIFIED,
+            address: Ipv4Addr::UNSPECIFIED,
             port: 0,
             read_timeout: None,
             write_timeout: None,
@@ -71,8 +70,8 @@ impl UdpMulticastSocket {
         Ok(Self { s: s.into() })
     }
 
-    pub fn join_multicast(&self, group: Ipv4Address, interface: Ipv4Address) -> Result<()> {
-        self.s.join_multicast_v4(&group.into(), &interface.into())?;
+    pub fn join_multicast(&self, group: Ipv4Addr, interface: Ipv4Addr) -> Result<()> {
+        self.s.join_multicast_v4(&group, &interface)?;
         Ok(())
     }
 
@@ -81,11 +80,8 @@ impl UdpMulticastSocket {
         Ok(())
     }
 
-    pub fn local_endpoint(&self) -> IpEndpoint {
-        match self.s.local_addr().unwrap() {
-            SocketAddr::V4(v4) => IpEndpoint::new((*v4.ip()).into(), v4.port()),
-            _ => panic!("UDP multicast socket doesn't support IPv6"),
-        }
+    pub fn local_endpoint(&self) -> SocketAddr {
+        self.s.local_addr().unwrap()
     }
 
     pub fn set_read_timeout(&mut self, timeout: Option<Duration>) {
@@ -105,8 +101,8 @@ impl UdpMulticastSocket {
             .map_err(|e| std::io::Error::from(e).into())
     }
 
-    pub fn connect(&self, endpoint: IpEndpoint) -> Result<()> {
-        Ok(self.s.connect::<SocketAddrV4>(endpoint.into())?)
+    pub fn connect(&self, endpoint: SocketAddr) -> Result<()> {
+        Ok(self.s.connect(endpoint)?)
     }
 
     pub fn recv(&self, buf: &mut [u8]) -> Result<usize> {
@@ -123,16 +119,16 @@ impl UdpMulticastSocket {
     }
 
     // FIXME: use Endpoint
-    pub fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, Ipv4Address, u16)> {
+    pub fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, Ipv4Addr, u16)> {
         let r = self.s.recv_from(buf)?;
         match r {
-            (length, SocketAddr::V4(addr)) => Ok((length, (*addr.ip()).into(), addr.port())),
+            (length, SocketAddr::V4(addr)) => Ok((length, *addr.ip(), addr.port())),
             _ => panic!("UDP multicast socket doesn't support IPv6"),
         }
     }
 
     // FIXME: use Endpoint
-    pub fn recv_from_alloc(&self) -> Result<(Vec<u8>, Ipv4Address, u16)> {
+    pub fn recv_from_alloc(&self) -> Result<(Vec<u8>, Ipv4Addr, u16)> {
         let mut buf = vec![0u8; self.get_next_packet_len()?];
         let (r, i, p) = self.recv_from(buf.as_mut())?;
 
@@ -146,8 +142,8 @@ impl UdpMulticastSocket {
     }
 
     // FIXME: use Endpoint
-    pub fn send_to(&self, buf: &[u8], addr: Ipv4Address, port: u16) -> Result<usize> {
-        Ok(self.s.send_to(buf, SocketAddrV4::new(addr.into(), port))?)
+    pub fn send_to(&self, buf: &[u8], addr: Ipv4Addr, port: u16) -> Result<usize> {
+        Ok(self.s.send_to(buf, SocketAddrV4::new(addr, port))?)
     }
 }
 
@@ -183,7 +179,7 @@ impl AsyncUdpMulticastSocket {
         }
     }
 
-    pub fn join_multicast(&self, group: Ipv4Address, interface: Ipv4Address) -> Result<()> {
+    pub fn join_multicast(&self, group: Ipv4Addr, interface: Ipv4Addr) -> Result<()> {
         self.watcher.get_ref().join_multicast(group, interface)
     }
 
@@ -191,7 +187,7 @@ impl AsyncUdpMulticastSocket {
         self.watcher.get_ref().set_broadcast(broadcast)
     }
 
-    pub fn local_endpoint(&self) -> IpEndpoint {
+    pub fn local_endpoint(&self) -> SocketAddr {
         self.watcher.get_ref().local_endpoint()
     }
 
@@ -203,7 +199,7 @@ impl AsyncUdpMulticastSocket {
         self.write_timeout = timeout;
     }
 
-    pub fn connect(&self, endpoint: IpEndpoint) -> Result<()> {
+    pub fn connect(&self, endpoint: SocketAddr) -> Result<()> {
         self.watcher.get_ref().connect(endpoint)
     }
 
@@ -223,7 +219,7 @@ impl AsyncUdpMulticastSocket {
     }
 
     // FIXME: use Endpoint
-    pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, Ipv4Address, u16)> {
+    pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, Ipv4Addr, u16)> {
         let reader = self.watcher.read_with(|io| io.s.recv_from(buf));
 
         if let Some(read_timeout) = self.read_timeout {
@@ -250,8 +246,8 @@ impl AsyncUdpMulticastSocket {
     }
 
     // FIXME: use Endpoint
-    pub async fn send_to(&self, buf: &[u8], addr: Ipv4Address, port: u16) -> Result<usize> {
-        let writer = self.watcher.write_with(|io| io.s.send_to(buf, SocketAddrV4::new(addr.into(), port)));
+    pub async fn send_to(&self, buf: &[u8], addr: Ipv4Addr, port: u16) -> Result<usize> {
+        let writer = self.watcher.write_with(|io| io.s.send_to(buf, SocketAddrV4::new(addr, port)));
 
         if let Some(write_timeout) = self.write_timeout {
             with_timeout(write_timeout.into(), writer).await?

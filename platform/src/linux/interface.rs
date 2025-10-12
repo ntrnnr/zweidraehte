@@ -1,9 +1,11 @@
+use core::net::Ipv4Addr;
+
 use super::{Error, Result};
-use crate::address::Ipv4Address;
+
 use nix::ifaddrs::getifaddrs;
 
 /// Get the IPv4 address of a network interface by its name
-pub fn get_interface_address(interface_name: &str) -> Result<Ipv4Address> {
+pub fn get_interface_address(interface_name: &str) -> Result<Ipv4Addr> {
     let ifaddrs = getifaddrs().map_err(|e| Error::Other(format!("Failed to get interface addresses: {}", e)))?;
 
     for ifaddr in ifaddrs {

@@ -10,15 +10,17 @@ use crate::{
 pub mod servers;
 
 use core::{cell::RefCell, net::Ipv4Addr, pin::pin};
+
 use embassy_futures::select::select_slice;
 use embassy_sync::channel::DynamicSender;
 use heapless::Vec;
 use servers::KnxServer;
 
+// FIXME: NO ALLOC!
 extern crate alloc;
 use alloc::string::String;
 
-use platform::{AsyncUdpMulticastSocket, UdpMulticastSocketOptions, address::Ipv4Address, get_interface_address};
+use platform::{AsyncUdpMulticastSocket, UdpMulticastSocketOptions, get_interface_address};
 
 /// Protocol type for KNX/IP endpoints
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +33,7 @@ pub enum Protocol {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndpointType {
     protocol: Protocol,
-    address: Ipv4Addr, // FIXME: this should be Ipv4Address from platform
+    address: Ipv4Addr,
     port: u16,
 }
 
@@ -159,7 +161,7 @@ impl<'a> ManagedSocket<'a> {
     }
 
     /// Send a packet to the specified destination
-    pub async fn send_to(&self, data: &[u8], addr: Ipv4Address, port: u16) -> Result<usize, platform::Error> {
+    pub async fn send_to(&self, data: &[u8], addr: Ipv4Addr, port: u16) -> Result<usize, platform::Error> {
         self.socket.send_to(data, addr, port).await
     }
 
@@ -171,7 +173,7 @@ impl<'a> ManagedSocket<'a> {
     /// Receive a packet into a buffer allocated from the buffer manager
     ///
     /// Returns a tuple of (buffer, source_address, source_port)
-    pub async fn recv_from(&self) -> Result<(Buffer<'static>, Ipv4Address, u16), platform::Error> {
+    pub async fn recv_from(&self) -> Result<(Buffer<'static>, Ipv4Addr, u16), platform::Error> {
         // Allocate a buffer for receiving
         let mut buffer = self.buffer_manager.borrow().alloc().await;
         buffer.resize(buffer.capacity(), 0);
@@ -338,7 +340,7 @@ impl<const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIpBuilder<N_SER
             Err(e) => {
                 error!("Failed to get address for interface '{}': {:?}", self.interface_name, e);
                 error!("Falling back to UNSPECIFIED (0.0.0.0) - multicast may not work correctly");
-                Ipv4Address::UNSPECIFIED
+                Ipv4Addr::UNSPECIFIED
             }
         };
 
@@ -371,7 +373,7 @@ impl<const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIpBuilder<N_SER
 
             // Create socket options - bind to 0.0.0.0 and use SO_BINDTODEVICE
             let options = UdpMulticastSocketOptions {
-                address: Ipv4Address::UNSPECIFIED,
+                address: Ipv4Addr::UNSPECIFIED,
                 port,
                 interface: Some(String::from(self.interface_name)),
                 ..Default::default()
