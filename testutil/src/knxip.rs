@@ -75,7 +75,29 @@ async fn main(spawner: Spawner) {
 
     // Create the KNXnet/IP link layer builder and use the LinkLayerBuilder trait
     let local_hpai = EndpointType::new_udp_any(3671);
-    let ds = servers::DiscoveryServer::new(local_hpai);
+
+    // Create discovery server configuration
+    use platform::address::EthernetAddress;
+    use zweidraehte::address::IndividualAddress;
+    use zweidraehte::messages::knxip::substructs::{ServiceFamily, SupportedService};
+
+    const SUPPORTED_SERVICES: &[SupportedService] = &[
+        SupportedService { family: ServiceFamily::Core, version: 1 },
+        SupportedService { family: ServiceFamily::DeviceManagement, version: 1 },
+        SupportedService { family: ServiceFamily::Tunneling, version: 1 },
+        SupportedService { family: ServiceFamily::Routing, version: 1 },
+    ];
+
+    let discovery_config = servers::DiscoveryServerConfig::new(
+        "192.168.106.6".parse().unwrap(),
+        3671,
+        IndividualAddress::new(1, 1, 0),
+        EthernetAddress([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        SUPPORTED_SERVICES,
+    )
+    .with_friendly_name(*b"KNX Test Device\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
+
+    let ds = servers::DiscoveryServer::new(discovery_config);
     let rs = servers::RoutingServer::new(local_hpai);
     let cs = servers::RemoteConfigurationServer::new(local_hpai);
     let kb = KnxNetIpBuilder::new("knxdevbridgeif"); // Bind to knxbridge interface

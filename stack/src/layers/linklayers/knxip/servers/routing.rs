@@ -1,6 +1,6 @@
-use crate::{layers::linklayers::knxip::EndpointType, messages::knxip::KNXnetIPServiceType};
-
-use super::{ServerError, ServerInterest};
+use super::{
+    DynBufferManager, EndpointType, KNXnetIPServiceType, PendingResponse, ServerError, ServerInterest, SocketHandle,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RoutingServer {
@@ -27,9 +27,15 @@ impl super::KnxServer for RoutingServer {
         &self.interests
     }
 
-    fn handle_message(&self, service_code: KNXnetIPServiceType, _data: &[u8]) -> Result<(), ServerError> {
+    async fn handle_message(
+        &self,
+        service_code: KNXnetIPServiceType,
+        _data: &[u8],
+        _socket: SocketHandle,
+        _buffer_manager: &DynBufferManager<'static>,
+    ) -> Result<Option<PendingResponse>, ServerError> {
         trace!("Routing server handling service code {:?}", service_code);
         // TODO: Implement routing protocol handling
-        Ok(())
+        Ok(None)
     }
 }

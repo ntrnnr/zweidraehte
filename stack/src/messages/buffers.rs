@@ -125,6 +125,29 @@ impl core::fmt::Debug for Buffer<'_> {
     }
 }
 
+impl crate::util::packets::SerializeBuffer for Buffer<'_> {
+    fn serialize<P: crate::util::packets::SerializablePacket>(&mut self, packet: &P) -> (&mut [u8], &mut [u8]) {
+        // Get a mutable slice to the entire capacity
+        let full_buffer = unsafe { self.buffer.as_mut() };
+        let original_len = full_buffer.len();
+
+        // Create a temporary mutable reference for serialization
+        let mut temp = &mut full_buffer[..];
+        packet.serialize(&mut &mut temp);
+
+        // temp now points to remaining bytes
+        let written = original_len - temp.len();
+
+        // Update the buffer's length to match what was written
+        self.len = written;
+
+        // Split the buffer into written and remaining portions
+        let full_buffer = unsafe { self.buffer.as_mut() };
+        let (written_portion, remaining_portion) = full_buffer.split_at_mut(written);
+        (written_portion, remaining_portion)
+    }
+}
+
 /// A dynamic [`BufferManager`] with generics elided.
 #[derive(Clone, Copy)]
 pub struct DynBufferManager<'a> {

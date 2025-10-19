@@ -1,12 +1,7 @@
-use crate::{
-    context::BufferManagerContext,
-    layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
-    messages::{buffers::*, knx::*, knxip::*},
+use core::{
+    cell::RefCell,
+    net::{Ipv4Addr, SocketAddrV4},
 };
-
-pub mod servers;
-
-use core::{cell::RefCell, net::Ipv4Addr};
 
 use embassy_futures::select::{Either, select, select_slice};
 use embassy_sync::channel::DynamicSender;
@@ -18,6 +13,14 @@ extern crate alloc;
 use alloc::string::String;
 
 use platform::{AsyncUdpMulticastSocket, UdpMulticastSocketOptions, get_interface_address};
+
+use crate::{
+    context::BufferManagerContext,
+    layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
+    messages::{buffers::*, knx::*, knxip::*},
+};
+
+pub mod servers;
 
 /// Protocol type for KNX/IP endpoints
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +213,78 @@ impl<'a> ManagedSocket<'a> {
 impl<'a> core::fmt::Debug for ManagedSocket<'a> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ManagedSocket").field("endpoint", &self.endpoint).finish_non_exhaustive()
+    }
+}
+
+/// A handle for sending responses on a socket
+///
+/// This is a lightweight reference that can be passed to servers, allowing them
+/// to send responses without knowing the underlying protocol (UDP vs TCP).
+///
+/// The handle is only valid during the message handling and should not be stored.
+#[derive(Debug, Clone, Copy)]
+pub struct SocketHandle {
+    /// Index identifying which socket this handle refers to
+    socket_index: usize,
+}
+
+impl SocketHandle {
+    /// Create a new socket handle (internal use only)
+    pub(super) const fn new(socket_index: usize) -> Self {
+        Self { socket_index }
+    }
+
+    /// Get the socket index (internal use only)
+    pub(super) const fn socket_index(&self) -> usize {
+        self.socket_index
+    }
+
+    /// Create a response that will be sent on this socket
+    ///
+    /// # Arguments
+    /// * `buffer` - The buffer containing the response data
+    /// * `destination` - The destination address
+    ///
+    /// # Returns
+    /// A `PendingResponse` that the layer will send
+    pub fn respond(&self, buffer: Buffer<'static>, destination: SocketAddrV4) -> PendingResponse {
+        PendingResponse { socket_handle: *self, buffer, destination }
+    }
+}
+
+/// A response that is ready to be sent
+///
+/// This is returned by servers when they want to send a message.
+/// The KnxNetIp layer takes this and performs the actual send operation.
+#[derive(Debug)]
+pub struct PendingResponse {
+    /// The socket to send on
+    pub(super) socket_handle: SocketHandle,
+    /// The buffer containing the response data
+    pub(super) buffer: Buffer<'static>,
+    /// The destination address
+    pub(super) destination: SocketAddrV4,
+}
+
+impl PendingResponse {
+    /// Get the socket handle
+    pub(super) fn socket_handle(&self) -> SocketHandle {
+        self.socket_handle
+    }
+
+    /// Get the buffer
+    pub(super) fn buffer(&self) -> &Buffer<'static> {
+        &self.buffer
+    }
+
+    /// Get the destination
+    pub(super) fn destination(&self) -> SocketAddrV4 {
+        self.destination
+    }
+
+    /// Consume and extract the parts
+    pub(super) fn into_parts(self) -> (SocketHandle, Buffer<'static>, SocketAddrV4) {
+        (self.socket_handle, self.buffer, self.destination)
     }
 }
 
@@ -462,6 +537,7 @@ pub struct KnxNetIp<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> {
     servers: [servers::ServerType; N_SERVERS],
     registrations: [ServerRegistration; N_REGISTRATIONS],
     sockets: Vec<ManagedSocket<'a>, N_REGISTRATIONS>,
+    buffer_manager: &'a RefCell<DynBufferManager<'static>>,
 }
 
 impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> core::fmt::Debug
@@ -487,8 +563,18 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIp<'a, N_SE
     /// * `service_code` - The KNX/IP service type
     /// * `socket_port` - The port number of the socket that received the packet
     /// * `data` - The raw packet data
-    fn dispatch_message(&self, service_code: KNXnetIPServiceType, socket_port: u16, data: &[u8]) {
-        let mut dispatched = false;
+    ///
+    /// # Returns
+    /// An optional response to send back (buffer, destination address, destination port)
+    async fn dispatch_message(
+        &self,
+        service_code: KNXnetIPServiceType,
+        socket_index: usize,
+        data: &[u8],
+    ) -> Option<PendingResponse> {
+        let socket_port = self.sockets[socket_index].endpoint().port();
+        let socket_handle = SocketHandle::new(socket_index);
+        let mut response = None;
 
         for reg in &self.registrations {
             // Match if: same service code AND same port
@@ -502,17 +588,28 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIp<'a, N_SE
                     service_code, reg.server_id, reg.endpoint
                 );
 
-                if let Err(e) = self.servers[reg.server_id].handle_message(service_code, data) {
-                    error!("Server {} failed to handle message: {:?}", reg.server_id, e);
-                } else {
-                    dispatched = true;
+                match self.servers[reg.server_id]
+                    .handle_message(service_code, data, socket_handle, &*self.buffer_manager.borrow())
+                    .await
+                {
+                    Ok(Some(server_response)) => {
+                        response = Some(server_response);
+                    }
+                    Ok(None) => {
+                        trace!("Server {} handled message but sent no response", reg.server_id);
+                    }
+                    Err(e) => {
+                        error!("Server {} failed to handle message: {:?}", reg.server_id, e);
+                    }
                 }
             }
         }
 
-        if !dispatched {
+        if response.is_none() {
             trace!("No server registered for service code {:?} on port {}", service_code, socket_port);
         }
+
+        response
     }
 }
 
@@ -546,11 +643,21 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> Layer<'a> for Knx
                         Ok(service_type) => {
                             debug!("  Service type: {:?}", service_type);
 
-                            // Get the port this socket is bound to
-                            let socket_port = self.sockets[socket_idx].endpoint().port();
+                            // Dispatch to interested servers based on service code and socket
+                            if let Some(response) = self.dispatch_message(service_type, socket_idx, &buffer[..]).await {
+                                // Extract the response parts
+                                let (socket_handle, response_buffer, destination) = response.into_parts();
 
-                            // Dispatch to interested servers based on service code and port
-                            self.dispatch_message(service_type, socket_port, &buffer[..]);
+                                // Send the response using the socket identified by the handle
+                                debug!("Sending {} byte response to {}", response_buffer.len(), destination);
+
+                                if let Err(e) = self.sockets[socket_handle.socket_index()]
+                                    .send_to(&response_buffer[..], *destination.ip(), destination.port())
+                                    .await
+                                {
+                                    error!("Failed to send response: {:?}", e);
+                                }
+                            }
                         }
                         Err(e) => {
                             warn!("Failed to parse KNX/IP service type from {}:{}: {:?}", addr, port, e);
@@ -626,7 +733,8 @@ impl<const N_SERVERS: usize, const N_REGISTRATIONS: usize> LinkLayerBuilder
         let (servers, registrations, managed_sockets) = self.build(buffer_manager);
 
         // Create the KnxNetIp instance directly
-        let mut link_layer = KnxNetIp { network_layer, servers, registrations, sockets: managed_sockets };
+        let mut link_layer =
+            KnxNetIp { network_layer, servers, registrations, sockets: managed_sockets, buffer_manager };
 
         // Return a future that runs the link layer
         async move { link_layer.process(inbox).await }

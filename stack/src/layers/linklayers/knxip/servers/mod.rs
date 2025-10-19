@@ -2,13 +2,15 @@ pub mod discovery;
 pub mod remote_config;
 pub mod routing;
 
-pub use discovery::DiscoveryServer;
+pub use discovery::{DiscoveryServer, DiscoveryServerConfig};
 pub use remote_config::RemoteConfigurationServer;
 pub use routing::RoutingServer;
 
-use crate::messages::knxip::KNXnetIPServiceType;
+use crate::messages::{buffers::DynBufferManager, knxip::KNXnetIPServiceType};
 
-use super::EndpointType;
+use super::{
+    EndpointType, {PendingResponse, SocketHandle},
+};
 
 /// Enum wrapping all possible KNX/IP server types
 /// This allows us to store heterogeneous servers without using trait objects
@@ -39,11 +41,17 @@ impl ServerType {
     }
 
     /// Handle a message
-    pub fn handle_message(&self, service_code: KNXnetIPServiceType, data: &[u8]) -> Result<(), ServerError> {
+    pub async fn handle_message(
+        &self,
+        service_code: KNXnetIPServiceType,
+        data: &[u8],
+        socket: SocketHandle,
+        buffer_manager: &DynBufferManager<'static>,
+    ) -> Result<Option<PendingResponse>, ServerError> {
         match self {
-            ServerType::Discovery(s) => s.handle_message(service_code, data),
-            ServerType::Routing(s) => s.handle_message(service_code, data),
-            ServerType::RemoteConfiguration(s) => s.handle_message(service_code, data),
+            ServerType::Discovery(s) => s.handle_message(service_code, data, socket, buffer_manager).await,
+            ServerType::Routing(s) => s.handle_message(service_code, data, socket, buffer_manager).await,
+            ServerType::RemoteConfiguration(s) => s.handle_message(service_code, data, socket, buffer_manager).await,
         }
     }
 }
@@ -104,13 +112,22 @@ pub trait KnxServer {
     /// # Arguments
     /// * `service_code` - The KNX/IP service type identifier
     /// * `data` - The message data (without the KNX/IP header)
+    /// * `socket` - Handle to the socket that received the message (for sending responses)
+    /// * `buffer_manager` - Access to the buffer manager for allocating response buffers
     ///
     /// # Returns
-    /// * `Ok(())` if the message was handled successfully
+    /// * `Ok(Some(response))` if a response should be sent
+    /// * `Ok(None)` if the message was handled but no response is needed
     /// * `Err(ServerError)` if there was an error handling the message
     ///
     /// # Note
     /// This method takes `&self` instead of `&mut self`. Servers that need to maintain
     /// mutable state should use interior mutability patterns (Cell, RefCell, or atomic types).
-    fn handle_message(&self, service_code: KNXnetIPServiceType, data: &[u8]) -> Result<(), ServerError>;
+    async fn handle_message(
+        &self,
+        service_code: KNXnetIPServiceType,
+        data: &[u8],
+        socket: SocketHandle,
+        buffer_manager: &DynBufferManager<'static>,
+    ) -> Result<Option<PendingResponse>, ServerError>;
 }
