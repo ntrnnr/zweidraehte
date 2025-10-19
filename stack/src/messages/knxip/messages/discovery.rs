@@ -85,6 +85,95 @@ impl SerializablePacket for SearchRequestBuilder {
 }
 
 // ============================================================================
+// SEARCH REQUEST EXTENDED
+// ============================================================================
+
+/// KNXnet/IP SEARCH_REQUEST (Extended)
+///
+/// Used to discover KNXnet/IP servers on the network with additional search parameters
+#[derive(Debug)]
+pub struct SearchRequestExtended<B: SplitByteSlice = &'static [u8]> {
+    pub discovery_endpoint: Endpoint,
+    pub search_request_parameters: heapless::Vec<SearchRequestParameter<B>, 16>,
+}
+
+impl<B: SplitByteSlice> SearchRequestExtended<B> {
+    /// Create a new SEARCH_REQUEST_EXTENDED with the given discovery endpoint and SRPs
+    pub fn new(
+        discovery_endpoint: Endpoint,
+        search_request_parameters: heapless::Vec<SearchRequestParameter<B>, 16>,
+    ) -> Self {
+        Self { discovery_endpoint, search_request_parameters }
+    }
+}
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchRequestExtended<B> {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
+        // Parse header
+        let header = buffer.take_obj_front::<raw::KNXnetIPHeader>().ok_or(ParseError::Format)?;
+
+        // Verify it's a SEARCH_REQUEST_EXTENDED
+        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+            != KNXnetIPServiceType::SearchRequestExtended
+        {
+            return Err(ParseError::Format);
+        }
+
+        // Parse discovery endpoint
+        let discovery_endpoint = Endpoint::parse(buffer, ())?;
+
+        // Parse all SRPs until buffer is empty
+        let mut search_request_parameters = heapless::Vec::new();
+        while !buffer.is_empty() {
+            let srp = SearchRequestParameter::parse(buffer, ())?;
+            search_request_parameters.push(srp).map_err(|_| ParseError::Format)?;
+        }
+
+        Ok(SearchRequestExtended { discovery_endpoint, search_request_parameters })
+    }
+}
+
+/// Builder for SearchRequestExtended message
+pub struct SearchRequestExtendedBuilder<'a> {
+    pub discovery_endpoint: Endpoint,
+    pub search_request_parameters: &'a [SearchRequestParameterBuilder<'a>],
+}
+
+impl<'a> SearchRequestExtendedBuilder<'a> {
+    pub fn new(
+        discovery_endpoint: Endpoint,
+        search_request_parameters: &'a [SearchRequestParameterBuilder<'a>],
+    ) -> Self {
+        Self { discovery_endpoint, search_request_parameters }
+    }
+}
+
+impl<'a> SerializablePacket for SearchRequestExtendedBuilder<'a> {
+    fn bytes_len(&self) -> usize {
+        let srps_len: usize = self.search_request_parameters.iter().map(|srp| srp.bytes_len()).sum();
+        mem::size_of::<raw::KNXnetIPHeader>() + self.discovery_endpoint.bytes_len() + srps_len
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        let header = raw::KNXnetIPHeader {
+            header_size: mem::size_of::<raw::KNXnetIPHeader>() as u8,
+            version: KNXnetIPVersion::Version10.into(),
+            service_type: U16::from(u16::from(KNXnetIPServiceType::SearchRequestExtended)),
+            total_length: (self.bytes_len() as u16).into(),
+        };
+        bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
+
+        self.discovery_endpoint.serialize(bv);
+
+        for srp in self.search_request_parameters {
+            srp.serialize(bv);
+        }
+    }
+}
+
+// ============================================================================
 // SEARCH RESPONSE
 // ============================================================================
 
@@ -167,6 +256,95 @@ impl<'a> SerializablePacket for SearchResponseBuilder<'a> {
 
         let services_builder = SupportedServiceFamiliesBuilder::new(self.supported_services);
         services_builder.serialize(bv);
+    }
+}
+
+// ============================================================================
+// SEARCH RESPONSE EXTENDED
+// ============================================================================
+
+/// KNXnet/IP SEARCH_RESPONSE (Extended)
+///
+/// Response to a SEARCH_REQUEST_EXTENDED containing a variable number of DIBs
+#[derive(Debug)]
+pub struct SearchResponseExtended<B: SplitByteSlice = &'static [u8]> {
+    pub control_endpoint: Endpoint,
+    pub description_information_blocks: heapless::Vec<DescriptionInformationBlock<B>, 16>,
+}
+
+impl<B: SplitByteSlice> SearchResponseExtended<B> {
+    /// Create a new SEARCH_RESPONSE_EXTENDED with the given control endpoint and DIBs
+    pub fn new(
+        control_endpoint: Endpoint,
+        description_information_blocks: heapless::Vec<DescriptionInformationBlock<B>, 16>,
+    ) -> Self {
+        Self { control_endpoint, description_information_blocks }
+    }
+}
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchResponseExtended<B> {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
+        // Parse header
+        let header = buffer.take_obj_front::<raw::KNXnetIPHeader>().ok_or(ParseError::Format)?;
+
+        // Verify it's a SEARCH_RESPONSE_EXTENDED
+        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+            != KNXnetIPServiceType::SearchResponseExtended
+        {
+            return Err(ParseError::Format);
+        }
+
+        // Parse control endpoint
+        let control_endpoint = Endpoint::parse(buffer, ())?;
+
+        // Parse all DIBs until buffer is empty
+        let mut description_information_blocks = heapless::Vec::new();
+        while !buffer.is_empty() {
+            let dib = DescriptionInformationBlock::parse(buffer, ())?;
+            description_information_blocks.push(dib).map_err(|_| ParseError::Format)?;
+        }
+
+        Ok(SearchResponseExtended { control_endpoint, description_information_blocks })
+    }
+}
+
+/// Builder for SearchResponseExtended message
+pub struct SearchResponseExtendedBuilder<'a> {
+    pub control_endpoint: Endpoint,
+    pub description_information_blocks: &'a [DescriptionInformationBlockBuilder<'a>],
+}
+
+impl<'a> SearchResponseExtendedBuilder<'a> {
+    pub fn new(
+        control_endpoint: Endpoint,
+        description_information_blocks: &'a [DescriptionInformationBlockBuilder<'a>],
+    ) -> Self {
+        Self { control_endpoint, description_information_blocks }
+    }
+}
+
+impl<'a> SerializablePacket for SearchResponseExtendedBuilder<'a> {
+    fn bytes_len(&self) -> usize {
+        let dibs_len: usize = self.description_information_blocks.iter().map(|dib| dib.bytes_len()).sum();
+        mem::size_of::<raw::KNXnetIPHeader>() + self.control_endpoint.bytes_len() + dibs_len
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        let header = raw::KNXnetIPHeader {
+            header_size: mem::size_of::<raw::KNXnetIPHeader>() as u8,
+            version: KNXnetIPVersion::Version10.into(),
+            service_type: U16::from(u16::from(KNXnetIPServiceType::SearchResponseExtended)),
+            total_length: (self.bytes_len() as u16).into(),
+        };
+        bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
+
+        self.control_endpoint.serialize(bv);
+
+        for dib in self.description_information_blocks {
+            dib.serialize(bv);
+        }
     }
 }
 
@@ -333,6 +511,7 @@ mod tests {
     use core::net::Ipv4Addr;
 
     use super::*;
+    use crate::messages::knxip::messages::KNXnetIPServiceFamily;
     use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
     #[test]
@@ -494,5 +673,155 @@ mod tests {
         assert_eq!(parsed.device_hardware.individual_address, device_hardware.individual_address);
         assert_eq!(parsed.device_hardware.medium, device_hardware.medium);
         assert_eq!(parsed.supported_services.iter().count(), 2);
+    }
+
+    #[test]
+    fn test_search_request_extended_round_trip() {
+        use crate::messages::knxip::substructs::*;
+        use platform::address::EthernetAddress;
+
+        let discovery_endpoint = Endpoint::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
+
+        // Create SRPs using builders
+        let mac_addr = EthernetAddress([0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
+        let srps = [
+            SearchRequestParameterBuilder::select_by_programming_mode(),
+            SearchRequestParameterBuilder::select_by_mac_address(mac_addr),
+            SearchRequestParameterBuilder::select_by_service(0x02, 0x01),
+            SearchRequestParameterBuilder::request_dibs(&[
+                KNXnetIPServiceFamily::DeviceInfo,
+                KNXnetIPServiceFamily::SupportedServiceFamilies,
+            ]),
+        ];
+
+        let builder = SearchRequestExtendedBuilder::new(discovery_endpoint, &srps);
+
+        // Serialize
+        let mut buffer = [0u8; 256];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+
+        // Parse back
+        let mut parse_buf = written;
+        let parsed = parse_buf.parse::<SearchRequestExtended<_>>().unwrap();
+
+        // Verify
+        assert_eq!(parsed.discovery_endpoint.address(), discovery_endpoint.address());
+        assert_eq!(parsed.discovery_endpoint.port(), discovery_endpoint.port());
+        assert_eq!(parsed.search_request_parameters.len(), 4);
+
+        // Check first SRP (SelectByProgrammingMode)
+        assert!(matches!(parsed.search_request_parameters[0], SearchRequestParameter::SelectByProgrammingMode));
+
+        // Check second SRP (SelectByMacAddress)
+        match &parsed.search_request_parameters[1] {
+            SearchRequestParameter::SelectByMacAddress { mac_address } => {
+                assert_eq!(*mac_address, mac_addr);
+            }
+            _ => panic!("Expected SelectByMacAddress"),
+        }
+
+        // Check third SRP (SelectByService)
+        match &parsed.search_request_parameters[2] {
+            SearchRequestParameter::SelectByService { service_family, version } => {
+                assert_eq!(*service_family, 0x02);
+                assert_eq!(*version, 0x01);
+            }
+            _ => panic!("Expected SelectByService"),
+        }
+
+        // Check fourth SRP (RequestDIBs)
+        match &parsed.search_request_parameters[3] {
+            SearchRequestParameter::RequestDIBs { selectors } => {
+                let dibs: Vec<_> = selectors.iter().collect();
+                assert_eq!(dibs.len(), 2);
+                assert_eq!(dibs[0], KNXnetIPServiceFamily::DeviceInfo);
+                assert_eq!(dibs[1], KNXnetIPServiceFamily::SupportedServiceFamilies);
+            }
+            _ => panic!("Expected RequestDIBs"),
+        }
+    }
+
+    #[test]
+    fn test_search_response_extended_round_trip() {
+        use crate::messages::knxip::substructs::*;
+        use platform::address::EthernetAddress;
+
+        let control_endpoint = Endpoint::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
+
+        let device_hardware = DeviceInformation {
+            medium: KNXMedium::TP1,
+            device_status: DeviceStatus::None,
+            individual_address: crate::address::IndividualAddress::new(1, 2, 52),
+            project_installation_identifier: 0x5678,
+            knx_serial_number: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
+            routing_multicast_address: Ipv4Addr::new(224, 0, 23, 12),
+            mac_address: EthernetAddress([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]),
+            friendly_name: *b"Test Device\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+        };
+
+        let services = [
+            SupportedService { family: ServiceFamily::Core, version: 1 },
+            SupportedService { family: ServiceFamily::DeviceManagement, version: 1 },
+            SupportedService { family: ServiceFamily::Tunneling, version: 1 },
+        ];
+
+        let ip_config = IpConfig {
+            ip_address: "192.168.1.100".parse().unwrap(),
+            subnet_mask: "255.255.255.0".parse().unwrap(),
+            default_gateway: "192.168.1.1".parse().unwrap(),
+            ip_capabilities: 0x0F,
+            ip_assignment_method: 0x01,
+        };
+
+        let dibs = [
+            DescriptionInformationBlockBuilder::DeviceInformation(&device_hardware),
+            DescriptionInformationBlockBuilder::SupportedServiceFamilies(SupportedServiceFamiliesBuilder::new(
+                &services,
+            )),
+            DescriptionInformationBlockBuilder::IpConfig(&ip_config),
+        ];
+
+        let builder = SearchResponseExtendedBuilder::new(control_endpoint, &dibs);
+
+        // Serialize
+        let mut buffer = [0u8; 256];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+
+        // Parse back
+        let mut parse_buf = written;
+        let parsed = parse_buf.parse::<SearchResponseExtended<_>>().unwrap();
+
+        // Verify
+        assert_eq!(parsed.control_endpoint.address(), control_endpoint.address());
+        assert_eq!(parsed.control_endpoint.port(), control_endpoint.port());
+        assert_eq!(parsed.description_information_blocks.len(), 3);
+
+        // Check first DIB (DeviceInformation)
+        match &parsed.description_information_blocks[0] {
+            DescriptionInformationBlock::DeviceInformation(info) => {
+                assert_eq!(info.individual_address, device_hardware.individual_address);
+                assert_eq!(info.medium, device_hardware.medium);
+            }
+            _ => panic!("Expected DeviceInformation"),
+        }
+
+        // Check second DIB (SupportedServiceFamilies)
+        match &parsed.description_information_blocks[1] {
+            DescriptionInformationBlock::SupportedServiceFamilies(families) => {
+                assert_eq!(families.iter().count(), 3);
+            }
+            _ => panic!("Expected SupportedServiceFamilies"),
+        }
+
+        // Check third DIB (IpConfig)
+        match &parsed.description_information_blocks[2] {
+            DescriptionInformationBlock::IpConfig(config) => {
+                assert_eq!(config.ip_address, ip_config.ip_address);
+                assert_eq!(config.subnet_mask, ip_config.subnet_mask);
+            }
+            _ => panic!("Expected IpConfig"),
+        }
     }
 }

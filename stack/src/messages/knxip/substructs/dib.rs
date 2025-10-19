@@ -330,6 +330,7 @@ impl<B: SplitByteSlice> SupportedServiceFamilies<B> {
 }
 
 /// Builder for Supported Service Families DIB
+#[derive(Debug)]
 pub struct SupportedServiceFamiliesBuilder<'a> {
     services: &'a [SupportedService],
 }
@@ -573,6 +574,7 @@ impl<B: SplitByteSlice> KnxAddresses<B> {
 }
 
 /// Builder for KNX Addresses DIB
+#[derive(Debug)]
 pub struct KnxAddressesBuilder<'a> {
     individual_address: IndividualAddress,
     additional_addresses: &'a [IndividualAddress],
@@ -753,6 +755,7 @@ impl<B: SplitByteSlice> TunnelingInfo<B> {
 }
 
 /// Builder for Tunneling Info DIB
+#[derive(Debug)]
 pub struct TunnelingInfoBuilder<'a> {
     max_local_apdu_len: u16,
     slots: &'a [TunnelingSlotInfo],
@@ -784,6 +787,118 @@ impl<'a> SerializablePacket for TunnelingInfoBuilder<'a> {
         let records_builder: RecordSequenceBuilder<TunnelingSlotInfo, _> =
             RecordSequenceBuilder::new(self.slots.iter());
         records_builder.serialize(bv);
+    }
+}
+
+// ============================================================================
+// DESCRIPTION INFORMATION BLOCK (DIB) ENUM
+// ============================================================================
+
+/// Enum representing any type of Description Information Block (DIB)
+///
+/// Used in SearchResponseExtended to hold a variable number of different DIB types
+#[derive(Debug)]
+pub enum DescriptionInformationBlock<B: SplitByteSlice = &'static [u8]> {
+    DeviceInformation(DeviceInformation),
+    SupportedServiceFamilies(SupportedServiceFamilies<B>),
+    IpConfig(IpConfig),
+    IpCurrentConfig(IpCurrentConfig),
+    KnxAddresses(KnxAddresses<B>),
+    ManufacturerData(ManufacturerData),
+    TunnelingInfo(TunnelingInfo<B>),
+}
+
+impl<B: SplitByteSlice> DescriptionInformationBlock<B> {
+    /// Get the description type code for this DIB
+    pub fn description_type_code(&self) -> KNXnetIPServiceFamily {
+        match self {
+            Self::DeviceInformation(d) => d.description_type_code(),
+            Self::SupportedServiceFamilies(s) => s.description_type_code(),
+            Self::IpConfig(i) => i.description_type_code(),
+            Self::IpCurrentConfig(i) => i.description_type_code(),
+            Self::KnxAddresses(k) => k.description_type_code(),
+            Self::ManufacturerData(m) => m.description_type_code(),
+            Self::TunnelingInfo(t) => t.description_type_code(),
+        }
+    }
+}
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for DescriptionInformationBlock<B> {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> ParseResult<Self> {
+        // Peek at the DIB header to determine which type to parse
+        let desc_type = peek_description_type_code(buffer.as_ref())?;
+
+        match desc_type {
+            KNXnetIPServiceFamily::DeviceInfo => {
+                let dib = DeviceInformation::parse(buffer, ())?;
+                Ok(Self::DeviceInformation(dib))
+            }
+            KNXnetIPServiceFamily::SupportedServiceFamilies => {
+                let dib = SupportedServiceFamilies::parse(buffer, ())?;
+                Ok(Self::SupportedServiceFamilies(dib))
+            }
+            KNXnetIPServiceFamily::IPConfig => {
+                let dib = IpConfig::parse(buffer, ())?;
+                Ok(Self::IpConfig(dib))
+            }
+            KNXnetIPServiceFamily::IPCurrentConfig => {
+                let dib = IpCurrentConfig::parse(buffer, ())?;
+                Ok(Self::IpCurrentConfig(dib))
+            }
+            KNXnetIPServiceFamily::KNXAddresses => {
+                let dib = KnxAddresses::parse(buffer, ())?;
+                Ok(Self::KnxAddresses(dib))
+            }
+            KNXnetIPServiceFamily::ManufacturerData => {
+                let dib = ManufacturerData::parse(buffer, ())?;
+                Ok(Self::ManufacturerData(dib))
+            }
+            KNXnetIPServiceFamily::TunnelingInfo => {
+                let dib = TunnelingInfo::parse(buffer, ())?;
+                Ok(Self::TunnelingInfo(dib))
+            }
+            _ => Err(ParseError::NotSupported),
+        }
+    }
+}
+
+/// Builder enum for serializing DIBs
+#[derive(Debug)]
+pub enum DescriptionInformationBlockBuilder<'a> {
+    DeviceInformation(&'a DeviceInformation),
+    SupportedServiceFamilies(SupportedServiceFamiliesBuilder<'a>),
+    IpConfig(&'a IpConfig),
+    IpCurrentConfig(&'a IpCurrentConfig),
+    KnxAddresses(KnxAddressesBuilder<'a>),
+    ManufacturerData(&'a ManufacturerData),
+    TunnelingInfo(TunnelingInfoBuilder<'a>),
+}
+
+impl<'a> SerializablePacket for DescriptionInformationBlockBuilder<'a> {
+    fn bytes_len(&self) -> usize {
+        match self {
+            Self::DeviceInformation(d) => d.bytes_len(),
+            Self::SupportedServiceFamilies(s) => s.bytes_len(),
+            Self::IpConfig(i) => i.bytes_len(),
+            Self::IpCurrentConfig(i) => i.bytes_len(),
+            Self::KnxAddresses(k) => k.bytes_len(),
+            Self::ManufacturerData(m) => m.bytes_len(),
+            Self::TunnelingInfo(t) => t.bytes_len(),
+        }
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        match self {
+            Self::DeviceInformation(d) => d.serialize(bv),
+            Self::SupportedServiceFamilies(s) => s.serialize(bv),
+            Self::IpConfig(i) => i.serialize(bv),
+            Self::IpCurrentConfig(i) => i.serialize(bv),
+            Self::KnxAddresses(k) => k.serialize(bv),
+            Self::ManufacturerData(m) => m.serialize(bv),
+            Self::TunnelingInfo(t) => t.serialize(bv),
+        }
     }
 }
 

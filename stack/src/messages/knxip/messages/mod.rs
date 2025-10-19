@@ -28,6 +28,7 @@ create_protocol_enum!(
     #[allow(missing_docs)]
     #[derive(Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
     pub enum KNXnetIPServiceType: u16 {
+        // Core Services (3.8.2)
         SearchRequest, 0x0201, "Search Request";
         SearchResponse, 0x0202, "Search Response";
         DescriptionRequest, 0x0203, "Description Request";
@@ -39,38 +40,39 @@ create_protocol_enum!(
         DisconnectRequest, 0x0209, "Disconnect Request";
         DisconnectResponse, 0x020a, "Disconnect Response";
         SearchRequestExtended, 0x020b, "Extended Search Request";
+        SearchResponseExtended, 0x020c, "Extended Search Response";
 
-        // // Device Management
-        // DeviceConfigurationRequest = 0x310,
-        // DeviceConfigurationAck = 0x311,
+        // Device Management (3.8.3)
+        DeviceConfigurationRequest, 0x310, "Device Configuration Request";
+        DeviceConfigurationAck, 0x311, "Device Configuration ACK";
 
         // Tunneling (3.8.4)
         TunnelingRequest, 0x0420, "Tunneling Request";
         TunnelingAck, 0x0421, "Tunneling ACK";
         TunnelingFeatureGet, 0x0422, "Tunneling Feature Get";
         TunnelingFeatureResponse, 0x0423, "Tunneling Feature Response";
-        // TunnelingFeatureSet = 0x0424,
-        // TunnelingFeatureInfo = 0x0425,
+        TunnelingFeatureSet, 0x0424, "Tunneling Feature Set";
+        TunnelingFeatureInfo, 0x0425, "Tunneling Feature Info";
 
-        // Routing
+        // Routing (3.8.5)
         RoutingIndication, 0x0530, "Routing Indication";
         RoutingLostMessage, 0x0531, "Routing Lost Message";
         RoutingBusy, 0x0532, "Routing Busy";
         RoutingSystemBroadcast, 0x0533, "Routing System Broadcast";
 
-        // Remote Diagnostic and Configuration
+        // Remote Diagnostic and Configuration (3.8.7)
         RemoteDiagnosticRequest, 0x0740, "Remote Diagnostic Request";
         RemoteDiagnosticResponse, 0x0741, "Remote Diagnostic Response";
         RemoteBasicConfigurationRequest, 0x0742, "Remote Basic Configuration Request";
         RemoteResetRequest, 0x0743, "Remote Reset Request";
 
-        // // Secure
-        // SecureWrapper, 0x0950, "Secure Wrapper";
-        // SessionRequest, 0x0951, "Session Request";
-        // SessionResponse, 0x0952, "Session Response";
-        // SessionAuthenticate, 0x0953, "Session Authenticate";
-        // SessionStatus, 0x0954, "Session Status";
-        // TimerNotify, 0x0955, "Timer Notify";
+        // Secure (3.8.9)
+        SecureWrapper, 0x0950, "Secure Wrapper";
+        SessionRequest, 0x0951, "Session Request";
+        SessionResponse, 0x0952, "Session Response";
+        SessionAuthenticate, 0x0953, "Session Authenticate";
+        SessionStatus, 0x0954, "Session Status";
+        TimerNotify, 0x0955, "Timer Notify";
 
         _, "Unknown Service Type 0x{:x}";
     }
