@@ -54,6 +54,16 @@ mod raw {
         pub friendly_name: [u8; 30],
     }
 
+    /// Wire format for Extended Device Information DIB
+    #[derive(Copy, Clone, Debug, FromBytes, IntoBytes, Unaligned, KnownLayout, Immutable)]
+    #[repr(C)]
+    pub(super) struct ExtendedDeviceInformationData {
+        pub medium_status: u8,
+        pub _reserved: u8,
+        pub max_local_apdu_len: U16,
+        pub device_descriptor_type0: U16,
+    }
+
     /// Wire format for a single supported service record (2 bytes)
     #[derive(Copy, Clone, Debug, FromBytes, IntoBytes, Unaligned, KnownLayout, Immutable)]
     #[repr(C)]
@@ -229,6 +239,63 @@ impl SerializablePacket for DeviceInformation {
             friendly_name: self.friendly_name,
         };
         bv.write_obj_front(&data).expect("too few bytes for device information data");
+    }
+}
+
+/// Extended Device Information DIB
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtendedDeviceInformation {
+    pub medium_status: u8,
+    pub max_local_apdu_len: u16,
+    pub device_descriptor_type0: u16,
+}
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for ExtendedDeviceInformation {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
+        let header = buffer.take_obj_front::<raw::Header>().ok_or(ParseError::Format)?;
+
+        if header.description_type_code != KNXnetIPServiceFamily::ExtendedDeviceInfo.into() {
+            return Err(ParseError::Format);
+        }
+
+        let data = buffer.take_obj_front::<raw::ExtendedDeviceInformationData>().ok_or(ParseError::Format)?;
+
+        Ok(Self {
+            medium_status: data.medium_status,
+            max_local_apdu_len: data.max_local_apdu_len.get(),
+            device_descriptor_type0: data.device_descriptor_type0.get(),
+        })
+    }
+}
+
+impl ExtendedDeviceInformation {
+    /// Get the description type code
+    pub fn description_type_code(&self) -> KNXnetIPServiceFamily {
+        KNXnetIPServiceFamily::ExtendedDeviceInfo
+    }
+}
+
+impl SerializablePacket for ExtendedDeviceInformation {
+    fn bytes_len(&self) -> usize {
+        mem::size_of::<raw::Header>() + mem::size_of::<raw::ExtendedDeviceInformationData>()
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        let header = raw::Header {
+            struct_len: self.bytes_len() as u8,
+            description_type_code: KNXnetIPServiceFamily::ExtendedDeviceInfo.into(),
+        };
+        bv.write_obj_front(&header).expect("too few bytes for DIB header");
+
+        let data = raw::ExtendedDeviceInformationData {
+            medium_status: self.medium_status,
+            _reserved: 0,
+            max_local_apdu_len: self.max_local_apdu_len.into(),
+            device_descriptor_type0: self.device_descriptor_type0.into(),
+        };
+        bv.write_obj_front(&data).expect("too few bytes for extended device information data");
     }
 }
 
@@ -800,6 +867,7 @@ impl<'a> SerializablePacket for TunnelingInfoBuilder<'a> {
 #[derive(Debug)]
 pub enum DescriptionInformationBlock<B: SplitByteSlice = &'static [u8]> {
     DeviceInformation(DeviceInformation),
+    ExtendedDeviceInformation(ExtendedDeviceInformation),
     SupportedServiceFamilies(SupportedServiceFamilies<B>),
     IpConfig(IpConfig),
     IpCurrentConfig(IpCurrentConfig),
@@ -813,6 +881,7 @@ impl<B: SplitByteSlice> DescriptionInformationBlock<B> {
     pub fn description_type_code(&self) -> KNXnetIPServiceFamily {
         match self {
             Self::DeviceInformation(d) => d.description_type_code(),
+            Self::ExtendedDeviceInformation(e) => e.description_type_code(),
             Self::SupportedServiceFamilies(s) => s.description_type_code(),
             Self::IpConfig(i) => i.description_type_code(),
             Self::IpCurrentConfig(i) => i.description_type_code(),
@@ -834,6 +903,10 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DescriptionInformationBlock<B>
             KNXnetIPServiceFamily::DeviceInfo => {
                 let dib = DeviceInformation::parse(buffer, ())?;
                 Ok(Self::DeviceInformation(dib))
+            }
+            KNXnetIPServiceFamily::ExtendedDeviceInfo => {
+                let dib = ExtendedDeviceInformation::parse(buffer, ())?;
+                Ok(Self::ExtendedDeviceInformation(dib))
             }
             KNXnetIPServiceFamily::SupportedServiceFamilies => {
                 let dib = SupportedServiceFamilies::parse(buffer, ())?;
@@ -868,6 +941,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DescriptionInformationBlock<B>
 #[derive(Debug)]
 pub enum DescriptionInformationBlockBuilder<'a> {
     DeviceInformation(&'a DeviceInformation),
+    ExtendedDeviceInformation(&'a ExtendedDeviceInformation),
     SupportedServiceFamilies(SupportedServiceFamiliesBuilder<'a>),
     IpConfig(&'a IpConfig),
     IpCurrentConfig(&'a IpCurrentConfig),
@@ -880,6 +954,7 @@ impl<'a> SerializablePacket for DescriptionInformationBlockBuilder<'a> {
     fn bytes_len(&self) -> usize {
         match self {
             Self::DeviceInformation(d) => d.bytes_len(),
+            Self::ExtendedDeviceInformation(e) => e.bytes_len(),
             Self::SupportedServiceFamilies(s) => s.bytes_len(),
             Self::IpConfig(i) => i.bytes_len(),
             Self::IpCurrentConfig(i) => i.bytes_len(),
@@ -892,6 +967,7 @@ impl<'a> SerializablePacket for DescriptionInformationBlockBuilder<'a> {
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
         match self {
             Self::DeviceInformation(d) => d.serialize(bv),
+            Self::ExtendedDeviceInformation(e) => e.serialize(bv),
             Self::SupportedServiceFamilies(s) => s.serialize(bv),
             Self::IpConfig(i) => i.serialize(bv),
             Self::IpCurrentConfig(i) => i.serialize(bv),
@@ -1011,6 +1087,31 @@ mod tests {
 
         let mut bytes = &written[..];
         let parsed: IpConfig = bytes.parse().unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn test_extended_device_info_round_trip() {
+        let original =
+            ExtendedDeviceInformation { medium_status: 0x01, max_local_apdu_len: 254, device_descriptor_type0: 0x07B0 };
+
+        let mut buf = [0u8; 64];
+        let mut slice = &mut buf[..];
+        let (written, _) = slice.serialize(&original);
+
+        // Verify wire format: header (2) + medium_status (1) + padding (1) + max_apdu (2) + descriptor (2) = 8 bytes
+        assert_eq!(written.len(), 8);
+        assert_eq!(written[0], 8); // struct_len
+        assert_eq!(written[1], 0x08); // ExtendedDeviceInfo type
+        assert_eq!(written[2], 0x01); // medium_status
+        assert_eq!(written[3], 0x00); // padding
+        assert_eq!(written[4], 0x00); // max_apdu MSB
+        assert_eq!(written[5], 0xFE); // max_apdu LSB (254)
+        assert_eq!(written[6], 0x07); // descriptor MSB
+        assert_eq!(written[7], 0xB0); // descriptor LSB
+
+        let mut bytes = &written[..];
+        let parsed: ExtendedDeviceInformation = bytes.parse().unwrap();
         assert_eq!(parsed, original);
     }
 }
