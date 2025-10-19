@@ -8,6 +8,7 @@ defmt = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
 
 embedded-io-async = { workspace = true }
+zerocopy = { workspace = true }
 
 # Linux deps
 embassy-time = { workspace = true }

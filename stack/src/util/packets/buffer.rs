@@ -1,8 +1,12 @@
 //! Buffer management and views into buffers
 
-// NOTE: taken from fuchsia's `packet` library and modified:
+// NOTE: taken from fuchsia's `packet` library and modified, original license below:
+//  Copyright 2019 The Fuchsia Authors. All rights reserved.
+//  Use of this source code is governed by a BSD-style license that can be
+//  found in the FUCHSIA_LICENSE file.
+//
 // We just a have a less awesome API, because we removed the BufViews and implement
-// the BufferView and BufferViewMut traits directly on Buf, otherwise we can't use Yoke
+// the BufferView and BufferViewMut traits directly on Buf
 
 use core::mem;
 use core::ops::{Bound, Range, RangeBounds};
@@ -228,6 +232,12 @@ impl<B: core::ops::Deref<Target = [u8]>> AsRef<[u8]> for Buf<B> {
     }
 }
 
+impl<B: core::ops::DerefMut<Target = [u8]>> AsMut<[u8]> for Buf<B> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.buf[self.body.clone()]
+    }
+}
+
 fn zero(bytes: &mut [u8]) {
     for byte in bytes.iter_mut() {
         *byte = 0;
@@ -339,26 +349,26 @@ impl<'b, 'a: 'b> BufferView<&'b mut [u8]> for &'b mut &'a mut [u8] {
 
 impl<'b, 'a: 'b> BufferViewMut<&'b mut [u8]> for &'b mut &'a mut [u8] {}
 
-fn take_front<'a>(bytes: &mut &'a [u8], n: usize) -> &'a [u8] {
+pub(crate) fn take_front<'a>(bytes: &mut &'a [u8], n: usize) -> &'a [u8] {
     let (prefix, rest) = mem::replace(bytes, &[]).split_at(n);
     *bytes = rest;
     prefix
 }
 
-fn take_back<'a>(bytes: &mut &'a [u8], n: usize) -> &'a [u8] {
+pub(crate) fn take_back<'a>(bytes: &mut &'a [u8], n: usize) -> &'a [u8] {
     let split = bytes.len() - n;
     let (rest, suffix) = mem::replace(bytes, &[]).split_at(split);
     *bytes = rest;
     suffix
 }
 
-fn take_front_mut<'a>(bytes: &mut &'a mut [u8], n: usize) -> &'a mut [u8] {
+pub(crate) fn take_front_mut<'a>(bytes: &mut &'a mut [u8], n: usize) -> &'a mut [u8] {
     let (prefix, rest) = mem::replace(bytes, &mut []).split_at_mut(n);
     *bytes = rest;
     prefix
 }
 
-fn take_back_mut<'a>(bytes: &mut &'a mut [u8], n: usize) -> &'a mut [u8] {
+pub(crate) fn take_back_mut<'a>(bytes: &mut &'a mut [u8], n: usize) -> &'a mut [u8] {
     let split = <[u8]>::len(bytes) - n;
     let (rest, suffix) = mem::replace(bytes, &mut []).split_at_mut(split);
     *bytes = rest;

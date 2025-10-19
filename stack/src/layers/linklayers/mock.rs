@@ -1,5 +1,3 @@
-use core::cell::RefCell;
-
 use embassy_futures::select::{Either, select};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
@@ -7,12 +5,8 @@ use embassy_sync::{
 };
 
 use crate::{
-    address::IndividualAddress,
     layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
-    messages::{
-        buffers::{Buffer, DynBufferManager},
-        knx::*,
-    },
+    messages::{buffers::Buffer, knx::*},
 };
 
 /// A mock link layer that allows injecting messages via a channel

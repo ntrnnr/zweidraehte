@@ -1,18 +1,8 @@
-use super::{ServerError, ServerInterest};
-use crate::layers::linklayers::knxip::EndpointType;
 use core::net::Ipv4Addr;
 
-// KNX/IP Discovery service type identifiers
-const SEARCH_REQUEST: u16 = 0x0201;
-const SEARCH_RESPONSE: u16 = 0x0202;
-const DESCRIPTION_REQUEST: u16 = 0x0203;
-const DESCRIPTION_RESPONSE: u16 = 0x0204;
-const CONNECT_REQUEST: u16 = 0x0205;
-const CONNECT_RESPONSE: u16 = 0x0206;
-const CONNECTIONSTATE_REQUEST: u16 = 0x0207;
-const CONNECTIONSTATE_RESPONSE: u16 = 0x0208;
-const DISCONNECT_REQUEST: u16 = 0x0209;
-const DISCONNECT_RESPONSE: u16 = 0x020A;
+use crate::{layers::linklayers::knxip::EndpointType, messages::knxip::KNXnetIPServiceType};
+
+use super::{ServerError, ServerInterest};
 
 // KNX/IP standard multicast address
 const KNX_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
@@ -33,8 +23,11 @@ impl DiscoveryServer {
 
         DiscoveryServer {
             interests: [
-                ServerInterest::new(SEARCH_REQUEST, EndpointType::new_udp_multicast(KNX_MULTICAST_ADDR, KNX_PORT)),
-                ServerInterest::new(DESCRIPTION_REQUEST, EndpointType::new_udp_any(port)),
+                ServerInterest::new(
+                    KNXnetIPServiceType::SearchRequest,
+                    EndpointType::new_udp_multicast(KNX_MULTICAST_ADDR, KNX_PORT),
+                ),
+                ServerInterest::new(KNXnetIPServiceType::DescriptionRequest, EndpointType::new_udp_any(port)),
             ],
         }
     }
@@ -48,8 +41,8 @@ impl super::KnxServer for DiscoveryServer {
         &self.interests
     }
 
-    fn handle_message(&self, service_code: u16, _data: &[u8]) -> Result<(), ServerError> {
-        trace!("Discovery server handling service code 0x{:04x}", service_code);
+    fn handle_message(&self, service_code: KNXnetIPServiceType, _data: &[u8]) -> Result<(), ServerError> {
+        trace!("Discovery server handling service code {:?}", service_code);
         // TODO: Implement discovery protocol handling
         Ok(())
     }

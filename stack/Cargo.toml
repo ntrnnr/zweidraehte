@@ -21,6 +21,10 @@ log = { workspace = true, optional = true }
 embedded-io-async = { workspace = true }
 pin-project = { workspace = true }
 heapless = { workspace = true }
+replace_with = { workspace = true }
+
+[dev-dependencies]
+test-case = { workspace = true }
 
 [features]
 defmt = ["dep:defmt"]

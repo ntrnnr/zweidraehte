@@ -1,7 +1,23 @@
 use core::fmt;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// A six-octet Ethernet II address.
-#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
+#[derive(
+    Debug,
+    Hash,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Clone,
+    Copy,
+    Default,
+    FromBytes,
+    IntoBytes,
+    Unaligned,
+    KnownLayout,
+    Immutable,
+)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(C)]
 pub struct Address(pub [u8; 6]);

@@ -9,7 +9,7 @@ use crate::{
     address::GroupAddress,
     dpt::PDT_Generic08,
     messages::knx::Priority,
-    util::{buffer::*, crc::crc16_ccitt},
+    util::{crc::crc16_ccitt, packets::BufferView},
 };
 
 pub trait TableMemory: ConstDefault + Sized {

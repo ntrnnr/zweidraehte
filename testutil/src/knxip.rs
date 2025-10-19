@@ -10,12 +10,12 @@ use env_logger::Env;
 
 use zweidraehte::{
     layers::{
-        ActorRequest, Layer, LayerOp, LinkLayerBuilder,
+        LayerOp, LinkLayerBuilder,
         linklayers::knxip::{EndpointType, KnxNetIpBuilder, servers},
     },
     messages::{
         buffers::{Buffer, BufferManager},
-        knx::{KnxMessageBuffer, ServiceType},
+        knx::KnxMessageBuffer,
     },
     test_util::MockContext,
 };
@@ -78,7 +78,7 @@ async fn main(spawner: Spawner) {
     let ds = servers::DiscoveryServer::new(local_hpai);
     let rs = servers::RoutingServer::new(local_hpai);
     let cs = servers::RemoteConfigurationServer::new(local_hpai);
-    let kb = KnxNetIpBuilder::new("knxbridge"); // Bind to knxbridge interface
+    let kb = KnxNetIpBuilder::new("knxdevbridgeif"); // Bind to knxbridge interface
     let kb = kb.add_server(ds).add_server(rs).add_server(cs);
 
     println!("Starting KNXnet/IP link layer with 3 servers and 10 registrations");
@@ -97,14 +97,14 @@ async fn main(spawner: Spawner) {
         loop {
             timer.next().await;
 
-            let test_buffer = bm.borrow().alloc_from_slice(&[0xbc, 0x10, 0x64, 0x18, 0x00, 0xe1, 0x00, 0x80]).await;
-            let test_msg = KnxMessageBuffer::new(test_buffer, ServiceType::L_Data_Req);
+            // let test_buffer = bm.borrow().alloc_from_slice(&[0xbc, 0x10, 0x64, 0x18, 0x00, 0xe1, 0x00, 0x80]).await;
+            // let test_msg = KnxMessageBuffer::new(test_buffer, ServiceType::L_Data_Req);
 
-            println!("Transmitting test message: {:x?}", test_msg.buf());
+            // println!("Transmitting test message: {:x?}", test_msg.buf());
 
-            // Send the request to the link layer and wait for confirmation
-            let confirmation = link_sender.request(test_msg).await;
-            println!("TX confirmation: {:x?}", confirmation.buf());
+            // // Send the request to the link layer and wait for confirmation
+            // let confirmation = link_sender.request(test_msg).await;
+            // println!("TX confirmation: {:x?}", confirmation.buf());
         }
     };
 

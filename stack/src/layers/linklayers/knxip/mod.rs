@@ -1,17 +1,14 @@
 use crate::{
     context::BufferManagerContext,
     layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
-    messages::{
-        buffers::{Buffer, DynBufferManager, MessageBuffer},
-        knx::*,
-    },
+    messages::{buffers::*, knx::*, knxip::*},
 };
 
 pub mod servers;
 
-use core::{cell::RefCell, net::Ipv4Addr, pin::pin};
+use core::{cell::RefCell, net::Ipv4Addr};
 
-use embassy_futures::select::select_slice;
+use embassy_futures::select::{Either, select, select_slice};
 use embassy_sync::channel::DynamicSender;
 use heapless::Vec;
 use servers::KnxServer;
@@ -107,7 +104,15 @@ impl EndpointType {
         matches!(self.protocol, Protocol::Tcp)
     }
 
-    /// Check if two endpoints match (same protocol, address, and port)
+    /// Check if two endpoints match for message dispatching
+    ///
+    /// This implements the C++ matching logic:
+    /// - Ports must match
+    /// - If `self` (registered endpoint) is 0.0.0.0, it matches any address
+    /// - If `other` (received packet destination) is multicast and `self` is multicast, they must match exactly
+    /// - Otherwise, addresses must match exactly
+    ///
+    /// Note: `self` is typically the registered endpoint, `other` is the socket/destination
     pub const fn matches(&self, other: &EndpointType) -> bool {
         // Check protocol matches
         let protocol_matches = match (self.protocol, other.protocol) {
@@ -116,12 +121,26 @@ impl EndpointType {
             _ => false,
         };
 
-        protocol_matches
-            && self.port == other.port
-            && self.address.octets()[0] == other.address.octets()[0]
+        if !protocol_matches || self.port != other.port {
+            return false;
+        }
+
+        // If registered endpoint is 0.0.0.0 (any), match everything on this port
+        if self.is_any() {
+            return true;
+        }
+
+        // Exact address match
+        if self.address.octets()[0] == other.address.octets()[0]
             && self.address.octets()[1] == other.address.octets()[1]
             && self.address.octets()[2] == other.address.octets()[2]
             && self.address.octets()[3] == other.address.octets()[3]
+        {
+            return true;
+        }
+
+        // No match
+        false
     }
 }
 
@@ -135,7 +154,7 @@ impl Default for EndpointType {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ServerRegistration {
     pub server_id: usize,
-    pub service_code: u16, // KNX/IP service type identifier
+    pub service_code: KNXnetIPServiceType,
     pub endpoint: EndpointType,
 }
 
@@ -458,13 +477,30 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> core::fmt::Debug
 }
 
 impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIp<'a, N_SERVERS, N_REGISTRATIONS> {
-    /// Dispatch a message received on a specific endpoint to interested servers
-    fn dispatch_message(&self, service_code: u16, endpoint: &EndpointType, data: &[u8]) {
+    /// Dispatch a message received on a specific socket to interested servers
+    ///
+    /// This method finds all servers registered for the given service code on the socket's port.
+    /// It handles the fact that one socket (bound to 0.0.0.0:port) may serve multiple logical
+    /// endpoints (unicast, broadcast, multiple multicast groups).
+    ///
+    /// # Arguments
+    /// * `service_code` - The KNX/IP service type
+    /// * `socket_port` - The port number of the socket that received the packet
+    /// * `data` - The raw packet data
+    fn dispatch_message(&self, service_code: KNXnetIPServiceType, socket_port: u16, data: &[u8]) {
         let mut dispatched = false;
 
         for reg in &self.registrations {
-            if reg.service_code == service_code && reg.endpoint.matches(endpoint) {
-                trace!("Dispatching service code 0x{:04x} to server {}", service_code, reg.server_id);
+            // Match if: same service code AND same port
+            // We don't check the specific address because:
+            // - The socket is bound to 0.0.0.0 (any address)
+            // - It may have joined multiple multicast groups
+            // - Any packet arriving on this socket must match one of the registered endpoints
+            if reg.service_code == service_code && reg.endpoint.port() == socket_port {
+                trace!(
+                    "Dispatching service code {:?} to server {} (endpoint: {:?})",
+                    service_code, reg.server_id, reg.endpoint
+                );
 
                 if let Err(e) = self.servers[reg.server_id].handle_message(service_code, data) {
                     error!("Server {} failed to handle message: {:?}", reg.server_id, e);
@@ -475,7 +511,7 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIp<'a, N_SE
         }
 
         if !dispatched {
-            trace!("No server registered for service code 0x{:04x} on endpoint {:?}", service_code, endpoint);
+            trace!("No server registered for service code {:?} on port {}", service_code, socket_port);
         }
     }
 }
@@ -491,50 +527,79 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> Layer<'a> for Knx
         info!("KnxNetIp Link Layer starting with {} servers, {} registrations", N_SERVERS, N_REGISTRATIONS);
 
         loop {
-            let mut s: Vec<_, N_REGISTRATIONS> = self.sockets.iter_mut().map(|s| s.recv_from()).collect();
-            let a = select_slice(s.as_mut_slice()).await;
-            if let (Ok((buffer, addr, port)), idx) = a {
-                debug!("Received data on socket {}: {}:{} -> {} {:?}", idx, addr, port, buffer.len(), &buffer[..]);
-            }
-        }
+            // Create futures for all socket receives and the inbox
+            let mut socket_futures: Vec<_, N_REGISTRATIONS> = self.sockets.iter_mut().map(|s| s.recv_from()).collect();
 
-        loop {
-            // TODO: Use select to wait for:
-            //   1. Incoming packets on any socket
-            //   2. Layer operations from inbox
-            //
-            // For incoming packets:
-            //   - Determine which endpoint it came from
-            //   - Parse KNX/IP header to get service code
-            //   - Call dispatch_message(service_code, endpoint, data)
-            //
-            // For layer operations:
-            //   - Handle as below
+            let inbox_future = inbox.next();
 
-            let layer_op = inbox.next().await;
-            trace!("KnxNetIp Link Layer received layer op: {:?}", layer_op);
+            // Select between socket receives and inbox operations
+            match select(select_slice(socket_futures.as_mut_slice()), inbox_future).await {
+                // Socket received a packet
+                Either::First((Ok((buffer, addr, port)), socket_idx)) => {
+                    // Drop socket_futures to release the mutable borrow
+                    drop(socket_futures);
 
-            match layer_op {
-                LayerOp::Indication(_msg) => {
-                    // Link layer typically doesn't receive indications from upper layers
-                    error!("KnxNetIp Link Layer received unexpected indication");
-                }
-                LayerOp::Request { message: msg, response_tx } => {
-                    // Handle transmission requests
-                    match msg.service_type() {
-                        ServiceType::L_Data_Req => {
-                            debug!("KnxNetIp Link Layer sending L_Data_Req: {:x?}", msg);
-                            // TODO: Encapsulate in KNX/IP frame and send via appropriate socket
-                            // For now, just send confirmation
-                            let mut conf_msg = msg;
-                            conf_msg.ctrl_field_mut().set_c(Confirm::NoError);
-                            response_tx.send(conf_msg).await;
+                    debug!("Received {} bytes on socket {} from {}:{}", buffer.len(), socket_idx, addr, port);
+
+                    // Peek at the service type from the KNX/IP header
+                    match peek_service_type(&buffer[..]) {
+                        Ok(service_type) => {
+                            debug!("  Service type: {:?}", service_type);
+
+                            // Get the port this socket is bound to
+                            let socket_port = self.sockets[socket_idx].endpoint().port();
+
+                            // Dispatch to interested servers based on service code and port
+                            self.dispatch_message(service_type, socket_port, &buffer[..]);
                         }
-                        _ => {
-                            // Return error for unsupported service types
-                            let mut error_msg = msg;
-                            error_msg.ctrl_field_mut().set_c(Confirm::Err);
-                            response_tx.send(error_msg).await;
+                        Err(e) => {
+                            warn!("Failed to parse KNX/IP service type from {}:{}: {:?}", addr, port, e);
+                            warn!(
+                                "  Data (first {} bytes): {:02x?}",
+                                buffer.len().min(16),
+                                &buffer[..buffer.len().min(16)]
+                            );
+                        }
+                    }
+
+                    // Buffer is automatically returned to the pool when dropped
+                }
+
+                // Socket receive error
+                Either::First((Err(e), socket_idx)) => {
+                    drop(socket_futures);
+                    error!("Socket {} receive error: {:?}", socket_idx, e);
+                    // Continue processing other sockets
+                }
+
+                // Inbox received a layer operation
+                Either::Second(layer_op) => {
+                    drop(socket_futures);
+                    trace!("KnxNetIp Link Layer received layer op: {:?}", layer_op);
+
+                    match layer_op {
+                        LayerOp::Indication(_msg) => {
+                            // Link layer typically doesn't receive indications from upper layers
+                            error!("KnxNetIp Link Layer received unexpected indication");
+                        }
+                        LayerOp::Request { message: msg, response_tx } => {
+                            // Handle transmission requests
+                            match msg.service_type() {
+                                ServiceType::L_Data_Req => {
+                                    debug!("KnxNetIp Link Layer sending L_Data_Req: {:x?}", msg);
+                                    // TODO: Encapsulate in KNX/IP frame and send via appropriate socket
+                                    // For now, just send confirmation
+                                    let mut conf_msg = msg;
+                                    conf_msg.ctrl_field_mut().set_c(Confirm::NoError);
+                                    response_tx.send(conf_msg).await;
+                                }
+                                _ => {
+                                    // Return error for unsupported service types
+                                    let mut error_msg = msg;
+                                    error_msg.ctrl_field_mut().set_c(Confirm::Err);
+                                    response_tx.send(error_msg).await;
+                                }
+                            }
                         }
                     }
                 }

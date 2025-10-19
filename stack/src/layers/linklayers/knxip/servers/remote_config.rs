@@ -1,12 +1,8 @@
-use super::{ServerError, ServerInterest};
-use crate::layers::linklayers::knxip::EndpointType;
 use core::net::Ipv4Addr;
 
-// KNX/IP Remote configuration service type identifiers
-const REMOTE_DIAGNOSTIC_REQUEST: u16 = 0x0740;
-const REMOTE_DIAGNOSTIC_RESPONSE: u16 = 0x0741;
-const REMOTE_BASIC_CONFIGURATION_REQUEST: u16 = 0x0742;
-const REMOTE_RESET_REQUEST: u16 = 0x0743;
+use crate::{layers::linklayers::knxip::EndpointType, messages::knxip::KNXnetIPServiceType};
+
+use super::{ServerError, ServerInterest};
 
 // KNX/IP standard multicast address
 const KNX_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
@@ -27,20 +23,26 @@ impl RemoteConfigurationServer {
         RemoteConfigurationServer {
             interests: [
                 ServerInterest::new(
-                    REMOTE_DIAGNOSTIC_REQUEST,
+                    KNXnetIPServiceType::RemoteDiagnosticRequest,
                     EndpointType::new_udp_multicast(KNX_MULTICAST_ADDR, KNX_PORT),
                 ),
                 ServerInterest::new(
-                    REMOTE_BASIC_CONFIGURATION_REQUEST,
+                    KNXnetIPServiceType::RemoteBasicConfigurationRequest,
                     EndpointType::new_udp_multicast(KNX_MULTICAST_ADDR, KNX_PORT),
                 ),
                 ServerInterest::new(
-                    REMOTE_RESET_REQUEST,
+                    KNXnetIPServiceType::RemoteResetRequest,
                     EndpointType::new_udp_multicast(KNX_MULTICAST_ADDR, KNX_PORT),
                 ),
-                ServerInterest::new(REMOTE_DIAGNOSTIC_REQUEST, EndpointType::new_udp_broadcast(KNX_PORT)),
-                ServerInterest::new(REMOTE_BASIC_CONFIGURATION_REQUEST, EndpointType::new_udp_broadcast(KNX_PORT)),
-                ServerInterest::new(REMOTE_RESET_REQUEST, EndpointType::new_udp_broadcast(KNX_PORT)),
+                ServerInterest::new(
+                    KNXnetIPServiceType::RemoteDiagnosticRequest,
+                    EndpointType::new_udp_broadcast(KNX_PORT),
+                ),
+                ServerInterest::new(
+                    KNXnetIPServiceType::RemoteBasicConfigurationRequest,
+                    EndpointType::new_udp_broadcast(KNX_PORT),
+                ),
+                ServerInterest::new(KNXnetIPServiceType::RemoteResetRequest, EndpointType::new_udp_broadcast(KNX_PORT)),
             ],
         }
     }
@@ -54,8 +56,8 @@ impl super::KnxServer for RemoteConfigurationServer {
         &self.interests
     }
 
-    fn handle_message(&self, service_code: u16, _data: &[u8]) -> Result<(), ServerError> {
-        trace!("Remote configuration server handling service code 0x{:04x}", service_code);
+    fn handle_message(&self, service_code: KNXnetIPServiceType, _data: &[u8]) -> Result<(), ServerError> {
+        trace!("Remote configuration server handling service code {:?}", service_code);
         // TODO: Implement discovery protocol handling
         Ok(())
     }

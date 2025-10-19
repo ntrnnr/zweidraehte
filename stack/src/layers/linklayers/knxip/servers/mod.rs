@@ -6,6 +6,8 @@ pub use discovery::DiscoveryServer;
 pub use remote_config::RemoteConfigurationServer;
 pub use routing::RoutingServer;
 
+use crate::messages::knxip::KNXnetIPServiceType;
+
 use super::EndpointType;
 
 /// Enum wrapping all possible KNX/IP server types
@@ -37,7 +39,7 @@ impl ServerType {
     }
 
     /// Handle a message
-    pub fn handle_message(&self, service_code: u16, data: &[u8]) -> Result<(), ServerError> {
+    pub fn handle_message(&self, service_code: KNXnetIPServiceType, data: &[u8]) -> Result<(), ServerError> {
         match self {
             ServerType::Discovery(s) => s.handle_message(service_code, data),
             ServerType::Routing(s) => s.handle_message(service_code, data),
@@ -76,12 +78,12 @@ pub enum ServerError {
 /// A server interest registration: service code on a specific endpoint
 #[derive(Debug, Clone, Copy)]
 pub struct ServerInterest {
-    pub service_code: u16,
+    pub service_code: KNXnetIPServiceType,
     pub endpoint: EndpointType,
 }
 
 impl ServerInterest {
-    pub const fn new(service_code: u16, endpoint: EndpointType) -> Self {
+    pub const fn new(service_code: KNXnetIPServiceType, endpoint: EndpointType) -> Self {
         Self { service_code, endpoint }
     }
 }
@@ -110,5 +112,5 @@ pub trait KnxServer {
     /// # Note
     /// This method takes `&self` instead of `&mut self`. Servers that need to maintain
     /// mutable state should use interior mutability patterns (Cell, RefCell, or atomic types).
-    fn handle_message(&self, service_code: u16, data: &[u8]) -> Result<(), ServerError>;
+    fn handle_message(&self, service_code: KNXnetIPServiceType, data: &[u8]) -> Result<(), ServerError>;
 }

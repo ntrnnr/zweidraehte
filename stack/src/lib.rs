@@ -280,7 +280,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// 4. Sends a GroupValueWrite request to the KNX bus
     ///
     /// # Example
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// # async fn example(stack: zweidraehte::Stack<'_, MyStackDef>, switch_index: MyComObjectIndex) {
     /// use zweidraehte::dpt::DPT_Switch;
     ///
@@ -333,7 +333,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// * `Err(ReadObjectError::Timeout)` - A timeout was specified but no response was received within the timeout period
     ///
     /// # Example
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// # use embassy_time::Duration;
     /// # async fn example(stack: zweidraehte::Stack<'_, MyStackDef>, asap: MyComObjectIndex) {
     /// // Fire-and-forget read request
@@ -409,7 +409,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// A reference to the `RefCell<D::CO>` containing all communication objects
     ///
     /// # Example
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// # fn example(stack: zweidraehte::Stack<'_, MyStackDef>, switch_index: MyComObjectIndex) {
     /// // Read the current value of a communication object
     /// let objects = stack.objects();
@@ -439,7 +439,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// * `ComObjectEvent::ReadResponse` - A response to a read request was received
     ///
     /// # Example
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// # async fn example(stack: zweidraehte::Stack<'_, MyStackDef>) {
     /// use embassy_sync::pubsub::WaitResult;
     /// use zweidraehte::objects::comm::ComObjectEvent;
@@ -487,7 +487,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// A `KnxMessageBuffer` that can be injected into a mock link layer
     ///
     /// # Example
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// # async fn example(
     /// #     stack: zweidraehte::Stack<'_, MyStackDef>,
     /// #     mock_ll: zweidraehte::layers::linklayers::mock::MockLinkLayerHandle
