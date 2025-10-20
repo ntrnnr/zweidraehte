@@ -17,12 +17,12 @@ use super::{super::substructs::*, KNXnetIPServiceType, KNXnetIPVersion, raw};
 /// Used to discover KNXnet/IP servers on the network
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchRequest {
-    pub discovery_endpoint: Endpoint,
+    pub discovery_endpoint: HPAI,
 }
 
 impl SearchRequest {
     /// Create a new SEARCH_REQUEST with the given discovery endpoint
-    pub fn new(discovery_endpoint: Endpoint) -> Self {
+    pub fn new(discovery_endpoint: HPAI) -> Self {
         Self { discovery_endpoint }
     }
 }
@@ -42,7 +42,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchRequest {
         }
 
         // Parse discovery endpoint
-        let discovery_endpoint = Endpoint::parse(buffer, ())?;
+        let discovery_endpoint = HPAI::parse(buffer, ())?;
 
         Ok(SearchRequest { discovery_endpoint })
     }
@@ -57,11 +57,11 @@ impl SearchRequest {
 
 /// Builder for SearchRequest message
 pub struct SearchRequestBuilder {
-    pub discovery_endpoint: Endpoint,
+    pub discovery_endpoint: HPAI,
 }
 
 impl SearchRequestBuilder {
-    pub fn new(discovery_endpoint: Endpoint) -> Self {
+    pub fn new(discovery_endpoint: HPAI) -> Self {
         Self { discovery_endpoint }
     }
 }
@@ -93,14 +93,14 @@ impl SerializablePacket for SearchRequestBuilder {
 /// Used to discover KNXnet/IP servers on the network with additional search parameters
 #[derive(Debug)]
 pub struct SearchRequestExtended<B: SplitByteSlice = &'static [u8]> {
-    pub discovery_endpoint: Endpoint,
+    pub discovery_endpoint: HPAI,
     pub search_request_parameters: heapless::Vec<SearchRequestParameter<B>, 16>,
 }
 
 impl<B: SplitByteSlice> SearchRequestExtended<B> {
     /// Create a new SEARCH_REQUEST_EXTENDED with the given discovery endpoint and SRPs
     pub fn new(
-        discovery_endpoint: Endpoint,
+        discovery_endpoint: HPAI,
         search_request_parameters: heapless::Vec<SearchRequestParameter<B>, 16>,
     ) -> Self {
         Self { discovery_endpoint, search_request_parameters }
@@ -122,7 +122,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchRequestExtended<B> {
         }
 
         // Parse discovery endpoint
-        let discovery_endpoint = Endpoint::parse(buffer, ())?;
+        let discovery_endpoint = HPAI::parse(buffer, ())?;
 
         // Parse all SRPs until buffer is empty
         let mut search_request_parameters = heapless::Vec::new();
@@ -137,15 +137,12 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchRequestExtended<B> {
 
 /// Builder for SearchRequestExtended message
 pub struct SearchRequestExtendedBuilder<'a> {
-    pub discovery_endpoint: Endpoint,
+    pub discovery_endpoint: HPAI,
     pub search_request_parameters: &'a [SearchRequestParameterBuilder<'a>],
 }
 
 impl<'a> SearchRequestExtendedBuilder<'a> {
-    pub fn new(
-        discovery_endpoint: Endpoint,
-        search_request_parameters: &'a [SearchRequestParameterBuilder<'a>],
-    ) -> Self {
+    pub fn new(discovery_endpoint: HPAI, search_request_parameters: &'a [SearchRequestParameterBuilder<'a>]) -> Self {
         Self { discovery_endpoint, search_request_parameters }
     }
 }
@@ -182,7 +179,7 @@ impl<'a> SerializablePacket for SearchRequestExtendedBuilder<'a> {
 /// Response to a SEARCH_REQUEST containing device information
 #[derive(Debug)]
 pub struct SearchResponse<B: SplitByteSlice> {
-    pub control_endpoint: Endpoint,
+    pub control_endpoint: HPAI,
     pub device_hardware: DeviceInformation,
     pub supported_services: SupportedServiceFamilies<B>,
 }
@@ -202,7 +199,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchResponse<B> {
         }
 
         // Parse control endpoint - now buffer is &mut BV
-        let control_endpoint = Endpoint::parse(buffer, ())?;
+        let control_endpoint = HPAI::parse(buffer, ())?;
 
         // Parse device hardware DIB
         let device_hardware = DeviceInformation::parse(buffer, ())?;
@@ -219,14 +216,14 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchResponse<B> {
 /// Since SearchResponse contains SupportedServiceFamilies which uses Records,
 /// we need a builder to serialize it properly.
 pub struct SearchResponseBuilder<'a> {
-    pub control_endpoint: Endpoint,
+    pub control_endpoint: HPAI,
     pub device_hardware: DeviceInformation,
     pub supported_services: &'a [SupportedService],
 }
 
 impl<'a> SearchResponseBuilder<'a> {
     pub fn new(
-        control_endpoint: Endpoint,
+        control_endpoint: HPAI,
         device_hardware: DeviceInformation,
         supported_services: &'a [SupportedService],
     ) -> Self {
@@ -268,14 +265,14 @@ impl<'a> SerializablePacket for SearchResponseBuilder<'a> {
 /// Response to a SEARCH_REQUEST_EXTENDED containing a variable number of DIBs
 #[derive(Debug)]
 pub struct SearchResponseExtended<B: SplitByteSlice = &'static [u8]> {
-    pub control_endpoint: Endpoint,
+    pub control_endpoint: HPAI,
     pub description_information_blocks: heapless::Vec<DescriptionInformationBlock<B>, 16>,
 }
 
 impl<B: SplitByteSlice> SearchResponseExtended<B> {
     /// Create a new SEARCH_RESPONSE_EXTENDED with the given control endpoint and DIBs
     pub fn new(
-        control_endpoint: Endpoint,
+        control_endpoint: HPAI,
         description_information_blocks: heapless::Vec<DescriptionInformationBlock<B>, 16>,
     ) -> Self {
         Self { control_endpoint, description_information_blocks }
@@ -297,7 +294,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchResponseExtended<B> {
         }
 
         // Parse control endpoint
-        let control_endpoint = Endpoint::parse(buffer, ())?;
+        let control_endpoint = HPAI::parse(buffer, ())?;
 
         // Parse all DIBs until buffer is empty
         let mut description_information_blocks = heapless::Vec::new();
@@ -312,13 +309,13 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchResponseExtended<B> {
 
 /// Builder for SearchResponseExtended message
 pub struct SearchResponseExtendedBuilder<'a> {
-    pub control_endpoint: Endpoint,
+    pub control_endpoint: HPAI,
     pub description_information_blocks: &'a [DescriptionInformationBlockBuilder<'a>],
 }
 
 impl<'a> SearchResponseExtendedBuilder<'a> {
     pub fn new(
-        control_endpoint: Endpoint,
+        control_endpoint: HPAI,
         description_information_blocks: &'a [DescriptionInformationBlockBuilder<'a>],
     ) -> Self {
         Self { control_endpoint, description_information_blocks }
@@ -357,12 +354,12 @@ impl<'a> SerializablePacket for SearchResponseExtendedBuilder<'a> {
 /// Request for detailed device information from a KNXnet/IP server
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DescriptionRequest {
-    pub control_endpoint: Endpoint,
+    pub control_endpoint: HPAI,
 }
 
 impl DescriptionRequest {
     /// Create a new DESCRIPTION_REQUEST with the given control endpoint
-    pub fn new(control_endpoint: Endpoint) -> Self {
+    pub fn new(control_endpoint: HPAI) -> Self {
         Self { control_endpoint }
     }
 }
@@ -382,7 +379,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DescriptionRequest {
         }
 
         // Parse control endpoint
-        let control_endpoint = Endpoint::parse(buffer, ())?;
+        let control_endpoint = HPAI::parse(buffer, ())?;
 
         Ok(DescriptionRequest { control_endpoint })
     }
@@ -397,11 +394,11 @@ impl DescriptionRequest {
 
 /// Builder for DescriptionRequest message
 pub struct DescriptionRequestBuilder {
-    pub control_endpoint: Endpoint,
+    pub control_endpoint: HPAI,
 }
 
 impl DescriptionRequestBuilder {
-    pub fn new(control_endpoint: Endpoint) -> Self {
+    pub fn new(control_endpoint: HPAI) -> Self {
         Self { control_endpoint }
     }
 }
@@ -531,7 +528,7 @@ mod tests {
 
     #[test]
     fn test_search_request_serialize() {
-        let builder = SearchRequestBuilder::new(Endpoint::ipv4_udp(Ipv4Addr::new(0x12, 0x23, 0x34, 0x45), 0x1337));
+        let builder = SearchRequestBuilder::new(HPAI::ipv4_udp(Ipv4Addr::new(0x12, 0x23, 0x34, 0x45), 0x1337));
 
         let mut buffer = [0u8; 14];
         let mut cursor = &mut buffer[..];
@@ -547,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_search_request_round_trip() {
-        let original = SearchRequest { discovery_endpoint: Endpoint::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671) };
+        let original = SearchRequest { discovery_endpoint: HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671) };
 
         // Serialize using builder (manually construct to avoid allocation)
         let builder = SearchRequestBuilder::new(original.discovery_endpoint.clone());
@@ -581,7 +578,7 @@ mod tests {
 
     #[test]
     fn test_description_request_serialize() {
-        let builder = DescriptionRequestBuilder::new(Endpoint::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671));
+        let builder = DescriptionRequestBuilder::new(HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671));
 
         let mut buffer = [0u8; 14];
         let mut cursor = &mut buffer[..];
@@ -600,7 +597,7 @@ mod tests {
         use crate::messages::knxip::substructs::*;
         use platform::address::EthernetAddress;
 
-        let control_endpoint = Endpoint::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
+        let control_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
 
         let device_hardware = DeviceInformation {
             medium: KNXMedium::TP1,
@@ -680,7 +677,7 @@ mod tests {
         use crate::messages::knxip::substructs::*;
         use platform::address::EthernetAddress;
 
-        let discovery_endpoint = Endpoint::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
+        let discovery_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
 
         // Create SRPs using builders
         let mac_addr = EthernetAddress([0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
@@ -747,7 +744,7 @@ mod tests {
         use crate::messages::knxip::substructs::*;
         use platform::address::EthernetAddress;
 
-        let control_endpoint = Endpoint::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
+        let control_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
 
         let device_hardware = DeviceInformation {
             medium: KNXMedium::TP1,

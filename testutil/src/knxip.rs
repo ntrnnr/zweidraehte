@@ -16,6 +16,7 @@ use zweidraehte::{
     messages::{
         buffers::{Buffer, BufferManager},
         knx::KnxMessageBuffer,
+        knxip::substructs::{DeviceInformation, HPAI},
     },
     test_util::MockContext,
 };
@@ -88,16 +89,21 @@ async fn main(spawner: Spawner) {
         SupportedService { family: ServiceFamily::Routing, version: 1 },
     ];
 
-    let discovery_config = servers::DiscoveryServerConfig::new(
-        "192.168.106.6".parse().unwrap(),
-        3671,
-        IndividualAddress::new(1, 1, 0),
-        EthernetAddress([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+    let ds = servers::DiscoveryServer::new(
+        HPAI::Ipv4Udp { addr: "192.168.106.6".parse().unwrap(), port: 3671 },
+        // FIXME: Fill in real device information loaded from config
+        DeviceInformation {
+            medium: zweidraehte::messages::knxip::substructs::KNXMedium::KNXIP,
+            device_status: zweidraehte::messages::knxip::substructs::DeviceStatus::None,
+            individual_address: IndividualAddress::new(1, 1, 0),
+            project_installation_identifier: 0,
+            knx_serial_number: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            routing_multicast_address: core::net::Ipv4Addr::new(224, 0, 23, 12),
+            mac_address: EthernetAddress([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            friendly_name: *b"KNX Test Device\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+        },
         SUPPORTED_SERVICES,
-    )
-    .with_friendly_name(*b"KNX Test Device\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
-
-    let ds = servers::DiscoveryServer::new(discovery_config);
+    );
     let rs = servers::RoutingServer::new(local_hpai);
     let cs = servers::RemoteConfigurationServer::new(local_hpai);
     let kb = KnxNetIpBuilder::new("knxdevbridgeif"); // Bind to knxbridge interface

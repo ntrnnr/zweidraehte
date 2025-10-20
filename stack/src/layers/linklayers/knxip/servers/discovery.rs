@@ -17,87 +17,24 @@ use platform::address::EthernetAddress;
 const KNX_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
 const KNX_PORT: u16 = 3671;
 
-/// Configuration for the Discovery Server
-#[derive(Debug, Clone, Copy)]
-pub struct DiscoveryServerConfig {
-    /// The control endpoint (IP address and port) this server listens on
-    pub control_endpoint: Endpoint,
-    /// Device hardware information
-    pub device_hardware: DeviceInformation,
-    /// Supported service families
-    pub supported_services: &'static [SupportedService],
-}
-
-impl DiscoveryServerConfig {
-    /// Create a new DiscoveryServerConfig with default values
-    ///
-    /// # Arguments
-    /// * `control_ip` - The IP address for the control endpoint
-    /// * `control_port` - The port for the control endpoint
-    /// * `individual_address` - The KNX individual address of this device
-    /// * `mac_address` - The MAC address of this device
-    pub const fn new(
-        control_ip: Ipv4Addr,
-        control_port: u16,
-        individual_address: IndividualAddress,
-        mac_address: EthernetAddress,
-        supported_services: &'static [SupportedService],
-    ) -> Self {
-        Self {
-            control_endpoint: Endpoint::ipv4_udp(control_ip, control_port),
-            device_hardware: DeviceInformation {
-                medium: KNXMedium::KNXIP,
-                device_status: DeviceStatus::None,
-                individual_address,
-                project_installation_identifier: 0,
-                knx_serial_number: [0; 6],
-                routing_multicast_address: KNX_MULTICAST_ADDR,
-                mac_address,
-                friendly_name: *b"KNX/IP Device\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-            },
-            supported_services,
-        }
-    }
-
-    /// Set the friendly name for the device
-    ///
-    /// # Arguments
-    /// * `name` - A byte array of exactly 30 bytes containing the friendly name
-    pub const fn with_friendly_name(mut self, name: [u8; 30]) -> Self {
-        self.device_hardware.friendly_name = name;
-        self
-    }
-
-    /// Set the KNX serial number
-    pub const fn with_serial_number(mut self, serial: [u8; 6]) -> Self {
-        self.device_hardware.knx_serial_number = serial;
-        self
-    }
-
-    /// Set the project installation identifier
-    pub const fn with_project_id(mut self, project_id: u16) -> Self {
-        self.device_hardware.project_installation_identifier = project_id;
-        self
-    }
-
-    /// Set the device status (e.g., programming mode)
-    pub const fn with_device_status(mut self, status: DeviceStatus) -> Self {
-        self.device_hardware.device_status = status;
-        self
-    }
-}
+// FIXME: Strictly speaking, we should only have one server that does discovery on 224.0.23.12:3671 and
+//        then multiple servers that handle the control endpoints of other service containers
 
 #[derive(Debug, Clone, Copy)]
 pub struct DiscoveryServer {
     interests: [ServerInterest; 2],
-    config: DiscoveryServerConfig,
+    control_endpoint: HPAI,
+    device_information: DeviceInformation,
+    supported_services: &'static [SupportedService],
 }
 
 impl DiscoveryServer {
     /// Create a new DiscoveryServer with the given configuration
-    pub fn new(config: DiscoveryServerConfig) -> Self {
-        let port = config.control_endpoint.port();
-
+    pub fn new(
+        control_endpoint: HPAI,
+        device_information: DeviceInformation,
+        supported_services: &'static [SupportedService],
+    ) -> Self {
         DiscoveryServer {
             interests: [
                 // Listen for SearchRequests on the KNX/IP multicast address
@@ -106,9 +43,14 @@ impl DiscoveryServer {
                     EndpointType::new_udp_multicast(KNX_MULTICAST_ADDR, KNX_PORT),
                 ),
                 // Listen for DescriptionRequests on our unicast endpoint
-                ServerInterest::new(KNXnetIPServiceType::DescriptionRequest, EndpointType::new_udp_any(port)),
+                ServerInterest::new(
+                    KNXnetIPServiceType::DescriptionRequest,
+                    EndpointType::new_udp_any(control_endpoint.port()),
+                ),
             ],
-            config,
+            control_endpoint,
+            device_information,
+            supported_services,
         }
     }
 
@@ -145,11 +87,8 @@ impl DiscoveryServer {
         let mut response_buffer = buffer_manager.alloc().await;
 
         // Build and serialize the SearchResponse
-        let response_builder = SearchResponseBuilder::new(
-            self.config.control_endpoint,
-            self.config.device_hardware,
-            self.config.supported_services,
-        );
+        let response_builder =
+            SearchResponseBuilder::new(self.control_endpoint, self.device_information, self.supported_services);
 
         // Serialize directly into the buffer (automatically sets length)
         response_buffer.serialize(&response_builder);
@@ -194,8 +133,7 @@ impl DiscoveryServer {
         let mut response_buffer = buffer_manager.alloc().await;
 
         // Build and serialize the DescriptionResponse
-        let response_builder =
-            DescriptionResponseBuilder::new(self.config.device_hardware, self.config.supported_services);
+        let response_builder = DescriptionResponseBuilder::new(self.device_information, self.supported_services);
 
         // Serialize directly into the buffer (automatically sets length)
         response_buffer.serialize(&response_builder);

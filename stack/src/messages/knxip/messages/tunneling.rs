@@ -119,8 +119,8 @@ mod raw {
 /// Used to establish a connection to a KNXnet/IP server
 #[derive(Debug)]
 pub struct ConnectRequest {
-    pub control_endpoint: Endpoint,
-    pub data_endpoint: Endpoint,
+    pub control_endpoint: HPAI,
+    pub data_endpoint: HPAI,
     pub connection_request: TunnelingCRI,
 }
 
@@ -136,8 +136,8 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for ConnectRequest {
             return Err(ParseError::Format);
         }
 
-        let control_endpoint = Endpoint::parse(buffer, ())?;
-        let data_endpoint = Endpoint::parse(buffer, ())?;
+        let control_endpoint = HPAI::parse(buffer, ())?;
+        let data_endpoint = HPAI::parse(buffer, ())?;
         let connection_request = TunnelingCRI::parse(buffer, ())?;
 
         Ok(ConnectRequest { control_endpoint, data_endpoint, connection_request })
@@ -160,13 +160,13 @@ impl ConnectRequest {
 
 /// Builder for ConnectRequest message
 pub struct ConnectRequestBuilder {
-    pub control_endpoint: Endpoint,
-    pub data_endpoint: Endpoint,
+    pub control_endpoint: HPAI,
+    pub data_endpoint: HPAI,
     pub cri: TunnelingCRIBuilder,
 }
 
 impl ConnectRequestBuilder {
-    pub fn new(control_endpoint: Endpoint, data_endpoint: Endpoint, cri: TunnelingCRIBuilder) -> Self {
+    pub fn new(control_endpoint: HPAI, data_endpoint: HPAI, cri: TunnelingCRIBuilder) -> Self {
         Self { control_endpoint, data_endpoint, cri }
     }
 }
@@ -205,7 +205,7 @@ impl SerializablePacket for ConnectRequestBuilder {
 pub struct ConnectResponse {
     pub communication_channel_id: u8,
     pub status: ConnectionStatus,
-    pub data_endpoint: Endpoint,
+    pub data_endpoint: HPAI,
     pub connection_response_data: Option<TunnelingCRD>,
 }
 
@@ -225,7 +225,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for ConnectResponse {
         let communication_channel_id = response_info.communication_channel_id;
         let status: ConnectionStatus = response_info.status.into();
 
-        let data_endpoint = Endpoint::parse(buffer, ())?;
+        let data_endpoint = HPAI::parse(buffer, ())?;
 
         // CRD is only present if connection was successful
         let connection_response_data = if status == ConnectionStatus::NoError && buffer.len() > 0 {
@@ -242,7 +242,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for ConnectResponse {
 pub struct ConnectResponseBuilder {
     pub communication_channel_id: u8,
     pub status: ConnectionStatus,
-    pub data_endpoint: Endpoint,
+    pub data_endpoint: HPAI,
     pub crd: Option<TunnelingCRDBuilder>,
 }
 
@@ -250,7 +250,7 @@ impl ConnectResponseBuilder {
     pub fn new(
         communication_channel_id: u8,
         status: ConnectionStatus,
-        data_endpoint: Endpoint,
+        data_endpoint: HPAI,
         crd: Option<TunnelingCRDBuilder>,
     ) -> Self {
         Self { communication_channel_id, status, data_endpoint, crd }
@@ -298,11 +298,11 @@ impl SerializablePacket for ConnectResponseBuilder {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionstateRequest {
     pub communication_channel_id: u8,
-    pub control_endpoint: Endpoint,
+    pub control_endpoint: HPAI,
 }
 
 impl ConnectionstateRequest {
-    pub fn new(communication_channel_id: u8, control_endpoint: Endpoint) -> Self {
+    pub fn new(communication_channel_id: u8, control_endpoint: HPAI) -> Self {
         Self { communication_channel_id, control_endpoint }
     }
 }
@@ -320,7 +320,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for ConnectionstateRequest {
         }
 
         let conn_info = buffer.take_obj_front::<raw::ConnectionInfo>().ok_or(ParseError::Format)?;
-        let control_endpoint = Endpoint::parse(buffer, ())?;
+        let control_endpoint = HPAI::parse(buffer, ())?;
 
         Ok(ConnectionstateRequest { communication_channel_id: conn_info.communication_channel_id, control_endpoint })
     }
@@ -338,11 +338,11 @@ impl ConnectionstateRequest {
 /// Builder for ConnectionstateRequest message
 pub struct ConnectionstateRequestBuilder {
     pub communication_channel_id: u8,
-    pub control_endpoint: Endpoint,
+    pub control_endpoint: HPAI,
 }
 
 impl ConnectionstateRequestBuilder {
-    pub fn new(communication_channel_id: u8, control_endpoint: Endpoint) -> Self {
+    pub fn new(communication_channel_id: u8, control_endpoint: HPAI) -> Self {
         Self { communication_channel_id, control_endpoint }
     }
 }
@@ -458,11 +458,11 @@ impl SerializablePacket for ConnectionstateResponseBuilder {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisconnectRequest {
     pub communication_channel_id: u8,
-    pub control_endpoint: Endpoint,
+    pub control_endpoint: HPAI,
 }
 
 impl DisconnectRequest {
-    pub fn new(communication_channel_id: u8, control_endpoint: Endpoint) -> Self {
+    pub fn new(communication_channel_id: u8, control_endpoint: HPAI) -> Self {
         Self { communication_channel_id, control_endpoint }
     }
 }
@@ -480,7 +480,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DisconnectRequest {
         }
 
         let conn_info = buffer.take_obj_front::<raw::ConnectionInfo>().ok_or(ParseError::Format)?;
-        let control_endpoint = Endpoint::parse(buffer, ())?;
+        let control_endpoint = HPAI::parse(buffer, ())?;
 
         Ok(DisconnectRequest { communication_channel_id: conn_info.communication_channel_id, control_endpoint })
     }
@@ -498,11 +498,11 @@ impl DisconnectRequest {
 /// Builder for DisconnectRequest message
 pub struct DisconnectRequestBuilder {
     pub communication_channel_id: u8,
-    pub control_endpoint: Endpoint,
+    pub control_endpoint: HPAI,
 }
 
 impl DisconnectRequestBuilder {
-    pub fn new(communication_channel_id: u8, control_endpoint: Endpoint) -> Self {
+    pub fn new(communication_channel_id: u8, control_endpoint: HPAI) -> Self {
         Self { communication_channel_id, control_endpoint }
     }
 }
@@ -981,8 +981,8 @@ mod tests {
 
     #[test]
     fn test_connect_request_round_trip() {
-        let control_endpoint = Endpoint::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
-        let data_endpoint = Endpoint::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3672);
+        let control_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
+        let data_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3672);
         let cri_builder = TunnelingCRIBuilder::new(TunnelingLayer::LinkLayer);
 
         let builder = ConnectRequestBuilder::new(control_endpoint.clone(), data_endpoint.clone(), cri_builder);
@@ -1004,7 +1004,7 @@ mod tests {
 
     #[test]
     fn test_connect_response_round_trip() {
-        let data_endpoint = Endpoint::ipv4_udp(Ipv4Addr::new(192, 168, 1, 1), 3671);
+        let data_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 1), 3671);
         let crd_builder = TunnelingCRDBuilder::new(IndividualAddress::new(1, 1, 1));
 
         let builder =
@@ -1028,7 +1028,7 @@ mod tests {
 
     #[test]
     fn test_connectionstate_request_round_trip() {
-        let control_endpoint = Endpoint::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
+        let control_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
         let builder = ConnectionstateRequestBuilder::new(10, control_endpoint.clone());
 
         // Serialize
@@ -1065,7 +1065,7 @@ mod tests {
 
     #[test]
     fn test_disconnect_request_round_trip() {
-        let control_endpoint = Endpoint::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
+        let control_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
         let builder = DisconnectRequestBuilder::new(15, control_endpoint.clone());
 
         // Serialize

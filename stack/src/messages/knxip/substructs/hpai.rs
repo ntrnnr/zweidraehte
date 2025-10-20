@@ -60,14 +60,14 @@ create_protocol_enum!(
 ///
 /// Represents a network endpoint for KNX/IP communication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Endpoint {
+pub enum HPAI {
     /// IPv4 UDP endpoint
     Ipv4Udp { addr: Ipv4Addr, port: u16 },
     /// IPv4 TCP endpoint
     Ipv4Tcp { addr: Ipv4Addr, port: u16 },
 }
 
-impl Endpoint {
+impl HPAI {
     /// Get the protocol code for this endpoint
     pub fn protocol_code(&self) -> HostProtocolCode {
         match self {
@@ -105,7 +105,7 @@ impl Endpoint {
 // PARSING: zerocopy wire format -> owned
 // ============================================================================
 
-impl<B: SplitByteSlice> ParsablePacket<B, ()> for Endpoint {
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for HPAI {
     type Error = ParseError;
 
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> ParseResult<Self> {
@@ -148,7 +148,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for Endpoint {
 // SERIALIZATION: owned -> zerocopy wire format
 // ============================================================================
 
-impl SerializablePacket for Endpoint {
+impl SerializablePacket for HPAI {
     fn bytes_len(&self) -> usize {
         mem::size_of::<raw::HPAIHeader>()
             + match self {
@@ -215,13 +215,13 @@ pub fn peek_hpai_structure_length(bytes: &[u8]) -> ParseResult<u8> {
 
 // Type alias for backward compatibility during migration
 #[deprecated(since = "0.1.0", note = "Use `Endpoint` instead")]
-pub type DynamicHPAI = Endpoint;
+pub type DynamicHPAI = HPAI;
 
 #[cfg(test)]
 mod test {
     use core::net::Ipv4Addr;
 
-    use super::{Endpoint, HostProtocolCode, ParseError, peek_host_protocol_code, peek_hpai_structure_length};
+    use super::{HPAI, HostProtocolCode, ParseError, peek_host_protocol_code, peek_hpai_structure_length};
     use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
     #[test]
@@ -233,9 +233,9 @@ mod test {
         ];
 
         let mut slice = &data[..];
-        let endpoint: Endpoint = slice.parse().unwrap();
+        let endpoint: HPAI = slice.parse().unwrap();
         match endpoint {
-            Endpoint::Ipv4Udp { addr, port } => {
+            HPAI::Ipv4Udp { addr, port } => {
                 assert_eq!(addr, Ipv4Addr::new(0x12, 0x23, 0x45, 0x68));
                 assert_eq!(port, 0x1337);
             }
@@ -252,9 +252,9 @@ mod test {
         ];
 
         let mut slice = &data[..];
-        let endpoint: Endpoint = slice.parse().unwrap();
+        let endpoint: HPAI = slice.parse().unwrap();
         match endpoint {
-            Endpoint::Ipv4Tcp { addr, port } => {
+            HPAI::Ipv4Tcp { addr, port } => {
                 assert_eq!(addr, Ipv4Addr::new(192, 168, 1, 1));
                 assert_eq!(port, 3671);
             }
@@ -266,7 +266,7 @@ mod test {
     fn test_parse_too_short() {
         let data = [0x08, 0x01, 0x12]; // Too short
         let mut slice = &data[..];
-        assert_eq!(slice.parse::<Endpoint>().unwrap_err(), ParseError::Format);
+        assert_eq!(slice.parse::<HPAI>().unwrap_err(), ParseError::Format);
     }
 
     #[test]
@@ -296,7 +296,7 @@ mod test {
 
     #[test]
     fn test_serialize_ipv4_udp() {
-        let endpoint = Endpoint::Ipv4Udp { addr: Ipv4Addr::new(0x12, 0x23, 0x45, 0x68), port: 0x1337 };
+        let endpoint = HPAI::Ipv4Udp { addr: Ipv4Addr::new(0x12, 0x23, 0x45, 0x68), port: 0x1337 };
 
         let mut buffer = [0u8; 8];
         let mut cursor = &mut buffer[..];
@@ -312,7 +312,7 @@ mod test {
 
     #[test]
     fn test_serialize_ipv4_tcp() {
-        let endpoint = Endpoint::Ipv4Tcp { addr: Ipv4Addr::new(192, 168, 1, 1), port: 3671 };
+        let endpoint = HPAI::Ipv4Tcp { addr: Ipv4Addr::new(192, 168, 1, 1), port: 3671 };
 
         let mut buffer = [0u8; 8];
         let mut cursor = &mut buffer[..];
@@ -328,7 +328,7 @@ mod test {
 
     #[test]
     fn test_round_trip() {
-        let original = Endpoint::Ipv4Udp { addr: Ipv4Addr::new(10, 0, 1, 42), port: 12345 };
+        let original = HPAI::Ipv4Udp { addr: Ipv4Addr::new(10, 0, 1, 42), port: 12345 };
 
         // Serialize
         let mut buffer = [0u8; 8];
@@ -337,20 +337,20 @@ mod test {
 
         // Parse back
         let mut slice = &written[..];
-        let parsed: Endpoint = slice.parse().unwrap();
+        let parsed: HPAI = slice.parse().unwrap();
 
         assert_eq!(parsed, original);
     }
 
     #[test]
     fn test_endpoint_methods() {
-        let endpoint = Endpoint::Ipv4Udp { addr: Ipv4Addr::new(1, 2, 3, 4), port: 5678 };
+        let endpoint = HPAI::Ipv4Udp { addr: Ipv4Addr::new(1, 2, 3, 4), port: 5678 };
 
         assert_eq!(endpoint.address(), Ipv4Addr::new(1, 2, 3, 4));
         assert_eq!(endpoint.port(), 5678);
         assert_eq!(endpoint.protocol_code(), HostProtocolCode::IPv4UDP);
 
-        let endpoint_tcp = Endpoint::Ipv4Tcp { addr: Ipv4Addr::new(5, 6, 7, 8), port: 9012 };
+        let endpoint_tcp = HPAI::Ipv4Tcp { addr: Ipv4Addr::new(5, 6, 7, 8), port: 9012 };
 
         assert_eq!(endpoint_tcp.address(), Ipv4Addr::new(5, 6, 7, 8));
         assert_eq!(endpoint_tcp.port(), 9012);
@@ -359,18 +359,18 @@ mod test {
 
     #[test]
     fn test_endpoint_constructors() {
-        let udp = Endpoint::ipv4_udp(Ipv4Addr::new(1, 2, 3, 4), 5678);
+        let udp = HPAI::ipv4_udp(Ipv4Addr::new(1, 2, 3, 4), 5678);
         match udp {
-            Endpoint::Ipv4Udp { addr, port } => {
+            HPAI::Ipv4Udp { addr, port } => {
                 assert_eq!(addr, Ipv4Addr::new(1, 2, 3, 4));
                 assert_eq!(port, 5678);
             }
             _ => panic!("Wrong type"),
         }
 
-        let tcp = Endpoint::ipv4_tcp(Ipv4Addr::new(5, 6, 7, 8), 9012);
+        let tcp = HPAI::ipv4_tcp(Ipv4Addr::new(5, 6, 7, 8), 9012);
         match tcp {
-            Endpoint::Ipv4Tcp { addr, port } => {
+            HPAI::Ipv4Tcp { addr, port } => {
                 assert_eq!(addr, Ipv4Addr::new(5, 6, 7, 8));
                 assert_eq!(port, 9012);
             }

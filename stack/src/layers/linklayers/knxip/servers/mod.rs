@@ -2,7 +2,7 @@ pub mod discovery;
 pub mod remote_config;
 pub mod routing;
 
-pub use discovery::{DiscoveryServer, DiscoveryServerConfig};
+pub use discovery::DiscoveryServer;
 pub use remote_config::RemoteConfigurationServer;
 pub use routing::RoutingServer;
 
