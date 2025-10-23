@@ -1,6 +1,4 @@
-use super::{
-    DynBufferManager, EndpointType, KNXnetIPServiceType, PendingResponse, ServerError, ServerInterest, SocketHandle,
-};
+use super::{DynBufferManager, EndpointType, KNXnetIPServiceType, ServerError, ServerInterest};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RoutingServer {
@@ -31,11 +29,11 @@ impl super::KnxServer for RoutingServer {
         &self,
         service_code: KNXnetIPServiceType,
         _data: &[u8],
-        _socket: SocketHandle,
+        _response_handle: &super::ResponseHandle<'_>,
         _buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<Option<PendingResponse>, ServerError> {
+    ) -> Result<(), ServerError> {
         trace!("Routing server handling service code {:?}", service_code);
         // TODO: Implement routing protocol handling
-        Ok(None)
+        Ok(())
     }
 }

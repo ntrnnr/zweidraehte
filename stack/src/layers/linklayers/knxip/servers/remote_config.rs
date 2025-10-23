@@ -1,8 +1,6 @@
 use core::net::Ipv4Addr;
 
-use super::{
-    DynBufferManager, EndpointType, KNXnetIPServiceType, PendingResponse, ServerError, ServerInterest, SocketHandle,
-};
+use super::{DynBufferManager, EndpointType, KNXnetIPServiceType, ServerError, ServerInterest};
 
 // KNX/IP standard multicast address
 const KNX_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
@@ -60,11 +58,11 @@ impl super::KnxServer for RemoteConfigurationServer {
         &self,
         service_code: KNXnetIPServiceType,
         _data: &[u8],
-        _socket: SocketHandle,
+        _response_handle: &super::ResponseHandle<'_>,
         _buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<Option<PendingResponse>, ServerError> {
+    ) -> Result<(), ServerError> {
         trace!("Remote configuration server handling service code {:?}", service_code);
         // TODO: Implement remote configuration protocol handling
-        Ok(None)
+        Ok(())
     }
 }

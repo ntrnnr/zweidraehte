@@ -9,7 +9,7 @@ use crate::{
     util::packets::ParseBuffer,
 };
 
-use super::{EndpointType, KNXnetIPServiceType, PendingResponse, ServerError, ServerInterest, SocketHandle};
+use super::{EndpointType, KNXnetIPServiceType, PendingResponse, ServerError, ServerInterest};
 
 use platform::address::EthernetAddress;
 
@@ -62,9 +62,9 @@ impl DiscoveryServer {
     async fn handle_search_request(
         &self,
         data: &[u8],
-        socket: SocketHandle,
+        response_handle: &super::ResponseHandle<'_>,
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<Option<PendingResponse>, ServerError> {
+    ) -> Result<(), ServerError> {
         use crate::messages::knxip::{SearchRequest, SearchResponseBuilder};
         use crate::util::packets::SerializeBuffer;
 
@@ -97,7 +97,9 @@ impl DiscoveryServer {
 
         let destination = SocketAddrV4::new(request.discovery_endpoint.address(), request.discovery_endpoint.port());
 
-        Ok(Some(socket.respond(response_buffer, destination)))
+        response_handle.respond(response_buffer, destination).await;
+
+        Ok(())
     }
 
     /// Handle a DescriptionRequest message
@@ -108,9 +110,9 @@ impl DiscoveryServer {
     async fn handle_description_request(
         &self,
         data: &[u8],
-        socket: SocketHandle,
+        response_handle: &super::ResponseHandle<'_>,
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<Option<PendingResponse>, ServerError> {
+    ) -> Result<(), ServerError> {
         use crate::messages::knxip::{DescriptionRequest, DescriptionResponseBuilder};
         use crate::util::packets::SerializeBuffer;
 
@@ -142,7 +144,9 @@ impl DiscoveryServer {
 
         let destination = SocketAddrV4::new(request.control_endpoint.address(), request.control_endpoint.port());
 
-        Ok(Some(socket.respond(response_buffer, destination)))
+        response_handle.respond(response_buffer, destination).await;
+
+        Ok(())
     }
 }
 
@@ -158,15 +162,17 @@ impl super::KnxServer for DiscoveryServer {
         &self,
         service_code: KNXnetIPServiceType,
         data: &[u8],
-        socket: SocketHandle,
+        response_handle: &super::ResponseHandle<'_>,
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<Option<PendingResponse>, super::ServerError> {
+    ) -> Result<(), super::ServerError> {
         trace!("Discovery server handling service code {:?}", service_code);
 
         match service_code {
-            KNXnetIPServiceType::SearchRequest => self.handle_search_request(data, socket, buffer_manager).await,
+            KNXnetIPServiceType::SearchRequest => {
+                self.handle_search_request(data, response_handle, buffer_manager).await
+            }
             KNXnetIPServiceType::DescriptionRequest => {
-                self.handle_description_request(data, socket, buffer_manager).await
+                self.handle_description_request(data, response_handle, buffer_manager).await
             }
             _ => {
                 debug!("Discovery server received unexpected service code: {:?}", service_code);

@@ -3,7 +3,7 @@ use core::{
     net::{Ipv4Addr, SocketAddrV4},
 };
 
-use embassy_futures::select::{Either, select, select_slice};
+use embassy_futures::select::{Either3, select_slice, select3};
 use embassy_sync::channel::DynamicSender;
 use heapless::Vec;
 use servers::KnxServer;
@@ -216,39 +216,40 @@ impl<'a> core::fmt::Debug for ManagedSocket<'a> {
     }
 }
 
-/// A handle for sending responses on a socket
+/// A handle for sending responses from servers
 ///
-/// This is a lightweight reference that can be passed to servers, allowing them
-/// to send responses without knowing the underlying protocol (UDP vs TCP).
+/// This allows servers to send responses at any time, not just during message handling.
+/// The handle wraps a channel sender and can be cloned to give to multiple servers.
 ///
-/// The handle is only valid during the message handling and should not be stored.
-#[derive(Debug, Clone, Copy)]
-pub struct SocketHandle {
-    /// Index identifying which socket this handle refers to
+/// This is particularly important for servers like RoutingServer that need to send
+/// routing indications at arbitrary times, not just in response to requests.
+#[derive(Clone)]
+pub struct ResponseHandle<'a> {
     socket_index: usize,
+    sender: DynamicSender<'a, PendingResponse>,
 }
 
-impl SocketHandle {
-    /// Create a new socket handle (internal use only)
-    pub(super) const fn new(socket_index: usize) -> Self {
-        Self { socket_index }
+impl<'a> ResponseHandle<'a> {
+    /// Create a new response handle (internal use only)
+    pub(super) fn new(socket_index: usize, sender: DynamicSender<'a, PendingResponse>) -> Self {
+        Self { socket_index, sender }
     }
 
-    /// Get the socket index (internal use only)
-    pub(super) const fn socket_index(&self) -> usize {
-        self.socket_index
-    }
-
-    /// Create a response that will be sent on this socket
+    /// Queue a response to be sent
     ///
     /// # Arguments
     /// * `buffer` - The buffer containing the response data
     /// * `destination` - The destination address
     ///
-    /// # Returns
-    /// A `PendingResponse` that the layer will send
-    pub fn respond(&self, buffer: Buffer<'static>, destination: SocketAddrV4) -> PendingResponse {
-        PendingResponse { socket_handle: *self, buffer, destination }
+    /// This will block if the response queue is full until space becomes available.
+    pub async fn respond(&self, buffer: Buffer<'static>, destination: SocketAddrV4) {
+        let response = PendingResponse { socket_index: self.socket_index, buffer, destination };
+        self.sender.send(response).await;
+    }
+
+    /// Get the socket index this response handle is for
+    pub fn socket_index(&self) -> usize {
+        self.socket_index
     }
 }
 
@@ -258,8 +259,8 @@ impl SocketHandle {
 /// The KnxNetIp layer takes this and performs the actual send operation.
 #[derive(Debug)]
 pub struct PendingResponse {
-    /// The socket to send on
-    pub(super) socket_handle: SocketHandle,
+    /// The socket index to send on
+    pub(super) socket_index: usize,
     /// The buffer containing the response data
     pub(super) buffer: Buffer<'static>,
     /// The destination address
@@ -267,9 +268,9 @@ pub struct PendingResponse {
 }
 
 impl PendingResponse {
-    /// Get the socket handle
-    pub(super) fn socket_handle(&self) -> SocketHandle {
-        self.socket_handle
+    /// Get the socket index
+    pub(super) fn socket_index(&self) -> usize {
+        self.socket_index
     }
 
     /// Get the buffer
@@ -283,8 +284,8 @@ impl PendingResponse {
     }
 
     /// Consume and extract the parts
-    pub(super) fn into_parts(self) -> (SocketHandle, Buffer<'static>, SocketAddrV4) {
-        (self.socket_handle, self.buffer, self.destination)
+    pub(super) fn into_parts(self) -> (usize, Buffer<'static>, SocketAddrV4) {
+        (self.socket_index, self.buffer, self.destination)
     }
 }
 
@@ -561,20 +562,17 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIp<'a, N_SE
     ///
     /// # Arguments
     /// * `service_code` - The KNX/IP service type
-    /// * `socket_port` - The port number of the socket that received the packet
+    /// * `socket_index` - The index of the socket that received the packet
     /// * `data` - The raw packet data
-    ///
-    /// # Returns
-    /// An optional response to send back (buffer, destination address, destination port)
+    /// * `response_handle` - Handle for servers to queue responses
     async fn dispatch_message(
         &self,
         service_code: KNXnetIPServiceType,
         socket_index: usize,
         data: &[u8],
-    ) -> Option<PendingResponse> {
+        response_handle: &ResponseHandle<'_>,
+    ) {
         let socket_port = self.sockets[socket_index].endpoint().port();
-        let socket_handle = SocketHandle::new(socket_index);
-        let mut response = None;
 
         for reg in &self.registrations {
             // Match if: same service code AND same port
@@ -589,14 +587,11 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIp<'a, N_SE
                 );
 
                 match self.servers[reg.server_id]
-                    .handle_message(service_code, data, socket_handle, &*self.buffer_manager.borrow())
+                    .handle_message(service_code, data, response_handle, &*self.buffer_manager.borrow())
                     .await
                 {
-                    Ok(Some(server_response)) => {
-                        response = Some(server_response);
-                    }
-                    Ok(None) => {
-                        trace!("Server {} handled message but sent no response", reg.server_id);
+                    Ok(()) => {
+                        trace!("Server {} handled message successfully", reg.server_id);
                     }
                     Err(e) => {
                         error!("Server {} failed to handle message: {:?}", reg.server_id, e);
@@ -604,12 +599,6 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> KnxNetIp<'a, N_SE
                 }
             }
         }
-
-        if response.is_none() {
-            trace!("No server registered for service code {:?} on port {}", service_code, socket_port);
-        }
-
-        response
     }
 }
 
@@ -620,6 +609,14 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> Layer<'a> for Knx
     where
         M: Inbox<LayerOp<Self::Message>>,
     {
+        use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+        use embassy_sync::channel::Channel;
+        use embassy_sync::channel::DynamicSender;
+
+        // Create a channel for pending responses (up to 16 queued responses)
+        let response_channel = Channel::<NoopRawMutex, PendingResponse, 16>::new();
+        let response_sender: DynamicSender<'_, PendingResponse> = response_channel.dyn_sender();
+
         // Endpoints are already deduplicated and sockets created in the builder
         info!("KnxNetIp Link Layer starting with {} servers, {} registrations", N_SERVERS, N_REGISTRATIONS);
 
@@ -628,12 +625,13 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> Layer<'a> for Knx
             let mut socket_futures: Vec<_, N_REGISTRATIONS> = self.sockets.iter_mut().map(|s| s.recv_from()).collect();
 
             let inbox_future = inbox.next();
+            let response_future = response_channel.receive();
 
-            // Select between socket receives and inbox operations
-            match select(select_slice(socket_futures.as_mut_slice()), inbox_future).await {
+            // Select between socket receives, inbox operations, and pending responses
+            match select3(select_slice(socket_futures.as_mut_slice()), inbox_future, response_future).await {
                 // Socket received a packet
-                Either::First((Ok((buffer, addr, port)), socket_idx)) => {
-                    // Drop socket_futures to release the mutable borrow
+                Either3::First((Ok((buffer, addr, port)), socket_idx)) => {
+                    // Drop futures to release the mutable borrow
                     drop(socket_futures);
 
                     debug!("Received {} bytes on socket {} from {}:{}", buffer.len(), socket_idx, addr, port);
@@ -643,21 +641,11 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> Layer<'a> for Knx
                         Ok(service_type) => {
                             debug!("  Service type: {:?}", service_type);
 
+                            // Create ResponseHandle for this socket
+                            let response_handle = ResponseHandle::new(socket_idx, response_sender.clone());
+
                             // Dispatch to interested servers based on service code and socket
-                            if let Some(response) = self.dispatch_message(service_type, socket_idx, &buffer[..]).await {
-                                // Extract the response parts
-                                let (socket_handle, response_buffer, destination) = response.into_parts();
-
-                                // Send the response using the socket identified by the handle
-                                debug!("Sending {} byte response to {}", response_buffer.len(), destination);
-
-                                if let Err(e) = self.sockets[socket_handle.socket_index()]
-                                    .send_to(&response_buffer[..], *destination.ip(), destination.port())
-                                    .await
-                                {
-                                    error!("Failed to send response: {:?}", e);
-                                }
-                            }
+                            self.dispatch_message(service_type, socket_idx, &buffer[..], &response_handle).await;
                         }
                         Err(e) => {
                             warn!("Failed to parse KNX/IP service type from {}:{}: {:?}", addr, port, e);
@@ -673,15 +661,16 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> Layer<'a> for Knx
                 }
 
                 // Socket receive error
-                Either::First((Err(e), socket_idx)) => {
+                Either3::First((Err(e), socket_idx)) => {
                     drop(socket_futures);
                     error!("Socket {} receive error: {:?}", socket_idx, e);
                     // Continue processing other sockets
                 }
 
                 // Inbox received a layer operation
-                Either::Second(layer_op) => {
+                Either3::Second(layer_op) => {
                     drop(socket_futures);
+
                     trace!("KnxNetIp Link Layer received layer op: {:?}", layer_op);
 
                     match layer_op {
@@ -708,6 +697,22 @@ impl<'a, const N_SERVERS: usize, const N_REGISTRATIONS: usize> Layer<'a> for Knx
                                 }
                             }
                         }
+                    }
+                }
+
+                // Response ready to send
+                Either3::Third(pending_response) => {
+                    drop(socket_futures);
+
+                    let (socket_index, response_buffer, destination) = pending_response.into_parts();
+
+                    debug!("Sending {} byte response to {}", response_buffer.len(), destination);
+
+                    if let Err(e) = self.sockets[socket_index]
+                        .send_to(&response_buffer[..], *destination.ip(), destination.port())
+                        .await
+                    {
+                        error!("Failed to send response: {:?}", e);
                     }
                 }
             }
