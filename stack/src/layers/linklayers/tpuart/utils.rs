@@ -1,4 +1,4 @@
-//! TP1 message format conversion utlities
+//! TP1 message format conversion utilities
 //!
 //! These functions help converting TP1 frames into the internal KNX message format and vice versa
 //! Below are the message formats shown in detail.

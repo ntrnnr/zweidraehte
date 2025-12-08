@@ -55,10 +55,19 @@ pub trait Layer<'a>: Sized {
 /// The builder accepts a generic context `CTX` that implements the required context traits
 /// (e.g., `BufferManagerContext`). This allows for easy mocking and testing of link layers
 /// without requiring the full stack infrastructure.
+///
+/// Each link layer implementation defines its own `Resources` type that contains all
+/// statically allocated resources needed by that link layer (e.g., sockets, channels).
+/// This enables flexible resource allocation for different link layer types (KNX/IP, KNX-RF, etc.)
+/// while maintaining a no_std, zero-allocation design.
 pub trait LinkLayerBuilder: Sized {
+    /// The resource type required by this link layer implementation
+    type Resources: Sized + 'static;
+
     /// Build and return the configured link layer instance
     ///
     /// # Arguments
+    /// * `resources` - Mutable reference to the link layer's resources
     /// * `context` - Reference to a context implementing required traits (e.g., BufferManagerContext)
     /// * `network_layer` - Channel sender to communicate with the network layer
     /// * `inbox` - Channel receiver for layer operations from the network layer
@@ -67,6 +76,7 @@ pub trait LinkLayerBuilder: Sized {
     /// A future that when awaited, runs the link layer to completion (never returns)
     fn build_and_run<'a, CTX>(
         self,
+        resources: &'a mut Self::Resources,
         context: &'a CTX,
         network_layer: DynamicSender<
             'a,
@@ -89,7 +99,7 @@ pub trait LinkLayerBuilder: Sized {
 ///
 /// To properly dispose, call the [defuse](Self::defuse) method before this object is dropped.
 #[must_use = "to delay the drop bomb invokation to the end of the scope"]
-pub struct DropBomb;
+struct DropBomb;
 impl DropBomb {
     pub fn new() -> Self {
         Self

@@ -58,6 +58,8 @@ impl<'a> NetworkLayer<'a> {
         match msg.service_type() {
             // Incoming indication message from link layer
             ServiceType::L_Data_Ind => {
+                trace!("Processing L_Data_Ind in Network Layer, addr typ: {:?}", msg.get_address_type());
+
                 match msg.get_address_type() {
                     AddressType::Group => msg.set_service_type(ServiceType::N_GroupData_Ind),
                     AddressType::Broadcast => msg.set_service_type(ServiceType::N_Broadcast_Ind),

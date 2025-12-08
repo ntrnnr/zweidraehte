@@ -13,7 +13,7 @@ use static_cell::StaticCell;
 use zweidraehte::{
     Runner, StackDefinition, StackResources, define_com_objects,
     dpt::DPT_Switch,
-    layers::linklayers::mock::MockLinkLayerBuilder,
+    layers::linklayers::mock::{MockLinkLayerBuilder, MockLinkLayerResources},
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
         comm::ComObjects,
@@ -62,9 +62,12 @@ impl StackDefinition for MyKnxStack {
 }
 
 #[embassy_executor::task]
-async fn run_stack(runner: Runner<'static, MyKnxStack>) {
+async fn run_stack(
+    runner: Runner<'static, MyKnxStack>,
+    link_layer_resources: &'static mut MockLinkLayerResources,
+) {
     println!("Running stack...");
-    runner.run().await;
+    runner.run(link_layer_resources).await;
 }
 
 #[embassy_executor::main]
@@ -118,7 +121,10 @@ async fn main(spawner: Spawner) {
         link_layer_builder,
     );
 
-    spawner.spawn(run_stack(runner)).unwrap();
+    // Create link layer resources
+    let ll_resources = Box::leak(Box::new(MockLinkLayerResources::new()));
+
+    spawner.spawn(run_stack(runner, ll_resources)).unwrap();
 
     // Inject messages using the mock link layer handle
     // GroupValueReadResponse for 1/0/4

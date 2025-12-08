@@ -276,7 +276,7 @@ mod test {
             0x12, 0x23, 0x45, 0x68, 0x13, 0x37,
         ];
         let mut slice = &data[..];
-        assert_eq!(slice.parse::<Endpoint>().unwrap_err(), ParseError::NotSupported);
+        assert_eq!(slice.parse::<HPAI>().unwrap_err(), ParseError::NotSupported);
     }
 
     #[test]

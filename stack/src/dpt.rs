@@ -11,8 +11,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned, big
 // Datapoint types: 3.7.2
 // Identifiers: 3.7.3
 
-#[const_trait]
-pub trait PropertyDataDefinition {
+pub const trait PropertyDataDefinition {
     const SIZE: usize;
     const ID: u8;
 }
@@ -214,61 +213,61 @@ impl_array_pdt!([u8; 18]);
 impl_array_pdt!([u8; 19]);
 impl_array_pdt!([u8; 20]);
 
-use const_bitfield::bitfield;
+// use const_bitfield::bitfield;
 
-bitfield! {
-    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-    pub struct KNXVersion(u16);
+// bitfield! {
+//     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+//     pub struct KNXVersion(u16);
 
-    u8, revision, set_revision: 5, 0;
-    u8, version, set_version: 10, 6;
-    u8, magic, set_magic: 15, 11;
-}
+//     u8, revision, set_revision: 5, 0;
+//     u8, version, set_version: 10, 6;
+//     u8, magic, set_magic: 15, 11;
+// }
 
-impl KNXVersion {
-    pub const fn from_triplet(magic: u8, version: u8, revision: u8) -> Self {
-        let mut v = KNXVersion(0);
-        v.set_magic(magic);
-        v.set_version(version);
-        v.set_revision(revision);
-        v
-    }
-}
+// impl KNXVersion {
+//     pub const fn from_triplet(magic: u8, version: u8, revision: u8) -> Self {
+//         let mut v = KNXVersion(0);
+//         v.set_magic(magic);
+//         v.set_version(version);
+//         v.set_revision(revision);
+//         v
+//     }
+// }
 
-impl core::fmt::Debug for KNXVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}.{:?}.{:?}", self.magic(), self.version(), self.revision())
-    }
-}
+// impl core::fmt::Debug for KNXVersion {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         write!(f, "{:?}.{:?}.{:?}", self.magic(), self.version(), self.revision())
+//     }
+// }
 
-impl<const ID: u8, const N: usize> PropertyData<KNXVersion, ID, N> {
-    pub fn with_value(value: KNXVersion) -> Self {
-        let value: u16 = value.0;
-        Self { data: (&value.to_be_bytes()[0..N]).try_into().unwrap(), _p: PhantomData }
-    }
+// impl<const ID: u8, const N: usize> PropertyData<KNXVersion, ID, N> {
+//     pub fn with_value(value: KNXVersion) -> Self {
+//         let value: u16 = value.0;
+//         Self { data: (&value.to_be_bytes()[0..N]).try_into().unwrap(), _p: PhantomData }
+//     }
 
-    pub fn value(&self) -> KNXVersion {
-        let value = u16::from_be_bytes(self.data[..N].try_into().unwrap());
-        KNXVersion(value)
-    }
+//     pub fn value(&self) -> KNXVersion {
+//         let value = u16::from_be_bytes(self.data[..N].try_into().unwrap());
+//         KNXVersion(value)
+//     }
 
-    pub fn set_value(&mut self, data: KNXVersion) {
-        let data: u16 = data.0;
-        self.data.copy_from_slice(&data.to_be_bytes()[..N]);
-    }
-}
+//     pub fn set_value(&mut self, data: KNXVersion) {
+//         let data: u16 = data.0;
+//         self.data.copy_from_slice(&data.to_be_bytes()[..N]);
+//     }
+// }
 
-impl<const ID: u8, const N: usize> Into<KNXVersion> for PropertyData<KNXVersion, ID, N> {
-    fn into(self) -> KNXVersion {
-        self.value()
-    }
-}
+// impl<const ID: u8, const N: usize> Into<KNXVersion> for PropertyData<KNXVersion, ID, N> {
+//     fn into(self) -> KNXVersion {
+//         self.value()
+//     }
+// }
 
-impl<const ID: u8, const N: usize> From<KNXVersion> for PropertyData<KNXVersion, ID, N> {
-    fn from(value: KNXVersion) -> Self {
-        Self::with_value(value)
-    }
-}
+// impl<const ID: u8, const N: usize> From<KNXVersion> for PropertyData<KNXVersion, ID, N> {
+//     fn from(value: KNXVersion) -> Self {
+//         Self::with_value(value)
+//     }
+// }
 
 pub type PDT_Control = PropertyData<[u8; 01], 0, 10>;
 pub type PDT_Char = PropertyData<i8, 1, 1>;
@@ -308,7 +307,7 @@ pub type PDT_Generic18 = PropertyData<[u8; 18], 0x22, 18>;
 pub type PDT_Generic19 = PropertyData<[u8; 19], 0x23, 19>;
 pub type PDT_Generic20 = PropertyData<[u8; 20], 0x24, 20>;
 //pub type PDT_UTF8           = //TODO: Super special variable len WTF shit - need to investigate
-pub type PDT_Version = PropertyData<KNXVersion, 0x30, 2>;
+//pub type PDT_Version = PropertyData<KNXVersion, 0x30, 2>;
 //pub type PDT_AlarmInfo      = PropertyData<KNXAlarmInfo, 0x31, 2>;
 pub type PDT_BinaryInformation = PropertyData<bool, 0x32, 1>; //TODO: raw_data/set_raw_data
 pub type PDT_Bitset8 = PropertyData<u8, 0x33, 1>;
@@ -465,7 +464,7 @@ datapoint_type_convs!(PDT_Generic18);
 datapoint_type_convs!(PDT_Generic19);
 datapoint_type_convs!(PDT_Generic20);
 //datapoint_type_convs!(PDT_UTF8);
-datapoint_type_convs!(PDT_Version);
+//datapoint_type_convs!(PDT_Version);
 //datapoint_type_convs!(PDT_AlarmInfo);
 datapoint_type_convs!(PDT_BinaryInformation);
 datapoint_type_convs!(PDT_Bitset8);
@@ -694,26 +693,26 @@ impl From<PDT_Enum8> for SystemError {
 
 // ###########################################################################
 
-pub type DPT_Version = DatapointType<PDT_Version, 217, 001>;
+// pub type DPT_Version = DatapointType<PDT_Version, 217, 001>;
 
-impl core::fmt::Debug for DPT_Version {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let i: KNXVersion = self.clone().into();
-        write!(f, "{:?}.{:?}.{:?}", i.magic(), i.version(), i.revision())
-    }
-}
+// impl core::fmt::Debug for DPT_Version {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         let i: KNXVersion = self.clone().into();
+//         write!(f, "{:?}.{:?}.{:?}", i.magic(), i.version(), i.revision())
+//     }
+// }
 
-impl From<KNXVersion> for DPT_Version {
-    fn from(value: KNXVersion) -> Self {
-        DPT_Version::new(value.into())
-    }
-}
+// impl From<KNXVersion> for DPT_Version {
+//     fn from(value: KNXVersion) -> Self {
+//         DPT_Version::new(value.into())
+//     }
+// }
 
-impl From<DPT_Version> for KNXVersion {
-    fn from(value: DPT_Version) -> Self {
-        value.backing.into()
-    }
-}
+// impl From<DPT_Version> for KNXVersion {
+//     fn from(value: DPT_Version) -> Self {
+//         value.backing.into()
+//     }
+// }
 
 #[cfg(test)]
 mod test {
@@ -794,19 +793,19 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_dpt_version() {
-        let s: DPT_Version = KNXVersion::from_triplet(3, 2, 1).into();
+    // #[test]
+    // fn test_dpt_version() {
+    //     let s: DPT_Version = KNXVersion::from_triplet(3, 2, 1).into();
 
-        let id = s.id();
-        assert_eq!(id.main(), 217);
-        assert_eq!(id.sub(), 1);
+    //     let id = s.id();
+    //     assert_eq!(id.main(), 217);
+    //     assert_eq!(id.sub(), 1);
 
-        assert_eq!(KNXVersion::from(s), KNXVersion::from_triplet(3, 2, 1));
-        {
-            let b = s.backing();
-            // FIXME: endianness correct?
-            assert_eq!(b.as_ref(), &[0b00011000, 0b10000001]);
-        }
-    }
+    //     assert_eq!(KNXVersion::from(s), KNXVersion::from_triplet(3, 2, 1));
+    //     {
+    //         let b = s.backing();
+    //         // FIXME: endianness correct?
+    //         assert_eq!(b.as_ref(), &[0b00011000, 0b10000001]);
+    //     }
+    // }
 }

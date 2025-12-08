@@ -1,3 +1,17 @@
+//! KNX/IP Link Layer Test Utility
+//!
+//! This test utility demonstrates a KNX/IP setup with Discovery and Routing Servers.
+//! It creates a KNX/IP link layer that:
+//! - Listens on the KNX multicast address (224.0.23.12:3671) for SearchRequest packets
+//! - Listens on unicast (0.0.0.0:3671) for DescriptionRequest packets
+//! - Listens on KNX multicast for RoutingIndication, RoutingBusy, and RoutingLostMessage
+//! - Responds with device information to discovery queries
+//! - Handles KNX routing with congestion control
+//!
+//! You can test this with the ETS software or knxd tools:
+//! - `knxtool search` to trigger a SearchRequest
+//! - The server will respond with device information
+
 use std::cell::RefCell;
 
 use embassy_executor::Spawner;
@@ -75,48 +89,74 @@ async fn main(spawner: Spawner) {
     let link_receiver = link_channel.receiver();
 
     // Create the KNXnet/IP link layer builder and use the LinkLayerBuilder trait
-    let local_hpai = EndpointType::new_udp_any(3671);
-
-    // Create discovery server configuration
     use platform::address::EthernetAddress;
     use zweidraehte::address::IndividualAddress;
-    use zweidraehte::messages::knxip::substructs::{ServiceFamily, SupportedService};
+    use zweidraehte::messages::knxip::KNXnetIPServiceType;
+    use zweidraehte::messages::knxip::substructs::{DeviceStatus, KNXMedium, ServiceFamily, SupportedService};
 
+    // Define supported services for the KNX/IP device
     const SUPPORTED_SERVICES: &[SupportedService] = &[
         SupportedService { family: ServiceFamily::Core, version: 1 },
-        SupportedService { family: ServiceFamily::DeviceManagement, version: 1 },
-        SupportedService { family: ServiceFamily::Tunneling, version: 1 },
+        //SupportedService { family: ServiceFamily::DeviceManagement, version: 1 },
+        //SupportedService { family: ServiceFamily::Tunneling, version: 1 },
         SupportedService { family: ServiceFamily::Routing, version: 1 },
     ];
 
-    let ds = servers::DiscoveryServer::new(
-        HPAI::Ipv4Udp { addr: "192.168.106.6".parse().unwrap(), port: 3671 },
-        // FIXME: Fill in real device information loaded from config
-        DeviceInformation {
-            medium: zweidraehte::messages::knxip::substructs::KNXMedium::KNXIP,
-            device_status: zweidraehte::messages::knxip::substructs::DeviceStatus::None,
-            individual_address: IndividualAddress::new(1, 1, 0),
-            project_installation_identifier: 0,
-            knx_serial_number: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-            routing_multicast_address: core::net::Ipv4Addr::new(224, 0, 23, 12),
-            mac_address: EthernetAddress([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-            friendly_name: *b"KNX Test Device\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-        },
-        SUPPORTED_SERVICES,
-    );
-    let rs = servers::RoutingServer::new(local_hpai);
-    let cs = servers::RemoteConfigurationServer::new(local_hpai);
-    let kb = KnxNetIpBuilder::new("knxdevbridgeif"); // Bind to knxbridge interface
-    let kb = kb.add_server(ds).add_server(rs).add_server(cs);
+    // Create discovery server with device information
+    let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.106.6".parse().unwrap(), port: 3671 };
 
-    println!("Starting KNXnet/IP link layer with 3 servers and 10 registrations");
+    let device_info = DeviceInformation {
+        medium: KNXMedium::KNXIP,
+        device_status: DeviceStatus::None,
+        individual_address: IndividualAddress::new(1, 1, 0),
+        project_installation_identifier: 0x1234,
+        knx_serial_number: [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78],
+        routing_multicast_address: core::net::Ipv4Addr::new(224, 0, 23, 12),
+        mac_address: EthernetAddress([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]),
+        friendly_name: *b"KNX Test Device\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+    };
+
+    let ds = servers::DiscoveryServer::new(control_endpoint, device_info, SUPPORTED_SERVICES);
+
+    // Create routing server for KNX/IP routing
+    let rs = servers::RoutingServer::new(core::net::Ipv4Addr::new(224, 0, 23, 12), 3671);
+
+    // Create KNX/IP builder and add both servers
+    // Discovery server listens on multicast (224.0.23.12:3671) and unicast (0.0.0.0:3671)
+    // Routing server listens on multicast (224.0.23.12:3671) for routing messages
+    let kb = KnxNetIpBuilder::<2, 2>::new("knxdevbridgeif") // 2 sockets max, 2 servers
+        .add_server(ds, &[KNXnetIPServiceType::SearchRequest, KNXnetIPServiceType::DescriptionRequest], &[
+            EndpointType::new_udp(core::net::Ipv4Addr::new(224, 0, 23, 12), 3671), // KNX multicast
+            EndpointType::new_udp_any(3671),                                       // Unicast on 3671
+        ])
+        .add_server(
+            rs,
+            &[
+                KNXnetIPServiceType::RoutingIndication,
+                KNXnetIPServiceType::RoutingBusy,
+                KNXnetIPServiceType::RoutingLostMessage,
+            ],
+            &[
+                EndpointType::new_udp(core::net::Ipv4Addr::new(224, 0, 23, 12), 3671), // KNX multicast
+            ],
+        );
+
+    println!("Starting KNXnet/IP link layer with Discovery and Routing Servers");
+    println!("  - Discovery: multicast 224.0.23.12:3671 for SearchRequest");
+    println!("  - Discovery: unicast 0.0.0.0:3671 for DescriptionRequest");
+    println!("  - Routing: multicast 224.0.23.12:3671 for RoutingIndication/Busy/Lost");
+    println!("  - Control endpoint: {:?}", control_endpoint);
 
     // Spawn the network layer
     let fake_network = FakeNetworkLayer { receiver: network_receiver };
     spawner.spawn(run_fake_network(fake_network)).unwrap();
 
+    // Create resources for the link layer (2 sockets max, 1 server)
+    use zweidraehte::layers::linklayers::knxip::KnxNetIpResources;
+    let ll_resources = Box::leak(Box::new(KnxNetIpResources::<2>::new()));
+
     // Build and run the link layer using the LinkLayerBuilder trait
-    let link_layer_future = kb.build_and_run(&context, network_sender, link_receiver);
+    let link_layer_future = kb.build_and_run(ll_resources, &context, network_sender, link_receiver);
 
     let test_loop = async {
         // Main test loop - send a test message every second

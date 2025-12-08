@@ -14,7 +14,7 @@ use zweidraehte::{
     address::IndividualAddress,
     layers::{ActorRequest, Layer, LayerOp, linklayers::tpuart::TpUartLinkLayer},
     messages::{
-        buffers::BufferManager,
+        buffers::{Buffer, BufferManager},
         knx::{KnxMessageBuffer, ServiceType},
     },
 };
@@ -75,24 +75,16 @@ async fn main(spawner: Spawner) {
     let bm = Box::leak(Box::new(RefCell::new(buffer_manager.dyn_buffer_manager())));
 
     // Create channels for communication between link layer and fake network layer
-    let network_channel = Box::leak(Box::new(Channel::<
-        NoopRawMutex,
-        LayerOp<KnxMessageBuffer<zweidraehte::messages::buffers::Buffer<'static>>>,
-        32,
-    >::new()));
+    let network_channel =
+        Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 32>::new()));
     let network_sender = network_channel.sender().into();
     let network_receiver = network_channel.receiver();
 
     // Create channel for sending requests to the link layer
-    let link_channel = Box::leak(Box::new(Channel::<
-        NoopRawMutex,
-        LayerOp<KnxMessageBuffer<zweidraehte::messages::buffers::Buffer<'static>>>,
-        32,
-    >::new()));
-    let link_sender: embassy_sync::channel::DynamicSender<
-        '_,
-        LayerOp<KnxMessageBuffer<zweidraehte::messages::buffers::Buffer<'static>>>,
-    > = link_channel.sender().into();
+    let link_channel =
+        Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 32>::new()));
+    let link_sender: embassy_sync::channel::DynamicSender<'_, LayerOp<KnxMessageBuffer<Buffer<'static>>>> =
+        link_channel.sender().into();
     let link_receiver = link_channel.receiver();
 
     let s = AsyncSerialPort::open(Options { baud_rate: 19200, parity: Parity::Even, ..Default::default() }).unwrap();

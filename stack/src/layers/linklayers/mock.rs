@@ -1,3 +1,4 @@
+use core::mem::MaybeUninit;
 use embassy_futures::select::{Either, select};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
@@ -109,6 +110,18 @@ impl<const N: usize> MockLinkLayerHandle<N> {
     }
 }
 
+/// Resources for MockLinkLayer (empty - no resources needed)
+pub struct MockLinkLayerResources {
+    _private: MaybeUninit<()>,
+}
+
+impl MockLinkLayerResources {
+    /// Create new empty resources for mock link layer
+    pub const fn new() -> Self {
+        Self { _private: MaybeUninit::uninit() }
+    }
+}
+
 /// Builder for the MockLinkLayer
 ///
 /// This builder creates a mock link layer. Call `new()` to create both
@@ -136,12 +149,15 @@ impl<const N: usize> MockLinkLayerBuilder<N> {
 }
 
 impl<const N: usize> LinkLayerBuilder for MockLinkLayerBuilder<N> {
+    type Resources = MockLinkLayerResources;
+
     fn build_and_run<'a, CTX>(
         self,
+        _resources: &'a mut Self::Resources,
         _context: &'a CTX,
         network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
         inbox: impl Inbox<LayerOp<KnxMessageBuffer<Buffer<'static>>>> + 'a,
-    ) -> impl Future<Output = !> + 'a
+    ) -> impl core::future::Future<Output = !> + 'a
     where
         CTX: crate::context::BufferManagerContext,
     {

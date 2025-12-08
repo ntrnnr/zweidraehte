@@ -36,3 +36,7 @@ path = "src/tpuart.rs"
 [[bin]]
 name = "knxip"
 path = "src/knxip.rs"
+
+[[bin]]
+name = "stack_knxip"
+path = "src/stack_knxip.rs"

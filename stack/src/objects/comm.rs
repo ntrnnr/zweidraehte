@@ -74,8 +74,7 @@ pub struct ComObjectInfoMut<'a> {
     pub value: &'a mut [u8],
 }
 
-#[const_trait]
-pub trait ComObjectIndex: Clone + Sized {
+pub const trait ComObjectIndex: Clone + Sized {
     fn from_index(idx: u16) -> Option<Self>;
     fn index(&self) -> u16;
 }

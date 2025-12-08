@@ -1,15 +1,18 @@
 use core::net::{Ipv4Addr, SocketAddrV4};
+use heapless::Vec;
 
 use crate::{
     address::IndividualAddress,
     messages::{
-        buffers::{DynBufferManager, MessageBuffer},
+        buffers::{Buffer, MessageBuffer},
+        knx::KnxMessageBuffer,
         knxip::substructs::*,
+        knxip::KNXnetIPServiceType,
     },
     util::packets::ParseBuffer,
 };
 
-use super::{EndpointType, KNXnetIPServiceType, PendingResponse, ServerError, ServerInterest};
+use super::{KnxNetIpServer, PendingResponse, ServerContext, ServerError};
 
 use platform::address::EthernetAddress;
 
@@ -20,9 +23,8 @@ const KNX_PORT: u16 = 3671;
 // FIXME: Strictly speaking, we should only have one server that does discovery on 224.0.23.12:3671 and
 //        then multiple servers that handle the control endpoints of other service containers
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct DiscoveryServer {
-    interests: [ServerInterest; 2],
     control_endpoint: HPAI,
     device_information: DeviceInformation,
     supported_services: &'static [SupportedService],
@@ -35,23 +37,7 @@ impl DiscoveryServer {
         device_information: DeviceInformation,
         supported_services: &'static [SupportedService],
     ) -> Self {
-        DiscoveryServer {
-            interests: [
-                // Listen for SearchRequests on the KNX/IP multicast address
-                ServerInterest::new(
-                    KNXnetIPServiceType::SearchRequest,
-                    EndpointType::new_udp_multicast(KNX_MULTICAST_ADDR, KNX_PORT),
-                ),
-                // Listen for DescriptionRequests on our unicast endpoint
-                ServerInterest::new(
-                    KNXnetIPServiceType::DescriptionRequest,
-                    EndpointType::new_udp_any(control_endpoint.port()),
-                ),
-            ],
-            control_endpoint,
-            device_information,
-            supported_services,
-        }
+        DiscoveryServer { control_endpoint, device_information, supported_services }
     }
 
     /// Handle a SearchRequest message
@@ -62,9 +48,8 @@ impl DiscoveryServer {
     async fn handle_search_request(
         &self,
         data: &[u8],
-        response_handle: &super::ResponseHandle<'_>,
-        buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<(), ServerError> {
+        context: &ServerContext<'_>,
+    ) -> Result<PendingResponse, ServerError> {
         use crate::messages::knxip::{SearchRequest, SearchResponseBuilder};
         use crate::util::packets::SerializeBuffer;
 
@@ -84,7 +69,7 @@ impl DiscoveryServer {
         );
 
         // Allocate a buffer for the response
-        let mut response_buffer = buffer_manager.alloc().await;
+        let mut response_buffer = context.alloc_buffer().await;
 
         // Build and serialize the SearchResponse
         let response_builder =
@@ -97,9 +82,7 @@ impl DiscoveryServer {
 
         let destination = SocketAddrV4::new(request.discovery_endpoint.address(), request.discovery_endpoint.port());
 
-        response_handle.respond(response_buffer, destination).await;
-
-        Ok(())
+        Ok(PendingResponse { buffer: response_buffer, destination })
     }
 
     /// Handle a DescriptionRequest message
@@ -110,9 +93,8 @@ impl DiscoveryServer {
     async fn handle_description_request(
         &self,
         data: &[u8],
-        response_handle: &super::ResponseHandle<'_>,
-        buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<(), ServerError> {
+        context: &ServerContext<'_>,
+    ) -> Result<PendingResponse, ServerError> {
         use crate::messages::knxip::{DescriptionRequest, DescriptionResponseBuilder};
         use crate::util::packets::SerializeBuffer;
 
@@ -122,7 +104,7 @@ impl DiscoveryServer {
         let mut buffer = data;
         let request = buffer.parse::<DescriptionRequest>().map_err(|e| {
             debug!("Failed to parse DescriptionRequest: {:?}", e);
-            super::ServerError::ParseError
+            ServerError::ParseError
         })?;
 
         debug!(
@@ -132,7 +114,7 @@ impl DiscoveryServer {
         );
 
         // Allocate a buffer for the response
-        let mut response_buffer = buffer_manager.alloc().await;
+        let mut response_buffer = context.alloc_buffer().await;
 
         // Build and serialize the DescriptionResponse
         let response_builder = DescriptionResponseBuilder::new(self.device_information, self.supported_services);
@@ -144,40 +126,44 @@ impl DiscoveryServer {
 
         let destination = SocketAddrV4::new(request.control_endpoint.address(), request.control_endpoint.port());
 
-        response_handle.respond(response_buffer, destination).await;
-
-        Ok(())
+        Ok(PendingResponse { buffer: response_buffer, destination })
     }
 }
 
-impl super::KnxServer for DiscoveryServer {
-    const N_INTERESTS: usize = 2;
+impl KnxNetIpServer for DiscoveryServer {
+    async fn on_indication<'a>(
+        &mut self,
+        service_type: KNXnetIPServiceType,
+        data: &[u8],
+        _source: SocketAddrV4,
+        context: &ServerContext<'a>,
+    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+        trace!("Discovery server handling service type {:?}", service_type);
 
-    /// Returns the list of service codes and endpoints this server is interested in
-    fn interests(&self) -> &[ServerInterest; Self::N_INTERESTS] {
-        &self.interests
+        let response = match service_type {
+            KNXnetIPServiceType::SearchRequest => self.handle_search_request(data, context).await?,
+            KNXnetIPServiceType::DescriptionRequest => self.handle_description_request(data, context).await?,
+            _ => {
+                debug!("Discovery server received unexpected service type: {:?}", service_type);
+                return Err(ServerError::Unsupported);
+            }
+        };
+
+        let mut responses = Vec::new();
+        let _ = responses.push(response);
+        Ok(responses)
     }
 
-    async fn handle_message(
-        &self,
-        service_code: KNXnetIPServiceType,
-        data: &[u8],
-        response_handle: &super::ResponseHandle<'_>,
-        buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<(), super::ServerError> {
-        trace!("Discovery server handling service code {:?}", service_code);
+    async fn on_request<'a>(
+        &mut self,
+        _message: &KnxMessageBuffer<Buffer<'static>>,
+        _context: &ServerContext<'a>,
+    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+        // Discovery server doesn't handle outgoing requests
+        Err(ServerError::Unsupported)
+    }
 
-        match service_code {
-            KNXnetIPServiceType::SearchRequest => {
-                self.handle_search_request(data, response_handle, buffer_manager).await
-            }
-            KNXnetIPServiceType::DescriptionRequest => {
-                self.handle_description_request(data, response_handle, buffer_manager).await
-            }
-            _ => {
-                debug!("Discovery server received unexpected service code: {:?}", service_code);
-                Err(ServerError::Unsupported)
-            }
-        }
+    fn supports_requests(&self) -> bool {
+        false
     }
 }

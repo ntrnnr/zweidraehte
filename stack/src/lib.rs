@@ -1,5 +1,4 @@
 #![cfg_attr(not(test), no_std)]
-#![feature(slice_as_array)]
 #![feature(const_trait_impl)]
 #![feature(adt_const_params)]
 #![feature(generic_const_exprs)]
@@ -77,11 +76,17 @@ where
     inner: MaybeUninit<Inner<D>>,
     buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
     buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
+    link_layer_resources: MaybeUninit<<D::LLB as LinkLayerBuilder>::Resources>,
 }
 
 impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResources<D, BUF_SZ, NUM_BUFS> {
     pub fn new() -> Self {
-        Self { inner: MaybeUninit::uninit(), buffers: MaybeUninit::uninit(), buffer_manager: MaybeUninit::uninit() }
+        Self {
+            inner: MaybeUninit::uninit(),
+            buffers: MaybeUninit::uninit(),
+            buffer_manager: MaybeUninit::uninit(),
+            link_layer_resources: MaybeUninit::uninit(),
+        }
     }
 }
 
@@ -214,10 +219,13 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
 }
 
 impl<'d, D: StackDefinition> Runner<'d, D> {
-    /// Run the KNX stack.app_service_channel
+    /// Run the KNX stack.
     ///
     /// You must call this in a background task, to process KNX messages.
-    pub async fn run(self) -> ! {
+    ///
+    /// # Arguments
+    /// * `link_layer_resources` - Mutable reference to the link layer resources
+    pub async fn run(self, link_layer_resources: &'d mut <D::LLB as LinkLayerBuilder>::Resources) -> ! {
         let ind_addr = IndividualAddress::new(1, 0, 1);
 
         // Create all the channels for layer to layer communication
@@ -245,8 +253,12 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         );
 
         // Build and run the link layer using the provided builder
-        let ll_task =
-            self.link_layer_builder.build_and_run(&self.stack.inner, nl_channel.sender().into(), ll_channel.receiver());
+        let ll_task = self.link_layer_builder.build_and_run(
+            link_layer_resources,
+            &self.stack.inner,
+            nl_channel.sender().into(),
+            ll_channel.receiver(),
+        );
 
         // Spawn and await all the upper layer tasks
         let nl_task = network_layer.process(nl_channel.receiver());

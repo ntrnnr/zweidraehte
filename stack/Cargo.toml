@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-platform = { path = "../platform", features = ["log"] }
+platform = { path = "../platform", features = ["log", "linux"] }
 
 zerocopy = { workspace = true }
-const-bitfield = { workspace = true }
+#const-bitfield = { workspace = true }
 const-default = { workspace = true }
 paste = { workspace = true }
 static_cell = { workspace = true }
