@@ -171,7 +171,10 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                                     }
                                 }
                             }
-                            _ => unimplemented!(),
+                            _ => {
+                                error!("Application Layer received unimplemented APCI: {:?}", ind.get_apci_code());
+                                unimplemented!();
+                            }
                         },
                         _ => unimplemented!(),
                     }

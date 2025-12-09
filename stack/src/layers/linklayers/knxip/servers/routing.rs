@@ -19,7 +19,8 @@ use heapless::Vec;
 use crate::{
     messages::{
         buffers::Buffer,
-        knx::{KnxMessageBuffer, ServiceType},
+        cemi::{knx_to_cemi_message, cemi_to_knx_message, CemiLData, CemiMessageCode},
+        knx::KnxMessageBuffer,
         knxip::{KNXnetIPServiceType, RoutingBusy, RoutingIndication, RoutingIndicationBuilder},
     },
     util::packets::{ParseBuffer, SerializeBuffer},
@@ -352,16 +353,66 @@ impl RoutingServer {
         message: &KnxMessageBuffer<Buffer<'static>>,
         context: &ServerContext<'a>,
     ) -> Result<PendingResponse, ServerError> {
-        let knx_data = message.buf();
+        // Determine message code from service type
+        let message_code = CemiMessageCode::from_service_type(message.service_type());
 
-        // Allocate a buffer for the response
+        // Convert internal KNX format to cEMI format
+        let mut cemi_buffer = [0u8; 256]; // Max cEMI frame size
+        let mut cemi_buf_len = 0;
+        {
+            // Create a simple buffer wrapper for conversion
+            struct TempBuffer<'a> {
+                data: &'a mut [u8],
+                len: usize,
+            }
+
+            impl<'a> core::ops::Deref for TempBuffer<'a> {
+                type Target = [u8];
+                fn deref(&self) -> &Self::Target {
+                    &self.data[..self.len]
+                }
+            }
+
+            impl<'a> core::ops::DerefMut for TempBuffer<'a> {
+                fn deref_mut(&mut self) -> &mut Self::Target {
+                    &mut self.data[..self.len]
+                }
+            }
+
+            impl<'a> crate::messages::buffers::MessageBuffer for TempBuffer<'a> {
+                fn len(&self) -> usize {
+                    self.len
+                }
+
+                fn set_len(&mut self, len: usize) {
+                    self.len = len;
+                }
+
+                fn capacity(&self) -> usize {
+                    self.data.len()
+                }
+
+                fn resize(&mut self, new_len: usize, fill_value: u8) {
+                    for i in self.len..new_len.min(self.data.len()) {
+                        self.data[i] = fill_value;
+                    }
+                    self.len = new_len.min(self.data.len());
+                }
+            }
+
+            let mut temp = TempBuffer { data: &mut cemi_buffer, len: 0 };
+            knx_to_cemi_message(message.buf(), message_code, &mut temp);
+            cemi_buf_len = temp.len;
+        }
+
+        let cemi_data = &cemi_buffer[..cemi_buf_len];
+
+        // Allocate a buffer for the final response
         let mut buffer = context.alloc_buffer().await;
 
-        // Build and serialize the RoutingIndication
-        let builder = RoutingIndicationBuilder::new(knx_data);
-
-        // Serialize directly into the buffer (automatically sets length)
-        buffer.serialize(&builder);
+        // Build and serialize the RoutingIndication with the cEMI frame
+        let routing_builder = RoutingIndicationBuilder::new(cemi_data);
+        buffer.serialize(&routing_builder);
 
         let destination = SocketAddrV4::new(self.multicast_addr, self.port);
 
@@ -386,11 +437,22 @@ impl KnxNetIpServer for RoutingServer {
                     ServerError::ParseError
                 })?;
 
-                let cemi_frame = indication.cemi_data();
+                // Parse the cEMI frame
+                let mut cemi_buffer = indication.cemi_data();
+                let cemi = cemi_buffer.parse::<CemiLData<_>>().map_err(|e| {
+                    debug!("Failed to parse cEMI frame: {:?}", e);
+                    ServerError::ParseError
+                })?;
 
-                // Allocate buffer and create KNX message
-                let buffer = context.buffer_manager.borrow_mut().alloc_from_slice(cemi_frame).await;
-                let knx_msg = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
+                // Determine service type from cEMI message code
+                let service_type = cemi.message_code().to_service_type();
+
+                // Convert cEMI format to internal KNX format
+                let mut knx_buffer = context.alloc_buffer().await;
+                cemi_to_knx_message(&cemi, &mut knx_buffer);
+
+                // Create KNX message
+                let knx_msg = KnxMessageBuffer::new(knx_buffer, service_type);
 
                 // Forward to network layer
                 context.send_to_network_layer(knx_msg).await;

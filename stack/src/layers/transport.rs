@@ -30,6 +30,13 @@ impl<'a, D: StackDefinition> TransportLayer<'a, D> {
     async fn handle_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         trace!("Transport Layer received message: {:?}", msg);
 
+        trace!("Dst addr: {:?}", msg.get_dest_addr());
+        trace!("ADT loaded: {:?}", self.adt.borrow().is_loaded());
+        trace!("TSAP: {:?}", match msg.get_dest_addr() {
+            DestinationAddress::Group(g) => self.adt.borrow().get_tsap(g),
+            _ => None,
+        });
+
         match msg.service_type() {
             // Incoming indication message from network layer
             ServiceType::N_GroupData_Ind => {
