@@ -1,14 +1,16 @@
 use core::{
     cell::RefCell,
+    future::pending,
     mem::MaybeUninit,
     net::{Ipv4Addr, SocketAddrV4},
 };
 
-use embassy_futures::select::{Either3, select_slice, select3};
+use embassy_futures::select::{Either4, select_slice, select4};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, DynamicSender},
 };
+use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
 
 use platform::{AsyncUdpMulticastSocket, UdpMulticastSocketOptions, get_interface_address};
@@ -470,7 +472,9 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<MAX_SOC
             server_instances,
             buffer_manager,
             interface_name: self.interface_name,
+            local_addr: interface_addr,
             network_layer_tx,
+            retry_queue: Vec::new(),
         }
     }
 }
@@ -502,6 +506,24 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> LinkLayerBuilder
     }
 }
 
+/// A request that is pending retry after being rate-limited
+struct PendingRequest {
+    /// The message to retry
+    message: KnxMessageBuffer<Buffer<'static>>,
+    /// Channel to send the response back to
+    response_tx: DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>,
+    /// When to retry sending this message
+    retry_after: Instant,
+    /// Number of times this message has been retried
+    retry_count: u8,
+}
+
+/// Maximum number of messages that can be queued for retry
+const MAX_RETRY_QUEUE_SIZE: usize = 16;
+
+/// Maximum number of retry attempts before giving up
+const MAX_RETRY_ATTEMPTS: u8 = 5;
+
 pub struct KnxNetIp<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
     /// Reference to socket resources
     resources: &'res KnxNetIpResources<MAX_SOCKETS>,
@@ -513,13 +535,107 @@ pub struct KnxNetIp<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
     buffer_manager: &'res RefCell<DynBufferManager<'static>>,
     /// Interface name for logging
     interface_name: &'static str,
+    /// Local interface IP address (used to filter out our own multicast echoes)
+    local_addr: Ipv4Addr,
     /// Channel to send messages to the network layer
     network_layer_tx: DynamicSender<'res, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+    /// Queue of messages waiting to be retried after rate limiting
+    retry_queue: Vec<PendingRequest, MAX_RETRY_QUEUE_SIZE>,
 }
 
 impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MAX_SOCKETS, MAX_SERVERS> {
+    /// Process expired retry requests
+    async fn process_retry_queue(&mut self, response_channel: &Channel<NoopRawMutex, PendingResponse, 16>) {
+        let now = Instant::now();
+
+        // Process all expired retry entries
+        // Note: We iterate backwards and use swap_remove for efficiency
+        let mut i = 0;
+        while i < self.retry_queue.len() {
+            if now >= self.retry_queue[i].retry_after {
+                let mut pending = self.retry_queue.swap_remove(i);
+
+                debug!("Retrying message (attempt {}/{})", pending.retry_count + 1, MAX_RETRY_ATTEMPTS);
+
+                // Try to send the message
+                let mut requeue = false;
+                let mut send_error = false;
+                let mut send_success = false;
+
+                for server in &mut self.server_instances {
+                    if server.handler.supports_requests() {
+                        let context = ServerContext::new(self.buffer_manager, self.network_layer_tx);
+                        match server.handler.on_request(&pending.message, &context).await {
+                            Ok(responses) => {
+                                // Success! Send responses and confirmation
+                                for response in responses {
+                                    response_channel.send(response).await;
+                                }
+                                send_success = true;
+                                break;
+                            }
+                            Err(ServerError::Busy(wait_time)) => {
+                                // Still busy, check if we should retry again
+                                pending.retry_count += 1;
+                                if pending.retry_count < MAX_RETRY_ATTEMPTS {
+                                    pending.retry_after = Instant::now() + Duration::from_millis(wait_time as u64);
+                                    debug!(
+                                        "Still busy, requeuing (attempt {}/{}, wait {}ms)",
+                                        pending.retry_count, MAX_RETRY_ATTEMPTS, wait_time
+                                    );
+                                    requeue = true;
+                                    break;
+                                } else {
+                                    warn!("Max retry attempts reached, giving up on message");
+                                    send_error = true;
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                error!("Server error during retry: {:?}", e);
+                                send_error = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if requeue {
+                    // Re-insert at the end
+                    if self.retry_queue.push(pending).is_err() {
+                        // Couldn't requeue - this shouldn't happen since we just removed an item
+                        // But if it does, we need to recover the pending request to send error
+                        error!("Retry queue full after swap_remove, dropping message");
+                        // Note: pending was moved into push, we can't access it here
+                        // This is actually OK - the message will be dropped
+                    }
+                } else if send_success {
+                    pending.message.ctrl_field_mut().set_c(Confirm::NoError);
+                    pending.response_tx.send(pending.message).await;
+                } else if send_error {
+                    pending.message.ctrl_field_mut().set_c(Confirm::Err);
+                    pending.response_tx.send(pending.message).await;
+                } else {
+                    // No server could handle it - send error
+                    pending.message.ctrl_field_mut().set_c(Confirm::Err);
+                    pending.response_tx.send(pending.message).await;
+                }
+            } else {
+                // This entry is not expired yet, move to next
+                i += 1;
+            }
+        }
+    }
+
+    /// Get the next retry time, if any messages are queued
+    fn get_next_retry_time(&self) -> Option<Instant> {
+        self.retry_queue.iter().map(|r| r.retry_after).min()
+    }
+
     /// Send a packet on a specific socket
     async fn send_on_socket(&self, socket_idx: usize, data: &[u8], destination: SocketAddrV4) -> Result<(), ()> {
+        trace!("Sending {} bytes on socket {} to {}: {:x?}", data.len(), socket_idx, destination, data);
+
         let sockets = unsafe { self.resources.sockets.assume_init_ref() };
 
         if let Some(Some(socket)) = sockets.get(socket_idx) {
@@ -548,6 +664,14 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
             // Receive data
             match socket.recv_from(&mut buffer[..]).await {
                 Ok((len, addr, port)) => {
+                    trace!(
+                        "Received {} bytes on socket {} from {}:{}: {:x?}",
+                        len,
+                        socket_idx,
+                        addr,
+                        port,
+                        &buffer[..len]
+                    );
                     buffer.set_len(len);
                     Ok((buffer, SocketAddrV4::new(addr, port)))
                 }
@@ -582,7 +706,10 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
         let response_channel = unsafe { self.resources.response_channel.assume_init_ref() };
 
         loop {
-            // Select between socket receives, inbox messages, and pending responses
+            // Process any expired retry requests first
+            self.process_retry_queue(response_channel).await;
+
+            // Select between socket receives, inbox messages, pending responses, and retry timer
             // Note: We create socket futures inline to avoid borrow checker issues
             let result = {
                 // Create futures for receiving from all sockets
@@ -591,13 +718,45 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                     let _ = socket_futures.push(self.recv_from_socket(i));
                 }
 
-                select3(select_slice(socket_futures.as_mut_slice()), inbox.next(), response_channel.receive()).await
+                // Create timer future - either a scheduled timer or a never-completing future
+                match self.get_next_retry_time() {
+                    Some(next_retry) => {
+                        select4(
+                            select_slice(socket_futures.as_mut_slice()),
+                            inbox.next(),
+                            response_channel.receive(),
+                            Timer::at(next_retry),
+                        )
+                        .await
+                    }
+                    None => {
+                        select4(
+                            select_slice(socket_futures.as_mut_slice()),
+                            inbox.next(),
+                            response_channel.receive(),
+                            pending::<()>(),
+                        )
+                        .await
+                    }
+                }
             };
 
             match result {
+                // Retry timer expired
+                Either4::Fourth(()) => {
+                    // Retry processing already happened at start of loop
+                    trace!("Retry timer expired, processed at loop start");
+                    continue;
+                }
                 // Socket received a packet
-                Either3::First((Ok((buffer, source)), socket_idx)) => {
+                Either4::First((Ok((buffer, source)), socket_idx)) => {
                     debug!("Received {} bytes on socket {} from {}", buffer.len(), socket_idx, source);
+
+                    // Filter out our own multicast echoes
+                    if *source.ip() == self.local_addr {
+                        trace!("Ignoring packet from our own IP address: {}", source);
+                        continue;
+                    }
 
                     // Peek at the service type from the KNX/IP header
                     match peek_service_type(&buffer[..]) {
@@ -637,13 +796,13 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                 }
 
                 // Socket receive error
-                Either3::First((Err(()), socket_idx)) => {
+                Either4::First((Err(()), socket_idx)) => {
                     error!("Socket {} receive error", socket_idx);
                     // Continue processing other sockets
                 }
 
                 // Inbox received a layer operation
-                Either3::Second(layer_op) => {
+                Either4::Second(layer_op) => {
                     trace!("KnxNetIp Link Layer received layer op: {:?}", layer_op);
 
                     match layer_op {
@@ -677,6 +836,34 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                                                     handled = true;
                                                     break;
                                                 }
+                                                Err(ServerError::Busy(wait_time)) => {
+                                                    // Server is rate-limited, queue for retry
+                                                    if self.retry_queue.len() < MAX_RETRY_QUEUE_SIZE {
+                                                        let retry_after =
+                                                            Instant::now() + Duration::from_millis(wait_time as u64);
+                                                        let pending = PendingRequest {
+                                                            message: msg_opt.take().unwrap(),
+                                                            response_tx,
+                                                            retry_after,
+                                                            retry_count: 0,
+                                                        };
+
+                                                        if self.retry_queue.push(pending).is_ok() {
+                                                            debug!(
+                                                                "Queued message for retry in {}ms (queue size: {})",
+                                                                wait_time,
+                                                                self.retry_queue.len()
+                                                            );
+                                                            handled = true;
+                                                            break;
+                                                        }
+                                                    } else {
+                                                        warn!(
+                                                            "Retry queue full ({} messages), cannot queue message",
+                                                            MAX_RETRY_QUEUE_SIZE
+                                                        );
+                                                    }
+                                                }
                                                 Err(e) => {
                                                     error!("Server error sending request: {:?}", e);
                                                 }
@@ -703,7 +890,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                 }
 
                 // Response ready to send
-                Either3::Third(pending_response) => {
+                Either4::Third(pending_response) => {
                     let destination = pending_response.destination;
                     let data = &pending_response.buffer[..];
 
