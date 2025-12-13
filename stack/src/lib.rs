@@ -12,6 +12,7 @@ mod macros;
 
 pub mod address;
 pub mod bcus;
+pub mod config;
 pub mod context;
 pub mod dpt;
 pub mod error;

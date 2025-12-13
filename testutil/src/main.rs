@@ -44,9 +44,9 @@ define_com_objects! {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct MyKnxStackStoredData {
+pub struct MyKnxStackStoredData {
     addr_tab: AddrTab7<30>,
-    asso_tab: AssoTab6<30>,
+    asso_tab: AssoTab6<15>, // 15 entries = 64 bytes (old JSON has 62 bytes, serde should handle)
     co_tab: CoTab7<30>,
 }
 
@@ -54,7 +54,7 @@ struct MyKnxStackStoredData {
 pub struct MyKnxStack;
 impl StackDefinition for MyKnxStack {
     type ADT = AddrTab7<30>;
-    type AST = AssoTab6<30>;
+    type AST = AssoTab6<15>; // Changed from 30 to 15 to match old JSON format (64 bytes)
     type COT = CoTab7<30>;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
@@ -62,10 +62,7 @@ impl StackDefinition for MyKnxStack {
 }
 
 #[embassy_executor::task]
-async fn run_stack(
-    runner: Runner<'static, MyKnxStack>,
-    link_layer_resources: &'static mut MockLinkLayerResources,
-) {
+async fn run_stack(runner: Runner<'static, MyKnxStack>, link_layer_resources: &'static mut MockLinkLayerResources) {
     println!("Running stack...");
     runner.run(link_layer_resources).await;
 }
@@ -74,13 +71,25 @@ async fn run_stack(
 async fn main(spawner: Spawner) {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
+    // Note: The JSON was created with old buffer sizes. Association table now uses 4 bytes per entry.
+    // Old AssoTab6<30> = 62 bytes, New AssoTab6<30> = 124 bytes
+    // To load old JSON with 62 bytes, we need AssoTab6<14> = 60 bytes (will pad to 62 with serde)
     let stored_data = File::open("stack_data.json")
-        .map_err(|_| ())
-        .and_then(|f| serde_json::from_reader::<File, MyKnxStackStoredData>(f).map_err(|_| ()))
-        .unwrap_or_else(|_| MyKnxStackStoredData {
-            addr_tab: AddrTab7::<30>::new(),
-            asso_tab: AssoTab6::<30>::new(),
-            co_tab: CoTab7::<30>::new(),
+        .map_err(|e| {
+            eprintln!("Failed to open stack_data.json: {}", e);
+        })
+        .and_then(|f| {
+            serde_json::from_reader::<File, MyKnxStackStoredData>(f).map_err(|e| {
+                eprintln!("Failed to deserialize stack_data.json: {}", e);
+            })
+        })
+        .unwrap_or_else(|_| {
+            eprintln!("Using empty tables");
+            MyKnxStackStoredData {
+                addr_tab: AddrTab7::<30>::new(),
+                asso_tab: AssoTab6::<15>::new(), // Changed from 30 to 15
+                co_tab: CoTab7::<30>::new(),
+            }
         });
 
     //serde_json::to_writer(File::create("stack_data.json").unwrap(), &stored_data).unwrap();

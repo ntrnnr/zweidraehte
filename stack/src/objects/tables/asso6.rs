@@ -16,14 +16,18 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
     // FIXME: remove pub, just for debugging
     pub fn tsap(&self, idx: u16) -> u16 {
         // NOTE: idx is 1-indexed!
-        let start = (2 * ((idx as usize) - 1) + 1) * 2;
+        // Format: [count_h, count_l, tsap1_h, tsap1_l, asap1_h, asap1_l, tsap2_h, tsap2_l, asap2_h, asap2_l, ...]
+        // Each entry is 4 bytes: TSAP (2 bytes) + ASAP (2 bytes)
+        let start = 2 + ((idx as usize) - 1) * 4;
         U16::from_bytes(self.table.data[start..start + 2].try_into().unwrap()).get()
     }
 
     // FIXME: remove pub, just for debugging
     pub fn asap(&self, idx: u16) -> u16 {
         // NOTE: idx is 1-indexed!
-        let start = (2 * ((idx as usize) - 1) + 2) * 2;
+        // Format: [count_h, count_l, tsap1_h, tsap1_l, asap1_h, asap1_l, tsap2_h, tsap2_l, asap2_h, asap2_l, ...]
+        // Each entry is 4 bytes: TSAP (2 bytes) + ASAP (2 bytes)
+        let start = 2 + ((idx as usize) - 1) * 4 + 2;
         U16::from_bytes(self.table.data[start..start + 2].try_into().unwrap()).get()
     }
 
@@ -233,7 +237,8 @@ impl<const N: usize> AssociationTable for Table<AssoTab6Impl<N>> {
     }
 }
 
-pub type AssoTab6<const MAX_ENTRIES: usize> = Table<AssoTab6Impl<{ (MAX_ENTRIES + 1) * 2 }>>;
+// Each association entry is 4 bytes: TSAP (2 bytes) + ASAP (2 bytes)
+pub type AssoTab6<const MAX_ENTRIES: usize> = Table<AssoTab6Impl<{ (MAX_ENTRIES + 1) * 4 }>>;
 
 #[cfg(test)]
 mod test {

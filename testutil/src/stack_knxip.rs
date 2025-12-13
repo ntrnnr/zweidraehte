@@ -106,15 +106,12 @@
 
 #![feature(adt_const_params)]
 
-use std::fs::File;
-
 use const_default::ConstDefault;
 use embassy_executor::Spawner;
 use embassy_sync::pubsub::WaitResult;
 use embassy_time::Duration;
 use env_logger::Env;
 use platform::address::EthernetAddress;
-use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
 use zweidraehte::{
     Runner, StackDefinition, StackResources,
@@ -124,10 +121,7 @@ use zweidraehte::{
     layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, KnxNetIpResources, servers},
     messages::knxip::KNXnetIPServiceType,
     messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium, ServiceFamily, SupportedService},
-    objects::{
-        comm::{ComObjectIndex, ComObjects},
-        tables::{addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7},
-    },
+    objects::comm::{ComObjectIndex, ComObjects},
 };
 
 #[derive(Debug, ConstDefault)]
@@ -150,19 +144,56 @@ define_com_objects! {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct MyKnxStackStoredData {
-    addr_tab: AddrTab7<30>,
-    asso_tab: AssoTab6<30>,
-    co_tab: CoTab7<30>,
+// Define stack configuration using the new macro
+mod stack_test_config {
+    use zweidraehte::config::{CE, RE, TE, UE, WE};
+    use zweidraehte::knx_stack_config;
+
+    knx_stack_config! {
+        name: StackTestConfig,
+        individual_address: "1.1.0",
+
+        group_addresses: {
+            1 => "1/0/1",
+            2 => "1/0/2",
+            3 => "1/0/3",
+            4 => "1/0/4",
+            5 => "1/1/1",
+            6 => "1/1/2",
+            7 => "1/1/3",
+            8 => "1/1/4",
+        },
+
+        comm_objects: {
+            1 => (0, CE | TE | RE | WE | UE),  // CO1: Full bidirectional with auto-transmit
+            2 => (0, CE | TE | RE | WE | UE),  // CO2: Full bidirectional with auto-transmit
+            3 => (0, CE | TE | RE | WE),       // CO3: No UE, won't auto-transmit on update
+            4 => (0, CE | TE | RE),            // CO4: Read-only from bus (no WE)
+            5 => (0, CE | TE | RE | WE),       // CO5: Can write to bus, no UE
+            6 => (0, CE | TE | RE | WE),       // CO6: Can write to bus, no UE
+            7 => (0, CE | TE | RE),            // CO7: Read-only from bus (no WE)
+            8 => (0, 0),                       // CO8: Disabled, application-local only
+        },
+
+        associations: {
+            1 => [1],        // TSAP 1 (1/0/1) → ASAP 1 (CO1)
+            2 => [2],        // TSAP 2 (1/0/2) → ASAP 2 (CO2)
+            3 => [3],        // TSAP 3 (1/0/3) → ASAP 3 (CO3)
+            4 => [4],        // TSAP 4 (1/0/4) → ASAP 4 (CO4)
+            5 => [5],        // TSAP 5 (1/1/1) → ASAP 5 (CO5)
+            6 => [6],        // TSAP 6 (1/1/2) → ASAP 6 (CO6)
+            7 => [3, 7],     // TSAP 7 (1/1/3) → ASAP 3 (CO3) and ASAP 7 (CO7)
+            8 => [1, 2, 5, 6], // TSAP 8 (1/1/4) → Broadcast to CO1, CO2, CO5, CO6
+        },
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct MyKnxStackWithKnxIp;
 impl StackDefinition for MyKnxStackWithKnxIp {
-    type ADT = AddrTab7<30>;
-    type AST = AssoTab6<30>;
-    type COT = CoTab7<30>;
+    type ADT = stack_test_config::AddrTab;
+    type AST = stack_test_config::AssoTab;
+    type COT = stack_test_config::CoTab;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = KnxNetIpBuilder<2, 2>; // 2 sockets, 2 servers
@@ -183,18 +214,14 @@ async fn main(spawner: Spawner) {
 
     println!("=== KNX Stack with KNX/IP Link Layer ===");
 
-    // Load or create stack configuration
-    let stored_data = File::open("stack_test_data.json")
-        .map_err(|_| ())
-        .and_then(|f| serde_json::from_reader::<File, MyKnxStackStoredData>(f).map_err(|_| ()))
-        .unwrap_or_else(|_| {
-            println!("No stack_test_data.json found, creating default configuration");
-            MyKnxStackStoredData {
-                addr_tab: AddrTab7::<30>::new(),
-                asso_tab: AssoTab6::<30>::new(),
-                co_tab: CoTab7::<30>::new(),
-            }
-        });
+    // Create configuration using the compile-time macro
+    const CONFIG: stack_test_config::StackTestConfig = stack_test_config::StackTestConfig::new();
+
+    println!("Configuration loaded from compile-time macro:");
+    println!("  - Individual Address: {}", CONFIG.individual_address);
+    println!("  - Address Table: {} entries", (CONFIG.addr7_data().len() - 2) / 2);
+    println!("  - Association Table: {} entries", (CONFIG.asso6_data().len() - 2) / 4); // 4 bytes per entry
+    println!("  - Communication Objects: {} objects", (CONFIG.co7_data().len() - 2) / 2);
 
     // Create KNX/IP Discovery Server configuration
     const SUPPORTED_SERVICES: &[SupportedService] = &[
@@ -253,13 +280,16 @@ async fn main(spawner: Spawner) {
     println!("  - Discovery Server: SearchRequest, DescriptionRequest");
     println!("  - Routing Server: RoutingIndication, RoutingBusy, RoutingLostMessage");
 
+    // Create table instances with configuration data loaded
+    let (addr_tab, asso_tab, co_tab) = stack_test_config::StackTestConfig::create_tables();
+
     // Create stack resources
     static RESOURCES: StaticCell<StackResources<MyKnxStackWithKnxIp>> = StaticCell::new();
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
-        stored_data.addr_tab,
-        stored_data.asso_tab,
-        stored_data.co_tab,
+        addr_tab,
+        asso_tab,
+        co_tab,
         comm_objs::AppComObjects::new(),
         link_layer_builder,
     );

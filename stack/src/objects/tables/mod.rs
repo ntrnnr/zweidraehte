@@ -348,12 +348,12 @@ impl ComObjectType {
 pub struct ComObjectFlags(u8);
 
 impl ComObjectFlags {
-    const UE_FLAG_MASK: u8 = 0b10000000; // Update Enable flag
-    const TE_FLAG_MASK: u8 = 0b01000000; // Transmission Enable flag
-    const ROI_FLAG_MASK: u8 = 0b00100000; // Read on Init flag
-    const WE_FLAG_MASK: u8 = 0b00010000; // Write Enable flag
-    const RE_FLAG_MASK: u8 = 0b00001000; // Read Enable flag
-    const CE_FLAG_MASK: u8 = 0b00000100; // Communication Enable flag
+    pub const UE_FLAG_MASK: u8 = 0b10000000; // Update Enable flag
+    pub const TE_FLAG_MASK: u8 = 0b01000000; // Transmission Enable flag
+    pub const ROI_FLAG_MASK: u8 = 0b00100000; // Read on Init flag
+    pub const WE_FLAG_MASK: u8 = 0b00010000; // Write Enable flag
+    pub const RE_FLAG_MASK: u8 = 0b00001000; // Read Enable flag
+    pub const CE_FLAG_MASK: u8 = 0b00000100; // Communication Enable flag
 
     const P_SHIFT: u8 = 0;
     const P_LEN: u8 = 2;
@@ -520,6 +520,15 @@ impl<T: TableMemory> ConstDefault for Table<T> {
 impl<T: TableMemory> Table<T> {
     pub const fn new() -> Self {
         Self { table: T::DEFAULT, state: LoadState::Unloaded, mcb_table: PDT_Generic08::with_value([0; 8]) }
+    }
+
+    /// Create a table with pre-loaded data, bypassing the load state machine.
+    /// This is useful for compile-time configurations where the data is known at build time.
+    pub fn with_data(data: &[u8]) -> Self {
+        let mut table = Self::new();
+        table.table.data_ref_mut()[..data.len()].copy_from_slice(data);
+        table.state = LoadState::Loaded;
+        table
     }
 
     fn next_state(event: LoadEvent, cur_state: LoadState) -> (LoadState, LoadAction) {
