@@ -940,4 +940,44 @@ mod tests {
             assert_eq!(msg.get_tpci(), *e, "TPCI code mismatch for test frame: {:x?}", t);
         }
     }
+
+    #[test]
+    fn test_set_get_apci_short_codes() {
+        // Test all short APCI codes (0-15)
+        let short_codes = [
+            ApciCode::GroupValueRead,
+            ApciCode::GroupValueResponse,
+            ApciCode::GroupValueWrite,
+            ApciCode::IndividualAddressWrite,
+            ApciCode::IndividualAddressRead,
+            ApciCode::IndividualAddressResponse,
+            ApciCode::AdcRead,
+            ApciCode::AdcResponse,
+            ApciCode::MemoryRead,
+            ApciCode::MemoryReadResponse,
+            ApciCode::MemoryWrite,
+            //ApciCode::UserMessage,
+            ApciCode::DeviceDescriptorRead,
+            ApciCode::DeviceDescriptorResponse,
+            ApciCode::Restart,
+            //ApciCode::Escape,
+        ];
+
+        for code in &short_codes {
+            let mut buf = [0u8; 16];
+            let mut msg = KnxMessageBuffer::new(&mut buf[..], ServiceType::T_GroupData_Req);
+
+            // Set the APCI code
+            msg.set_apci_code(*code);
+
+            // Read it back
+            let read_code = msg.get_apci_code();
+
+            assert_eq!(
+                read_code, *code,
+                "APCI code mismatch for {:?}. Bytes at APCI position: {:02x} {:02x}",
+                code, msg.buf[6], msg.buf[7]
+            );
+        }
+    }
 }

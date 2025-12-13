@@ -119,6 +119,9 @@ pub enum ComObjectEvent {
     /// A communication object was updated locally
     LocallyUpdated,
 
+    /// A remote device requested to read this communication object's value
+    Read,
+
     /// A response to a read request was received
     ReadResponse,
 }

@@ -395,7 +395,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
                         ComObjectEvent::ReadResponse => {
                             return;
                         }
-                        ComObjectEvent::Updated | ComObjectEvent::LocallyUpdated => {
+                        ComObjectEvent::Updated | ComObjectEvent::LocallyUpdated | ComObjectEvent::Read => {
                             // Continue waiting - these are not read responses
                             continue;
                         }

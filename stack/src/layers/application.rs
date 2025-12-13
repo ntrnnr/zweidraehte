@@ -171,6 +171,79 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                                     }
                                 }
                             }
+                            ApciCode::GroupValueRead => {
+                                trace!("Received GroupValueRead");
+
+                                let tsap = ind.get_connection_nr();
+                                trace!("Incoming TSAP: {:?}", tsap);
+
+                                for asap in self.ast.borrow().asaps_for_tsap(tsap) {
+                                    trace!("Processing GroupValueRead for ASAP: {}", asap);
+
+                                    let Some(cot_info) = self.cot.borrow().get_object(asap) else {
+                                        error!("Invalid ASAP: {}", asap);
+                                        continue;
+                                    };
+
+                                    // Check if communication and read are enabled for this object
+                                    if !cot_info.flags.communication_enable() || !cot_info.flags.read_enable() {
+                                        trace!(
+                                            "Received GroupValueRead.ind for ASAP {}, but comm or read flag isn't set",
+                                            asap
+                                        );
+                                        continue;
+                                    }
+
+                                    // Determine the size and offset for the response
+                                    let (object_size, msg_offset) = match cot_info.object_type.size_in_bytes() {
+                                        (s, true) => (s, offsets::MSG_APCI + 1),
+                                        (s, false) => (s, offsets::MSG_APDU),
+                                    };
+
+                                    trace!(
+                                        "Sending GroupValueResponse for ASAP {} with TSAP {}, size {}",
+                                        asap, tsap, object_size
+                                    );
+
+                                    // Allocate a new message for the response
+                                    let msg_buf =
+                                        self.buffer_manager.borrow().alloc_with_size(object_size + msg_offset).await;
+                                    let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_GroupData_Req);
+
+                                    // Fill in the message fields (but not APCI yet - it might overlap with data)
+                                    msg.ctrl_field_mut().set_priority(cot_info.flags.priority());
+                                    msg.set_connection_nr(tsap);
+
+                                    // Copy the current value from the communication object
+                                    msg.buf_mut()[msg_offset..msg_offset + object_size]
+                                        .copy_from_slice(self.comm_objects.borrow().value(asap));
+
+                                    // Set APCI code AFTER copying data to avoid overwriting when data fits in 6 bits
+                                    msg.set_apci_code(ApciCode::GroupValueResponse);
+
+                                    // Send the response to the transport layer and wait for confirmation
+                                    let confirmation = self.transport_layer.request(msg).await;
+                                    trace!(
+                                        "Received confirmation for GroupValueResponse ASAP {} with TSAP {}: {:?}",
+                                        asap,
+                                        tsap,
+                                        confirmation.service_type()
+                                    );
+
+                                    trace!(
+                                        "Sent GroupValueResponse for ASAP {}: {:x?}",
+                                        asap,
+                                        self.comm_objects.borrow().value(asap)
+                                    );
+
+                                    // Publish read event to the event channel
+                                    if let Some(index) =
+                                        <<D as StackDefinition>::CO as ComObjects>::Index::from_index(asap)
+                                    {
+                                        self.event_channel.publish_immediate((index, ComObjectEvent::Read));
+                                    }
+                                }
+                            }
                             _ => {
                                 error!("Application Layer received unimplemented APCI: {:?}", ind.get_apci_code());
                                 unimplemented!();

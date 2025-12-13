@@ -816,6 +816,11 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                                 ServiceType::L_Data_Req => {
                                     debug!("KnxNetIp Link Layer sending L_Data_Req: {:x?}", msg);
 
+                                    // Convert L_Data_Req to L_Data_Ind for KNX/IP routing
+                                    // Messages originating from this device should be sent as indications
+                                    let mut msg = msg;
+                                    msg.set_service_type(ServiceType::L_Data_Ind);
+
                                     // Find a server that supports outgoing requests
                                     let mut msg_opt = Some(msg);
                                     let mut handled = false;
