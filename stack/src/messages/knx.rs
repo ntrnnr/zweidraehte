@@ -136,6 +136,10 @@ create_protocol_enum!(
         FunctionPropertyCommand,    0x87,   "A_FunctionPropertyCommand";
 
         PropertyValueRead,          0xd5,   "A_PropertyValue_Read";
+        PropertyValueResponse,      0xd6,   "A_PropertyValue_Response";
+        PropertyValueWrite,         0xd7,   "A_PropertyValue_Write";
+        PropertyDescriptionRead,    0xd8,   "A_PropertyDescription_Read";
+        PropertyDescriptionResponse, 0xd9,  "A_PropertyDescription_Response";
 
         Empty,                      0,      "<Empty>";
         _,                                  "Unknown APCI code 0x{:x}";
