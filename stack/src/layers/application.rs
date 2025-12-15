@@ -17,6 +17,7 @@ use crate::{
     },
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
+        interface::PropertyServiceHandler,
         tables::{AssociationTable, CommunicationObjectTable},
     },
 };
@@ -43,6 +44,9 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     event_channel:
         &'a PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
 
+    // Interface object server for handling property services
+    interface_object_server: &'a dyn PropertyServiceHandler,
+
     // Receiver for requests from the application to the application layer
     app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
 
@@ -64,10 +68,20 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             2,
             1,
         >,
+        interface_object_server: &'a dyn PropertyServiceHandler,
         app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
         transport_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
     ) -> Self {
-        Self { buffer_manager, ast, cot, comm_objects, event_channel, app_request_receiver, transport_layer }
+        Self {
+            buffer_manager,
+            ast,
+            cot,
+            comm_objects,
+            event_channel,
+            interface_object_server,
+            app_request_receiver,
+            transport_layer,
+        }
     }
 }
 

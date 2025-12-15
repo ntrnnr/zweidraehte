@@ -47,6 +47,7 @@ use crate::{
     messages::buffers::{Buffer, BufferManager, DynBufferManager},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
+        interface::InterfaceObjectsBuilder,
         tables::{AddressTable, AssociationTable, CommunicationObjectTable, TableMemory},
     },
 };
@@ -59,34 +60,42 @@ pub enum ReadObjectError {
 }
 
 pub trait StackDefinition: Copy {
-    type ADT: AddressTable;
-    type AST: AssociationTable;
-    type COT: CommunicationObjectTable;
+    type ADT: AddressTable + 'static;
+    type AST: AssociationTable + 'static;
+    type COT: CommunicationObjectTable + 'static;
     type P: ConstDefault;
     type CO: ComObjects;
     type LLB: layers::LinkLayerBuilder;
+    type IOB: InterfaceObjectsBuilder;
 }
 
-pub struct StackResources<D: StackDefinition, const BUF_SZ: usize = 128, const NUM_BUFS: usize = 4>
-where
-    D::ADT: AddressTable,
-    D::AST: TableMemory,
-    D::COT: CommunicationObjectTable,
+pub struct StackResources<
+    D: StackDefinition,
+    const BUF_SZ: usize = 128,
+    const NUM_BUFS: usize = 4,
+> where
+    D::ADT: AddressTable + 'static,
+    D::AST: TableMemory + 'static,
+    D::COT: CommunicationObjectTable + 'static,
     D::CO: ComObjects,
 {
     inner: MaybeUninit<Inner<D>>,
     buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
     buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
     link_layer_resources: MaybeUninit<<D::LLB as LinkLayerBuilder>::Resources>,
+    interface_objects: MaybeUninit<<D::IOB as InterfaceObjectsBuilder>::Objects<'static, D::ADT, D::AST, D::COT>>,
 }
 
-impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResources<D, BUF_SZ, NUM_BUFS> {
+impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize>
+    StackResources<D, BUF_SZ, NUM_BUFS>
+{
     pub fn new() -> Self {
         Self {
             inner: MaybeUninit::uninit(),
             buffers: MaybeUninit::uninit(),
             buffer_manager: MaybeUninit::uninit(),
             link_layer_resources: MaybeUninit::uninit(),
+            interface_objects: MaybeUninit::uninit(),
         }
     }
 }
@@ -96,6 +105,7 @@ impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResour
 /// You must call [`Runner::run()`] in a background task for the KNX stack to work.
 pub struct Runner<'d, D: StackDefinition> {
     stack: Stack<'d, D>,
+    interface_objects: &'d dyn crate::objects::interface::PropertyServiceHandler,
     app_request_receiver: DynamicReceiver<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     link_layer_builder: D::LLB,
 }
@@ -137,10 +147,18 @@ pub struct Runner<'d, D: StackDefinition> {
 ///
 /// For a complete working example with all the trait implementations,
 /// see the `testutil` crate in this repository.
-#[derive(Copy, Clone)]
 pub struct Stack<'d, D: StackDefinition> {
     inner: &'d Inner<D>,
+    interface_objects: &'d <D::IOB as InterfaceObjectsBuilder>::Objects<'static, D::ADT, D::AST, D::COT>,
     app_request_sender: DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+}
+
+impl<'d, D: StackDefinition> Copy for Stack<'d, D> {}
+
+impl<'d, D: StackDefinition> Clone for Stack<'d, D> {
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 pub(crate) struct Inner<D: StackDefinition> {
@@ -189,6 +207,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     cot: D::COT,
     comm_objs: D::CO,
     link_layer_builder: D::LLB,
+    interface_objects_builder: D::IOB,
 ) -> (Stack<'d, D>, Runner<'d, D>) {
     // SAFETY: We are creating a reference to the buffers that are stored in the `StackResources` struct,
     //         which lives at least as long as `Inner`
@@ -208,13 +227,25 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
 
     let inner = &*resources.inner.write(inner);
 
+    // Build interface objects with references to the tables stored in Inner.
+    // SAFETY: Inner is now stable in memory (written to StackResources), so we can safely
+    //         transmute the table references to 'static lifetime. The actual lifetime is 'd
+    //         but the interface objects container needs 'static for its type parameter.
+    let interface_objects = {
+        let adt_ref: &'static RefCell<D::ADT> = unsafe { core::mem::transmute(&inner.adt) };
+        let ast_ref: &'static RefCell<D::AST> = unsafe { core::mem::transmute(&inner.ast) };
+        let cot_ref: &'static RefCell<D::COT> = unsafe { core::mem::transmute(&inner.cot) };
+        interface_objects_builder.build(adt_ref, ast_ref, cot_ref)
+    };
+    let interface_objects = &*resources.interface_objects.write(interface_objects);
+
     // SAFETY: We are creating a static reference to the channel held by the `Inner` struct,
     //         which is safe because it is guaranteed to live as long as the `Stack` or the `Runner`.
     let (app_request_sender, app_request_receiver) =
         create_request_response_pair::<NoopRawMutex, _, 1>(unsafe { core::mem::transmute(&inner.app_service_channel) });
 
-    let stack = Stack { inner, app_request_sender: app_request_sender.into() };
-    let runner = Runner { stack, app_request_receiver: app_request_receiver.into(), link_layer_builder };
+    let stack = Stack { inner, interface_objects, app_request_sender: app_request_sender.into() };
+    let runner = Runner { stack, interface_objects, app_request_receiver: app_request_receiver.into(), link_layer_builder };
 
     (stack, runner)
 }
@@ -249,6 +280,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             &self.stack.inner.cot,
             &self.stack.inner.comm_objs,
             &self.stack.inner.event_channel,
+            self.interface_objects,
             self.app_request_receiver,
             tl_channel.sender().into(),
         );
@@ -435,6 +467,52 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// ```
     pub fn objects(&self) -> &RefCell<D::CO> {
         &self.inner.comm_objs
+    }
+
+    /// Get access to the address table.
+    ///
+    /// Returns a reference to the `RefCell` containing the address table.
+    /// The address table maps TSAPs (Transport Service Access Points) to group addresses.
+    ///
+    /// # Returns
+    /// A reference to the `RefCell<D::ADT>` containing the address table
+    pub fn address_table(&self) -> &RefCell<D::ADT> {
+        &self.inner.adt
+    }
+
+    /// Get access to the association table.
+    ///
+    /// Returns a reference to the `RefCell` containing the association table.
+    /// The association table maps TSAPs to ASAPs (Application Service Access Points).
+    ///
+    /// # Returns
+    /// A reference to the `RefCell<D::AST>` containing the association table
+    pub fn association_table(&self) -> &RefCell<D::AST> {
+        &self.inner.ast
+    }
+
+    /// Get access to the communication object table.
+    ///
+    /// Returns a reference to the `RefCell` containing the communication object table.
+    /// The communication object table contains type and flag information for each
+    /// communication object (separate from the values stored in `objects()`).
+    ///
+    /// # Returns
+    /// A reference to the `RefCell<D::COT>` containing the communication object table
+    pub fn communication_object_table(&self) -> &RefCell<D::COT> {
+        &self.inner.cot
+    }
+
+    /// Get access to the interface objects container.
+    ///
+    /// Returns a reference to the interface objects container created by the
+    /// `InterfaceObjectsBuilder` during stack initialization. The container
+    /// type is determined by the `IOB` associated type in the `StackDefinition`.
+    ///
+    /// # Returns
+    /// A reference to the interface objects container
+    pub fn interface_objects(&self) -> &<D::IOB as InterfaceObjectsBuilder>::Objects<'static, D::ADT, D::AST, D::COT> {
+        self.interface_objects
     }
 
     /// Subscribe to communication object events.

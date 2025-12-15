@@ -13,10 +13,3 @@ pub trait BufferManagerContext {
     /// Get a reference to the buffer manager
     fn buffer_manager(&self) -> &RefCell<DynBufferManager<'static>>;
 }
-
-// TODO: Add more context traits as needed:
-// - AddressTableContext
-// - AssociationTableContext
-// - CommunicationObjectTableContext
-// - CommunicationObjectsContext
-// - EventChannelContext

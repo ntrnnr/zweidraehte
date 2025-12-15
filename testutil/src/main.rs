@@ -17,6 +17,7 @@ use zweidraehte::{
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
         comm::ComObjects,
+        interface::EmptyInterfaceObjectsBuilder,
         tables::{
             AddressTable, AssociationTable, CommunicationObjectTable, addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7,
         },
@@ -59,6 +60,7 @@ impl StackDefinition for MyKnxStack {
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = MockLinkLayerBuilder<8>;
+    type IOB = EmptyInterfaceObjectsBuilder;
 }
 
 #[embassy_executor::task]
@@ -128,6 +130,7 @@ async fn main(spawner: Spawner) {
         stored_data.co_tab,
         comm_objs::AppComObjects::new(),
         link_layer_builder,
+        EmptyInterfaceObjectsBuilder,
     );
 
     // Create link layer resources

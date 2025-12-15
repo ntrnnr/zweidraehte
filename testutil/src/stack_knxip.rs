@@ -106,6 +106,8 @@
 
 #![feature(adt_const_params)]
 
+use core::cell::RefCell;
+
 use const_default::ConstDefault;
 use embassy_executor::Spawner;
 use embassy_sync::pubsub::WaitResult;
@@ -122,6 +124,12 @@ use zweidraehte::{
     messages::knxip::KNXnetIPServiceType,
     messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium, ServiceFamily, SupportedService},
     objects::comm::{ComObjectIndex, ComObjects},
+    objects::interface::{
+        AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
+        InterfaceObject, InterfaceObjectsBuilder, IpParameterObject, PropertyDescriptionResponse, PropertyError,
+        PropertyServiceHandler,
+    },
+    objects::tables::LoadableTable,
 };
 
 #[derive(Debug, ConstDefault)]
@@ -188,6 +196,196 @@ mod stack_test_config {
     }
 }
 
+// ============================================================================
+// Interface Objects Configuration
+// ============================================================================
+
+/// Device-specific constants for Interface Objects
+mod device_info {
+    /// KNX Manufacturer ID (0x00FA = unregistered/test)
+    pub const MANUFACTURER_ID: u16 = 0x00FA;
+
+    /// Device serial number (6 bytes)
+    pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
+
+    /// Hardware type identifier (6 bytes)
+    pub const HARDWARE_TYPE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+
+    /// Application program version (5 bytes: manufacturer, app_id, version)
+    pub const PROGRAM_VERSION: [u8; 5] = [0x00, 0xFA, 0x01, 0x00, 0x01];
+
+    /// PEI type (0 = no PEI)
+    pub const PEI_TYPE: u8 = 0x00;
+
+    /// Project Installation ID for KNXnet/IP
+    pub const PROJECT_INSTALLATION_ID: u16 = 0x1234;
+}
+
+/// Interface Objects container for a KNXnet/IP device
+///
+/// This struct holds all the interface objects required for a standard
+/// KNXnet/IP device. It implements `PropertyServiceHandler` to dispatch
+/// property requests to the correct object by index:
+///
+/// - Index 0: Device Object
+/// - Index 1: Address Table Object
+/// - Index 2: Association Table Object
+/// - Index 3: Application Program Object
+/// - Index 4: Group Object Table Object
+/// - Index 5: IP Parameter Object
+pub struct KnxIpInterfaceObjects<'a, ADT, AST, COT>
+where
+    ADT: zweidraehte::objects::tables::LoadableTable,
+    AST: zweidraehte::objects::tables::LoadableTable,
+    COT: zweidraehte::objects::tables::LoadableTable,
+{
+    pub device: RefCell<DeviceObject>,
+    pub addr_table: RefCell<AddressTableObject<'a, ADT>>,
+    pub asso_table: RefCell<AssociationTableObject<'a, AST>>,
+    pub app_program: RefCell<ApplicationProgramObject>,
+    pub group_object_table: RefCell<GroupObjectTableObject<'a, COT>>,
+    pub ip_parameter: RefCell<IpParameterObject>,
+}
+
+impl<'a, ADT, AST, COT> KnxIpInterfaceObjects<'a, ADT, AST, COT>
+where
+    ADT: zweidraehte::objects::tables::LoadableTable,
+    AST: zweidraehte::objects::tables::LoadableTable,
+    COT: zweidraehte::objects::tables::LoadableTable,
+{
+    /// Create new interface objects wrapping the provided tables
+    pub fn new(addr_table: &'a RefCell<ADT>, asso_table: &'a RefCell<AST>, co_table: &'a RefCell<COT>) -> Self {
+        // Create Device Object with device information
+        let mut device = DeviceObject::new();
+        device.serial_number = device_info::SERIAL_NUMBER.into();
+        device.manufacturer_id = device_info::MANUFACTURER_ID.into();
+        device.hardware_type = device_info::HARDWARE_TYPE.into();
+
+        // Create Application Program Object
+        let mut app_program = ApplicationProgramObject::new();
+        app_program.program_version = device_info::PROGRAM_VERSION.into();
+        app_program.pei_type = device_info::PEI_TYPE.into();
+        // Load state starts as "loaded" for this demo
+        app_program.load_state = 0x01.into(); // Loaded
+        app_program.run_state = 0x01.into(); // Running
+
+        // Create IP Parameter Object
+        let mut ip_parameter = IpParameterObject::new();
+        ip_parameter.project_installation_id = device_info::PROJECT_INSTALLATION_ID.into();
+        ip_parameter.current_ip_method = 0x01.into(); // Manual
+        ip_parameter.ip_method = 0x01.into(); // Manual
+        ip_parameter.ip_capabilities = 0x07.into(); // DHCP, BootP, Manual
+
+        Self {
+            device: RefCell::new(device),
+            addr_table: RefCell::new(AddressTableObject::new(addr_table)),
+            asso_table: RefCell::new(AssociationTableObject::new(asso_table)),
+            app_program: RefCell::new(app_program),
+            group_object_table: RefCell::new(GroupObjectTableObject::new(co_table)),
+            ip_parameter: RefCell::new(ip_parameter),
+        }
+    }
+}
+
+impl<'a, ADT, AST, COT> PropertyServiceHandler for KnxIpInterfaceObjects<'a, ADT, AST, COT>
+where
+    ADT: zweidraehte::objects::tables::LoadableTable,
+    AST: zweidraehte::objects::tables::LoadableTable,
+    COT: zweidraehte::objects::tables::LoadableTable,
+{
+    fn object_count(&self) -> u16 {
+        6 // Device, AddrTable, AssoTable, AppProgram, GroupObjectTable, IpParameter
+    }
+
+    fn property_description_read(
+        &self,
+        object_idx: u16,
+        prop_id: u8,
+        prop_idx: u8,
+    ) -> Result<PropertyDescriptionResponse, PropertyError> {
+        match object_idx {
+            0 => self.device.borrow().property_description(object_idx, prop_id, prop_idx),
+            1 => self.addr_table.borrow().property_description(object_idx, prop_id, prop_idx),
+            2 => self.asso_table.borrow().property_description(object_idx, prop_id, prop_idx),
+            3 => self.app_program.borrow().property_description(object_idx, prop_id, prop_idx),
+            4 => self.group_object_table.borrow().property_description(object_idx, prop_id, prop_idx),
+            5 => self.ip_parameter.borrow().property_description(object_idx, prop_id, prop_idx),
+            _ => Err(PropertyError::InvalidObjectIndex),
+        }
+    }
+
+    fn property_value_read(
+        &self,
+        object_idx: u16,
+        prop_id: u8,
+        start_idx: u16,
+        count: u16,
+        buf: &mut [u8],
+    ) -> Result<usize, PropertyError> {
+        match object_idx {
+            0 => self.device.borrow().read_property(prop_id, start_idx, count, buf),
+            1 => self.addr_table.borrow().read_property(prop_id, start_idx, count, buf),
+            2 => self.asso_table.borrow().read_property(prop_id, start_idx, count, buf),
+            3 => self.app_program.borrow().read_property(prop_id, start_idx, count, buf),
+            4 => self.group_object_table.borrow().read_property(prop_id, start_idx, count, buf),
+            5 => self.ip_parameter.borrow().read_property(prop_id, start_idx, count, buf),
+            _ => Err(PropertyError::InvalidObjectIndex),
+        }
+    }
+
+    fn property_value_write(
+        &self,
+        object_idx: u16,
+        prop_id: u8,
+        start_idx: u16,
+        data: &[u8],
+    ) -> Result<(), PropertyError> {
+        match object_idx {
+            0 => self.device.borrow_mut().write_property(prop_id, start_idx, data),
+            1 => self.addr_table.borrow_mut().write_property(prop_id, start_idx, data),
+            2 => self.asso_table.borrow_mut().write_property(prop_id, start_idx, data),
+            3 => self.app_program.borrow_mut().write_property(prop_id, start_idx, data),
+            4 => self.group_object_table.borrow_mut().write_property(prop_id, start_idx, data),
+            5 => self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data),
+            _ => Err(PropertyError::InvalidObjectIndex),
+        }
+    }
+}
+
+// ============================================================================
+// Interface Objects Builder
+// ============================================================================
+
+/// Builder for KNXnet/IP interface objects
+///
+/// This builder is consumed during stack initialization to create the
+/// `KnxIpInterfaceObjects` container with all required interface objects.
+#[derive(Debug, Clone, Copy)]
+pub struct KnxIpInterfaceObjectsBuilder;
+
+impl InterfaceObjectsBuilder for KnxIpInterfaceObjectsBuilder {
+    type Objects<'a, ADT, AST, COT>
+        = KnxIpInterfaceObjects<'a, ADT, AST, COT>
+    where
+        ADT: LoadableTable + 'a,
+        AST: LoadableTable + 'a,
+        COT: LoadableTable + 'a;
+
+    fn build<'a, ADT, AST, COT>(
+        self,
+        addr_table: &'a RefCell<ADT>,
+        asso_table: &'a RefCell<AST>,
+        co_table: &'a RefCell<COT>,
+    ) -> Self::Objects<'a, ADT, AST, COT>
+    where
+        ADT: LoadableTable,
+        AST: LoadableTable,
+        COT: LoadableTable,
+    {
+        KnxIpInterfaceObjects::new(addr_table, asso_table, co_table)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct MyKnxStackWithKnxIp;
 impl StackDefinition for MyKnxStackWithKnxIp {
@@ -197,6 +395,7 @@ impl StackDefinition for MyKnxStackWithKnxIp {
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = KnxNetIpBuilder<2, 2>; // 2 sockets, 2 servers
+    type IOB = KnxIpInterfaceObjectsBuilder;
 }
 
 #[embassy_executor::task]
@@ -283,7 +482,8 @@ async fn main(spawner: Spawner) {
     // Create table instances with configuration data loaded
     let (addr_tab, asso_tab, co_tab) = stack_test_config::StackTestConfig::create_tables();
 
-    // Create stack resources
+    // Create stack resources - the stack takes ownership of the tables
+    // and stores them in RefCells that we can access via the Stack handle
     static RESOURCES: StaticCell<StackResources<MyKnxStackWithKnxIp>> = StaticCell::new();
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
@@ -292,6 +492,27 @@ async fn main(spawner: Spawner) {
         co_tab,
         comm_objs::AppComObjects::new(),
         link_layer_builder,
+        KnxIpInterfaceObjectsBuilder,
+    );
+
+    // The interface objects are now stored inside the stack (in StackResources)
+    // and can be accessed via stack.interface_objects()
+    let interface_objects = stack.interface_objects();
+
+    // Demonstrate accessing the interface objects
+    // The container implements PropertyServiceHandler to handle management requests
+    println!("Interface Objects created via builder:");
+    println!("  - Device Object: serial_number = {:02X?}", interface_objects.device.borrow().serial_number.as_ref());
+    println!("  - Address Table Object: wraps stack's address table");
+    println!("  - Association Table Object: wraps stack's association table");
+    println!(
+        "  - Application Program Object: program_version = {:02X?}",
+        interface_objects.app_program.borrow().program_version.as_ref()
+    );
+    println!("  - Group Object Table Object: wraps stack's CO table");
+    println!(
+        "  - IP Parameter Object: project_installation_id = {:04X}",
+        interface_objects.ip_parameter.borrow().project_installation_id.value()
     );
 
     // Create link layer resources
