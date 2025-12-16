@@ -61,7 +61,7 @@ impl super::KnxServer for RemoteConfigurationServer {
         _response_handle: &super::ResponseHandle<'_>,
         _buffer_manager: &DynBufferManager<'static>,
     ) -> Result<(), ServerError> {
-        trace!("Remote configuration server handling service code {:?}", service_code);
+        debug!("Remote config handling service code {:?}", service_code);
         // TODO: Implement remote configuration protocol handling
         Ok(())
     }

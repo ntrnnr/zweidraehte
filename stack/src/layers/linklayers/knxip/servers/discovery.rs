@@ -138,7 +138,7 @@ impl KnxNetIpServer for DiscoveryServer {
         _source: SocketAddrV4,
         context: &ServerContext<'a>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
-        trace!("Discovery server handling service type {:?}", service_type);
+        debug!("Discovery server handling {:?}", service_type);
 
         let response = match service_type {
             KNXnetIPServiceType::SearchRequest => self.handle_search_request(data, context).await?,

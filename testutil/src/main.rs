@@ -8,12 +8,12 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, pubsub::WaitResult};
 use embassy_time::{Duration, Timer};
 use env_logger::Env;
+use knx_conformance::harness::mock::{MockLinkLayerBuilder, MockLinkLayerResources};
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
 use zweidraehte::{
     Runner, StackDefinition, StackResources, define_com_objects,
     dpt::DPT_Switch,
-    layers::linklayers::mock::{MockLinkLayerBuilder, MockLinkLayerResources},
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
         comm::ComObjects,

@@ -36,7 +36,7 @@ impl<'a> Layer<'a> for NetworkLayer<'a> {
     {
         loop {
             let layer_op = inbox.next().await;
-            trace!("Network Layer received layer op: {:?}", layer_op);
+            trace!("NL received: {:?}", layer_op);
 
             match layer_op {
                 LayerOp::Indication(msg) => {
@@ -53,12 +53,12 @@ impl<'a> Layer<'a> for NetworkLayer<'a> {
 
 impl<'a> NetworkLayer<'a> {
     async fn handle_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
-        trace!("Network Layer received indication: {:?}", msg);
+        debug!("NL indication: {:?}", msg);
 
         match msg.service_type() {
             // Incoming indication message from link layer
             ServiceType::L_Data_Ind => {
-                trace!("Processing L_Data_Ind in Network Layer, addr typ: {:?}", msg.get_address_type());
+                trace!("NL L_Data_Ind addr_typ: {:?}", msg.get_address_type());
 
                 match msg.get_address_type() {
                     AddressType::Group => msg.set_service_type(ServiceType::N_GroupData_Ind),
@@ -71,7 +71,7 @@ impl<'a> NetworkLayer<'a> {
                 msg.convert_hop_count_to_hop_count_type();
 
                 // Send message up to transport layer
-                trace!("Network Layer sending to Transport layer: {:x?}", msg);
+                debug!("NL -> TL: {:x?}", msg);
                 self.transport_layer.send(LayerOp::Indication(msg)).await;
             }
 
@@ -84,7 +84,7 @@ impl<'a> NetworkLayer<'a> {
         &mut self,
         mut msg: KnxMessageBuffer<Buffer<'static>>,
     ) -> KnxMessageBuffer<Buffer<'static>> {
-        trace!("Network Layer received request: {:?}", msg);
+        debug!("NL request: {:?}", msg);
 
         match msg.service_type() {
             // Incoming requests from transport layer
@@ -121,7 +121,7 @@ impl<'a> NetworkLayer<'a> {
                     _ => unreachable!(),
                 }
 
-                trace!("Network Layer sending to Link layer: {:x?}", msg);
+                debug!("NL -> LL: {:x?}", msg);
 
                 // Send to link layer using request pattern to get confirmation
                 let link_confirmation = self.link_layer.request(msg).await;
@@ -145,7 +145,7 @@ impl<'a> NetworkLayer<'a> {
 
             // Everything else is unhandled - return error confirmation
             _ => {
-                trace!("Unhandled request service type: {:?}", msg.service_type());
+                warn!("NL unhandled service type: {:?}", msg.service_type());
                 // Set error and return
                 msg.ctrl_field_mut().set_c(Confirm::Err);
                 msg

@@ -4,6 +4,7 @@ members = [
     "stack",
     "platform",
     "testutil",
+    "conformance",
 ]
 
 [workspace.package]

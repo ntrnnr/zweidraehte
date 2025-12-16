@@ -549,6 +549,30 @@ impl From<DPT_Switch> for bool {
 
 // ###########################################################################
 
+/// DPT 5.010 - 1-byte unsigned counter (0..255)
+/// Uses long format for GroupValue_Response (data > 6 bits)
+pub type DPT_Value_1_Ucount = DatapointType<PDT_UnsignedChar, 5, 010>;
+
+impl core::fmt::Debug for DPT_Value_1_Ucount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.backing)
+    }
+}
+
+impl From<u8> for DPT_Value_1_Ucount {
+    fn from(value: u8) -> Self {
+        DPT_Value_1_Ucount::new(value.into())
+    }
+}
+
+impl From<DPT_Value_1_Ucount> for u8 {
+    fn from(value: DPT_Value_1_Ucount) -> Self {
+        value.backing.into()
+    }
+}
+
+// ###########################################################################
+
 pub type DPT_PropDataType = DatapointType<PDT_UnsignedInt, 7, 010>;
 
 impl core::fmt::Debug for DPT_PropDataType {

@@ -634,7 +634,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
 
     /// Send a packet on a specific socket
     async fn send_on_socket(&self, socket_idx: usize, data: &[u8], destination: SocketAddrV4) -> Result<(), ()> {
-        trace!("Sending {} bytes on socket {} to {}: {:x?}", data.len(), socket_idx, destination, data);
+        trace!("KNX/IP TX {} bytes on socket {} to {}: {:x?}", data.len(), socket_idx, destination, data);
 
         let sockets = unsafe { self.resources.sockets.assume_init_ref() };
 
@@ -665,7 +665,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
             match socket.recv_from(&mut buffer[..]).await {
                 Ok((len, addr, port)) => {
                     trace!(
-                        "Received {} bytes on socket {} from {}:{}: {:x?}",
+                        "KNX/IP RX {} bytes on socket {} from {}:{}: {:x?}",
                         len,
                         socket_idx,
                         addr,
@@ -745,7 +745,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                 // Retry timer expired
                 Either4::Fourth(()) => {
                     // Retry processing already happened at start of loop
-                    trace!("Retry timer expired, processed at loop start");
+                    trace!("KNX/IP retry timer expired");
                     continue;
                 }
                 // Socket received a packet
@@ -754,7 +754,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
 
                     // Filter out our own multicast echoes
                     if *source.ip() == self.local_addr {
-                        trace!("Ignoring packet from our own IP address: {}", source);
+                        debug!("KNX/IP ignoring own multicast echo: {}", source);
                         continue;
                     }
 
@@ -803,7 +803,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
 
                 // Inbox received a layer operation
                 Either4::Second(layer_op) => {
-                    trace!("KnxNetIp Link Layer received layer op: {:?}", layer_op);
+                    trace!("KNX/IP received layer op: {:?}", layer_op);
 
                     match layer_op {
                         LayerOp::Indication(_msg) => {

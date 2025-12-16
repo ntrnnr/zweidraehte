@@ -767,6 +767,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "knx-conformance"
+version = "0.1.0"
+dependencies = [
+ "const-default",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
+ "heapless 0.9.1",
+ "log",
+ "paste",
+ "static_cell",
+ "zweidraehte",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.172"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1345,6 +1361,7 @@ dependencies = [
  "embassy-time",
  "embedded-io-async",
  "env_logger",
+ "knx-conformance",
  "paste",
  "platform",
  "serde",

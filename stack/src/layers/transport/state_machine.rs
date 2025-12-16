@@ -260,7 +260,7 @@ pub fn process_event(conn: &mut Connection, event: TlEvent) -> ActionBuffer {
             conn.reset();
             actions.push(TlAction::SendDisconnect { dest: source });
             actions.push(TlAction::IndicateDisconnected { source });
-            trace!("Connection closed due to wrong sequence number: expected {}, got {}", conn.seq_no_recv, seq_no);
+            warn!("TL connection closed due to wrong sequence number: expected {}, got {}", conn.seq_no_recv, seq_no);
         }
 
         // Application wants to send data

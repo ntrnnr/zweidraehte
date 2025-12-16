@@ -1,0 +1,22 @@
+[package]
+name = "knx-conformance"
+version = "0.1.0"
+edition = "2021"
+description = "KNX conformance testing framework"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+zweidraehte = { path = "../stack", features = ["test-util", "log"] }
+embassy-sync = { workspace = true }
+embassy-time = { workspace = true, features = ["std"] }
+embassy-futures = { workspace = true }
+embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"] }
+const-default = { workspace = true }
+static_cell = { workspace = true }
+paste = { workspace = true }
+heapless = { workspace = true }
+log = { workspace = true, features = ["std"] }
+
+[[bin]]
+name = "conformance-runner"
+path = "src/bin/runner.rs"

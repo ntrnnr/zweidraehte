@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 zweidraehte = { path = "../stack", features = ["log", "test-util"] }
+knx-conformance = { path = "../conformance" }
 platform = { path = "../platform", features = ["log", "linux"] }
 
 embassy-sync = { workspace = true, features = ["std"] }

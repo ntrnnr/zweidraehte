@@ -21,7 +21,7 @@ use crate::{
 
 use super::super::{Inbox, Layer, LayerOp};
 
-mod utils;
+pub mod utils;
 
 // TODO:
 // * If the length of the LSDU requires an L_Data-Frame with value of the field Length ≥ 255
@@ -326,12 +326,12 @@ where
 
             match select(Pin::new(&mut self.state_timeout), self.uart.read(&mut buf)).await {
                 Either::First(timeout_state) => {
-                    trace!("Timeout timer fired during init, transitioning to {:?}", timeout_state);
+                    debug!("TPUART timeout during init, transitioning to {:?}", timeout_state);
                     self.state_timeout.retry();
                     self.state_transition(timeout_state).await;
                 }
                 Either::Second(_) => {
-                    trace!("TPUART INIT RX: {:x?}", buf[0]);
+                    trace!("TPUART init RX: {:02x}", buf[0]);
                     self.handle_incoming_byte(buf[0]).await;
                 }
             }
@@ -340,7 +340,7 @@ where
         if self.state == TpUartState::Error {
             error!("TPUART initialization failed");
         } else {
-            trace!("TPUART initialization completed successfully");
+            info!("TPUART initialization completed successfully");
         }
     }
 
@@ -350,7 +350,7 @@ where
             && let Some(message_in) = self.message_in.as_mut()
             && message_in.len() > 0
         {
-            trace!("Adding byte to ongoing receive: {:02x}", incoming);
+            trace!("TPUART RX byte: {:02x}", incoming);
 
             // Save the byte we just received
             message_in.push(incoming);
@@ -366,10 +366,7 @@ where
                 // We received enough of the frame to parse the header
                 // We'll just store the necessary information we gathered from the header in the state now
                 ReceiveInfo::ParsedHeader { ack, expected_len, is_echo } => {
-                    trace!(
-                        "Header for ongoing receive parsed, ack: {}, expected_len: {}, is_echo: {}",
-                        ack, expected_len, is_echo
-                    );
+                    debug!("TPUART header parsed: ack={}, len={}, echo={}", ack, expected_len, is_echo);
                     // FIXME: if ack is true, we should send an immediate ACK command to TPUART. I think...
                     //        right now our individual addr is auto-acked, we don't handle grp addrs yet, but we need it for that
 
@@ -402,14 +399,14 @@ where
                         // Convert TP1 frame to KNX format
                         let knx_buffer = utils::tp1_to_knx_message(buffer);
                         let indication = KnxMessageBuffer::new(knx_buffer, ServiceType::L_Data_Ind);
-                        trace!("Sending L_Data.ind to network layer: {:?}", indication);
+                        debug!("TPUART -> NL L_Data.ind: {:x?}", indication);
                         self.network_layer.send(LayerOp::Indication(indication)).await;
                     }
 
                     self.state_transition(TpUartState::Idle).await;
 
                     trace!(
-                        "State: {:?}, Message In: {:?}, Message out: {:?}, Pending TX: {:?}",
+                        "TPUART state: {:?}, msg_in: {:?}, msg_out: {:?}, pending: {:?}",
                         self.state,
                         self.message_in,
                         self.message_out.as_ref().map(|(buf, _)| buf),
@@ -420,7 +417,7 @@ where
                 // If we received an echo, we can be sure that we transmitted this frame onto the bus
                 // Now we need to wait for a positive or negative confirmation
                 ReceiveInfo::TransmitComplete => {
-                    trace!("Transmission completed");
+                    debug!("TPUART transmission completed, waiting for confirmation");
                     self.state_timeout.stop();
                     self.state_transition(TpUartState::WaitingForConfirmation).await;
                 }
@@ -439,7 +436,7 @@ where
             && (incoming & 0x07) == U_STATE_IND
         {
             trace!(
-                "RX U_State.ind SC: {:?} - RE: {:?} - TE: {:?} - PE: {:?} - TW: {:?}",
+                "TPUART U_State.ind SC={} RE={} TE={} PE={} TW={}",
                 incoming & 0x80 != 0,
                 incoming & 0x40 != 0,
                 incoming & 0x20 != 0,
@@ -469,9 +466,9 @@ where
         }
         // We are receiving reset indication in response to a request request
         else if (self.state == TpUartState::InReset) && incoming == U_RESET_IND {
-            trace!("RX U_Reset.ind, cur state: {:?}", self.state);
+            trace!("TPUART U_Reset.ind, state: {:?}", self.state);
             if self.state == TpUartState::InReset {
-                trace!("Received expected U_Reset.ind, sending config now");
+                debug!("TPUART reset complete, sending config");
                 self.state_timeout.stop();
                 self.state_transition(TpUartState::InSendConfig).await;
             } else {
@@ -485,9 +482,9 @@ where
             let ack = incoming & 0x80 != 0;
 
             if ack {
-                trace!("L_Data.con ACK");
+                debug!("TPUART L_Data.con ACK");
             } else {
-                trace!("L_Data.con NACK");
+                debug!("TPUART L_Data.con NACK");
             }
 
             // If we're waiting for confirmation, handle the ACK/NACK
@@ -512,7 +509,7 @@ where
         else if (self.state == TpUartState::Idle || self.state == TpUartState::WaitingForConfirmation)
             && (incoming & 0x50) == L_DATA_EXTENDED_IND
         {
-            trace!("RX L_Data.ind {:02x}", incoming);
+            trace!("TPUART L_Data.ind start: {:02x}", incoming);
 
             let mut buffer = self.buffer_manager.borrow().alloc().await;
             buffer.push(incoming);
@@ -558,7 +555,7 @@ where
 
             // Did we receive enough of the packet to have a parsable header?
             if self.message_in.as_ref().unwrap().len() >= min_header_len {
-                trace!("Received enough of a frame to parse the header");
+                trace!("TPUART parsing frame header");
 
                 // Check if this is an echo of our transmitted message
                 let is_echo = if let Some((message_out, _)) = &self.message_out {
@@ -602,7 +599,7 @@ where
                     (addr, expected_length)
                 };
 
-                trace!("Parsed header. DST Addr: {:?}, expected length: {:?}", dst_addr, expected_len);
+                trace!("TPUART header: dst={:?}, len={}", dst_addr, expected_len);
 
                 // Check if we should ACK the packet
                 let ack = if let Some(individual_addr) = self.individual_addr {
@@ -646,7 +643,7 @@ where
     }
 
     async fn state_transition(&mut self, new_state: TpUartState) {
-        trace!("State transition {:?} -> {:?}", self.state, new_state);
+        debug!("TPUART {:?} -> {:?}", self.state, new_state);
 
         match new_state {
             TpUartState::Start | TpUartState::InReset => {
@@ -677,7 +674,7 @@ where
                     self.uart.write_all(&buf).await.unwrap();
                 }
 
-                trace!("Getting state from TP-Uart");
+                trace!("TPUART sending U_State_Req");
 
                 // Send get state cmd
                 self.uart.write_all(&[U_STATE_RQ]).await.expect("Unable to send get state command to TP-Uart");

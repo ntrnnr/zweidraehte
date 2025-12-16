@@ -139,7 +139,7 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
         loop {
             match select(inbox.next(), self.app_request_receiver.receive()).await {
                 Either::First(msg) => {
-                    trace!("Application Layer received message: {:?}", msg);
+                    trace!("AL received: {:?}", msg);
 
                     match msg {
                         LayerOp::Indication(mut ind) => match ind.get_apci_code() {
@@ -169,23 +169,23 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                             // ApciCode::IndividualAddressRead => { ... }
                             // ApciCode::IndividualAddressWrite => { ... }
                             _ => {
-                                trace!("Unhandled APCI code: {:?}", ind.get_apci_code());
+                                warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
                             }
                         },
                         _ => {
-                            trace!("Unexpected LayerOp variant in application layer");
+                            warn!("AL unexpected LayerOp variant");
                         }
                     }
                 }
                 Either::Second(request) => match request.get() {
                     r @ ApplicationLayerService::GroupValueWriteRequest(asap) => {
-                        trace!("Application Layer received group value write request: {:?}", r);
+                        debug!("AL GroupValueWrite.req: {:?}", r);
 
                         self.send_group_value_request(*asap, false).await;
                         request.reply(ApplicationLayerServiceResponse::GroupValueWriteResponse).await;
                     }
                     r @ ApplicationLayerService::GroupValueReadRequest(asap) => {
-                        trace!("Application Layer received group value read request: {:?}", r);
+                        debug!("AL GroupValueRead.req: {:?}", r);
 
                         self.send_group_value_request(*asap, true).await;
                         request.reply(ApplicationLayerServiceResponse::GroupValueWriteResponse).await;
@@ -212,17 +212,17 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     ) {
         // Validate service type
         if ind.service_type() != ServiceType::T_GroupData_Ind {
-            trace!("{:?} received with unexpected service type: {:?}, ignoring", apci, ind.service_type());
+            warn!("AL {:?} with unexpected service type: {:?}", apci, ind.service_type());
             return;
         }
 
-        trace!("Received {:?}", apci);
+        debug!("AL received {:?}", apci);
         // FIXME: check if application is running (also check if tables are loaded?)
 
-        trace!("Incoming TSAP: {:?}", ind.get_connection_nr());
+        trace!("AL incoming TSAP: {:?}", ind.get_connection_nr());
 
         for asap in self.ast.borrow().asaps_for_tsap(ind.get_connection_nr()) {
-            trace!("Processing ASAP: {}", asap);
+            trace!("AL processing ASAP: {}", asap);
 
             let Some(cot_info) = self.cot.borrow().get_object(asap) else {
                 error!("Invalid ASAP: {}", asap);
@@ -232,14 +232,14 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             if matches!(apci, ApciCode::GroupValueWrite)
                 && (!cot_info.flags.communication_enable() || !cot_info.flags.write_enable())
             {
-                trace!("Received GroupValueWrite.ind for ASAP {}, but comm or write flag isn't set", asap);
+                debug!("AL GroupValueWrite for ASAP {} ignored (comm/write flag)", asap);
                 continue;
             }
 
             if matches!(apci, ApciCode::GroupValueResponse)
                 && (!cot_info.flags.communication_enable() || !cot_info.flags.update_enable())
             {
-                trace!("Received GroupValueResponse.ind for ASAP {}, but comm or update flag isn't set", asap);
+                debug!("AL GroupValueResponse for ASAP {} ignored (comm/update flag)", asap);
                 continue;
             }
 
@@ -276,7 +276,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     }
                 }
 
-                trace!("ASAP {} updated due to {:?}: {:x?}", asap, apci, self.comm_objects.borrow().value(asap));
+                debug!("AL ASAP {} updated via {:?}: {:x?}", asap, apci, self.comm_objects.borrow().value(asap));
             } else {
                 error!("Length of telegram not enough to contain object value");
             }
@@ -290,17 +290,17 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     async fn handle_group_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
         // Validate service type
         if ind.service_type() != ServiceType::T_GroupData_Ind {
-            trace!("GroupValueRead received with unexpected service type: {:?}, ignoring", ind.service_type());
+            warn!("AL GroupValueRead with unexpected service type: {:?}", ind.service_type());
             return;
         }
 
-        trace!("Received GroupValueRead");
+        debug!("AL received GroupValueRead");
 
         let tsap = ind.get_connection_nr();
-        trace!("Incoming TSAP: {:?}", tsap);
+        trace!("AL incoming TSAP: {:?}", tsap);
 
         for asap in self.ast.borrow().asaps_for_tsap(tsap) {
-            trace!("Processing GroupValueRead for ASAP: {}", asap);
+            trace!("AL processing GroupValueRead for ASAP: {}", asap);
 
             let Some(cot_info) = self.cot.borrow().get_object(asap) else {
                 error!("Invalid ASAP: {}", asap);
@@ -309,14 +309,14 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
             // Check if communication and read are enabled for this object
             if !cot_info.flags.communication_enable() || !cot_info.flags.read_enable() {
-                trace!("Received GroupValueRead.ind for ASAP {}, but comm or read flag isn't set", asap);
+                debug!("AL GroupValueRead for ASAP {} ignored (comm/read flag)", asap);
                 continue;
             }
 
             // Determine the size and offset for the response
             let (object_size, msg_offset) = Self::get_object_size_and_offset(&cot_info);
 
-            trace!("Sending GroupValueResponse for ASAP {} with TSAP {}, size {}", asap, tsap, object_size);
+            info!("AL sending GroupValueResponse for ASAP {} TSAP {} size {}", asap, tsap, object_size);
 
             // Allocate a new message for the response
             let msg_buf = self.buffer_manager.borrow().alloc_with_size(object_size + msg_offset).await;
@@ -334,14 +334,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
             // Send the response to the transport layer and wait for confirmation
             let confirmation = self.transport_layer.request(msg).await;
-            trace!(
-                "Received confirmation for GroupValueResponse ASAP {} with TSAP {}: {:?}",
-                asap,
-                tsap,
-                confirmation.service_type()
-            );
+            debug!("AL GroupValueResponse confirmation ASAP {} TSAP {}: {:?}", asap, tsap, confirmation.service_type());
 
-            trace!("Sent GroupValueResponse for ASAP {}: {:x?}", asap, self.comm_objects.borrow().value(asap));
+            trace!("AL sent GroupValueResponse for ASAP {}: {:x?}", asap, self.comm_objects.borrow().value(asap));
 
             // Publish read event to the event channel
             if let Some(index) = <<D as StackDefinition>::CO as ComObjects>::Index::from_index(asap) {
@@ -377,7 +372,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::IdleOk);
 
             // FIXME: Tell caller about success?
-            trace!("Communication object {} is not enabled for communication", asap);
+            debug!("AL comm object {} not enabled for communication", asap);
             return;
         }
 
@@ -386,7 +381,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
             // We only send to the first TSAP per spec
             if let Some(tsap) = self.ast.borrow().get_sending_tsap(asap) {
-                trace!("Found sending TSAP {} for ASAP {}", tsap, asap);
+                trace!("AL found sending TSAP {} for ASAP {}", tsap, asap);
 
                 // Determine the length of this comm obj and the offset in the message
                 // The offset can be 7 for objects with len <= 6 bits because it fits
@@ -402,8 +397,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     (true, _) => (1, offsets::MSG_APCI + 1),
                 };
 
-                trace!(
-                    "Preparing {} request for ASAP {} with TSAP {}, comm object size {} and message offset {}",
+                debug!(
+                    "AL preparing {} ASAP {} TSAP {} size {} offset {}",
                     if read { "GroupValueRead" } else { "GroupValueWrite" },
                     asap,
                     tsap,
@@ -432,7 +427,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
                 // Send the request to the transport layer and wait for confirmation
                 let confirmation = self.transport_layer.request(msg).await;
-                trace!("Received confirmation for ASAP {} with TSAP {}: {:?}", asap, tsap, confirmation.service_type());
+                debug!("AL confirmation for ASAP {} TSAP {}: {:?}", asap, tsap, confirmation.service_type());
 
                 // Update communication object status based on confirmation
                 if confirmation.ctrl_field().c() == Confirm::NoError {
@@ -444,10 +439,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::IdleError);
 
                 error!(
-                    "No sending TSAP for or transmission flag not set for ASAP {} - Flags: {:?}",
+                    "AL no sending TSAP or transmission flag not set for ASAP {} - Flags: {:?}",
                     asap, cot_info.flags
                 );
-                trace!("{}", cot_info.flags.transmission_enable());
             }
         }
     }
@@ -485,7 +479,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
             ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
             other => {
-                trace!("PropertyDescriptionRead received with unexpected service type: {:?}, ignoring", other);
+                warn!("AL PropertyDescriptionRead unexpected service type: {:?}", other);
                 return;
             }
         };
@@ -504,13 +498,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let prop_id = buf[offsets::MSG_APCI + 3];
         let prop_idx = buf[offsets::MSG_APCI + 4];
 
-        trace!(
-            "Received PropertyDescriptionRead ({:?}): object_idx={}, prop_id={}, prop_idx={}",
-            ind.service_type(),
-            object_idx,
-            prop_id,
-            prop_idx
-        );
+        debug!("AL PropertyDescriptionRead: obj={}, prop_id={}, prop_idx={}", object_idx, prop_id, prop_idx);
 
         // Query the interface object server
         let response = self.interface_object_server.property_description_read(object_idx, prop_id, prop_idx);
@@ -535,15 +523,15 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 let response_buf = &mut msg.buf_mut()[offsets::MSG_APCI + 2..];
                 let _len = desc.encode(response_buf);
 
-                trace!("Sending PropertyDescriptionResponse: {:?}", desc);
+                debug!("AL sending PropertyDescriptionResponse: {:?}", desc);
 
                 // Send the response
                 let confirmation = self.transport_layer.request(msg).await;
-                trace!("PropertyDescriptionResponse confirmation: {:?}", confirmation.service_type());
+                trace!("AL PropertyDescriptionResponse confirmation: {:?}", confirmation.service_type());
             }
             Err(e) => {
                 // Send negative response with prop_id = 0 to indicate error
-                trace!("PropertyDescriptionRead failed: {:?}", e);
+                warn!("AL PropertyDescriptionRead failed: {:?}", e);
 
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
@@ -559,7 +547,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 response_buf[offsets::MSG_APCI + 4] = prop_idx;
 
                 let confirmation = self.transport_layer.request(msg).await;
-                trace!("PropertyDescriptionResponse (error) confirmation: {:?}", confirmation.service_type());
+                trace!("AL PropertyDescriptionResponse (error) confirmation: {:?}", confirmation.service_type());
             }
         }
     }
@@ -590,7 +578,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
             ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
             other => {
-                trace!("PropertyValueRead received with unexpected service type: {:?}, ignoring", other);
+                warn!("AL PropertyValueRead unexpected service type: {:?}", other);
                 return;
             }
         };
@@ -611,14 +599,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let count = (count_start >> 12) as u16;
         let start_idx = count_start & 0x0FFF;
 
-        trace!(
-            "Received PropertyValueRead ({:?}): object_idx={}, prop_id={}, count={}, start_idx={}",
-            ind.service_type(),
-            object_idx,
-            prop_id,
-            count,
-            start_idx
-        );
+        debug!("AL PropertyValueRead: obj={}, prop_id={}, count={}, start={}", object_idx, prop_id, count, start_idx);
 
         // Get source address to use as destination for response
         let source_addr = ind.get_source_addr();
@@ -657,15 +638,15 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 response_buf[offsets::MSG_APCI + 6..offsets::MSG_APCI + 6 + data_len]
                     .copy_from_slice(&data_buf[..data_len]);
 
-                trace!("Sending PropertyValueResponse: {} bytes of data", data_len);
+                debug!("AL sending PropertyValueResponse: {} bytes", data_len);
 
                 // Send the response
                 let confirmation = self.transport_layer.request(msg).await;
-                trace!("PropertyValueResponse confirmation: {:?}", confirmation.service_type());
+                trace!("AL PropertyValueResponse confirmation: {:?}", confirmation.service_type());
             }
             Err(e) => {
                 // Send error response with count = 0
-                trace!("PropertyValueRead failed: {:?}", e);
+                warn!("AL PropertyValueRead failed: {:?}", e);
 
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 6;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
@@ -683,7 +664,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 response_buf[offsets::MSG_APCI + 5] = start_idx as u8;
 
                 let confirmation = self.transport_layer.request(msg).await;
-                trace!("PropertyValueResponse (error) confirmation: {:?}", confirmation.service_type());
+                trace!("AL PropertyValueResponse (error) confirmation: {:?}", confirmation.service_type());
             }
         }
     }
@@ -715,7 +696,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
             ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
             other => {
-                trace!("PropertyValueWrite received with unexpected service type: {:?}, ignoring", other);
+                warn!("AL PropertyValueWrite unexpected service type: {:?}", other);
                 return;
             }
         };
@@ -741,14 +722,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let data_len = ind.len() - data_start;
         let data = &buf[data_start..data_start + data_len];
 
-        trace!(
-            "Received PropertyValueWrite ({:?}): object_idx={}, prop_id={}, count={}, start_idx={}, data_len={}",
-            ind.service_type(),
-            object_idx,
-            prop_id,
-            count,
-            start_idx,
-            data_len
+        debug!(
+            "AL PropertyValueWrite: obj={}, prop_id={}, count={}, start={}, data_len={}",
+            object_idx, prop_id, count, start_idx, data_len
         );
 
         // Get source address to use as destination for response
@@ -776,14 +752,14 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 // Echo back the written data
                 response_buf[offsets::MSG_APCI + 6..offsets::MSG_APCI + 6 + data_len].copy_from_slice(data);
 
-                trace!("Sending PropertyValueResponse (write success): {} bytes", data_len);
+                debug!("AL sending PropertyValueResponse (write success): {} bytes", data_len);
 
                 let confirmation = self.transport_layer.request(msg).await;
-                trace!("PropertyValueResponse (write) confirmation: {:?}", confirmation.service_type());
+                trace!("AL PropertyValueResponse (write) confirmation: {:?}", confirmation.service_type());
             }
             Err(e) => {
                 // Error: respond with count = 0
-                trace!("PropertyValueWrite failed: {:?}", e);
+                warn!("AL PropertyValueWrite failed: {:?}", e);
 
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 6;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
@@ -801,7 +777,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 response_buf[offsets::MSG_APCI + 5] = start_idx as u8;
 
                 let confirmation = self.transport_layer.request(msg).await;
-                trace!("PropertyValueResponse (write error) confirmation: {:?}", confirmation.service_type());
+                trace!("AL PropertyValueResponse (write error) confirmation: {:?}", confirmation.service_type());
             }
         }
     }

@@ -104,7 +104,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
     /// Handle an indication from the network layer
     async fn handle_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
-        trace!("Transport Layer received indication: {:?}", msg);
+        debug!("TL indication: {:?}", msg);
 
         match msg.service_type() {
             // ─────────────────────────────────────────────────────────────────
@@ -118,7 +118,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
                 {
                     msg.set_connection_nr(conn_nr);
                     msg.set_service_type(ServiceType::T_GroupData_Ind);
-                    trace!("Transport layer sending to Application layer: {:x?}", msg);
+                    debug!("TL -> AL: {:x?}", msg);
                     self.application_layer.send(LayerOp::Indication(msg)).await;
                 }
             }
@@ -126,7 +126,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             ServiceType::N_Broadcast_Ind => {
                 if let Some(Tpci::DataBroadcast) = msg.get_tpci() {
                     msg.set_service_type(ServiceType::T_Broadcast_Ind);
-                    trace!("Transport layer sending to Application layer: {:x?}", msg);
+                    debug!("TL -> AL: {:x?}", msg);
                     self.application_layer.send(LayerOp::Indication(msg)).await;
                 }
             }
@@ -134,7 +134,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             ServiceType::N_SystemBroadcast_Ind => {
                 if let Some(Tpci::DataSystemBroadcast) = msg.get_tpci() {
                     msg.set_service_type(ServiceType::T_SystemBroadcast_Ind);
-                    trace!("Transport layer sending to Application layer: {:x?}", msg);
+                    debug!("TL -> AL: {:x?}", msg);
                     self.application_layer.send(LayerOp::Indication(msg)).await;
                 }
             }
@@ -147,7 +147,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             }
 
             _ => {
-                trace!("Unhandled indication service type: {:?}", msg.service_type());
+                warn!("TL unhandled indication: {:?}", msg.service_type());
             }
         }
     }
@@ -157,7 +157,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
         let tpci = match msg.get_tpci() {
             Some(t) => t,
             None => {
-                trace!("Invalid TPCI in N_Data_Ind");
+                warn!("Invalid TPCI in N_Data_Ind");
                 return;
             }
         };
@@ -166,7 +166,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             addr => addr,
         };
 
-        trace!("Connection indication from {}: TPCI={:?}", source, tpci);
+        trace!("TL connection from {}: TPCI={:?}", source, tpci);
 
         // Create the appropriate event based on TPCI
         let event = match tpci {
@@ -182,7 +182,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
                 return;
             }
             _ => {
-                trace!("Unexpected TPCI for N_Data_Ind: {:?}", tpci);
+                warn!("TL unexpected TPCI for N_Data_Ind: {:?}", tpci);
                 return;
             }
         };
@@ -197,7 +197,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
         let conn = match conn {
             Some(c) => c,
             None => {
-                trace!("No connection slot for {}", source);
+                debug!("TL no connection slot for {}", source);
                 // If we received data for a non-existent connection, send disconnect
                 if matches!(event, TlEvent::ReceivedData { .. }) {
                     self.send_disconnect(source).await;
@@ -222,7 +222,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
     /// Handle a request from the application layer
     async fn handle_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) -> KnxMessageBuffer<Buffer<'static>> {
-        trace!("Transport Layer received request: {:?}", msg);
+        debug!("TL request: {:?}", msg);
 
         match msg.service_type() {
             // ─────────────────────────────────────────────────────────────────
@@ -243,7 +243,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             // Unhandled
             // ─────────────────────────────────────────────────────────────────
             _ => {
-                trace!("Unhandled request service type: {:?}", msg.service_type());
+                warn!("TL unhandled request: {:?}", msg.service_type());
                 let mut response = msg;
                 response.ctrl_field_mut().set_c(Confirm::Err);
                 response
@@ -259,26 +259,26 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
         &mut self,
         mut msg: KnxMessageBuffer<Buffer<'static>>,
     ) -> KnxMessageBuffer<Buffer<'static>> {
-        trace!("Received T_GroupData_Req: {:?}", msg);
+        trace!("T_GroupData_Req: {:?}", msg);
 
         if self.adt.borrow().is_loaded()
             && let Some(dst_addr) = self.adt.borrow().get_address(msg.get_connection_nr())
         {
-            trace!("Converting connection number to group address: {}", dst_addr);
+            trace!("TL conn_nr -> group addr: {}", dst_addr);
             let original_conn_nr = msg.get_connection_nr();
 
             msg.set_tpci(Tpci::DataGroup);
             msg.set_dest_addr(DestinationAddress::Group(dst_addr));
             msg.set_service_type(ServiceType::N_GroupData_Req);
 
-            trace!("Transport layer sending to Network layer: {:x?}", msg);
+            debug!("TL -> NL: {:x?}", msg);
             let mut confirmation = self.network_layer.request(msg).await;
 
             confirmation.set_service_type(ServiceType::T_GroupData_Con);
             confirmation.set_connection_nr(original_conn_nr);
             confirmation
         } else {
-            trace!("ADT not loaded or invalid connection number: {}", msg.get_connection_nr());
+            warn!("TL ADT not loaded or invalid conn_nr: {}", msg.get_connection_nr());
             msg.set_service_type(ServiceType::T_GroupData_Con);
             msg.ctrl_field_mut().set_c(Confirm::Err);
             msg
@@ -291,7 +291,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     ) -> KnxMessageBuffer<Buffer<'static>> {
         msg.set_tpci(Tpci::DataBroadcast);
         msg.set_service_type(ServiceType::N_Broadcast_Req);
-        trace!("Transport layer sending to Network layer: {:x?}", msg);
+        debug!("TL -> NL: {:x?}", msg);
 
         let mut confirmation = self.network_layer.request(msg).await;
         confirmation.set_service_type(ServiceType::T_Broadcast_Con);
@@ -304,7 +304,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     ) -> KnxMessageBuffer<Buffer<'static>> {
         msg.set_tpci(Tpci::DataSystemBroadcast);
         msg.set_service_type(ServiceType::N_SystemBroadcast_Req);
-        trace!("Transport layer sending to Network layer: {:x?}", msg);
+        debug!("TL -> NL: {:x?}", msg);
 
         let mut confirmation = self.network_layer.request(msg).await;
         confirmation.set_service_type(ServiceType::T_SystemBroadcast_Con);
@@ -523,11 +523,11 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
                     self.send_nack(dest, seq_no).await;
                 }
                 TlAction::IndicateConnected { source } => {
-                    trace!("Connection established with {}", source);
+                    info!("TL connection established with {}", source);
                     // TODO: Send T_Connect.ind to application layer if needed
                 }
                 TlAction::IndicateDisconnected { source } => {
-                    trace!("Connection closed with {}", source);
+                    info!("TL connection closed with {}", source);
                     // TODO: Send T_Disconnect.ind to application layer if needed
                 }
                 TlAction::IndicateData { source: _ } => {
@@ -537,11 +537,11 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
                     }
                 }
                 TlAction::ConfirmData { dest, success } => {
-                    trace!("Data confirmation for {}: {}", dest, success);
+                    debug!("TL data confirmation for {}: {}", dest, success);
                     // TODO: Complete pending request with confirmation
                 }
                 TlAction::ConfirmConnect { dest, success } => {
-                    trace!("Connect confirmation for {}: {}", dest, success);
+                    debug!("TL connect confirmation for {}: {}", dest, success);
                 }
                 TlAction::StartAckTimer => {
                     if let Some(conn) = self.connections.find_any(remote_addr) {
@@ -555,7 +555,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
                     }
                 }
                 TlAction::Retransmit { dest } => {
-                    trace!("Retransmitting to {}", dest);
+                    debug!("TL retransmitting to {}", dest);
                     // TODO: Retransmit pending message
                     if let Some(conn) = self.connections.find_any(dest) {
                         if let Some(ref msg) = conn.pending_msg {
@@ -624,7 +624,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             // Wait for either a message or timeout
             match select(inbox.next(), Timer::at(deadline)).await {
                 Either::First(layer_op) => {
-                    trace!("Transport Layer received layer op: {:?}", layer_op);
+                    trace!("TL received: {:?}", layer_op);
 
                     match layer_op {
                         LayerOp::Indication(msg) => {
