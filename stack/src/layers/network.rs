@@ -1,6 +1,6 @@
 use embassy_sync::channel::DynamicSender;
 
-use crate::messages::builder::ConfirmationExt;
+use crate::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage};
 use crate::messages::knx::*;
 use crate::{address::IndividualAddress, messages::buffers::Buffer};
 
@@ -11,8 +11,8 @@ pub struct NetworkLayer<'a> {
     device_addr: IndividualAddress,
     default_hop_count: u8,
 
-    link_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
-    transport_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+    link_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+    transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
 }
 
 impl<'a> NetworkLayer<'a> {
@@ -21,19 +21,19 @@ impl<'a> NetworkLayer<'a> {
         device_addr: IndividualAddress,
         default_hop_count: u8,
 
-        link_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
-        transport_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+        link_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
         Self { device_addr, default_hop_count, link_layer, transport_layer }
     }
 }
 
 impl<'a> Layer<'a> for NetworkLayer<'a> {
-    type Message = KnxMessageBuffer<Buffer<'static>>;
+    type Buffer = Buffer<'static>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
     where
-        M: Inbox<LayerOp<Self::Message>>,
+        M: Inbox<LayerOp<Self::Buffer>>,
     {
         loop {
             let layer_op = inbox.next().await;
@@ -53,7 +53,7 @@ impl<'a> Layer<'a> for NetworkLayer<'a> {
 }
 
 impl<'a> NetworkLayer<'a> {
-    async fn handle_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
+    async fn handle_indication(&mut self, mut msg: IndicationMessage<Buffer<'static>>) {
         debug!("NL indication: {:?}", msg);
 
         match msg.service_type() {
@@ -83,9 +83,13 @@ impl<'a> NetworkLayer<'a> {
 
     async fn handle_request(
         &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> KnxMessageBuffer<Buffer<'static>> {
+        msg: RequestMessage<Buffer<'static>>,
+    ) -> ConfirmationMessage<Buffer<'static>> {
         debug!("NL request: {:?}", msg);
+
+        // Extract inner message - we need to work with the KnxMessageBuffer directly
+        // because we're transforming a request into a different request for the link layer
+        let mut msg = msg.into_inner();
 
         match msg.service_type() {
             // Incoming requests from transport layer
@@ -125,10 +129,12 @@ impl<'a> NetworkLayer<'a> {
                 debug!("NL -> LL: {:x?}", msg);
 
                 // Send to link layer using request pattern to get confirmation
-                let link_confirmation = self.link_layer.request(msg).await;
+                // Wrap as RequestMessage for the link layer
+                let link_confirmation = self.link_layer.request(RequestMessage::request(msg)).await;
 
                 // Convert link confirmation back to network confirmation
-                let mut network_confirmation = link_confirmation;
+                // We need to transform the confirmation message's service type
+                let mut network_confirmation = link_confirmation.into_inner();
                 match network_confirmation.get_address_type() {
                     AddressType::Group => network_confirmation.set_service_type(ServiceType::N_GroupData_Con),
                     AddressType::Broadcast => network_confirmation.set_service_type(ServiceType::N_Broadcast_Con),
@@ -141,7 +147,7 @@ impl<'a> NetworkLayer<'a> {
 
                 network_confirmation.convert_hop_count_to_hop_count_type();
 
-                network_confirmation
+                ConfirmationMessage::confirmation(network_confirmation)
             }
 
             // Everything else is unhandled - return error confirmation

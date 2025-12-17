@@ -43,7 +43,7 @@ use crate::{
     address::IndividualAddress,
     messages::{
         buffers::Buffer,
-        builder::ConfirmationExt,
+        builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
         knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
     },
     objects::tables::{AddressTable, LoadableTable},
@@ -82,9 +82,9 @@ pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1,
     /// Address table for group address ↔ TSAP mapping
     adt: &'a RefCell<D::ADT>,
     /// Channel to send messages to the network layer
-    network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+    network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     /// Channel to send messages to the application layer
-    application_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+    application_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     /// Connection table for stateful connections
     connections: ConnectionTable<MAX_INCOMING, MAX_OUTGOING>,
 }
@@ -96,8 +96,8 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     pub fn new(
         buffer_manager: &'a RefCell<crate::messages::buffers::DynBufferManager<'static>>,
         adt: &'a RefCell<D::ADT>,
-        network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
-        application_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        application_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
         Self { buffer_manager, adt, network_layer, application_layer, connections: ConnectionTable::new() }
     }
@@ -107,7 +107,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     // ========================================================================
 
     /// Handle an indication from the network layer
-    async fn handle_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
+    async fn handle_indication(&mut self, mut msg: IndicationMessage<Buffer<'static>>) {
         debug!("TL indication: {:?}", msg);
 
         match msg.service_type() {
@@ -157,7 +157,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     }
 
     /// Handle connection-oriented indications (N_Data_Ind)
-    async fn handle_connection_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
+    async fn handle_connection_indication(&mut self, mut msg: IndicationMessage<Buffer<'static>>) {
         let tpci = match msg.get_tpci() {
             Some(t) => t,
             None => {
@@ -225,8 +225,14 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     // ========================================================================
 
     /// Handle a request from the application layer
-    async fn handle_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) -> KnxMessageBuffer<Buffer<'static>> {
+    async fn handle_request(
+        &mut self,
+        msg: RequestMessage<Buffer<'static>>,
+    ) -> ConfirmationMessage<Buffer<'static>> {
         debug!("TL request: {:?}", msg);
+
+        // Extract inner message for processing
+        let msg = msg.into_inner();
 
         match msg.service_type() {
             // ─────────────────────────────────────────────────────────────────
@@ -260,7 +266,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     async fn handle_group_data_request(
         &mut self,
         mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> KnxMessageBuffer<Buffer<'static>> {
+    ) -> ConfirmationMessage<Buffer<'static>> {
         trace!("T_GroupData_Req: {:?}", msg);
 
         if self.adt.borrow().is_loaded()
@@ -274,7 +280,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             msg.set_service_type(ServiceType::N_GroupData_Req);
 
             debug!("TL -> NL: {:x?}", msg);
-            let mut confirmation = self.network_layer.request(msg).await;
+            let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
 
             confirmation.set_service_type(ServiceType::T_GroupData_Con);
             confirmation.set_connection_nr(original_conn_nr);
@@ -288,12 +294,12 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     async fn handle_broadcast_request(
         &mut self,
         mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> KnxMessageBuffer<Buffer<'static>> {
+    ) -> ConfirmationMessage<Buffer<'static>> {
         msg.set_tpci(Tpci::DataBroadcast);
         msg.set_service_type(ServiceType::N_Broadcast_Req);
         debug!("TL -> NL: {:x?}", msg);
 
-        let mut confirmation = self.network_layer.request(msg).await;
+        let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
         confirmation.set_service_type(ServiceType::T_Broadcast_Con);
         confirmation
     }
@@ -301,12 +307,12 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     async fn handle_system_broadcast_request(
         &mut self,
         mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> KnxMessageBuffer<Buffer<'static>> {
+    ) -> ConfirmationMessage<Buffer<'static>> {
         msg.set_tpci(Tpci::DataSystemBroadcast);
         msg.set_service_type(ServiceType::N_SystemBroadcast_Req);
         debug!("TL -> NL: {:x?}", msg);
 
-        let mut confirmation = self.network_layer.request(msg).await;
+        let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
         confirmation.set_service_type(ServiceType::T_SystemBroadcast_Con);
         confirmation
     }
@@ -318,7 +324,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     async fn handle_connect_request(
         &mut self,
         msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> KnxMessageBuffer<Buffer<'static>> {
+    ) -> ConfirmationMessage<Buffer<'static>> {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
             _ => return msg.error().build(),
@@ -340,7 +346,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     async fn handle_disconnect_request(
         &mut self,
         msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> KnxMessageBuffer<Buffer<'static>> {
+    ) -> ConfirmationMessage<Buffer<'static>> {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
             _ => return msg.error().build(),
@@ -358,7 +364,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     async fn handle_data_request(
         &mut self,
         mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> KnxMessageBuffer<Buffer<'static>> {
+    ) -> ConfirmationMessage<Buffer<'static>> {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
             _ => return msg.error().build(),
@@ -380,7 +386,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             if matches!(action, TlAction::StorePendingMessage) {
                 // Clone the message buffer for storage
                 // Note: We're storing the original message; caller should keep a copy if needed
-                if let Some(conn) = self.connections.find_any(dest) {
+                if let Some(_conn) = self.connections.find_any(dest) {
                     // The message is moved into pending_msg for retransmission
                     // For now we'll handle this differently - see below
                 }
@@ -394,7 +400,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
         msg.set_service_type(ServiceType::N_Data_Req);
 
         // Store for potential retransmission
-        if let Some(conn) = self.connections.find_any(dest) {
+        if let Some(_conn) = self.connections.find_any(dest) {
             // We should store a copy, but since Buffer is a smart pointer,
             // we can't easily clone it. Instead, we'll need to re-allocate.
             // For now, we'll send immediately and handle retransmission later.
@@ -406,7 +412,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
         // Send the data
         trace!("Transport layer sending data to Network layer: {:x?}", msg);
-        let mut confirmation = self.network_layer.request(msg).await;
+        let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
 
         // We don't return confirmation immediately - we wait for ACK
         // For now, return immediate confirmation (TODO: proper async confirmation)
@@ -482,7 +488,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
         &mut self,
         actions: ActionBuffer,
         remote_addr: IndividualAddress,
-        mut msg_for_data: Option<KnxMessageBuffer<Buffer<'static>>>,
+        mut msg_for_data: Option<IndicationMessage<Buffer<'static>>>,
     ) {
         for action in actions.iter() {
             match action {
@@ -534,7 +540,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
                     debug!("TL retransmitting to {}", dest);
                     // TODO: Retransmit pending message
                     if let Some(conn) = self.connections.find_any(dest) {
-                        if let Some(ref msg) = conn.pending_msg {
+                        if let Some(ref _msg) = conn.pending_msg {
                             // Would retransmit here
                             trace!("Would retransmit pending message");
                         }
@@ -543,7 +549,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
                 TlAction::StorePendingMessage => {
                     // Handled in the caller
                 }
-                TlAction::SendData { dest } => {
+                TlAction::SendData { dest: _ } => {
                     // Handled in the caller (handle_data_request)
                 }
             }
@@ -652,11 +658,11 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> Layer<'a>
     for TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>
 {
-    type Message = KnxMessageBuffer<Buffer<'static>>;
+    type Buffer = Buffer<'static>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
     where
-        M: Inbox<LayerOp<Self::Message>>,
+        M: Inbox<LayerOp<Self::Buffer>>,
     {
         loop {
             // Calculate next timeout deadline

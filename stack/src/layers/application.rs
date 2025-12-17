@@ -31,6 +31,7 @@ use crate::{
     StackDefinition,
     messages::{
         buffers::{Buffer, DynBufferManager},
+        builder::{IndicationMessage, RequestMessage},
         knx::*,
     },
     objects::{
@@ -86,7 +87,7 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
 
     // --- Communication channels ---
     app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
-    transport_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+    transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
 }
 
 // ============================================================================
@@ -110,7 +111,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         >,
         interface_object_server: &'a dyn PropertyServiceHandler,
         app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
-        transport_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+        transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
         Self {
             buffer_manager,
@@ -130,11 +131,11 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 // ============================================================================
 
 impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
-    type Message = KnxMessageBuffer<Buffer<'static>>;
+    type Buffer = Buffer<'static>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
     where
-        M: Inbox<LayerOp<Self::Message>>,
+        M: Inbox<LayerOp<Self::Buffer>>,
     {
         loop {
             match select(inbox.next(), self.app_request_receiver.receive()).await {
@@ -209,7 +210,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Only valid for `T_GroupData_Ind` service type.
     async fn handle_group_value_write_or_response(
         &mut self,
-        ind: &mut KnxMessageBuffer<Buffer<'static>>,
+        ind: &mut IndicationMessage<Buffer<'static>>,
         apci: ApciCode,
     ) {
         // Validate service type
@@ -289,7 +290,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     ///
     /// Responds with the current value of the communication object.
     /// Only valid for `T_GroupData_Ind` service type.
-    async fn handle_group_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
+    async fn handle_group_value_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
         // Validate service type
         if ind.service_type() != ServiceType::T_GroupData_Ind {
             warn!("AL GroupValueRead with unexpected service type: {:?}", ind.service_type());
@@ -337,7 +338,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             msg.set_apci_code(ApciCode::GroupValueResponse);
 
             // Send the response to the transport layer and wait for confirmation
-            let confirmation = self.transport_layer.request(msg).await;
+            let confirmation = self.transport_layer.request(RequestMessage::request(msg)).await;
             debug!("AL GroupValueResponse confirmation ASAP {} TSAP {}: {:?}", asap, tsap, confirmation.service_type());
 
             trace!("AL sent GroupValueResponse for ASAP {}: {:x?}", asap, self.comm_objects.borrow().value(asap));
@@ -434,7 +435,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 msg.set_connection_nr(tsap);
 
                 // Send the request to the transport layer and wait for confirmation
-                let confirmation = self.transport_layer.request(msg).await;
+                let confirmation = self.transport_layer.request(RequestMessage::request(msg)).await;
                 debug!("AL confirmation for ASAP {} TSAP {}: {:?}", asap, tsap, confirmation.service_type());
 
                 // Update communication object status based on confirmation
@@ -481,7 +482,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[4]: Property Index
     /// - APDU[5-6]: Type + MaxElements
     /// - APDU[7]: Read/Write Access Levels
-    async fn handle_property_description_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
+    async fn handle_property_description_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
         use crate::messages::builder::IndicationExt;
 
         // Determine response service type based on incoming service type
@@ -577,7 +578,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[3]: Property ID
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits]
     /// - APDU[6..]: Data
-    async fn handle_property_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
+    async fn handle_property_value_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
         use crate::messages::builder::IndicationExt;
 
         // Determine response service type based on incoming service type
@@ -691,7 +692,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[3]: Property ID
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits] (count=0 on error)
     /// - APDU[6..]: Written data (echo back on success)
-    async fn handle_property_value_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
+    async fn handle_property_value_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
         use crate::messages::builder::IndicationExt;
 
         // Determine response service type based on incoming service type
@@ -803,7 +804,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Response format:
     /// - APDU[0-1]: APCI (DeviceDescriptorResponse with descriptor type in low 6 bits)
     /// - APDU[2-3]: Mask version (only if descriptor type is 0)
-    async fn handle_device_descriptor_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
+    async fn handle_device_descriptor_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
         use crate::messages::builder::IndicationExt;
 
         // DeviceDescriptorRead APDU: [APCI:2] where the descriptor type is in the lower 6 bits

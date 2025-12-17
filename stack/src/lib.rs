@@ -260,10 +260,10 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let ind_addr = IndividualAddress::new(1, 0, 1);
 
         // Create all the channels for layer to layer communication
-        let ll_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 1> = Channel::new();
-        let nl_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 1> = Channel::new();
-        let tl_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 1> = Channel::new();
-        let al_channel: Channel<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 1> = Channel::new();
+        let ll_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
+        let nl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
+        let tl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
+        let al_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
 
         // Create a network layer
         let mut network_layer = NetworkLayer::new(ind_addr, 6, ll_channel.sender().into(), tl_channel.sender().into());

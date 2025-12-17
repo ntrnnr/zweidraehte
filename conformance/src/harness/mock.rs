@@ -16,6 +16,7 @@ use zweidraehte::{
     layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
     messages::{
         buffers::Buffer,
+        builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
         knx::*,
     },
 };
@@ -29,7 +30,7 @@ use zweidraehte::{
 /// Optionally, outgoing messages (requests from upper layers) can be captured
 /// and forwarded to a capture channel for test verification.
 pub struct MockLinkLayer<'a, const N: usize, const C: usize = 8> {
-    network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+    network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     injection_receiver: Receiver<'static, NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, N>,
     capture_sender: Option<Sender<'static, NoopRawMutex, CapturedLinkLayerMessage, C>>,
 }
@@ -46,7 +47,7 @@ pub struct CapturedLinkLayerMessage {
 impl<'a, const N: usize, const C: usize> MockLinkLayer<'a, N, C> {
     /// Create a new Mock Link Layer
     pub fn new(
-        network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         injection_receiver: Receiver<'static, NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, N>,
     ) -> Self {
         Self { network_layer, injection_receiver, capture_sender: None }
@@ -54,7 +55,7 @@ impl<'a, const N: usize, const C: usize> MockLinkLayer<'a, N, C> {
 
     /// Create a new Mock Link Layer with capture support
     pub fn with_capture(
-        network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         injection_receiver: Receiver<'static, NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, N>,
         capture_sender: Sender<'static, NoopRawMutex, CapturedLinkLayerMessage, C>,
     ) -> Self {
@@ -63,11 +64,11 @@ impl<'a, const N: usize, const C: usize> MockLinkLayer<'a, N, C> {
 }
 
 impl<'a, const N: usize, const C: usize> Layer<'a> for MockLinkLayer<'a, N, C> {
-    type Message = KnxMessageBuffer<Buffer<'static>>;
+    type Buffer = Buffer<'static>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
     where
-        M: Inbox<LayerOp<Self::Message>>,
+        M: Inbox<LayerOp<Self::Buffer>>,
     {
         loop {
             match select(inbox.next(), self.injection_receiver.receive()).await {
@@ -92,7 +93,7 @@ impl<'a, const N: usize, const C: usize> Layer<'a> for MockLinkLayer<'a, N, C> {
                     let converted_buf = tp1::tp1_to_knx_message_no_checksum(inner_buf);
                     let internal_msg = KnxMessageBuffer::new(converted_buf, service_type);
                     log::debug!("Mock LL injecting message: {:x?}", internal_msg);
-                    self.network_layer.send(LayerOp::Indication(internal_msg)).await;
+                    self.network_layer.send(LayerOp::Indication(IndicationMessage::indication(internal_msg))).await;
                 }
             }
         }
@@ -102,8 +103,8 @@ impl<'a, const N: usize, const C: usize> Layer<'a> for MockLinkLayer<'a, N, C> {
 impl<'a, const N: usize, const C: usize> MockLinkLayer<'a, N, C> {
     async fn handle_request(
         &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> KnxMessageBuffer<Buffer<'static>> {
+        msg: RequestMessage<Buffer<'static>>,
+    ) -> ConfirmationMessage<Buffer<'static>> {
         log::trace!("Mock LL received request: {:?}", msg);
 
         // Capture the outgoing message if a capture sender is configured
@@ -119,24 +120,27 @@ impl<'a, const N: usize, const C: usize> MockLinkLayer<'a, N, C> {
             }
         }
 
-        match msg.service_type() {
+        // Get inner message to mutate for confirmation
+        let mut inner = msg.into_inner();
+
+        match inner.service_type() {
             // Just pretend we sent the message and issue a confirmation back
             ServiceType::L_Data_Req => {
                 log::debug!("Mock LL: simulating L_Data_Con for L_Data_Req");
 
                 // Create confirmation by converting the request
-                msg.ctrl_field_mut().set_c(Confirm::NoError);
-                msg.set_service_type(ServiceType::L_Data_Con);
+                inner.ctrl_field_mut().set_c(Confirm::NoError);
+                inner.set_service_type(ServiceType::L_Data_Con);
 
-                log::trace!("Mock LL returning confirmation: {:?}", msg);
-                msg
+                log::trace!("Mock LL returning confirmation: {:?}", inner);
+                ConfirmationMessage::confirmation(inner)
             }
 
             // Everything else is unhandled - return error confirmation
             _ => {
-                log::warn!("Mock LL: unhandled request service type: {:?}", msg.service_type());
-                msg.ctrl_field_mut().set_c(Confirm::Err);
-                msg
+                log::warn!("Mock LL: unhandled request service type: {:?}", inner.service_type());
+                inner.ctrl_field_mut().set_c(Confirm::Err);
+                ConfirmationMessage::confirmation(inner)
             }
         }
     }
@@ -279,8 +283,8 @@ impl<const N: usize, const C: usize> LinkLayerBuilder for MockLinkLayerBuilder<N
         self,
         _resources: &'a mut Self::Resources,
         _context: &'a CTX,
-        network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
-        inbox: impl Inbox<LayerOp<KnxMessageBuffer<Buffer<'static>>>> + 'a,
+        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        inbox: impl Inbox<LayerOp<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a
     where
         CTX: BufferManagerContext,

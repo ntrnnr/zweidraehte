@@ -29,7 +29,6 @@ use zweidraehte::{
     },
     messages::{
         buffers::{Buffer, BufferManager},
-        knx::KnxMessageBuffer,
         knxip::substructs::{DeviceInformation, HPAI},
     },
     test_util::MockContext,
@@ -37,7 +36,7 @@ use zweidraehte::{
 
 // Network layer that just prints received messages
 struct FakeNetworkLayer {
-    receiver: Receiver<'static, NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 32>,
+    receiver: Receiver<'static, NoopRawMutex, LayerOp<Buffer<'static>>, 32>,
 }
 
 impl FakeNetworkLayer {
@@ -78,14 +77,14 @@ async fn main(spawner: Spawner) {
 
     // Create channels for communication between link layer and network layer
     let network_channel =
-        Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 32>::new()));
-    let network_sender: DynamicSender<'_, LayerOp<KnxMessageBuffer<Buffer<'static>>>> = network_channel.sender().into();
+        Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<Buffer<'static>>, 32>::new()));
+    let network_sender: DynamicSender<'_, LayerOp<Buffer<'static>>> = network_channel.sender().into();
     let network_receiver = network_channel.receiver();
 
     // Create channel for sending requests to the link layer
     let link_channel =
-        Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 32>::new()));
-    let link_sender: DynamicSender<'_, LayerOp<KnxMessageBuffer<Buffer<'static>>>> = link_channel.sender().into();
+        Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<Buffer<'static>>, 32>::new()));
+    let link_sender: DynamicSender<'_, LayerOp<Buffer<'static>>> = link_channel.sender().into();
     let link_receiver = link_channel.receiver();
 
     // Create the KNXnet/IP link layer builder and use the LinkLayerBuilder trait

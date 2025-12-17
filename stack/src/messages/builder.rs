@@ -42,6 +42,7 @@
 //! ```
 
 use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
 
 use crate::address::IndividualAddress;
 use crate::messages::buffers::Buffer;
@@ -64,6 +65,108 @@ pub mod direction {
     /// Confirmation message sent in response to a request.
     /// Reuses the original request's buffer with modified service type and confirm flag.
     pub struct Confirmation;
+}
+
+// ============================================================================
+// Typed Message Wrapper
+// ============================================================================
+
+/// A message typed by its direction (Indication, Request, or Confirmation)
+///
+/// This wrapper carries the message direction in the type system, enabling
+/// compile-time enforcement that:
+/// - `LayerOp::Indication` only accepts `IndicationMessage`
+/// - `LayerOp::Request` only accepts `RequestMessage`
+/// - Response channels only accept `ConfirmationMessage`
+///
+/// Uses `Deref`/`DerefMut` for ergonomic transparent access to the inner
+/// `KnxMessageBuffer`, so you can call methods directly without unwrapping.
+pub struct TypedMessage<B: Deref<Target = [u8]>, Dir> {
+    inner: KnxMessageBuffer<B>,
+    _direction: PhantomData<Dir>,
+}
+
+/// A message indicating data received from the bus (flows UP the stack)
+pub type IndicationMessage<B> = TypedMessage<B, direction::Indication>;
+
+/// A message requesting an action (flows DOWN the stack)
+pub type RequestMessage<B> = TypedMessage<B, direction::Request>;
+
+/// A confirmation message in response to a request
+pub type ConfirmationMessage<B> = TypedMessage<B, direction::Confirmation>;
+
+// ----------------------------------------------------------------------------
+// TypedMessage: Core Implementation
+// ----------------------------------------------------------------------------
+
+impl<B: Deref<Target = [u8]>, Dir> TypedMessage<B, Dir> {
+    /// Consume the wrapper and return the inner `KnxMessageBuffer`
+    ///
+    /// Use this when you need to pass the message to an API that consumes it,
+    /// such as `.confirm()` or `.error()`.
+    pub fn into_inner(self) -> KnxMessageBuffer<B> {
+        self.inner
+    }
+}
+
+impl<B: Deref<Target = [u8]>, Dir> Deref for TypedMessage<B, Dir> {
+    type Target = KnxMessageBuffer<B>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<B: Deref<Target = [u8]> + DerefMut, Dir> DerefMut for TypedMessage<B, Dir> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl<B: Deref<Target = [u8]> + core::fmt::Debug, Dir> core::fmt::Debug for TypedMessage<B, Dir> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+// ----------------------------------------------------------------------------
+// IndicationMessage: Creation
+// ----------------------------------------------------------------------------
+
+impl<B: Deref<Target = [u8]>> IndicationMessage<B> {
+    /// Create an indication message from a received `KnxMessageBuffer`
+    ///
+    /// Used by link layers when they receive data from the bus and need
+    /// to pass it up to the network layer.
+    pub fn indication(msg: KnxMessageBuffer<B>) -> Self {
+        TypedMessage { inner: msg, _direction: PhantomData }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// RequestMessage: Creation
+// ----------------------------------------------------------------------------
+
+impl<B: Deref<Target = [u8]>> RequestMessage<B> {
+    /// Create a request message from a `KnxMessageBuffer`
+    ///
+    /// Used when building requests that will flow down the stack.
+    pub fn request(msg: KnxMessageBuffer<B>) -> Self {
+        TypedMessage { inner: msg, _direction: PhantomData }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// ConfirmationMessage: Creation
+// ----------------------------------------------------------------------------
+
+impl<B: Deref<Target = [u8]>> ConfirmationMessage<B> {
+    /// Create a confirmation message from a `KnxMessageBuffer`
+    ///
+    /// Used when building confirmations to return via `response_tx`.
+    pub fn confirmation(msg: KnxMessageBuffer<B>) -> Self {
+        TypedMessage { inner: msg, _direction: PhantomData }
+    }
 }
 
 // ============================================================================
@@ -225,11 +328,12 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::NetworkRequest> 
     /// Build a network-layer message (no transport/application layer)
     ///
     /// This is used when you only need network layer context.
-    pub fn build(self) -> KnxMessageBuffer<Buffer<'static>> {
+    /// Returns a `RequestMessage` which can only be used with `LayerOp::Request`.
+    pub fn build(self) -> RequestMessage<Buffer<'static>> {
         let mut msg = KnxMessageBuffer::new(self.buffer, self.state.service_type);
         msg.ctrl_field_mut().set_priority(self.state.priority);
         msg.set_dest_addr(self.state.dest);
-        msg
+        RequestMessage::request(msg)
     }
 
     /// Add transport layer control PDU
@@ -295,12 +399,13 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::TransportRequest
     /// Build a transport control PDU
     ///
     /// This finalizes the message with transport layer context (ACK, NACK, Connect, Disconnect).
-    pub fn build(self) -> KnxMessageBuffer<Buffer<'static>> {
+    /// Returns a `RequestMessage` which can only be used with `LayerOp::Request`.
+    pub fn build(self) -> RequestMessage<Buffer<'static>> {
         let mut msg = KnxMessageBuffer::new(self.buffer, self.state.network.service_type);
         msg.ctrl_field_mut().set_priority(self.state.network.priority);
         msg.set_dest_addr(self.state.network.dest);
         msg.set_tpci(self.state.tpci);
-        msg
+        RequestMessage::request(msg)
     }
 }
 
@@ -313,6 +418,7 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::ApplicationReque
     ///
     /// The writer function receives mutable access to the buffer to write
     /// application-specific data (descriptor type, property values, etc.).
+    /// Returns a `RequestMessage` which can only be used with `LayerOp::Request`.
     ///
     /// # Example
     /// ```ignore
@@ -324,7 +430,7 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::ApplicationReque
     ///         .copy_from_slice(&mask_version);
     /// });
     /// ```
-    pub fn with_data<F>(self, writer: F) -> KnxMessageBuffer<Buffer<'static>>
+    pub fn with_data<F>(self, writer: F) -> RequestMessage<Buffer<'static>>
     where
         F: FnOnce(&mut [u8]),
     {
@@ -340,13 +446,14 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::ApplicationReque
         // Let caller write application-specific data
         writer(msg.buf_mut());
 
-        msg
+        RequestMessage::request(msg)
     }
 
     /// Build an application message without additional data
     ///
     /// Used when the APCI code is sufficient (e.g., simple read requests).
-    pub fn build(self) -> KnxMessageBuffer<Buffer<'static>> {
+    /// Returns a `RequestMessage` which can only be used with `LayerOp::Request`.
+    pub fn build(self) -> RequestMessage<Buffer<'static>> {
         self.with_data(|_| {})
     }
 }
@@ -446,9 +553,11 @@ impl MessageBuilder<Buffer<'static>, direction::Confirmation, state::Confirmatio
     /// This finalizes the confirmation by:
     /// - Converting the service type from _Req to _Con
     /// - Setting the Confirm flag (NoError or Err)
-    pub fn build(self) -> KnxMessageBuffer<Buffer<'static>> {
+    ///
+    /// Returns a `ConfirmationMessage` which can only be sent via `response_tx`.
+    pub fn build(self) -> ConfirmationMessage<Buffer<'static>> {
         let mut msg = KnxMessageBuffer::new(self.buffer, self.state.service_type.to_confirmation());
         msg.ctrl_field_mut().set_c(self.state.confirm);
-        msg
+        ConfirmationMessage::confirmation(msg)
     }
 }

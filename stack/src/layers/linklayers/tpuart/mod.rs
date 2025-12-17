@@ -15,7 +15,7 @@ use crate::{
     address::{GroupAddress, IndividualAddress, KNXAddress},
     messages::{
         buffers::{Buffer, DynBufferManager, MessageBuffer},
-        builder::ConfirmationExt,
+        builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
         knx::*,
     },
 };
@@ -265,16 +265,16 @@ where
     // Interfaces to other components and layers
     uart: U,
     buffer_manager: &'a RefCell<DynBufferManager<'static>>,
-    network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+    network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
 
     // Local state
     chip: TpUartChip,
     state: TpUartState,
     state_timeout: Timeout<TpUartState>,
     message_in: Option<Buffer<'static>>,
-    message_out: Option<(Buffer<'static>, DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>)>,
+    message_out: Option<(Buffer<'static>, DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>)>,
     individual_addr: Option<IndividualAddress>,
-    pending_transmission: Option<(Buffer<'static>, DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>)>,
+    pending_transmission: Option<(Buffer<'static>, DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>)>,
 }
 
 impl<'a, U> TpUartLinkLayer<'a, U>
@@ -285,7 +285,7 @@ where
         uart: U,
         individual_addr: Option<IndividualAddress>,
         buffer_manager: &'a RefCell<DynBufferManager<'static>>,
-        network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
         Self {
             uart,
@@ -399,7 +399,8 @@ where
 
                         // Convert TP1 frame to KNX format
                         let knx_buffer = utils::tp1_to_knx_message(buffer);
-                        let indication = KnxMessageBuffer::new(knx_buffer, ServiceType::L_Data_Ind);
+                        let msg = KnxMessageBuffer::new(knx_buffer, ServiceType::L_Data_Ind);
+                        let indication = IndicationMessage::indication(msg);
                         debug!("TPUART -> NL L_Data.ind: {:x?}", indication);
                         self.network_layer.send(LayerOp::Indication(indication)).await;
                     }
@@ -501,7 +502,8 @@ where
                     self.state_transition(TpUartState::Idle).await;
 
                     // Send confirmation back to the requester
-                    let confirmation = KnxMessageBuffer::new(transmitted_data, ServiceType::L_Data_Con);
+                    let msg = KnxMessageBuffer::new(transmitted_data, ServiceType::L_Data_Con);
+                    let confirmation = ConfirmationMessage::confirmation(msg);
                     response_tx.send(confirmation).await;
                 }
             }
@@ -738,7 +740,7 @@ where
     async fn queue_frame_transmission(
         &mut self,
         msg: Buffer<'static>,
-        response_tx: DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>,
+        response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
     ) {
         // If we're idle and no transmission is pending, start transmission immediately
         if self.state == TpUartState::Idle && self.pending_transmission.is_none() {
@@ -753,7 +755,7 @@ where
             warn!("Replacing pending transmission - sending error for previous request");
             let mut error_msg = KnxMessageBuffer::new(old_msg, ServiceType::L_Data_Con);
             error_msg.ctrl_field_mut().set_c(Confirm::Err);
-            old_response_tx.send(error_msg).await;
+            old_response_tx.send(ConfirmationMessage::confirmation(error_msg)).await;
         }
 
         // Store the new pending transmission
@@ -764,7 +766,7 @@ where
     async fn transmit_frame(
         &mut self,
         msg: Buffer<'static>,
-        response_tx: DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>,
+        response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
     ) {
         trace!("Transmitting frame ({} bytes): {:?}", msg.len(), msg);
 
@@ -821,11 +823,11 @@ impl<'a, U> Layer<'a> for TpUartLinkLayer<'a, U>
 where
     U: embedded_io_async::Read + embedded_io_async::Write,
 {
-    type Message = KnxMessageBuffer<Buffer<'static>>;
+    type Buffer = Buffer<'static>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
     where
-        M: Inbox<LayerOp<Self::Message>>,
+        M: Inbox<LayerOp<Self::Buffer>>,
     {
         self.initialize().await;
 
@@ -863,16 +865,17 @@ where
                                             self.chip.max_frame_size(),
                                             self.chip
                                         );
-                                        response_tx.send(msg.error().build()).await;
+                                        response_tx.send(msg.into_inner().error().build()).await;
                                     } else {
                                         // Convert KNX frame to TP1 format for transmission
-                                        let tp1_buffer = utils::knx_to_tp1_message(msg.into_inner());
+                                        // into_inner() twice: RequestMessage -> KnxMessageBuffer -> Buffer
+                                        let tp1_buffer = utils::knx_to_tp1_message(msg.into_inner().into_inner());
                                         self.queue_frame_transmission(tp1_buffer, response_tx).await;
                                     }
                                 }
                                 _ => {
                                     // Return error for unsupported service types
-                                    response_tx.send(msg.error().build()).await;
+                                    response_tx.send(msg.into_inner().error().build()).await;
                                 }
                             }
                         }

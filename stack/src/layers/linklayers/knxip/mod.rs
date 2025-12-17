@@ -18,7 +18,7 @@ use platform::{AsyncUdpMulticastSocket, UdpMulticastSocketOptions, get_interface
 use crate::{
     context::BufferManagerContext,
     layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
-    messages::{buffers::*, builder::ConfirmationExt, knx::*, knxip::*},
+    messages::{buffers::*, builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage}, knx::*, knxip::*},
 };
 
 pub mod servers;
@@ -182,21 +182,22 @@ pub struct ServerContext<'a> {
     /// Buffer manager for allocating message buffers
     buffer_manager: &'a RefCell<DynBufferManager<'static>>,
     /// Channel to send messages up to the network layer
-    network_layer_tx: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+    network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
 }
 
 impl<'a> ServerContext<'a> {
     /// Create a new server context
     pub fn new(
         buffer_manager: &'a RefCell<DynBufferManager<'static>>,
-        network_layer_tx: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+        network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
         Self { buffer_manager, network_layer_tx }
     }
 
     /// Send an indication to the network layer (L_Data.ind)
     pub async fn send_to_network_layer(&self, message: KnxMessageBuffer<Buffer<'static>>) {
-        self.network_layer_tx.send(LayerOp::Indication(message)).await;
+        let indication = IndicationMessage::indication(message);
+        self.network_layer_tx.send(LayerOp::Indication(indication)).await;
     }
 
     /// Allocate a buffer for responses
@@ -344,7 +345,7 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<MAX_SOC
         self,
         resources: &'res mut KnxNetIpResources<MAX_SOCKETS>,
         buffer_manager: &'res RefCell<DynBufferManager<'static>>,
-        network_layer_tx: DynamicSender<'res, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+        network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
     ) -> KnxNetIp<'res, MAX_SOCKETS, MAX_SERVERS> {
         // Initialize response channel
         let response_channel = resources.response_channel.write(Channel::new());
@@ -489,11 +490,8 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> LinkLayerBuilder
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
-        network_layer: DynamicSender<
-            'a,
-            LayerOp<crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>>,
-        >,
-        inbox: impl Inbox<LayerOp<crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>>> + 'a,
+        network_layer: DynamicSender<'a, LayerOp<crate::messages::buffers::Buffer<'static>>>,
+        inbox: impl Inbox<LayerOp<crate::messages::buffers::Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a
     where
         CTX: crate::context::BufferManagerContext,
@@ -509,9 +507,9 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> LinkLayerBuilder
 /// A request that is pending retry after being rate-limited
 struct PendingRequest {
     /// The message to retry
-    message: KnxMessageBuffer<Buffer<'static>>,
+    message: RequestMessage<Buffer<'static>>,
     /// Channel to send the response back to
-    response_tx: DynamicSender<'static, KnxMessageBuffer<Buffer<'static>>>,
+    response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
     /// When to retry sending this message
     retry_after: Instant,
     /// Number of times this message has been retried
@@ -538,7 +536,7 @@ pub struct KnxNetIp<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
     /// Local interface IP address (used to filter out our own multicast echoes)
     local_addr: Ipv4Addr,
     /// Channel to send messages to the network layer
-    network_layer_tx: DynamicSender<'res, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+    network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
     /// Queue of messages waiting to be retried after rate limiting
     retry_queue: Vec<PendingRequest, MAX_RETRY_QUEUE_SIZE>,
 }
@@ -565,7 +563,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
                 for server in &mut self.server_instances {
                     if server.handler.supports_requests() {
                         let context = ServerContext::new(self.buffer_manager, self.network_layer_tx);
-                        match server.handler.on_request(&pending.message, &context).await {
+                        match server.handler.on_request(&*pending.message, &context).await {
                             Ok(responses) => {
                                 // Success! Send responses and confirmation
                                 for response in responses {
@@ -610,12 +608,12 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
                         // This is actually OK - the message will be dropped
                     }
                 } else if send_success {
-                    pending.response_tx.send(pending.message.confirm().build()).await;
+                    pending.response_tx.send(pending.message.into_inner().confirm().build()).await;
                 } else if send_error {
-                    pending.response_tx.send(pending.message.error().build()).await;
+                    pending.response_tx.send(pending.message.into_inner().error().build()).await;
                 } else {
                     // No server could handle it - send error
-                    pending.response_tx.send(pending.message.error().build()).await;
+                    pending.response_tx.send(pending.message.into_inner().error().build()).await;
                 }
             } else {
                 // This entry is not expired yet, move to next
@@ -687,11 +685,11 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
 impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
     for KnxNetIp<'res, MAX_SOCKETS, MAX_SERVERS>
 {
-    type Message = KnxMessageBuffer<Buffer<'static>>;
+    type Buffer = Buffer<'static>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
     where
-        M: Inbox<LayerOp<Self::Message>>,
+        M: Inbox<LayerOp<Self::Buffer>>,
     {
         info!(
             "KnxNetIp Link Layer starting with {} server(s), {} socket(s)",
@@ -815,8 +813,11 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
 
                                     // Convert L_Data_Req to L_Data_Ind for KNX/IP routing
                                     // Messages originating from this device should be sent as indications
-                                    let mut msg = msg;
-                                    msg.set_service_type(ServiceType::L_Data_Ind);
+                                    // Extract inner KnxMessageBuffer to modify service type
+                                    let mut inner_msg = msg.into_inner();
+                                    inner_msg.set_service_type(ServiceType::L_Data_Ind);
+                                    // Re-wrap as RequestMessage for the servers
+                                    let msg = RequestMessage::request(inner_msg);
 
                                     // Find a server that supports outgoing requests
                                     let mut msg_opt = Some(msg);
@@ -826,13 +827,13 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                                             // Create server context with buffer manager and network layer channel
                                             let context =
                                                 ServerContext::new(self.buffer_manager, self.network_layer_tx);
-                                            match server.handler.on_request(msg_opt.as_ref().unwrap(), &context).await {
+                                            match server.handler.on_request(&**msg_opt.as_ref().unwrap(), &context).await {
                                                 Ok(responses) => {
                                                     for response in responses {
                                                         response_channel.send(response).await;
                                                     }
                                                     // Send confirmation
-                                                    response_tx.send(msg_opt.take().unwrap().confirm().build()).await;
+                                                    response_tx.send(msg_opt.take().unwrap().into_inner().confirm().build()).await;
                                                     handled = true;
                                                     break;
                                                 }
@@ -873,12 +874,12 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
 
                                     if !handled {
                                         // No server could handle it - send error
-                                        response_tx.send(msg_opt.take().unwrap().error().build()).await;
+                                        response_tx.send(msg_opt.take().unwrap().into_inner().error().build()).await;
                                     }
                                 }
                                 _ => {
                                     // Return error for unsupported service types
-                                    response_tx.send(msg.error().build()).await;
+                                    response_tx.send(msg.into_inner().error().build()).await;
                                 }
                             }
                         }

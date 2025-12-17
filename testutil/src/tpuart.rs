@@ -15,6 +15,7 @@ use zweidraehte::{
     layers::{ActorRequest, Layer, LayerOp, linklayers::tpuart::TpUartLinkLayer},
     messages::{
         buffers::{Buffer, BufferManager},
+        builder::RequestMessage,
         knx::{KnxMessageBuffer, ServiceType},
     },
 };
@@ -24,7 +25,7 @@ struct FakeNetworkLayer {
     receiver: embassy_sync::channel::Receiver<
         'static,
         NoopRawMutex,
-        LayerOp<KnxMessageBuffer<zweidraehte::messages::buffers::Buffer<'static>>>,
+        LayerOp<Buffer<'static>>,
         32,
     >,
 }
@@ -57,7 +58,7 @@ async fn run_link_layer(
     link_receiver: embassy_sync::channel::Receiver<
         'static,
         NoopRawMutex,
-        LayerOp<KnxMessageBuffer<zweidraehte::messages::buffers::Buffer<'static>>>,
+        LayerOp<Buffer<'static>>,
         32,
     >,
 ) {
@@ -76,14 +77,14 @@ async fn main(spawner: Spawner) {
 
     // Create channels for communication between link layer and fake network layer
     let network_channel =
-        Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 32>::new()));
+        Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<Buffer<'static>>, 32>::new()));
     let network_sender = network_channel.sender().into();
     let network_receiver = network_channel.receiver();
 
     // Create channel for sending requests to the link layer
     let link_channel =
-        Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<KnxMessageBuffer<Buffer<'static>>>, 32>::new()));
-    let link_sender: embassy_sync::channel::DynamicSender<'_, LayerOp<KnxMessageBuffer<Buffer<'static>>>> =
+        Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<Buffer<'static>>, 32>::new()));
+    let link_sender: embassy_sync::channel::DynamicSender<'_, LayerOp<Buffer<'static>>> =
         link_channel.sender().into();
     let link_receiver = link_channel.receiver();
 
@@ -109,7 +110,7 @@ async fn main(spawner: Spawner) {
         println!("Transmitting test message: {:x?}", test_msg.buf());
 
         // Send the request to the link layer and wait for confirmation
-        let confirmation = link_sender.request(test_msg).await;
+        let confirmation = link_sender.request(RequestMessage::request(test_msg)).await;
         println!("TX confirmation: {:x?}", confirmation.buf());
     }
 }

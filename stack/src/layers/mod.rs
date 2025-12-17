@@ -1,7 +1,11 @@
 #![allow(async_fn_in_trait)]
 
+use core::ops::Deref;
+
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 use embassy_sync::channel::{Channel, DynamicSender, Receiver, Sender};
+
+use crate::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
 
 pub trait Inbox<M> {
     #[must_use = "Must set response for message"]
@@ -18,14 +22,26 @@ where
     }
 }
 
-pub enum LayerOp<T: 'static> {
-    Indication(T),
-    Request { message: T, response_tx: DynamicSender<'static, T> },
+/// Layer operation with compile-time direction safety
+///
+/// - `Indication`: Can only contain an `IndicationMessage` (data flowing UP the stack)
+/// - `Request`: Can only contain a `RequestMessage` (request flowing DOWN the stack)
+///   with a response channel that only accepts `ConfirmationMessage`
+///
+/// This prevents accidentally sending a request as an indication or vice versa.
+pub enum LayerOp<B: Deref<Target = [u8]> + 'static> {
+    /// Data received from lower layer, flowing UP the stack
+    Indication(IndicationMessage<B>),
+    /// Request to lower layer, flowing DOWN the stack
+    Request {
+        message: RequestMessage<B>,
+        response_tx: DynamicSender<'static, ConfirmationMessage<B>>,
+    },
 }
 
-impl<T> core::fmt::Debug for LayerOp<T>
+impl<B> core::fmt::Debug for LayerOp<B>
 where
-    T: core::fmt::Debug + 'static,
+    B: Deref<Target = [u8]> + core::fmt::Debug + 'static,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -36,11 +52,12 @@ where
 }
 
 pub trait Layer<'a>: Sized {
-    type Message: 'static;
+    /// The buffer type used in messages (e.g., `Buffer<'static>`)
+    type Buffer: Deref<Target = [u8]> + 'static;
 
     async fn process<M>(&mut self, _: M) -> !
     where
-        M: Inbox<LayerOp<Self::Message>>;
+        M: Inbox<LayerOp<Self::Buffer>>;
 }
 
 /// Trait for building link layers
@@ -78,11 +95,8 @@ pub trait LinkLayerBuilder: Sized {
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
-        network_layer: DynamicSender<
-            'a,
-            LayerOp<crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>>,
-        >,
-        inbox: impl Inbox<LayerOp<crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>>> + 'a,
+        network_layer: DynamicSender<'a, LayerOp<crate::messages::buffers::Buffer<'static>>>,
+        inbox: impl Inbox<LayerOp<crate::messages::buffers::Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a
     where
         CTX: crate::context::BufferManagerContext;
@@ -219,20 +233,22 @@ impl<M, R, const N: usize> ActorRequest<M, R> for Sender<'static, NoopRawMutex, 
     }
 }
 
-/// ActorRequest implementation for LayerOp communication.
-/// This allows layers to make requests to other layers and await responses.
-impl<'a, T: 'static> ActorRequest<T, T> for DynamicSender<'a, LayerOp<T>> {
-    async fn request(&self, message: T) -> T {
-        let channel: Channel<NoopRawMutex, T, 1> = Channel::new();
-        let sender: DynamicSender<'_, T> = channel.sender().into();
+/// ActorRequest implementation for LayerOp communication with typed messages.
+///
+/// This allows layers to send `RequestMessage`s and receive `ConfirmationMessage`s.
+/// The type system ensures you can't accidentally send the wrong message type.
+impl<'a, B: Deref<Target = [u8]> + 'static> ActorRequest<RequestMessage<B>, ConfirmationMessage<B>> for DynamicSender<'a, LayerOp<B>> {
+    async fn request(&self, message: RequestMessage<B>) -> ConfirmationMessage<B> {
+        let channel: Channel<NoopRawMutex, ConfirmationMessage<B>, 1> = Channel::new();
+        let sender: DynamicSender<'_, ConfirmationMessage<B>> = channel.sender().into();
         let bomb = DropBomb::new();
 
         // We guarantee that channel lives until we've been notified on it, at which
         // point its out of reach for the replier.
         let response_tx = unsafe {
             core::mem::transmute::<
-                &embassy_sync::channel::DynamicSender<'_, T>,
-                &embassy_sync::channel::DynamicSender<'_, T>,
+                &embassy_sync::channel::DynamicSender<'_, ConfirmationMessage<B>>,
+                &embassy_sync::channel::DynamicSender<'_, ConfirmationMessage<B>>,
             >(&sender)
         };
         let layer_op = LayerOp::Request { message, response_tx: response_tx.clone() };
@@ -244,18 +260,20 @@ impl<'a, T: 'static> ActorRequest<T, T> for DynamicSender<'a, LayerOp<T>> {
     }
 }
 
-impl<'a, T: 'static, const N: usize> ActorRequest<T, T> for Sender<'a, NoopRawMutex, LayerOp<T>, N> {
-    async fn request(&self, message: T) -> T {
-        let channel: Channel<NoopRawMutex, T, 1> = Channel::new();
-        let sender: DynamicSender<'_, T> = channel.sender().into();
+impl<'a, B: Deref<Target = [u8]> + 'static, const N: usize> ActorRequest<RequestMessage<B>, ConfirmationMessage<B>>
+    for Sender<'a, NoopRawMutex, LayerOp<B>, N>
+{
+    async fn request(&self, message: RequestMessage<B>) -> ConfirmationMessage<B> {
+        let channel: Channel<NoopRawMutex, ConfirmationMessage<B>, 1> = Channel::new();
+        let sender: DynamicSender<'_, ConfirmationMessage<B>> = channel.sender().into();
         let bomb = DropBomb::new();
 
         // We guarantee that channel lives until we've been notified on it, at which
         // point its out of reach for the replier.
         let response_tx = unsafe {
             core::mem::transmute::<
-                &embassy_sync::channel::DynamicSender<'_, T>,
-                &embassy_sync::channel::DynamicSender<'_, T>,
+                &embassy_sync::channel::DynamicSender<'_, ConfirmationMessage<B>>,
+                &embassy_sync::channel::DynamicSender<'_, ConfirmationMessage<B>>,
             >(&sender)
         };
         let layer_op = LayerOp::Request { message, response_tx: response_tx.clone() };
