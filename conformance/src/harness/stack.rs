@@ -29,9 +29,7 @@ use zweidraehte::{
     Runner, StackDefinition, StackResources,
 };
 
-use super::mock::{
-    CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle, MockLinkLayerResources,
-};
+use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle, MockLinkLayerResources};
 
 // ============================================================================
 // Test Communication Objects
@@ -180,6 +178,7 @@ impl ConstDefault for TestParameters {
 pub struct ConformanceTestStack;
 
 impl StackDefinition for ConformanceTestStack {
+    const MASK_VERSION: &'static [u8; 2] = &[0x57, 0xb0];
     type ADT = conformance_config::AddrTab;
     type AST = conformance_config::AssoTab;
     type COT = conformance_config::CoTab;

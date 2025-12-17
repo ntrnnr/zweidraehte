@@ -389,6 +389,7 @@ impl InterfaceObjectsBuilder for KnxIpInterfaceObjectsBuilder {
 #[derive(Debug, Clone, Copy)]
 pub struct MyKnxStackWithKnxIp;
 impl StackDefinition for MyKnxStackWithKnxIp {
+    const MASK_VERSION: &'static [u8; 2] = &[0x57, 0xb0];
     type ADT = stack_test_config::AddrTab;
     type AST = stack_test_config::AssoTab;
     type COT = stack_test_config::CoTab;

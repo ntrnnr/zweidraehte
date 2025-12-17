@@ -54,6 +54,7 @@ pub struct MyKnxStackStoredData {
 #[derive(Debug, Clone, Copy)]
 pub struct MyKnxStack;
 impl StackDefinition for MyKnxStack {
+    const MASK_VERSION: &'static [u8; 2] = &[0x07, 0xb0];
     type ADT = AddrTab7<30>;
     type AST = AssoTab6<15>; // Changed from 30 to 15 to match old JSON format (64 bytes)
     type COT = CoTab7<30>;

@@ -76,6 +76,8 @@ fn far_future() -> Instant {
 /// - `MAX_INCOMING`: Maximum number of incoming connections (default: 1)
 /// - `MAX_OUTGOING`: Maximum number of outgoing connections (default: 0)
 pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1, const MAX_OUTGOING: usize = 0> {
+    /// Buffer manager for allocating messages
+    buffer_manager: &'a RefCell<crate::messages::buffers::DynBufferManager<'static>>,
     /// Address table for group address ↔ TSAP mapping
     adt: &'a RefCell<D::ADT>,
     /// Channel to send messages to the network layer
@@ -91,11 +93,12 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 {
     /// Create a new Transport Layer
     pub fn new(
+        buffer_manager: &'a RefCell<crate::messages::buffers::DynBufferManager<'static>>,
         adt: &'a RefCell<D::ADT>,
         network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
         application_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
     ) -> Self {
-        Self { adt, network_layer, application_layer, connections: ConnectionTable::new() }
+        Self { buffer_manager, adt, network_layer, application_layer, connections: ConnectionTable::new() }
     }
 
     // ========================================================================
@@ -583,24 +586,61 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     // PDU Sending Helpers
     // ========================================================================
 
+    /// Send a T_Connect PDU to establish a connection
     async fn send_connect(&mut self, dest: IndividualAddress) {
-        // TODO: Allocate buffer and send T_Connect PDU
-        trace!("Would send T_Connect to {}", dest);
+        // Control PDUs need only the basic header (7 bytes up to and including TPCI)
+        const CONTROL_PDU_LEN: usize = 7;
+
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(CONTROL_PDU_LEN).await;
+        let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::N_Data_Req);
+
+        msg.set_dest_addr(DestinationAddress::Individual(dest));
+        msg.set_tpci(Tpci::Connect);
+
+        debug!("TL sending T_Connect to {}", dest);
+        let _confirmation = self.network_layer.request(msg).await;
     }
 
+    /// Send a T_Disconnect PDU to close a connection
     async fn send_disconnect(&mut self, dest: IndividualAddress) {
-        // TODO: Allocate buffer and send T_Disconnect PDU
-        trace!("Would send T_Disconnect to {}", dest);
+        const CONTROL_PDU_LEN: usize = 7;
+
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(CONTROL_PDU_LEN).await;
+        let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::N_Data_Req);
+
+        msg.set_dest_addr(DestinationAddress::Individual(dest));
+        msg.set_tpci(Tpci::Disconnect);
+
+        debug!("TL sending T_Disconnect to {}", dest);
+        let _confirmation = self.network_layer.request(msg).await;
     }
 
+    /// Send a T_ACK PDU to acknowledge received data
     async fn send_ack(&mut self, dest: IndividualAddress, seq_no: u8) {
-        // TODO: Allocate buffer and send T_ACK PDU
-        trace!("Would send T_ACK({}) to {}", seq_no, dest);
+        const CONTROL_PDU_LEN: usize = 7;
+
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(CONTROL_PDU_LEN).await;
+        let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::N_Data_Req);
+
+        msg.set_dest_addr(DestinationAddress::Individual(dest));
+        msg.set_tpci(Tpci::Ack(seq_no));
+
+        debug!("TL sending T_ACK({}) to {}", seq_no, dest);
+        let _confirmation = self.network_layer.request(msg).await;
     }
 
+    /// Send a T_NACK PDU to signal an error in received data
     async fn send_nack(&mut self, dest: IndividualAddress, seq_no: u8) {
-        // TODO: Allocate buffer and send T_NACK PDU
-        trace!("Would send T_NACK({}) to {}", seq_no, dest);
+        const CONTROL_PDU_LEN: usize = 7;
+
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(CONTROL_PDU_LEN).await;
+        let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::N_Data_Req);
+
+        msg.set_dest_addr(DestinationAddress::Individual(dest));
+        msg.set_tpci(Tpci::Nack(seq_no));
+
+        debug!("TL sending T_NACK({}) to {}", seq_no, dest);
+        let _confirmation = self.network_layer.request(msg).await;
     }
 }
 

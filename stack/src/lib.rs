@@ -60,6 +60,7 @@ pub enum ReadObjectError {
 }
 
 pub trait StackDefinition: Copy {
+    const MASK_VERSION: &'static [u8; 2];
     type ADT: AddressTable + 'static;
     type AST: AssociationTable + 'static;
     type COT: CommunicationObjectTable + 'static;
@@ -69,11 +70,8 @@ pub trait StackDefinition: Copy {
     type IOB: InterfaceObjectsBuilder;
 }
 
-pub struct StackResources<
-    D: StackDefinition,
-    const BUF_SZ: usize = 128,
-    const NUM_BUFS: usize = 4,
-> where
+pub struct StackResources<D: StackDefinition, const BUF_SZ: usize = 128, const NUM_BUFS: usize = 4>
+where
     D::ADT: AddressTable + 'static,
     D::AST: TableMemory + 'static,
     D::COT: CommunicationObjectTable + 'static,
@@ -86,9 +84,7 @@ pub struct StackResources<
     interface_objects: MaybeUninit<<D::IOB as InterfaceObjectsBuilder>::Objects<'static, D::ADT, D::AST, D::COT>>,
 }
 
-impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize>
-    StackResources<D, BUF_SZ, NUM_BUFS>
-{
+impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResources<D, BUF_SZ, NUM_BUFS> {
     pub fn new() -> Self {
         Self {
             inner: MaybeUninit::uninit(),
@@ -126,6 +122,7 @@ pub struct Runner<'d, D: StackDefinition> {
 /// // Define your stack configuration types that implement the required traits
 /// struct MyStackDefinition;
 /// impl StackDefinition for MyStackDefinition {
+///     const MASK_VERSION: &'static [u8; 2] = &[0x07, 0xb0];
 ///     type ADT = MyAddressTable;      // implements AddressTable
 ///     type AST = MyAssociationTable;  // implements AssociationTable  
 ///     type COT = MyComObjectTable;    // implements CommunicationObjectTable
@@ -245,7 +242,8 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         create_request_response_pair::<NoopRawMutex, _, 1>(unsafe { core::mem::transmute(&inner.app_service_channel) });
 
     let stack = Stack { inner, interface_objects, app_request_sender: app_request_sender.into() };
-    let runner = Runner { stack, interface_objects, app_request_receiver: app_request_receiver.into(), link_layer_builder };
+    let runner =
+        Runner { stack, interface_objects, app_request_receiver: app_request_receiver.into(), link_layer_builder };
 
     (stack, runner)
 }
@@ -270,8 +268,12 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let mut network_layer = NetworkLayer::new(ind_addr, 6, ll_channel.sender().into(), tl_channel.sender().into());
 
         // Create a transport layer
-        let mut transport_layer =
-            TransportLayer::<'_, D>::new(&self.stack.inner.adt, nl_channel.sender().into(), al_channel.sender().into());
+        let mut transport_layer = TransportLayer::<'_, D>::new(
+            &self.stack.inner.buffer_manager,
+            &self.stack.inner.adt,
+            nl_channel.sender().into(),
+            al_channel.sender().into(),
+        );
 
         // Create an application layer
         let mut application_layer = ApplicationLayer::<'_, D>::new(

@@ -164,7 +164,9 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                             }
 
                             // --- Device Management (TODO) ---
-                            // ApciCode::DeviceDescriptorRead => { ... }
+                            ApciCode::DeviceDescriptorRead => {
+                                self.handle_device_descriptor_read(&ind).await;
+                            }
                             // ApciCode::Restart => { ... }
                             // ApciCode::IndividualAddressRead => { ... }
                             // ApciCode::IndividualAddressWrite => { ... }
@@ -779,6 +781,105 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 let confirmation = self.transport_layer.request(msg).await;
                 trace!("AL PropertyValueResponse (write error) confirmation: {:?}", confirmation.service_type());
             }
+        }
+    }
+}
+
+// ============================================================================
+// Device Management Services (A_DeviceDescriptor_Read, ...)
+// ============================================================================
+
+impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
+    /// Handle `A_DeviceDescriptor_Read.ind`
+    ///
+    /// Responds with the device descriptor (mask version) for descriptor type 0.
+    /// For any other descriptor type, responds with an error (type 0x3F, no data).
+    ///
+    /// This service can arrive via:
+    /// - `T_Data_Ind` (connection-oriented) → respond with `T_Data_Req`
+    /// - `T_DataUnack_Ind` (connectionless) → respond with `T_DataUnack_Req`
+    ///
+    /// Message format (incoming):
+    /// - APDU[0-1]: APCI (contains DeviceDescriptorRead code with descriptor type in low 6 bits)
+    ///
+    /// Response format:
+    /// - APDU[0-1]: APCI (DeviceDescriptorResponse with descriptor type in low 6 bits)
+    /// - APDU[2-3]: Mask version (only if descriptor type is 0)
+    async fn handle_device_descriptor_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
+        // Determine response service type based on incoming service type
+        let response_service_type = match ind.service_type() {
+            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
+            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
+            other => {
+                warn!("AL DeviceDescriptorRead unexpected service type: {:?}", other);
+                return;
+            }
+        };
+
+        // DeviceDescriptorRead APDU: [APCI:2] where the descriptor type is in the lower 6 bits
+        // Minimum length: MSG_APCI + 2 = 8 bytes
+        const MIN_LEN: usize = offsets::MSG_APCI + 2;
+
+        if ind.len() < MIN_LEN {
+            error!("DeviceDescriptorRead message too short: {} < {}", ind.len(), MIN_LEN);
+            return;
+        }
+
+        // Extract descriptor type from the lower 6 bits of the APCI
+        let buf = ind.buf();
+        let descriptor_type = buf[offsets::MSG_APCI + 1] & 0x3F;
+
+        debug!("AL DeviceDescriptorRead: descriptor_type={}", descriptor_type);
+
+        // Get source address to use as destination for response
+        let source_addr = ind.get_source_addr();
+
+        if descriptor_type == 0 {
+            // Descriptor type 0: respond with mask version (2 bytes)
+            const RESPONSE_LEN: usize = offsets::MSG_APCI + 4; // APCI(2) + MaskVersion(2)
+            let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+            let mut msg = KnxMessageBuffer::new(msg_buf, response_service_type);
+
+            // Set destination to the original sender
+            msg.set_dest_addr(DestinationAddress::Individual(source_addr));
+
+            // Preserve priority from the incoming request
+            msg.ctrl_field_mut().set_priority(ind.ctrl_field().priority());
+
+            // Set APCI code
+            msg.set_apci_code(ApciCode::DeviceDescriptorResponse);
+
+            // Set descriptor type to 0 in the response
+            msg.buf_mut()[offsets::MSG_APCI + 1] = (msg.buf()[offsets::MSG_APCI + 1] & 0xC0) | 0x00;
+
+            // Copy mask version
+            msg.buf_mut()[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4].copy_from_slice(D::MASK_VERSION);
+
+            debug!("AL sending DeviceDescriptorResponse: mask_version={:02x?}", D::MASK_VERSION);
+
+            // Send the response
+            let confirmation = self.transport_layer.request(msg).await;
+            trace!("AL DeviceDescriptorResponse confirmation: {:?}", confirmation.service_type());
+        } else {
+            // Any other descriptor type: error response with type = 0x3F, no data
+            const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 2; // APCI(2) only, no data
+            let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
+            let mut msg = KnxMessageBuffer::new(msg_buf, response_service_type);
+
+            msg.set_dest_addr(DestinationAddress::Individual(source_addr));
+
+            // Preserve priority from the incoming request
+            msg.ctrl_field_mut().set_priority(ind.ctrl_field().priority());
+
+            msg.set_apci_code(ApciCode::DeviceDescriptorResponse);
+
+            // Set descriptor type to 0x3F (all 6 bits set) to indicate error
+            msg.buf_mut()[offsets::MSG_APCI + 1] = (msg.buf()[offsets::MSG_APCI + 1] & 0xC0) | 0x3F;
+
+            debug!("AL sending DeviceDescriptorResponse (error): descriptor_type=0x3F");
+
+            let confirmation = self.transport_layer.request(msg).await;
+            trace!("AL DeviceDescriptorResponse (error) confirmation: {:?}", confirmation.service_type());
         }
     }
 }
