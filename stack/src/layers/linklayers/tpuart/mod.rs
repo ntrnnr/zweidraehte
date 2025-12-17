@@ -15,6 +15,7 @@ use crate::{
     address::{GroupAddress, IndividualAddress, KNXAddress},
     messages::{
         buffers::{Buffer, DynBufferManager, MessageBuffer},
+        builder::ConfirmationExt,
         knx::*,
     },
 };
@@ -862,9 +863,7 @@ where
                                             self.chip.max_frame_size(),
                                             self.chip
                                         );
-                                        let mut error_msg = msg;
-                                        error_msg.ctrl_field_mut().set_c(Confirm::Err);
-                                        response_tx.send(error_msg).await;
+                                        response_tx.send(msg.error().build()).await;
                                     } else {
                                         // Convert KNX frame to TP1 format for transmission
                                         let tp1_buffer = utils::knx_to_tp1_message(msg.into_inner());
@@ -873,9 +872,7 @@ where
                                 }
                                 _ => {
                                     // Return error for unsupported service types
-                                    let mut error_msg = msg;
-                                    error_msg.ctrl_field_mut().set_c(Confirm::Err);
-                                    response_tx.send(error_msg).await;
+                                    response_tx.send(msg.error().build()).await;
                                 }
                             }
                         }

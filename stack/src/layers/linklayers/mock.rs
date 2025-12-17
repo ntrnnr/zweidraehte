@@ -10,6 +10,7 @@ use crate::{
     layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
     messages::{
         buffers::Buffer,
+        builder::ConfirmationExt,
         knx::*,
     },
 };
@@ -118,20 +119,15 @@ impl<'a, const N: usize, const C: usize> MockLinkLayer<'a, N, C> {
             // Just pretend we sent the message and issue a confirmation back
             ServiceType::L_Data_Req => {
                 debug!("Mock LL: simulating L_Data_Con for L_Data_Req");
-
-                // Create confirmation by converting the request
-                msg.ctrl_field_mut().set_c(Confirm::NoError);
-                msg.set_service_type(ServiceType::L_Data_Con);
-
-                trace!("Mock LL returning confirmation: {:?}", msg);
-                msg
+                let confirmation = msg.confirm().build();
+                trace!("Mock LL returning confirmation: {:?}", confirmation);
+                confirmation
             }
 
             // Everything else is unhandled - return error confirmation
             _ => {
                 warn!("Mock LL: unhandled request service type: {:?}", msg.service_type());
-                msg.ctrl_field_mut().set_c(Confirm::Err);
-                msg
+                msg.error().build()
             }
         }
     }

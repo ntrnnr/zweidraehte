@@ -43,7 +43,8 @@ use crate::{
     address::IndividualAddress,
     messages::{
         buffers::Buffer,
-        knx::{Confirm, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
+        builder::ConfirmationExt,
+        knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
     },
     objects::tables::{AddressTable, LoadableTable},
 };
@@ -247,9 +248,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             // ─────────────────────────────────────────────────────────────────
             _ => {
                 warn!("TL unhandled request: {:?}", msg.service_type());
-                let mut response = msg;
-                response.ctrl_field_mut().set_c(Confirm::Err);
-                response
+                msg.error().build()
             }
         }
     }
@@ -282,9 +281,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             confirmation
         } else {
             warn!("TL ADT not loaded or invalid conn_nr: {}", msg.get_connection_nr());
-            msg.set_service_type(ServiceType::T_GroupData_Con);
-            msg.ctrl_field_mut().set_c(Confirm::Err);
-            msg
+            msg.error().build()
         }
     }
 
@@ -320,47 +317,33 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
     async fn handle_connect_request(
         &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
+        msg: KnxMessageBuffer<Buffer<'static>>,
     ) -> KnxMessageBuffer<Buffer<'static>> {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
-            _ => {
-                msg.set_service_type(ServiceType::T_Connect_Con);
-                msg.ctrl_field_mut().set_c(Confirm::Err);
-                return msg;
-            }
+            _ => return msg.error().build(),
         };
 
         // Allocate an outgoing connection
         let conn = match self.connections.allocate_outgoing(dest) {
             Some(c) => c,
-            None => {
-                msg.set_service_type(ServiceType::T_Connect_Con);
-                msg.ctrl_field_mut().set_c(Confirm::Err);
-                return msg;
-            }
+            None => return msg.error().build(),
         };
 
         // Process connect request through state machine
         let actions = process_event(conn, TlEvent::RequestConnect { dest });
         self.execute_actions(actions, dest, None).await;
 
-        msg.set_service_type(ServiceType::T_Connect_Con);
-        msg.ctrl_field_mut().set_c(Confirm::NoError);
-        msg
+        msg.confirm().build()
     }
 
     async fn handle_disconnect_request(
         &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
+        msg: KnxMessageBuffer<Buffer<'static>>,
     ) -> KnxMessageBuffer<Buffer<'static>> {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
-            _ => {
-                msg.set_service_type(ServiceType::T_Disconnect_Con);
-                msg.ctrl_field_mut().set_c(Confirm::Err);
-                return msg;
-            }
+            _ => return msg.error().build(),
         };
 
         // Find the connection
@@ -369,9 +352,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             self.execute_actions(actions, dest, None).await;
         }
 
-        msg.set_service_type(ServiceType::T_Disconnect_Con);
-        msg.ctrl_field_mut().set_c(Confirm::NoError);
-        msg
+        msg.confirm().build()
     }
 
     async fn handle_data_request(
@@ -380,21 +361,13 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     ) -> KnxMessageBuffer<Buffer<'static>> {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
-            _ => {
-                msg.set_service_type(ServiceType::T_Data_Con);
-                msg.ctrl_field_mut().set_c(Confirm::Err);
-                return msg;
-            }
+            _ => return msg.error().build(),
         };
 
         // Find the connection
         let conn = match self.connections.find_any(dest) {
             Some(c) => c,
-            None => {
-                msg.set_service_type(ServiceType::T_Data_Con);
-                msg.ctrl_field_mut().set_c(Confirm::Err);
-                return msg;
-            }
+            None => return msg.error().build(),
         };
 
         // Store the message for retransmission before processing

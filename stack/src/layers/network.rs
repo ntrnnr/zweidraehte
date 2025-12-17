@@ -1,5 +1,6 @@
 use embassy_sync::channel::DynamicSender;
 
+use crate::messages::builder::ConfirmationExt;
 use crate::messages::knx::*;
 use crate::{address::IndividualAddress, messages::buffers::Buffer};
 
@@ -146,9 +147,7 @@ impl<'a> NetworkLayer<'a> {
             // Everything else is unhandled - return error confirmation
             _ => {
                 warn!("NL unhandled service type: {:?}", msg.service_type());
-                // Set error and return
-                msg.ctrl_field_mut().set_c(Confirm::Err);
-                msg
+                msg.error().build()
             }
         }
     }

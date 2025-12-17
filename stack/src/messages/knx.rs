@@ -61,6 +61,40 @@ create_protocol_enum!(
     }
 );
 
+impl ServiceType {
+    /// Convert a request service type to its confirmation variant.
+    ///
+    /// This is used when building confirmation messages in response to requests.
+    /// For non-request types (indications, confirmations, or unknown), returns self unchanged.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// assert_eq!(ServiceType::T_Data_Req.to_confirmation(), ServiceType::T_Data_Con);
+    /// assert_eq!(ServiceType::N_GroupData_Req.to_confirmation(), ServiceType::N_GroupData_Con);
+    /// ```
+    pub fn to_confirmation(self) -> ServiceType {
+        match self {
+            // Link layer
+            ServiceType::L_Data_Req => ServiceType::L_Data_Con,
+            // Network layer
+            ServiceType::N_Data_Req => ServiceType::N_Data_Con,
+            ServiceType::N_GroupData_Req => ServiceType::N_GroupData_Con,
+            ServiceType::N_Broadcast_Req => ServiceType::N_Broadcast_Con,
+            ServiceType::N_SystemBroadcast_Req => ServiceType::N_SystemBroadcast_Con,
+            // Transport layer
+            ServiceType::T_Data_Req => ServiceType::T_Data_Con,
+            ServiceType::T_GroupData_Req => ServiceType::T_GroupData_Con,
+            ServiceType::T_Broadcast_Req => ServiceType::T_Broadcast_Con,
+            ServiceType::T_SystemBroadcast_Req => ServiceType::T_SystemBroadcast_Con,
+            ServiceType::T_DataUnack_Req => ServiceType::T_DataUnack_Con,
+            ServiceType::T_Connect_Req => ServiceType::T_Connect_Con,
+            ServiceType::T_Disconnect_Req => ServiceType::T_Disconnect_Con,
+            // Already a confirmation, indication, or unknown - panic
+            _ => panic!("Cannot convert non-request service type {:?} to confirmation", self),
+        }
+    }
+}
+
 create_protocol_enum!(
     /// Priority levels
     #[derive(Eq, PartialEq, Copy, Clone)]
@@ -462,8 +496,25 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
         KnxMessageBuffer { service_type, buf }
     }
 
+    /// Create a KnxMessageBuffer from a buffer, using a default service type.
+    ///
+    /// This is useful when reconstructing a message from a raw buffer where
+    /// the service type will be set separately.
+    pub fn from_buffer(buf: B) -> Self {
+        KnxMessageBuffer { service_type: ServiceType::L_Data_Ind, buf }
+    }
+
+    /// Consume the message and return the inner buffer.
     pub fn into_inner(self) -> B {
         self.buf
+    }
+
+    /// Consume the message and return both the buffer and service type.
+    ///
+    /// This is useful when you need to transform a message while preserving
+    /// its service type (e.g., for confirmations).
+    pub fn into_parts(self) -> (B, ServiceType) {
+        (self.buf, self.service_type)
     }
 
     pub fn buf(&self) -> &B {

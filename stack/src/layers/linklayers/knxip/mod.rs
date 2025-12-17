@@ -18,7 +18,7 @@ use platform::{AsyncUdpMulticastSocket, UdpMulticastSocketOptions, get_interface
 use crate::{
     context::BufferManagerContext,
     layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
-    messages::{buffers::*, knx::*, knxip::*},
+    messages::{buffers::*, builder::ConfirmationExt, knx::*, knxip::*},
 };
 
 pub mod servers;
@@ -610,15 +610,12 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
                         // This is actually OK - the message will be dropped
                     }
                 } else if send_success {
-                    pending.message.ctrl_field_mut().set_c(Confirm::NoError);
-                    pending.response_tx.send(pending.message).await;
+                    pending.response_tx.send(pending.message.confirm().build()).await;
                 } else if send_error {
-                    pending.message.ctrl_field_mut().set_c(Confirm::Err);
-                    pending.response_tx.send(pending.message).await;
+                    pending.response_tx.send(pending.message.error().build()).await;
                 } else {
                     // No server could handle it - send error
-                    pending.message.ctrl_field_mut().set_c(Confirm::Err);
-                    pending.response_tx.send(pending.message).await;
+                    pending.response_tx.send(pending.message.error().build()).await;
                 }
             } else {
                 // This entry is not expired yet, move to next
@@ -835,9 +832,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                                                         response_channel.send(response).await;
                                                     }
                                                     // Send confirmation
-                                                    let mut conf = msg_opt.take().unwrap();
-                                                    conf.ctrl_field_mut().set_c(Confirm::NoError);
-                                                    response_tx.send(conf).await;
+                                                    response_tx.send(msg_opt.take().unwrap().confirm().build()).await;
                                                     handled = true;
                                                     break;
                                                 }
@@ -878,16 +873,12 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
 
                                     if !handled {
                                         // No server could handle it - send error
-                                        let mut error_msg = msg_opt.take().unwrap();
-                                        error_msg.ctrl_field_mut().set_c(Confirm::Err);
-                                        response_tx.send(error_msg).await;
+                                        response_tx.send(msg_opt.take().unwrap().error().build()).await;
                                     }
                                 }
                                 _ => {
                                     // Return error for unsupported service types
-                                    let mut error_msg = msg;
-                                    error_msg.ctrl_field_mut().set_c(Confirm::Err);
-                                    response_tx.send(error_msg).await;
+                                    response_tx.send(msg.error().build()).await;
                                 }
                             }
                         }

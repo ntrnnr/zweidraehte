@@ -60,6 +60,10 @@ pub mod direction {
     /// Message flowing DOWN the stack (Application → Transport → Network → Link)
     /// These are requests to send data.
     pub struct Request;
+
+    /// Confirmation message sent in response to a request.
+    /// Reuses the original request's buffer with modified service type and confirm flag.
+    pub struct Confirmation;
 }
 
 // ============================================================================
@@ -69,6 +73,7 @@ pub mod direction {
 /// Type-level marker for builder state progression
 pub mod state {
     use super::*;
+    use crate::messages::knx::Confirm;
 
     /// Freshly allocated buffer with no context set
     pub struct Allocated;
@@ -91,6 +96,13 @@ pub mod state {
         pub network: NetworkRequest,
         pub transport_service: ServiceType,
         pub apci: ApciCode,
+    }
+
+    /// Confirmation ready to be built.
+    /// The service type will be converted from _Req to _Con and the confirm flag set.
+    pub struct ConfirmationReady {
+        pub service_type: ServiceType,
+        pub confirm: Confirm,
     }
 }
 
@@ -365,5 +377,78 @@ impl IndicationExt for KnxMessageBuffer<Buffer<'static>> {
         buffer: Buffer<'static>,
     ) -> MessageBuilder<Buffer<'static>, direction::Request, state::NetworkRequest> {
         MessageBuilder::respond_to(buffer, self)
+    }
+}
+
+// ============================================================================
+// Confirmation Building
+// ============================================================================
+
+use crate::messages::knx::Confirm;
+
+/// Extension trait for converting request messages to confirmations.
+///
+/// This provides a type-safe way to build confirmation messages that:
+/// - Automatically converts service types (T_Data_Req → T_Data_Con)
+/// - Sets the appropriate Confirm flag (NoError or Err)
+/// - Reuses the original request's buffer (zero-copy)
+///
+/// # Example
+/// ```ignore
+/// use crate::messages::builder::ConfirmationExt;
+///
+/// async fn handle_request(&mut self, msg: KnxMessageBuffer<...>) -> KnxMessageBuffer<...> {
+///     match process(&msg) {
+///         Ok(_) => msg.confirm().build(),
+///         Err(_) => msg.error().build(),
+///     }
+/// }
+/// ```
+pub trait ConfirmationExt {
+    /// Convert this request message into a successful confirmation.
+    ///
+    /// Sets `Confirm::NoError` and converts service type (e.g., T_Data_Req → T_Data_Con).
+    fn confirm(self) -> MessageBuilder<Buffer<'static>, direction::Confirmation, state::ConfirmationReady>;
+
+    /// Convert this request message into an error confirmation.
+    ///
+    /// Sets `Confirm::Err` and converts service type (e.g., T_Data_Req → T_Data_Con).
+    fn error(self) -> MessageBuilder<Buffer<'static>, direction::Confirmation, state::ConfirmationReady>;
+}
+
+impl ConfirmationExt for KnxMessageBuffer<Buffer<'static>> {
+    fn confirm(self) -> MessageBuilder<Buffer<'static>, direction::Confirmation, state::ConfirmationReady> {
+        let (buffer, service_type) = self.into_parts();
+        MessageBuilder {
+            buffer,
+            _direction: PhantomData,
+            state: state::ConfirmationReady { service_type, confirm: Confirm::NoError },
+        }
+    }
+
+    fn error(self) -> MessageBuilder<Buffer<'static>, direction::Confirmation, state::ConfirmationReady> {
+        let (buffer, service_type) = self.into_parts();
+        MessageBuilder {
+            buffer,
+            _direction: PhantomData,
+            state: state::ConfirmationReady { service_type, confirm: Confirm::Err },
+        }
+    }
+}
+
+// ============================================================================
+// Confirmation Builder Implementation
+// ============================================================================
+
+impl MessageBuilder<Buffer<'static>, direction::Confirmation, state::ConfirmationReady> {
+    /// Build the confirmation message.
+    ///
+    /// This finalizes the confirmation by:
+    /// - Converting the service type from _Req to _Con
+    /// - Setting the Confirm flag (NoError or Err)
+    pub fn build(self) -> KnxMessageBuffer<Buffer<'static>> {
+        let mut msg = KnxMessageBuffer::new(self.buffer, self.state.service_type.to_confirmation());
+        msg.ctrl_field_mut().set_c(self.state.confirm);
+        msg
     }
 }
