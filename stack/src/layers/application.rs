@@ -322,9 +322,11 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
             // Allocate a new message for the response
             let msg_buf = self.buffer_manager.borrow().alloc_with_size(object_size + msg_offset).await;
-            let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_GroupData_Req);
 
-            // Fill in the message fields (but not APCI yet - it might overlap with data)
+            // Build the GroupValueResponse message
+            // Note: We can't use respond_with() because group communication uses connection_nr (TSAP)
+            // instead of individual addressing, so we manually build with the required fields
+            let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_GroupData_Req);
             msg.ctrl_field_mut().set_priority(cot_info.flags.priority());
             msg.set_connection_nr(tsap);
 
@@ -410,6 +412,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
                 // Allocate a new message with the required size
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(object_size + msg_offset).await;
+
+                // Note: We don't use MessageBuilder here because group communication uses
+                // connection_nr (TSAP) instead of individual addressing, which the builder
+                // doesn't support yet. Group services have different semantics.
                 let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_GroupData_Req);
 
                 // Fill in a few other fields
@@ -476,6 +482,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[5-6]: Type + MaxElements
     /// - APDU[7]: Read/Write Access Levels
     async fn handle_property_description_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
+        use crate::messages::builder::IndicationExt;
+
         // Determine response service type based on incoming service type
         let response_service_type = match ind.service_type() {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
@@ -505,25 +513,20 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         // Query the interface object server
         let response = self.interface_object_server.property_description_read(object_idx, prop_id, prop_idx);
 
-        // Get source address to use as destination for response
-        let source_addr = ind.get_source_addr();
-
         match response {
             Ok(desc) => {
                 // Allocate response message: APCI(2) + ObjectIdx(1) + PropId(1) + PropIdx(1) + TypeMax(2) + Access(1) = 8
                 const RESPONSE_LEN: usize = offsets::MSG_APCI + 8;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
-                let mut msg = KnxMessageBuffer::new(msg_buf, response_service_type);
 
-                // Set destination to the original sender
-                msg.set_dest_addr(DestinationAddress::Individual(source_addr));
-
-                // Set APCI code
-                msg.set_apci_code(ApciCode::PropertyDescriptionResponse);
-
-                // Encode the response into the message buffer
-                let response_buf = &mut msg.buf_mut()[offsets::MSG_APCI + 2..];
-                let _len = desc.encode(response_buf);
+                let msg = ind
+                    .respond_with(msg_buf)
+                    .with_application(ApciCode::PropertyDescriptionResponse, response_service_type)
+                    .with_data(|data| {
+                        // Encode the response into the message buffer
+                        let response_buf = &mut data[offsets::MSG_APCI + 2..];
+                        let _len = desc.encode(response_buf);
+                    });
 
                 debug!("AL sending PropertyDescriptionResponse: {:?}", desc);
 
@@ -537,16 +540,16 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
-                let mut msg = KnxMessageBuffer::new(msg_buf, response_service_type);
 
-                msg.set_dest_addr(DestinationAddress::Individual(source_addr));
-                msg.set_apci_code(ApciCode::PropertyDescriptionResponse);
-
-                // Error response: prop_id = 0 indicates "no such property"
-                let response_buf = msg.buf_mut();
-                response_buf[offsets::MSG_APCI + 2] = object_idx as u8;
-                response_buf[offsets::MSG_APCI + 3] = 0; // prop_id = 0 indicates error
-                response_buf[offsets::MSG_APCI + 4] = prop_idx;
+                let msg = ind
+                    .respond_with(msg_buf)
+                    .with_application(ApciCode::PropertyDescriptionResponse, response_service_type)
+                    .with_data(|data| {
+                        // Error response: prop_id = 0 indicates "no such property"
+                        data[offsets::MSG_APCI + 2] = object_idx as u8;
+                        data[offsets::MSG_APCI + 3] = 0; // prop_id = 0 indicates error
+                        data[offsets::MSG_APCI + 4] = prop_idx;
+                    });
 
                 let confirmation = self.transport_layer.request(msg).await;
                 trace!("AL PropertyDescriptionResponse (error) confirmation: {:?}", confirmation.service_type());
@@ -575,6 +578,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits]
     /// - APDU[6..]: Data
     async fn handle_property_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
+        use crate::messages::builder::IndicationExt;
+
         // Determine response service type based on incoming service type
         let response_service_type = match ind.service_type() {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
@@ -603,9 +608,6 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         debug!("AL PropertyValueRead: obj={}, prop_id={}, count={}, start={}", object_idx, prop_id, count, start_idx);
 
-        // Get source address to use as destination for response
-        let source_addr = ind.get_source_addr();
-
         // Allocate a buffer for the response data
         // Max APDU size is typically 14 bytes for TP1, so max data is about 8 bytes
         // We'll use a reasonable max and let the handler limit it
@@ -621,24 +623,21 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 // Allocate response message: APCI(2) + ObjIdx(1) + PropId(1) + Count+StartIdx(2) + Data(N)
                 let response_len = offsets::MSG_APCI + 6 + data_len;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
-                let mut msg = KnxMessageBuffer::new(msg_buf, response_service_type);
 
-                // Set destination to the original sender
-                msg.set_dest_addr(DestinationAddress::Individual(source_addr));
+                let msg = ind
+                    .respond_with(msg_buf)
+                    .with_application(ApciCode::PropertyValueResponse, response_service_type)
+                    .with_data(|data| {
+                        // Fill in the response header
+                        data[offsets::MSG_APCI + 2] = object_idx as u8;
+                        data[offsets::MSG_APCI + 3] = prop_id;
+                        data[offsets::MSG_APCI + 4] = (count_start >> 8) as u8;
+                        data[offsets::MSG_APCI + 5] = count_start as u8;
 
-                // Set APCI code
-                msg.set_apci_code(ApciCode::PropertyValueResponse);
-
-                // Fill in the response header
-                let response_buf = msg.buf_mut();
-                response_buf[offsets::MSG_APCI + 2] = object_idx as u8;
-                response_buf[offsets::MSG_APCI + 3] = prop_id;
-                response_buf[offsets::MSG_APCI + 4] = (count_start >> 8) as u8;
-                response_buf[offsets::MSG_APCI + 5] = count_start as u8;
-
-                // Copy the data
-                response_buf[offsets::MSG_APCI + 6..offsets::MSG_APCI + 6 + data_len]
-                    .copy_from_slice(&data_buf[..data_len]);
+                        // Copy the data
+                        data[offsets::MSG_APCI + 6..offsets::MSG_APCI + 6 + data_len]
+                            .copy_from_slice(&data_buf[..data_len]);
+                    });
 
                 debug!("AL sending PropertyValueResponse: {} bytes", data_len);
 
@@ -652,18 +651,18 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 6;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
-                let mut msg = KnxMessageBuffer::new(msg_buf, response_service_type);
 
-                msg.set_dest_addr(DestinationAddress::Individual(source_addr));
-                msg.set_apci_code(ApciCode::PropertyValueResponse);
-
-                // Error response: count = 0 indicates error
-                let response_buf = msg.buf_mut();
-                response_buf[offsets::MSG_APCI + 2] = object_idx as u8;
-                response_buf[offsets::MSG_APCI + 3] = prop_id;
-                // Count = 0, keep start_idx
-                response_buf[offsets::MSG_APCI + 4] = (start_idx >> 8) as u8;
-                response_buf[offsets::MSG_APCI + 5] = start_idx as u8;
+                let msg = ind
+                    .respond_with(msg_buf)
+                    .with_application(ApciCode::PropertyValueResponse, response_service_type)
+                    .with_data(|data| {
+                        // Error response: count = 0 indicates error
+                        data[offsets::MSG_APCI + 2] = object_idx as u8;
+                        data[offsets::MSG_APCI + 3] = prop_id;
+                        // Count = 0, keep start_idx
+                        data[offsets::MSG_APCI + 4] = (start_idx >> 8) as u8;
+                        data[offsets::MSG_APCI + 5] = start_idx as u8;
+                    });
 
                 let confirmation = self.transport_layer.request(msg).await;
                 trace!("AL PropertyValueResponse (error) confirmation: {:?}", confirmation.service_type());
@@ -693,6 +692,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits] (count=0 on error)
     /// - APDU[6..]: Written data (echo back on success)
     async fn handle_property_value_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
+        use crate::messages::builder::IndicationExt;
+
         // Determine response service type based on incoming service type
         let response_service_type = match ind.service_type() {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
@@ -729,9 +730,6 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             object_idx, prop_id, count, start_idx, data_len
         );
 
-        // Get source address to use as destination for response
-        let source_addr = ind.get_source_addr();
-
         // Perform the write
         let result = self.interface_object_server.property_value_write(object_idx, prop_id, start_idx, data);
 
@@ -740,19 +738,19 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 // Success: echo back the written data
                 let response_len = offsets::MSG_APCI + 6 + data_len;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
-                let mut msg = KnxMessageBuffer::new(msg_buf, response_service_type);
 
-                msg.set_dest_addr(DestinationAddress::Individual(source_addr));
-                msg.set_apci_code(ApciCode::PropertyValueResponse);
+                let msg = ind
+                    .respond_with(msg_buf)
+                    .with_application(ApciCode::PropertyValueResponse, response_service_type)
+                    .with_data(|response_buf| {
+                        response_buf[offsets::MSG_APCI + 2] = object_idx as u8;
+                        response_buf[offsets::MSG_APCI + 3] = prop_id;
+                        response_buf[offsets::MSG_APCI + 4] = (count_start >> 8) as u8;
+                        response_buf[offsets::MSG_APCI + 5] = count_start as u8;
 
-                let response_buf = msg.buf_mut();
-                response_buf[offsets::MSG_APCI + 2] = object_idx as u8;
-                response_buf[offsets::MSG_APCI + 3] = prop_id;
-                response_buf[offsets::MSG_APCI + 4] = (count_start >> 8) as u8;
-                response_buf[offsets::MSG_APCI + 5] = count_start as u8;
-
-                // Echo back the written data
-                response_buf[offsets::MSG_APCI + 6..offsets::MSG_APCI + 6 + data_len].copy_from_slice(data);
+                        // Echo back the written data
+                        response_buf[offsets::MSG_APCI + 6..offsets::MSG_APCI + 6 + data_len].copy_from_slice(data);
+                    });
 
                 debug!("AL sending PropertyValueResponse (write success): {} bytes", data_len);
 
@@ -765,18 +763,18 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 6;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
-                let mut msg = KnxMessageBuffer::new(msg_buf, response_service_type);
 
-                msg.set_dest_addr(DestinationAddress::Individual(source_addr));
-                msg.set_apci_code(ApciCode::PropertyValueResponse);
-
-                // Error response: count = 0 indicates error
-                let response_buf = msg.buf_mut();
-                response_buf[offsets::MSG_APCI + 2] = object_idx as u8;
-                response_buf[offsets::MSG_APCI + 3] = prop_id;
-                // Count = 0, keep start_idx
-                response_buf[offsets::MSG_APCI + 4] = (start_idx >> 8) as u8;
-                response_buf[offsets::MSG_APCI + 5] = start_idx as u8;
+                let msg = ind
+                    .respond_with(msg_buf)
+                    .with_application(ApciCode::PropertyValueResponse, response_service_type)
+                    .with_data(|response_buf| {
+                        // Error response: count = 0 indicates error
+                        response_buf[offsets::MSG_APCI + 2] = object_idx as u8;
+                        response_buf[offsets::MSG_APCI + 3] = prop_id;
+                        // Count = 0, keep start_idx
+                        response_buf[offsets::MSG_APCI + 4] = (start_idx >> 8) as u8;
+                        response_buf[offsets::MSG_APCI + 5] = start_idx as u8;
+                    });
 
                 let confirmation = self.transport_layer.request(msg).await;
                 trace!("AL PropertyValueResponse (write error) confirmation: {:?}", confirmation.service_type());
@@ -806,15 +804,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[0-1]: APCI (DeviceDescriptorResponse with descriptor type in low 6 bits)
     /// - APDU[2-3]: Mask version (only if descriptor type is 0)
     async fn handle_device_descriptor_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        // Determine response service type based on incoming service type
-        let response_service_type = match ind.service_type() {
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
-            other => {
-                warn!("AL DeviceDescriptorRead unexpected service type: {:?}", other);
-                return;
-            }
-        };
+        use crate::messages::builder::IndicationExt;
 
         // DeviceDescriptorRead APDU: [APCI:2] where the descriptor type is in the lower 6 bits
         // Minimum length: MSG_APCI + 2 = 8 bytes
@@ -831,50 +821,47 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         debug!("AL DeviceDescriptorRead: descriptor_type={}", descriptor_type);
 
-        // Get source address to use as destination for response
-        let source_addr = ind.get_source_addr();
+        // Determine transport service type
+        let transport_service = match ind.service_type() {
+            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
+            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
+            other => {
+                warn!("AL DeviceDescriptorRead unexpected service type: {:?}", other);
+                return;
+            }
+        };
 
         if descriptor_type == 0 {
             // Descriptor type 0: respond with mask version (2 bytes)
             const RESPONSE_LEN: usize = offsets::MSG_APCI + 4; // APCI(2) + MaskVersion(2)
             let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
-            let mut msg = KnxMessageBuffer::new(msg_buf, response_service_type);
 
-            // Set destination to the original sender
-            msg.set_dest_addr(DestinationAddress::Individual(source_addr));
-
-            // Preserve priority from the incoming request
-            msg.ctrl_field_mut().set_priority(ind.ctrl_field().priority());
-
-            // Set APCI code
-            msg.set_apci_code(ApciCode::DeviceDescriptorResponse);
-
-            // Set descriptor type to 0 in the response
-            msg.buf_mut()[offsets::MSG_APCI + 1] = (msg.buf()[offsets::MSG_APCI + 1] & 0xC0) | 0x00;
-
-            // Copy mask version
-            msg.buf_mut()[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4].copy_from_slice(D::MASK_VERSION);
+            let msg = ind
+                .respond_with(msg_buf)
+                .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
+                .with_data(|data| {
+                    // Set descriptor type to 0 in the response
+                    data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0) | 0x00;
+                    // Copy mask version
+                    data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4].copy_from_slice(D::MASK_VERSION);
+                });
 
             debug!("AL sending DeviceDescriptorResponse: mask_version={:02x?}", D::MASK_VERSION);
 
-            // Send the response
             let confirmation = self.transport_layer.request(msg).await;
             trace!("AL DeviceDescriptorResponse confirmation: {:?}", confirmation.service_type());
         } else {
             // Any other descriptor type: error response with type = 0x3F, no data
             const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 2; // APCI(2) only, no data
             let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
-            let mut msg = KnxMessageBuffer::new(msg_buf, response_service_type);
 
-            msg.set_dest_addr(DestinationAddress::Individual(source_addr));
-
-            // Preserve priority from the incoming request
-            msg.ctrl_field_mut().set_priority(ind.ctrl_field().priority());
-
-            msg.set_apci_code(ApciCode::DeviceDescriptorResponse);
-
-            // Set descriptor type to 0x3F (all 6 bits set) to indicate error
-            msg.buf_mut()[offsets::MSG_APCI + 1] = (msg.buf()[offsets::MSG_APCI + 1] & 0xC0) | 0x3F;
+            let msg = ind
+                .respond_with(msg_buf)
+                .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
+                .with_data(|data| {
+                    // Set descriptor type to 0x3F (all 6 bits set) to indicate error
+                    data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0) | 0x3F;
+                });
 
             debug!("AL sending DeviceDescriptorResponse (error): descriptor_type=0x3F");
 

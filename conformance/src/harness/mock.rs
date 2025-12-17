@@ -12,11 +12,11 @@ use embassy_sync::{
 
 use zweidraehte::{
     context::BufferManagerContext,
+    encoding::tp1,
     layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
     messages::{
         buffers::Buffer,
         knx::*,
-        tp1,
     },
 };
 

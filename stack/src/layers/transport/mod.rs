@@ -43,7 +43,7 @@ use crate::{
     address::IndividualAddress,
     messages::{
         buffers::Buffer,
-        knx::{Confirm, DestinationAddress, KnxMessageBuffer, ServiceType, Tpci},
+        knx::{Confirm, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
     },
     objects::tables::{AddressTable, LoadableTable},
 };
@@ -588,14 +588,21 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
     /// Send a T_Connect PDU to establish a connection
     async fn send_connect(&mut self, dest: IndividualAddress) {
+        use crate::messages::builder::MessageBuilder;
+
         // Control PDUs need only the basic header (7 bytes up to and including TPCI)
         const CONTROL_PDU_LEN: usize = 7;
 
         let msg_buf = self.buffer_manager.borrow().alloc_with_size(CONTROL_PDU_LEN).await;
-        let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::N_Data_Req);
 
-        msg.set_dest_addr(DestinationAddress::Individual(dest));
-        msg.set_tpci(Tpci::Connect);
+        let msg = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::N_Data_Req,
+            Priority::System,
+            DestinationAddress::Individual(dest),
+        )
+        .with_transport_control(Tpci::Connect)
+        .build();
 
         debug!("TL sending T_Connect to {}", dest);
         let _confirmation = self.network_layer.request(msg).await;
@@ -603,13 +610,20 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
     /// Send a T_Disconnect PDU to close a connection
     async fn send_disconnect(&mut self, dest: IndividualAddress) {
+        use crate::messages::builder::MessageBuilder;
+
         const CONTROL_PDU_LEN: usize = 7;
 
         let msg_buf = self.buffer_manager.borrow().alloc_with_size(CONTROL_PDU_LEN).await;
-        let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::N_Data_Req);
 
-        msg.set_dest_addr(DestinationAddress::Individual(dest));
-        msg.set_tpci(Tpci::Disconnect);
+        let msg = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::N_Data_Req,
+            Priority::System,
+            DestinationAddress::Individual(dest),
+        )
+        .with_transport_control(Tpci::Disconnect)
+        .build();
 
         debug!("TL sending T_Disconnect to {}", dest);
         let _confirmation = self.network_layer.request(msg).await;
@@ -617,13 +631,20 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
     /// Send a T_ACK PDU to acknowledge received data
     async fn send_ack(&mut self, dest: IndividualAddress, seq_no: u8) {
+        use crate::messages::builder::MessageBuilder;
+
         const CONTROL_PDU_LEN: usize = 7;
 
         let msg_buf = self.buffer_manager.borrow().alloc_with_size(CONTROL_PDU_LEN).await;
-        let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::N_Data_Req);
 
-        msg.set_dest_addr(DestinationAddress::Individual(dest));
-        msg.set_tpci(Tpci::Ack(seq_no));
+        let msg = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::N_Data_Req,
+            Priority::System,
+            DestinationAddress::Individual(dest),
+        )
+        .with_transport_control(Tpci::Ack(seq_no))
+        .build();
 
         debug!("TL sending T_ACK({}) to {}", seq_no, dest);
         let _confirmation = self.network_layer.request(msg).await;
@@ -631,13 +652,20 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
     /// Send a T_NACK PDU to signal an error in received data
     async fn send_nack(&mut self, dest: IndividualAddress, seq_no: u8) {
+        use crate::messages::builder::MessageBuilder;
+
         const CONTROL_PDU_LEN: usize = 7;
 
         let msg_buf = self.buffer_manager.borrow().alloc_with_size(CONTROL_PDU_LEN).await;
-        let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::N_Data_Req);
 
-        msg.set_dest_addr(DestinationAddress::Individual(dest));
-        msg.set_tpci(Tpci::Nack(seq_no));
+        let msg = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::N_Data_Req,
+            Priority::System,
+            DestinationAddress::Individual(dest),
+        )
+        .with_transport_control(Tpci::Nack(seq_no))
+        .build();
 
         debug!("TL sending T_NACK({}) to {}", seq_no, dest);
         let _confirmation = self.network_layer.request(msg).await;

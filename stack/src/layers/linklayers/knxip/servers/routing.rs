@@ -17,9 +17,9 @@ use embassy_time::Instant;
 use heapless::Vec;
 
 use crate::{
+    encoding::cemi::{CemiLData, CemiMessageCode, cemi_to_knx_message, knx_to_cemi_message},
     messages::{
         buffers::{Buffer, MessageBuffer},
-        cemi::{CemiLData, CemiMessageCode, cemi_to_knx_message, knx_to_cemi_message},
         knx::KnxMessageBuffer,
         knxip::{KNXnetIPServiceType, RoutingBusy, RoutingIndication, RoutingIndicationBuilder},
     },

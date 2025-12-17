@@ -15,6 +15,7 @@ pub mod bcus;
 pub mod config;
 pub mod context;
 pub mod dpt;
+pub mod encoding;
 pub mod error;
 pub mod layers;
 pub mod messages;
