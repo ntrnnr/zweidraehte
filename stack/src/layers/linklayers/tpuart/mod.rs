@@ -1,827 +1,917 @@
-use core::{
-    cell::RefCell,
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
-};
+//! TPUART Link Layer Implementation
+//!
+//! This module implements the KNX TP1 link layer using TPUART-compatible chips.
+//!
+//! ## Supported Chips
+//!
+//! - Siemens TPUART1 (legacy, 64 byte max frame)
+//! - Siemens TPUART2 (64 byte max frame)
+//! - ON Semiconductor NCN5120/5121/5130 (256 byte extended frames)
+//! - Elmos E981.03 (256 byte extended frames)
+//!
+//! ## Features
+//!
+//! - Automatic chip detection during initialization
+//! - Configurable NAK/BUSY retry counts
+//! - Bus failure detection (after repeated reset failures)
+//! - Repeated telegram detection and filtering
+//! - Invalidation state for error recovery (3ms timeout)
+//! - Individual address ACK via hardware (set during init)
+//! - Frame size validation per chip capabilities
+//!
+//! ## Architecture
+//!
+//! The implementation uses a pure state machine pattern for testability,
+//! with async I/O handled separately in the action executor.
+//!
+//! ## Future Work
+//!
+//! - Statistics collection
+//!
+//! ## Bus Monitor Mode
+//!
+//! The [`busmon::BusMonitor`] struct provides an ergonomic async interface for bus monitor
+//! mode. In this mode, the TPUART chip passively captures all bus traffic including
+//! ACK/NACK/BUSY bytes and collision events.
+//!
+//! See the [`busmon`] module for usage details.
+//!
+//! **Note**: Bus monitor mode is mutually exclusive with normal operation. Once enabled,
+//! a chip reset is required to return to normal mode.
 
-use embassy_futures::select::{Either, Either3, select, select3};
+use core::cell::RefCell;
+
+use embassy_futures::select::{Either3, select3};
 use embassy_sync::channel::DynamicSender;
-use embassy_time::{Duration, Timer};
-use pin_project::pin_project;
-use zerocopy::{FromBytes, Immutable, KnownLayout, Ref, Unaligned};
+use embassy_time::{Instant, Timer};
 
 use crate::{
-    address::{GroupAddress, IndividualAddress, KNXAddress},
+    address::IndividualAddress,
     messages::{
         buffers::{Buffer, DynBufferManager, MessageBuffer},
-        builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
+        builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage},
         knx::*,
     },
 };
 
 use super::super::{Inbox, Layer, LayerOp};
 
-pub mod utils;
+pub mod busmon;
+mod chip;
+mod state_machine;
 
-// TODO:
-// * If the length of the LSDU requires an L_Data-Frame with value of the field Length ≥ 255
-//   characters, then no L_Data-Frame shall be transmitted on the bus; the L_Data.req shall
-//   be confirmed by an L_Data.con with l_status = not_ok
-// * If the remote Data Link Layer instance receives an L_Data-Frame, it shall check the Frame correctness.
-//   An L_Data-Frame shall be considered correct if all of the following requirements are fulfilled.
-//       1. The L_Data-Frame is correct according the general KNX TP1 Frame check conditions as
-//          specified in clause 2.5.3 Checking for correct request Frames.
-//       2. The length of the Frame is between 8 and 23 characters for an L_Data_Standard-Frame or
-//          between 9 and 263 for an L_Data_Extended-Frame. (The character counting includes the Check
-//          octet.)
-// * If the received Frame is not correct then it shall not be passed to the Data Link Layer user.
-// * Address checking as per 01/03/02 2.4.2
+use chip::{ChipType, RetryConfig};
+use crate::encoding::tp1::{knx_to_tp1_message, tp1_to_knx_message};
+use state_machine::*;
 
-// FIXME: if frame is invalid (or oversized), go to invalid state, transition to Idle after timeout of 2ms (2.5ms?) - openknx does this
-//        maybe generally make the state machine simpler like openknx
-// FIXME: can't use an ftdi anymore, because round trip times are too long for timeouts like 2ms
-// FIXME: if incoming frame is oversized, reject it, don't ACK
-// FIXME: ACK received frames when we handle the destination group address
-// FIXME: Detect repeated frames that we already sent an indication upwards for and ignore them
-// FIXME: Add support for NCN5120/30/31
-// FIXME: Add support for TPUART1?
-// FIXME: Add support for Elmos
-// FIXME: Do we want to support BUSY singalling? Maybe for flash erasure and similar when the CPU stalls on AVRs or other small controllers?
-// FIXME: add support fo bus monitor mode
-// FIXME: add statistics?
-// FIMXE: when running into RX timeouts, should we reset the TPUART? In case of n unsuccessful attempts to reset,
-//        we can mark the bus a failed and keep resetting until we succeed. We need to test this with a microcontroller
-//        that is independent from a TPUART and runs without bus power supply
+use crate::address::GroupAddress;
 
-// FIXME: right now we detect end of frames by parsing them and checking the length fields
-//        the TPUART datasheet says we should rather detect this by applying a timeout of 2ms to 2.5ms
-//        we can't do that with an FTDI or similar though, do we keep this?
-// FIXME: Do we want a keepalive mechanism with a timer and state requests? Do we are if the bus is okay or not?
-// FIXME: Do we want a timer that handles confirmations when transmitting?
-//        Right now we trust the TPUART to give us a positive or negative confirmation after n retransmissions
+// Re-export for external use
+pub use chip::ChipType as TpUartChipType;
 
-/// TP-Uart services
-const L_DATA_CON: u8 = 0x0b;
-const L_DATA_EXTENDED_IND: u8 = 0x10;
-//const L_DATA_STANDARD_IND: u8 = 0x90;
-//const L_POLL_DATA_IND: u8     = 0xf0;
-const U_RESET_REQ: u8 = 0x01;
-const U_STATE_RQ: u8 = 0x02;
-const U_RESET_IND: u8 = 0x03;
-const U_STATE_IND: u8 = 0x07;
-const U_ACK_INFORMATION: u8 = 0x10;
-const U_L_DATA_START: u8 = 0x80;
-const U_L_DATA_END: u8 = 0x40;
-const U_MAX_RST_CNT: u8 = 0x24;
-const U_SET_ADDRESS: u8 = 0x28;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TpUartChip {
-    //TpUart1,
-    TpUart2,
-    //Ncn5120,
-    //E981
-}
-
-impl TpUartChip {
-    /// Maximum frame size including control byte and checksum
-    fn max_frame_size(&self) -> usize {
-        match self {
-            //TpUartChip::TpUart1 => 64,
-            TpUartChip::TpUart2 => 64,
-            //TpUartChip::Ncn5120 => 256,
-            //TpUartChip::E981 => 256,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum TpUartState {
-    New,
-    Error,
-    Start,
-    InReset,
-    InSendConfig,
-    InGetState,
-
-    /// The TP-Uart is configured and waiting to receive a frame from the bus
-    /// or transmit a frame
-    Idle,
-
-    /// The TP-Uart received an L-Data.ind (Standard or extended) and receives
-    /// the frame byte by byte. After it gathered enough of the frame if can
-    /// parse the `expected_len` and receive as many bytes as necessary from the
-    /// bus.
-    /// Should a frame be received completely and the FCS is correct, it
-    /// is passed to the upper layer.
-    /// In case of a wrong FCS, the frame is silently discarded.
-    /// In case of a timeout, the state is transitioned into `ReceiveTimeout`
-    Receive {
-        acked: bool,
-        expected_len: Option<usize>,
-        is_echo: bool,
-    },
-
-    /// Transmission completed, waiting for ACK/NACK confirmation.
-    /// During this time, more frames caused by automatic retransmissions may be received.
-    WaitingForConfirmation,
-
-    ReceiveTimeout,
-    // WaitKeepalive,
-    // BusMonitor,
-    Invalid,
-}
-
-#[pin_project]
-struct Timeout<State: Copy> {
-    pending_timeout: Option<Duration>,
-    num_attempts: usize,
-    max_retries: usize,
-    retry_state: Option<State>,
-    failure_state: Option<State>,
-    #[pin]
-    timer: Option<Timer>,
-}
-
-impl<State: Copy> Timeout<State> {
-    fn new() -> Self {
-        Self {
-            pending_timeout: None,
-            num_attempts: 0,
-            max_retries: 0,
-            retry_state: None,
-            failure_state: None,
-            timer: None,
-        }
-    }
-
-    fn start(&mut self, failure_state: State, retry_state: State, timeout: Duration, max_retries: usize) {
-        self.pending_timeout = Some(timeout);
-        self.max_retries = max_retries;
-        self.retry_state = Some(retry_state);
-        self.failure_state = Some(failure_state);
-        self.timer = Some(Timer::after(timeout));
-    }
-
-    fn stop(&mut self) {
-        self.pending_timeout = None;
-        self.num_attempts = 0;
-        self.max_retries = 0;
-        self.retry_state = None;
-        self.failure_state = None;
-        self.timer = None;
-    }
-
-    fn retry(&mut self) {
-        self.num_attempts += 1;
-        if let Some(timeout) = self.pending_timeout {
-            self.timer = Some(Timer::after(timeout));
-        }
-    }
-}
-
-// Future implementation that resolves when timer expires
-impl<State: Copy> Future for Timeout<State> {
-    type Output = State;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.project();
-
-        // Check if we have a pending timeout
-        if this.pending_timeout.is_none() {
-            return Poll::Pending; // No timeout active
-        }
-
-        // Determine which state to return based on attempts
-        let target_state = if *this.num_attempts == *this.max_retries {
-            *this.failure_state.as_ref().unwrap()
-        } else {
-            *this.retry_state.as_ref().unwrap()
-        };
-
-        // Poll the timer if we have one
-        if let Some(timer) = this.timer.as_mut().as_pin_mut() {
-            match timer.poll(cx) {
-                // Timer expired, resolve with the target state
-                Poll::Ready(_) => Poll::Ready(target_state),
-                // Timer still pending, return Poll::Pending
-                Poll::Pending => Poll::Pending,
-            }
-        } else {
-            // No timer, remain pending
-            Poll::Pending
-        }
-    }
-}
-
-/// Start of a TP1 standard frame
+/// Trait for checking if a group address should be acknowledged
 ///
-/// see KNX 03/02/02 - 2.2.4.1
-#[derive(Debug, FromBytes, Unaligned, KnownLayout, Immutable)]
-#[repr(C)]
-struct TPFrameHeaderStandard {
-    ctrl: u8,
-    source_addr: IndividualAddress,
-    dst_addr: [u8; 2],
-    at_length: u8,
-}
-
-/// Start of a TP1 extended frame
+/// This is used by the TPUART link layer to determine whether to send an ACK
+/// for incoming frames addressed to group addresses. The link layer will call
+/// this after receiving the destination address (byte 6) to decide whether to
+/// acknowledge the frame.
 ///
-/// see KNX 03/02/02 - 2.2.5.1
-#[derive(Debug, FromBytes, Unaligned, KnownLayout, Immutable)]
-#[repr(C)]
-struct TPFrameHeaderExtended {
-    ctrl: u8,
-    ext_ctrl: u8,
-    source_addr: IndividualAddress,
-    dst_addr: [u8; 2],
-    length: u8,
-}
-
-/// ReceiveInfo contains information about an ongoing reception of a frame and
-/// info parsed from a partially received frame still on the wire.
+/// # Implementation Notes
 ///
-/// Parsed info contains information like the expected length, if the frame
-/// should be acked because a destination address matched, if it's an echo
-/// because we are transmitting this frame currently etc.
-#[derive(Debug)]
-enum ReceiveInfo {
-    None,
-    ParsedHeader { ack: bool, expected_len: usize, is_echo: bool },
-    ReceiveComplete,
-    TransmitComplete,
+/// - Return `true` if the address is in the address table and the table is loaded
+/// - Return `false` if the table is not loaded or the address is not found
+/// - This is called synchronously during frame reception, so implementations
+///   should be fast (e.g., using RefCell, not async)
+///
+/// # Example
+///
+/// ```ignore
+/// use std::cell::RefCell;
+///
+/// struct MyAddressChecker<'a> {
+///     addr_table: &'a RefCell<AddrTab7>,
+/// }
+///
+/// impl AddressChecker for MyAddressChecker<'_> {
+///     fn should_ack_group_address(&self, address: GroupAddress) -> bool {
+///         let table = self.addr_table.borrow();
+///         table.is_loaded() && table.contains(address)
+///     }
+/// }
+/// ```
+pub trait AddressChecker {
+    /// Check if a group address should be acknowledged
+    ///
+    /// Returns `true` if the link layer should send an ACK for this group address.
+    fn should_ack_group_address(&self, address: GroupAddress) -> bool;
 }
 
-// FIXME: retry count dynamic as part of a config?
-const NAK_RETRY_COUNT: u8 = 3;
-const BSY_RETRY_COUNT: u8 = 3;
+/// A no-op address checker that never ACKs group addresses
+///
+/// This is used when no address table is configured, which means the device
+/// will not ACK any group-addressed frames (only individually-addressed frames
+/// matching our address will be ACKed via the TPUART hardware).
+pub struct NoAddressChecker;
 
-pub struct TpUartLinkLayer<'a, U>
+impl AddressChecker for NoAddressChecker {
+    fn should_ack_group_address(&self, _address: GroupAddress) -> bool {
+        false
+    }
+}
+
+/// TPUART Link Layer
+///
+/// Handles communication with TPUART-compatible transceiver chips for KNX TP1.
+pub struct TpUartLinkLayer<'a, U, A = NoAddressChecker>
 where
     U: embedded_io_async::Read + embedded_io_async::Write,
+    A: AddressChecker,
 {
-    // Interfaces to other components and layers
+    // Hardware interface
     uart: U,
+
+    // Buffer management
     buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+
+    // Upper layer connection
     network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
 
-    // Local state
-    chip: TpUartChip,
-    state: TpUartState,
-    state_timeout: Timeout<TpUartState>,
-    message_in: Option<Buffer<'static>>,
-    message_out: Option<(Buffer<'static>, DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>)>,
+    // State machines
+    main_ctx: StateMachineContext,
+    send_ctx: SendContext,
+
+    // Configuration
     individual_addr: Option<IndividualAddress>,
-    pending_transmission: Option<(Buffer<'static>, DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>)>,
+    retry_config: RetryConfig,
+
+    // Group address ACK checker
+    address_checker: A,
+
+    // Receive buffer
+    receive_buffer: Option<Buffer<'static>>,
+
+    // Transmission state
+    pending_tx: Option<PendingTransmission>,
+    current_tx: Option<CurrentTransmission>,
+
+    // Timeout tracking (using Instant for simplicity)
+    timeout_deadline: Option<Instant>,
+
+    // Previous control byte for repeat detection
+    prev_control_byte: u8,
 }
 
-impl<'a, U> TpUartLinkLayer<'a, U>
+/// Pending transmission waiting for link layer to become idle
+struct PendingTransmission {
+    buffer: Buffer<'static>,
+    response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
+}
+
+/// Current active transmission
+struct CurrentTransmission {
+    /// Original KNX format buffer
+    knx_buffer: Buffer<'static>,
+    /// TP1 format buffer (with checksum)
+    tp1_buffer: Buffer<'static>,
+    /// Channel to send confirmation
+    response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
+}
+
+impl<'a, U> TpUartLinkLayer<'a, U, NoAddressChecker>
 where
     U: embedded_io_async::Read + embedded_io_async::Write,
 {
+    /// Create a new TPUART link layer without group address ACK support
+    ///
+    /// This creates a link layer that will not ACK group-addressed frames.
+    /// Only individually-addressed frames matching the configured address
+    /// will be ACKed (via TPUART hardware).
+    ///
+    /// Use [`with_address_checker`](Self::with_address_checker) if you need
+    /// group address ACK support.
     pub fn new(
         uart: U,
         individual_addr: Option<IndividualAddress>,
         buffer_manager: &'a RefCell<DynBufferManager<'static>>,
         network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
+        Self::with_address_checker(uart, individual_addr, buffer_manager, network_layer, NoAddressChecker)
+    }
+}
+
+impl<'a, U, A> TpUartLinkLayer<'a, U, A>
+where
+    U: embedded_io_async::Read + embedded_io_async::Write,
+    A: AddressChecker,
+{
+    /// Create a new TPUART link layer with group address ACK support
+    ///
+    /// The `address_checker` is called after receiving the destination address
+    /// (byte 6) of incoming frames to determine whether to ACK group-addressed
+    /// frames.
+    pub fn with_address_checker(
+        uart: U,
+        individual_addr: Option<IndividualAddress>,
+        buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        address_checker: A,
+    ) -> Self {
         Self {
             uart,
             buffer_manager,
-            chip: TpUartChip::TpUart2,
-            state: TpUartState::New,
-            state_timeout: Timeout::new(),
             network_layer,
-            message_in: None,
-            message_out: None,
+            main_ctx: StateMachineContext::new(),
+            send_ctx: SendContext::new(),
             individual_addr,
-            pending_transmission: None,
+            retry_config: RetryConfig::default(),
+            address_checker,
+            receive_buffer: None,
+            pending_tx: None,
+            current_tx: None,
+            timeout_deadline: None,
+            prev_control_byte: 0xFF,
         }
     }
 
-    /// Calculate the final TP1 frame size without actually converting
-    fn calculate_tp1_frame_size<B: MessageBuffer>(&self, knx_msg: &B) -> usize {
-        let len = knx_msg.len();
-
-        // Check for standard frame: length <= 23 and lower 4 bits of NPDU are 0
-        if (len < 23) && ((knx_msg[5] & 0xf) == 0) {
-            // Standard frame: same size + 1 byte for checksum
-            len + 1
-        } else {
-            // Extended frame: +1 byte for extended control field + 1 byte for checksum
-            len + 2
-        }
+    /// Set the retry configuration
+    pub fn set_retry_config(&mut self, config: RetryConfig) {
+        self.retry_config = config;
     }
 
-    async fn initialize(&mut self) {
-        // Start the interface if necessary
-        if self.state == TpUartState::New {
-            self.state_transition(TpUartState::Start).await;
+    /// Check if the bus is operational
+    pub fn is_bus_ok(&self) -> bool {
+        self.main_ctx.is_bus_ok()
+    }
+
+    /// Check if the bus has failed
+    pub fn is_bus_failed(&self) -> bool {
+        self.main_ctx.is_bus_failed()
+    }
+
+    /// Get the detected chip type
+    pub fn chip_type(&self) -> ChipType {
+        self.main_ctx.chip_type
+    }
+
+    /// Check if the chip supports register read operations (E981 only)
+    pub fn supports_register_read(&self) -> bool {
+        self.main_ctx.chip_type.supports_register_access()
+    }
+
+    /// Check if the chip supports register write operations (E981 and NCN5120)
+    pub fn supports_register_write(&self) -> bool {
+        matches!(self.main_ctx.chip_type, ChipType::E981 | ChipType::Ncn5120)
+    }
+
+    /// Read a register from the E981 chip
+    ///
+    /// This method can only be called when the layer is in the Idle state.
+    /// Returns `None` if the chip doesn't support register read, is not idle,
+    /// or if the read times out.
+    ///
+    /// # Arguments
+    /// * `address` - The 16-bit register address to read
+    ///
+    /// # Returns
+    /// * `Some(value)` - The register value on success
+    /// * `None` - On failure (unsupported chip, busy, or timeout)
+    pub async fn read_register(&mut self, address: u16) -> Option<u8> {
+        // Only E981 supports register read
+        if self.main_ctx.chip_type != ChipType::E981 {
+            return None;
         }
 
-        // Wait for initialization to complete
-        while !matches!(self.state, TpUartState::Idle | TpUartState::Error) {
+        // Must be in Idle state
+        if self.main_ctx.main_state != MainState::Idle {
+            return None;
+        }
+
+        // Trigger the register read
+        let actions = process_main_event(&mut self.main_ctx, MainEvent::ReadRegister { address });
+        self.execute_main_actions(actions).await;
+
+        // Wait for response
+        while self.main_ctx.main_state == MainState::WaitRegRes {
             let mut buf = [0u8];
 
-            match select(Pin::new(&mut self.state_timeout), self.uart.read(&mut buf)).await {
-                Either::First(timeout_state) => {
-                    debug!("TPUART timeout during init, transitioning to {:?}", timeout_state);
-                    self.state_timeout.retry();
-                    self.state_transition(timeout_state).await;
+            let timeout_future = async {
+                if let Some(deadline) = self.timeout_deadline {
+                    Timer::at(deadline).await;
+                    true
+                } else {
+                    core::future::pending::<bool>().await
                 }
-                Either::Second(_) => {
-                    trace!("TPUART init RX: {:02x}", buf[0]);
-                    self.handle_incoming_byte(buf[0]).await;
+            };
+
+            match embassy_futures::select::select(timeout_future, self.uart.read(&mut buf)).await {
+                embassy_futures::select::Either::First(_) => {
+                    // Timeout
+                    let actions = process_main_event(&mut self.main_ctx, MainEvent::Timer);
+                    self.execute_main_actions(actions).await;
+                }
+                embassy_futures::select::Either::Second(result) => {
+                    if result.is_ok() {
+                        let actions = process_main_event(&mut self.main_ctx, MainEvent::ReceivedByte(buf[0]));
+                        self.execute_main_actions(actions).await;
+                    } else {
+                        let actions = process_main_event(&mut self.main_ctx, MainEvent::ReceiveError);
+                        self.execute_main_actions(actions).await;
+                    }
                 }
             }
         }
 
-        if self.state == TpUartState::Error {
-            error!("TPUART initialization failed");
+        // Check if read was successful
+        if self.main_ctx.reg_read_state.received_bytes >= self.main_ctx.reg_read_state.expected_bytes {
+            Some(self.main_ctx.reg_read_state.value)
         } else {
-            info!("TPUART initialization completed successfully");
+            None
         }
     }
 
-    async fn handle_incoming_byte(&mut self, incoming: u8) {
-        // Are we already in the process of receiving a frame?
-        if let TpUartState::Receive { .. } = self.state
-            && let Some(message_in) = self.message_in.as_mut()
-            && message_in.len() > 0
-        {
-            trace!("TPUART RX byte: {:02x}", incoming);
-
-            // Save the byte we just received
-            message_in.push(incoming);
-
-            // Reset receive timeout for the next byte to 1s
-            self.state_timeout.start(TpUartState::ReceiveTimeout, TpUartState::Invalid, Duration::from_secs(1), 0);
-
-            // Try to parse the header of the message we partly received
-            match self.header_parse() {
-                // Unable to parse the header yet, continue receiving
-                ReceiveInfo::None => {}
-
-                // We received enough of the frame to parse the header
-                // We'll just store the necessary information we gathered from the header in the state now
-                ReceiveInfo::ParsedHeader { ack, expected_len, is_echo } => {
-                    debug!("TPUART header parsed: ack={}, len={}, echo={}", ack, expected_len, is_echo);
-                    // FIXME: if ack is true, we should send an immediate ACK command to TPUART. I think...
-                    //        right now our individual addr is auto-acked, we don't handle grp addrs yet, but we need it for that
-
-                    self.state_transition(TpUartState::Receive {
-                        acked: ack,
-                        expected_len: Some(expected_len),
-                        is_echo,
-                    })
-                    .await;
-                }
-
-                // We received the complete frame, we can now process it further
-                ReceiveInfo::ReceiveComplete => {
-                    debug!("Received TP1 frame: {:x?}", &self.message_in.as_ref().unwrap()[..]);
-
-                    self.state_timeout.stop();
-
-                    // Take the received message and send it to network layer as indication
-                    if let Some(buffer) = self.message_in.take() {
-                        let mut checksum = 0u8;
-                        for &byte in &buffer[..] {
-                            checksum ^= byte;
-                        }
-                        checksum ^= 0xFF;
-
-                        if checksum != 0x00 {
-                            error!("WRRRRRRROOOOOOOOOOOOOOOOOOOOOONG CHECKSUM!");
-                        }
-
-                        // Convert TP1 frame to KNX format
-                        let knx_buffer = utils::tp1_to_knx_message(buffer);
-                        let msg = KnxMessageBuffer::new(knx_buffer, ServiceType::L_Data_Ind);
-                        let indication = IndicationMessage::indication(msg);
-                        debug!("TPUART -> NL L_Data.ind: {:x?}", indication);
-                        self.network_layer.send(LayerOp::Indication(indication)).await;
-                    }
-
-                    self.state_transition(TpUartState::Idle).await;
-
-                    trace!(
-                        "TPUART state: {:?}, msg_in: {:?}, msg_out: {:?}, pending: {:?}",
-                        self.state,
-                        self.message_in,
-                        self.message_out.as_ref().map(|(buf, _)| buf),
-                        self.pending_transmission.as_ref().map(|(msg, _)| msg)
-                    );
-                }
-
-                // If we received an echo, we can be sure that we transmitted this frame onto the bus
-                // Now we need to wait for a positive or negative confirmation
-                ReceiveInfo::TransmitComplete => {
-                    debug!("TPUART transmission completed, waiting for confirmation");
-                    self.state_timeout.stop();
-                    self.state_transition(TpUartState::WaitingForConfirmation).await;
-                }
-            };
-
-            return;
+    /// Write a register value to the E981 or NCN5120 chip
+    ///
+    /// This is a fire-and-forget operation. The chip does not send a response.
+    ///
+    /// # Arguments
+    /// * `address` - The register address (8-bit for NCN5120, 16-bit for E981)
+    /// * `value` - The value to write
+    ///
+    /// # Returns
+    /// * `true` - If the write command was sent
+    /// * `false` - If the chip doesn't support register write
+    pub async fn write_register(&mut self, address: u16, value: u8) -> bool {
+        // Must be in Idle state and support register write
+        if self.main_ctx.main_state != MainState::Idle {
+            return false;
         }
 
-        // If we get here, we know we are not actively receiving a frame,
-        // so the incoming byte must be a control byte of some sort
+        let actions = process_main_event(
+            &mut self.main_ctx,
+            MainEvent::WriteRegister { address, value },
+        );
 
-        // We are receiving a state indication
-        if (self.state == TpUartState::Idle
-            || self.state == TpUartState::WaitingForConfirmation
-            || self.state == TpUartState::InGetState)
-            && (incoming & 0x07) == U_STATE_IND
-        {
-            trace!(
-                "TPUART U_State.ind SC={} RE={} TE={} PE={} TW={}",
-                incoming & 0x80 != 0,
-                incoming & 0x40 != 0,
-                incoming & 0x20 != 0,
-                incoming & 0x10 != 0,
-                incoming & 0x08 != 0,
-            );
+        // Check if the action includes a write command (not RegisterOperationFailed)
+        let has_write_action = actions.iter().any(|a| {
+            matches!(
+                a,
+                MainAction::SendE981RegWrite { .. } | MainAction::SendNcn5120RegWrite { .. }
+            )
+        });
 
-            match self.state {
-                TpUartState::InGetState => {
-                    self.state_timeout.stop();
-                    self.state_transition(TpUartState::Idle).await
-                }
-
-                TpUartState::Idle => {
-                    // If we have a currently outgoing message and we receive any error
-                    // indication except a temperature warning, reschedule it for transmission again
-                    if let Some(msg) = self.message_out.take()
-                        && incoming & 0xF0 != 0
-                    {
-                        warn!("Rescheduling failed out message for new send attempt");
-                        self.pending_transmission = Some(msg);
-                    }
-                }
-
-                _ => error!("TpUart state {:?} invalid - incoming: {:02x?}", self.state, incoming),
-            }
-        }
-        // We are receiving reset indication in response to a request request
-        else if (self.state == TpUartState::InReset) && incoming == U_RESET_IND {
-            trace!("TPUART U_Reset.ind, state: {:?}", self.state);
-            if self.state == TpUartState::InReset {
-                debug!("TPUART reset complete, sending config");
-                self.state_timeout.stop();
-                self.state_transition(TpUartState::InSendConfig).await;
-            } else {
-                error!("Received spurious U_Reset.ind")
-            }
-        }
-        // We are receiving a confirmation from a remote device
-        // That means it's either an ACK or a NACK
-        else if (self.state == TpUartState::WaitingForConfirmation) && (incoming & 0x7F == L_DATA_CON) {
-            // FIXME: what if no ack is requested in the frame to be transmitted? Does the uart still send this .con?
-            let ack = incoming & 0x80 != 0;
-
-            if ack {
-                debug!("TPUART L_Data.con ACK");
-            } else {
-                debug!("TPUART L_Data.con NACK");
-            }
-
-            // If we're waiting for confirmation, handle the ACK/NACK
-            if self.state == TpUartState::WaitingForConfirmation {
-                if let Some((mut transmitted_data, response_tx)) = self.message_out.take() {
-                    // Set the error flag in the confirmation based on ACK/NACK
-                    if !ack && transmitted_data.len() > 0 {
-                        transmitted_data[0] |= 0x01;
-                    } else {
-                        transmitted_data[0] &= 0xFE;
-                    }
-
-                    self.state_transition(TpUartState::Idle).await;
-
-                    // Send confirmation back to the requester
-                    let msg = KnxMessageBuffer::new(transmitted_data, ServiceType::L_Data_Con);
-                    let confirmation = ConfirmationMessage::confirmation(msg);
-                    response_tx.send(confirmation).await;
-                }
-            }
-        }
-        // Incoming message
-        else if (self.state == TpUartState::Idle || self.state == TpUartState::WaitingForConfirmation)
-            && (incoming & 0x50) == L_DATA_EXTENDED_IND
-        {
-            trace!("TPUART L_Data.ind start: {:02x}", incoming);
-
-            let mut buffer = self.buffer_manager.borrow().alloc().await;
-            buffer.push(incoming);
-            self.message_in = Some(buffer);
-
-            // Start the TX timeout (gets reset when the next byte is received)
-            self.state_timeout.start(TpUartState::ReceiveTimeout, TpUartState::Invalid, Duration::from_secs(1), 0);
-
-            self.state_transition(TpUartState::Receive { acked: false, expected_len: None, is_echo: false }).await;
-        }
-        // Error
-        else {
-            error!("Unknown TPUart command: {:02x} in state {:?}", incoming, self.state);
-        }
-
-        // // // That's BUSMON stuff
-        // // //                    ACK                 NACK                BSY
-        // // } else if incoming == 0xCC || incoming == 0xC0 || incoming == 0x0C {
-        // //     if incoming == 0xCC {
-        // //         trace!("L_Ackn.ind ACK");
-        // //     } else if incoming == 0xC0 {
-        // //         trace!("L_Ackn.ind NACK");
-        // //     } else if incoming == 0x0C {
-        // //         trace!("L_Ackn.ind BSY");
-        // //     }
+        self.execute_main_actions(actions).await;
+        has_write_action
     }
 
-    fn header_parse(&mut self) -> ReceiveInfo {
-        let mut ret = ReceiveInfo::None;
-
-        // Do we have enough information yet to ACK the packet and determine its length?
-        // If not, try to get this info
-        if let TpUartState::Receive { acked: false, expected_len: None, .. } = self.state {
-            // First make sure that we have enough data. For that we need to
-            // know if we are dealing with a standard or extended frame.
-            // Uppermost bit cleared means extended frame format
-            let ext = (self.message_in.as_ref().unwrap()[0] & 0x80) != 0x80;
-            let min_header_len = if ext {
-                core::mem::size_of::<TPFrameHeaderExtended>()
-            } else {
-                core::mem::size_of::<TPFrameHeaderStandard>()
-            };
-
-            // Did we receive enough of the packet to have a parsable header?
-            if self.message_in.as_ref().unwrap().len() >= min_header_len {
-                trace!("TPUART parsing frame header");
-
-                // Check if this is an echo of our transmitted message
-                let is_echo = if let Some((message_out, _)) = &self.message_out {
-                    (self.message_in.as_ref().unwrap()[0] ^ message_out[0]) & !0x20 == 0
-                        && self.message_in.as_ref().unwrap()[1..5] == message_out[1..5]
-                } else {
-                    false
-                };
-
-                // Do we have to deal with a individual dst address of a group dst address?
-                // Depending on the extended frame format or the standard format, we
-                // need to check different bytes for the addr type flag
-                let (dst_addr, expected_len) = if ext {
-                    let header: Ref<_, TPFrameHeaderExtended> =
-                        Ref::from_bytes(&self.message_in.as_ref().unwrap()[..min_header_len]).unwrap();
-
-                    let addr = if header.ext_ctrl & 0x80 == 0 {
-                        KNXAddress::Individual(IndividualAddress::from_bytes(&header.dst_addr))
-                    } else {
-                        KNXAddress::Group(GroupAddress::from_bytes(&header.dst_addr))
-                    };
-
-                    // The length is the payload, header and CRC
-                    let expected_length = header.length as usize + core::mem::size_of::<TPFrameHeaderExtended>() + 2;
-
-                    (addr, expected_length)
-                } else {
-                    let header: Ref<_, TPFrameHeaderStandard> =
-                        Ref::from_bytes(&self.message_in.as_ref().unwrap()[..min_header_len]).unwrap();
-
-                    let addr = if header.at_length & 0x80 == 0 {
-                        KNXAddress::Individual(IndividualAddress::from_bytes(&header.dst_addr))
-                    } else {
-                        KNXAddress::Group(GroupAddress::from_bytes(&header.dst_addr))
-                    };
-
-                    // The length is the payload, header and CRC
-                    let expected_length =
-                        (header.at_length & 0x0F) as usize + core::mem::size_of::<TPFrameHeaderStandard>() + 2;
-
-                    (addr, expected_length)
-                };
-
-                trace!("TPUART header: dst={:?}, len={}", dst_addr, expected_len);
-
-                // Check if we should ACK the packet
-                let ack = if let Some(individual_addr) = self.individual_addr {
-                    match dst_addr {
-                        KNXAddress::Individual(addr) => {
-                            // FIXME: we don't really need this, because we set a hw addr
-                            addr == individual_addr
-                        }
-                        KNXAddress::Group(_) => {
-                            // FIXME: need access to group address table and decide if we should ACK
-                            false
-                        }
-                        KNXAddress::Unspecified(_) => unreachable!(),
-                    }
-                } else {
-                    false
-                };
-
-                ret = ReceiveInfo::ParsedHeader { ack, expected_len, is_echo };
-            }
-
-        // Did we receive enough of the message so that we know how much we should expect?
-        } else if let TpUartState::Receive { expected_len: Some(expected_len), is_echo: false, .. } = self.state {
-            // If we received as many bytes as we expect, we can notify the main loop about that
-            if self.message_in.as_ref().unwrap().len() == expected_len {
-                ret = ReceiveInfo::ReceiveComplete;
-            }
-
-        // If we are receiving an echo, this means the TP-UART has transmitted our frame onto the bus.
-        // We may receive multiple echo frames (retransmissions) until an ACK is received from the destination.
-        // When we've received a complete echo frame, we signal TransmitComplete so the transmit loop knows
-        // the echo phase is done and can wait for ACK/NACK confirmation.
-        } else if let TpUartState::Receive { expected_len: Some(expected_len), is_echo: true, .. } = self.state {
-            // If we received as many bytes as we expect for this echo frame
-            if self.message_in.as_ref().unwrap().len() == expected_len {
-                ret = ReceiveInfo::TransmitComplete;
-            }
+    /// Write a register value to the E981 chip with a 16-bit address
+    ///
+    /// This is a fire-and-forget operation. The chip does not send a response.
+    /// Use this method when you need the full 16-bit address space of the E981.
+    ///
+    /// # Arguments
+    /// * `address` - The 16-bit register address
+    /// * `value` - The value to write
+    ///
+    /// # Returns
+    /// * `true` - If the write command was sent
+    /// * `false` - If the chip is not E981 or not idle
+    pub async fn write_register_e981(&mut self, address: u16, value: u8) -> bool {
+        // Must be E981 and in Idle state
+        if self.main_ctx.chip_type != ChipType::E981 || self.main_ctx.main_state != MainState::Idle {
+            return false;
         }
 
-        ret
+        // Send E981 register write directly
+        let buf = [
+            E981_REG_WRITE_REQ,
+            (address >> 8) as u8,
+            (address & 0xFF) as u8,
+            value,
+        ];
+        let _ = self.uart.write_all(&buf).await;
+
+        // Reset keepalive timer
+        self.timeout_deadline = Some(Instant::now() + TIMEOUT_KEEPALIVE);
+        true
     }
 
-    async fn state_transition(&mut self, new_state: TpUartState) {
-        debug!("TPUART {:?} -> {:?}", self.state, new_state);
+    // ========================================================================
+    // Action Execution
+    // ========================================================================
 
-        match new_state {
-            TpUartState::Start | TpUartState::InReset => {
-                // Clear any pending message in and out
-                let _ = self.message_in.take();
-                let _ = self.message_out.take();
-
-                // Send reset
-                self.uart.write_all(&[U_RESET_REQ]).await.expect("Unable to send reset command to TP-Uart");
-
-                self.state_timeout.start(TpUartState::Error, TpUartState::InReset, Duration::from_millis(500), 2);
-                self.state = TpUartState::InReset;
-            }
-
-            s @ TpUartState::InSendConfig | s @ TpUartState::InGetState => {
-                if s == TpUartState::InSendConfig {
-                    // Set an individual address if we have one
+    /// Execute actions returned by the main state machine
+    async fn execute_main_actions(&mut self, actions: ActionBuffer) {
+        for action in actions.iter().copied() {
+            match action {
+                MainAction::StartTimer(duration) => {
+                    self.timeout_deadline = Some(Instant::now() + duration);
+                }
+                MainAction::StopTimer => {
+                    self.timeout_deadline = None;
+                }
+                MainAction::SendByte(byte) => {
+                    let _ = self.uart.write_all(&[byte]).await;
+                }
+                MainAction::AllocReceiveBuffer => {
+                    let buffer = self.buffer_manager.borrow().alloc().await;
+                    self.receive_buffer = Some(buffer);
+                }
+                MainAction::StoreReceivedByte(byte) => {
+                    if let Some(buf) = self.receive_buffer.as_mut() {
+                        buf.push(byte);
+                    }
+                }
+                MainAction::ReleaseReceiveBuffer => {
+                    self.receive_buffer = None;
+                }
+                MainAction::ClearReceiveState => {
+                    self.main_ctx.receive_state.reset();
+                }
+                MainAction::ParseHeaderAndCheckAck => {
+                    // Parse header and decide on ACK after 6 bytes received
+                    // Extract header bytes first to avoid borrow issues
+                    let header: Option<[u8; 6]> = self.receive_buffer.as_ref().and_then(|buf| {
+                        if buf.len() >= 6 {
+                            let mut h = [0u8; 6];
+                            h.copy_from_slice(&buf[..6]);
+                            Some(h)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(h) = header {
+                        self.parse_header_and_check_ack(&h).await;
+                    }
+                }
+                MainAction::SendAck => {
+                    let _ = self.uart.write_all(&[U_ACK_INF]).await;
+                }
+                MainAction::SendNack => {
+                    let _ = self.uart.write_all(&[U_NACK_INF]).await;
+                }
+                MainAction::SendBusy => {
+                    let _ = self.uart.write_all(&[U_BUSY_INF]).await;
+                }
+                MainAction::IndicationToNetwork => {
+                    if let Some(buffer) = self.receive_buffer.take() {
+                        // Validate checksum
+                        if validate_checksum(&buffer[..]) {
+                            // Convert TP1 to KNX format and send indication
+                            let knx_buffer = tp1_to_knx_message(buffer);
+                            let msg = KnxMessageBuffer::new(knx_buffer, ServiceType::L_Data_Ind);
+                            let indication = IndicationMessage::indication(msg);
+                            self.network_layer.send(LayerOp::Indication(indication)).await;
+                        } else {
+                            warn!("TPUART: Invalid checksum on received frame");
+                        }
+                    }
+                }
+                MainAction::ConfirmationToNetwork { success } => {
+                    self.complete_transmission(success).await;
+                }
+                MainAction::SetChipType(chip_type) => {
+                    debug!("TPUART: Detected chip type: {:?}", chip_type);
+                }
+                MainAction::SetChipVersion(version) => {
+                    debug!("TPUART: Chip version: {}", version);
+                }
+                MainAction::IncrementResetCounter => {
+                    if self.main_ctx.reset_counter < 255 {
+                        self.main_ctx.reset_counter += 1;
+                    }
+                }
+                MainAction::ResetBusFailureCounter => {
+                    self.main_ctx.reset_counter = 0;
+                }
+                MainAction::StoreControlByte(byte) => {
+                    self.prev_control_byte = byte;
+                }
+                MainAction::MarkAsRepeatedFrame => {
+                    self.main_ctx.receive_state.is_repeated = true;
+                }
+                MainAction::ClearRepeatedFlag => {
+                    self.main_ctx.receive_state.is_repeated = false;
+                }
+                MainAction::MarkFrameInvalid => {
+                    // Mark frame as invalid (control = 0xFF) so it won't be processed
+                    // On error, the RX frame control field is set to 0xFF
+                    self.main_ctx.receive_state.control_byte = 0xFF;
+                }
+                MainAction::SendSmFrameStart => {
+                    // Check if this is an echo of our transmission
+                    if let Some(ref tx) = self.current_tx {
+                        if let Some(ref buf) = self.receive_buffer {
+                            if buf.len() >= 4 && self.is_echo(&tx.tp1_buffer, buf) {
+                                self.main_ctx.receive_state.is_echo = true;
+                                let actions = process_send_event(&mut self.send_ctx, SendEvent::FrameStartReceived { is_echo: true });
+                                self.execute_send_actions(actions).await;
+                            }
+                        }
+                    }
+                }
+                MainAction::SendSmFrameComplete => {
+                    let actions = process_send_event(&mut self.send_ctx, SendEvent::EchoReceived);
+                    self.execute_send_actions(actions).await;
+                }
+                MainAction::SendSmConfirmation { ack } => {
+                    let actions = process_send_event(&mut self.send_ctx, SendEvent::Confirmation { ack });
+                    self.execute_send_actions(actions).await;
+                }
+                MainAction::ResetSendStateMachine => {
+                    // Reset send state machine due to error (e.g., U_State.ind with error flags)
+                    // The send sequence state is reset to 0
+                    self.send_ctx.reset();
+                    // Also clear any pending transmission
+                    if self.current_tx.is_some() {
+                        self.current_tx = None;
+                        // Notify caller of failure
+                        debug!("TPUART: Send state machine reset due to error");
+                    }
+                }
+                MainAction::ConfigureAddress => {
                     if let Some(addr) = self.individual_addr {
-                        debug!("Sending address {:?}", addr);
                         let mut buf = [U_SET_ADDRESS, 0x00, 0x00];
                         buf[1..].copy_from_slice(addr.as_bytes());
-                        self.uart.write_all(&buf).await.unwrap();
+                        let _ = self.uart.write_all(&buf).await;
                     }
-
-                    // Set maximum retry count
-                    debug!("Setting maximum retry counts (NAK/BSY) to {:?} & {:?}", NAK_RETRY_COUNT, BSY_RETRY_COUNT);
-                    let buf = [U_MAX_RST_CNT, (BSY_RETRY_COUNT & 0x7) << 5 | (NAK_RETRY_COUNT & 0x7)];
-                    self.uart.write_all(&buf).await.unwrap();
                 }
-
-                trace!("TPUART sending U_State_Req");
-
-                // Send get state cmd
-                self.uart.write_all(&[U_STATE_RQ]).await.expect("Unable to send get state command to TP-Uart");
-
-                self.state_timeout.start(TpUartState::Error, TpUartState::InGetState, Duration::from_millis(500), 2);
-                self.state = TpUartState::InGetState
+                MainAction::ConfigureRetryCounts => {
+                    let buf = [U_MAX_RST_CNT, self.retry_config.encode()];
+                    let _ = self.uart.write_all(&buf).await;
+                }
+                MainAction::SendStateRequest => {
+                    let _ = self.uart.write_all(&[U_STATE_REQ]).await;
+                }
+                MainAction::SendVersionRequest => {
+                    let _ = self.uart.write_all(&[U_VERSION_REQ]).await;
+                }
+                MainAction::SendNcn5120SysStateRequest => {
+                    let _ = self.uart.write_all(&[NCN5120_SYS_STATE_REQ, U_VERSION_REQ]).await;
+                }
+                MainAction::InitComplete => {
+                    info!("TPUART: Initialization complete, chip: {}", self.main_ctx.chip_type.name());
+                }
+                MainAction::SendE981RegRead { address } => {
+                    // E981 register read: 3 bytes (cmd, addr_hi, addr_lo)
+                    let buf = [
+                        E981_REG_READ_REQ,
+                        (address >> 8) as u8,
+                        (address & 0xFF) as u8,
+                    ];
+                    let _ = self.uart.write_all(&buf).await;
+                }
+                MainAction::SendE981RegWrite { address, value } => {
+                    // E981 register write: 4 bytes (cmd, addr_hi, addr_lo, value)
+                    let buf = [
+                        E981_REG_WRITE_REQ,
+                        (address >> 8) as u8,
+                        (address & 0xFF) as u8,
+                        value,
+                    ];
+                    let _ = self.uart.write_all(&buf).await;
+                }
+                MainAction::SendNcn5120RegWrite { address, value } => {
+                    // NCN5120 register write: 2 bytes (cmd | addr, value)
+                    // Address is in lower 3 bits of command
+                    let buf = [NCN5120_REG_WRITE_REQ | (address & 0x07), value];
+                    let _ = self.uart.write_all(&buf).await;
+                }
+                MainAction::RegisterReadComplete { value } => {
+                    // Register read completed - this is handled by the async read_register method
+                    trace!("TPUART: Register read complete, value: 0x{:02X}", value);
+                }
+                MainAction::RegisterOperationFailed => {
+                    // Register operation failed - this is handled by the async read_register method
+                    trace!("TPUART: Register operation failed");
+                }
             }
-
-            // TpUartState::BusMonitor => {
-            //     // Send busmon cmd
-            //     self.uart.write_all(&[0x05]).await.unwrap();
-            //     self.state = TpUartState::BusMonitor
-            // },
-            TpUartState::Idle => {
-                self.state = TpUartState::Idle;
-            }
-
-            s @ TpUartState::Receive { acked: false, .. } => {
-                self.state = s;
-            }
-
-            s @ TpUartState::Receive { acked: true, .. } => {
-                trace!("Sending ACK for this frame");
-                self.uart
-                    .write_all(&[U_ACK_INFORMATION | 1])
-                    .await
-                    .expect("Unable to send immediate ACK command to TP-Uart");
-
-                self.state = s;
-            }
-
-            TpUartState::ReceiveTimeout => {
-                error!("RX timeout when receiving TP-Uart frame, going back to Idle");
-                self.state_timeout.stop();
-                let _ = self.message_in.take();
-                self.state = TpUartState::Idle;
-            }
-
-            TpUartState::WaitingForConfirmation => {
-                self.state = TpUartState::WaitingForConfirmation;
-            }
-
-            // TpUartState::WaitKeepalive => {
-            //     //FIXME: what is this for?
-            //     self.uart.write_all(&[0x02]).await.unwrap();
-            //     //timer.start(0.5,0);
-
-            //     self.state = TpUartState::WaitKeepalive
-            // },
-            TpUartState::Error => {
-                error!("Entered error state");
-                self.state_timeout.stop();
-                self.state = TpUartState::Error
-            }
-
-            _ => unreachable!(),
         }
     }
 
-    async fn queue_frame_transmission(
-        &mut self,
-        msg: Buffer<'static>,
-        response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
-    ) {
-        // If we're idle and no transmission is pending, start transmission immediately
-        if self.state == TpUartState::Idle && self.pending_transmission.is_none() {
-            trace!("TP-UART is idle, starting transmission immediately");
-            self.transmit_frame(msg, response_tx).await;
+    /// Execute actions returned by the send state machine
+    async fn execute_send_actions(&mut self, actions: SendActionBuffer) {
+        for action in actions.iter().copied() {
+            match action {
+                SendAction::SendByte { index, is_last } => {
+                    if let Some(ref tx) = self.current_tx {
+                        if index < tx.tp1_buffer.len() {
+                            let byte = tx.tp1_buffer[index];
+                            let is_long_frame = tx.tp1_buffer.len() > 64;
+
+                            match self.main_ctx.chip_type {
+                                // E981: Uses special long frame commands for frames >64 bytes
+                                ChipType::E981 if is_long_frame => {
+                                    if index == 0 {
+                                        // First byte: normal start command
+                                        let _ = self.uart.write_all(&[U_L_DATA_START, byte]).await;
+                                    } else if is_last {
+                                        // Last byte: E981_LONG_DATA_END + full index
+                                        let _ = self.uart.write_all(&[E981_LONG_DATA_END, index as u8, byte]).await;
+                                    } else {
+                                        // Middle bytes: E981_LONG_DATA_CONTINUE + full index
+                                        let _ = self.uart.write_all(&[E981_LONG_DATA_CONTINUE, index as u8, byte]).await;
+                                    }
+                                }
+
+                                // NCN5120: Uses offset command at 64-byte boundaries
+                                ChipType::Ncn5120 if is_long_frame => {
+                                    // Send offset command at each 64-byte boundary (except 0)
+                                    if (index & 0x3F) == 0 && index > 0 {
+                                        let offset_cmd = U_L_DATA_OFFSET_REQ | (index >> 6) as u8;
+                                        let _ = self.uart.write_all(&[offset_cmd]).await;
+                                    }
+                                    // Normal start/end with 6-bit index
+                                    let cmd = if is_last {
+                                        U_L_DATA_END | (index & 0x3F) as u8
+                                    } else {
+                                        U_L_DATA_START | (index & 0x3F) as u8
+                                    };
+                                    let _ = self.uart.write_all(&[cmd, byte]).await;
+                                }
+
+                                // Standard frame (<=64 bytes) or TPUART1/2
+                                _ => {
+                                    let cmd = if is_last {
+                                        U_L_DATA_END | (index & 0x3F) as u8
+                                    } else {
+                                        U_L_DATA_START | (index & 0x3F) as u8
+                                    };
+                                    let _ = self.uart.write_all(&[cmd, byte]).await;
+                                }
+                            }
+                        }
+                    }
+                }
+                SendAction::StartSendTimer => {
+                    self.timeout_deadline = Some(Instant::now() + TIMEOUT_SEND);
+                }
+                SendAction::StopSendTimer => {
+                    // Timer is shared with main state machine
+                }
+                SendAction::TransmissionComplete { success } => {
+                    self.complete_transmission(success).await;
+                }
+                SendAction::FrameSendingComplete => {
+                    // All bytes sent to TPUART, waiting for echo
+                }
+            }
+        }
+    }
+
+    /// Complete the current transmission
+    async fn complete_transmission(&mut self, success: bool) {
+        if let Some(tx) = self.current_tx.take() {
+            let mut msg = KnxMessageBuffer::new(tx.knx_buffer, ServiceType::L_Data_Con);
+            if success {
+                msg.ctrl_field_mut().set_c(Confirm::NoError);
+            } else {
+                msg.ctrl_field_mut().set_c(Confirm::Err);
+            }
+            let confirmation = ConfirmationMessage::confirmation(msg);
+            tx.response_tx.send(confirmation).await;
+        }
+        self.send_ctx.reset();
+    }
+
+    /// Check if received bytes match our transmitted frame (echo detection)
+    fn is_echo(&self, tx_buf: &Buffer<'static>, rx_buf: &Buffer<'static>) -> bool {
+        if rx_buf.len() < 4 || tx_buf.len() < 4 {
+            return false;
+        }
+        // Compare control byte (ignoring repeat bit) and source/dest addresses
+        ((rx_buf[0] ^ tx_buf[0]) & !0x20) == 0 && rx_buf[1..4] == tx_buf[1..4]
+    }
+
+    /// Calculate expected frame length from received header
+    fn parse_frame_header(&mut self) {
+        let (is_extended, byte5, byte6) = if let Some(ref buf) = self.receive_buffer {
+            let is_extended = self.main_ctx.receive_state.is_extended;
+            let min_header = if is_extended { 8 } else { 7 };
+            if buf.len() < min_header {
+                return;
+            }
+            (is_extended, buf[5], buf[6])
+        } else {
+            return;
+        };
+
+        let expected_len = if is_extended {
+            // Extended frame: length at byte 7, plus header and checksum
+            byte6 as usize + 9
+        } else {
+            // Standard frame: length in lower 4 bits of byte 6
+            (byte5 & 0x0F) as usize + 8
+        };
+
+        self.main_ctx.receive_state.expected_len = Some(expected_len);
+
+        // Check for echo
+        let is_echo = if let (Some(tx), Some(buf)) = (&self.current_tx, &self.receive_buffer) {
+            self.is_echo_check(&tx.tp1_buffer, buf)
+        } else {
+            false
+        };
+
+        if is_echo {
+            self.main_ctx.receive_state.is_echo = true;
+        }
+
+    }
+
+    /// Parse the frame header (after 6 bytes received) and decide on ACK
+    ///
+    /// This function:
+    /// 1. Parses the control byte to determine frame format (standard vs extended)
+    /// 2. Extracts destination address (bytes 3-4)
+    /// 3. Checks if it's a group address (byte 5 bit 7)
+    /// 4. For group addresses: checks address table and sends ACK if found
+    /// 5. Updates expected frame length in receive_state
+    /// 6. Checks if this is an echo of our transmission
+    async fn parse_header_and_check_ack(&mut self, header: &[u8; 6]) {
+        let ctrl = header[0];
+        let dst_hi = header[3];
+        let dst_lo = header[4];
+        let at_npci = header[5];
+
+        // Determine frame format from control byte
+        // Standard frame: bit 7 = 1, extended frame: bit 7 = 0
+        let is_extended = (ctrl & 0x80) == 0;
+        self.main_ctx.receive_state.is_extended = is_extended;
+        self.main_ctx.receive_state.control_byte = ctrl;
+
+        // Check if this is an echo of our transmission
+        // Compare control byte (ignoring repeat bit) and addresses
+        if let Some(ref tx) = self.current_tx {
+            if tx.tp1_buffer.len() >= 6 {
+                let tx_buf = &tx.tp1_buffer;
+                let ctrl_match = ((header[0] ^ tx_buf[0]) & !0x20) == 0;
+                let addr_match = header[1..6] == tx_buf[1..6];
+                if ctrl_match && addr_match {
+                    self.main_ctx.receive_state.is_echo = true;
+                    // Don't ACK our own echoes
+                    return;
+                }
+            }
+        }
+
+        // Check if group address (bit 7 of AT/NPCI byte)
+        let is_group_address = (at_npci & 0x80) != 0;
+
+        if is_group_address {
+            // Extract group address from bytes 3-4
+            let ga = GroupAddress::from_bytes(&[dst_hi, dst_lo]);
+
+            // Check if we should ACK this group address
+            if self.address_checker.should_ack_group_address(ga) {
+                // Send ACK
+                let _ = self.uart.write_all(&[U_ACK_INF]).await;
+                self.main_ctx.receive_state.acked = true;
+                trace!("TPUART: ACK sent for group address {}", ga);
+            }
+        }
+        // Individual addresses are ACKed by the TPUART hardware when our address is set
+    }
+
+    /// Check if received bytes match our transmitted frame (echo detection) - non-borrowing version
+    fn is_echo_check(&self, tx_buf: &Buffer<'static>, rx_buf: &Buffer<'static>) -> bool {
+        if rx_buf.len() < 4 || tx_buf.len() < 4 {
+            return false;
+        }
+        // Compare control byte (ignoring repeat bit) and source/dest addresses
+        ((rx_buf[0] ^ tx_buf[0]) & !0x20) == 0 && rx_buf[1..4] == tx_buf[1..4]
+    }
+
+    /// Start a new transmission
+    async fn start_transmission(&mut self, msg: Buffer<'static>, response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>) {
+        // Check frame size
+        let tp1_size = self.calculate_tp1_frame_size(&msg);
+        if tp1_size > self.main_ctx.chip_type.max_frame_size() {
+            // Frame too large
+            warn!("TPUART: Frame too large ({} > {})", tp1_size, self.main_ctx.chip_type.max_frame_size());
+            let mut error_msg = KnxMessageBuffer::new(msg, ServiceType::L_Data_Con);
+            error_msg.ctrl_field_mut().set_c(Confirm::Err);
+            response_tx.send(ConfirmationMessage::confirmation(error_msg)).await;
             return;
         }
 
-        // If there's already a pending transmission, replace it with this new one
-        // This implements a "latest wins" policy to avoid blocking
-        if let Some((old_msg, old_response_tx)) = self.pending_transmission.take() {
-            warn!("Replacing pending transmission - sending error for previous request");
-            let mut error_msg = KnxMessageBuffer::new(old_msg, ServiceType::L_Data_Con);
-            error_msg.ctrl_field_mut().set_c(Confirm::Err);
-            old_response_tx.send(ConfirmationMessage::confirmation(error_msg)).await;
+        // Allocate buffer for TP1 format and copy data
+        let mut tp1_buf = self.buffer_manager.borrow().alloc().await;
+        for &byte in &msg[..] {
+            tp1_buf.push(byte);
         }
 
-        // Store the new pending transmission
-        self.pending_transmission = Some((msg, response_tx));
-        trace!("Stored pending transmission (state: {:?})", self.state);
+        // Convert KNX format to TP1 format (modifies in place, may add extended control byte)
+        let mut tp1_buffer = knx_to_tp1_message(tp1_buf);
+
+        // Add checksum to the buffer
+        let checksum = calculate_checksum(&tp1_buffer[..]);
+        tp1_buffer.push(checksum);
+
+        self.send_ctx.total_bytes = tp1_buffer.len();
+        self.current_tx = Some(CurrentTransmission { knx_buffer: msg, tp1_buffer, response_tx });
+
+        // Start transmission
+        let actions = process_send_event(&mut self.send_ctx, SendEvent::StartTransmission);
+        self.execute_send_actions(actions).await;
     }
 
-    async fn transmit_frame(
-        &mut self,
-        msg: Buffer<'static>,
-        response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
-    ) {
-        trace!("Transmitting frame ({} bytes): {:?}", msg.len(), msg);
-
-        // Calculate checksum: XOR all bytes in the frame
-        let mut checksum = 0u8;
-        for &byte in &msg[..] {
-            checksum ^= byte;
+    /// Calculate TP1 frame size without converting
+    fn calculate_tp1_frame_size(&self, knx_msg: &Buffer<'static>) -> usize {
+        let len = knx_msg.len();
+        // Check for standard frame: length <= 23 and lower 4 bits of NPDU are 0
+        if len < 23 && (knx_msg[5] & 0x0F) == 0 {
+            len + 1 // Standard: same size + checksum
+        } else {
+            len + 2 // Extended: +1 for extended control + checksum
         }
-        // The checksum is XORed with 0xFF so that XORing all bytes including checksum results in 0
-        checksum ^= 0xFF;
-        let checksum = &[checksum];
+    }
 
-        // Store the outgoing message for echo detection and response handling
-        self.message_out = Some((msg, response_tx));
+    /// Queue a frame for transmission
+    async fn queue_transmission(&mut self, msg: Buffer<'static>, response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>) {
+        // If idle and nothing pending, start immediately
+        if self.main_ctx.main_state == MainState::Idle && self.pending_tx.is_none() && self.current_tx.is_none() {
+            self.start_transmission(msg, response_tx).await;
+            return;
+        }
 
-        let mut it = self.message_out.as_ref().unwrap().0.iter().chain(checksum).enumerate().peekable();
-        while let Some((i, b)) = it.next() {
-            let cmd = if it.peek().is_some() {
-                [U_L_DATA_START | (i & 0xff) as u8, *b]
-            } else {
-                [U_L_DATA_END | (i & 0xff) as u8, *b]
+        // Replace any pending transmission
+        if let Some(old) = self.pending_tx.take() {
+            let mut error_msg = KnxMessageBuffer::new(old.buffer, ServiceType::L_Data_Con);
+            error_msg.ctrl_field_mut().set_c(Confirm::Err);
+            old.response_tx.send(ConfirmationMessage::confirmation(error_msg)).await;
+        }
+
+        self.pending_tx = Some(PendingTransmission { buffer: msg, response_tx });
+    }
+
+    /// Check and start pending transmission if idle
+    async fn check_pending_transmission(&mut self) {
+        if self.main_ctx.main_state == MainState::Idle && self.current_tx.is_none() {
+            if let Some(pending) = self.pending_tx.take() {
+                self.start_transmission(pending.buffer, pending.response_tx).await;
+            }
+        }
+    }
+
+    // ========================================================================
+    // Initialization
+    // ========================================================================
+
+    /// Initialize the TPUART
+    async fn initialize(&mut self) {
+        // Start initial timer to trigger reset sequence
+        self.timeout_deadline = Some(Instant::now() + TIMEOUT_RESET);
+
+        // Process initial timer event
+        let actions = process_main_event(&mut self.main_ctx, MainEvent::Timer);
+        self.execute_main_actions(actions).await;
+
+        // Wait for initialization to complete
+        while !matches!(self.main_ctx.main_state, MainState::Idle | MainState::Error) {
+            let mut buf = [0u8];
+
+            let timeout_future = async {
+                if let Some(deadline) = self.timeout_deadline {
+                    Timer::at(deadline).await;
+                    true
+                } else {
+                    // No timeout, wait forever (will never complete)
+                    core::future::pending::<bool>().await
+                }
             };
 
-            trace!("TPUART TX: {:x?}", &cmd);
-            if let Err(_) = self.uart.write_all(&cmd).await {
-                // // If write fails, send error confirmation
-                // if let Some((mut data, response_tx)) = self.message_out.take() {
-                //     data[0] |= 0x01; // Set error flag
-                //     let error_msg = KnxMessageBuffer::new(data, ServiceType::L_Data_Con);
-                //     response_tx.send(error_msg).await;
-                // }
-                // return;
-                panic!("Failed to write to TP-UART: {:?}", cmd);
+            match embassy_futures::select::select(timeout_future, self.uart.read(&mut buf)).await {
+                embassy_futures::select::Either::First(_) => {
+                    // Timeout
+                    let actions = process_main_event(&mut self.main_ctx, MainEvent::Timer);
+                    self.execute_main_actions(actions).await;
+                }
+                embassy_futures::select::Either::Second(result) => {
+                    if result.is_ok() {
+                        let actions = process_main_event(&mut self.main_ctx, MainEvent::ReceivedByte(buf[0]));
+                        self.execute_main_actions(actions).await;
+                    } else {
+                        let actions = process_main_event(&mut self.main_ctx, MainEvent::ReceiveError);
+                        self.execute_main_actions(actions).await;
+                    }
+                }
             }
+        }
+
+        if self.main_ctx.main_state == MainState::Error {
+            error!("TPUART: Initialization failed");
         }
     }
 }
 
-// IMPORTANT: DEADLOCK PREVENTION
-// This implementation prevents deadlocks by ensuring the main event loop never blocks.
-// The main loop MUST always be able to poll:
-// 1. UART RX future (to read confirmations that complete transmissions)
-// 2. Timeout future (to handle state machine timeouts)
-// 3. Inbox future (to receive new requests)
-//
-// We use a simple single-slot pending transmission approach:
-// - If link layer is idle and no pending transmission: start immediately
-// - If link layer is busy or has pending transmission: replace pending with new request
-// - This implements "latest wins" policy and never blocks the main loop
-//
-// The main loop processes pending transmissions only when idle, ensuring proper coordination.
+// ============================================================================
+// Layer Implementation
+// ============================================================================
 
-impl<'a, U> Layer<'a> for TpUartLinkLayer<'a, U>
+impl<'a, U, A> Layer<'a> for TpUartLinkLayer<'a, U, A>
 where
     U: embedded_io_async::Read + embedded_io_async::Write,
+    A: AddressChecker,
 {
     type Buffer = Buffer<'static>;
 
@@ -834,48 +924,60 @@ where
         loop {
             let mut buf = [0u8];
 
-            match select3(Pin::new(&mut self.state_timeout), self.uart.read(&mut buf), inbox.next()).await {
-                Either3::First(timeout_state) => {
-                    trace!("Timeout timer fired, transitioning to {:?}", timeout_state);
-                    self.state_timeout.retry();
-                    self.state_transition(timeout_state).await;
+            // Create timeout future
+            let timeout_future = async {
+                if let Some(deadline) = self.timeout_deadline {
+                    Timer::at(deadline).await;
+                    true
+                } else {
+                    core::future::pending::<bool>().await
                 }
-                Either3::Second(_) => {
-                    trace!("TPUART RX: {:x?}", buf[0]);
-                    self.handle_incoming_byte(buf[0]).await;
+            };
+
+            match select3(timeout_future, self.uart.read(&mut buf), inbox.next()).await {
+                Either3::First(_) => {
+                    // Timeout
+                    trace!("TPUART: Timeout");
+                    let actions = process_main_event(&mut self.main_ctx, MainEvent::Timer);
+                    self.execute_main_actions(actions).await;
+
+                    // Also check send timeout if in sending state
+                    if self.send_ctx.state != SendState::Idle {
+                        let send_actions = process_send_event(&mut self.send_ctx, SendEvent::Timeout);
+                        self.execute_send_actions(send_actions).await;
+                    }
+                }
+                Either3::Second(result) => {
+                    match result {
+                        Ok(_) => {
+                            trace!("TPUART RX: 0x{:02X}", buf[0]);
+                            let actions = process_main_event(&mut self.main_ctx, MainEvent::ReceivedByte(buf[0]));
+                            self.execute_main_actions(actions).await;
+
+                            // Parse header after receiving enough bytes
+                            if self.main_ctx.main_state == MainState::ReceiveFrame {
+                                self.parse_frame_header();
+                            }
+                        }
+                        Err(_) => {
+                            let actions = process_main_event(&mut self.main_ctx, MainEvent::ReceiveError);
+                            self.execute_main_actions(actions).await;
+                        }
+                    }
                 }
                 Either3::Third(layer_op) => {
-                    trace!("TP-UART Link Layer received layer op: {:?}", layer_op);
-
                     match layer_op {
-                        LayerOp::Indication(_msg) => {
-                            // Link layer typically doesn't receive indications from upper layers
-                            error!("TP-UART Link Layer received unexpected indication");
+                        LayerOp::Indication(_) => {
+                            error!("TPUART: Unexpected indication from upper layer");
                         }
-                        LayerOp::Request { message: msg, response_tx } => {
-                            // Handle transmission requests
-                            match msg.service_type() {
+                        LayerOp::Request { message, response_tx } => {
+                            match message.service_type() {
                                 ServiceType::L_Data_Req => {
-                                    // Check if frame would exceed maximum size when converted to TP1
-                                    let tp1_size = self.calculate_tp1_frame_size(msg.buf());
-                                    if tp1_size > self.chip.max_frame_size() {
-                                        warn!(
-                                            "Outgoing frame too large ({} bytes > {} max for {:?}), rejecting",
-                                            tp1_size,
-                                            self.chip.max_frame_size(),
-                                            self.chip
-                                        );
-                                        response_tx.send(msg.into_inner().error().build()).await;
-                                    } else {
-                                        // Convert KNX frame to TP1 format for transmission
-                                        // into_inner() twice: RequestMessage -> KnxMessageBuffer -> Buffer
-                                        let tp1_buffer = utils::knx_to_tp1_message(msg.into_inner().into_inner());
-                                        self.queue_frame_transmission(tp1_buffer, response_tx).await;
-                                    }
+                                    self.queue_transmission(message.into_inner().into_inner(), response_tx).await;
                                 }
                                 _ => {
-                                    // Return error for unsupported service types
-                                    response_tx.send(msg.into_inner().error().build()).await;
+                                    // Unsupported service type
+                                    response_tx.send(message.into_inner().error().build()).await;
                                 }
                             }
                         }
@@ -883,13 +985,13 @@ where
                 }
             }
 
-            // IMPORTANT: Only check for pending transmissions AFTER handling all other events
-            // and only when we're in a safe state to start a new transmission
-            if self.state == TpUartState::Idle && self.pending_transmission.is_some() {
-                trace!("Starting pending transmission");
-                if let Some((msg, response_tx)) = self.pending_transmission.take() {
-                    self.transmit_frame(msg, response_tx).await;
-                }
+            // Check for pending transmission
+            self.check_pending_transmission().await;
+
+            // Continue sending bytes if in Sending state
+            if self.send_ctx.state == SendState::Sending {
+                let actions = process_send_event(&mut self.send_ctx, SendEvent::SendNextByte);
+                self.execute_send_actions(actions).await;
             }
         }
     }

@@ -25,6 +25,8 @@ embedded-io-async = { workspace = true }
 paste = { workspace = true }
 
 env_logger = "0.11"
+log = "0.4"
+chrono = "0.4"
 
 [[bin]]
 name = "testutil"
@@ -41,3 +43,7 @@ path = "src/knxip.rs"
 [[bin]]
 name = "stack_knxip"
 path = "src/stack_knxip.rs"
+
+[[bin]]
+name = "busmon"
+path = "src/busmon.rs"

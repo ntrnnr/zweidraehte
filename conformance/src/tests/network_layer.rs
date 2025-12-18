@@ -262,7 +262,8 @@ mod tests {
 
     #[test]
     fn test_cases_created() {
-        let tests = create_network_layer_tests();
+        let suite = create_network_layer_suite();
+        let tests = &suite.cases;
         assert_eq!(tests.len(), 4);
 
         // Verify test names
