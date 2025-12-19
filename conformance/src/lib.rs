@@ -125,6 +125,10 @@ pub enum TestStep {
     /// Wait for a specific duration
     Wait { duration_ms: u32 },
 
+    /// Set programming mode on the DUT
+    /// When enabled, the device responds to A_IndividualAddress_Read broadcasts
+    SetProgrammingMode(bool),
+
     /// Custom action placeholder (for complex test scenarios)
     Custom,
 }

@@ -29,6 +29,7 @@ use super::{ActorRequest, Inbox, Layer, LayerOp, Request};
 
 use crate::{
     StackDefinition,
+    address::GroupAddress,
     messages::{
         buffers::{Buffer, DynBufferManager},
         builder::{IndicationMessage, RequestMessage},
@@ -85,6 +86,10 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     #[allow(dead_code)] // TODO: implement property services
     interface_object_server: &'a dyn PropertyServiceHandler,
 
+    // --- Device state ---
+    /// Programming mode flag - when true, device responds to A_IndividualAddress_Read
+    programming_mode: &'a RefCell<bool>,
+
     // --- Communication channels ---
     app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
@@ -110,6 +115,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             1,
         >,
         interface_object_server: &'a dyn PropertyServiceHandler,
+        programming_mode: &'a RefCell<bool>,
         app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
         transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
@@ -120,6 +126,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             comm_objects,
             event_channel,
             interface_object_server,
+            programming_mode,
             app_request_receiver,
             transport_layer,
         }
@@ -164,12 +171,14 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                                 self.handle_property_value_write(&ind).await;
                             }
 
-                            // --- Device Management (TODO) ---
+                            // --- Device Management ---
                             ApciCode::DeviceDescriptorRead => {
                                 self.handle_device_descriptor_read(&ind).await;
                             }
+                            ApciCode::IndividualAddressRead => {
+                                self.handle_individual_address_read(&ind).await;
+                            }
                             // ApciCode::Restart => { ... }
-                            // ApciCode::IndividualAddressRead => { ... }
                             // ApciCode::IndividualAddressWrite => { ... }
                             _ => {
                                 warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
@@ -869,6 +878,60 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             let confirmation = self.transport_layer.request(msg).await;
             trace!("AL DeviceDescriptorResponse (error) confirmation: {:?}", confirmation.service_type());
         }
+    }
+
+    /// Handle `A_IndividualAddress_Read.ind`
+    ///
+    /// Responds with the device's individual address if the device is in programming mode.
+    /// This service arrives via `T_Broadcast_Ind` and responds via `T_Broadcast_Req`.
+    ///
+    /// Message format (incoming):
+    /// - APDU[0-1]: APCI (IndividualAddressRead, no additional data)
+    ///
+    /// Response format:
+    /// - APDU[0-1]: APCI (IndividualAddressResponse, no additional data)
+    ///
+    /// Note: The individual address is taken from the source address field of the
+    /// response frame, not from the APDU payload.
+    async fn handle_individual_address_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::messages::builder::MessageBuilder;
+
+        // Validate service type - must be broadcast
+        if ind.service_type() != ServiceType::T_Broadcast_Ind {
+            warn!("AL IndividualAddressRead with unexpected service type: {:?}", ind.service_type());
+            return;
+        }
+
+        debug!("AL IndividualAddressRead received");
+
+        // Only respond if device is in programming mode
+        // Per KNX spec, A_IndividualAddress_Read should only be responded to when
+        // the device is in programming mode (e.g., programming button pressed)
+        if !*self.programming_mode.borrow() {
+            trace!("AL IndividualAddressRead ignored (not in programming mode)");
+            return;
+        }
+
+        // IndividualAddressResponse: APCI only, no payload
+        // The individual address is conveyed in the source address field of the L_Data frame
+        const RESPONSE_LEN: usize = offsets::MSG_APCI + 2;
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+
+        // Build broadcast response
+        // Note: For IndividualAddressResponse, we broadcast to 0x0000 (all devices)
+        let msg = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::T_Broadcast_Req,
+            ind.ctrl_field().priority(),
+            DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])), // Broadcast address
+        )
+        .with_application(ApciCode::IndividualAddressResponse, ServiceType::T_Broadcast_Req)
+        .build();
+
+        debug!("AL sending IndividualAddressResponse");
+
+        let confirmation = self.transport_layer.request(msg).await;
+        trace!("AL IndividualAddressResponse confirmation: {:?}", confirmation.service_type());
     }
 }
 

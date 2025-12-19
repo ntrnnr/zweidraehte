@@ -793,7 +793,8 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
                 self.ctrl_field_mut().set_sb(SystemBroadcast::NoSysBroadcast);
             }
             AddressType::Broadcast => {
-                self.buf[MSG_ADDR_TYPE] &= !0x80;
+                // Broadcast uses group address format (AT=1) with destination 0x0000
+                self.buf[MSG_ADDR_TYPE] |= 0x80;
                 self.ctrl_field_mut().set_sb(SystemBroadcast::NoSysBroadcast);
                 self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(&[0, 0]);
             }

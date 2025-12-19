@@ -175,6 +175,10 @@ async fn main(spawner: Spawner) {
                     TestStep::Custom => {
                         println!("  [{}] 🔧 Custom step", i);
                     }
+                    TestStep::SetProgrammingMode(enabled) => {
+                        println!("  [{}] 🔧 SetProgrammingMode({})", i, enabled);
+                        harness.set_programming_mode(*enabled);
+                    }
                     TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
                         println!("  [{}] ❌ Unresolved template step", i);
                         test_passed = false;

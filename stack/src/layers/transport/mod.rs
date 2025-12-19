@@ -225,10 +225,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     // ========================================================================
 
     /// Handle a request from the application layer
-    async fn handle_request(
-        &mut self,
-        msg: RequestMessage<Buffer<'static>>,
-    ) -> ConfirmationMessage<Buffer<'static>> {
+    async fn handle_request(&mut self, msg: RequestMessage<Buffer<'static>>) -> ConfirmationMessage<Buffer<'static>> {
         debug!("TL request: {:?}", msg);
 
         // Extract inner message for processing
@@ -241,6 +238,11 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             ServiceType::T_GroupData_Req => self.handle_group_data_request(msg).await,
             ServiceType::T_Broadcast_Req => self.handle_broadcast_request(msg).await,
             ServiceType::T_SystemBroadcast_Req => self.handle_system_broadcast_request(msg).await,
+
+            // ─────────────────────────────────────────────────────────────────
+            // Connectionless point-to-point (unacknowledged)
+            // ─────────────────────────────────────────────────────────────────
+            ServiceType::T_DataUnack_Req => self.handle_data_unack_request(msg).await,
 
             // ─────────────────────────────────────────────────────────────────
             // Connection-oriented requests
@@ -314,6 +316,20 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
         let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
         confirmation.set_service_type(ServiceType::T_SystemBroadcast_Con);
+        confirmation
+    }
+
+    async fn handle_data_unack_request(
+        &mut self,
+        mut msg: KnxMessageBuffer<Buffer<'static>>,
+    ) -> ConfirmationMessage<Buffer<'static>> {
+        // Connectionless point-to-point data - no connection state needed
+        msg.set_tpci(Tpci::DataIndividual);
+        msg.set_service_type(ServiceType::N_Data_Req);
+        debug!("TL -> NL (unack): {:x?}", msg);
+
+        let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
+        confirmation.set_service_type(ServiceType::T_DataUnack_Con);
         confirmation
     }
 

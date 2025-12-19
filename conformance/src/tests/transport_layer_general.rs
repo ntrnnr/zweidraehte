@@ -79,6 +79,11 @@ fn comment(text: &str) -> TestStep {
     TestStep::Comment(text.to_string())
 }
 
+/// Helper to set programming mode
+fn set_programming_mode(enabled: bool) -> TestStep {
+    TestStep::SetProgrammingMode(enabled)
+}
+
 /// Create transport layer test suite from EITT specification
 ///
 /// Test Collection: TL-General Transport Layer Tests
@@ -150,6 +155,7 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 comment("Broadcast-addressed frames with incorrect TPCI coding for broadcast communication."),
                 comment("Test purpose: Check whether the DUT does not change the value of its individual address with an Individual Address Write command with the Transport Control field set to the value \"40h\", which indicates the frame as \"T_Data_Connected-PDU\" with SeqNo == 0 in the Transport Control field."),
                 comment("Test Precondition: Activate Programming Mode and (indirectly) check IA. Other settings same as clause 2.1"),
+                set_programming_mode(true),
                 // Activate programming mode via PropertyWrite
                 inject("BC #IFACE_A_ADDR #BDUT_ADDR 66 03 D7 00 36 10 01 01"),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 66 03 D6 00 36 10 01 01", 200),

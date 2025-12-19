@@ -49,9 +49,14 @@ fn expect(template: &str, timeout_ms: u32) -> TestStep {
     TestStep::ExpectTemplate { template: template.to_string(), timeout_ms }
 }
 
-/// Helper to create a comment step  
+/// Helper to create a comment step
 fn comment(text: &str) -> TestStep {
     TestStep::Comment(text.to_string())
+}
+
+/// Helper to set programming mode
+fn set_programming_mode(enabled: bool) -> TestStep {
+    TestStep::SetProgrammingMode(enabled)
 }
 
 /// Create network layer test suite from EITT specification
@@ -210,6 +215,8 @@ pub fn create_network_layer_suite() -> TestSuite {
             name: "3.4 Broadcast communication",
             steps: vec![
                 comment("Testcase 3.4 Broadcast communication"),
+                comment("Preparation: Activate ProgMode"),
+                set_programming_mode(true),
                 comment("Send telegrams with Routing Count 6, 5, 4, 3, 2, 1, 0 to the BDUT."),
                 comment("Acceptance: The BDUT shall answer with Routing Count 6 in all cases."),
                 // Broadcast: destination 00 00, IndividualRead (01 00)

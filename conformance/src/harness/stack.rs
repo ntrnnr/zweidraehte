@@ -24,7 +24,10 @@ use zweidraehte::{
     messages::buffers::{Buffer, BufferManager, DynBufferManager, MessageBuffer},
     messages::knx::{KnxMessageBuffer, ServiceType},
     objects::comm::ComObjects,
-    objects::interface::{InterfaceObjectsBuilder, PropertyDescriptionResponse, PropertyError, PropertyServiceHandler},
+    objects::interface::{
+        DeviceObject, InterfaceObject, InterfaceObjectsBuilder, PropertyDescriptionResponse, PropertyError,
+        PropertyServiceHandler,
+    },
     objects::tables::LoadableTable,
     Runner, StackDefinition, StackResources,
 };
@@ -93,41 +96,61 @@ mod conformance_config {
 /// Minimal interface objects container for conformance testing
 ///
 /// This provides the bare minimum interface objects needed for the stack to run.
-pub struct MinimalInterfaceObjects;
+/// Contains a DeviceObject (Object Index 0) which is mandatory for all KNX devices.
+pub struct MinimalInterfaceObjects {
+    device: DeviceObject,
+}
+
+impl MinimalInterfaceObjects {
+    pub fn new() -> Self {
+        Self { device: DeviceObject::new() }
+    }
+}
 
 impl PropertyServiceHandler for MinimalInterfaceObjects {
     fn object_count(&self) -> u16 {
-        0
+        1 // Just the DeviceObject at index 0
     }
 
     fn property_description_read(
         &self,
-        _object_idx: u16,
-        _prop_id: u8,
-        _prop_idx: u8,
+        object_idx: u16,
+        prop_id: u8,
+        prop_idx: u8,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
-        Err(PropertyError::InvalidObjectIndex)
+        match object_idx {
+            0 => self.device.property_description(object_idx, prop_id, prop_idx),
+            _ => Err(PropertyError::InvalidObjectIndex),
+        }
     }
 
     fn property_value_read(
         &self,
-        _object_idx: u16,
-        _prop_id: u8,
-        _start_idx: u16,
-        _count: u16,
-        _buf: &mut [u8],
+        object_idx: u16,
+        prop_id: u8,
+        start_idx: u16,
+        count: u16,
+        buf: &mut [u8],
     ) -> Result<usize, PropertyError> {
-        Err(PropertyError::InvalidObjectIndex)
+        match object_idx {
+            0 => self.device.read_property(prop_id, start_idx, count, buf),
+            _ => Err(PropertyError::InvalidObjectIndex),
+        }
     }
 
     fn property_value_write(
         &self,
-        _object_idx: u16,
+        object_idx: u16,
         _prop_id: u8,
         _start_idx: u16,
         _data: &[u8],
     ) -> Result<(), PropertyError> {
-        Err(PropertyError::InvalidObjectIndex)
+        match object_idx {
+            // DeviceObject is immutable here since we don't have &mut self
+            // For conformance testing, writes to device object can return an error
+            0 => Err(PropertyError::WriteNotAllowed),
+            _ => Err(PropertyError::InvalidObjectIndex),
+        }
     }
 }
 
@@ -154,7 +177,7 @@ impl InterfaceObjectsBuilder for MinimalInterfaceObjectsBuilder {
         AST: LoadableTable,
         COT: LoadableTable,
     {
-        MinimalInterfaceObjects
+        MinimalInterfaceObjects::new()
     }
 }
 
@@ -184,7 +207,7 @@ impl StackDefinition for ConformanceTestStack {
     type COT = conformance_config::CoTab;
     type P = TestParameters;
     type CO = test_comm_objs::TestComObjects;
-    type LLB = MockLinkLayerBuilder<8, 8>;
+    type LLB = MockLinkLayerBuilder<16, 16>;
     type IOB = MinimalInterfaceObjectsBuilder;
 }
 
@@ -193,10 +216,10 @@ impl StackDefinition for ConformanceTestStack {
 // ============================================================================
 
 // Injection channel for sending messages into the stack
-static INJECTION_CHANNEL: StaticCell<Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, 8>> = StaticCell::new();
+static INJECTION_CHANNEL: StaticCell<Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, 16>> = StaticCell::new();
 
 // Capture channel for receiving messages from the stack
-static CAPTURE_CHANNEL: StaticCell<Channel<NoopRawMutex, CapturedLinkLayerMessage, 8>> = StaticCell::new();
+static CAPTURE_CHANNEL: StaticCell<Channel<NoopRawMutex, CapturedLinkLayerMessage, 16>> = StaticCell::new();
 
 // Stack resources
 static STACK_RESOURCES: StaticCell<StackResources<ConformanceTestStack>> = StaticCell::new();
@@ -205,8 +228,8 @@ static STACK_RESOURCES: StaticCell<StackResources<ConformanceTestStack>> = Stati
 static LL_RESOURCES: StaticCell<MockLinkLayerResources> = StaticCell::new();
 
 // Buffer manager for test injections
-static INJECTION_BUFFERS: StaticCell<[[u8; 64]; 8]> = StaticCell::new();
-static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<8>> = StaticCell::new();
+static INJECTION_BUFFERS: StaticCell<[[u8; 64]; 16]> = StaticCell::new();
+static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<16>> = StaticCell::new();
 
 // ============================================================================
 // Full Stack Harness
@@ -217,9 +240,11 @@ static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<8>> = StaticCell::new(
 /// This harness runs the complete KNX stack and provides methods to:
 /// - Inject telegrams (simulating incoming messages from the bus)
 /// - Capture outgoing telegrams (messages the stack sends to the bus)
+/// - Control device state (programming mode, etc.)
 pub struct FullStackHarness {
-    handle: MockLinkLayerHandle<8, 8>,
+    handle: MockLinkLayerHandle<16, 16>,
     buffer_manager: DynBufferManager<'static>,
+    stack: zweidraehte::Stack<'static, ConformanceTestStack>,
 }
 
 impl FullStackHarness {
@@ -232,7 +257,7 @@ impl FullStackHarness {
         let capture_channel = CAPTURE_CHANNEL.init(Channel::new());
 
         // Initialize buffer manager for test injections
-        let buffers = INJECTION_BUFFERS.init([[0u8; 64]; 8]);
+        let buffers = INJECTION_BUFFERS.init([[0u8; 64]; 16]);
         // SAFETY: We're initializing the buffer manager with our static buffers
         let buffer_manager = INJECTION_BUFFER_MANAGER.init(unsafe { BufferManager::new(buffers) });
         let dyn_buffer_manager = buffer_manager.dyn_buffer_manager();
@@ -241,7 +266,7 @@ impl FullStackHarness {
 
         // Create MockLinkLayerBuilder with capture support
         let (link_layer_builder, handle) =
-            MockLinkLayerBuilder::<8, 8>::with_capture(injection_channel, capture_channel);
+            MockLinkLayerBuilder::<16, 16>::with_capture(injection_channel, capture_channel);
 
         // Create tables from configuration
         let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables();
@@ -250,7 +275,7 @@ impl FullStackHarness {
         let resources = STACK_RESOURCES.init(StackResources::new());
 
         // Create stack
-        let (_stack, runner) = zweidraehte::new(
+        let (stack, runner) = zweidraehte::new(
             resources,
             addr_tab,
             asso_tab,
@@ -262,7 +287,7 @@ impl FullStackHarness {
 
         let ll_resources = LL_RESOURCES.init(MockLinkLayerResources::new());
 
-        let harness = Self { handle, buffer_manager: dyn_buffer_manager };
+        let harness = Self { handle, buffer_manager: dyn_buffer_manager, stack };
         (harness, runner, ll_resources)
     }
 
@@ -294,5 +319,12 @@ impl FullStackHarness {
     /// Try to receive a captured telegram without blocking
     pub fn try_receive_captured(&self) -> Option<CapturedLinkLayerMessage> {
         self.handle.try_receive_captured()
+    }
+
+    /// Set the programming mode flag on the DUT
+    ///
+    /// When enabled, the device responds to A_IndividualAddress_Read broadcasts.
+    pub fn set_programming_mode(&self, enabled: bool) {
+        self.stack.set_programming_mode(enabled);
     }
 }

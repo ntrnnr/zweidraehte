@@ -169,6 +169,10 @@ pub(crate) struct Inner<D: StackDefinition> {
     pub(crate) comm_objs: RefCell<D::CO>,
     pub(crate) event_channel:
         PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
+    /// Programming mode flag - when true, device responds to A_IndividualAddress_Read
+    /// and can be accessed via DeviceObject property PID 54
+    // NOTE: if we get more state like this, we should refactor into a proper state struct
+    pub(crate) programming_mode: RefCell<bool>,
 }
 
 // Implement context traits for Inner
@@ -221,6 +225,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         cot: RefCell::new(cot),
         comm_objs: RefCell::new(comm_objs),
         event_channel: PubSubChannel::new(),
+        programming_mode: RefCell::new(false),
     };
 
     let inner = &*resources.inner.write(inner);
@@ -284,6 +289,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             &self.stack.inner.comm_objs,
             &self.stack.inner.event_channel,
             self.interface_objects,
+            &self.stack.inner.programming_mode,
             self.app_request_receiver,
             tl_channel.sender().into(),
         );
@@ -598,5 +604,32 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     pub async fn alloc_message(&self, msg: &[u8]) -> KnxMessageBuffer<Buffer<'static>> {
         let buffer = self.inner.buffer_manager.borrow_mut().alloc_from_slice(msg).await;
         KnxMessageBuffer::new(buffer, messages::knx::ServiceType::L_Data_Ind)
+    }
+
+    /// Check if programming mode is active.
+    ///
+    /// When programming mode is active, the device responds to `A_IndividualAddress_Read`
+    /// broadcasts. This is typically activated by pressing a physical programming button
+    /// on the device, or set via the DeviceObject property PID 54.
+    ///
+    /// # Returns
+    /// `true` if programming mode is active, `false` otherwise
+    pub fn programming_mode(&self) -> bool {
+        *self.inner.programming_mode.borrow()
+    }
+
+    /// Set the programming mode flag.
+    ///
+    /// When programming mode is active, the device responds to `A_IndividualAddress_Read`
+    /// broadcasts. This is typically activated by pressing a physical programming button
+    /// on the device.
+    ///
+    /// # Arguments
+    /// * `enabled` - `true` to enable programming mode, `false` to disable it
+    ///
+    /// # Note
+    /// This can also be accessed via the DeviceObject property PID 54.
+    pub fn set_programming_mode(&self, enabled: bool) {
+        *self.inner.programming_mode.borrow_mut() = enabled;
     }
 }
