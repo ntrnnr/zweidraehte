@@ -28,7 +28,7 @@ use embassy_sync::{
 use super::{ActorRequest, Inbox, Layer, LayerOp, Request};
 
 use crate::{
-    StackDefinition,
+    StackDefinition, StackState,
     address::GroupAddress,
     messages::{
         buffers::{Buffer, DynBufferManager},
@@ -87,8 +87,8 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     interface_object_server: &'a dyn PropertyServiceHandler,
 
     // --- Device state ---
-    /// Programming mode flag - when true, device responds to A_IndividualAddress_Read
-    programming_mode: &'a RefCell<bool>,
+    /// Runtime state (programming mode, etc.)
+    state: &'a D::State,
 
     // --- Communication channels ---
     app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
@@ -115,7 +115,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             1,
         >,
         interface_object_server: &'a dyn PropertyServiceHandler,
-        programming_mode: &'a RefCell<bool>,
+        state: &'a D::State,
         app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
         transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
@@ -126,7 +126,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             comm_objects,
             event_channel,
             interface_object_server,
-            programming_mode,
+            state,
             app_request_receiver,
             transport_layer,
         }
@@ -907,7 +907,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         // Only respond if device is in programming mode
         // Per KNX spec, A_IndividualAddress_Read should only be responded to when
         // the device is in programming mode (e.g., programming button pressed)
-        if !*self.programming_mode.borrow() {
+        if !self.state.programming_mode() {
             trace!("AL IndividualAddressRead ignored (not in programming mode)");
             return;
         }

@@ -60,6 +60,122 @@ pub enum ReadObjectError {
     Timeout,
 }
 
+/// Trait for stack state types.
+///
+/// Stack state holds runtime configuration that can be shared between
+/// the stack, layers, and interface objects (e.g., programming mode, individual address).
+/// This state can later be persisted to flash/storage.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use core::cell::RefCell;
+/// use zweidraehte::{StackState, address::IndividualAddress};
+///
+/// pub struct MyDeviceState {
+///     individual_address: RefCell<IndividualAddress>,
+///     programming_mode: RefCell<bool>,
+/// }
+///
+/// impl Default for MyDeviceState {
+///     fn default() -> Self {
+///         Self {
+///             individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
+///             programming_mode: RefCell::new(false),
+///         }
+///     }
+/// }
+///
+/// impl StackState for MyDeviceState {
+///     fn individual_address(&self) -> IndividualAddress {
+///         *self.individual_address.borrow()
+///     }
+///
+///     fn set_individual_address(&self, addr: IndividualAddress) {
+///         *self.individual_address.borrow_mut() = addr;
+///     }
+///
+///     fn programming_mode(&self) -> bool {
+///         *self.programming_mode.borrow()
+///     }
+///
+///     fn set_programming_mode(&self, enabled: bool) {
+///         *self.programming_mode.borrow_mut() = enabled;
+///     }
+/// }
+/// ```
+pub trait StackState: Default {
+    /// Get the device's individual address.
+    ///
+    /// This is the unique address assigned to this device on the KNX bus.
+    /// It is used as the source address for outgoing messages.
+    fn individual_address(&self) -> IndividualAddress;
+
+    /// Set the device's individual address.
+    ///
+    /// This is typically set during device configuration or via
+    /// `A_IndividualAddress_Write` when in programming mode.
+    fn set_individual_address(&self, addr: IndividualAddress);
+
+    /// Get the programming mode flag.
+    ///
+    /// When programming mode is active, the device responds to `A_IndividualAddress_Read`
+    /// broadcasts and can have its individual address changed.
+    fn programming_mode(&self) -> bool;
+
+    /// Set the programming mode flag.
+    fn set_programming_mode(&self, enabled: bool);
+}
+
+/// A basic stack state implementation with individual address and programming mode.
+///
+/// This is a minimal implementation suitable for simple devices.
+/// For more complex devices, implement your own `StackState` type.
+///
+/// The default individual address is `1.0.1`.
+#[derive(Debug)]
+pub struct BasicStackState {
+    individual_address: RefCell<IndividualAddress>,
+    programming_mode: RefCell<bool>,
+}
+
+impl Default for BasicStackState {
+    fn default() -> Self {
+        Self {
+            individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
+            programming_mode: RefCell::new(false),
+        }
+    }
+}
+
+impl BasicStackState {
+    /// Create a new `BasicStackState` with the given individual address.
+    pub fn with_individual_address(addr: IndividualAddress) -> Self {
+        Self {
+            individual_address: RefCell::new(addr),
+            programming_mode: RefCell::new(false),
+        }
+    }
+}
+
+impl StackState for BasicStackState {
+    fn individual_address(&self) -> IndividualAddress {
+        *self.individual_address.borrow()
+    }
+
+    fn set_individual_address(&self, addr: IndividualAddress) {
+        *self.individual_address.borrow_mut() = addr;
+    }
+
+    fn programming_mode(&self) -> bool {
+        *self.programming_mode.borrow()
+    }
+
+    fn set_programming_mode(&self, enabled: bool) {
+        *self.programming_mode.borrow_mut() = enabled;
+    }
+}
+
 pub trait StackDefinition: Copy {
     const MASK_VERSION: &'static [u8; 2];
     type ADT: AddressTable + 'static;
@@ -69,6 +185,11 @@ pub trait StackDefinition: Copy {
     type CO: ComObjects;
     type LLB: layers::LinkLayerBuilder;
     type IOB: InterfaceObjectsBuilder;
+    /// Runtime state shared between stack, layers, and interface objects.
+    ///
+    /// Use [`BasicStackState`] for simple devices, or implement your own
+    /// [`StackState`] type for devices with additional runtime configuration.
+    type State: StackState + 'static;
 }
 
 pub struct StackResources<D: StackDefinition, const BUF_SZ: usize = 128, const NUM_BUFS: usize = 4>
@@ -169,10 +290,8 @@ pub(crate) struct Inner<D: StackDefinition> {
     pub(crate) comm_objs: RefCell<D::CO>,
     pub(crate) event_channel:
         PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
-    /// Programming mode flag - when true, device responds to A_IndividualAddress_Read
-    /// and can be accessed via DeviceObject property PID 54
-    // NOTE: if we get more state like this, we should refactor into a proper state struct
-    pub(crate) programming_mode: RefCell<bool>,
+    /// Runtime state shared between stack, layers, and interface objects
+    pub(crate) state: D::State,
 }
 
 // Implement context traits for Inner
@@ -225,7 +344,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         cot: RefCell::new(cot),
         comm_objs: RefCell::new(comm_objs),
         event_channel: PubSubChannel::new(),
-        programming_mode: RefCell::new(false),
+        state: D::State::default(),
     };
 
     let inner = &*resources.inner.write(inner);
@@ -238,7 +357,8 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         let adt_ref: &'static RefCell<D::ADT> = unsafe { core::mem::transmute(&inner.adt) };
         let ast_ref: &'static RefCell<D::AST> = unsafe { core::mem::transmute(&inner.ast) };
         let cot_ref: &'static RefCell<D::COT> = unsafe { core::mem::transmute(&inner.cot) };
-        interface_objects_builder.build(adt_ref, ast_ref, cot_ref)
+        let state_ref: &'static D::State = unsafe { core::mem::transmute(&inner.state) };
+        interface_objects_builder.build(adt_ref, ast_ref, cot_ref, state_ref)
     };
     let interface_objects = &*resources.interface_objects.write(interface_objects);
 
@@ -262,16 +382,15 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
     /// # Arguments
     /// * `link_layer_resources` - Mutable reference to the link layer resources
     pub async fn run(self, link_layer_resources: &'d mut <D::LLB as LinkLayerBuilder>::Resources) -> ! {
-        let ind_addr = IndividualAddress::new(1, 0, 1);
-
         // Create all the channels for layer to layer communication
         let ll_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
         let nl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
         let tl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
         let al_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
 
-        // Create a network layer
-        let mut network_layer = NetworkLayer::new(ind_addr, 6, ll_channel.sender().into(), tl_channel.sender().into());
+        // Create a network layer with reference to stack state for individual address
+        let mut network_layer =
+            NetworkLayer::new(&self.stack.inner.state, 6, ll_channel.sender().into(), tl_channel.sender().into());
 
         // Create a transport layer
         let mut transport_layer = TransportLayer::<'_, D>::new(
@@ -289,7 +408,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             &self.stack.inner.comm_objs,
             &self.stack.inner.event_channel,
             self.interface_objects,
-            &self.stack.inner.programming_mode,
+            &self.stack.inner.state,
             self.app_request_receiver,
             tl_channel.sender().into(),
         );
@@ -606,6 +725,28 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         KnxMessageBuffer::new(buffer, messages::knx::ServiceType::L_Data_Ind)
     }
 
+    /// Get the device's individual address.
+    ///
+    /// This is the unique address assigned to this device on the KNX bus.
+    /// It is used as the source address for outgoing messages.
+    ///
+    /// # Returns
+    /// The device's individual address
+    pub fn individual_address(&self) -> IndividualAddress {
+        self.inner.state.individual_address()
+    }
+
+    /// Set the device's individual address.
+    ///
+    /// This is typically set during device configuration or via
+    /// `A_IndividualAddress_Write` when in programming mode.
+    ///
+    /// # Arguments
+    /// * `addr` - The new individual address
+    pub fn set_individual_address(&self, addr: IndividualAddress) {
+        self.inner.state.set_individual_address(addr);
+    }
+
     /// Check if programming mode is active.
     ///
     /// When programming mode is active, the device responds to `A_IndividualAddress_Read`
@@ -615,7 +756,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # Returns
     /// `true` if programming mode is active, `false` otherwise
     pub fn programming_mode(&self) -> bool {
-        *self.inner.programming_mode.borrow()
+        self.inner.state.programming_mode()
     }
 
     /// Set the programming mode flag.
@@ -630,6 +771,14 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # Note
     /// This can also be accessed via the DeviceObject property PID 54.
     pub fn set_programming_mode(&self, enabled: bool) {
-        *self.inner.programming_mode.borrow_mut() = enabled;
+        self.inner.state.set_programming_mode(enabled);
+    }
+
+    /// Get access to the runtime state.
+    ///
+    /// Returns a reference to the runtime state containing programming mode
+    /// and other shared configuration.
+    pub fn state(&self) -> &D::State {
+        &self.inner.state
     }
 }

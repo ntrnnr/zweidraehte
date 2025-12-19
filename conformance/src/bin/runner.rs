@@ -4,11 +4,20 @@
 //! It injects telegrams into the stack and verifies the responses.
 //!
 //! Usage:
-//!   cargo run --bin conformance-runner [suite_filter...]
+//!   cargo run --bin conformance-runner [filter...]
 //!
 //! Arguments:
-//!   suite_filter  Optional suite name filters (case-insensitive substring match)
-//!                 Examples: "network", "transport", "NL", "TL"
+//!   filter  Optional filters (case-insensitive substring match)
+//!           - Suite filters: "network", "transport", "NL", "TL"
+//!           - Test case filters: "2.1", "3.4", "broadcast"
+//!           Multiple filters are OR'd together
+//!
+//! Examples:
+//!   cargo run --bin conformance-runner              # Run all tests
+//!   cargo run --bin conformance-runner network      # Run network layer suite
+//!   cargo run --bin conformance-runner 2.3          # Run test 2.3 only
+//!   cargo run --bin conformance-runner 2.1 2.3      # Run tests 2.1 and 2.3
+//!   cargo run --bin conformance-runner broadcast    # Run tests with "broadcast" in name
 //!
 //! Environment:
 //!   RUST_LOG    Set log level (error, warn, info, debug, trace)
@@ -37,9 +46,9 @@ async fn run_stack(runner: Runner<'static, ConformanceTestStack>, ll_resources: 
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // Parse command line arguments for suite filters
+    // Parse command line arguments for filters
     let args: Vec<String> = env::args().collect();
-    let suite_filters: Vec<&str> = args.iter().skip(1).map(|s| s.as_str()).collect();
+    let filters: Vec<&str> = args.iter().skip(1).map(|s| s.as_str()).collect();
 
     // Parse log level from RUST_LOG env var
     let log_level = match env::var("RUST_LOG").ok().as_deref() {
@@ -68,30 +77,47 @@ async fn main(spawner: Spawner) {
         knx_conformance::tests::transport_layer_general::create_transport_layer_suite(),
     ];
 
-    // Filter suites if filters provided
-    let suites: Vec<_> = if suite_filters.is_empty() {
+    // Helper to check if a filter matches a suite or test name
+    let matches_filter = |name: &str, filter: &str| -> bool {
+        name.to_lowercase().contains(&filter.to_lowercase())
+    };
+
+    // Check if any filter matches a test case name in any suite
+    let has_test_case_filter = filters.iter().any(|f| {
+        all_suites.iter().any(|s| s.cases.iter().any(|c| matches_filter(c.name, f)))
+    });
+
+    // Filter suites - include if suite name matches OR if any test case matches
+    let suites: Vec<_> = if filters.is_empty() {
         all_suites
     } else {
         all_suites
             .into_iter()
             .filter(|s| {
-                let name_lower = s.name.to_lowercase();
-                suite_filters.iter().any(|f| name_lower.contains(&f.to_lowercase()))
+                // Include suite if its name matches any filter
+                let suite_matches = filters.iter().any(|f| matches_filter(s.name, f));
+                // Or if any of its test cases match any filter
+                let case_matches = s.cases.iter().any(|c| filters.iter().any(|f| matches_filter(c.name, f)));
+                suite_matches || case_matches
             })
             .collect()
     };
 
     if suites.is_empty() {
-        println!("No suites matched filters: {:?}", suite_filters);
+        println!("No suites or tests matched filters: {:?}", filters);
         println!();
         println!("Available suites:");
-        println!("  - Network Layer Tests");
-        println!("  - Transport Layer General Tests");
+        println!("  - Network Layer Tests (3.1, 3.2, 3.3, 3.4)");
+        println!("  - Transport Layer General Tests (2.1, 2.2, 2.3, 2.4, 2.5)");
         std::process::exit(1);
     }
 
-    if !suite_filters.is_empty() {
-        println!("Running {} suite(s) matching: {:?}\n", suites.len(), suite_filters);
+    if !filters.is_empty() {
+        if has_test_case_filter {
+            println!("Running tests matching: {:?}\n", filters);
+        } else {
+            println!("Running {} suite(s) matching: {:?}\n", suites.len(), filters);
+        }
     }
 
     // Create the full stack harness
@@ -115,6 +141,11 @@ async fn main(spawner: Spawner) {
         println!();
 
         for test in &suite.cases {
+            // Skip test if we have case-level filters and this test doesn't match
+            if has_test_case_filter && !filters.iter().any(|f| matches_filter(test.name, f)) {
+                continue;
+            }
+
             total_tests += 1;
             logger::start_test(test.name);
             println!("Test: {}", test.name);

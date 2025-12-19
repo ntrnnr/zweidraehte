@@ -116,7 +116,7 @@ use env_logger::Env;
 use platform::address::EthernetAddress;
 use static_cell::StaticCell;
 use zweidraehte::{
-    Runner, StackDefinition, StackResources,
+    BasicStackState, Runner, StackDefinition, StackResources, StackState,
     address::IndividualAddress,
     define_com_objects,
     dpt::DPT_Switch,
@@ -371,16 +371,18 @@ impl InterfaceObjectsBuilder for KnxIpInterfaceObjectsBuilder {
         AST: LoadableTable + 'a,
         COT: LoadableTable + 'a;
 
-    fn build<'a, ADT, AST, COT>(
+    fn build<'a, ADT, AST, COT, S>(
         self,
         addr_table: &'a RefCell<ADT>,
         asso_table: &'a RefCell<AST>,
         co_table: &'a RefCell<COT>,
+        _state: &'a S,
     ) -> Self::Objects<'a, ADT, AST, COT>
     where
         ADT: LoadableTable,
         AST: LoadableTable,
         COT: LoadableTable,
+        S: StackState,
     {
         KnxIpInterfaceObjects::new(addr_table, asso_table, co_table)
     }
@@ -397,6 +399,7 @@ impl StackDefinition for MyKnxStackWithKnxIp {
     type CO = comm_objs::AppComObjects;
     type LLB = KnxNetIpBuilder<2, 2>; // 2 sockets, 2 servers
     type IOB = KnxIpInterfaceObjectsBuilder;
+    type State = BasicStackState;
 }
 
 #[embassy_executor::task]

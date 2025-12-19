@@ -20,7 +20,7 @@ use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
 
 use zweidraehte::{
-    define_com_objects,
+    BasicStackState, define_com_objects,
     messages::buffers::{Buffer, BufferManager, DynBufferManager, MessageBuffer},
     messages::knx::{KnxMessageBuffer, ServiceType},
     objects::comm::ComObjects,
@@ -29,7 +29,7 @@ use zweidraehte::{
         PropertyServiceHandler,
     },
     objects::tables::LoadableTable,
-    Runner, StackDefinition, StackResources,
+    Runner, StackDefinition, StackResources, StackState,
 };
 
 use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle, MockLinkLayerResources};
@@ -41,12 +41,16 @@ use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerH
 define_com_objects! {
     pub mod test_comm_objs {
         pub struct TestComObjects {
-            // For conformance testing, we need objects > 6 bits to use long format responses
+            // 1-byte objects for long format responses (network layer tests 3.x)
             // DPT_Value_1_Ucount is 1 byte (8 bits), forcing long format GroupValue_Response
-            1 => pub co_1: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),   // For GroupValue_Response tests
+            1 => pub co_1: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
             2 => pub co_2: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
             3 => pub co_3: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
             4 => pub co_4: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+
+            // 1-bit object for short format responses (transport layer tests 2.x)
+            // DPT_Switch is 1 bit, uses short format with value in APCI field
+            5 => pub co_switch: DPT_Switch = DPT_Switch::from(false),
         }
     }
 }
@@ -64,27 +68,34 @@ mod conformance_config {
         individual_address: "1.0.1",  // DUT individual address matching EITT tests (BDUT = 1.0.1 = 0x1001)
 
         group_addresses: {
-            // Group address 2/0/1 = 0x1001 (matches GO_ADDR in test variables)
-            1 => "2/0/1",  // For GroupValue tests
+            // Group address 2/0/1 = 0x1001 for network layer tests (long format)
+            1 => "2/0/1",
             2 => "2/0/2",
             3 => "2/0/3",
             4 => "2/0/4",
+            // Group address 5/5/5 = 0x2D05 for transport layer tests (short format)
+            // This matches GO_ADDR in transport_layer_general.rs test variables
+            5 => "5/5/5",
         },
 
         comm_objects: {
-            // All objects have full flags for read/write/response testing
-            // Use size 7 (Byte1 = 1 byte) to force long format GroupValue_Response
+            // 1-byte objects for long format GroupValue_Response (network layer tests)
+            // Size 7 = 1 byte
             1 => (7, CE | TE | RE | WE | UE),
             2 => (7, CE | TE | RE | WE | UE),
             3 => (7, CE | TE | RE | WE | UE),
             4 => (7, CE | TE | RE | WE | UE),
+            // 1-bit object for short format GroupValue_Response (transport layer tests)
+            // Size 1 = 1 bit (fits in 6-bit APCI field)
+            5 => (1, CE | TE | RE | WE | UE),
         },
 
         associations: {
-            1 => [1],  // TSAP 1 (2/0/1) → CO 1
-            2 => [2],  // TSAP 2 (2/0/2) → CO 2
-            3 => [3],  // TSAP 3 (2/0/3) → CO 3
-            4 => [4],  // TSAP 4 (2/0/4) → CO 4
+            1 => [1],  // TSAP 1 (2/0/1) → CO 1 (1-byte)
+            2 => [2],  // TSAP 2 (2/0/2) → CO 2 (1-byte)
+            3 => [3],  // TSAP 3 (2/0/3) → CO 3 (1-byte)
+            4 => [4],  // TSAP 4 (2/0/4) → CO 4 (1-byte)
+            5 => [5],  // TSAP 5 (5/5/5) → CO 5 (1-bit, short format)
         },
     }
 }
@@ -93,21 +104,28 @@ mod conformance_config {
 // Minimal Interface Objects
 // ============================================================================
 
+use zweidraehte::objects::interface::pid;
+
+/// PID for programming mode (Device Object specific, PID 54)
+const PID_PROGMODE: u8 = pid::PROGMODE;
+
 /// Minimal interface objects container for conformance testing
 ///
 /// This provides the bare minimum interface objects needed for the stack to run.
 /// Contains a DeviceObject (Object Index 0) which is mandatory for all KNX devices.
-pub struct MinimalInterfaceObjects {
+/// Also holds a reference to the stack state for PID_PROGMODE read/write.
+pub struct MinimalInterfaceObjects<'a, S: StackState> {
     device: DeviceObject,
+    state: &'a S,
 }
 
-impl MinimalInterfaceObjects {
-    pub fn new() -> Self {
-        Self { device: DeviceObject::new() }
+impl<'a, S: StackState> MinimalInterfaceObjects<'a, S> {
+    pub fn new(state: &'a S) -> Self {
+        Self { device: DeviceObject::new(), state }
     }
 }
 
-impl PropertyServiceHandler for MinimalInterfaceObjects {
+impl<S: StackState> PropertyServiceHandler for MinimalInterfaceObjects<'_, S> {
     fn object_count(&self) -> u16 {
         1 // Just the DeviceObject at index 0
     }
@@ -133,7 +151,20 @@ impl PropertyServiceHandler for MinimalInterfaceObjects {
         buf: &mut [u8],
     ) -> Result<usize, PropertyError> {
         match object_idx {
-            0 => self.device.read_property(prop_id, start_idx, count, buf),
+            0 => {
+                // Handle PID_PROGMODE specially - read from stack state
+                if prop_id == PID_PROGMODE {
+                    if start_idx != 1 || count != 1 {
+                        return Err(PropertyError::InvalidStartIndex);
+                    }
+                    if buf.is_empty() {
+                        return Err(PropertyError::BufferTooSmall);
+                    }
+                    buf[0] = if self.state.programming_mode() { 1 } else { 0 };
+                    return Ok(1);
+                }
+                self.device.read_property(prop_id, start_idx, count, buf)
+            }
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }
@@ -141,14 +172,23 @@ impl PropertyServiceHandler for MinimalInterfaceObjects {
     fn property_value_write(
         &self,
         object_idx: u16,
-        _prop_id: u8,
+        prop_id: u8,
         _start_idx: u16,
-        _data: &[u8],
+        data: &[u8],
     ) -> Result<(), PropertyError> {
         match object_idx {
-            // DeviceObject is immutable here since we don't have &mut self
-            // For conformance testing, writes to device object can return an error
-            0 => Err(PropertyError::WriteNotAllowed),
+            0 => {
+                // Handle PID_PROGMODE - write to stack state
+                if prop_id == PID_PROGMODE {
+                    if data.is_empty() {
+                        return Err(PropertyError::InvalidElementCount);
+                    }
+                    self.state.set_programming_mode(data[0] != 0);
+                    return Ok(());
+                }
+                // Other properties are read-only
+                Err(PropertyError::WriteNotAllowed)
+            }
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }
@@ -160,24 +200,29 @@ pub struct MinimalInterfaceObjectsBuilder;
 
 impl InterfaceObjectsBuilder for MinimalInterfaceObjectsBuilder {
     type Objects<'a, ADT, AST, COT>
-        = MinimalInterfaceObjects
+        = MinimalInterfaceObjects<'a, BasicStackState>
     where
         ADT: LoadableTable + 'a,
         AST: LoadableTable + 'a,
         COT: LoadableTable + 'a;
 
-    fn build<'a, ADT, AST, COT>(
+    fn build<'a, ADT, AST, COT, S>(
         self,
         _addr_table: &'a RefCell<ADT>,
         _asso_table: &'a RefCell<AST>,
         _co_table: &'a RefCell<COT>,
+        state: &'a S,
     ) -> Self::Objects<'a, ADT, AST, COT>
     where
         ADT: LoadableTable,
         AST: LoadableTable,
         COT: LoadableTable,
+        S: StackState,
     {
-        MinimalInterfaceObjects::new()
+        // SAFETY: We know S is BasicStackState from the StackDefinition
+        // This is a workaround for the GAT lifetime constraints
+        let state_ref: &'a BasicStackState = unsafe { &*(state as *const S as *const BasicStackState) };
+        MinimalInterfaceObjects::new(state_ref)
     }
 }
 
@@ -209,6 +254,7 @@ impl StackDefinition for ConformanceTestStack {
     type CO = test_comm_objs::TestComObjects;
     type LLB = MockLinkLayerBuilder<16, 16>;
     type IOB = MinimalInterfaceObjectsBuilder;
+    type State = BasicStackState;
 }
 
 // ============================================================================

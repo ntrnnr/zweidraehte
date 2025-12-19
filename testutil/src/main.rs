@@ -12,7 +12,7 @@ use knx_conformance::harness::mock::{MockLinkLayerBuilder, MockLinkLayerResource
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
 use zweidraehte::{
-    Runner, StackDefinition, StackResources, define_com_objects,
+    BasicStackState, Runner, StackDefinition, StackResources, define_com_objects,
     dpt::DPT_Switch,
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
@@ -62,6 +62,7 @@ impl StackDefinition for MyKnxStack {
     type CO = comm_objs::AppComObjects;
     type LLB = MockLinkLayerBuilder<8>;
     type IOB = EmptyInterfaceObjectsBuilder;
+    type State = BasicStackState;
 }
 
 #[embassy_executor::task]

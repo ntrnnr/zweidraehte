@@ -2,33 +2,33 @@ use embassy_sync::channel::DynamicSender;
 
 use crate::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage};
 use crate::messages::knx::*;
-use crate::{address::IndividualAddress, messages::buffers::Buffer};
+use crate::{StackState, messages::buffers::Buffer};
 
 use super::{ActorRequest, Inbox, Layer, LayerOp};
 
 /// Network layer for the KNX stack
-pub struct NetworkLayer<'a> {
-    device_addr: IndividualAddress,
+pub struct NetworkLayer<'a, S: StackState> {
+    state: &'a S,
     default_hop_count: u8,
 
     link_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
 }
 
-impl<'a> NetworkLayer<'a> {
-    /// Create a new Network Layer with the device's individual address
+impl<'a, S: StackState> NetworkLayer<'a, S> {
+    /// Create a new Network Layer with a reference to the shared stack state
     pub fn new(
-        device_addr: IndividualAddress,
+        state: &'a S,
         default_hop_count: u8,
 
         link_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
-        Self { device_addr, default_hop_count, link_layer, transport_layer }
+        Self { state, default_hop_count, link_layer, transport_layer }
     }
 }
 
-impl<'a> Layer<'a> for NetworkLayer<'a> {
+impl<'a, S: StackState> Layer<'a> for NetworkLayer<'a, S> {
     type Buffer = Buffer<'static>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
@@ -52,7 +52,7 @@ impl<'a> Layer<'a> for NetworkLayer<'a> {
     }
 }
 
-impl<'a> NetworkLayer<'a> {
+impl<'a, S: StackState> NetworkLayer<'a, S> {
     async fn handle_indication(&mut self, mut msg: IndicationMessage<Buffer<'static>>) {
         debug!("NL indication: {:?}", msg);
 
@@ -105,7 +105,7 @@ impl<'a> NetworkLayer<'a> {
                 ctrl.set_c(Confirm::NoError);
 
                 msg.convert_hop_count_type_to_hop_count(self.default_hop_count);
-                msg.set_source_addr(self.device_addr);
+                msg.set_source_addr(self.state.individual_address());
                 msg.set_service_type(ServiceType::L_Data_Req);
 
                 // This also sets the SBC flag in CTRL and the

@@ -327,19 +327,22 @@ pub trait InterfaceObjectsBuilder: Sized {
     /// * `addr_table` - Reference to the address table (stored in stack Inner)
     /// * `asso_table` - Reference to the association table (stored in stack Inner)
     /// * `co_table` - Reference to the communication object table (stored in stack Inner)
+    /// * `state` - Reference to the shared stack state (programming mode, etc.)
     ///
     /// # Returns
     /// The container holding all interface objects for this device.
-    fn build<'a, ADT, AST, COT>(
+    fn build<'a, ADT, AST, COT, S>(
         self,
         addr_table: &'a RefCell<ADT>,
         asso_table: &'a RefCell<AST>,
         co_table: &'a RefCell<COT>,
+        state: &'a S,
     ) -> Self::Objects<'a, ADT, AST, COT>
     where
         ADT: LoadableTable,
         AST: LoadableTable,
-        COT: LoadableTable;
+        COT: LoadableTable,
+        S: crate::StackState;
 }
 
 /// Context trait for accessing interface objects from within the stack.
@@ -382,16 +385,18 @@ impl InterfaceObjectsBuilder for EmptyInterfaceObjectsBuilder {
         AST: LoadableTable + 'a,
         COT: LoadableTable + 'a;
 
-    fn build<'a, ADT, AST, COT>(
+    fn build<'a, ADT, AST, COT, S>(
         self,
         _addr_table: &'a RefCell<ADT>,
         _asso_table: &'a RefCell<AST>,
         _co_table: &'a RefCell<COT>,
+        _state: &'a S,
     ) -> Self::Objects<'a, ADT, AST, COT>
     where
         ADT: LoadableTable,
         AST: LoadableTable,
         COT: LoadableTable,
+        S: crate::StackState,
     {
         // No interface objects created
     }

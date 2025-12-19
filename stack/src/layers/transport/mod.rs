@@ -158,6 +158,8 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
     /// Handle connection-oriented indications (N_Data_Ind)
     async fn handle_connection_indication(&mut self, mut msg: IndicationMessage<Buffer<'static>>) {
+        use crate::messages::knx::offsets::MSG_TPCI;
+
         let tpci = match msg.get_tpci() {
             Some(t) => t,
             None => {
@@ -172,13 +174,42 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
         trace!("TL connection from {}: TPCI={:?}", source, tpci);
 
+        // Control packets (Connect, Disconnect, ACK, NACK) must have exactly 7 bytes
+        // (CTRL + SRC[2] + DEST[2] + NPDU + TPCI, no additional data)
+        // Malformed control packets with extra bytes must be ignored (KNX conformance test 2.5)
+        const CONTROL_PACKET_LEN: usize = MSG_TPCI + 1; // 7 bytes
+
         // Create the appropriate event based on TPCI
         let event = match tpci {
-            Tpci::Connect => TlEvent::ReceivedConnect { source },
-            Tpci::Disconnect => TlEvent::ReceivedDisconnect { source },
+            Tpci::Connect => {
+                if msg.len() != CONTROL_PACKET_LEN {
+                    warn!("TL ignoring malformed T_Connect (len={}, expected={})", msg.len(), CONTROL_PACKET_LEN);
+                    return;
+                }
+                TlEvent::ReceivedConnect { source }
+            }
+            Tpci::Disconnect => {
+                if msg.len() != CONTROL_PACKET_LEN {
+                    warn!("TL ignoring malformed T_Disconnect (len={}, expected={})", msg.len(), CONTROL_PACKET_LEN);
+                    return;
+                }
+                TlEvent::ReceivedDisconnect { source }
+            }
+            Tpci::Ack(seq_no) => {
+                if msg.len() != CONTROL_PACKET_LEN {
+                    warn!("TL ignoring malformed T_ACK (len={}, expected={})", msg.len(), CONTROL_PACKET_LEN);
+                    return;
+                }
+                TlEvent::ReceivedAck { source, seq_no }
+            }
+            Tpci::Nack(seq_no) => {
+                if msg.len() != CONTROL_PACKET_LEN {
+                    warn!("TL ignoring malformed T_NACK (len={}, expected={})", msg.len(), CONTROL_PACKET_LEN);
+                    return;
+                }
+                TlEvent::ReceivedNack { source, seq_no }
+            }
             Tpci::DataConnected(seq_no) => TlEvent::ReceivedData { source, seq_no },
-            Tpci::Ack(seq_no) => TlEvent::ReceivedAck { source, seq_no },
-            Tpci::Nack(seq_no) => TlEvent::ReceivedNack { source, seq_no },
             Tpci::DataIndividual => {
                 // Unnumbered individual data - forward to application
                 msg.set_service_type(ServiceType::T_DataUnack_Ind);
@@ -201,11 +232,10 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
         let conn = match conn {
             Some(c) => c,
             None => {
-                debug!("TL no connection slot for {}", source);
-                // If we received data for a non-existent connection, send disconnect
-                if matches!(event, TlEvent::ReceivedData { .. }) {
-                    self.send_disconnect(source).await;
-                }
+                // No connection slot found - just ignore the message silently
+                // Per KNX conformance tests (2.5.1), we should NOT send a T_Disconnect
+                // when receiving data for a non-existent connection - just ignore it
+                debug!("TL no connection slot for {} - ignoring", source);
                 return;
             }
         };
@@ -392,35 +422,20 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             None => return msg.error().build(),
         };
 
-        // Store the message for retransmission before processing
-        // (We'll do this in execute_actions when we see StorePendingMessage)
         let seq_no = conn.seq_no_send;
         let actions = process_event(conn, TlEvent::RequestData { dest });
-
-        // We need to handle StorePendingMessage specially - store the message in the connection
-        for action in actions.iter() {
-            if matches!(action, TlAction::StorePendingMessage) {
-                // Clone the message buffer for storage
-                // Note: We're storing the original message; caller should keep a copy if needed
-                if let Some(_conn) = self.connections.find_any(dest) {
-                    // The message is moved into pending_msg for retransmission
-                    // For now we'll handle this differently - see below
-                }
-                break;
-            }
-        }
 
         // For data requests, we need to prepare and send the message
         msg.set_tpci(Tpci::DataConnected(seq_no));
         msg.set_dest_addr(DestinationAddress::Individual(dest));
         msg.set_service_type(ServiceType::N_Data_Req);
 
-        // Store for potential retransmission
-        if let Some(_conn) = self.connections.find_any(dest) {
-            // We should store a copy, but since Buffer is a smart pointer,
-            // we can't easily clone it. Instead, we'll need to re-allocate.
-            // For now, we'll send immediately and handle retransmission later.
-            // TODO: Proper message storage for retransmission
+        // Store a copy for potential retransmission
+        // We need to allocate a new buffer and copy the message content
+        let pending_buffer = self.buffer_manager.borrow().alloc_from_slice(&*msg.buf()).await;
+        let pending_msg = KnxMessageBuffer::new(pending_buffer, msg.service_type());
+        if let Some(conn) = self.connections.find_any(dest) {
+            conn.pending_msg = Some(pending_msg);
         }
 
         // Execute other actions (start timer, etc.)
@@ -554,11 +569,17 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
                 }
                 TlAction::Retransmit { dest } => {
                     debug!("TL retransmitting to {}", dest);
-                    // TODO: Retransmit pending message
+                    // Get the pending message from the connection
                     if let Some(conn) = self.connections.find_any(dest) {
-                        if let Some(ref _msg) = conn.pending_msg {
-                            // Would retransmit here
-                            trace!("Would retransmit pending message");
+                        if let Some(ref pending_msg) = conn.pending_msg {
+                            // Allocate a new buffer and copy the pending message
+                            let retransmit_buffer =
+                                self.buffer_manager.borrow().alloc_from_slice(&*pending_msg.buf()).await;
+                            let retransmit_msg = KnxMessageBuffer::new(retransmit_buffer, pending_msg.service_type());
+
+                            debug!("TL retransmitting: {:x?}", retransmit_msg);
+                            let _confirmation =
+                                self.network_layer.request(RequestMessage::request(retransmit_msg)).await;
                         }
                     }
                 }
