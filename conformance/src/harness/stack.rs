@@ -13,6 +13,7 @@
 //! (e.g., GroupValue_Read → GroupValue_Response).
 
 use core::cell::RefCell;
+use std::net::Ipv4Addr;
 
 use const_default::ConstDefault;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -20,16 +21,17 @@ use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
 
 use zweidraehte::{
-    BasicStackState, define_com_objects,
+    BasicIpStackState, IpPlatform, IpStackState, define_com_objects,
     messages::buffers::{Buffer, BufferManager, DynBufferManager, MessageBuffer},
     messages::knx::{KnxMessageBuffer, ServiceType},
     objects::comm::ComObjects,
     objects::interface::{
-        DeviceObject, InterfaceObject, InterfaceObjectsBuilder, PropertyDescriptionResponse, PropertyError,
-        PropertyServiceHandler,
+        AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject,
+        GroupObjectTableObject, InterfaceObject, InterfaceObjectsBuilder, IpParameterObject,
+        PropertyDescriptionResponse, PropertyError, PropertyServiceHandler,
     },
     objects::tables::LoadableTable,
-    Runner, StackDefinition, StackResources, StackState,
+    Runner, StackDefinition, StackResources,
 };
 
 use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle, MockLinkLayerResources};
@@ -101,33 +103,164 @@ mod conformance_config {
 }
 
 // ============================================================================
-// Minimal Interface Objects
+// Mock IP Platform
 // ============================================================================
 
-use zweidraehte::objects::interface::pid;
-
-/// PID for programming mode (Device Object specific, PID 54)
-const PID_PROGMODE: u8 = pid::PROGMODE;
-
-/// Minimal interface objects container for conformance testing
-///
-/// This provides the bare minimum interface objects needed for the stack to run.
-/// Contains a DeviceObject (Object Index 0) which is mandatory for all KNX devices.
-/// Also holds a reference to the stack state for PID_PROGMODE read/write.
-pub struct MinimalInterfaceObjects<'a, S: StackState> {
-    device: DeviceObject,
-    state: &'a S,
+/// Mock platform for testing that provides static IP configuration.
+#[derive(Debug, Clone)]
+pub struct MockIpPlatform {
+    pub ip_address: Ipv4Addr,
+    pub subnet_mask: Ipv4Addr,
+    pub gateway: Ipv4Addr,
+    pub mac_address: [u8; 6],
 }
 
-impl<'a, S: StackState> MinimalInterfaceObjects<'a, S> {
-    pub fn new(state: &'a S) -> Self {
-        Self { device: DeviceObject::new(), state }
+impl Default for MockIpPlatform {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-impl<S: StackState> PropertyServiceHandler for MinimalInterfaceObjects<'_, S> {
+impl MockIpPlatform {
+    pub fn new() -> Self {
+        Self {
+            ip_address: Ipv4Addr::new(192, 168, 1, 100),
+            subnet_mask: Ipv4Addr::new(255, 255, 255, 0),
+            gateway: Ipv4Addr::new(192, 168, 1, 1),
+            mac_address: [0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E],
+        }
+    }
+}
+
+impl IpPlatform for MockIpPlatform {
+    fn current_ip_address(&self) -> Ipv4Addr {
+        self.ip_address
+    }
+
+    fn current_subnet_mask(&self) -> Ipv4Addr {
+        self.subnet_mask
+    }
+
+    fn current_default_gateway(&self) -> Ipv4Addr {
+        self.gateway
+    }
+
+    fn mac_address(&self) -> [u8; 6] {
+        self.mac_address
+    }
+
+    fn current_ip_assignment_method(&self) -> u8 {
+        0x02 // Manual
+    }
+
+    fn ip_capabilities(&self) -> u8 {
+        0x07 // BootP, DHCP, Manual supported
+    }
+
+    fn knxnetip_device_capabilities(&self) -> u16 {
+        0x003F // Supports routing, tunneling, etc.
+    }
+}
+
+// ============================================================================
+// Device Information
+// ============================================================================
+
+/// Device-specific constants for Interface Objects
+mod device_info {
+    /// Device serial number (6 bytes)
+    /// Format: bytes 0-1 = manufacturer ID (0x00FA), bytes 2-5 = device-specific
+    pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
+
+    /// Hardware type identifier (6 bytes)
+    pub const HARDWARE_TYPE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+
+    /// Application program version (5 bytes: manufacturer, app_id, version)
+    pub const PROGRAM_VERSION: [u8; 5] = [0x00, 0xFA, 0x01, 0x00, 0x01];
+
+    /// PEI type (0 = no PEI)
+    pub const PEI_TYPE: u8 = 0x00;
+}
+
+// ============================================================================
+// KNX/IP Interface Objects
+// ============================================================================
+
+/// Interface Objects container for a KNXnet/IP device
+///
+/// This struct holds all the interface objects required for a standard
+/// KNXnet/IP device. It implements `PropertyServiceHandler` to dispatch
+/// property requests to the correct object by index:
+///
+/// - Index 0: Device Object
+/// - Index 1: Address Table Object
+/// - Index 2: Association Table Object
+/// - Index 3: Application Program Object
+/// - Index 4: Group Object Table Object
+/// - Index 5: IP Parameter Object
+pub struct KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
+where
+    ADT: LoadableTable,
+    AST: LoadableTable,
+    COT: LoadableTable,
+    S: IpStackState,
+{
+    pub device: RefCell<DeviceObject<'a, S>>,
+    pub addr_table: RefCell<AddressTableObject<'a, ADT>>,
+    pub asso_table: RefCell<AssociationTableObject<'a, AST>>,
+    pub app_program: RefCell<ApplicationProgramObject>,
+    pub group_object_table: RefCell<GroupObjectTableObject<'a, COT>>,
+    pub ip_parameter: RefCell<IpParameterObject<'a, S>>,
+}
+
+impl<'a, ADT, AST, COT, S> KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
+where
+    ADT: LoadableTable,
+    AST: LoadableTable,
+    COT: LoadableTable,
+    S: IpStackState,
+{
+    /// Create new interface objects wrapping the provided tables
+    pub fn new(
+        addr_table: &'a RefCell<ADT>,
+        asso_table: &'a RefCell<AST>,
+        co_table: &'a RefCell<COT>,
+        state: &'a S,
+    ) -> Self {
+        // Create Device Object with device information and state reference
+        let device = DeviceObject::with_values(state, device_info::SERIAL_NUMBER, device_info::HARDWARE_TYPE);
+
+        // Create Application Program Object
+        let mut app_program = ApplicationProgramObject::new();
+        app_program.program_version = device_info::PROGRAM_VERSION.into();
+        app_program.pei_type = device_info::PEI_TYPE.into();
+        // Load state starts as "loaded" for this demo
+        app_program.load_state = 0x01.into(); // Loaded
+        app_program.run_state = 0x01.into(); // Running
+
+        // Create IP Parameter Object
+        let ip_parameter = IpParameterObject::with_state(state);
+
+        Self {
+            device: RefCell::new(device),
+            addr_table: RefCell::new(AddressTableObject::new(addr_table)),
+            asso_table: RefCell::new(AssociationTableObject::new(asso_table)),
+            app_program: RefCell::new(app_program),
+            group_object_table: RefCell::new(GroupObjectTableObject::new(co_table)),
+            ip_parameter: RefCell::new(ip_parameter),
+        }
+    }
+}
+
+impl<'a, ADT, AST, COT, S> PropertyServiceHandler for KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
+where
+    ADT: LoadableTable,
+    AST: LoadableTable,
+    COT: LoadableTable,
+    S: IpStackState,
+{
     fn object_count(&self) -> u16 {
-        1 // Just the DeviceObject at index 0
+        6 // Device, AddrTable, AssoTable, AppProgram, GroupObjectTable, IpParameter
     }
 
     fn property_description_read(
@@ -137,7 +270,12 @@ impl<S: StackState> PropertyServiceHandler for MinimalInterfaceObjects<'_, S> {
         prop_idx: u8,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
         match object_idx {
-            0 => self.device.property_description(object_idx, prop_id, prop_idx),
+            0 => self.device.borrow().property_description(object_idx, prop_id, prop_idx),
+            1 => self.addr_table.borrow().property_description(object_idx, prop_id, prop_idx),
+            2 => self.asso_table.borrow().property_description(object_idx, prop_id, prop_idx),
+            3 => self.app_program.borrow().property_description(object_idx, prop_id, prop_idx),
+            4 => self.group_object_table.borrow().property_description(object_idx, prop_id, prop_idx),
+            5 => self.ip_parameter.borrow().property_description(object_idx, prop_id, prop_idx),
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }
@@ -151,20 +289,12 @@ impl<S: StackState> PropertyServiceHandler for MinimalInterfaceObjects<'_, S> {
         buf: &mut [u8],
     ) -> Result<usize, PropertyError> {
         match object_idx {
-            0 => {
-                // Handle PID_PROGMODE specially - read from stack state
-                if prop_id == PID_PROGMODE {
-                    if start_idx != 1 || count != 1 {
-                        return Err(PropertyError::InvalidStartIndex);
-                    }
-                    if buf.is_empty() {
-                        return Err(PropertyError::BufferTooSmall);
-                    }
-                    buf[0] = if self.state.programming_mode() { 1 } else { 0 };
-                    return Ok(1);
-                }
-                self.device.read_property(prop_id, start_idx, count, buf)
-            }
+            0 => self.device.borrow().read_property(prop_id, start_idx, count, buf),
+            1 => self.addr_table.borrow().read_property(prop_id, start_idx, count, buf),
+            2 => self.asso_table.borrow().read_property(prop_id, start_idx, count, buf),
+            3 => self.app_program.borrow().read_property(prop_id, start_idx, count, buf),
+            4 => self.group_object_table.borrow().read_property(prop_id, start_idx, count, buf),
+            5 => self.ip_parameter.borrow().read_property(prop_id, start_idx, count, buf),
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }
@@ -173,56 +303,55 @@ impl<S: StackState> PropertyServiceHandler for MinimalInterfaceObjects<'_, S> {
         &self,
         object_idx: u16,
         prop_id: u8,
-        _start_idx: u16,
+        start_idx: u16,
         data: &[u8],
     ) -> Result<(), PropertyError> {
         match object_idx {
-            0 => {
-                // Handle PID_PROGMODE - write to stack state
-                if prop_id == PID_PROGMODE {
-                    if data.is_empty() {
-                        return Err(PropertyError::InvalidElementCount);
-                    }
-                    self.state.set_programming_mode(data[0] != 0);
-                    return Ok(());
-                }
-                // Other properties are read-only
-                Err(PropertyError::WriteNotAllowed)
-            }
+            0 => self.device.borrow_mut().write_property(prop_id, start_idx, data),
+            1 => self.addr_table.borrow_mut().write_property(prop_id, start_idx, data),
+            2 => self.asso_table.borrow_mut().write_property(prop_id, start_idx, data),
+            3 => self.app_program.borrow_mut().write_property(prop_id, start_idx, data),
+            4 => self.group_object_table.borrow_mut().write_property(prop_id, start_idx, data),
+            5 => self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data),
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }
 }
 
-/// Builder for minimal interface objects
-#[derive(Debug, Clone, Copy)]
-pub struct MinimalInterfaceObjectsBuilder;
+// ============================================================================
+// Interface Objects Builder
+// ============================================================================
 
-impl InterfaceObjectsBuilder for MinimalInterfaceObjectsBuilder {
+/// Builder for KNXnet/IP interface objects
+///
+/// This builder is consumed during stack initialization to create the
+/// `KnxIpInterfaceObjects` container with all required interface objects.
+#[derive(Debug, Clone, Copy)]
+pub struct KnxIpInterfaceObjectsBuilder;
+
+impl<S: IpStackState> InterfaceObjectsBuilder<S> for KnxIpInterfaceObjectsBuilder {
     type Objects<'a, ADT, AST, COT>
-        = MinimalInterfaceObjects<'a, BasicStackState>
+        = KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
     where
         ADT: LoadableTable + 'a,
         AST: LoadableTable + 'a,
-        COT: LoadableTable + 'a;
+        COT: LoadableTable + 'a,
+        S: 'a;
 
-    fn build<'a, ADT, AST, COT, S>(
+    fn build<'a, ADT, AST, COT>(
         self,
-        _addr_table: &'a RefCell<ADT>,
-        _asso_table: &'a RefCell<AST>,
-        _co_table: &'a RefCell<COT>,
+        addr_table: &'a RefCell<ADT>,
+        asso_table: &'a RefCell<AST>,
+        co_table: &'a RefCell<COT>,
         state: &'a S,
     ) -> Self::Objects<'a, ADT, AST, COT>
     where
         ADT: LoadableTable,
         AST: LoadableTable,
         COT: LoadableTable,
-        S: StackState,
+        S: 'a,
     {
-        // SAFETY: We know S is BasicStackState from the StackDefinition
-        // This is a workaround for the GAT lifetime constraints
-        let state_ref: &'a BasicStackState = unsafe { &*(state as *const S as *const BasicStackState) };
-        MinimalInterfaceObjects::new(state_ref)
+        KnxIpInterfaceObjects::new(addr_table, asso_table, co_table, state)
     }
 }
 
@@ -253,8 +382,8 @@ impl StackDefinition for ConformanceTestStack {
     type P = TestParameters;
     type CO = test_comm_objs::TestComObjects;
     type LLB = MockLinkLayerBuilder<16, 16>;
-    type IOB = MinimalInterfaceObjectsBuilder;
-    type State = BasicStackState;
+    type IOB = KnxIpInterfaceObjectsBuilder;
+    type State = BasicIpStackState<MockIpPlatform>;
 }
 
 // ============================================================================
@@ -328,7 +457,7 @@ impl FullStackHarness {
             co_tab,
             test_comm_objs::TestComObjects::new(),
             link_layer_builder,
-            MinimalInterfaceObjectsBuilder,
+            KnxIpInterfaceObjectsBuilder,
         );
 
         let ll_resources = LL_RESOURCES.init(MockLinkLayerResources::new());

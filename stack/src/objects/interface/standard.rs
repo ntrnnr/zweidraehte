@@ -26,13 +26,14 @@
 use core::cell::RefCell;
 use core::marker::PhantomData;
 
+use crate::StackState;
 use crate::dpt::{
-    InterfaceObjectType, PDT_Generic01, PDT_Generic02, PDT_Generic05, PDT_Generic06,
-    PDT_UnsignedChar, PDT_UnsignedInt, PropertyDataDefinition,
+    InterfaceObjectType, PDT_Generic01, PDT_Generic02, PDT_Generic05, PDT_Generic06, PDT_Generic10, PDT_UnsignedChar,
+    PDT_UnsignedInt, PropertyDataDefinition,
 };
 use crate::objects::tables::LoadableTable;
 
-use super::{pid, InterfaceObject, PropertyAccess, PropertyDescriptor, PropertyError};
+use super::{InterfaceObject, PropertyAccess, PropertyDescriptor, PropertyError, pid};
 
 // ============================================================================
 // Device Object (Object Type 0)
@@ -44,20 +45,221 @@ crate::define_interface_object! {
     /// The Device Object contains basic device information and is mandatory
     /// for all KNX devices. It is always Object Index 0.
     ///
+    /// This implementation holds a reference to the stack state for dynamic
+    /// properties like programming mode and individual address components.
+    ///
     /// # Properties
     ///
     /// | PID | Name | Type | Access |
     /// |-----|------|------|--------|
     /// | 1 | Object Type | PDT_UNSIGNED_INT | RO |
-    /// | 11 | Serial Number | PDT_GENERIC_06 | RW |
-    /// | 12 | Manufacturer ID | PDT_UNSIGNED_INT | RO |
+    /// | 11 | Serial Number | PDT_GENERIC_06 | RO |
+    /// | 12 | Manufacturer ID | PDT_UNSIGNED_INT | RO | (derived from serial number bytes 0-1)
     /// | 14 | Device Control | PDT_GENERIC_01 | RW |
+    /// | 15 | Order Info | PDT_GENERIC_10 | RO |
+    /// | 25 | Version | PDT_GENERIC_02 | RO |
+    /// | 51 | Routing Count | PDT_UNSIGNED_CHAR | RW | (state-backed)
+    /// | 54 | Programming Mode | PDT_GENERIC_01 | RW |
+    /// | 56 | Max APDU Length | PDT_UNSIGNED_INT | RO |
+    /// | 57 | Subnet Address | PDT_UNSIGNED_CHAR | RO |
+    /// | 58 | Device Address | PDT_UNSIGNED_CHAR | RO |
     /// | 78 | Hardware Type | PDT_GENERIC_06 | RO |
-    pub struct DeviceObject: InterfaceObjectType::Device {
-        pid::SERIAL_NUMBER => serial_number: PDT_Generic06, ReadWrite;
-        pid::MANUFACTURER_ID => manufacturer_id: PDT_UnsignedInt, ReadOnly;
-        pid::DEVICE_CONTROL => device_control: PDT_Generic01, ReadWrite;
-        pid::HARDWARE_TYPE => hardware_type: PDT_Generic06, ReadOnly
+    /// | 83 | Device Descriptor | PDT_UNSIGNED_INT | RO |
+    pub struct DeviceObject<'a, S: StackState>: InterfaceObjectType::Device
+        with state: &'a S
+    {
+        // Static properties (stored in struct)
+        // Note: manufacturer_id is derived from serial_number bytes 0-1
+        pid::SERIAL_NUMBER => serial_number: PDT_Generic06, ReadOnly,
+        pid::MANUFACTURER_ID => manufacturer_id: PDT_UnsignedInt, ReadOnly,
+        pid::DEVICE_CONTROL => device_control: PDT_Generic01, ReadWrite,
+        pid::ORDER_INFO => order_info: PDT_Generic10, ReadOnly,
+        pid::VERSION => version: PDT_Generic02, ReadOnly,
+        pid::MAX_APDU_LENGTH => max_apdu_length: PDT_UnsignedInt, ReadOnly,
+        pid::HARDWARE_TYPE => hardware_type: PDT_Generic06, ReadOnly,
+        pid::DEVICE_DESCRIPTOR => device_descriptor: PDT_UnsignedInt, ReadOnly
+    }
+    state {
+        // State-backed properties (read/written via closures)
+        pid::ROUTING_COUNT => {
+            read: |s| [s.routing_count()],
+            write: |s, data| { s.set_routing_count(data[0]); Ok(()) }
+        }: PDT_UnsignedChar, ReadWrite,
+
+        pid::PROGMODE => {
+            read: |s| [if s.programming_mode() { 0x01 } else { 0x00 }],
+            write: |s, data| { s.set_programming_mode(data[0] != 0); Ok(()) }
+        }: PDT_Generic01, ReadWrite,
+
+        pid::SUBNET_ADDRESS => {
+            read: |s| {
+                let addr = s.individual_address();
+                [(addr.area() << 4) | addr.line()]
+            },
+            write: |_s, _data| {
+                Err(crate::objects::interface::PropertyError::WriteNotAllowed)
+            }
+        }: PDT_UnsignedChar, ReadOnly,
+
+        pid::DEVICE_ADDRESS => {
+            read: |s| [s.individual_address().device()],
+            write: |_s, _data| {
+                Err(crate::objects::interface::PropertyError::WriteNotAllowed)
+            }
+        }: PDT_UnsignedChar, ReadOnly
+    }
+}
+
+/// Device information for creating a DeviceObject
+pub struct DeviceInfo {
+    /// Serial number (6 bytes: 2 bytes manufacturer ID + 4 bytes device-specific)
+    pub serial_number: [u8; 6],
+    /// Order information (10 bytes, manufacturer-specific)
+    pub order_info: [u8; 10],
+    /// Hardware type (6 bytes)
+    pub hardware_type: [u8; 6],
+    /// Firmware version (2 bytes: magic.version.revision encoded)
+    pub version: [u8; 2],
+    /// Maximum APDU length supported (typically 14 for TP, higher for IP)
+    pub max_apdu_length: u16,
+    /// Device descriptor (mask version, e.g., 0x07B0 for System B)
+    pub device_descriptor: u16,
+}
+
+impl<'a, S: StackState> DeviceObject<'a, S> {
+    /// Create a new device object with custom static values
+    ///
+    /// The manufacturer_id is automatically derived from the first two bytes
+    /// of the serial_number (KNX serial number format: 2 bytes manufacturer + 4 bytes device).
+    pub fn with_info(state: &'a S, info: &DeviceInfo) -> Self {
+        let mut obj = Self::new(state);
+        obj.serial_number = PDT_Generic06::with_value(info.serial_number);
+        // Manufacturer ID is bytes 0-1 of serial number (big-endian)
+        let manufacturer_id_val = u16::from_be_bytes([info.serial_number[0], info.serial_number[1]]);
+        obj.manufacturer_id = PDT_UnsignedInt::with_value(manufacturer_id_val);
+        obj.order_info = PDT_Generic10::with_value(info.order_info);
+        obj.version = PDT_Generic02::with_value(info.version);
+        obj.max_apdu_length = PDT_UnsignedInt::with_value(info.max_apdu_length);
+        obj.hardware_type = PDT_Generic06::with_value(info.hardware_type);
+        obj.device_descriptor = PDT_UnsignedInt::with_value(info.device_descriptor);
+        obj
+    }
+
+    /// Create a new device object with basic values (legacy API)
+    ///
+    /// The manufacturer_id is automatically derived from the first two bytes
+    /// of the serial_number (KNX serial number format: 2 bytes manufacturer + 4 bytes device).
+    pub fn with_values(state: &'a S, serial_number_val: [u8; 6], hardware_type_val: [u8; 6]) -> Self {
+        Self::with_info(state, &DeviceInfo {
+            serial_number: serial_number_val,
+            order_info: [0; 10],
+            hardware_type: hardware_type_val,
+            version: [0x00, 0x01],     // Version 0.0.1
+            max_apdu_length: 14,       // Standard TP APDU length
+            device_descriptor: 0x07B0, // System B
+        })
+    }
+}
+
+// ============================================================================
+// IP Parameter Object (Object Type 11 / 0x0B)
+// ============================================================================
+
+use core::net::Ipv4Addr;
+
+use crate::IpStackState;
+use crate::dpt::{PDT_Bitset8, PDT_Bitset16, PDT_UnsignedLong};
+use crate::objects::interface::Ipv4Property;
+
+/// Default KNX System Setup multicast address: 224.0.23.12
+const SYSTEM_SETUP_MULTICAST: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
+
+crate::define_interface_object! {
+    /// IP Parameter Object - Object Type 11 (0x0B)
+    ///
+    /// Contains KNXnet/IP configuration for IP-capable devices.
+    /// This object is mandatory for KNXnet/IP devices.
+    ///
+    /// # Properties
+    ///
+    /// | PID | Name | Type | Access |
+    /// |-----|------|------|--------|
+    /// | 1 | Object Type | PDT_UNSIGNED_INT | RO |
+    /// | 51 | Project Installation ID | PDT_UNSIGNED_INT | RW |
+    /// | 52 | KNX Individual Address | PDT_UNSIGNED_INT | RW | (state-backed, delegates to DeviceObject)
+    /// | 54 | Current IP Assignment Method | PDT_UNSIGNED_CHAR | RO |
+    /// | 55 | IP Assignment Method | PDT_UNSIGNED_CHAR | RW |
+    /// | 56 | IP Capabilities | PDT_BITSET8 | RO |
+    /// | 57 | Current IP Address | PDT_UNSIGNED_LONG | RO |
+    /// | 58 | Current Subnet Mask | PDT_UNSIGNED_LONG | RO |
+    /// | 59 | Current Default Gateway | PDT_UNSIGNED_LONG | RO |
+    /// | 60 | IP Address | PDT_UNSIGNED_LONG | RW |
+    /// | 61 | Subnet Mask | PDT_UNSIGNED_LONG | RW |
+    /// | 62 | Default Gateway | PDT_UNSIGNED_LONG | RW |
+    /// | 64 | MAC Address | PDT_GENERIC_06 | RO |
+    /// | 65 | System Setup Multicast Address | PDT_UNSIGNED_LONG | RO |
+    /// | 66 | Routing Multicast Address | PDT_UNSIGNED_LONG | RW |
+    /// | 67 | TTL | PDT_UNSIGNED_CHAR | RW |
+    /// | 68 | KNXnet/IP Device Capabilities | PDT_BITSET16 | RO |
+    /// | 76 | Friendly Name | PDT_UNSIGNED_CHAR[30] | RW |
+    pub struct IpParameterObject<'a, S: IpStackState>: InterfaceObjectType::IPParameter
+        with state: &'a S
+    {
+        // No static properties - all are state-backed for IP
+    }
+    // Properties requiring custom logic (complex types, constants, or special handling)
+    state {
+        // KNX Individual Address (uses IndividualAddress type, needs custom conversion)
+        pid::KNX_INDIVIDUAL_ADDRESS => {
+            read: |s| {
+                let addr = s.individual_address();
+                let bytes = addr.as_bytes();
+                [bytes[0], bytes[1]]
+            },
+            write: |s, data| {
+                if data.len() >= 2 {
+                    s.set_individual_address(crate::address::IndividualAddress::from_bytes(data));
+                    Ok(())
+                } else {
+                    Err(crate::objects::interface::PropertyError::BufferTooSmall)
+                }
+            }
+        }: PDT_UnsignedInt, ReadWrite,
+
+        // System Setup Multicast Address (fixed constant, not from state)
+        pid::SYSTEM_SETUP_MULTICAST_ADDRESS => {
+            read: |_s| u32::from(SYSTEM_SETUP_MULTICAST).to_be_bytes(),
+            write: |_s, _data| Err(crate::objects::interface::PropertyError::WriteNotAllowed)
+        }: PDT_UnsignedLong, ReadOnly
+    }
+    // Shorthand ReadWrite: auto-generates getter/setter calls
+    state_rw {
+        pid::PROJECT_INSTALLATION_ID => project_installation_id: PDT_UnsignedInt,
+        pid::IP_ASSIGNMENT_METHOD => ip_assignment_method: PDT_UnsignedChar,
+        pid::TTL => ttl: PDT_UnsignedChar,
+        // IP addresses use Ipv4Property wrapper for Ipv4Addr <-> u32 conversion
+        pid::IP_ADDRESS => configured_ip_address: Ipv4Property,
+        pid::SUBNET_MASK => configured_subnet_mask: Ipv4Property,
+        pid::DEFAULT_GATEWAY => configured_default_gateway: Ipv4Property,
+        pid::ROUTING_MULTICAST_ADDRESS => routing_multicast_address: Ipv4Property
+    }
+    // Shorthand ReadOnly: auto-generates getter calls
+    state_ro {
+        pid::CURRENT_IP_ASSIGNMENT_METHOD => current_ip_assignment_method: PDT_UnsignedChar,
+        pid::IP_CAPABILITIES => ip_capabilities: PDT_Bitset8,
+        pid::MAC_ADDRESS => mac_address: PDT_Generic06,
+        pid::KNXNETIP_DEVICE_CAPABILITIES => knxnetip_device_capabilities: PDT_Bitset16,
+        // Current IP config (read-only from platform)
+        pid::CURRENT_IP_ADDRESS => current_ip_address: Ipv4Property,
+        pid::CURRENT_SUBNET_MASK => current_subnet_mask: Ipv4Property,
+        pid::CURRENT_DEFAULT_GATEWAY => current_default_gateway: Ipv4Property
+    }
+}
+
+impl<'a, S: IpStackState> IpParameterObject<'a, S> {
+    /// Create a new IP Parameter Object with a reference to the IP stack state.
+    pub fn with_state(state: &'a S) -> Self {
+        Self::new(state)
     }
 }
 
@@ -87,50 +289,32 @@ crate::define_interface_object! {
     }
 }
 
-// ============================================================================
-// Router Object (Object Type 6) - For line/backbone couplers
-// ============================================================================
+// // ============================================================================
+// // Router Object (Object Type 6) - For line/backbone couplers
+// // ============================================================================
 
-crate::define_interface_object! {
-    /// Router Object - Object Type 6
-    ///
-    /// Contains routing configuration for line/backbone couplers.
-    /// This object is only present in routing devices.
-    ///
-    /// # Properties
-    ///
-    /// | PID | Name | Type | Access |
-    /// |-----|------|------|--------|
-    /// | 1 | Object Type | PDT_UNSIGNED_INT | RO |
-    /// | 51 | Line Status | PDT_GENERIC_01 | RO |
-    /// | 52 | Main LC Config | PDT_GENERIC_01 | RW |
-    /// | 53 | Sub LC Config | PDT_GENERIC_01 | RW |
-    pub struct RouterObject: InterfaceObjectType::Router {
-        pid::LINE_STATUS => line_status: PDT_Generic01, ReadOnly;
-        pid::MAIN_LCCONFIG => main_lc_config: PDT_Generic01, ReadWrite;
-        pid::SUB_LCCONFIG => sub_lc_config: PDT_Generic01, ReadWrite;
-        pid::MAIN_LCGRPCONFIG => main_lc_grp_config: PDT_Generic01, ReadWrite;
-        pid::SUB_LCGRPCONFIG => sub_lc_grp_config: PDT_Generic01, ReadWrite
-    }
-}
-
-// ============================================================================
-// IP Parameter Object (Object Type 11) - For KNXnet/IP devices
-// ============================================================================
-
-crate::define_interface_object! {
-    /// IP Parameter Object - Object Type 11 (0x0B)
-    ///
-    /// Contains IP configuration for KNXnet/IP devices.
-    /// This object is only present in KNXnet/IP devices.
-    pub struct IpParameterObject: InterfaceObjectType::IPParameter {
-        pid::PROJECT_INSTALLATION_ID => project_installation_id: PDT_UnsignedInt, ReadWrite;
-        pid::CURRENT_IP_ASSIGNMENT_METHOD => current_ip_method: PDT_UnsignedChar, ReadOnly;
-        pid::IP_ASSIGNMENT_METHOD => ip_method: PDT_UnsignedChar, ReadWrite;
-        pid::IP_CAPABILITIES => ip_capabilities: PDT_UnsignedChar, ReadOnly;
-        pid::FRIENDLY_NAME => friendly_name: PDT_Generic02, ReadWrite
-    }
-}
+// crate::define_interface_object! {
+//     /// Router Object - Object Type 6
+//     ///
+//     /// Contains routing configuration for line/backbone couplers.
+//     /// This object is only present in routing devices.
+//     ///
+//     /// # Properties
+//     ///
+//     /// | PID | Name | Type | Access |
+//     /// |-----|------|------|--------|
+//     /// | 1 | Object Type | PDT_UNSIGNED_INT | RO |
+//     /// | 51 | Line Status | PDT_GENERIC_01 | RO |
+//     /// | 52 | Main LC Config | PDT_GENERIC_01 | RW |
+//     /// | 53 | Sub LC Config | PDT_GENERIC_01 | RW |
+//     pub struct RouterObject: InterfaceObjectType::Router {
+//         pid::LINE_STATUS => line_status: PDT_Generic01, ReadOnly;
+//         pid::MAIN_LCCONFIG => main_lc_config: PDT_Generic01, ReadWrite;
+//         pid::SUB_LCCONFIG => sub_lc_config: PDT_Generic01, ReadWrite;
+//         pid::MAIN_LCGRPCONFIG => main_lc_grp_config: PDT_Generic01, ReadWrite;
+//         pid::SUB_LCGRPCONFIG => sub_lc_grp_config: PDT_Generic01, ReadWrite
+//     }
+// }
 
 // ============================================================================
 // Address Table Object (Object Type 1)
@@ -186,10 +370,7 @@ pub struct TableInterfaceObject<'a, T: LoadableTable, S: TableObjectSpec> {
 impl<'a, T: LoadableTable, S: TableObjectSpec> TableInterfaceObject<'a, T, S> {
     /// Create a new table interface object wrapping an existing table
     pub fn new(table: &'a RefCell<T>) -> Self {
-        Self {
-            table,
-            _spec: PhantomData,
-        }
+        Self { table, _spec: PhantomData }
     }
 
     /// Get property descriptors for table objects
@@ -199,7 +380,7 @@ impl<'a, T: LoadableTable, S: TableObjectSpec> TableInterfaceObject<'a, T, S> {
             PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite),
             PropertyDescriptor::new(pid::TABLE_REFERENCE, 0x09, 1, PropertyAccess::ReadOnly), // PDT_UNSIGNED_LONG
             PropertyDescriptor::new(pid::TABLE, S::TABLE_PDT, 0, PropertyAccess::ReadWrite), // max_elements set dynamically
-            PropertyDescriptor::new(pid::MCB_TABLE, 0x17, 1, PropertyAccess::ReadOnly), // PDT_GENERIC_08
+            PropertyDescriptor::new(pid::MCB_TABLE, 0x17, 1, PropertyAccess::ReadOnly),      // PDT_GENERIC_08
         ]
     }
 }
@@ -225,17 +406,13 @@ impl<'a, T: LoadableTable, S: TableObjectSpec> InterfaceObject for TableInterfac
 
     fn property_descriptor_by_id(&self, pid: u8) -> Option<(u16, PropertyDescriptor)> {
         let descriptors = Self::property_descriptors();
-        descriptors
-            .iter()
-            .enumerate()
-            .find(|(_, d)| d.pid == pid)
-            .map(|(i, d)| {
-                let mut desc = *d;
-                if desc.pid == super::pid::TABLE {
-                    desc.max_elements = (self.table.borrow().data_ref().len() / S::ENTRY_SIZE) as u16;
-                }
-                (i as u16, desc)
-            })
+        descriptors.iter().enumerate().find(|(_, d)| d.pid == pid).map(|(i, d)| {
+            let mut desc = *d;
+            if desc.pid == super::pid::TABLE {
+                desc.max_elements = (self.table.borrow().data_ref().len() / S::ENTRY_SIZE) as u16;
+            }
+            (i as u16, desc)
+        })
     }
 
     fn read_property(&self, pid: u8, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {

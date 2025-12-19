@@ -115,8 +115,9 @@ use embassy_time::Duration;
 use env_logger::Env;
 use platform::address::EthernetAddress;
 use static_cell::StaticCell;
+use std::net::Ipv4Addr;
 use zweidraehte::{
-    BasicStackState, Runner, StackDefinition, StackResources, StackState,
+    BasicIpStackState, IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
     address::IndividualAddress,
     define_com_objects,
     dpt::DPT_Switch,
@@ -197,15 +198,73 @@ mod stack_test_config {
 }
 
 // ============================================================================
+// Mock IP Platform
+// ============================================================================
+
+/// Mock platform for testing that provides static IP configuration.
+#[derive(Debug, Clone)]
+pub struct MockIpPlatform {
+    pub ip_address: Ipv4Addr,
+    pub subnet_mask: Ipv4Addr,
+    pub gateway: Ipv4Addr,
+    pub mac_address: [u8; 6],
+}
+
+impl Default for MockIpPlatform {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MockIpPlatform {
+    pub fn new() -> Self {
+        Self {
+            ip_address: Ipv4Addr::new(192, 168, 1, 100),
+            subnet_mask: Ipv4Addr::new(255, 255, 255, 0),
+            gateway: Ipv4Addr::new(192, 168, 1, 1),
+            mac_address: [0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E],
+        }
+    }
+}
+
+impl IpPlatform for MockIpPlatform {
+    fn current_ip_address(&self) -> Ipv4Addr {
+        self.ip_address
+    }
+
+    fn current_subnet_mask(&self) -> Ipv4Addr {
+        self.subnet_mask
+    }
+
+    fn current_default_gateway(&self) -> Ipv4Addr {
+        self.gateway
+    }
+
+    fn mac_address(&self) -> [u8; 6] {
+        self.mac_address
+    }
+
+    fn current_ip_assignment_method(&self) -> u8 {
+        0x02 // Manual
+    }
+
+    fn ip_capabilities(&self) -> u8 {
+        0x07 // BootP, DHCP, Manual supported
+    }
+
+    fn knxnetip_device_capabilities(&self) -> u16 {
+        0x003F // Supports routing, tunneling, etc.
+    }
+}
+
+// ============================================================================
 // Interface Objects Configuration
 // ============================================================================
 
 /// Device-specific constants for Interface Objects
 mod device_info {
-    /// KNX Manufacturer ID (0x00FA = unregistered/test)
-    pub const MANUFACTURER_ID: u16 = 0x00FA;
-
     /// Device serial number (6 bytes)
+    /// Format: bytes 0-1 = manufacturer ID (0x00FA), bytes 2-5 = device-specific
     pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
 
     /// Hardware type identifier (6 bytes)
@@ -233,33 +292,38 @@ mod device_info {
 /// - Index 3: Application Program Object
 /// - Index 4: Group Object Table Object
 /// - Index 5: IP Parameter Object
-pub struct KnxIpInterfaceObjects<'a, ADT, AST, COT>
+pub struct KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
 where
     ADT: zweidraehte::objects::tables::LoadableTable,
     AST: zweidraehte::objects::tables::LoadableTable,
     COT: zweidraehte::objects::tables::LoadableTable,
+    S: IpStackState,
 {
-    pub device: RefCell<DeviceObject>,
+    pub device: RefCell<DeviceObject<'a, S>>,
     pub addr_table: RefCell<AddressTableObject<'a, ADT>>,
     pub asso_table: RefCell<AssociationTableObject<'a, AST>>,
     pub app_program: RefCell<ApplicationProgramObject>,
     pub group_object_table: RefCell<GroupObjectTableObject<'a, COT>>,
-    pub ip_parameter: RefCell<IpParameterObject>,
+    pub ip_parameter: RefCell<IpParameterObject<'a, S>>,
 }
 
-impl<'a, ADT, AST, COT> KnxIpInterfaceObjects<'a, ADT, AST, COT>
+impl<'a, ADT, AST, COT, S> KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
 where
     ADT: zweidraehte::objects::tables::LoadableTable,
     AST: zweidraehte::objects::tables::LoadableTable,
     COT: zweidraehte::objects::tables::LoadableTable,
+    S: IpStackState,
 {
     /// Create new interface objects wrapping the provided tables
-    pub fn new(addr_table: &'a RefCell<ADT>, asso_table: &'a RefCell<AST>, co_table: &'a RefCell<COT>) -> Self {
-        // Create Device Object with device information
-        let mut device = DeviceObject::new();
-        device.serial_number = device_info::SERIAL_NUMBER.into();
-        device.manufacturer_id = device_info::MANUFACTURER_ID.into();
-        device.hardware_type = device_info::HARDWARE_TYPE.into();
+    pub fn new(
+        addr_table: &'a RefCell<ADT>,
+        asso_table: &'a RefCell<AST>,
+        co_table: &'a RefCell<COT>,
+        state: &'a S,
+    ) -> Self {
+        // Create Device Object with device information and state reference
+        // Note: manufacturer_id is derived from serial_number bytes 0-1
+        let device = DeviceObject::with_values(state, device_info::SERIAL_NUMBER, device_info::HARDWARE_TYPE);
 
         // Create Application Program Object
         let mut app_program = ApplicationProgramObject::new();
@@ -270,11 +334,7 @@ where
         app_program.run_state = 0x01.into(); // Running
 
         // Create IP Parameter Object
-        let mut ip_parameter = IpParameterObject::new();
-        ip_parameter.project_installation_id = device_info::PROJECT_INSTALLATION_ID.into();
-        ip_parameter.current_ip_method = 0x01.into(); // Manual
-        ip_parameter.ip_method = 0x01.into(); // Manual
-        ip_parameter.ip_capabilities = 0x07.into(); // DHCP, BootP, Manual
+        let ip_parameter = IpParameterObject::with_state(state);
 
         Self {
             device: RefCell::new(device),
@@ -287,11 +347,12 @@ where
     }
 }
 
-impl<'a, ADT, AST, COT> PropertyServiceHandler for KnxIpInterfaceObjects<'a, ADT, AST, COT>
+impl<'a, ADT, AST, COT, S> PropertyServiceHandler for KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
 where
     ADT: zweidraehte::objects::tables::LoadableTable,
     AST: zweidraehte::objects::tables::LoadableTable,
     COT: zweidraehte::objects::tables::LoadableTable,
+    S: IpStackState,
 {
     fn object_count(&self) -> u16 {
         6 // Device, AddrTable, AssoTable, AppProgram, GroupObjectTable, IpParameter
@@ -363,28 +424,29 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct KnxIpInterfaceObjectsBuilder;
 
-impl InterfaceObjectsBuilder for KnxIpInterfaceObjectsBuilder {
+impl<S: IpStackState> InterfaceObjectsBuilder<S> for KnxIpInterfaceObjectsBuilder {
     type Objects<'a, ADT, AST, COT>
-        = KnxIpInterfaceObjects<'a, ADT, AST, COT>
+        = KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
     where
         ADT: LoadableTable + 'a,
         AST: LoadableTable + 'a,
-        COT: LoadableTable + 'a;
+        COT: LoadableTable + 'a,
+        S: 'a;
 
-    fn build<'a, ADT, AST, COT, S>(
+    fn build<'a, ADT, AST, COT>(
         self,
         addr_table: &'a RefCell<ADT>,
         asso_table: &'a RefCell<AST>,
         co_table: &'a RefCell<COT>,
-        _state: &'a S,
+        state: &'a S,
     ) -> Self::Objects<'a, ADT, AST, COT>
     where
         ADT: LoadableTable,
         AST: LoadableTable,
         COT: LoadableTable,
-        S: StackState,
+        S: 'a,
     {
-        KnxIpInterfaceObjects::new(addr_table, asso_table, co_table)
+        KnxIpInterfaceObjects::new(addr_table, asso_table, co_table, state)
     }
 }
 
@@ -399,7 +461,7 @@ impl StackDefinition for MyKnxStackWithKnxIp {
     type CO = comm_objs::AppComObjects;
     type LLB = KnxNetIpBuilder<2, 2>; // 2 sockets, 2 servers
     type IOB = KnxIpInterfaceObjectsBuilder;
-    type State = BasicStackState;
+    type State = BasicIpStackState<MockIpPlatform>;
 }
 
 #[embassy_executor::task]
@@ -514,10 +576,11 @@ async fn main(spawner: Spawner) {
         interface_objects.app_program.borrow().program_version.as_ref()
     );
     println!("  - Group Object Table Object: wraps stack's CO table");
-    println!(
-        "  - IP Parameter Object: project_installation_id = {:04X}",
-        interface_objects.ip_parameter.borrow().project_installation_id.value()
-    );
+    // TODO: Re-enable once IpParameterObject supports InterfaceObjectsBuilder trait bounds
+    // println!(
+    //     "  - IP Parameter Object: project_installation_id = {:04X}",
+    //     interface_objects.ip_parameter.borrow().project_installation_id.value()
+    // );
 
     // Create link layer resources
     let ll_resources = Box::leak(Box::new(KnxNetIpResources::<2>::new()));

@@ -5,6 +5,10 @@
 #![feature(type_alias_impl_trait)]
 #![feature(never_type)]
 
+// Re-export paste for use in macros
+#[doc(hidden)]
+pub use paste;
+
 mod fmt;
 
 #[macro_use]
@@ -125,6 +129,15 @@ pub trait StackState: Default {
 
     /// Set the programming mode flag.
     fn set_programming_mode(&self, enabled: bool);
+
+    /// Get the routing count (hop count) for outgoing messages.
+    ///
+    /// This value (0-7) is placed in the network layer control field.
+    /// Default is 6 per KNX specification.
+    fn routing_count(&self) -> u8;
+
+    /// Set the routing count (hop count) for outgoing messages.
+    fn set_routing_count(&self, count: u8);
 }
 
 /// A basic stack state implementation with individual address and programming mode.
@@ -137,6 +150,7 @@ pub trait StackState: Default {
 pub struct BasicStackState {
     individual_address: RefCell<IndividualAddress>,
     programming_mode: RefCell<bool>,
+    routing_count: RefCell<u8>,
 }
 
 impl Default for BasicStackState {
@@ -144,6 +158,7 @@ impl Default for BasicStackState {
         Self {
             individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
             programming_mode: RefCell::new(false),
+            routing_count: RefCell::new(6), // Default per KNX spec
         }
     }
 }
@@ -154,6 +169,7 @@ impl BasicStackState {
         Self {
             individual_address: RefCell::new(addr),
             programming_mode: RefCell::new(false),
+            routing_count: RefCell::new(6),
         }
     }
 }
@@ -174,6 +190,388 @@ impl StackState for BasicStackState {
     fn set_programming_mode(&self, enabled: bool) {
         *self.programming_mode.borrow_mut() = enabled;
     }
+
+    fn routing_count(&self) -> u8 {
+        *self.routing_count.borrow()
+    }
+
+    fn set_routing_count(&self, count: u8) {
+        *self.routing_count.borrow_mut() = count & 0x07; // Only 3 bits (0-7)
+    }
+}
+
+// ============================================================================
+// IP Stack State Extension
+// ============================================================================
+
+use core::net::Ipv4Addr;
+
+/// Extended stack state for KNXnet/IP devices.
+///
+/// This trait extends [`StackState`] with IP-specific configuration and
+/// platform queries needed by [`IpParameterObject`].
+///
+/// The trait separates:
+/// - **Current values** (read from platform/OS): `current_ip_address()`, `current_subnet_mask()`, etc.
+/// - **Configured values** (ETS-programmable, persisted): `configured_ip_address()`, etc.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use core::cell::RefCell;
+/// use core::net::Ipv4Addr;
+/// use zweidraehte::{StackState, IpStackState, address::IndividualAddress};
+///
+/// pub struct MyIpDeviceState {
+///     // Base state
+///     individual_address: RefCell<IndividualAddress>,
+///     programming_mode: RefCell<bool>,
+///     routing_count: RefCell<u8>,
+///     // IP state
+///     configured_ip: RefCell<Ipv4Addr>,
+///     configured_subnet: RefCell<Ipv4Addr>,
+///     configured_gateway: RefCell<Ipv4Addr>,
+///     friendly_name: RefCell<[u8; 30]>,
+///     // Platform reference for current values
+///     // ...
+/// }
+/// ```
+pub trait IpStackState: StackState {
+    // ========================================================================
+    // Current values (read from platform/OS - typically read-only)
+    // ========================================================================
+
+    /// Get the current IP address from the platform/OS.
+    ///
+    /// This reflects the actual IP address the device is using, which may
+    /// differ from the configured address if using DHCP.
+    fn current_ip_address(&self) -> Ipv4Addr;
+
+    /// Get the current subnet mask from the platform/OS.
+    fn current_subnet_mask(&self) -> Ipv4Addr;
+
+    /// Get the current default gateway from the platform/OS.
+    fn current_default_gateway(&self) -> Ipv4Addr;
+
+    /// Get the MAC address of the network interface.
+    fn mac_address(&self) -> [u8; 6];
+
+    // ========================================================================
+    // Configured values (ETS-programmable, persisted)
+    // ========================================================================
+
+    /// Get the configured (static) IP address.
+    ///
+    /// This is the address configured via ETS, used when IP assignment
+    /// method is set to manual/static.
+    fn configured_ip_address(&self) -> Ipv4Addr;
+
+    /// Set the configured IP address.
+    fn set_configured_ip_address(&self, addr: Ipv4Addr);
+
+    /// Get the configured subnet mask.
+    fn configured_subnet_mask(&self) -> Ipv4Addr;
+
+    /// Set the configured subnet mask.
+    fn set_configured_subnet_mask(&self, mask: Ipv4Addr);
+
+    /// Get the configured default gateway.
+    fn configured_default_gateway(&self) -> Ipv4Addr;
+
+    /// Set the configured default gateway.
+    fn set_configured_default_gateway(&self, gateway: Ipv4Addr);
+
+    /// Get the IP assignment method.
+    ///
+    /// - Bit 0: Manual (static IP)
+    /// - Bit 1: BootP
+    /// - Bit 2: DHCP
+    /// - Bit 3: AutoIP
+    fn ip_assignment_method(&self) -> u8;
+
+    /// Set the IP assignment method.
+    fn set_ip_assignment_method(&self, method: u8);
+
+    /// Get the current IP assignment method in use.
+    fn current_ip_assignment_method(&self) -> u8;
+
+    /// Get IP capabilities supported by this device.
+    ///
+    /// Bitfield indicating which assignment methods are supported.
+    fn ip_capabilities(&self) -> u8;
+
+    /// Get the routing multicast address.
+    ///
+    /// Default is 224.0.23.12 (KNX multicast address).
+    fn routing_multicast_address(&self) -> Ipv4Addr;
+
+    /// Set the routing multicast address.
+    fn set_routing_multicast_address(&self, addr: Ipv4Addr);
+
+    /// Get the multicast TTL value.
+    ///
+    /// Default is 16 per KNX specification.
+    fn ttl(&self) -> u8;
+
+    /// Set the multicast TTL value.
+    fn set_ttl(&self, ttl: u8);
+
+    /// Get the friendly name length.
+    fn friendly_name_len(&self) -> usize;
+
+    /// Copy the friendly name into the provided buffer.
+    ///
+    /// Returns the number of bytes copied.
+    fn friendly_name(&self, buf: &mut [u8]) -> usize;
+
+    /// Set the friendly name.
+    fn set_friendly_name(&self, name: &[u8]);
+
+    /// Get the KNXnet/IP device capabilities.
+    ///
+    /// Bit 0: Device Management
+    /// Bit 1: Tunneling
+    /// Bit 2: Routing
+    /// Bit 3: Remote Logging
+    /// Bit 4: Remote Configuration & Diagnosis
+    /// Bit 5: Object Server
+    fn knxnetip_device_capabilities(&self) -> u16;
+
+    /// Get the project installation ID.
+    ///
+    /// 2 bytes: project number (bits 15-4) + installation number (bits 3-0)
+    fn project_installation_id(&self) -> u16;
+
+    /// Set the project installation ID.
+    fn set_project_installation_id(&self, id: u16);
+}
+
+/// Default KNX multicast address: 224.0.23.12
+pub const DEFAULT_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
+
+/// A basic IP stack state implementation.
+///
+/// This provides a reference implementation suitable for simple KNXnet/IP devices.
+/// It stores configured values in `RefCell`s and requires a platform reference
+/// for querying current network values.
+///
+/// For more complex devices or those with persistent storage, implement
+/// your own [`IpStackState`] type.
+#[derive(Debug)]
+pub struct BasicIpStackState<P: IpPlatform> {
+    // Base state
+    individual_address: RefCell<IndividualAddress>,
+    programming_mode: RefCell<bool>,
+    routing_count: RefCell<u8>,
+
+    // IP configured values
+    configured_ip: RefCell<Ipv4Addr>,
+    configured_subnet: RefCell<Ipv4Addr>,
+    configured_gateway: RefCell<Ipv4Addr>,
+    ip_assignment_method: RefCell<u8>,
+    routing_multicast: RefCell<Ipv4Addr>,
+    ttl: RefCell<u8>,
+    friendly_name: RefCell<[u8; 30]>,
+    friendly_name_len: RefCell<usize>,
+    project_installation_id: RefCell<u16>,
+
+    // Platform for current values
+    platform: P,
+}
+
+/// Platform trait for querying current network configuration.
+///
+/// Implement this trait to provide platform-specific network information
+/// to [`BasicIpStackState`].
+pub trait IpPlatform {
+    /// Get the current IP address from the OS/network stack.
+    fn current_ip_address(&self) -> Ipv4Addr;
+
+    /// Get the current subnet mask from the OS/network stack.
+    fn current_subnet_mask(&self) -> Ipv4Addr;
+
+    /// Get the current default gateway from the OS/network stack.
+    fn current_default_gateway(&self) -> Ipv4Addr;
+
+    /// Get the MAC address of the network interface.
+    fn mac_address(&self) -> [u8; 6];
+
+    /// Get the current IP assignment method in use (manual, DHCP, etc.)
+    fn current_ip_assignment_method(&self) -> u8;
+
+    /// Get the IP capabilities supported by this platform.
+    fn ip_capabilities(&self) -> u8;
+
+    /// Get the KNXnet/IP device capabilities.
+    fn knxnetip_device_capabilities(&self) -> u16;
+}
+
+impl<P: IpPlatform + Default> Default for BasicIpStackState<P> {
+    fn default() -> Self {
+        Self {
+            individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
+            programming_mode: RefCell::new(false),
+            routing_count: RefCell::new(6),
+            configured_ip: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
+            configured_subnet: RefCell::new(Ipv4Addr::new(255, 255, 255, 0)),
+            configured_gateway: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
+            ip_assignment_method: RefCell::new(0x04), // DHCP by default
+            routing_multicast: RefCell::new(DEFAULT_MULTICAST_ADDR),
+            ttl: RefCell::new(16),
+            friendly_name: RefCell::new([0u8; 30]),
+            friendly_name_len: RefCell::new(0),
+            project_installation_id: RefCell::new(0),
+            platform: P::default(),
+        }
+    }
+}
+
+impl<P: IpPlatform> BasicIpStackState<P> {
+    /// Create a new `BasicIpStackState` with the given platform.
+    pub fn new(platform: P) -> Self
+    where
+        P: Default,
+    {
+        Self { platform, ..Default::default() }
+    }
+
+    /// Create a new `BasicIpStackState` with individual address and platform.
+    pub fn with_address(addr: IndividualAddress, platform: P) -> Self
+    where
+        P: Default,
+    {
+        Self { individual_address: RefCell::new(addr), platform, ..Default::default() }
+    }
+}
+
+impl<P: IpPlatform + Default> StackState for BasicIpStackState<P> {
+    fn individual_address(&self) -> IndividualAddress {
+        *self.individual_address.borrow()
+    }
+
+    fn set_individual_address(&self, addr: IndividualAddress) {
+        *self.individual_address.borrow_mut() = addr;
+    }
+
+    fn programming_mode(&self) -> bool {
+        *self.programming_mode.borrow()
+    }
+
+    fn set_programming_mode(&self, enabled: bool) {
+        *self.programming_mode.borrow_mut() = enabled;
+    }
+
+    fn routing_count(&self) -> u8 {
+        *self.routing_count.borrow()
+    }
+
+    fn set_routing_count(&self, count: u8) {
+        *self.routing_count.borrow_mut() = count & 0x07;
+    }
+}
+
+impl<P: IpPlatform + Default> IpStackState for BasicIpStackState<P> {
+    fn current_ip_address(&self) -> Ipv4Addr {
+        self.platform.current_ip_address()
+    }
+
+    fn current_subnet_mask(&self) -> Ipv4Addr {
+        self.platform.current_subnet_mask()
+    }
+
+    fn current_default_gateway(&self) -> Ipv4Addr {
+        self.platform.current_default_gateway()
+    }
+
+    fn mac_address(&self) -> [u8; 6] {
+        self.platform.mac_address()
+    }
+
+    fn configured_ip_address(&self) -> Ipv4Addr {
+        *self.configured_ip.borrow()
+    }
+
+    fn set_configured_ip_address(&self, addr: Ipv4Addr) {
+        *self.configured_ip.borrow_mut() = addr;
+    }
+
+    fn configured_subnet_mask(&self) -> Ipv4Addr {
+        *self.configured_subnet.borrow()
+    }
+
+    fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
+        *self.configured_subnet.borrow_mut() = mask;
+    }
+
+    fn configured_default_gateway(&self) -> Ipv4Addr {
+        *self.configured_gateway.borrow()
+    }
+
+    fn set_configured_default_gateway(&self, gateway: Ipv4Addr) {
+        *self.configured_gateway.borrow_mut() = gateway;
+    }
+
+    fn ip_assignment_method(&self) -> u8 {
+        *self.ip_assignment_method.borrow()
+    }
+
+    fn set_ip_assignment_method(&self, method: u8) {
+        *self.ip_assignment_method.borrow_mut() = method;
+    }
+
+    fn current_ip_assignment_method(&self) -> u8 {
+        self.platform.current_ip_assignment_method()
+    }
+
+    fn ip_capabilities(&self) -> u8 {
+        self.platform.ip_capabilities()
+    }
+
+    fn routing_multicast_address(&self) -> Ipv4Addr {
+        *self.routing_multicast.borrow()
+    }
+
+    fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
+        *self.routing_multicast.borrow_mut() = addr;
+    }
+
+    fn ttl(&self) -> u8 {
+        *self.ttl.borrow()
+    }
+
+    fn set_ttl(&self, ttl: u8) {
+        *self.ttl.borrow_mut() = ttl;
+    }
+
+    fn friendly_name_len(&self) -> usize {
+        *self.friendly_name_len.borrow()
+    }
+
+    fn friendly_name(&self, buf: &mut [u8]) -> usize {
+        let fname = self.friendly_name.borrow();
+        let len = (*self.friendly_name_len.borrow()).min(buf.len());
+        buf[..len].copy_from_slice(&fname[..len]);
+        len
+    }
+
+    fn set_friendly_name(&self, name: &[u8]) {
+        let mut fname = self.friendly_name.borrow_mut();
+        let len = name.len().min(30);
+        fname[..len].copy_from_slice(&name[..len]);
+        *self.friendly_name_len.borrow_mut() = len;
+    }
+
+    fn knxnetip_device_capabilities(&self) -> u16 {
+        self.platform.knxnetip_device_capabilities()
+    }
+
+    fn project_installation_id(&self) -> u16 {
+        *self.project_installation_id.borrow()
+    }
+
+    fn set_project_installation_id(&self, id: u16) {
+        *self.project_installation_id.borrow_mut() = id;
+    }
 }
 
 pub trait StackDefinition: Copy {
@@ -184,7 +582,7 @@ pub trait StackDefinition: Copy {
     type P: ConstDefault;
     type CO: ComObjects;
     type LLB: layers::LinkLayerBuilder;
-    type IOB: InterfaceObjectsBuilder;
+    type IOB: InterfaceObjectsBuilder<Self::State>;
     /// Runtime state shared between stack, layers, and interface objects.
     ///
     /// Use [`BasicStackState`] for simple devices, or implement your own
@@ -203,7 +601,7 @@ where
     buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
     buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
     link_layer_resources: MaybeUninit<<D::LLB as LinkLayerBuilder>::Resources>,
-    interface_objects: MaybeUninit<<D::IOB as InterfaceObjectsBuilder>::Objects<'static, D::ADT, D::AST, D::COT>>,
+    interface_objects: MaybeUninit<<D::IOB as InterfaceObjectsBuilder<D::State>>::Objects<'static, D::ADT, D::AST, D::COT>>,
 }
 
 impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResources<D, BUF_SZ, NUM_BUFS> {
@@ -268,7 +666,7 @@ pub struct Runner<'d, D: StackDefinition> {
 /// see the `testutil` crate in this repository.
 pub struct Stack<'d, D: StackDefinition> {
     inner: &'d Inner<D>,
-    interface_objects: &'d <D::IOB as InterfaceObjectsBuilder>::Objects<'static, D::ADT, D::AST, D::COT>,
+    interface_objects: &'d <D::IOB as InterfaceObjectsBuilder<D::State>>::Objects<'static, D::ADT, D::AST, D::COT>,
     app_request_sender: DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
 }
 
@@ -639,7 +1037,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     ///
     /// # Returns
     /// A reference to the interface objects container
-    pub fn interface_objects(&self) -> &<D::IOB as InterfaceObjectsBuilder>::Objects<'static, D::ADT, D::AST, D::COT> {
+    pub fn interface_objects(&self) -> &<D::IOB as InterfaceObjectsBuilder<D::State>>::Objects<'static, D::ADT, D::AST, D::COT> {
         self.interface_objects
     }
 

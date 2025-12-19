@@ -4,11 +4,200 @@
 //! and the stack's management layer.
 
 use core::cell::RefCell;
+use core::net::Ipv4Addr;
 
-use crate::dpt::InterfaceObjectType;
+use crate::dpt::{
+    InterfaceObjectType, PDT_Bitset16, PDT_Bitset8, PDT_Generic06, PDT_UnsignedChar,
+    PDT_UnsignedInt, PDT_UnsignedLong,
+};
 use crate::objects::tables::LoadableTable;
 
 use super::{PropertyDescriptionResponse, PropertyDescriptor, PropertyError};
+
+// ============================================================================
+// State Property Value Conversion
+// ============================================================================
+
+/// Trait for converting between state getter return values and byte representations.
+///
+/// This trait is used by the shorthand macro syntax to automatically convert
+/// between the native type returned by a state getter (e.g., `u8`, `Ipv4Addr`)
+/// and the byte representation stored in the property.
+///
+/// The trait is parameterized by the PDT type (e.g., `PDT_UnsignedChar`),
+/// which determines the wire format.
+///
+/// # Example
+///
+/// For `PDT_UnsignedChar`, the value type is `u8`:
+/// - `to_bytes(&value)` returns `[u8; 1]`
+/// - `from_bytes(data)` parses a single byte into `u8`
+///
+/// For `PDT_UnsignedLong`, the value type can be `u32` or `Ipv4Addr`:
+/// - `to_bytes(&value)` returns `[u8; 4]` in big-endian
+/// - `from_bytes(data)` parses 4 bytes into the value type
+pub trait StatePropertyValue {
+    /// The native value type (e.g., `u8`, `u16`, `u32`, `Ipv4Addr`, `[u8; 6]`)
+    type Value;
+
+    /// The byte array type for this property (e.g., `[u8; 1]`, `[u8; 4]`)
+    type Bytes: AsRef<[u8]>;
+
+    /// Convert a native value to bytes
+    fn to_bytes(value: &Self::Value) -> Self::Bytes;
+
+    /// Convert bytes to a native value
+    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError>;
+}
+
+// PDT_UnsignedChar: u8 <-> 1 byte
+impl StatePropertyValue for PDT_UnsignedChar {
+    type Value = u8;
+    type Bytes = [u8; 1];
+
+    fn to_bytes(value: &Self::Value) -> Self::Bytes {
+        [*value]
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
+        if data.is_empty() {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        Ok(data[0])
+    }
+}
+
+// PDT_UnsignedInt: u16 <-> 2 bytes (big-endian)
+impl StatePropertyValue for PDT_UnsignedInt {
+    type Value = u16;
+    type Bytes = [u8; 2];
+
+    fn to_bytes(value: &Self::Value) -> Self::Bytes {
+        value.to_be_bytes()
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
+        if data.len() < 2 {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        Ok(u16::from_be_bytes([data[0], data[1]]))
+    }
+}
+
+// PDT_UnsignedLong: u32 <-> 4 bytes (big-endian)
+impl StatePropertyValue for PDT_UnsignedLong {
+    type Value = u32;
+    type Bytes = [u8; 4];
+
+    fn to_bytes(value: &Self::Value) -> Self::Bytes {
+        value.to_be_bytes()
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
+        if data.len() < 4 {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        Ok(u32::from_be_bytes([data[0], data[1], data[2], data[3]]))
+    }
+}
+
+// PDT_Bitset8: u8 <-> 1 byte
+impl StatePropertyValue for PDT_Bitset8 {
+    type Value = u8;
+    type Bytes = [u8; 1];
+
+    fn to_bytes(value: &Self::Value) -> Self::Bytes {
+        [*value]
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
+        if data.is_empty() {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        Ok(data[0])
+    }
+}
+
+// PDT_Bitset16: u16 <-> 2 bytes (big-endian)
+impl StatePropertyValue for PDT_Bitset16 {
+    type Value = u16;
+    type Bytes = [u8; 2];
+
+    fn to_bytes(value: &Self::Value) -> Self::Bytes {
+        value.to_be_bytes()
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
+        if data.len() < 2 {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        Ok(u16::from_be_bytes([data[0], data[1]]))
+    }
+}
+
+// PDT_Generic06: [u8; 6] <-> 6 bytes (e.g., MAC address)
+impl StatePropertyValue for PDT_Generic06 {
+    type Value = [u8; 6];
+    type Bytes = [u8; 6];
+
+    fn to_bytes(value: &Self::Value) -> Self::Bytes {
+        *value
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
+        if data.len() < 6 {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        let mut arr = [0u8; 6];
+        arr.copy_from_slice(&data[..6]);
+        Ok(arr)
+    }
+}
+
+// ============================================================================
+// Ipv4 Wrapper for PDT_UnsignedLong
+// ============================================================================
+
+/// Wrapper type to use Ipv4Addr with PDT_UnsignedLong in the shorthand syntax.
+///
+/// Since a single PDT type can only have one `StatePropertyValue` implementation,
+/// and `PDT_UnsignedLong` uses `u32` by default, we provide this wrapper for
+/// properties that return `Ipv4Addr`.
+///
+/// # Usage in macro
+///
+/// ```rust,ignore
+/// state_ro {
+///     pid::CURRENT_IP_ADDRESS => current_ip_address: Ipv4Property
+/// }
+/// ```
+///
+/// The state getter should return `Ipv4Addr`, and this wrapper handles the
+/// conversion to/from `u32` wire format.
+pub struct Ipv4Property;
+
+// Ipv4Property uses the same wire format as PDT_UnsignedLong (4 bytes, ID 7)
+impl const crate::dpt::PropertyDataDefinition for Ipv4Property {
+    const SIZE: usize = 4;
+    const ID: u8 = 7; // Same as PDT_UnsignedLong
+}
+
+impl StatePropertyValue for Ipv4Property {
+    type Value = Ipv4Addr;
+    type Bytes = [u8; 4];
+
+    fn to_bytes(value: &Self::Value) -> Self::Bytes {
+        u32::from(*value).to_be_bytes()
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
+        if data.len() < 4 {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        let raw = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        Ok(Ipv4Addr::from(raw))
+    }
+}
 
 // ============================================================================
 // Property Service Handler
@@ -251,6 +440,15 @@ pub trait LoadableInterfaceObject: InterfaceObject {
 /// `InterfaceObjects` container, which is then stored in the stack's
 /// internal state and accessible via a context trait.
 ///
+/// # State Requirements
+///
+/// Different interface objects may require different state trait bounds:
+/// - Basic devices only need `StackState`
+/// - KNXnet/IP devices need `IpStackState` (which extends `StackState`)
+///
+/// Use the `StateRequirement` associated type to specify the minimum state
+/// trait bound your interface objects need.
+///
 /// # Example
 ///
 /// ```rust,ignore
@@ -305,7 +503,7 @@ pub trait LoadableInterfaceObject: InterfaceObject {
 ///     }
 /// }
 /// ```
-pub trait InterfaceObjectsBuilder: Sized {
+pub trait InterfaceObjectsBuilder<S>: Sized {
     /// The container type that holds all interface objects.
     ///
     /// This is a GAT (Generic Associated Type) that allows the container
@@ -316,7 +514,8 @@ pub trait InterfaceObjectsBuilder: Sized {
     where
         ADT: LoadableTable + 'a,
         AST: LoadableTable + 'a,
-        COT: LoadableTable + 'a;
+        COT: LoadableTable + 'a,
+        S: 'a;
 
     /// Build the interface objects container.
     ///
@@ -331,7 +530,7 @@ pub trait InterfaceObjectsBuilder: Sized {
     ///
     /// # Returns
     /// The container holding all interface objects for this device.
-    fn build<'a, ADT, AST, COT, S>(
+    fn build<'a, ADT, AST, COT>(
         self,
         addr_table: &'a RefCell<ADT>,
         asso_table: &'a RefCell<AST>,
@@ -342,7 +541,7 @@ pub trait InterfaceObjectsBuilder: Sized {
         ADT: LoadableTable,
         AST: LoadableTable,
         COT: LoadableTable,
-        S: crate::StackState;
+        S: 'a;
 }
 
 /// Context trait for accessing interface objects from within the stack.
@@ -377,15 +576,16 @@ pub trait InterfaceObjectsContext {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EmptyInterfaceObjectsBuilder;
 
-impl InterfaceObjectsBuilder for EmptyInterfaceObjectsBuilder {
+impl<S> InterfaceObjectsBuilder<S> for EmptyInterfaceObjectsBuilder {
     type Objects<'a, ADT, AST, COT>
         = ()
     where
         ADT: LoadableTable + 'a,
         AST: LoadableTable + 'a,
-        COT: LoadableTable + 'a;
+        COT: LoadableTable + 'a,
+        S: 'a;
 
-    fn build<'a, ADT, AST, COT, S>(
+    fn build<'a, ADT, AST, COT>(
         self,
         _addr_table: &'a RefCell<ADT>,
         _asso_table: &'a RefCell<AST>,
@@ -396,7 +596,7 @@ impl InterfaceObjectsBuilder for EmptyInterfaceObjectsBuilder {
         ADT: LoadableTable,
         AST: LoadableTable,
         COT: LoadableTable,
-        S: crate::StackState,
+        S: 'a,
     {
         // No interface objects created
     }
