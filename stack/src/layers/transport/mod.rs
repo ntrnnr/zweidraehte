@@ -26,6 +26,11 @@
 //! - **Connection Table**: Fixed-size storage for connection state
 //! - **Global Timer**: Periodic scanning for timeout handling
 
+// FIXME: do we want the connection timeout, ack timeout and max_repetitions to be configurable? Are there PIDs available for interface objects?
+// FIXME: this is the full-blown state machine implementation - we may want a simpler version for smaller microcontrollers
+//        for example if we receive data while in OPEN_WAIT, we could just replace the data we are expecting an ACK for with the new data - multiple other stacks do it that way
+//        I am not sure what documented style we are implementing right now, most likely Style 3 but without tested outgoing connections
+
 mod connection;
 mod state_machine;
 
@@ -58,9 +63,18 @@ use super::{ActorRequest, Inbox, Layer, LayerOp};
 /// Default ACK timeout in milliseconds (per KNX spec: 3 seconds)
 pub const ACK_TIMEOUT_MS: u64 = 3000;
 
+/// Default connection timeout in milliseconds (per KNX spec: 6 seconds)
+pub const CONNECTION_TIMEOUT_MS: u64 = 6000;
+
 /// Very far future instant for "no timeout" scenarios
 fn far_future() -> Instant {
     Instant::now() + Duration::from_secs(86400 * 365) // 1 year
+}
+
+/// Timeout type for distinguishing ACK vs connection timeouts
+enum TimeoutType {
+    Ack,
+    Connection,
 }
 
 // ============================================================================
@@ -232,7 +246,14 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
         let conn = match conn {
             Some(c) => c,
             None => {
-                // No connection slot found - just ignore the message silently
+                // No connection slot found
+                // For T_Connect from a different source when already connected,
+                // we need to reject it with T_Disconnect (KNX spec requirement)
+                if matches!(event, TlEvent::ReceivedConnect { .. }) {
+                    debug!("TL rejecting connection from {} - already connected", source);
+                    self.send_disconnect(source).await;
+                    return;
+                }
                 // Per KNX conformance tests (2.5.1), we should NOT send a T_Disconnect
                 // when receiving data for a non-existent connection - just ignore it
                 debug!("TL no connection slot for {} - ignoring", source);
@@ -455,26 +476,31 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     // Timeout Handling
     // ========================================================================
 
-    /// Check for and handle connection timeouts
+    /// Check for and handle all timeouts (ACK and connection)
     async fn check_timeouts(&mut self) {
         let now = Instant::now();
 
-        // Collect timed-out incoming connection indices and process them
-        // We need to do this in two phases to avoid borrow checker issues
+        // Process incoming connections
         loop {
-            // Find the first timed-out incoming connection
-            let timed_out = self
-                .connections
-                .incoming_mut()
-                .iter()
-                .enumerate()
-                .find(|(_, c)| c.is_timed_out(now))
-                .map(|(i, c)| (i, c.remote_addr));
+            // Find the first timed-out incoming connection (either ACK or connection timeout)
+            let timed_out = self.connections.incoming_mut().iter().enumerate().find_map(|(i, c)| {
+                if c.is_ack_timed_out(now) {
+                    Some((i, c.remote_addr, TimeoutType::Ack))
+                } else if c.is_conn_timed_out(now) {
+                    Some((i, c.remote_addr, TimeoutType::Connection))
+                } else {
+                    None
+                }
+            });
 
             match timed_out {
-                Some((idx, addr)) => {
+                Some((idx, addr, timeout_type)) => {
                     let conn = &mut self.connections.incoming_mut()[idx];
-                    let actions = process_event(conn, TlEvent::AckTimeout);
+                    let event = match timeout_type {
+                        TimeoutType::Ack => TlEvent::AckTimeout,
+                        TimeoutType::Connection => TlEvent::ConnectionTimeout,
+                    };
+                    let actions = process_event(conn, event);
                     self.execute_actions(actions, addr, None).await;
                 }
                 None => break,
@@ -483,18 +509,24 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
         // Same for outgoing connections
         loop {
-            let timed_out = self
-                .connections
-                .outgoing_mut()
-                .iter()
-                .enumerate()
-                .find(|(_, c)| c.is_timed_out(now))
-                .map(|(i, c)| (i, c.remote_addr));
+            let timed_out = self.connections.outgoing_mut().iter().enumerate().find_map(|(i, c)| {
+                if c.is_ack_timed_out(now) {
+                    Some((i, c.remote_addr, TimeoutType::Ack))
+                } else if c.is_conn_timed_out(now) {
+                    Some((i, c.remote_addr, TimeoutType::Connection))
+                } else {
+                    None
+                }
+            });
 
             match timed_out {
-                Some((idx, addr)) => {
+                Some((idx, addr, timeout_type)) => {
                     let conn = &mut self.connections.outgoing_mut()[idx];
-                    let actions = process_event(conn, TlEvent::AckTimeout);
+                    let event = match timeout_type {
+                        TimeoutType::Ack => TlEvent::AckTimeout,
+                        TimeoutType::Connection => TlEvent::ConnectionTimeout,
+                    };
+                    let actions = process_event(conn, event);
                     self.execute_actions(actions, addr, None).await;
                 }
                 None => break,
@@ -549,6 +581,31 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
                         self.application_layer.send(LayerOp::Indication(msg)).await;
                     }
                 }
+                TlAction::QueueIncomingData { source: _ } => {
+                    // Store the incoming message for later delivery
+                    // This is used when we receive data while in OPEN_WAIT
+                    if let Some(msg) = msg_for_data.take() {
+                        if let Some(conn) = self.connections.find_any(remote_addr) {
+                            // Allocate a buffer and store the message
+                            let queued_buffer = self.buffer_manager.borrow().alloc_from_slice(&*msg.buf()).await;
+                            let queued_msg = KnxMessageBuffer::new(queued_buffer, msg.service_type());
+                            conn.queued_incoming = Some(queued_msg);
+                            debug!("TL queued incoming data from {} for later delivery", remote_addr);
+                        }
+                    }
+                }
+                TlAction::DeliverQueuedData { source: _ } => {
+                    // Deliver any queued incoming data to the application layer
+                    if let Some(conn) = self.connections.find_any(remote_addr) {
+                        if let Some(mut queued_msg) = conn.queued_incoming.take() {
+                            queued_msg.set_service_type(ServiceType::T_Data_Ind);
+                            debug!("TL delivering queued data from {}", remote_addr);
+                            self.application_layer
+                                .send(LayerOp::Indication(IndicationMessage::indication(queued_msg)))
+                                .await;
+                        }
+                    }
+                }
                 TlAction::ConfirmData { dest, success } => {
                     debug!("TL data confirmation for {}: {}", dest, success);
                     // TODO: Complete pending request with confirmation
@@ -559,12 +616,23 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
                 TlAction::StartAckTimer => {
                     if let Some(conn) = self.connections.find_any(remote_addr) {
                         let deadline = Instant::now() + Duration::from_millis(ACK_TIMEOUT_MS);
-                        conn.start_timeout(deadline);
+                        conn.start_ack_timeout(deadline);
                     }
                 }
                 TlAction::StopAckTimer => {
                     if let Some(conn) = self.connections.find_any(remote_addr) {
-                        conn.stop_timeout();
+                        conn.stop_ack_timeout();
+                    }
+                }
+                TlAction::StartConnTimer => {
+                    if let Some(conn) = self.connections.find_any(remote_addr) {
+                        let deadline = Instant::now() + Duration::from_millis(CONNECTION_TIMEOUT_MS);
+                        conn.start_conn_timeout(deadline);
+                    }
+                }
+                TlAction::StopConnTimer => {
+                    if let Some(conn) = self.connections.find_any(remote_addr) {
+                        conn.stop_conn_timeout();
                     }
                 }
                 TlAction::Retransmit { dest } => {

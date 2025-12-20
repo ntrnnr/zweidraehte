@@ -33,7 +33,7 @@ use log::LevelFilter;
 use knx_conformance::harness::mock::MockLinkLayerResources;
 use knx_conformance::harness::stack::{ConformanceTestStack, FullStackHarness};
 use knx_conformance::logger;
-use knx_conformance::tests::{network_layer, transport_layer_general};
+use knx_conformance::tests::{network_layer, transport_layer_general, transport_layer_state_machine, transport_layer_timing};
 use knx_conformance::*;
 
 use zweidraehte::Runner;
@@ -75,6 +75,8 @@ async fn main(spawner: Spawner) {
     let all_suites = vec![
         knx_conformance::tests::network_layer::create_network_layer_suite(),
         knx_conformance::tests::transport_layer_general::create_transport_layer_suite(),
+        knx_conformance::tests::transport_layer_timing::create_transport_layer_timing_suite(),
+        knx_conformance::tests::transport_layer_state_machine::create_transport_layer_state_machine_suite(),
     ];
 
     // Helper to check if a filter matches a suite or test name
@@ -109,6 +111,8 @@ async fn main(spawner: Spawner) {
         println!("Available suites:");
         println!("  - Network Layer Tests (3.1, 3.2, 3.3, 3.4)");
         println!("  - Transport Layer General Tests (2.1, 2.2, 2.3, 2.4, 2.5)");
+        println!("  - Transport Layer Timing Tests (4.1, 4.2)");
+        println!("  - Transport Layer State Machine Tests (6.2.x, 6.3.x, 6.4.x, 6.5.x)");
         std::process::exit(1);
     }
 
@@ -147,6 +151,13 @@ async fn main(spawner: Spawner) {
             }
 
             total_tests += 1;
+
+            // Drain any leftover captured messages from previous tests
+            let drained = harness.drain_captured();
+            if drained > 0 {
+                println!("(Drained {} leftover messages from previous test)", drained);
+            }
+
             logger::start_test(test.name);
             println!("Test: {}", test.name);
             println!("----------------------------------------------------------------------");

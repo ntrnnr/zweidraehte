@@ -48,9 +48,14 @@ pub struct Connection {
     /// Repetition counter for retransmissions
     pub rep_count: u8,
     /// Timeout deadline for ACK (when in OpenWait state)
-    pub timeout_deadline: Option<Instant>,
-    /// Stored message buffer for possible retransmission
+    pub ack_timeout_deadline: Option<Instant>,
+    /// Timeout deadline for connection (when in OpenIdle state with no activity)
+    pub conn_timeout_deadline: Option<Instant>,
+    /// Stored message buffer for possible retransmission (outgoing)
     pub pending_msg: Option<KnxMessageBuffer<Buffer<'static>>>,
+    /// Queued incoming data message received while in OPEN_WAIT state
+    /// Will be delivered to application layer when transitioning to OPEN_IDLE
+    pub queued_incoming: Option<KnxMessageBuffer<Buffer<'static>>>,
 }
 
 impl Default for Connection {
@@ -68,8 +73,10 @@ impl Connection {
             seq_no_send: 0,
             seq_no_recv: 0,
             rep_count: 0,
-            timeout_deadline: None,
+            ack_timeout_deadline: None,
+            conn_timeout_deadline: None,
             pending_msg: None,
+            queued_incoming: None,
         }
     }
 
@@ -79,23 +86,45 @@ impl Connection {
         self.seq_no_send = 0;
         self.seq_no_recv = 0;
         self.rep_count = 0;
-        self.timeout_deadline = None;
+        self.ack_timeout_deadline = None;
+        self.conn_timeout_deadline = None;
         self.pending_msg = None;
+        self.queued_incoming = None;
     }
 
-    /// Check if this connection has timed out
-    pub fn is_timed_out(&self, now: Instant) -> bool {
-        self.timeout_deadline.map(|d| now >= d).unwrap_or(false)
+    /// Check if there is queued incoming data
+    pub fn has_queued_incoming(&self) -> bool {
+        self.queued_incoming.is_some()
+    }
+
+    /// Check if the ACK timeout has expired
+    pub fn is_ack_timed_out(&self, now: Instant) -> bool {
+        self.ack_timeout_deadline.map(|d| now >= d).unwrap_or(false)
+    }
+
+    /// Check if the connection timeout has expired
+    pub fn is_conn_timed_out(&self, now: Instant) -> bool {
+        self.conn_timeout_deadline.map(|d| now >= d).unwrap_or(false)
     }
 
     /// Start the ACK timeout timer
-    pub fn start_timeout(&mut self, deadline: Instant) {
-        self.timeout_deadline = Some(deadline);
+    pub fn start_ack_timeout(&mut self, deadline: Instant) {
+        self.ack_timeout_deadline = Some(deadline);
     }
 
     /// Stop the ACK timeout timer
-    pub fn stop_timeout(&mut self) {
-        self.timeout_deadline = None;
+    pub fn stop_ack_timeout(&mut self) {
+        self.ack_timeout_deadline = None;
+    }
+
+    /// Start the connection timeout timer
+    pub fn start_conn_timeout(&mut self, deadline: Instant) {
+        self.conn_timeout_deadline = Some(deadline);
+    }
+
+    /// Stop the connection timeout timer
+    pub fn stop_conn_timeout(&mut self) {
+        self.conn_timeout_deadline = None;
     }
 
     /// Increment sequence number for sending (wraps at 15)
@@ -213,25 +242,27 @@ impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_I
     /// Get the next timeout deadline across all connections
     ///
     /// Returns `None` if no connections have pending timeouts.
+    /// Considers both ACK timeouts and connection timeouts.
     pub fn next_timeout_deadline(&self) -> Option<Instant> {
-        let incoming_deadline = self.incoming.iter().filter_map(|c| c.timeout_deadline).min();
+        let all_deadlines = self
+            .incoming
+            .iter()
+            .chain(self.outgoing.iter())
+            .flat_map(|c| [c.ack_timeout_deadline, c.conn_timeout_deadline])
+            .flatten();
 
-        let outgoing_deadline = self.outgoing.iter().filter_map(|c| c.timeout_deadline).min();
-
-        match (incoming_deadline, outgoing_deadline) {
-            (Some(a), Some(b)) => Some(if a < b { a } else { b }),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        }
+        all_deadlines.min()
     }
 
-    /// Iterate over all connections that have timed out
+    /// Iterate over all connections that have any timeout (ACK or connection)
     ///
     /// Returns mutable references to connections whose timeout deadline
     /// has passed. The caller should process timeouts and update state.
     pub fn iter_timed_out(&mut self, now: Instant) -> impl Iterator<Item = &mut Connection> {
-        self.incoming.iter_mut().chain(self.outgoing.iter_mut()).filter(move |c| c.is_timed_out(now))
+        self.incoming
+            .iter_mut()
+            .chain(self.outgoing.iter_mut())
+            .filter(move |c| c.is_ack_timed_out(now) || c.is_conn_timed_out(now))
     }
 
     /// Get mutable access to all incoming connections

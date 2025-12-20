@@ -214,6 +214,21 @@ impl<const N: usize, const C: usize> MockLinkLayerHandle<N, C> {
             None
         }
     }
+
+    /// Drain all pending captured messages from the channel
+    ///
+    /// This is useful for clearing leftover messages between tests.
+    /// Returns the number of messages drained.
+    pub fn drain_captured(&self) -> usize {
+        let mut count = 0;
+        while self.try_receive_captured().is_some() {
+            count += 1;
+        }
+        if count > 0 {
+            log::debug!("Drained {} captured messages from channel", count);
+        }
+        count
+    }
 }
 
 /// Resources for MockLinkLayer (empty - no resources needed)

@@ -502,4 +502,12 @@ impl FullStackHarness {
     pub fn set_programming_mode(&self, enabled: bool) {
         self.stack.set_programming_mode(enabled);
     }
+
+    /// Drain all pending captured messages from the channel
+    ///
+    /// This is useful for clearing leftover messages between tests.
+    /// Returns the number of messages drained.
+    pub fn drain_captured(&self) -> usize {
+        self.handle.drain_captured()
+    }
 }

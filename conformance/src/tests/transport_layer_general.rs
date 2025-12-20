@@ -15,7 +15,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::{TestCase, TestStep, TestSuite, TestVariable};
+use super::helpers::{comment, expect, inject, inject_delay, set_programming_mode};
+use crate::{TestCase, TestSuite, TestVariable};
 
 /// Create test variables for transport layer tests
 ///
@@ -27,61 +28,12 @@ use crate::{TestCase, TestStep, TestSuite, TestVariable};
 /// - GO_ADDR: Group Object Address (2D 05)
 pub fn create_test_variables() -> BTreeMap<String, TestVariable> {
     let mut vars = BTreeMap::new();
-    vars.insert(
-        "IFACE_A_ADDR".to_string(),
-        TestVariable::Bytes(vec![0xAF, 0xFE]),
-    );
-    vars.insert(
-        "IFACE_B_ADDR".to_string(),
-        TestVariable::Bytes(vec![0xAF, 0x01]),
-    );
-    vars.insert(
-        "BDUT_ADDR".to_string(),
-        TestVariable::Bytes(vec![0x10, 0x01]),
-    );
-    vars.insert(
-        "SER_NUM".to_string(),
-        TestVariable::Bytes(vec![0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE]),
-    );
-    vars.insert(
-        "GO_ADDR".to_string(),
-        TestVariable::Bytes(vec![0x2D, 0x05]),
-    );
+    vars.insert("IFACE_A_ADDR".to_string(), TestVariable::Bytes(vec![0xAF, 0xFE]));
+    vars.insert("IFACE_B_ADDR".to_string(), TestVariable::Bytes(vec![0xAF, 0x01]));
+    vars.insert("BDUT_ADDR".to_string(), TestVariable::Bytes(vec![0x10, 0x01]));
+    vars.insert("SER_NUM".to_string(), TestVariable::Bytes(vec![0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE]));
+    vars.insert("GO_ADDR".to_string(), TestVariable::Bytes(vec![0x2D, 0x05]));
     vars
-}
-
-/// Helper to create an inject step from a template string
-fn inject(template: &str) -> TestStep {
-    TestStep::InjectTemplate {
-        template: template.to_string(),
-        delay_before_ms: 0,
-    }
-}
-
-/// Helper to create an inject step with delay
-fn inject_delay(template: &str, delay_ms: u32) -> TestStep {
-    TestStep::InjectTemplate {
-        template: template.to_string(),
-        delay_before_ms: delay_ms,
-    }
-}
-
-/// Helper to create an expect step from a template string
-fn expect(template: &str, timeout_ms: u32) -> TestStep {
-    TestStep::ExpectTemplate {
-        template: template.to_string(),
-        timeout_ms,
-    }
-}
-
-/// Helper to create a comment step
-fn comment(text: &str) -> TestStep {
-    TestStep::Comment(text.to_string())
-}
-
-/// Helper to set programming mode
-fn set_programming_mode(enabled: bool) -> TestStep {
-    TestStep::SetProgrammingMode(enabled)
 }
 
 /// Create transport layer test suite from EITT specification
