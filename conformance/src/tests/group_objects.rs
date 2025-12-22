@@ -1025,6 +1025,210 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
     TestSuite { name: "Group Objects UINT1 Tests", variables: vars, cases }
 }
 
+// ============================================================================
+// 5.2 Association Table Structure Tests
+// ============================================================================
+
+/// Create test variables for Association Table structure tests
+///
+/// Based on the EITT specification:
+/// - GA_1: Group address for 1-to-1 and 1-to-n testing (09 00)
+/// - GA_2: Group address for n-to-1 testing (09 01)
+/// - GA_3: Group address for status information (09 02)
+fn create_association_table_test_variables() -> BTreeMap<String, TestVariable> {
+    let mut vars = BTreeMap::new();
+    vars.insert("EDI".to_string(), TestVariable::Bytes(vec![0xAF, 0xFE]));
+    vars.insert("BDUT".to_string(), TestVariable::Bytes(vec![0x10, 0x01]));
+    // Group addresses for association table testing
+    vars.insert("GA_1".to_string(), TestVariable::Bytes(vec![0x09, 0x00])); // 1/1/0
+    vars.insert("GA_2".to_string(), TestVariable::Bytes(vec![0x09, 0x01])); // 1/1/1
+    vars.insert("GA_3".to_string(), TestVariable::Bytes(vec![0x09, 0x02])); // 1/1/2 (status)
+    vars
+}
+
+/// Creates the 5.2.1 Server Tests - Receiving telegrams suite
+///
+/// Tests the structure of the Association Table when receiving telegrams.
+/// Tests 1-to-1, 1-to-n, n-to-1, and n-to-n relations between group addresses
+/// and group objects.
+///
+/// # Test Setup Requirements
+///
+/// The BDUT must be configured with:
+/// - **Test 1 (1-to-1)**: One group address linked to one 1-bit group object,
+///   with a status object linked to GA_3
+/// - **Test 2 (1-to-n)**: One group address linked to two 1-bit group objects,
+///   both with status objects linked to GA_3
+/// - **Test 3 (n-to-1)**: Two group addresses (GA_1, GA_2) each linked to a
+///   different 1-bit group object, with status objects linked to GA_3
+/// - **Test 4 (n-to-n)**: Multiple group addresses linked to multiple objects,
+///   with status objects linked to GA_3
+pub fn create_association_table_receiving_suite() -> TestSuite {
+    let vars = create_association_table_test_variables();
+
+    let cases = vec![
+        // ====================================================================
+        // 5.2.1 Test 1 - 1 to 1 relation (1-bit)
+        // ====================================================================
+        TestCase::new("5.2.1 Test 1 - 1 to 1 relation (1-bit)").with_steps(vec![
+            comment("Testcase 5.2.1 Test 1 - 1 to 1 relation (1-bit)"),
+            comment("Please configure the BDUT with a Group Address that is linked to a single 1-bit DPT (Group Object)."),
+            comment("The tested object shall have a status object that is linked to a Group Address for status information."),
+            // Write value 1 to GA_1
+            inject("BC #EDI #GA_1 E1 00 81"),
+            // Expect status update on GA_3 with value 1
+            expect("BC #BDUT #GA_3 E1 00 81", 200),
+            // Write value 0 to GA_1
+            inject("BC #EDI #GA_1 E1 00 80"),
+            // Expect status update on GA_3 with value 0
+            expect("BC #BDUT #GA_3 E1 00 80", 200),
+            comment("Acceptance: verify if the returned status value has changed according to the written values."),
+            comment("================================================================================"),
+        ]),
+
+        // ====================================================================
+        // 5.2.1 Test 2 - 1 to n relation (1-bit)
+        // ====================================================================
+        TestCase::new("5.2.1 Test 2 - 1 to n relation (1-bit)").with_steps(vec![
+            comment("Testcase 5.2.1 Test 2 - 1 to n relation (1-bit)"),
+            comment("Please configure the BDUT with a Group Address is linked to two 1-bit DPTs (Group Objects)."),
+            comment("The tested objects shall have status objects that are linked to a single Group Address for status information."),
+            // Write value 1 to GA_1
+            inject("BC #EDI #GA_1 E1 00 81"),
+            // Expect two status updates on GA_3 (one for each linked object)
+            expect("BC #BDUT #GA_3 E1 00 81", 200),
+            expect("BC #BDUT #GA_3 E1 00 81", 400),
+            // Write value 0 to GA_1
+            inject("BC #EDI #GA_1 E1 00 80"),
+            // Expect two status updates on GA_3
+            expect("BC #BDUT #GA_3 E1 00 80", 200),
+            expect("BC #BDUT #GA_3 E1 00 80", 400),
+            comment("Acceptance: verify if the returned status values have changed according to the written values."),
+            comment("================================================================================"),
+        ]),
+
+        // ====================================================================
+        // 5.2.1 Test 3 - n to 1 relation (1-bit)
+        // ====================================================================
+        TestCase::new("5.2.1 Test 3 - n to 1 relation (1-bit)").with_steps(vec![
+            comment("Testcase 5.2.1 Test 3 - n to 1 relation (1-bit)"),
+            comment("Please configure the BDUT with two Group Addresses that each link to a single, but different, 1-bit DPT (Group Object)."),
+            comment("The tested objects shall have status objects that are linked to a single Group Address for status information."),
+            // Write value 1 to GA_1
+            inject("BC #EDI #GA_1 E1 00 81"),
+            expect("BC #BDUT #GA_3 E1 00 81", 200),
+            // Write value 0 to GA_1
+            inject("BC #EDI #GA_1 E1 00 80"),
+            expect("BC #BDUT #GA_3 E1 00 80", 200),
+            // Write value 1 to GA_2
+            inject("BC #EDI #GA_2 E1 00 81"),
+            expect("BC #BDUT #GA_3 E1 00 81", 200),
+            // Write value 0 to GA_2
+            inject("BC #EDI #GA_2 E1 00 80"),
+            expect("BC #BDUT #GA_3 E1 00 80", 200),
+            comment("Acceptance: verify if the returned status value has changed according to the written values."),
+            comment("================================================================================"),
+        ]),
+
+        // ====================================================================
+        // 5.2.1 Test 4 - n to n relation (1-bit)
+        // ====================================================================
+        TestCase::new("5.2.1 Test 4 - n to n relation (1-bit)").with_steps(vec![
+            comment("Testcase 5.2.1 Test 4 - n to n relation (1-bit)"),
+            comment("Please configure the BDUT with a Group Address is linked to at least two 1-bit DPTs (Group Objects)."),
+            comment("The tested objects shall have status objects that are linked to a single Group Address for status information."),
+            // Write value 1 to GA_1 (linked to multiple objects)
+            inject("BC #EDI #GA_1 E1 00 81"),
+            expect("BC #BDUT #GA_3 E1 00 81", 200),
+            expect("BC #BDUT #GA_3 E1 00 81", 400),
+            // Write value 0 to GA_1
+            inject("BC #EDI #GA_1 E1 00 80"),
+            expect("BC #BDUT #GA_3 E1 00 80", 200),
+            expect("BC #BDUT #GA_3 E1 00 80", 400),
+            // Write value 1 to GA_2 (also linked to multiple objects)
+            inject("BC #EDI #GA_2 E1 00 81"),
+            expect("BC #BDUT #GA_3 E1 00 81", 200),
+            expect("BC #BDUT #GA_3 E1 00 81", 400),
+            // Write value 0 to GA_2
+            inject("BC #EDI #GA_2 E1 00 80"),
+            expect("BC #BDUT #GA_3 E1 00 80", 200),
+            expect("BC #BDUT #GA_3 E1 00 80", 400),
+            comment("Acceptance: verify if the returned status values have changed according to the written values."),
+            comment("================================================================================"),
+        ]),
+    ];
+
+    TestSuite::new("5.2.1 Server Tests - Receiving telegrams", vars).with_cases(cases)
+}
+
+/// Creates the 5.2.2 Server Tests - Sending telegrams suite
+///
+/// Tests the structure of the Association Table when sending telegrams.
+/// Requires manual stimulation of the BDUT to trigger sends.
+///
+/// # Test Setup Requirements
+///
+/// - Tests require manual stimulation of the BDUT (e.g., button press, sensor input)
+/// - Each test expects the tester to stimulate the object twice within 20 seconds
+/// - Status objects should be linked to GA_3
+///
+/// Note: These tests have very long timeouts (20 seconds) because they wait
+/// for manual stimulation of the device.
+pub fn create_association_table_sending_suite() -> TestSuite {
+    let vars = create_association_table_test_variables();
+
+    let cases = vec![
+        // ====================================================================
+        // 5.2.2 Test 1 - 1 to 1 relation (1-bit)
+        // ====================================================================
+        TestCase::new("5.2.2 Test 1 - 1 to 1 relation (1-bit)").with_steps(vec![
+            comment("Testcase 5.2.2 Test 1 - 1 to 1 relation (1-bit)"),
+            comment("Please configure the BDUT with a Group Address that is linked to a single 1-bit DPT (Group Object)."),
+            comment("Stimulate the object on the server side: twice and within 20 seconds)."),
+            // Expect status message with value 1
+            expect("BC #BDUT #GA_3 E1 00 81", 20000),
+            // Expect status message with value 0
+            expect("BC #BDUT #GA_3 E1 00 80", 20000),
+            comment("Acceptance: verify if the returned status value has changed according to the stimuli."),
+            comment("================================================================================"),
+        ]),
+
+        // ====================================================================
+        // 5.2.2 Test 2 - 1 to n relation (1-bit)
+        // ====================================================================
+        TestCase::new("5.2.2 Test 2 - 1 to n relation (1-bit)").with_steps(vec![
+            comment("Testcase 5.2.2 Test 2 - 1 to n relation (1-bit)"),
+            comment("Please configure the BDUT with a Group Address is linked to two 1-bit DPTs (Group Objects)."),
+            comment("Stimulate both objects on the server side: each object once and within 20 seconds."),
+            // Expect two status messages with value 1 (one per object)
+            expect("BC #BDUT #GA_3 E1 00 81", 20000),
+            expect("BC #BDUT #GA_3 E1 00 81", 20000),
+            // Expect two status messages with value 0 (one per object)
+            expect("BC #BDUT #GA_3 E1 00 80", 20000),
+            expect("BC #BDUT #GA_3 E1 00 80", 20000),
+            comment("Acceptance: verify if two telegrams have been sent. One telegram for each Group Address with values according to the stimuli."),
+            comment("================================================================================"),
+        ]),
+
+        // ====================================================================
+        // 5.2.2 Test 3 - n to 1 relation (1-bit)
+        // ====================================================================
+        TestCase::new("5.2.2 Test 3 - n to 1 relation (1-bit)").with_steps(vec![
+            comment("Testcase 5.2.2 Test 3 - n to 1 relation (1-bit)"),
+            comment("Please configure the BDUT with two Group Addresses that each link to a single 1-bit DPT (Group Object)."),
+            comment("Stimulate the object on the server side: twice and within 20 seconds)."),
+            // Expect status message with value 1
+            expect("BC #BDUT #GA_3 E1 00 81", 20000),
+            // Expect status message with value 0
+            expect("BC #BDUT #GA_3 E1 00 80", 20000),
+            comment("Acceptance: verify if two telegrams have been sent with the same destination Group Address. The values are according to the stimuli AND no telegram shall have been sent to the second Group Address."),
+            comment("================================================================================"),
+        ]),
+    ];
+
+    TestSuite::new("5.2.2 Server Tests - Sending telegrams", vars).with_cases(cases)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

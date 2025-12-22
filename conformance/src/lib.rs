@@ -156,6 +156,13 @@ pub enum TestStep {
     /// See TriggerRead documentation for why we use explicit triggering.
     TriggerWrite { asap: u16 },
 
+    /// Expect no response within the timeout period.
+    ///
+    /// This step passes if no message is received within the specified timeout.
+    /// Use this when the test expects the device to remain silent (e.g., when
+    /// programming mode is off and an IndividualAddress_Read is sent).
+    ExpectNone { timeout_ms: u32 },
+
     /// Custom action placeholder (for complex test scenarios)
     Custom,
 }

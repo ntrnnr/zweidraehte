@@ -5,6 +5,97 @@ use std::collections::BTreeMap;
 use crate::{GroupAddress, IndividualAddress, TestVariable};
 
 // ============================================================================
+// Variable Expression Parsing
+// ============================================================================
+
+/// Parse a variable expression and return the resulting bytes
+///
+/// Supported formats:
+/// - `#VAR` - simple variable reference
+/// - `#VAR.N` - array index (byte at position N)
+/// - `#VAR+N` - arithmetic addition (for 16-bit values, adds N to the value)
+///
+/// Examples:
+/// - `#MEMPOS` -> [0x02, 0x00] (for MEMPOS=0x0200)
+/// - `#MEMPOS+12` -> [0x02, 0x0C] (0x0200 + 12 = 0x020C)
+/// - `#MEM.0` -> [0x01] (first byte of MEM array)
+/// - `#MEM.12` -> [0x0D] (13th byte of MEM array)
+fn parse_variable_expr(expr: &str, variables: &BTreeMap<String, TestVariable>) -> Result<Vec<u8>, String> {
+    // Check for array indexing: #VAR.N
+    if let Some(dot_pos) = expr.find('.') {
+        let var_name = &expr[..dot_pos];
+        let index_str = &expr[dot_pos + 1..];
+        let index: usize = index_str.parse().map_err(|_| format!("Invalid array index: {}", index_str))?;
+
+        match variables.get(var_name) {
+            Some(var) => {
+                let bytes = var.as_bytes();
+                if index >= bytes.len() {
+                    return Err(format!("Array index {} out of bounds for {} (len={})", index, var_name, bytes.len()));
+                }
+                Ok(vec![bytes[index]])
+            }
+            None => Err(format!("Unknown variable: {}", var_name)),
+        }
+    }
+    // Check for arithmetic: #VAR+N or #VAR-N
+    else if let Some(plus_pos) = expr.find('+') {
+        let var_name = &expr[..plus_pos];
+        let offset_str = &expr[plus_pos + 1..];
+        let offset: i32 = offset_str.parse().map_err(|_| format!("Invalid offset: {}", offset_str))?;
+
+        match variables.get(var_name) {
+            Some(var) => {
+                let bytes = var.as_bytes();
+                if bytes.len() == 2 {
+                    // 16-bit value (big-endian)
+                    let value = ((bytes[0] as u16) << 8) | (bytes[1] as u16);
+                    let new_value = (value as i32 + offset) as u16;
+                    Ok(vec![(new_value >> 8) as u8, (new_value & 0xFF) as u8])
+                } else if bytes.len() == 1 {
+                    // 8-bit value
+                    let value = bytes[0] as i32;
+                    let new_value = (value + offset) as u8;
+                    Ok(vec![new_value])
+                } else {
+                    Err(format!("Arithmetic only supported for 1 or 2 byte values, {} has {} bytes", var_name, bytes.len()))
+                }
+            }
+            None => Err(format!("Unknown variable: {}", var_name)),
+        }
+    } else if let Some(minus_pos) = expr.find('-') {
+        let var_name = &expr[..minus_pos];
+        let offset_str = &expr[minus_pos + 1..];
+        let offset: i32 = offset_str.parse().map_err(|_| format!("Invalid offset: {}", offset_str))?;
+
+        match variables.get(var_name) {
+            Some(var) => {
+                let bytes = var.as_bytes();
+                if bytes.len() == 2 {
+                    let value = ((bytes[0] as u16) << 8) | (bytes[1] as u16);
+                    let new_value = (value as i32 - offset) as u16;
+                    Ok(vec![(new_value >> 8) as u8, (new_value & 0xFF) as u8])
+                } else if bytes.len() == 1 {
+                    let value = bytes[0] as i32;
+                    let new_value = (value - offset) as u8;
+                    Ok(vec![new_value])
+                } else {
+                    Err(format!("Arithmetic only supported for 1 or 2 byte values, {} has {} bytes", var_name, bytes.len()))
+                }
+            }
+            None => Err(format!("Unknown variable: {}", var_name)),
+        }
+    }
+    // Simple variable reference
+    else {
+        match variables.get(expr) {
+            Some(var) => Ok(var.as_bytes()),
+            None => Err(format!("Unknown variable: {}", expr)),
+        }
+    }
+}
+
+// ============================================================================
 // Telegram
 // ============================================================================
 
@@ -29,18 +120,17 @@ impl Telegram {
     /// Format: "BC #EDI #BDUT 61 43 00"
     /// - Hex bytes are space-separated
     /// - Variables start with #
+    /// - Variable expressions: #VAR, #VAR.N (array index), #VAR+N (arithmetic)
     /// - Wildcards are ?? (for matching only)
     pub fn parse(input: &str, variables: &BTreeMap<String, TestVariable>) -> Result<Self, String> {
         let mut data = Vec::new();
 
         for token in input.split_whitespace() {
             if token.starts_with('#') {
-                // Variable reference
-                let var_name = &token[1..];
-                match variables.get(var_name) {
-                    Some(var) => data.extend(var.as_bytes()),
-                    None => return Err(format!("Unknown variable: {}", var_name)),
-                }
+                // Variable expression
+                let expr = &token[1..];
+                let bytes = parse_variable_expr(expr, variables)?;
+                data.extend(bytes);
             } else if token == "??" {
                 // Wildcard - use 0x00 as placeholder (matching handles this)
                 data.push(0x00);
@@ -78,22 +168,18 @@ impl TelegramMatcher {
     ///
     /// Format: "BC #BDUT #EDI 63 43 40 ?? ??"
     /// - ?? means any byte at that position
+    /// - Variable expressions: #VAR, #VAR.N (array index), #VAR+N (arithmetic)
     pub fn parse(input: &str, variables: &BTreeMap<String, TestVariable>) -> Result<Self, String> {
         let mut expected = Vec::new();
         let mut wildcards = Vec::new();
 
         for token in input.split_whitespace() {
             if token.starts_with('#') {
-                // Variable reference
-                let var_name = &token[1..];
-                match variables.get(var_name) {
-                    Some(var) => {
-                        let bytes = var.as_bytes();
-                        expected.extend(&bytes);
-                        wildcards.extend(vec![false; bytes.len()]);
-                    }
-                    None => return Err(format!("Unknown variable: {}", var_name)),
-                }
+                // Variable expression
+                let expr = &token[1..];
+                let bytes = parse_variable_expr(expr, variables)?;
+                expected.extend(&bytes);
+                wildcards.extend(vec![false; bytes.len()]);
             } else if token == "??" {
                 // Wildcard
                 expected.push(0x00);
@@ -259,5 +345,70 @@ mod tests {
         assert!(matcher.matches(&[0xBC, 0x10, 0x01, 0x63, 0x43, 0x40, 0xFF, 0xFF]));
         assert!(!matcher.matches(&[0xBC, 0x10, 0x01, 0x63, 0x43, 0x41, 0x12, 0x34]));
         // 0x40 vs 0x41
+    }
+
+    #[test]
+    fn test_array_indexing() {
+        let mut vars = BTreeMap::new();
+        // MEM = 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D
+        vars.insert(
+            "MEM".into(),
+            TestVariable::Bytes(vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D]),
+        );
+
+        let telegram = Telegram::parse("BC #MEM.0 #MEM.1 #MEM.12", &vars).unwrap();
+        assert_eq!(telegram.data, vec![0xBC, 0x01, 0x02, 0x0D]);
+    }
+
+    #[test]
+    fn test_arithmetic_16bit() {
+        let mut vars = BTreeMap::new();
+        // MEMPOS = 0x0200 (512 in decimal)
+        vars.insert("MEMPOS".into(), TestVariable::Bytes(vec![0x02, 0x00]));
+
+        // MEMPOS + 12 = 0x020C
+        let telegram = Telegram::parse("BC #MEMPOS #MEMPOS+12", &vars).unwrap();
+        assert_eq!(telegram.data, vec![0xBC, 0x02, 0x00, 0x02, 0x0C]);
+
+        // MEMPOS + 24 = 0x0218
+        let telegram2 = Telegram::parse("#MEMPOS+24", &vars).unwrap();
+        assert_eq!(telegram2.data, vec![0x02, 0x18]);
+
+        // MEMPOS + 255 = 0x02FF
+        let telegram3 = Telegram::parse("#MEMPOS+255", &vars).unwrap();
+        assert_eq!(telegram3.data, vec![0x02, 0xFF]);
+    }
+
+    #[test]
+    fn test_arithmetic_subtraction() {
+        let mut vars = BTreeMap::new();
+        vars.insert("MEMPOS".into(), TestVariable::Bytes(vec![0x02, 0x00]));
+
+        // MEMPOS - 1 = 0x01FF
+        let telegram = Telegram::parse("#MEMPOS-1", &vars).unwrap();
+        assert_eq!(telegram.data, vec![0x01, 0xFF]);
+    }
+
+    #[test]
+    fn test_combined_expressions() {
+        let mut vars = BTreeMap::new();
+        vars.insert("EDI".into(), TestVariable::Bytes(vec![0xAF, 0xFE]));
+        vars.insert("BDUT".into(), TestVariable::Bytes(vec![0x10, 0x01]));
+        vars.insert("MEMPOS".into(), TestVariable::Bytes(vec![0x02, 0x00]));
+        vars.insert(
+            "MEM".into(),
+            TestVariable::Bytes(vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C]),
+        );
+
+        // Example from test 2.6.1: "BC #EDI #BDUT 6F 42 8C #MEMPOS #MEM.0 #MEM.1 #MEM.2"
+        let telegram = Telegram::parse("BC #EDI #BDUT 6F 42 8C #MEMPOS #MEM.0 #MEM.1 #MEM.2", &vars).unwrap();
+        assert_eq!(
+            telegram.data,
+            vec![0xBC, 0xAF, 0xFE, 0x10, 0x01, 0x6F, 0x42, 0x8C, 0x02, 0x00, 0x01, 0x02, 0x03]
+        );
+
+        // Example with offset: "#MEMPOS+12"
+        let telegram2 = Telegram::parse("BC #EDI #BDUT 6F 46 8C #MEMPOS+12 #MEM.0", &vars).unwrap();
+        assert_eq!(telegram2.data, vec![0xBC, 0xAF, 0xFE, 0x10, 0x01, 0x6F, 0x46, 0x8C, 0x02, 0x0C, 0x01]);
     }
 }

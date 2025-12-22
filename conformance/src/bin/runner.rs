@@ -78,6 +78,29 @@ async fn main(spawner: Spawner) {
         knx_conformance::tests::transport_layer_timing::create_transport_layer_timing_suite(),
         knx_conformance::tests::transport_layer_state_machine::create_transport_layer_state_machine_suite(),
         knx_conformance::tests::group_objects::create_group_objects_uint1_suite(),
+        knx_conformance::tests::management::create_individual_address_read_suite(),
+        knx_conformance::tests::management::create_individual_address_write_suite(),
+        knx_conformance::tests::management::create_device_descriptor_type0_suite(),
+        knx_conformance::tests::management::create_device_descriptor_type2_suite(),
+        knx_conformance::tests::management::create_device_descriptor_illegal_types_suite(),
+        knx_conformance::tests::management::create_memory_read_suite(),
+        knx_conformance::tests::management::create_memory_write_suite(),
+        knx_conformance::tests::management::create_adc_read_suite(),
+        knx_conformance::tests::management::create_restart_suite(),
+        knx_conformance::tests::management::create_memorybit_write_suite(),
+        knx_conformance::tests::management::create_authorization_suite(),
+        knx_conformance::tests::management::create_key_write_suite(),
+        knx_conformance::tests::management::create_property_value_read_suite(),
+        knx_conformance::tests::management::create_individual_address_serial_number_write_suite(),
+        knx_conformance::tests::management::create_individual_address_serial_number_read_suite(),
+        knx_conformance::tests::management::create_network_parameter_read_suite(),
+        knx_conformance::tests::management::create_network_parameter_write_suite(),
+        knx_conformance::tests::management::create_illegal_apci_suite(),
+        knx_conformance::tests::management::create_user_memory_read_suite(),
+        knx_conformance::tests::management::create_user_memory_write_suite(),
+        knx_conformance::tests::management::create_user_manufacturer_info_read_suite(),
+        knx_conformance::tests::group_objects::create_association_table_receiving_suite(),
+        knx_conformance::tests::group_objects::create_association_table_sending_suite(),
     ];
 
     // Helper to check if a filter matches a suite or test name
@@ -114,6 +137,28 @@ async fn main(spawner: Spawner) {
         println!("  - Transport Layer General Tests (2.1, 2.2, 2.3, 2.4, 2.5)");
         println!("  - Transport Layer Timing Tests (4.1, 4.2)");
         println!("  - Transport Layer State Machine Tests (6.2.x, 6.3.x, 6.4.x, 6.5.x)");
+        println!("  - Group Objects UINT1 Tests (1.4.1.x)");
+        println!("  - Association Table Tests (5.2.1, 5.2.2)");
+        println!("  - Management Tests:");
+        println!("      M-2.3 IndividualAddress_Read");
+        println!("      M-2.4 IndividualAddress_Write");
+        println!("      M-2.5 DeviceDescriptor (Type 0, Type 2, Illegal Types)");
+        println!("      M-2.6 Memory_Read");
+        println!("      M-2.7 Memory_Write");
+        println!("      M-2.8 ADC_Read");
+        println!("      M-2.9 Restart");
+        println!("      M-2.10 MemoryBit_Write");
+        println!("      M-2.11 Authorization");
+        println!("      M-2.12 Key_Write");
+        println!("      M-2.13 PropertyValue_Read");
+        println!("      M-2.16 IndividualAddressSerialNumber_Write");
+        println!("      M-2.17 IndividualAddressSerialNumber_Read");
+        println!("      M-2.18 NetworkParameter_Read");
+        println!("      M-2.19 NetworkParameter_Write");
+        println!("      M-2.20 Illegal APCI");
+        println!("      M-2.31 UserMemory_Read");
+        println!("      M-2.32 UserMemory_Write");
+        println!("      M-2.33 UserManufacturerInfo_Read");
         std::process::exit(1);
     }
 
@@ -201,7 +246,6 @@ async fn main(spawner: Spawner) {
                             Either::First(Some(msg)) => {
                                 if matcher.matches(&msg.data) {
                                     println!("        ✅ Matched: {:02X?}", msg.data.as_slice());
-                                    println!("        📋 ServiceType: {:?}", msg.service_type);
                                 } else {
                                     println!("        ❌ Mismatch!");
                                     println!("           Expected: {:02X?}", matcher.expected);
@@ -241,6 +285,25 @@ async fn main(spawner: Spawner) {
                         harness.stack().write_object_by_asap(*asap).await;
                         // Give stack time to process
                         Timer::after(Duration::from_millis(10)).await;
+                    }
+                    TestStep::ExpectNone { timeout_ms } => {
+                        println!("  [{}] 🚫 ExpectNone (timeout {}ms)", i, timeout_ms);
+                        let timeout = Duration::from_millis(*timeout_ms as u64);
+                        let recv_fut = harness.receive_captured();
+                        let timeout_fut = Timer::after(timeout);
+                        match select(recv_fut, timeout_fut).await {
+                            Either::First(Some(msg)) => {
+                                println!("        ❌ Unexpected message received!");
+                                println!("           Got: {:02X?}", msg.data.as_slice());
+                                test_passed = false;
+                            }
+                            Either::First(None) => {
+                                println!("        ✅ No message (capture not available)");
+                            }
+                            Either::Second(_) => {
+                                println!("        ✅ No message received (as expected)");
+                            }
+                        }
                     }
                     TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
                         println!("  [{}] ❌ Unresolved template step", i);

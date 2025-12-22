@@ -62,3 +62,11 @@ pub fn trigger_read(asap: u16) -> TestStep {
 pub fn trigger_write(asap: u16) -> TestStep {
     TestStep::TriggerWrite { asap }
 }
+
+/// Helper to expect no response within a timeout
+///
+/// This step passes if no message is received within the timeout period.
+/// Use this when the test expects the device to remain silent.
+pub fn expect_none(timeout_ms: u32) -> TestStep {
+    TestStep::ExpectNone { timeout_ms }
+}

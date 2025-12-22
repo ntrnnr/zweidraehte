@@ -35,9 +35,9 @@ use zweidraehte::{
     messages::knx::{KnxMessageBuffer, ServiceType},
     objects::comm::{ComObjectStatus, ComObjects},
     objects::interface::{
-        AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
-        InterfaceObject, InterfaceObjectsBuilder, IpParameterObject, PropertyDescriptionResponse, PropertyError,
-        PropertyServiceHandler,
+        AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
+        GroupObjectTableObject, InterfaceObject, InterfaceObjectsBuilder, IpParameterObject,
+        PropertyDescriptionResponse, PropertyError, PropertyServiceHandler,
     },
     objects::tables::LoadableTable,
     BasicIpStackState, IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
@@ -555,6 +555,30 @@ mod device_info {
 
     /// PEI type (0 = no PEI)
     pub const PEI_TYPE: u8 = 0x00;
+
+    /// Maximum APDU length for modern TP1 with Extended Frame Format (EFF)
+    ///
+    /// Modern TP1 devices with EFF support can handle APDUs up to 255 bytes.
+    /// This is the absolute maximum that the length field can represent.
+    /// Standard TP1 (without EFF) is limited to 14 bytes.
+    pub const MAX_APDU_LENGTH: u16 = 255;
+
+    /// Device descriptor (mask version)
+    /// 0x07B0 = System B device
+    pub const DEVICE_DESCRIPTOR: u16 = 0x07B0;
+
+    /// Buffer size for message buffers
+    ///
+    /// Must be large enough to hold the maximum APDU plus frame overhead:
+    /// - Control byte: 1
+    /// - Source address: 2
+    /// - Destination address: 2
+    /// - NPDU (length/hop count): 1
+    /// - APDU: MAX_APDU_LENGTH
+    /// - Plus some margin for internal headers
+    ///
+    /// We round up to a nice power of 2 for memory alignment.
+    pub const BUFFER_SIZE: usize = MAX_APDU_LENGTH as usize + 16; // 271 bytes
 }
 
 // ============================================================================
@@ -602,8 +626,18 @@ where
         co_table: &'a RefCell<COT>,
         state: &'a S,
     ) -> Self {
-        // Create Device Object with device information and state reference
-        let device = DeviceObject::with_values(state, device_info::SERIAL_NUMBER, device_info::HARDWARE_TYPE);
+        // Create Device Object with full device information including max APDU length
+        let device = DeviceObject::with_info(
+            state,
+            &DeviceInfo {
+                serial_number: device_info::SERIAL_NUMBER,
+                order_info: [0; 10],
+                hardware_type: device_info::HARDWARE_TYPE,
+                version: [0x00, 0x01], // Version 0.0.1
+                max_apdu_length: device_info::MAX_APDU_LENGTH,
+                device_descriptor: device_info::DEVICE_DESCRIPTOR,
+            },
+        );
 
         // Create Application Program Object
         let mut app_program = ApplicationProgramObject::new();
@@ -771,14 +805,15 @@ static INJECTION_CHANNEL: StaticCell<Channel<NoopRawMutex, KnxMessageBuffer<Buff
 // Capture channel for receiving messages from the stack
 static CAPTURE_CHANNEL: StaticCell<Channel<NoopRawMutex, CapturedLinkLayerMessage, 16>> = StaticCell::new();
 
-// Stack resources
-static STACK_RESOURCES: StaticCell<StackResources<ConformanceTestStack>> = StaticCell::new();
+// Stack resources - use BUFFER_SIZE from device_info for max APDU support
+static STACK_RESOURCES: StaticCell<StackResources<ConformanceTestStack, { device_info::BUFFER_SIZE }, 4>> =
+    StaticCell::new();
 
 // Link layer resources
 static LL_RESOURCES: StaticCell<MockLinkLayerResources> = StaticCell::new();
 
-// Buffer manager for test injections
-static INJECTION_BUFFERS: StaticCell<[[u8; 64]; 16]> = StaticCell::new();
+// Buffer manager for test injections - use BUFFER_SIZE from device_info
+static INJECTION_BUFFERS: StaticCell<[[u8; device_info::BUFFER_SIZE]; 16]> = StaticCell::new();
 static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<16>> = StaticCell::new();
 
 // ============================================================================
@@ -807,7 +842,7 @@ impl FullStackHarness {
         let capture_channel = CAPTURE_CHANNEL.init(Channel::new());
 
         // Initialize buffer manager for test injections
-        let buffers = INJECTION_BUFFERS.init([[0u8; 64]; 16]);
+        let buffers = INJECTION_BUFFERS.init([[0u8; device_info::BUFFER_SIZE]; 16]);
         // SAFETY: We're initializing the buffer manager with our static buffers
         let buffer_manager = INJECTION_BUFFER_MANAGER.init(unsafe { BufferManager::new(buffers) });
         let dyn_buffer_manager = buffer_manager.dyn_buffer_manager();
