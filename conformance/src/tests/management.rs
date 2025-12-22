@@ -25,10 +25,7 @@ pub fn create_test_variables() -> BTreeMap<String, TestVariable> {
     let mut vars = BTreeMap::new();
     vars.insert("EDI".to_string(), TestVariable::Bytes(vec![0xAF, 0xFE]));
     vars.insert("BDUT".to_string(), TestVariable::Bytes(vec![0x10, 0x01]));
-    vars.insert(
-        "BDUT_SERIAL_NUMBER".to_string(),
-        TestVariable::Bytes(vec![0x30, 0x30, 0x30, 0x30, 0x30, 0x30]),
-    );
+    vars.insert("BDUT_SERIAL_NUMBER".to_string(), TestVariable::Bytes(vec![0x30, 0x30, 0x30, 0x30, 0x30, 0x30]));
     vars
 }
 
@@ -166,7 +163,7 @@ pub fn create_individual_address_write_suite() -> TestSuite {
 pub fn create_device_descriptor_type0_suite() -> TestSuite {
     let mut vars = create_test_variables();
     // DD0_RESPONSE: Device Descriptor Type 0 response (2 bytes, wildcard by default)
-    vars.insert("DD0_RESPONSE".to_string(), TestVariable::Bytes(vec![0x07, 0xB0]));
+    vars.insert("DD0_RESPONSE".to_string(), TestVariable::Bytes(vec![0x57, 0xB0]));
 
     let cases = vec![
         // ====================================================================
@@ -310,12 +307,10 @@ pub fn create_device_descriptor_illegal_types_suite() -> TestSuite {
         // DeviceDescriptor_Read with illegal type (connectionless: TPCI = 0x03)
         steps_cl.push(inject(&format!("BC #EDI #BDUT 61 03 {:02X}", dd_type)));
         // Expect error response 0x7F
-        steps_cl.push(expect(&format!("BC #BDUT #EDI 61 03 7F", ), 500));
+        steps_cl.push(expect(&format!("BC #BDUT #EDI 61 03 7F",), 500));
     }
 
-    steps_cl.push(comment(
-        "Acceptance: The BDUT sends a telegram with a negative A_DeviceDescriptor_Response-PDU.",
-    ));
+    steps_cl.push(comment("Acceptance: The BDUT sends a telegram with a negative A_DeviceDescriptor_Response-PDU."));
 
     let cases = vec![
         TestCase::new("M-2.5.5 Read Illegal Device Descriptor Types, connection-oriented").with_steps(steps_co),
@@ -1490,7 +1485,7 @@ fn create_memorybit_test_variables() -> BTreeMap<String, TestVariable> {
     vars.insert("MEMPOS".to_string(), TestVariable::Bytes(vec![0x02, 0x00])); // 0x0200
     vars.insert("MEMPOS_LASTACCESS".to_string(), TestVariable::Bytes(vec![0x02, 0xFF])); // 0x02FF
     vars.insert("MEMPOS_PROTECTED".to_string(), TestVariable::Bytes(vec![0x03, 0x00])); // 0x0300
-    // Memory content: 16 bytes of 0x0F (default value)
+                                                                                        // Memory content: 16 bytes of 0x0F (default value)
     let mem: Vec<u8> = vec![0x0F; 16];
     vars.insert("MEM".to_string(), TestVariable::Bytes(mem));
     vars
@@ -2112,10 +2107,7 @@ fn create_property_access_test_variables() -> std::collections::BTreeMap<String,
     vars.insert("OBJ_0_ILLEGAL_PROP_INDEX".into(), TestVariable::Bytes(vec![0x04]));
 
     // Property data
-    vars.insert(
-        "OBJ_0_PROP_1_DATA".into(),
-        TestVariable::Bytes(vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]),
-    );
+    vars.insert("OBJ_0_PROP_1_DATA".into(), TestVariable::Bytes(vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]));
     vars.insert("OBJ_0_PROP_2_DATA".into(), TestVariable::Bytes(vec![0x11, 0x22, 0x33, 0x44]));
     vars.insert(
         "OBJ_0_PROP_3_DATA".into(),
@@ -2856,8 +2848,7 @@ fn create_user_memory_test_variables() -> std::collections::BTreeMap<String, Tes
     vars.insert(
         "MEM_VAL".to_string(),
         TestVariable::Bytes(vec![
-            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
-            0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00,
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00,
         ]),
     );
 

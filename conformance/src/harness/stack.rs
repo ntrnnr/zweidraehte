@@ -564,8 +564,8 @@ mod device_info {
     pub const MAX_APDU_LENGTH: u16 = 255;
 
     /// Device descriptor (mask version)
-    /// 0x07B0 = System B device
-    pub const DEVICE_DESCRIPTOR: u16 = 0x07B0;
+    /// 0x57B0 = System B KNX/IP device
+    pub const DEVICE_DESCRIPTOR: u16 = 0x57B0;
 
     /// Buffer size for message buffers
     ///
@@ -627,17 +627,14 @@ where
         state: &'a S,
     ) -> Self {
         // Create Device Object with full device information including max APDU length
-        let device = DeviceObject::with_info(
-            state,
-            &DeviceInfo {
-                serial_number: device_info::SERIAL_NUMBER,
-                order_info: [0; 10],
-                hardware_type: device_info::HARDWARE_TYPE,
-                version: [0x00, 0x01], // Version 0.0.1
-                max_apdu_length: device_info::MAX_APDU_LENGTH,
-                device_descriptor: device_info::DEVICE_DESCRIPTOR,
-            },
-        );
+        let device = DeviceObject::with_info(state, &DeviceInfo {
+            serial_number: device_info::SERIAL_NUMBER,
+            order_info: [0; 10],
+            hardware_type: device_info::HARDWARE_TYPE,
+            version: [0x00, 0x01], // Version 0.0.1
+            max_apdu_length: device_info::MAX_APDU_LENGTH,
+            device_descriptor: device_info::DEVICE_DESCRIPTOR,
+        });
 
         // Create Application Program Object
         let mut app_program = ApplicationProgramObject::new();
@@ -784,7 +781,7 @@ impl ConstDefault for TestParameters {
 pub struct ConformanceTestStack;
 
 impl StackDefinition for ConformanceTestStack {
-    const MASK_VERSION: &'static [u8; 2] = &[0x57, 0xb0];
+    const MASK_VERSION: &'static [u8; 2] = &[0x57, 0xB0];
     type ADT = conformance_config::AddrTab;
     type AST = conformance_config::AssoTab;
     type COT = conformance_config::CoTab;
