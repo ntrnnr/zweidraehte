@@ -571,6 +571,21 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
         }
     }
 
+    /// Get the 6-bit data field from a short APCI message.
+    ///
+    /// For short APCI codes (GroupValueRead, GroupValueResponse, GroupValueWrite, etc.),
+    /// the lower 6 bits of the second APCI byte contain a small data payload.
+    /// This is commonly used for:
+    /// - GroupValueRead: Should always be 0x00 for a valid read request
+    /// - GroupValueResponse/Write with 1-bit data: Contains the 1-bit value in bit 0
+    ///
+    /// # Returns
+    /// The 6-bit data value (0x00-0x3F)
+    pub fn get_short_apci_data(&self) -> u8 {
+        use offsets::*;
+        self.buf[MSG_APCI + 1] & 0x3F
+    }
+
     /// Get the source address from the message
     pub fn get_source_addr(&self) -> IndividualAddress {
         use offsets::*;

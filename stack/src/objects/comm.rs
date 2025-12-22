@@ -9,23 +9,39 @@ use crate::dpt::DatapointType;
 /// Status of a communication object
 ///
 /// Defined in KNX 03/04/01 3.2 - Communication flags
+///
+/// BCU1/BCU2 flag byte format:
+/// - Bit 6: Idle indicator (1 = idle, 0 = transmitting)
+/// - Bit 3: Update flag
+/// - Bit 2: Read request pending
+/// - Bit 1: Write/Transmit request pending
+/// - Bit 0: Error flag (1 = error, 0 = ok)
 pub enum ComObjectStatus {
-    /// Update was updated remotely
+    /// Object was updated remotely (0x48)
     Updated,
 
-    /// Read request was issued
+    /// Read request was issued, not yet sent (0x44)
     ReadRequest,
 
-    /// Write request was issued
+    /// Read request sent successfully, waiting for response (0x44)
+    ReadRequestOk,
+
+    /// Read request failed (transmission error or disabled) (0x45)
+    ReadRequestError,
+
+    /// Write request was issued (0x02)
     WriteRequest,
 
-    /// Read or Write request is currently handled
+    /// Write request failed (transmission error or disabled) (0x41)
+    WriteRequestError,
+
+    /// Read or Write request is currently handled (0x02)
     Busy,
 
-    /// Object is idle
+    /// Object is idle (0x40)
     IdleOk,
 
-    /// Object encountered an error during last requested bus transaction
+    /// Object encountered an error during last requested bus transaction (0x41)
     IdleError,
 
     /// Object is currently uninitialized
@@ -35,6 +51,65 @@ pub enum ComObjectStatus {
 impl Default for ComObjectStatus {
     fn default() -> Self {
         ComObjectStatus::Uninitialized
+    }
+}
+
+impl ComObjectStatus {
+    /// Convert status to a BCU1-style flags byte.
+    ///
+    /// Format (8 bits):
+    /// - Bit 6: Idle indicator (1 = idle, 0 = transmitting)
+    /// - Bit 3: Update flag
+    /// - Bit 2: Read request pending
+    /// - Bit 1: Write/Transmit request pending (BCU1 style)
+    /// - Bit 0: Error flag (1 = error, 0 = ok)
+    ///
+    /// Common values:
+    /// - 0x40: IdleOk
+    /// - 0x41: IdleError
+    /// - 0x42: Busy/Transmitting (WriteRequest pending)
+    /// - 0x44: ReadRequest pending (idle)
+    /// - 0x48: Updated
+    pub fn to_flags_byte(&self) -> u8 {
+        match self {
+            ComObjectStatus::IdleOk => 0x40,             // Idle, OK
+            ComObjectStatus::IdleError => 0x41,          // Idle, Error
+            ComObjectStatus::Busy => 0x02,               // Transmitting (not idle)
+            ComObjectStatus::WriteRequest => 0x02,       // Transmitting (not idle)
+            ComObjectStatus::WriteRequestError => 0x41,  // Idle, Error (write failed)
+            ComObjectStatus::ReadRequest => 0x44,        // Idle + Read request pending
+            ComObjectStatus::ReadRequestOk => 0x44,      // Idle + Read request pending (sent OK)
+            ComObjectStatus::ReadRequestError => 0x45,   // Idle + Read request pending + Error
+            ComObjectStatus::Updated => 0x48,            // Idle + Updated
+            ComObjectStatus::Uninitialized => 0x40,      // Treat as IdleOk
+        }
+    }
+
+    /// Create status from a BCU1-style flags byte.
+    ///
+    /// Format (8 bits):
+    /// - Bit 7: Set command (when writing, 1 = set flags, 0 = clear/read)
+    /// - Bit 6: Idle indicator (ignored when parsing)
+    /// - Bit 3: Update flag
+    /// - Bit 2: Read request pending
+    /// - Bit 1: Write/Transmit request pending
+    /// - Bit 0: Error flag (1 = error, 0 = ok)
+    ///
+    /// This is the inverse of `to_flags_byte()`.
+    pub fn from_flags_byte(flags: u8) -> Self {
+        // Check special flags first (read request and update take priority)
+        if flags & 0x04 != 0 {
+            ComObjectStatus::ReadRequest
+        } else if flags & 0x08 != 0 {
+            ComObjectStatus::Updated
+        } else if flags & 0x02 != 0 {
+            // Write/Transmit request pending
+            ComObjectStatus::WriteRequest
+        } else if flags & 0x01 != 0 {
+            ComObjectStatus::IdleError
+        } else {
+            ComObjectStatus::IdleOk
+        }
     }
 }
 
@@ -79,8 +154,11 @@ pub const trait ComObjectIndex: Clone + Sized {
     fn index(&self) -> u16;
 }
 
+/// Trait for managing communication objects in a KNX application.
 pub trait ComObjects {
     type Index: ComObjectIndex;
+    /// Context type for hooks. Use `()` if not needed.
+    type HookContext;
 
     fn new() -> Self;
     fn info<'a>(&'a self, idx: u16) -> ComObjectInfo<'a>;
@@ -109,6 +187,18 @@ pub trait ComObjects {
         let info = self.info_mut(idx);
         info.value
     }
+
+    /// Called before reading an object's value.
+    #[inline]
+    fn prepare_read(&mut self, _idx: u16, _ctx: &Self::HookContext) {
+        // Default: no-op
+    }
+
+    /// Called after writing an object's value.
+    #[inline]
+    fn handle_write(&mut self, _idx: u16, _ctx: &Self::HookContext) {
+        // Default: no-op
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,8 +216,143 @@ pub enum ComObjectEvent {
     ReadResponse,
 }
 
+/// Defines communication objects for a KNX application.
+///
+/// # Syntax
+///
+/// ```rust,ignore
+/// define_com_objects! {
+///     pub mod my_objects {
+///         pub struct MyComObjects {
+///             1 => pub switch: DPT_Switch = DPT_Switch::from(false),
+///             2 => pub dimmer: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+///         }
+///     }
+/// }
+/// ```
+///
+/// # Custom Implementation with Hooks
+///
+/// For objects that need custom behavior (e.g., computed values, validation,
+/// or side effects on read/write), use the `#[manual_impl]` attribute to prevent
+/// the macro from generating the `ComObjects` impl. Then provide your own
+/// implementation with custom `prepare_read` and `handle_write` hooks:
+///
+/// ```rust,ignore
+/// define_com_objects! {
+///     pub mod my_objects {
+///         #[manual_impl]  // Don't generate ComObjects impl
+///         pub struct MyComObjects {
+///             1 => pub temperature: DPT_Value_Temp = DPT_Value_Temp::default(),
+///             2 => pub setpoint: DPT_Value_Temp = DPT_Value_Temp::default(),
+///         }
+///     }
+/// }
+///
+/// use my_objects::*;
+///
+/// impl ComObjects for MyComObjects {
+///     type Index = Index;
+///     type HookContext = ();  // No external context needed
+///
+///     fn new() -> Self {
+///         Self {
+///             temperature: ComObject::new(DPT_Value_Temp::default()),
+///             setpoint: ComObject::new(DPT_Value_Temp::default()),
+///         }
+///     }
+///
+///     fn info(&self, idx: u16) -> ComObjectInfo { /* ... */ }
+///     fn info_mut(&mut self, idx: u16) -> ComObjectInfoMut { /* ... */ }
+///
+///     fn prepare_read(&mut self, idx: u16, _ctx: &()) {
+///         if let Some(Index::Temperature) = Index::from_index(idx) {
+///             // Update temperature from sensor before responding to read
+///             // self.temperature.value = read_sensor();
+///         }
+///     }
+///
+///     fn handle_write(&mut self, idx: u16, _ctx: &()) {
+///         if let Some(Index::Setpoint) = Index::from_index(idx) {
+///             // Apply new setpoint to controller after write
+///             // apply_setpoint(self.setpoint.value);
+///         }
+///     }
+/// }
+/// ```
 #[macro_export]
 macro_rules! define_com_objects {
+    // Variant with #[manual_impl] - generates struct and Index but NOT ComObjects impl
+    (
+        $(#[$mod_meta:meta])*
+        pub mod $mod_name:ident {
+            #[manual_impl]
+            $(#[$struct_meta:meta])*
+            pub struct $struct_name:ident {
+                $(
+                    $(#[$field_meta:meta])*
+                    $idx:expr => pub $obj_name:ident: $type:ty = $default:expr
+                ),* $(,)?
+            }
+        }
+    ) => {
+        paste::paste! {
+            $(#[$mod_meta])*
+            pub mod $mod_name {
+                use $crate::objects::comm::*;
+
+                #[allow(unused_imports)]
+                use $crate::dpt::*;
+
+                use embassy_sync::{
+                    pubsub::{PubSubChannel, PubSubBehavior, DynSubscriber},
+                    blocking_mutex::raw::NoopRawMutex
+                };
+
+
+                /// Enum with all communication object names and their indices
+                #[allow(dead_code)]
+                #[derive(core::marker::ConstParamTy, Debug, Clone, Copy, PartialEq, Eq)]
+                #[repr(u16)]
+                pub enum Index {
+                    $(
+                        [<$obj_name:camel>] = $idx,
+                    )*
+                }
+
+                #[allow(dead_code)]
+                impl ComObjectIndex for Index {
+                    /// Convert from usize index to enum if valid
+                    fn from_index(idx: u16) -> Option<Self> {
+                        match idx {
+                            $(
+                                $idx => Some(Self::[<$obj_name:camel>]),
+                            )*
+                            _ => None,
+                        }
+                    }
+
+                    /// Get the index value
+                    fn index(&self) -> u16 {
+                        *self as u16
+                    }
+                }
+
+                /// The communication objects
+                $(#[$struct_meta])*
+                pub struct $struct_name {
+                    $(
+                        $(#[$field_meta])*
+                        pub $obj_name: ComObject<$type>,
+                    )*
+                }
+
+                // Note: ComObjects impl is NOT generated - user must provide their own
+            }
+        }
+    };
+
+    // Standard variant - generates everything including ComObjects impl
     (
         $(#[$mod_meta:meta])*
         pub mod $mod_name:ident {
@@ -193,6 +418,7 @@ macro_rules! define_com_objects {
 
                 impl ComObjects for $struct_name {
                     type Index = Index;
+                    type HookContext = ();
 
                     fn new() -> Self {
                         Self {

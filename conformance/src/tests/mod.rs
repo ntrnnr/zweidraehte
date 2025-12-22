@@ -4,6 +4,7 @@
 
 mod helpers;
 
+pub mod group_objects;
 pub mod network_layer;
 pub mod transport_layer_general;
 pub mod transport_layer_state_machine;

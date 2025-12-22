@@ -25,7 +25,7 @@ use crate::{TestCase, TestSuite, TestVariable};
 /// - IFACE_B_ADDR: Physical Address for USB B (10.15.1 = AF 01)
 /// - BDUT_ADDR: Basic Device Under Test (1.0.1 = 10 01)
 /// - SER_NUM: Serial number of BDUT
-/// - GO_ADDR: Group Object Address (2D 05)
+/// - GO_ADDR: Group Object Address (5/5/5 = 2D 05) - 1-bit object
 pub fn create_test_variables() -> BTreeMap<String, TestVariable> {
     let mut vars = BTreeMap::new();
     vars.insert("IFACE_A_ADDR".to_string(), TestVariable::Bytes(vec![0xAF, 0xFE]));

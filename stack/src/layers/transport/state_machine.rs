@@ -485,10 +485,11 @@ mod tests {
 
         assert_eq!(conn.state, ConnectionState::OpenIdle);
         assert_eq!(conn.remote_addr, source);
-        assert_eq!(actions.len(), 1);
+        assert_eq!(actions.len(), 2);
 
-        let action = actions.iter().next().unwrap();
-        assert_eq!(action, TlAction::IndicateConnected { source });
+        let mut iter = actions.iter();
+        assert_eq!(iter.next(), Some(TlAction::StartConnTimer));
+        assert_eq!(iter.next(), Some(TlAction::IndicateConnected { source }));
     }
 
     #[test]
@@ -503,9 +504,10 @@ mod tests {
         let actions = process_event(&mut conn, TlEvent::ReceivedData { source, seq_no: 0 });
 
         assert_eq!(conn.seq_no_recv, 1);
-        assert_eq!(actions.len(), 2);
+        assert_eq!(actions.len(), 3);
 
         let mut iter = actions.iter();
+        assert_eq!(iter.next(), Some(TlAction::StartConnTimer)); // Reset connection timeout
         assert_eq!(iter.next(), Some(TlAction::SendAck { dest: source, seq_no: 0 }));
         assert_eq!(iter.next(), Some(TlAction::IndicateData { source }));
     }
@@ -522,7 +524,13 @@ mod tests {
         let actions = process_event(&mut conn, TlEvent::RequestData { dest });
 
         assert_eq!(conn.state, ConnectionState::OpenWait);
-        assert_eq!(actions.len(), 3);
+        assert_eq!(actions.len(), 4);
+
+        let mut iter = actions.iter();
+        assert_eq!(iter.next(), Some(TlAction::StopConnTimer)); // Stop connection timeout when entering OPEN_WAIT
+        assert_eq!(iter.next(), Some(TlAction::StorePendingMessage));
+        assert_eq!(iter.next(), Some(TlAction::SendData { dest }));
+        assert_eq!(iter.next(), Some(TlAction::StartAckTimer));
 
         // Receive ACK
         let actions = process_event(&mut conn, TlEvent::ReceivedAck { source: dest, seq_no: 0 });
@@ -532,6 +540,7 @@ mod tests {
 
         let mut iter = actions.iter();
         assert_eq!(iter.next(), Some(TlAction::StopAckTimer));
+        assert_eq!(iter.next(), Some(TlAction::StartConnTimer)); // Restart connection timeout
         assert_eq!(iter.next(), Some(TlAction::ConfirmData { dest, success: true }));
     }
 

@@ -11,6 +11,15 @@
 //!
 //! This is required for EITT tests that expect full device responses
 //! (e.g., GroupValue_Read → GroupValue_Response).
+//!
+//! ## BCU1-Style Group Object Tests
+//!
+//! The Group Object conformance tests (1.4.1.x) require a BCU1-style application
+//! where shadow objects (GO1, GO2, GO3) provide access to GO0's internal state:
+//!
+//! - **GO1 (ASAP 2)**: Communication flags - reading/writing controls GO0's transmission state
+//! - **GO2 (ASAP 3)**: Configuration flags - reading/writing modifies GO0's COT flags
+//! - **GO3 (ASAP 4)**: Value access - direct read/write of GO0's value without flag changes
 
 use core::cell::RefCell;
 use std::net::Ipv4Addr;
@@ -21,38 +30,354 @@ use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
 
 use zweidraehte::{
-    BasicIpStackState, IpPlatform, IpStackState, define_com_objects,
+    define_com_objects,
     messages::buffers::{Buffer, BufferManager, DynBufferManager, MessageBuffer},
     messages::knx::{KnxMessageBuffer, ServiceType},
-    objects::comm::ComObjects,
+    objects::comm::{ComObjectStatus, ComObjects},
     objects::interface::{
-        AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject,
-        GroupObjectTableObject, InterfaceObject, InterfaceObjectsBuilder, IpParameterObject,
-        PropertyDescriptionResponse, PropertyError, PropertyServiceHandler,
+        AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
+        InterfaceObject, InterfaceObjectsBuilder, IpParameterObject, PropertyDescriptionResponse, PropertyError,
+        PropertyServiceHandler,
     },
     objects::tables::LoadableTable,
-    Runner, StackDefinition, StackResources,
+    BasicIpStackState, IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
 };
 
 use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle, MockLinkLayerResources};
 
 // ============================================================================
-// Test Communication Objects
+// Communication Objects (BCU1-style with shadow objects)
 // ============================================================================
+//
+// The conformance tests use a BCU1-style setup where shadow objects provide
+// access to the main object's internal state:
+//
+// - GO0 (ASAP 1): Main 1-bit group object
+// - GO1 (ASAP 2): Exposes GO0's communication flags (4-bit)
+// - GO2 (ASAP 3): Exposes GO0's configuration flags from COT (8-bit)
+// - GO3 (ASAP 4): Exposes GO0's value as 8-bit
+// - GO4 (ASAP 5): For Read on Init testing
+//
+// Writing to GO1/GO2/GO3 modifies the internal state of GO0.
+// This is achieved through the prepare_read and handle_write hooks.
 
 define_com_objects! {
-    pub mod test_comm_objs {
-        pub struct TestComObjects {
-            // 1-byte objects for long format responses (network layer tests 3.x)
-            // DPT_Value_1_Ucount is 1 byte (8 bits), forcing long format GroupValue_Response
-            1 => pub co_1: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
-            2 => pub co_2: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
-            3 => pub co_3: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
-            4 => pub co_4: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+    pub mod comm_objs {
+        // Use #[manual_impl] to provide our own ComObjects implementation with hooks
+        #[manual_impl]
+        pub struct ConformanceComObjects {
+            // ================================================================
+            // GO0-GO3: 1-bit main object and shadow objects (ASAP 1-4)
+            // ================================================================
 
-            // 1-bit object for short format responses (transport layer tests 2.x)
-            // DPT_Switch is 1 bit, uses short format with value in APCI field
-            5 => pub co_switch: DPT_Switch = DPT_Switch::from(false),
+            // GO0: Main 1-bit object (UINT1)
+            // This is the primary test object whose flags/value are accessed via GO1-GO3
+            1 => pub go_0: DPT_Switch = DPT_Switch::from(false),
+
+            // GO1: Communication flags (4-bit / UINT4)
+            // Bit 0: Read request pending
+            // Bit 1: Write/Transmission request pending
+            // Bit 2: Error flag (0=OK, 1=Error)
+            // Bit 3: Update flag
+            2 => pub go_1_comm_flags: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+
+            // GO2: Configuration flags (8-bit / UINT8)
+            // Bits 0-1: Priority (0=System, 1=High, 2=Alarm, 3=Low)
+            // Bit 2: Communication Enable
+            // Bit 3: Read Enable
+            // Bit 4: Write Enable
+            // Bit 5: Read on Init
+            // Bit 6: Transmission Enable
+            // Bit 7: Update Enable (Read Response Update)
+            3 => pub go_2_config_flags: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0xDFu8),
+
+            // GO3: Value of GO0 as 8-bit (for reading/writing without affecting flags)
+            4 => pub go_3_value: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+
+            // ================================================================
+            // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects (ASAP 5-8)
+            // For invalid data length tests (1.4.1.4a)
+            // ================================================================
+
+            // GO0_BYTE3: 3-byte version of GO0 for invalid data length tests
+            5 => pub go_0_byte3: DPT_Value_3_Ucount = DPT_Value_3_Ucount::default(),
+
+            // GO1_BYTE3: Communication flags for GO0_BYTE3
+            6 => pub go_1_byte3_comm_flags: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+
+            // GO2_BYTE3: Configuration flags for GO0_BYTE3
+            7 => pub go_2_byte3_config_flags: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0xDFu8),
+
+            // GO3_BYTE3: Value of GO0_BYTE3 as 3-byte (for reading/writing without affecting flags)
+            8 => pub go_3_byte3_value: DPT_Value_3_Ucount = DPT_Value_3_Ucount::default(),
+
+            // ================================================================
+            // Additional test objects (ASAP 9-11)
+            // ================================================================
+
+            // GO4: For Read on Init testing
+            9 => pub go_4: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+
+            // GO5: 8-bit object for network layer test 3.1 (long format response)
+            10 => pub go_5_network_test: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+
+            // GO6: 1-bit object for transport layer test 2.1
+            11 => pub go_6_transport_test: DPT_Switch = DPT_Switch::from(false),
+        }
+    }
+}
+
+// Manual ComObjects implementation with custom hooks for shadow objects
+use comm_objs::{ConformanceComObjects, Index as CoIndex};
+use core::cell::UnsafeCell;
+use zweidraehte::dpt::{DPT_Switch, DPT_Value_1_Ucount, DPT_Value_3_Ucount};
+use zweidraehte::objects::comm::{ComObject, ComObjectIndex, ComObjectInfo, ComObjectInfoMut};
+use zweidraehte::objects::tables::{ComObjectFlags, CommunicationObjectTable};
+
+/// Hook context for conformance tests that provides access to the COT.
+///
+/// This struct uses interior mutability to allow setting the COT reference
+/// after stack initialization.
+///
+/// # Safety
+///
+/// The COT pointer is initialized to null and must be set via `set_cot()`
+/// before any hooks are called. The pointer must remain valid for the
+/// lifetime of the stack.
+pub struct ConformanceHookContext {
+    /// Pointer to the COT, set after stack initialization.
+    /// Using UnsafeCell because we need to mutate this after creation.
+    cot: UnsafeCell<*const RefCell<conformance_config::CoTab>>,
+}
+
+impl ConformanceHookContext {
+    /// Create a new hook context with no COT reference.
+    pub const fn new() -> Self {
+        Self { cot: UnsafeCell::new(core::ptr::null()) }
+    }
+
+    /// Set the COT reference. Must be called after stack initialization.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the COT reference remains valid for the
+    /// lifetime of the stack.
+    pub unsafe fn set_cot(&self, cot: &RefCell<conformance_config::CoTab>) {
+        *self.cot.get() = cot as *const _;
+    }
+
+    /// Get a reference to the COT if it has been set.
+    fn cot(&self) -> Option<&RefCell<conformance_config::CoTab>> {
+        // SAFETY: We only read the pointer, and if non-null, it was set
+        // to a valid reference by set_cot().
+        unsafe {
+            let ptr = *self.cot.get();
+            if ptr.is_null() {
+                None
+            } else {
+                Some(&*ptr)
+            }
+        }
+    }
+}
+
+// SAFETY: The UnsafeCell is only accessed from single-threaded embassy context
+unsafe impl Send for ConformanceHookContext {}
+unsafe impl Sync for ConformanceHookContext {}
+
+impl ComObjects for ConformanceComObjects {
+    type Index = CoIndex;
+    type HookContext = ConformanceHookContext;
+
+    fn new() -> Self {
+        Self {
+            // GO0-GO3: 1-bit main object and shadow objects
+            go_0: ComObject::new(DPT_Switch::from(false)),
+            go_1_comm_flags: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
+            go_2_config_flags: ComObject::new(DPT_Value_1_Ucount::from(0xDFu8)),
+            go_3_value: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
+            // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects
+            go_0_byte3: ComObject::new(DPT_Value_3_Ucount::default()),
+            go_1_byte3_comm_flags: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
+            go_2_byte3_config_flags: ComObject::new(DPT_Value_1_Ucount::from(0xDFu8)),
+            go_3_byte3_value: ComObject::new(DPT_Value_3_Ucount::default()),
+            // Additional test objects
+            go_4: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
+            go_5_network_test: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
+            go_6_transport_test: ComObject::new(DPT_Switch::from(false)),
+        }
+    }
+
+    fn info(&self, idx: u16) -> ComObjectInfo<'_> {
+        match CoIndex::from_index(idx).expect("invalid index") {
+            // GO0-GO3: 1-bit main object and shadow objects
+            CoIndex::Go0 => ComObjectInfo { status: &self.go_0.status, value: self.go_0.value.as_ref() },
+            CoIndex::Go1CommFlags => {
+                ComObjectInfo { status: &self.go_1_comm_flags.status, value: self.go_1_comm_flags.value.as_ref() }
+            }
+            CoIndex::Go2ConfigFlags => {
+                ComObjectInfo { status: &self.go_2_config_flags.status, value: self.go_2_config_flags.value.as_ref() }
+            }
+            CoIndex::Go3Value => {
+                ComObjectInfo { status: &self.go_3_value.status, value: self.go_3_value.value.as_ref() }
+            }
+            // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects
+            CoIndex::Go0Byte3 => {
+                ComObjectInfo { status: &self.go_0_byte3.status, value: self.go_0_byte3.value.as_ref() }
+            }
+            CoIndex::Go1Byte3CommFlags => ComObjectInfo {
+                status: &self.go_1_byte3_comm_flags.status,
+                value: self.go_1_byte3_comm_flags.value.as_ref(),
+            },
+            CoIndex::Go2Byte3ConfigFlags => ComObjectInfo {
+                status: &self.go_2_byte3_config_flags.status,
+                value: self.go_2_byte3_config_flags.value.as_ref(),
+            },
+            CoIndex::Go3Byte3Value => {
+                ComObjectInfo { status: &self.go_3_byte3_value.status, value: self.go_3_byte3_value.value.as_ref() }
+            }
+            // Additional test objects
+            CoIndex::Go4 => ComObjectInfo { status: &self.go_4.status, value: self.go_4.value.as_ref() },
+            CoIndex::Go5NetworkTest => {
+                ComObjectInfo { status: &self.go_5_network_test.status, value: self.go_5_network_test.value.as_ref() }
+            }
+            CoIndex::Go6TransportTest => ComObjectInfo {
+                status: &self.go_6_transport_test.status,
+                value: self.go_6_transport_test.value.as_ref(),
+            },
+        }
+    }
+
+    fn info_mut(&mut self, idx: u16) -> ComObjectInfoMut<'_> {
+        match CoIndex::from_index(idx).expect("invalid index") {
+            // GO0-GO3: 1-bit main object and shadow objects
+            CoIndex::Go0 => ComObjectInfoMut { status: &mut self.go_0.status, value: self.go_0.value.as_mut() },
+            CoIndex::Go1CommFlags => ComObjectInfoMut {
+                status: &mut self.go_1_comm_flags.status,
+                value: self.go_1_comm_flags.value.as_mut(),
+            },
+            CoIndex::Go2ConfigFlags => ComObjectInfoMut {
+                status: &mut self.go_2_config_flags.status,
+                value: self.go_2_config_flags.value.as_mut(),
+            },
+            CoIndex::Go3Value => {
+                ComObjectInfoMut { status: &mut self.go_3_value.status, value: self.go_3_value.value.as_mut() }
+            }
+            // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects
+            CoIndex::Go0Byte3 => {
+                ComObjectInfoMut { status: &mut self.go_0_byte3.status, value: self.go_0_byte3.value.as_mut() }
+            }
+            CoIndex::Go1Byte3CommFlags => ComObjectInfoMut {
+                status: &mut self.go_1_byte3_comm_flags.status,
+                value: self.go_1_byte3_comm_flags.value.as_mut(),
+            },
+            CoIndex::Go2Byte3ConfigFlags => ComObjectInfoMut {
+                status: &mut self.go_2_byte3_config_flags.status,
+                value: self.go_2_byte3_config_flags.value.as_mut(),
+            },
+            CoIndex::Go3Byte3Value => ComObjectInfoMut {
+                status: &mut self.go_3_byte3_value.status,
+                value: self.go_3_byte3_value.value.as_mut(),
+            },
+            // Additional test objects
+            CoIndex::Go4 => ComObjectInfoMut { status: &mut self.go_4.status, value: self.go_4.value.as_mut() },
+            CoIndex::Go5NetworkTest => ComObjectInfoMut {
+                status: &mut self.go_5_network_test.status,
+                value: self.go_5_network_test.value.as_mut(),
+            },
+            CoIndex::Go6TransportTest => ComObjectInfoMut {
+                status: &mut self.go_6_transport_test.status,
+                value: self.go_6_transport_test.value.as_mut(),
+            },
+        }
+    }
+
+    fn prepare_read(&mut self, idx: u16, ctx: &Self::HookContext) {
+        match CoIndex::from_index(idx) {
+            Some(CoIndex::Go1CommFlags) => {
+                // GO1 reads GO0's communication status
+                let flags = self.go_0.status.to_flags_byte();
+                self.go_1_comm_flags.value.as_mut()[0] = flags;
+            }
+            Some(CoIndex::Go2ConfigFlags) => {
+                // GO2 reads GO0's configuration flags from the COT
+                // GO0 is at ASAP 1 (index 1 in the COT)
+                if let Some(cot) = ctx.cot() {
+                    if let Some(flags) = cot.borrow().object_flags(1) {
+                        self.go_2_config_flags.value.as_mut()[0] = flags.to_byte();
+                    }
+                }
+            }
+            Some(CoIndex::Go3Value) => {
+                // GO3 reads GO0's value
+                let go0_value = self.go_0.value.as_ref()[0];
+                self.go_3_value.value.as_mut()[0] = go0_value;
+            }
+            // BYTE3 shadow objects
+            Some(CoIndex::Go1Byte3CommFlags) => {
+                // GO1_BYTE3 reads GO0_BYTE3's communication status
+                let flags = self.go_0_byte3.status.to_flags_byte();
+                self.go_1_byte3_comm_flags.value.as_mut()[0] = flags;
+            }
+            Some(CoIndex::Go2Byte3ConfigFlags) => {
+                // GO2_BYTE3 reads GO0_BYTE3's configuration flags from the COT
+                // GO0_BYTE3 is at ASAP 5 (index 5 in the COT)
+                if let Some(cot) = ctx.cot() {
+                    if let Some(flags) = cot.borrow().object_flags(5) {
+                        self.go_2_byte3_config_flags.value.as_mut()[0] = flags.to_byte();
+                    }
+                }
+            }
+            Some(CoIndex::Go3Byte3Value) => {
+                // GO3_BYTE3 reads GO0_BYTE3's value (3 bytes)
+                let go0_value = self.go_0_byte3.value.as_ref();
+                self.go_3_byte3_value.value.as_mut().copy_from_slice(go0_value);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_write(&mut self, idx: u16, ctx: &Self::HookContext) {
+        match CoIndex::from_index(idx) {
+            Some(CoIndex::Go1CommFlags) => {
+                // GO1 write sets GO0's communication flags directly
+                // The value written becomes GO0's new comm flags
+                let flags = self.go_1_comm_flags.value.as_ref()[0];
+                self.go_0.status = ComObjectStatus::from_flags_byte(flags);
+            }
+            Some(CoIndex::Go2ConfigFlags) => {
+                // GO2 write modifies GO0's configuration flags in the COT
+                // GO0 is at ASAP 1 (index 1 in the COT)
+                if let Some(cot) = ctx.cot() {
+                    let new_flags = ComObjectFlags::from_byte(self.go_2_config_flags.value.as_ref()[0]);
+                    cot.borrow_mut().set_object_flags(1, new_flags);
+                }
+            }
+            Some(CoIndex::Go3Value) => {
+                // GO3 write modifies GO0's value directly
+                let new_value = self.go_3_value.value.as_ref()[0];
+                self.go_0.value.as_mut()[0] = new_value;
+            }
+            // BYTE3 shadow objects
+            Some(CoIndex::Go1Byte3CommFlags) => {
+                // GO1_BYTE3 write sets GO0_BYTE3's communication flags directly
+                let flags = self.go_1_byte3_comm_flags.value.as_ref()[0];
+                self.go_0_byte3.status = ComObjectStatus::from_flags_byte(flags);
+            }
+            Some(CoIndex::Go2Byte3ConfigFlags) => {
+                // GO2_BYTE3 write modifies GO0_BYTE3's configuration flags in the COT
+                // GO0_BYTE3 is at ASAP 5 (index 5 in the COT)
+                if let Some(cot) = ctx.cot() {
+                    let new_flags = ComObjectFlags::from_byte(self.go_2_byte3_config_flags.value.as_ref()[0]);
+                    cot.borrow_mut().set_object_flags(5, new_flags);
+                }
+            }
+            Some(CoIndex::Go3Byte3Value) => {
+                // GO3_BYTE3 write modifies GO0_BYTE3's value directly (3 bytes)
+                let new_value = self.go_3_byte3_value.value.as_ref();
+                self.go_0_byte3.value.as_mut().copy_from_slice(new_value);
+            }
+            _ => {}
         }
     }
 }
@@ -60,44 +385,94 @@ define_com_objects! {
 // ============================================================================
 // Test Stack Configuration
 // ============================================================================
+//
+// Address layout for conformance tests (MUST be sorted by encoded group address):
+// - TSAP 1: 0x0801 (1/0/1) → CO 10 (GO5, 8-bit for network layer test 3.1)
+// - TSAP 2: 0x1000 (2/0/0) → CO 1 (GO0, main 1-bit object)
+// - TSAP 3: 0x1001 (2/0/1) → CO 2 (GO1, comm flags)
+// - TSAP 4: 0x1002 (2/0/2) → CO 3 (GO2, config flags)
+// - TSAP 5: 0x1003 (2/0/3) → CO 4 (GO3, value)
+// - TSAP 6: 0x1005 (2/0/5) → CO 9 (GO4, read on init)
+// - TSAP 7: 0x1100 (2/1/0) → CO 5 (GO0_BYTE3, 3-byte main object for test 1.4.1.4a)
+// - TSAP 8: 0x1101 (2/1/1) → CO 6 (GO1_BYTE3, comm flags for GO0_BYTE3)
+// - TSAP 9: 0x1102 (2/1/2) → CO 7 (GO2_BYTE3, config flags for GO0_BYTE3)
+// - TSAP 10: 0x1103 (2/1/3) → CO 8 (GO3_BYTE3, value for GO0_BYTE3)
+// - TSAP 11: 0x2D05 (5/5/5) → CO 11 (GO6, 1-bit for transport layer test 2.1)
 
 mod conformance_config {
-    use zweidraehte::config::{CE, RE, TE, UE, WE};
+    use zweidraehte::config::{CE, RE, ROI, TE, UE, WE};
     use zweidraehte::knx_stack_config;
 
     knx_stack_config! {
         name: ConformanceTestConfig,
-        individual_address: "1.0.1",  // DUT individual address matching EITT tests (BDUT = 1.0.1 = 0x1001)
+        individual_address: "1.0.1",  // BDUT = 1.0.1 = 0x1001
 
+        // NOTE: Group addresses MUST be sorted by their encoded value for binary search!
+        // Address encoding (3-level): ((main & 0x1F) << 11) | ((middle & 0x07) << 8) | sub
         group_addresses: {
-            // Group address 2/0/1 = 0x1001 for network layer tests (long format)
-            1 => "2/0/1",
-            2 => "2/0/2",
-            3 => "2/0/3",
-            4 => "2/0/4",
-            // Group address 5/5/5 = 0x2D05 for transport layer tests (short format)
-            // This matches GO_ADDR in transport_layer_general.rs test variables
-            5 => "5/5/5",
+            // Sorted order by encoded value:
+            1 => "1/0/1",  // 0x0801 - for network layer test 3.1 (8-bit, long format)
+            2 => "2/0/0",  // 0x1000 (main object GO0)
+            3 => "2/0/1",  // 0x1001 (comm flags GO1)
+            4 => "2/0/2",  // 0x1002 (config flags GO2)
+            5 => "2/0/3",  // 0x1003 (value GO3)
+            6 => "2/0/5",  // 0x1005 (read on init GO4)
+            7 => "2/1/0",  // 0x1100 (3-byte main object GO0_BYTE3 for test 1.4.1.4a)
+            8 => "2/1/1",  // 0x1101 (comm flags GO1_BYTE3)
+            9 => "2/1/2",  // 0x1102 (config flags GO2_BYTE3)
+            10 => "2/1/3", // 0x1103 (value GO3_BYTE3)
+            11 => "5/5/5", // 0x2D05 - for transport layer test 2.1 (1-bit)
         },
 
         comm_objects: {
-            // 1-byte objects for long format GroupValue_Response (network layer tests)
-            // Size 7 = 1 byte
-            1 => (7, CE | TE | RE | WE | UE),
-            2 => (7, CE | TE | RE | WE | UE),
+            // ================================================================
+            // GO0-GO3: 1-bit main object and shadow objects (ASAP 1-4)
+            // ================================================================
+            // GO0: Main 1-bit object (UINT1) - all flags enabled by default
+            1 => (1, CE | TE | RE | WE | UE),
+            // GO1: Communication flags (4-bit) - for accessing GO0's comm flags
+            2 => (4, CE | TE | RE | WE | UE),
+            // GO2: Configuration flags (8-bit) - for accessing GO0's config flags
             3 => (7, CE | TE | RE | WE | UE),
+            // GO3: Value (8-bit) - for accessing GO0's value without flag modification
             4 => (7, CE | TE | RE | WE | UE),
-            // 1-bit object for short format GroupValue_Response (transport layer tests)
-            // Size 1 = 1 bit (fits in 6-bit APCI field)
-            5 => (1, CE | TE | RE | WE | UE),
+
+            // ================================================================
+            // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects (ASAP 5-8)
+            // ================================================================
+            // GO0_BYTE3: 3-byte main object for invalid data length test 1.4.1.4a
+            5 => (9, CE | TE | RE | WE | UE),   // 9 = Byte3 (3 bytes)
+            // GO1_BYTE3: Communication flags for GO0_BYTE3 (4-bit like original GO1)
+            6 => (4, CE | TE | RE | WE | UE),   // 4 = 4-bit for short format response
+            // GO2_BYTE3: Configuration flags for GO0_BYTE3
+            7 => (7, CE | TE | RE | WE | UE),
+            // GO3_BYTE3: Value for GO0_BYTE3 (3 bytes)
+            8 => (9, CE | TE | RE | WE | UE),   // 9 = Byte3 (3 bytes)
+
+            // ================================================================
+            // Additional test objects (ASAP 9-11)
+            // ================================================================
+            // GO4: Read on Init test object - has ROI flag set
+            9 => (7, CE | TE | RE | WE | UE | ROI),
+            // GO5: 8-bit object for network layer test 3.1 (long format response)
+            10 => (7, CE | TE | RE | WE | UE),
+            // GO6: 1-bit object for transport layer test 2.1
+            11 => (1, CE | TE | RE | WE | UE),
         },
 
         associations: {
-            1 => [1],  // TSAP 1 (2/0/1) → CO 1 (1-byte)
-            2 => [2],  // TSAP 2 (2/0/2) → CO 2 (1-byte)
-            3 => [3],  // TSAP 3 (2/0/3) → CO 3 (1-byte)
-            4 => [4],  // TSAP 4 (2/0/4) → CO 4 (1-byte)
-            5 => [5],  // TSAP 5 (5/5/5) → CO 5 (1-bit, short format)
+            // Note: TSAPs are assigned based on sorted group address positions
+            1 => [10],  // TSAP 1 (1/0/1) → CO 10 (GO5, 8-bit for network layer test)
+            2 => [1],   // TSAP 2 (2/0/0) → CO 1 (GO0, 1-bit main object)
+            3 => [2],   // TSAP 3 (2/0/1) → CO 2 (GO1, comm flags)
+            4 => [3],   // TSAP 4 (2/0/2) → CO 3 (GO2, config flags)
+            5 => [4],   // TSAP 5 (2/0/3) → CO 4 (GO3, value)
+            6 => [9],   // TSAP 6 (2/0/5) → CO 9 (GO4, read on init)
+            7 => [5],   // TSAP 7 (2/1/0) → CO 5 (GO0_BYTE3, 3-byte main object)
+            8 => [6],   // TSAP 8 (2/1/1) → CO 6 (GO1_BYTE3, comm flags)
+            9 => [7],   // TSAP 9 (2/1/2) → CO 7 (GO2_BYTE3, config flags)
+            10 => [8],  // TSAP 10 (2/1/3) → CO 8 (GO3_BYTE3, value)
+            11 => [11], // TSAP 11 (5/5/5) → CO 11 (GO6, 1-bit for transport layer)
         },
     }
 }
@@ -380,7 +755,7 @@ impl StackDefinition for ConformanceTestStack {
     type AST = conformance_config::AssoTab;
     type COT = conformance_config::CoTab;
     type P = TestParameters;
-    type CO = test_comm_objs::TestComObjects;
+    type CO = ConformanceComObjects;
     type LLB = MockLinkLayerBuilder<16, 16>;
     type IOB = KnxIpInterfaceObjectsBuilder;
     type State = BasicIpStackState<MockIpPlatform>;
@@ -449,16 +824,27 @@ impl FullStackHarness {
         // Create stack resources
         let resources = STACK_RESOURCES.init(StackResources::new());
 
+        // Create hook context (initially with null COT pointer)
+        let hook_context = ConformanceHookContext::new();
+
         // Create stack
         let (stack, runner) = zweidraehte::new(
             resources,
             addr_tab,
             asso_tab,
             co_tab,
-            test_comm_objs::TestComObjects::new(),
+            ConformanceComObjects::new(),
+            hook_context,
             link_layer_builder,
             KnxIpInterfaceObjectsBuilder,
         );
+
+        // Patch the hook context with the COT reference
+        // SAFETY: The COT lives in Inner which is stored in STACK_RESOURCES,
+        // so it has 'static lifetime. The stack is single-threaded (embassy).
+        unsafe {
+            stack.hook_context().set_cot(stack.communication_object_table());
+        }
 
         let ll_resources = LL_RESOURCES.init(MockLinkLayerResources::new());
 
@@ -471,14 +857,6 @@ impl FullStackHarness {
         let mut buffer = self.buffer_manager.alloc().await;
         buffer.fill_from_slice(data);
         KnxMessageBuffer::new(buffer, service_type)
-    }
-
-    /// Inject a raw telegram into the stack (simulating incoming message from bus)
-    ///
-    /// This creates an L_Data.ind message with the given bytes.
-    pub async fn inject_raw(&self, data: &[u8]) {
-        let msg = self.create_message(data, ServiceType::L_Data_Ind).await;
-        self.handle.inject(msg).await;
     }
 
     /// Inject a telegram into the stack (simulating incoming message from bus)
@@ -509,5 +887,10 @@ impl FullStackHarness {
     /// Returns the number of messages drained.
     pub fn drain_captured(&self) -> usize {
         self.handle.drain_captured()
+    }
+
+    /// Get access to the stack for direct manipulation
+    pub fn stack(&self) -> &zweidraehte::Stack<'static, ConformanceTestStack> {
+        &self.stack
     }
 }

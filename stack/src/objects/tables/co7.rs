@@ -93,6 +93,18 @@ impl<const N: usize> CommunicationObjectTable for Table<CoTab7Impl<N>> {
     fn object_flags(&self, idx: u16) -> Option<ComObjectFlags> {
         self.com_object(idx).map(|desc| desc.flags)
     }
+
+    /// Set the configuration flags for a communication object at runtime.
+    fn set_object_flags(&mut self, idx: u16, flags: ComObjectFlags) -> bool {
+        if idx == 0 || idx > self.entry_count() {
+            return false;
+        }
+
+        // Each entry is 2 bytes (type + flags), flags are at offset 1 within the entry
+        let offset = 2 + (((idx - 1) as usize) * 2) + 1;
+        self.table.data[offset] = flags.0;
+        true
+    }
 }
 
 pub type CoTab7<const MAX_ENTRIES: usize> = Table<CoTab7Impl<{ (MAX_ENTRIES + 1) * 2 }>>;

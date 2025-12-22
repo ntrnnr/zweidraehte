@@ -690,6 +690,8 @@ pub(crate) struct Inner<D: StackDefinition> {
         PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
     /// Runtime state shared between stack, layers, and interface objects
     pub(crate) state: D::State,
+    /// Hook context for communication object hooks
+    pub(crate) hook_context: <D::CO as ComObjects>::HookContext,
 }
 
 // Implement context traits for Inner
@@ -725,6 +727,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     ast: D::AST,
     cot: D::COT,
     comm_objs: D::CO,
+    hook_context: <D::CO as ComObjects>::HookContext,
     link_layer_builder: D::LLB,
     interface_objects_builder: D::IOB,
 ) -> (Stack<'d, D>, Runner<'d, D>) {
@@ -743,6 +746,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         comm_objs: RefCell::new(comm_objs),
         event_channel: PubSubChannel::new(),
         state: D::State::default(),
+        hook_context,
     };
 
     let inner = &*resources.inner.write(inner);
@@ -804,6 +808,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             &self.stack.inner.ast,
             &self.stack.inner.cot,
             &self.stack.inner.comm_objs,
+            &self.stack.inner.hook_context,
             &self.stack.inner.event_channel,
             self.interface_objects,
             &self.stack.inner.state,
@@ -883,12 +888,57 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         self.app_request_sender.request(ApplicationLayerService::GroupValueWriteRequest(asap.index())).await;
     }
 
+    /// Send a write request for a communication object using its current value.
+    ///
+    /// Unlike `update_object`, this method does not modify the object's value - it simply
+    /// sends the current value to the KNX bus. This is useful when the value has already
+    /// been set through other means (e.g., via a shadow object in conformance testing).
+    ///
+    /// # Arguments
+    /// * `asap` - The communication object index to send
+    ///
+    /// # Behavior
+    /// 1. Sets the communication object status to `WriteRequest`
+    /// 2. Sends a GroupValueWrite request with the object's current value to the KNX bus
+    ///
+    /// Note: This does NOT publish a `LocallyUpdated` event since the value is not being
+    /// changed, only transmitted.
+    pub async fn write_object(&self, asap: <<D as StackDefinition>::CO as ComObjects>::Index) {
+        self.write_object_by_asap(asap.index()).await
+    }
+
+    /// Send a write request for a communication object by ASAP number.
+    ///
+    /// This is a lower-level version of `write_object` that takes a raw ASAP number
+    /// instead of the type-safe Index type.
+    pub async fn write_object_by_asap(&self, asap: u16) {
+        {
+            let mut comm_objs = self.inner.comm_objs.borrow_mut();
+            comm_objs.set_status(asap, ComObjectStatus::WriteRequest);
+        }
+
+        self.app_request_sender.request(ApplicationLayerService::GroupValueWriteRequest(asap)).await;
+    }
+
     /// Send a read request for a communication object.
     ///
     /// This method sends the read request and returns immediately without waiting for a response.
     /// Use `read_object_with_timeout` if you need to wait for the response.
     pub async fn read_object(&self, asap: <<D as StackDefinition>::CO as ComObjects>::Index) {
-        let _ = self.read_object_with_timeout(asap, None).await;
+        self.read_object_by_asap(asap.index()).await;
+    }
+
+    /// Send a read request for a communication object by ASAP number.
+    ///
+    /// This is a lower-level version of `read_object` that takes a raw ASAP number
+    /// instead of the type-safe Index type.
+    pub async fn read_object_by_asap(&self, asap: u16) {
+        {
+            let mut comm_objs = self.inner.comm_objs.borrow_mut();
+            comm_objs.set_status(asap, ComObjectStatus::ReadRequest);
+        }
+
+        self.app_request_sender.request(ApplicationLayerService::GroupValueReadRequest(asap)).await;
     }
 
     /// Send a read request for a communication object and optionally wait for the response.
@@ -1178,5 +1228,14 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// and other shared configuration.
     pub fn state(&self) -> &D::State {
         &self.inner.state
+    }
+
+    /// Get access to the hook context for communication object hooks.
+    ///
+    /// This is useful for setting up hook context after stack initialization,
+    /// for example when the hook context needs references to stack-internal
+    /// structures like the COT.
+    pub fn hook_context(&self) -> &<D::CO as ComObjects>::HookContext {
+        &self.inner.hook_context
     }
 }

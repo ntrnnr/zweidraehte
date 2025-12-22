@@ -129,6 +129,33 @@ pub enum TestStep {
     /// When enabled, the device responds to A_IndividualAddress_Read broadcasts
     SetProgrammingMode(bool),
 
+    /// Trigger a GroupValue_Read request for the given ASAP.
+    ///
+    /// # BCU1/BCU2 Compatibility Note
+    ///
+    /// In a real BCU1/BCU2, setting the ReadRequest flag on a communication object
+    /// would automatically trigger the device to send a GroupValue_Read on the bus.
+    /// Our stack does not implement this automatic behavior because:
+    ///
+    /// 1. Our architecture separates the comm object state from bus operations
+    /// 2. Automatic triggering would require background scanning or event-driven
+    ///    status monitoring, which adds complexity
+    /// 3. Application code can explicitly call read/write methods when needed
+    ///
+    /// For conformance tests that expect BCU1-style behavior, use this step after
+    /// setting the ReadRequest flag via the shadow object (GO1) to explicitly
+    /// trigger the read operation.
+    TriggerRead { asap: u16 },
+
+    /// Trigger a GroupValue_Write request for the given ASAP.
+    ///
+    /// # BCU1/BCU2 Compatibility Note
+    ///
+    /// Similar to TriggerRead, this explicitly triggers a write operation that
+    /// a BCU1/BCU2 would perform automatically when the WriteRequest flag is set.
+    /// See TriggerRead documentation for why we use explicit triggering.
+    TriggerWrite { asap: u16 },
+
     /// Custom action placeholder (for complex test scenarios)
     Custom,
 }

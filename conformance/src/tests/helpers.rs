@@ -28,3 +28,37 @@ pub fn comment(text: &str) -> TestStep {
 pub fn set_programming_mode(enabled: bool) -> TestStep {
     TestStep::SetProgrammingMode(enabled)
 }
+
+/// Helper to trigger a GroupValue_Read for the given ASAP.
+///
+/// # BCU1/BCU2 Compatibility Note
+///
+/// Our stack does not automatically send GroupValue_Read when the ReadRequest
+/// flag is set on a communication object. This differs from BCU1/BCU2 behavior
+/// where setting the flag would automatically trigger the bus operation.
+///
+/// Use this helper after setting the ReadRequest flag via the shadow object (GO1)
+/// to explicitly trigger the read operation that a BCU1/BCU2 would perform
+/// automatically.
+///
+/// See `TestStep::TriggerRead` for more details on why we use explicit triggering.
+pub fn trigger_read(asap: u16) -> TestStep {
+    TestStep::TriggerRead { asap }
+}
+
+/// Helper to trigger a GroupValue_Write for the given ASAP.
+///
+/// # BCU1/BCU2 Compatibility Note
+///
+/// Our stack does not automatically send GroupValue_Write when the WriteRequest
+/// flag is set on a communication object. This differs from BCU1/BCU2 behavior
+/// where setting the flag would automatically trigger the bus operation.
+///
+/// Use this helper after setting the WriteRequest flag via the shadow object (GO1)
+/// to explicitly trigger the write operation that a BCU1/BCU2 would perform
+/// automatically.
+///
+/// See `TestStep::TriggerWrite` for more details on why we use explicit triggering.
+pub fn trigger_write(asap: u16) -> TestStep {
+    TestStep::TriggerWrite { asap }
+}

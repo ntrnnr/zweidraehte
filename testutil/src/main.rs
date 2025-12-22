@@ -131,6 +131,7 @@ async fn main(spawner: Spawner) {
         stored_data.asso_tab,
         stored_data.co_tab,
         comm_objs::AppComObjects::new(),
+        (),  // hook_context
         link_layer_builder,
         EmptyInterfaceObjectsBuilder,
     );

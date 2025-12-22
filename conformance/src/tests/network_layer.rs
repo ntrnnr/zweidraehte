@@ -25,12 +25,12 @@ use crate::{TestCase, TestSuite, TestVariable};
 /// Based on the EITT specification:
 /// - EDI: External Device Interface (10.15.254 = AF FE)
 /// - BDUT: Basic Device Under Test (1.0.1 = 10 01)
-/// - GO_ADDR: Group Object Address (1/0/1 = 10 01)
+/// - GO_ADDR: Group Object Address (1/0/1 = 08 01) - 8-bit object for long format response
 pub fn create_test_variables() -> BTreeMap<String, TestVariable> {
     let mut vars = BTreeMap::new();
     vars.insert("EDI".to_string(), TestVariable::Bytes(vec![0xAF, 0xFE]));
     vars.insert("BDUT".to_string(), TestVariable::Bytes(vec![0x10, 0x01]));
-    vars.insert("GO_ADDR".to_string(), TestVariable::Bytes(vec![0x10, 0x01]));
+    vars.insert("GO_ADDR".to_string(), TestVariable::Bytes(vec![0x08, 0x01]));
     vars
 }
 

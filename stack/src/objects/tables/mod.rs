@@ -328,16 +328,39 @@ impl From<ComObjectType> for u8 {
 }
 
 impl ComObjectType {
-    /// Get the size in bytes for this object type and if it's a compact type
-    /// that fits in the 6 APCI bits for the short APCIs
+    /// Get the size in bytes for this object type and whether it's a compact type
+    /// that fits in the 6 APCI bits for short APDUs.
+    ///
+    /// Returns `(size_in_bytes, is_short_format)` where:
+    /// - `size_in_bytes` is the number of bytes the value occupies
+    /// - `is_short_format` is true if the value can fit in the 6-bit APCI data field
     pub fn size_in_bytes(&self) -> (usize, bool) {
-        if *self < Self::Byte15 {
-            return (1, *self <= Self::Uint6);
-        } else if *self != Self::Byte252 {
-            let i: u8 = (*self).into();
-            return ((i as usize) - 6, false);
-        } else {
-            return (252, false);
+        match *self {
+            // Uint types (0-6): All are 1 byte, but only Uint1-Uint6 fit in short format
+            Self::Uint1 | Self::Uint2 | Self::Uint3 | Self::Uint4 | Self::Uint5 | Self::Uint6 => {
+                (1, true)
+            }
+            Self::Uint7 | Self::Byte1 => (1, false),
+            Self::Byte2 => (2, false),
+            Self::Byte3 => (3, false),
+            Self::Byte4 => (4, false),
+            Self::Byte5 => (5, false),
+            Self::Byte6 => (6, false),
+            Self::Byte7 => (7, false),
+            Self::Byte8 => (8, false),
+            Self::Byte9 => (9, false),
+            Self::Byte10 => (10, false),
+            Self::Byte11 => (11, false),
+            Self::Byte12 => (12, false),
+            Self::Byte13 => (13, false),
+            Self::Byte14 => (14, false),
+            Self::Byte15 => (15, false),
+            Self::Byte252 => (252, false),
+            // For Byte16-Byte248, the value is (enum_value - 6)
+            _ => {
+                let i: u8 = (*self).into();
+                ((i as usize) - 6, false)
+            }
         }
     }
 }
@@ -382,6 +405,18 @@ impl Default for ComObjectFlags {
 }
 
 impl ComObjectFlags {
+    /// Create ComObjectFlags from a raw byte value.
+    #[inline]
+    pub const fn from_byte(value: u8) -> Self {
+        Self(value)
+    }
+
+    /// Get the raw byte value of the flags.
+    #[inline]
+    pub const fn to_byte(self) -> u8 {
+        self.0
+    }
+
     #[inline]
     pub fn transmission_enable(&self) -> bool {
         self.0 & Self::TE_FLAG_MASK != 0
@@ -438,6 +473,11 @@ pub trait CommunicationObjectTable: LoadableTable {
     fn get_object(&self, idx: u16) -> Option<ComObjectTableEntry>;
     fn object_type(&self, idx: u16) -> Option<ComObjectType>;
     fn object_flags(&self, idx: u16) -> Option<ComObjectFlags>;
+
+    /// Set the configuration flags for a communication object at runtime.
+    ///
+    /// Returns `true` if the flags were successfully set, `false` if the index is invalid.
+    fn set_object_flags(&mut self, idx: u16, flags: ComObjectFlags) -> bool;
 }
 
 create_protocol_enum!(

@@ -557,6 +557,7 @@ async fn main(spawner: Spawner) {
         asso_tab,
         co_tab,
         comm_objs::AppComObjects::new(),
+        (),  // hook_context
         link_layer_builder,
         KnxIpInterfaceObjectsBuilder,
     );

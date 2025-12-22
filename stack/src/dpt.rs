@@ -573,6 +573,11 @@ impl From<DPT_Value_1_Ucount> for u8 {
 
 // ###########################################################################
 
+/// DPT for 3-byte value (used in conformance tests for invalid data length)
+pub type DPT_Value_3_Ucount = DatapointType<PDT_Generic03, 232, 600>;
+
+// ###########################################################################
+
 pub type DPT_PropDataType = DatapointType<PDT_UnsignedInt, 7, 010>;
 
 impl core::fmt::Debug for DPT_PropDataType {

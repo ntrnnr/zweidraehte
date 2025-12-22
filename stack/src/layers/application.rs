@@ -79,6 +79,7 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     ast: &'a RefCell<D::AST>,
     cot: &'a RefCell<D::COT>,
     comm_objects: &'a RefCell<D::CO>,
+    hook_context: &'a <D::CO as ComObjects>::HookContext,
     event_channel:
         &'a PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
 
@@ -107,6 +108,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         ast: &'a RefCell<D::AST>,
         cot: &'a RefCell<D::COT>,
         comm_objects: &'a RefCell<D::CO>,
+        hook_context: &'a <D::CO as ComObjects>::HookContext,
         event_channel: &'a PubSubChannel<
             NoopRawMutex,
             (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent),
@@ -124,6 +126,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             ast,
             cot,
             comm_objects,
+            hook_context,
             event_channel,
             interface_object_server,
             state,
@@ -241,23 +244,29 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 continue;
             };
 
-            if matches!(apci, ApciCode::GroupValueWrite)
-                && (!cot_info.flags.communication_enable() || !cot_info.flags.write_enable())
-            {
-                debug!("AL GroupValueWrite for ASAP {} ignored (comm/write flag)", asap);
+            // Check communication enable flag first (applies to both Write and Response)
+            if !cot_info.flags.communication_enable() {
+                debug!("AL {:?} for ASAP {} ignored (comm disabled)", apci, asap);
+                continue;
+            }
+
+            // For GroupValue_Write: check write_enable
+            // For GroupValue_Response: check BOTH write_enable AND update_enable
+            // BCU1/BCU2 behavior: write_enable gates both Write and Response processing
+            if matches!(apci, ApciCode::GroupValueWrite) && !cot_info.flags.write_enable() {
+                debug!("AL GroupValueWrite for ASAP {} ignored (write disabled)", asap);
                 continue;
             }
 
             if matches!(apci, ApciCode::GroupValueResponse)
-                && (!cot_info.flags.communication_enable() || !cot_info.flags.update_enable())
+                && (!cot_info.flags.write_enable() || !cot_info.flags.update_enable())
             {
-                debug!("AL GroupValueResponse for ASAP {} ignored (comm/update flag)", asap);
+                debug!("AL GroupValueResponse for ASAP {} ignored (write/update disabled)", asap);
                 continue;
             }
 
             let (object_size, msg_offset) = Self::get_object_size_and_offset(&cot_info);
 
-            // FIXME: -1?
             // Check if incoming message is long enough to carry a comm object value
             if ind.len() as usize == object_size + msg_offset {
                 // Set the APCI to all zeros, because we don't need it anymore
@@ -273,6 +282,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
                     objs.value_mut(asap).copy_from_slice(&ind.buf()[msg_offset..msg_offset + object_size]);
                     objs.set_status(asap, ComObjectStatus::Updated);
+
+                    // Call write hook
+                    objs.handle_write(asap, self.hook_context);
                 }
 
                 // Publish event to the event channel
@@ -306,7 +318,19 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
+        // Per KNX spec, GroupValue_Read should have a data field of 0x00
+        // Some implementations (test case 1.4.1.7) send non-zero values which should be ignored
+        let short_data = ind.get_short_apci_data();
+        if short_data != 0 {
+            debug!("AL GroupValueRead ignored: invalid data field 0x{:02X} (expected 0x00)", short_data);
+            return;
+        }
+
         debug!("AL received GroupValueRead");
+
+        // Get the priority from the incoming request - response should mirror it
+        // This is BCU1/BCU2 compatible behavior as per EITT tests
+        let request_priority = ind.ctrl_field().priority();
 
         let tsap = ind.get_connection_nr();
         trace!("AL incoming TSAP: {:?}", tsap);
@@ -330,6 +354,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
             info!("AL sending GroupValueResponse for ASAP {} TSAP {} size {}", asap, tsap, object_size);
 
+            // Call read hook
+            self.comm_objects.borrow_mut().prepare_read(asap, self.hook_context);
+
             // Allocate a new message for the response
             let msg_buf = self.buffer_manager.borrow().alloc_with_size(object_size + msg_offset).await;
 
@@ -337,7 +364,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             // Note: We can't use respond_with() because group communication uses connection_nr (TSAP)
             // instead of individual addressing, so we manually build with the required fields
             let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_GroupData_Req);
-            msg.ctrl_field_mut().set_priority(cot_info.flags.priority());
+            // Mirror the priority from the incoming request (BCU1/BCU2 compatible behavior)
+            msg.ctrl_field_mut().set_priority(request_priority);
             msg.set_connection_nr(tsap);
 
             // Copy the current value from the communication object
@@ -383,84 +411,103 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         }
 
         if !cot_info.flags.communication_enable() {
-            self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::IdleOk);
+            // Communication disabled - set error status but preserve the request type
+            // BCU1/BCU2 behavior: Read/Write request stays pending with error indication
+            let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
+            self.comm_objects.borrow_mut().set_status(asap, new_status);
 
-            // FIXME: Tell caller about success?
             debug!("AL comm object {} not enabled for communication", asap);
             return;
         }
 
-        if cot_info.flags.transmission_enable() {
-            self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::Busy);
+        if !cot_info.flags.transmission_enable() {
+            // Transmission disabled - set error status but preserve the request type
+            let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
+            self.comm_objects.borrow_mut().set_status(asap, new_status);
 
-            // We only send to the first TSAP per spec
-            if let Some(tsap) = self.ast.borrow().get_sending_tsap(asap) {
-                trace!("AL found sending TSAP {} for ASAP {}", tsap, asap);
+            debug!("AL comm object {} transmission not enabled", asap);
+            return;
+        }
 
-                // Determine the length of this comm obj and the offset in the message
-                // The offset can be 7 for objects with len <= 6 bits because it fits
-                // into the unused six bits of the short APCI codes.
-                let (object_size, msg_offset) = match (read, cot_info.object_type.size_in_bytes()) {
-                    // GroupValueWrite.req
-                    (false, (s, true)) => (s, offsets::MSG_APCI + 1),
-                    (false, (s, false)) => (s, offsets::MSG_APDU),
+        self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::Busy);
 
-                    // GroupValueRead.req
-                    // We need at least 1 byte for the lowermost two bits of the APCI code,
-                    // the lowermost six bits of this byte are unused
-                    (true, _) => (1, offsets::MSG_APCI + 1),
-                };
+        // We only send to the first TSAP per spec
+        if let Some(tsap) = self.ast.borrow().get_sending_tsap(asap) {
+            trace!("AL found sending TSAP {} for ASAP {}", tsap, asap);
 
-                debug!(
-                    "AL preparing {} ASAP {} TSAP {} size {} offset {}",
-                    if read { "GroupValueRead" } else { "GroupValueWrite" },
-                    asap,
-                    tsap,
-                    object_size,
-                    msg_offset
-                );
+            // Determine the length of this comm obj and the offset in the message
+            // The offset can be 7 for objects with len <= 6 bits because it fits
+            // into the unused six bits of the short APCI codes.
+            let (object_size, msg_offset) = match (read, cot_info.object_type.size_in_bytes()) {
+                // GroupValueWrite.req
+                (false, (s, true)) => (s, offsets::MSG_APCI + 1),
+                (false, (s, false)) => (s, offsets::MSG_APDU),
 
-                // Allocate a new message with the required size
-                let msg_buf = self.buffer_manager.borrow().alloc_with_size(object_size + msg_offset).await;
+                // GroupValueRead.req
+                // We need at least 1 byte for the lowermost two bits of the APCI code,
+                // the lowermost six bits of this byte are unused
+                (true, _) => (1, offsets::MSG_APCI + 1),
+            };
 
-                // Note: We don't use MessageBuilder here because group communication uses
-                // connection_nr (TSAP) instead of individual addressing, which the builder
-                // doesn't support yet. Group services have different semantics.
-                let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_GroupData_Req);
+            debug!(
+                "AL preparing {} ASAP {} TSAP {} size {} offset {}",
+                if read { "GroupValueRead" } else { "GroupValueWrite" },
+                asap,
+                tsap,
+                object_size,
+                msg_offset
+            );
 
-                // Fill in a few other fields
-                msg.ctrl_field_mut().set_priority(cot_info.flags.priority());
+            // Allocate a new message with the required size
+            let msg_buf = self.buffer_manager.borrow().alloc_with_size(object_size + msg_offset).await;
+
+            // Note: We don't use MessageBuilder here because group communication uses
+            // connection_nr (TSAP) instead of individual addressing, which the builder
+            // doesn't support yet. Group services have different semantics.
+            let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_GroupData_Req);
+
+            // Fill in a few other fields
+            msg.ctrl_field_mut().set_priority(cot_info.flags.priority());
+            if read {
+                msg.set_apci_code(ApciCode::GroupValueRead);
+            } else {
+                // Copy the value of the communication objet into the message
+                msg.buf_mut()[msg_offset..msg_offset + object_size]
+                    .copy_from_slice(self.comm_objects.borrow().value(asap));
+
+                msg.set_apci_code(ApciCode::GroupValueWrite);
+            }
+
+            // Set connection number from sending assoc nr
+            msg.set_connection_nr(tsap);
+
+            // Send the request to the transport layer and wait for confirmation
+            let confirmation = self.transport_layer.request(RequestMessage::request(msg)).await;
+            debug!("AL confirmation for ASAP {} TSAP {}: {:?}", asap, tsap, confirmation.service_type());
+
+            // Update communication object status based on confirmation
+            // BCU1/BCU2 behavior: Read request stays pending (waiting for response)
+            // Write request clears after successful transmission
+            if confirmation.ctrl_field().c() == Confirm::NoError {
                 if read {
-                    msg.set_apci_code(ApciCode::GroupValueRead);
+                    // Read request: keep pending, waiting for GroupValue_Response
+                    self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::ReadRequestOk);
                 } else {
-                    // Copy the value of the communication objet into the message
-                    msg.buf_mut()[msg_offset..msg_offset + object_size]
-                        .copy_from_slice(self.comm_objects.borrow().value(asap));
-
-                    msg.set_apci_code(ApciCode::GroupValueWrite);
-                }
-
-                // Set connection number from sending assoc nr
-                msg.set_connection_nr(tsap);
-
-                // Send the request to the transport layer and wait for confirmation
-                let confirmation = self.transport_layer.request(RequestMessage::request(msg)).await;
-                debug!("AL confirmation for ASAP {} TSAP {}: {:?}", asap, tsap, confirmation.service_type());
-
-                // Update communication object status based on confirmation
-                if confirmation.ctrl_field().c() == Confirm::NoError {
+                    // Write request: transmission complete
                     self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::IdleOk);
-                } else {
-                    self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::IdleError);
                 }
             } else {
-                self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::IdleError);
-
-                error!(
-                    "AL no sending TSAP or transmission flag not set for ASAP {} - Flags: {:?}",
-                    asap, cot_info.flags
-                );
+                // Transmission failed
+                let new_status =
+                    if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
+                self.comm_objects.borrow_mut().set_status(asap, new_status);
             }
+        } else {
+            // No sending TSAP found - error
+            let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
+            self.comm_objects.borrow_mut().set_status(asap, new_status);
+
+            error!("AL no sending TSAP or transmission flag not set for ASAP {} - Flags: {:?}", asap, cot_info.flags);
         }
     }
 }

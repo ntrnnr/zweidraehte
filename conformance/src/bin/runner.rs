@@ -33,8 +33,8 @@ use log::LevelFilter;
 use knx_conformance::harness::mock::MockLinkLayerResources;
 use knx_conformance::harness::stack::{ConformanceTestStack, FullStackHarness};
 use knx_conformance::logger;
-use knx_conformance::tests::{network_layer, transport_layer_general, transport_layer_state_machine, transport_layer_timing};
 use knx_conformance::*;
+
 
 use zweidraehte::Runner;
 
@@ -77,6 +77,7 @@ async fn main(spawner: Spawner) {
         knx_conformance::tests::transport_layer_general::create_transport_layer_suite(),
         knx_conformance::tests::transport_layer_timing::create_transport_layer_timing_suite(),
         knx_conformance::tests::transport_layer_state_machine::create_transport_layer_state_machine_suite(),
+        knx_conformance::tests::group_objects::create_group_objects_uint1_suite(),
     ];
 
     // Helper to check if a filter matches a suite or test name
@@ -153,6 +154,8 @@ async fn main(spawner: Spawner) {
             total_tests += 1;
 
             // Drain any leftover captured messages from previous tests
+            // Wait a bit for any in-flight messages to arrive, then drain again
+            Timer::after(Duration::from_millis(100)).await;
             let drained = harness.drain_captured();
             if drained > 0 {
                 println!("(Drained {} leftover messages from previous test)", drained);
@@ -181,7 +184,13 @@ async fn main(spawner: Spawner) {
                             println!("        (delay: {}ms)", delay_before_ms);
                             Timer::after(Duration::from_millis(*delay_before_ms as u64)).await;
                         }
-                        harness.inject_raw(&telegram.data).await;
+
+                        // Create message and inject directly
+                        let msg = harness.create_message(&telegram.data, zweidraehte::messages::knx::ServiceType::L_Data_Ind).await;
+                        harness.inject(msg).await;
+
+                        // Give stack time to process the message
+                        Timer::after(Duration::from_millis(10)).await;
                     }
                     TestStep::Expect { matcher, timeout_ms } => {
                         println!("  [{}] ⬆️  Expect: {:02X?}", i, matcher.expected);
@@ -220,6 +229,18 @@ async fn main(spawner: Spawner) {
                     TestStep::SetProgrammingMode(enabled) => {
                         println!("  [{}] 🔧 SetProgrammingMode({})", i, enabled);
                         harness.set_programming_mode(*enabled);
+                    }
+                    TestStep::TriggerRead { asap } => {
+                        println!("  [{}] 📤 TriggerRead(ASAP {})", i, asap);
+                        harness.stack().read_object_by_asap(*asap).await;
+                        // Give stack time to process
+                        Timer::after(Duration::from_millis(10)).await;
+                    }
+                    TestStep::TriggerWrite { asap } => {
+                        println!("  [{}] 📤 TriggerWrite(ASAP {})", i, asap);
+                        harness.stack().write_object_by_asap(*asap).await;
+                        // Give stack time to process
+                        Timer::after(Duration::from_millis(10)).await;
                     }
                     TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
                         println!("  [{}] ❌ Unresolved template step", i);
