@@ -190,6 +190,9 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                             ApciCode::IndividualAddressSerialNumberWrite => {
                                 self.handle_individual_address_serial_number_write(&ind).await;
                             }
+                            ApciCode::AdcRead => {
+                                self.handle_adc_read(&ind).await;
+                            }
                             // ApciCode::Restart => { ... }
                             _ => {
                                 warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
@@ -1144,6 +1147,82 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         self.state.set_individual_address(new_addr);
 
         // No response is sent
+    }
+
+    /// Handle `A_ADC_Read.ind`
+    ///
+    /// Reads an analog-to-digital converter channel and returns the sum of readings.
+    /// This is a legacy service used by older KNX devices.
+    ///
+    /// Message format (incoming):
+    /// - APDU[0]: High 2 bits of APCI
+    /// - APDU[1]: 0x80 | channel (6 bits) - AdcRead code with channel number
+    /// - APDU[2]: count - number of readings to sum
+    ///
+    /// Response format:
+    /// - APDU[0]: High 2 bits of APCI
+    /// - APDU[1]: 0xC0 | channel (6 bits) - AdcResponse code with channel number
+    /// - APDU[2]: count - 0 if channel unsupported, otherwise same as request
+    /// - APDU[3-4]: sum of readings (2 bytes, big-endian)
+    async fn handle_adc_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::messages::builder::IndicationExt;
+
+        // ADC_Read APDU: [APCI:2 (with channel in low 6 bits)] [count:1]
+        // Minimum length: MSG_APCI + 3 = 9 bytes
+        const MIN_LEN: usize = offsets::MSG_APCI + 3;
+
+        if ind.len() < MIN_LEN {
+            error!("ADC_Read message too short: {} < {}", ind.len(), MIN_LEN);
+            return;
+        }
+
+        let buf = ind.buf();
+        let channel = buf[offsets::MSG_APCI + 1] & 0x3F;
+        let count = buf[offsets::MSG_APCI + 2];
+
+        debug!("AL ADC_Read: channel={}, count={}", channel, count);
+
+        // Determine transport service type
+        let transport_service = match ind.service_type() {
+            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
+            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
+            other => {
+                warn!("AL ADC_Read unexpected service type: {:?}", other);
+                return;
+            }
+        };
+
+        // Response: APCI(2) + count(1) + sum(2) = 5 bytes APDU
+        const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+
+        // We support channels 0-5 (typical KNX ADC channels), return 0 for unsupported
+        // For supported channels, we return dummy values (0x0000 for the sum)
+        let (response_count, sum) = if channel <= 5 {
+            // Supported channel - return requested count and dummy sum
+            (count, 0x0000u16)
+        } else {
+            // Unsupported channel - return count=0 and sum=0
+            (0u8, 0x0000u16)
+        };
+
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::AdcResponse, transport_service)
+            .with_data(|data| {
+                // Set channel in low 6 bits of APCI byte 1
+                data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0) | channel;
+                // Count
+                data[offsets::MSG_APCI + 2] = response_count;
+                // Sum (big-endian)
+                data[offsets::MSG_APCI + 3] = (sum >> 8) as u8;
+                data[offsets::MSG_APCI + 4] = sum as u8;
+            });
+
+        debug!("AL sending ADC_Response: channel={}, count={}, sum={}", channel, response_count, sum);
+
+        let confirmation = self.transport_layer.request(msg).await;
+        trace!("AL ADC_Response confirmation: {:?}", confirmation.service_type());
     }
 }
 
