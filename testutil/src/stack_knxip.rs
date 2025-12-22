@@ -322,8 +322,8 @@ where
         state: &'a S,
     ) -> Self {
         // Create Device Object with device information and state reference
-        // Note: manufacturer_id is derived from serial_number bytes 0-1
-        let device = DeviceObject::with_values(state, device_info::SERIAL_NUMBER, device_info::HARDWARE_TYPE);
+        // Note: serial_number and manufacturer_id are read dynamically from StackState
+        let device = DeviceObject::with_values(state, device_info::HARDWARE_TYPE);
 
         // Create Application Program Object
         let mut app_program = ApplicationProgramObject::new();
@@ -569,7 +569,7 @@ async fn main(spawner: Spawner) {
     // Demonstrate accessing the interface objects
     // The container implements PropertyServiceHandler to handle management requests
     println!("Interface Objects created via builder:");
-    println!("  - Device Object: serial_number = {:02X?}", interface_objects.device.borrow().serial_number.as_ref());
+    println!("  - Device Object: hardware_type = {:02X?}", interface_objects.device.borrow().hardware_type.as_ref());
     println!("  - Address Table Object: wraps stack's address table");
     println!("  - Association Table Object: wraps stack's association table");
     println!(

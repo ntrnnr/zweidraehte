@@ -184,6 +184,12 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                             ApciCode::IndividualAddressWrite => {
                                 self.handle_individual_address_write(&ind).await;
                             }
+                            ApciCode::IndividualAddressSerialNumberRead => {
+                                self.handle_individual_address_serial_number_read(&ind).await;
+                            }
+                            ApciCode::IndividualAddressSerialNumberWrite => {
+                                self.handle_individual_address_serial_number_write(&ind).await;
+                            }
                             // ApciCode::Restart => { ... }
                             _ => {
                                 warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
@@ -1026,6 +1032,118 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         self.state.set_individual_address(new_addr);
 
         // No response is sent for IndividualAddressWrite
+    }
+
+    /// Handle `A_IndividualAddressSerialNumber_Read.ind`
+    ///
+    /// Responds with the device's individual address if the serial number matches.
+    /// This service arrives via `T_Broadcast_Ind` and responds via `T_Broadcast_Req`.
+    ///
+    /// Message format (incoming):
+    /// - APDU[0-1]: APCI (IndividualAddressSerialNumberRead, code 0xDC)
+    /// - APDU[2-7]: Serial number to match (6 bytes)
+    ///
+    /// Response format:
+    /// - APDU[0-1]: APCI (IndividualAddressSerialNumberResponse, code 0xDD)
+    /// - APDU[2-7]: Serial number (6 bytes)
+    /// - APDU[8-11]: Domain address / reserved (4 bytes, zero)
+    async fn handle_individual_address_serial_number_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::messages::builder::MessageBuilder;
+
+        // Validate service type - must be broadcast
+        if ind.service_type() != ServiceType::T_Broadcast_Ind {
+            warn!("AL IndividualAddressSerialNumberRead with unexpected service type: {:?}", ind.service_type());
+            return;
+        }
+
+        // Validate APDU length: APCI (2 bytes) + serial number (6 bytes) = 8 bytes minimum
+        const MIN_LEN: usize = offsets::MSG_APCI + 8;
+        if ind.len() < MIN_LEN {
+            error!("IndividualAddressSerialNumberRead message too short: {} < {}", ind.len(), MIN_LEN);
+            return;
+        }
+
+        // Extract serial number from APDU[2-7]
+        let buf = ind.buf();
+        let received_serial = &buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8];
+
+        // Only respond if serial number matches
+        if received_serial != self.state.serial_number() {
+            trace!("AL IndividualAddressSerialNumberRead ignored (serial mismatch)");
+            return;
+        }
+
+        debug!("AL IndividualAddressSerialNumberRead: serial matches, sending response");
+
+        // Response: APCI (2) + serial (6) + domain/reserved (4) = 12 bytes APDU
+        const RESPONSE_LEN: usize = offsets::MSG_APCI + 12;
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+
+        // Build broadcast response
+        let mut msg = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::T_Broadcast_Req,
+            ind.ctrl_field().priority(),
+            DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])),
+        )
+        .with_application(ApciCode::IndividualAddressSerialNumberResponse, ServiceType::T_Broadcast_Req)
+        .build();
+
+        // Copy serial number to response (APDU bytes 2-7)
+        msg.buf_mut()[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8].copy_from_slice(self.state.serial_number());
+        // Domain address / reserved (4 bytes, zero) - already zeroed by alloc
+
+        let confirmation = self.transport_layer.request(msg).await;
+        trace!("AL IndividualAddressSerialNumberResponse confirmation: {:?}", confirmation.service_type());
+    }
+
+    /// Handle `A_IndividualAddressSerialNumber_Write.ind`
+    ///
+    /// Sets the device's individual address if the serial number matches.
+    /// This service arrives via `T_Broadcast_Ind` and requires no response.
+    ///
+    /// Message format (incoming):
+    /// - APDU[0-1]: APCI (IndividualAddressSerialNumberWrite, code 0xDE)
+    /// - APDU[2-7]: Serial number (6 bytes)
+    /// - APDU[8-9]: New individual address (2 bytes)
+    /// - APDU[10-13]: Reserved (4 bytes)
+    async fn handle_individual_address_serial_number_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::address::IndividualAddress;
+
+        // Validate service type - must be broadcast
+        if ind.service_type() != ServiceType::T_Broadcast_Ind {
+            warn!("AL IndividualAddressSerialNumberWrite with unexpected service type: {:?}", ind.service_type());
+            return;
+        }
+
+        // Validate APDU length: APCI (2) + serial (6) + addr (2) + reserved (4) = 14 bytes
+        const MIN_LEN: usize = offsets::MSG_APCI + 14;
+        if ind.len() < MIN_LEN {
+            error!("IndividualAddressSerialNumberWrite message too short: {} < {}", ind.len(), MIN_LEN);
+            return;
+        }
+
+        let buf = ind.buf();
+
+        // Extract serial number from APDU[2-7]
+        let received_serial = &buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8];
+
+        // Only accept if serial number matches
+        if received_serial != self.state.serial_number() {
+            trace!("AL IndividualAddressSerialNumberWrite ignored (serial mismatch)");
+            return;
+        }
+
+        // Extract new individual address from APDU[8-9]
+        let new_addr_bytes = &buf[offsets::MSG_APCI + 8..offsets::MSG_APCI + 10];
+        let new_addr = IndividualAddress::from_bytes(new_addr_bytes);
+
+        debug!("AL IndividualAddressSerialNumberWrite: setting address to {}", new_addr);
+
+        // Update the device's individual address
+        self.state.set_individual_address(new_addr);
+
+        // No response is sent
     }
 }
 

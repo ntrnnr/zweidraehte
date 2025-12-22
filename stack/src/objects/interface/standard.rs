@@ -53,7 +53,7 @@ crate::define_interface_object! {
     /// | PID | Name | Type | Access |
     /// |-----|------|------|--------|
     /// | 1 | Object Type | PDT_UNSIGNED_INT | RO |
-    /// | 11 | Serial Number | PDT_GENERIC_06 | RO |
+    /// | 11 | Serial Number | PDT_GENERIC_06 | RO | (state-backed)
     /// | 12 | Manufacturer ID | PDT_UNSIGNED_INT | RO | (derived from serial number bytes 0-1)
     /// | 14 | Device Control | PDT_GENERIC_01 | RW |
     /// | 15 | Order Info | PDT_GENERIC_10 | RO |
@@ -69,9 +69,6 @@ crate::define_interface_object! {
         with state: &'a S
     {
         // Static properties (stored in struct)
-        // Note: manufacturer_id is derived from serial_number bytes 0-1
-        pid::SERIAL_NUMBER => serial_number: PDT_Generic06, ReadOnly,
-        pid::MANUFACTURER_ID => manufacturer_id: PDT_UnsignedInt, ReadOnly,
         pid::DEVICE_CONTROL => device_control: PDT_Generic01, ReadWrite,
         pid::ORDER_INFO => order_info: PDT_Generic10, ReadOnly,
         pid::VERSION => version: PDT_Generic02, ReadOnly,
@@ -81,6 +78,21 @@ crate::define_interface_object! {
     }
     state {
         // State-backed properties (read/written via closures)
+        // Serial number is read from StackState
+        pid::SERIAL_NUMBER => {
+            read: |s| *s.serial_number(),
+            write: |_s, _data| Err(crate::objects::interface::PropertyError::WriteNotAllowed)
+        }: PDT_Generic06, ReadOnly,
+
+        // Manufacturer ID is derived from serial number bytes 0-1
+        pid::MANUFACTURER_ID => {
+            read: |s| {
+                let sn = s.serial_number();
+                [sn[0], sn[1]]
+            },
+            write: |_s, _data| Err(crate::objects::interface::PropertyError::WriteNotAllowed)
+        }: PDT_UnsignedInt, ReadOnly,
+
         pid::ROUTING_COUNT => {
             read: |s| [s.routing_count()],
             write: |s, data| { s.set_routing_count(data[0]); Ok(()) }
@@ -111,9 +123,10 @@ crate::define_interface_object! {
 }
 
 /// Device information for creating a DeviceObject
+///
+/// Note: Serial number is not included here because it's read dynamically
+/// from the `StackState::serial_number()` method.
 pub struct DeviceInfo {
-    /// Serial number (6 bytes: 2 bytes manufacturer ID + 4 bytes device-specific)
-    pub serial_number: [u8; 6],
     /// Order information (10 bytes, manufacturer-specific)
     pub order_info: [u8; 10],
     /// Hardware type (6 bytes)
@@ -129,14 +142,9 @@ pub struct DeviceInfo {
 impl<'a, S: StackState> DeviceObject<'a, S> {
     /// Create a new device object with custom static values
     ///
-    /// The manufacturer_id is automatically derived from the first two bytes
-    /// of the serial_number (KNX serial number format: 2 bytes manufacturer + 4 bytes device).
+    /// Serial number and manufacturer ID are read dynamically from the StackState.
     pub fn with_info(state: &'a S, info: &DeviceInfo) -> Self {
         let mut obj = Self::new(state);
-        obj.serial_number = PDT_Generic06::with_value(info.serial_number);
-        // Manufacturer ID is bytes 0-1 of serial number (big-endian)
-        let manufacturer_id_val = u16::from_be_bytes([info.serial_number[0], info.serial_number[1]]);
-        obj.manufacturer_id = PDT_UnsignedInt::with_value(manufacturer_id_val);
         obj.order_info = PDT_Generic10::with_value(info.order_info);
         obj.version = PDT_Generic02::with_value(info.version);
         obj.max_apdu_length = PDT_UnsignedInt::with_value(info.max_apdu_length);
@@ -147,11 +155,9 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 
     /// Create a new device object with basic values (legacy API)
     ///
-    /// The manufacturer_id is automatically derived from the first two bytes
-    /// of the serial_number (KNX serial number format: 2 bytes manufacturer + 4 bytes device).
-    pub fn with_values(state: &'a S, serial_number_val: [u8; 6], hardware_type_val: [u8; 6]) -> Self {
+    /// Serial number and manufacturer ID are read dynamically from the StackState.
+    pub fn with_values(state: &'a S, hardware_type_val: [u8; 6]) -> Self {
         Self::with_info(state, &DeviceInfo {
-            serial_number: serial_number_val,
             order_info: [0; 10],
             hardware_type: hardware_type_val,
             version: [0x00, 0x01],     // Version 0.0.1

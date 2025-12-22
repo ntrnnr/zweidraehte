@@ -542,10 +542,10 @@ impl IpPlatform for MockIpPlatform {
 // ============================================================================
 
 /// Device-specific constants for Interface Objects
-mod device_info {
+pub mod device_info {
     /// Device serial number (6 bytes)
-    /// Format: bytes 0-1 = manufacturer ID (0x00FA), bytes 2-5 = device-specific
-    pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
+    /// Must match BDUT_SERIAL_NUMBER in test variables (management.rs)
+    pub const SERIAL_NUMBER: [u8; 6] = [0x30, 0x30, 0x30, 0x30, 0x30, 0x30];
 
     /// Hardware type identifier (6 bytes)
     pub const HARDWARE_TYPE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
@@ -627,8 +627,8 @@ where
         state: &'a S,
     ) -> Self {
         // Create Device Object with full device information including max APDU length
+        // Note: Serial number is read dynamically from StackState
         let device = DeviceObject::with_info(state, &DeviceInfo {
-            serial_number: device_info::SERIAL_NUMBER,
             order_info: [0; 10],
             hardware_type: device_info::HARDWARE_TYPE,
             version: [0x00, 0x01], // Version 0.0.1
@@ -859,8 +859,15 @@ impl FullStackHarness {
         // Create hook context (initially with null COT pointer)
         let hook_context = ConformanceHookContext::new();
 
+        // Create stack state with test serial number
+        let state = BasicIpStackState::with_address_and_serial(
+            zweidraehte::address::IndividualAddress::new(1, 0, 1),
+            device_info::SERIAL_NUMBER,
+            MockIpPlatform::new(),
+        );
+
         // Create stack
-        let (stack, runner) = zweidraehte::new(
+        let (stack, runner) = zweidraehte::new_with_state(
             resources,
             addr_tab,
             asso_tab,
@@ -869,6 +876,7 @@ impl FullStackHarness {
             hook_context,
             link_layer_builder,
             KnxIpInterfaceObjectsBuilder,
+            state,
         );
 
         // Patch the hook context with the COT reference

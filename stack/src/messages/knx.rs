@@ -175,6 +175,10 @@ create_protocol_enum!(
         PropertyDescriptionRead,    0xd8,   "A_PropertyDescription_Read";
         PropertyDescriptionResponse, 0xd9,  "A_PropertyDescription_Response";
 
+        IndividualAddressSerialNumberRead,      0xdc,   "A_IndividualAddressSerialNumber_Read";
+        IndividualAddressSerialNumberResponse,  0xdd,   "A_IndividualAddressSerialNumber_Response";
+        IndividualAddressSerialNumberWrite,     0xde,   "A_IndividualAddressSerialNumber_Write";
+
         Empty,                      0,      "<Empty>";
         _,                                  "Unknown APCI code 0x{:x}";
     }

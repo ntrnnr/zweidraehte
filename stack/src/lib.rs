@@ -138,6 +138,12 @@ pub trait StackState: Default {
 
     /// Set the routing count (hop count) for outgoing messages.
     fn set_routing_count(&self, count: u8);
+
+    /// Get the device serial number (6 bytes).
+    ///
+    /// The serial number consists of 2 bytes manufacturer ID followed by
+    /// 4 bytes device-specific identifier. Used for `A_IndividualAddressSerialNumber_Read/Write`.
+    fn serial_number(&self) -> &[u8; 6];
 }
 
 /// A basic stack state implementation with individual address and programming mode.
@@ -151,6 +157,7 @@ pub struct BasicStackState {
     individual_address: RefCell<IndividualAddress>,
     programming_mode: RefCell<bool>,
     routing_count: RefCell<u8>,
+    serial_number: [u8; 6],
 }
 
 impl Default for BasicStackState {
@@ -159,6 +166,7 @@ impl Default for BasicStackState {
             individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
             programming_mode: RefCell::new(false),
             routing_count: RefCell::new(6), // Default per KNX spec
+            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00], // Default: manufacturer 0x00FA
         }
     }
 }
@@ -170,6 +178,17 @@ impl BasicStackState {
             individual_address: RefCell::new(addr),
             programming_mode: RefCell::new(false),
             routing_count: RefCell::new(6),
+            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00],
+        }
+    }
+
+    /// Create a new `BasicStackState` with the given individual address and serial number.
+    pub fn with_address_and_serial(addr: IndividualAddress, serial_number: [u8; 6]) -> Self {
+        Self {
+            individual_address: RefCell::new(addr),
+            programming_mode: RefCell::new(false),
+            routing_count: RefCell::new(6),
+            serial_number,
         }
     }
 }
@@ -197,6 +216,10 @@ impl StackState for BasicStackState {
 
     fn set_routing_count(&self, count: u8) {
         *self.routing_count.borrow_mut() = count & 0x07; // Only 3 bits (0-7)
+    }
+
+    fn serial_number(&self) -> &[u8; 6] {
+        &self.serial_number
     }
 }
 
@@ -363,6 +386,7 @@ pub struct BasicIpStackState<P: IpPlatform> {
     individual_address: RefCell<IndividualAddress>,
     programming_mode: RefCell<bool>,
     routing_count: RefCell<u8>,
+    serial_number: [u8; 6],
 
     // IP configured values
     configured_ip: RefCell<Ipv4Addr>,
@@ -412,6 +436,7 @@ impl<P: IpPlatform + Default> Default for BasicIpStackState<P> {
             individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
             programming_mode: RefCell::new(false),
             routing_count: RefCell::new(6),
+            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00], // Default: manufacturer 0x00FA
             configured_ip: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
             configured_subnet: RefCell::new(Ipv4Addr::new(255, 255, 255, 0)),
             configured_gateway: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
@@ -442,6 +467,14 @@ impl<P: IpPlatform> BasicIpStackState<P> {
     {
         Self { individual_address: RefCell::new(addr), platform, ..Default::default() }
     }
+
+    /// Create a new `BasicIpStackState` with individual address, serial number, and platform.
+    pub fn with_address_and_serial(addr: IndividualAddress, serial_number: [u8; 6], platform: P) -> Self
+    where
+        P: Default,
+    {
+        Self { individual_address: RefCell::new(addr), serial_number, platform, ..Default::default() }
+    }
 }
 
 impl<P: IpPlatform + Default> StackState for BasicIpStackState<P> {
@@ -467,6 +500,10 @@ impl<P: IpPlatform + Default> StackState for BasicIpStackState<P> {
 
     fn set_routing_count(&self, count: u8) {
         *self.routing_count.borrow_mut() = count & 0x07;
+    }
+
+    fn serial_number(&self) -> &[u8; 6] {
+        &self.serial_number
     }
 }
 
@@ -575,6 +612,7 @@ impl<P: IpPlatform + Default> IpStackState for BasicIpStackState<P> {
 }
 
 pub trait StackDefinition: Copy {
+    /// Device descriptor / mask version (2 bytes, e.g., 0x07B0 for System B)
     const MASK_VERSION: &'static [u8; 2];
     type ADT: AddressTable + 'static;
     type AST: AssociationTable + 'static;
@@ -644,10 +682,11 @@ pub struct Runner<'d, D: StackDefinition> {
 /// impl StackDefinition for MyStackDefinition {
 ///     const MASK_VERSION: &'static [u8; 2] = &[0x07, 0xb0];
 ///     type ADT = MyAddressTable;      // implements AddressTable
-///     type AST = MyAssociationTable;  // implements AssociationTable  
+///     type AST = MyAssociationTable;  // implements AssociationTable
 ///     type COT = MyComObjectTable;    // implements CommunicationObjectTable
 ///     type P = MyParameters;          // implements ConstDefault
 ///     type CO = MyComObjects;         // implements ComObjects
+///     type State = BasicStackState;   // implements StackState (includes serial number)
 /// }
 ///
 /// // Create stack resources and configuration
@@ -721,6 +760,11 @@ fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
     (sender.into(), receiver.into())
 }
 
+/// Create a new KNX stack with default state.
+///
+/// This function creates a stack using `D::State::default()` for the state.
+/// For custom state initialization (e.g., with a specific serial number),
+/// use [`new_with_state`] instead.
 pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
     resources: &'d mut StackResources<D, BUF_SZ, NUM_BUFS>,
     adt: D::ADT,
@@ -730,6 +774,24 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     hook_context: <D::CO as ComObjects>::HookContext,
     link_layer_builder: D::LLB,
     interface_objects_builder: D::IOB,
+) -> (Stack<'d, D>, Runner<'d, D>) {
+    new_with_state(resources, adt, ast, cot, comm_objs, hook_context, link_layer_builder, interface_objects_builder, D::State::default())
+}
+
+/// Create a new KNX stack with custom state.
+///
+/// This function allows passing a pre-configured state instead of using the default.
+/// Use this when you need to configure the state with specific values (e.g., serial number).
+pub fn new_with_state<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
+    resources: &'d mut StackResources<D, BUF_SZ, NUM_BUFS>,
+    adt: D::ADT,
+    ast: D::AST,
+    cot: D::COT,
+    comm_objs: D::CO,
+    hook_context: <D::CO as ComObjects>::HookContext,
+    link_layer_builder: D::LLB,
+    interface_objects_builder: D::IOB,
+    state: D::State,
 ) -> (Stack<'d, D>, Runner<'d, D>) {
     // SAFETY: We are creating a reference to the buffers that are stored in the `StackResources` struct,
     //         which lives at least as long as `Inner`
@@ -745,7 +807,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         cot: RefCell::new(cot),
         comm_objs: RefCell::new(comm_objs),
         event_channel: PubSubChannel::new(),
-        state: D::State::default(),
+        state,
         hook_context,
     };
 
