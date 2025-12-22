@@ -181,8 +181,10 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                             ApciCode::IndividualAddressRead => {
                                 self.handle_individual_address_read(&ind).await;
                             }
+                            ApciCode::IndividualAddressWrite => {
+                                self.handle_individual_address_write(&ind).await;
+                            }
                             // ApciCode::Restart => { ... }
-                            // ApciCode::IndividualAddressWrite => { ... }
                             _ => {
                                 warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
                             }
@@ -979,6 +981,51 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         let confirmation = self.transport_layer.request(msg).await;
         trace!("AL IndividualAddressResponse confirmation: {:?}", confirmation.service_type());
+    }
+
+    /// Handle `A_IndividualAddress_Write.ind`
+    ///
+    /// Sets the device's individual address if the device is in programming mode.
+    /// This service arrives via `T_Broadcast_Ind` and requires no response.
+    ///
+    /// Message format (incoming):
+    /// - APDU[0-1]: APCI (IndividualAddressWrite, code 3)
+    /// - APDU[2-3]: New individual address (2 bytes, big-endian)
+    ///
+    /// Per KNX spec, this service only takes effect when the device is in programming mode.
+    async fn handle_individual_address_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::address::IndividualAddress;
+
+        // Validate service type - must be broadcast
+        if ind.service_type() != ServiceType::T_Broadcast_Ind {
+            warn!("AL IndividualAddressWrite with unexpected service type: {:?}", ind.service_type());
+            return;
+        }
+
+        // Only accept if device is in programming mode
+        if !self.state.programming_mode() {
+            trace!("AL IndividualAddressWrite ignored (not in programming mode)");
+            return;
+        }
+
+        // Validate APDU length: APCI (2 bytes) + address (2 bytes) = 4 bytes minimum
+        const MIN_LEN: usize = offsets::MSG_APCI + 4;
+        if ind.len() < MIN_LEN {
+            error!("IndividualAddressWrite message too short: {} < {}", ind.len(), MIN_LEN);
+            return;
+        }
+
+        // Extract new individual address from APDU[2-3]
+        let buf = ind.buf();
+        let new_addr_bytes = &buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4];
+        let new_addr = IndividualAddress::from_bytes(new_addr_bytes);
+
+        debug!("AL IndividualAddressWrite: setting address to {}", new_addr);
+
+        // Update the device's individual address
+        self.state.set_individual_address(new_addr);
+
+        // No response is sent for IndividualAddressWrite
     }
 }
 
