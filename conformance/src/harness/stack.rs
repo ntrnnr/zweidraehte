@@ -962,8 +962,29 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
     }
 }
 
+/// Device descriptor type 2 (DD2) data for conformance tests.
+///
+/// This must match the DD2_RESPONSE variable in the conformance test suite.
+/// Format:
+/// - Bytes 0-1: Application manufacturer code (0x0001)
+/// - Bytes 2-3: Manufacturer-specific device type (0x0203)
+/// - Byte 4: Version (0x04)
+/// - Byte 5: Link management support (bit 7=0) + Logical tag base (0x05)
+/// - Bytes 6-13: Channel information (4 channels)
+pub const CONFORMANCE_DD2: [u8; 14] = [
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+];
+
+/// User Manufacturer Info for conformance tests.
+///
+/// This must match the expected response in the conformance test suite.
+/// Format: Manufacturer ID (2 bytes) + Device Type (1 byte)
+pub const CONFORMANCE_USER_MANUFACTURER_INFO: [u8; 3] = [0x00, 0x00, 0x00];
+
 impl StackDefinition for ConformanceTestStack {
     const MASK_VERSION: &'static [u8; 2] = &[0x57, 0xB0];
+    const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
+    const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     type Tables = ConformanceTables;
     type P = TestParameters;
     type CO = ConformanceComObjects;

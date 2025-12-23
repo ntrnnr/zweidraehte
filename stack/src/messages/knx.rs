@@ -179,6 +179,12 @@ create_protocol_enum!(
         IndividualAddressSerialNumberResponse,  0xdd,   "A_IndividualAddressSerialNumber_Response";
         IndividualAddressSerialNumberWrite,     0xde,   "A_IndividualAddressSerialNumber_Write";
 
+        UserManufacturerInfoRead,   0x85,   "A_UserManufacturerInfo_Read";
+        UserManufacturerInfoResponse, 0x86, "A_UserManufacturerInfo_Response";
+
+        AuthorizeRequest,           0xd1,   "A_Authorize_Request";
+        AuthorizeResponse,          0xd2,   "A_Authorize_Response";
+
         Empty,                      0,      "<Empty>";
         _,                                  "Unknown APCI code 0x{:x}";
     }

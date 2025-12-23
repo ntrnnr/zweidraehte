@@ -302,8 +302,9 @@ pub fn create_device_descriptor_illegal_types_suite() -> TestSuite {
     // ========================================================================
     let mut steps_cl = vec![comment("Testcase M-2.5.6 Read illegal Device Descriptor Types, connectionless")];
 
-    // Test all DD types 0x01-0x3F (connectionless uses TPCI 0x03)
-    for dd_type in 0x01u8..=0x3F {
+    // Test illegal DD types: 0x01, 0x03-0x3F (skip 0x00 and 0x02 which are valid)
+    let illegal_types_cl: Vec<u8> = (0x01..=0x3F).filter(|&t| t != 0x00 && t != 0x02).collect();
+    for dd_type in illegal_types_cl {
         // DeviceDescriptor_Read with illegal type (connectionless: TPCI = 0x03)
         steps_cl.push(inject(&format!("BC #EDI #BDUT 61 03 {:02X}", dd_type)));
         // Expect error response 0x7F

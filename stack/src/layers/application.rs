@@ -209,6 +209,9 @@ where
                             ApciCode::MemoryWrite => {
                                 self.handle_memory_write(&ind).await;
                             }
+                            ApciCode::UserManufacturerInfoRead => {
+                                self.handle_user_manufacturer_info_read(&ind).await;
+                            }
                             // ApciCode::Restart => { ... }
                             _ => {
                                 warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
@@ -937,6 +940,43 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
             let confirmation = self.transport_layer.request(msg).await;
             trace!("AL DeviceDescriptorResponse confirmation: {:?}", confirmation.service_type());
+        } else if descriptor_type == 2 {
+            // Descriptor type 2: respond with extended device info (14 bytes) if supported
+            if let Some(dd2) = D::DEVICE_DESCRIPTOR_TYPE2 {
+                const RESPONSE_LEN: usize = offsets::MSG_APCI + 16; // APCI(2) + DD2(14)
+                let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+
+                let msg = ind
+                    .respond_with(msg_buf)
+                    .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
+                    .with_data(|data| {
+                        // Set descriptor type to 2 in the response
+                        data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0) | 0x02;
+                        // Copy DD2 data
+                        data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 16].copy_from_slice(dd2);
+                    });
+
+                debug!("AL sending DeviceDescriptorResponse (DD2): {:02x?}", dd2);
+
+                let confirmation = self.transport_layer.request(msg).await;
+                trace!("AL DeviceDescriptorResponse (DD2) confirmation: {:?}", confirmation.service_type());
+            } else {
+                // DD2 not supported: error response with type = 0x3F
+                const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 2;
+                let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
+
+                let msg = ind
+                    .respond_with(msg_buf)
+                    .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
+                    .with_data(|data| {
+                        data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0) | 0x3F;
+                    });
+
+                debug!("AL sending DeviceDescriptorResponse (error, DD2 not supported): descriptor_type=0x3F");
+
+                let confirmation = self.transport_layer.request(msg).await;
+                trace!("AL DeviceDescriptorResponse (error) confirmation: {:?}", confirmation.service_type());
+            }
         } else {
             // Any other descriptor type: error response with type = 0x3F, no data
             const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 2; // APCI(2) only, no data
@@ -1435,6 +1475,54 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         let confirmation = self.transport_layer.request(msg).await;
         trace!("AL Memory_Response confirmation: {:?}", confirmation.service_type());
+    }
+
+    /// Handle `A_UserManufacturerInfo_Read.ind`
+    ///
+    /// Responds with the manufacturer ID and manufacturer-specific data.
+    ///
+    /// Message format (incoming):
+    /// - APDU[0-1]: APCI (0x0BC5 - UserManufacturerInfo_Read via User escape)
+    ///
+    /// Response format:
+    /// - APDU[0-1]: APCI (0x0BC6 - UserManufacturerInfo_Response via User escape)
+    /// - APDU[2]: Manufacturer ID (8-bit)
+    /// - APDU[3-4]: Manufacturer-specific data (16-bit)
+    async fn handle_user_manufacturer_info_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::messages::builder::IndicationExt;
+
+        // Check if USER_MANUFACTURER_INFO is configured
+        let Some(info) = D::USER_MANUFACTURER_INFO else {
+            debug!("AL UserManufacturerInfo_Read: not supported (no USER_MANUFACTURER_INFO configured)");
+            return;
+        };
+
+        // Determine transport service type
+        let transport_service = match ind.service_type() {
+            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
+            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
+            other => {
+                warn!("AL UserManufacturerInfo_Read unexpected service type: {:?}", other);
+                return;
+            }
+        };
+
+        // Response: APCI(2) + Manufacturer ID(2) + Device Type(1) = 5 bytes
+        const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::UserManufacturerInfoResponse, transport_service)
+            .with_data(|data| {
+                // Copy the 3-byte manufacturer info (Manufacturer ID + Device Type)
+                data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 5].copy_from_slice(info);
+            });
+
+        debug!("AL sending UserManufacturerInfo_Response: {:02x?}", info);
+
+        let confirmation = self.transport_layer.request(msg).await;
+        trace!("AL UserManufacturerInfo_Response confirmation: {:?}", confirmation.service_type());
     }
 }
 

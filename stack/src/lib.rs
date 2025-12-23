@@ -613,8 +613,31 @@ impl<P: IpPlatform + Default> IpStackState for BasicIpStackState<P> {
 }
 
 pub trait StackDefinition: Copy {
-    /// Device descriptor / mask version (2 bytes, e.g., 0x07B0 for System B)
+    /// Device descriptor type 0 / mask version (2 bytes, e.g., 0x07B0 for System B)
     const MASK_VERSION: &'static [u8; 2];
+
+    /// Device descriptor type 2 (14 bytes, optional).
+    ///
+    /// DD2 contains extended device information:
+    /// - Bytes 0-1: Application manufacturer code (16-bit)
+    /// - Bytes 2-3: Manufacturer-specific device type (16-bit)
+    /// - Byte 4: Version of manufacturer-specific device type (8-bit)
+    /// - Byte 5: Link management support (bit 7) + Logical tag base (bits 0-5)
+    /// - Bytes 6-13: Channel information (4 channels, 2 bytes each)
+    ///
+    /// Set to `None` if DD2 is not supported. If `None`, the stack will return
+    /// error code 0x3F when DD2 is requested.
+    const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = None;
+
+    /// User Manufacturer Info (3 bytes, optional).
+    ///
+    /// Contains:
+    /// - Byte 0: KNX Manufacturer ID (8-bit)
+    /// - Bytes 1-2: Manufacturer-specific data (16-bit)
+    ///
+    /// Set to `None` if not supported. If `None`, the stack will not respond
+    /// to A_UserManufacturerInfo_Read requests.
+    const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = None;
 
     /// User-defined tables container.
     ///
