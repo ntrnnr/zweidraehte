@@ -30,6 +30,7 @@ use super::{ActorRequest, Inbox, Layer, LayerOp, Request};
 use crate::{
     StackDefinition, StackState,
     address::GroupAddress,
+    memory::{HasAssociationTable, HasCommunicationObjectTable},
     messages::{
         buffers::{Buffer, DynBufferManager},
         builder::{IndicationMessage, RequestMessage},
@@ -76,8 +77,8 @@ pub enum ApplicationLayerServiceResponse {
 pub struct ApplicationLayer<'a, D: StackDefinition> {
     // --- Shared stack resources ---
     buffer_manager: &'a RefCell<DynBufferManager<'static>>,
-    ast: &'a RefCell<D::AST>,
-    cot: &'a RefCell<D::COT>,
+    /// User-defined tables container (for accessing AST/COT via accessor traits)
+    tables: &'a D::Tables,
     comm_objects: &'a RefCell<D::CO>,
     hook_context: &'a <D::CO as ComObjects>::HookContext,
     event_channel:
@@ -90,6 +91,10 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     // --- Device state ---
     /// Runtime state (programming mode, etc.)
     state: &'a D::State,
+
+    // --- Memory access ---
+    /// Memory map for A_Memory_Read/Write services
+    memory_map: &'a D::Mem,
 
     // --- Communication channels ---
     app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
@@ -105,8 +110,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         buffer_manager: &'a RefCell<DynBufferManager<'static>>,
-        ast: &'a RefCell<D::AST>,
-        cot: &'a RefCell<D::COT>,
+        tables: &'a D::Tables,
         comm_objects: &'a RefCell<D::CO>,
         hook_context: &'a <D::CO as ComObjects>::HookContext,
         event_channel: &'a PubSubChannel<
@@ -118,18 +122,19 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         >,
         interface_object_server: &'a dyn PropertyServiceHandler,
         state: &'a D::State,
+        memory_map: &'a D::Mem,
         app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
         transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
         Self {
             buffer_manager,
-            ast,
-            cot,
+            tables,
             comm_objects,
             hook_context,
             event_channel,
             interface_object_server,
             state,
+            memory_map,
             app_request_receiver,
             transport_layer,
         }
@@ -140,7 +145,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 // Layer Implementation (Main Event Loop)
 // ============================================================================
 
-impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
+impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D>
+where
+    D::Tables: HasAssociationTable + HasCommunicationObjectTable,
+{
     type Buffer = Buffer<'static>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
@@ -153,7 +161,9 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                     trace!("AL received: {:?}", msg);
 
                     match msg {
-                        LayerOp::Indication(mut ind) => match ind.get_apci_code() {
+                        LayerOp::Indication(mut ind) => {
+                            debug!("AL APCI code: {:?}", ind.get_apci_code());
+                            match ind.get_apci_code() {
                             // --- Group Communication ---
                             a @ (ApciCode::GroupValueWrite | ApciCode::GroupValueResponse) => {
                                 self.handle_group_value_write_or_response(&mut ind, a).await;
@@ -193,11 +203,17 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
                             ApciCode::AdcRead => {
                                 self.handle_adc_read(&ind).await;
                             }
+                            ApciCode::MemoryRead => {
+                                self.handle_memory_read(&ind).await;
+                            }
+                            ApciCode::MemoryWrite => {
+                                self.handle_memory_write(&ind).await;
+                            }
                             // ApciCode::Restart => { ... }
                             _ => {
                                 warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
                             }
-                        },
+                        }},
                         _ => {
                             warn!("AL unexpected LayerOp variant");
                         }
@@ -226,7 +242,10 @@ impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D> {
 // Group Communication Services (A_GroupValue_*)
 // ============================================================================
 
-impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
+impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
+where
+    D::Tables: HasAssociationTable + HasCommunicationObjectTable,
+{
     /// Handle `A_GroupValue_Write.ind` or `A_GroupValue_Response.ind`
     ///
     /// Updates local communication objects with values received from the bus.
@@ -247,10 +266,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         trace!("AL incoming TSAP: {:?}", ind.get_connection_nr());
 
-        for asap in self.ast.borrow().asaps_for_tsap(ind.get_connection_nr()) {
+        for asap in self.tables.ast().borrow().asaps_for_tsap(ind.get_connection_nr()) {
             trace!("AL processing ASAP: {}", asap);
 
-            let Some(cot_info) = self.cot.borrow().get_object(asap) else {
+            let Some(cot_info) = self.tables.cot().borrow().get_object(asap) else {
                 error!("Invalid ASAP: {}", asap);
                 continue;
             };
@@ -346,10 +365,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let tsap = ind.get_connection_nr();
         trace!("AL incoming TSAP: {:?}", tsap);
 
-        for asap in self.ast.borrow().asaps_for_tsap(tsap) {
+        for asap in self.tables.ast().borrow().asaps_for_tsap(tsap) {
             trace!("AL processing GroupValueRead for ASAP: {}", asap);
 
-            let Some(cot_info) = self.cot.borrow().get_object(asap) else {
+            let Some(cot_info) = self.tables.cot().borrow().get_object(asap) else {
                 error!("Invalid ASAP: {}", asap);
                 continue;
             };
@@ -405,7 +424,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         // FIXME: check if device is configured at all:
         //        following needs to be loaded: Addr, Assoc, Cotab and App
 
-        let Some(cot_info) = self.cot.borrow().get_object(asap) else {
+        let Some(cot_info) = self.tables.cot().borrow().get_object(asap) else {
             error!("Invalid ASAP: {}", asap);
             // FIXME: return error to caller?
             return;
@@ -443,7 +462,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::Busy);
 
         // We only send to the first TSAP per spec
-        if let Some(tsap) = self.ast.borrow().get_sending_tsap(asap) {
+        if let Some(tsap) = self.tables.ast().borrow().get_sending_tsap(asap) {
             trace!("AL found sending TSAP {} for ASAP {}", tsap, asap);
 
             // Determine the length of this comm obj and the offset in the message
@@ -1223,6 +1242,199 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         let confirmation = self.transport_layer.request(msg).await;
         trace!("AL ADC_Response confirmation: {:?}", confirmation.service_type());
+    }
+
+    /// Handle `A_Memory_Read.ind`
+    ///
+    /// Reads from device memory at the specified address.
+    ///
+    /// Message format (incoming):
+    /// - APDU[0]: High 2 bits of APCI
+    /// - APDU[1]: 0x00 | count (6 bits) - MemoryRead code with byte count
+    /// - APDU[2-3]: Address (2 bytes, big-endian)
+    ///
+    /// Response format:
+    /// - APDU[0]: High 2 bits of APCI
+    /// - APDU[1]: 0x40 | count (6 bits) - MemoryResponse code with byte count (0 on error)
+    /// - APDU[2-3]: Address (2 bytes, big-endian)
+    /// - APDU[4+]: Data (count bytes, if successful)
+    async fn handle_memory_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::memory::MemoryMap;
+        use crate::messages::builder::IndicationExt;
+
+        // Memory_Read APDU: [APCI:2] [address:2]
+        // Minimum length: MSG_APCI + 4 = 10 bytes
+        const MIN_LEN: usize = offsets::MSG_APCI + 4;
+
+        if ind.len() < MIN_LEN {
+            error!("Memory_Read message too short: {} < {}", ind.len(), MIN_LEN);
+            return;
+        }
+
+        let buf = ind.buf();
+        let count = buf[offsets::MSG_APCI + 1] & 0x3F;
+        let address = u16::from_be_bytes([buf[offsets::MSG_APCI + 2], buf[offsets::MSG_APCI + 3]]);
+
+        debug!("AL Memory_Read: address=0x{:04X}, count={}", address, count);
+
+        // Determine transport service type
+        let transport_service = match ind.service_type() {
+            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
+            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
+            other => {
+                warn!("AL Memory_Read unexpected service type: {:?}", other);
+                return;
+            }
+        };
+
+        // Read from memory map first to determine response size
+        let mut data = [0u8; 63]; // Max count is 63 (6 bits)
+        let result = self.memory_map.read(self.tables, address, &mut data[..(count as usize)]);
+
+        let response_count = match result {
+            Ok(bytes_read) => bytes_read as u8,
+            Err(_) => 0, // Error: return count=0
+        };
+
+        // Response: APCI(2) + address(2) + data(response_count) = 4 + response_count bytes APDU
+        // On error, response_count is 0 and no data is sent (just APCI + address)
+        let response_len = offsets::MSG_APCI + 4 + (response_count as usize);
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::MemoryReadResponse, transport_service)
+            .with_data(|msg_data| {
+                // Set count in low 6 bits of APCI byte 1
+                msg_data[offsets::MSG_APCI + 1] = (msg_data[offsets::MSG_APCI + 1] & 0xC0) | response_count;
+                // Address (big-endian)
+                msg_data[offsets::MSG_APCI + 2] = (address >> 8) as u8;
+                msg_data[offsets::MSG_APCI + 3] = address as u8;
+                // Copy data if successful
+                if response_count > 0 {
+                    msg_data[offsets::MSG_APCI + 4..offsets::MSG_APCI + 4 + response_count as usize]
+                        .copy_from_slice(&data[..response_count as usize]);
+                }
+            });
+
+        debug!("AL sending Memory_Response: address=0x{:04X}, count={}", address, response_count);
+
+        let confirmation = self.transport_layer.request(msg).await;
+        trace!("AL Memory_Response confirmation: {:?}", confirmation.service_type());
+    }
+
+    /// Handle `A_Memory_Write.ind`
+    ///
+    /// Writes to device memory at the specified address.
+    ///
+    /// Message format (incoming):
+    /// - APDU[0]: High 2 bits of APCI
+    /// - APDU[1]: 0x80 | count (6 bits) - MemoryWrite code with byte count
+    /// - APDU[2-3]: Address (2 bytes, big-endian)
+    /// - APDU[4+]: Data (count bytes)
+    ///
+    /// If the Verify flag is set in DEVICE_CONTROL (PID 14), a Memory_Response is sent.
+    async fn handle_memory_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::memory::MemoryMap;
+        use crate::messages::builder::IndicationExt;
+        use crate::objects::interface::pid;
+
+        // Memory_Write APDU: [APCI:2] [address:2] [data:count]
+        // Minimum length without data: MSG_APCI + 4 = 10 bytes
+        const MIN_LEN: usize = offsets::MSG_APCI + 4;
+
+        if ind.len() < MIN_LEN {
+            error!("Memory_Write message too short: {} < {}", ind.len(), MIN_LEN);
+            return;
+        }
+
+        let buf = ind.buf();
+        let count = buf[offsets::MSG_APCI + 1] & 0x3F;
+        let address = u16::from_be_bytes([buf[offsets::MSG_APCI + 2], buf[offsets::MSG_APCI + 3]]);
+
+        // Verify data length matches count field exactly (length consistency check)
+        let expected_len = offsets::MSG_APCI + 4 + (count as usize);
+        let length_inconsistent = ind.len() != expected_len;
+
+        if length_inconsistent {
+            warn!(
+                "Memory_Write length inconsistency: expected {} bytes, got {} (count={})",
+                expected_len,
+                ind.len(),
+                count
+            );
+        }
+
+        let data = &buf[offsets::MSG_APCI + 4..core::cmp::min(ind.len(), offsets::MSG_APCI + 4 + count as usize)];
+
+        debug!("AL Memory_Write: address=0x{:04X}, count={}", address, count);
+
+        // If length is inconsistent, don't write and respond with count=0
+        // Otherwise, write to memory map
+        let response_count = if length_inconsistent {
+            0 // Length inconsistency: response with count=0
+        } else {
+            match self.memory_map.write(self.tables, address, data) {
+                Ok(bytes_written) => {
+                    debug!("AL Memory_Write: wrote {} bytes to 0x{:04X}", bytes_written, address);
+                    bytes_written as u8
+                }
+                Err(e) => {
+                    warn!("AL Memory_Write failed: address=0x{:04X}, error={:?}", address, e);
+                    0 // Error: response with count=0
+                }
+            }
+        };
+
+        // Check if Verify flag is set in DEVICE_CONTROL (Object 0, PID 14)
+        // Bit 2 (0x04) is the Verify flag
+        let mut device_control = [0u8; 1];
+        let verify_enabled = self
+            .interface_object_server
+            .property_value_read(0, pid::DEVICE_CONTROL, 1, 1, &mut device_control)
+            .map(|_| device_control[0] & 0x04 != 0)
+            .unwrap_or(false);
+
+        if !verify_enabled {
+            // No response when Verify is not enabled
+            return;
+        }
+
+        // Determine transport service type
+        let transport_service = match ind.service_type() {
+            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
+            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
+            other => {
+                warn!("AL Memory_Write unexpected service type: {:?}", other);
+                return;
+            }
+        };
+
+        // Send Memory_Response with written data (or count=0 on error)
+        // Response: APCI(2) + address(2) + data(response_count) = 4 + response_count bytes APDU
+        let response_len = offsets::MSG_APCI + 4 + (response_count as usize);
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::MemoryReadResponse, transport_service)
+            .with_data(|msg_data| {
+                // Set count in low 6 bits of APCI byte 1
+                msg_data[offsets::MSG_APCI + 1] = (msg_data[offsets::MSG_APCI + 1] & 0xC0) | response_count;
+                // Address (big-endian)
+                msg_data[offsets::MSG_APCI + 2] = (address >> 8) as u8;
+                msg_data[offsets::MSG_APCI + 3] = address as u8;
+                // Copy data if successful
+                if response_count > 0 {
+                    msg_data[offsets::MSG_APCI + 4..offsets::MSG_APCI + 4 + response_count as usize]
+                        .copy_from_slice(data);
+                }
+            });
+
+        debug!("AL sending Memory_Response (verify): address=0x{:04X}, count={}", address, response_count);
+
+        let confirmation = self.transport_layer.request(msg).await;
+        trace!("AL Memory_Response confirmation: {:?}", confirmation.service_type());
     }
 }
 

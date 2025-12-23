@@ -11,9 +11,11 @@ use env_logger::Env;
 use knx_conformance::harness::mock::{MockLinkLayerBuilder, MockLinkLayerResources};
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
+use core::cell::RefCell;
 use zweidraehte::{
     BasicStackState, Runner, StackDefinition, StackResources, define_com_objects,
     dpt::DPT_Switch,
+    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
         comm::ComObjects,
@@ -51,18 +53,45 @@ pub struct MyKnxStackStoredData {
     co_tab: CoTab7<30>,
 }
 
+/// User-defined tables container for MyKnxStack
+pub struct MyTables {
+    pub adt: RefCell<AddrTab7<30>>,
+    pub ast: RefCell<AssoTab6<15>>,
+    pub cot: RefCell<CoTab7<30>>,
+}
+
+impl HasAddressTable for MyTables {
+    type ADT = AddrTab7<30>;
+    fn adt(&self) -> &RefCell<Self::ADT> {
+        &self.adt
+    }
+}
+
+impl HasAssociationTable for MyTables {
+    type AST = AssoTab6<15>;
+    fn ast(&self) -> &RefCell<Self::AST> {
+        &self.ast
+    }
+}
+
+impl HasCommunicationObjectTable for MyTables {
+    type COT = CoTab7<30>;
+    fn cot(&self) -> &RefCell<Self::COT> {
+        &self.cot
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct MyKnxStack;
 impl StackDefinition for MyKnxStack {
     const MASK_VERSION: &'static [u8; 2] = &[0x07, 0xb0];
-    type ADT = AddrTab7<30>;
-    type AST = AssoTab6<15>; // Changed from 30 to 15 to match old JSON format (64 bytes)
-    type COT = CoTab7<30>;
+    type Tables = MyTables;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = MockLinkLayerBuilder<8>;
     type IOB = EmptyInterfaceObjectsBuilder;
     type State = BasicStackState;
+    type Mem = zweidraehte::memory::NoMemoryMap;
 }
 
 #[embassy_executor::task]
@@ -125,11 +154,16 @@ async fn main(spawner: Spawner) {
     // The builder is consumed when creating the stack, the handle is kept for injection
     let (link_layer_builder, mock_ll_handle) = MockLinkLayerBuilder::new(injection_channel);
 
+    // Create the tables container
+    let tables = MyTables {
+        adt: RefCell::new(stored_data.addr_tab),
+        ast: RefCell::new(stored_data.asso_tab),
+        cot: RefCell::new(stored_data.co_tab),
+    };
+
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
-        stored_data.addr_tab,
-        stored_data.asso_tab,
-        stored_data.co_tab,
+        tables,
         comm_objs::AppComObjects::new(),
         (),  // hook_context
         link_layer_builder,

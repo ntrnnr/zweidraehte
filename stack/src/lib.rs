@@ -22,6 +22,7 @@ pub mod dpt;
 pub mod encoding;
 pub mod error;
 pub mod layers;
+pub mod memory;
 pub mod messages;
 pub mod objects;
 pub mod util;
@@ -49,11 +50,11 @@ use crate::{
         network::NetworkLayer,
         transport::TransportLayer,
     },
+    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable, MemoryMap},
     messages::buffers::{Buffer, BufferManager, DynBufferManager},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
         interface::InterfaceObjectsBuilder,
-        tables::{AddressTable, AssociationTable, CommunicationObjectTable, TableMemory},
     },
 };
 
@@ -165,7 +166,7 @@ impl Default for BasicStackState {
         Self {
             individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
             programming_mode: RefCell::new(false),
-            routing_count: RefCell::new(6), // Default per KNX spec
+            routing_count: RefCell::new(6),                      // Default per KNX spec
             serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00], // Default: manufacturer 0x00FA
         }
     }
@@ -614,32 +615,49 @@ impl<P: IpPlatform + Default> IpStackState for BasicIpStackState<P> {
 pub trait StackDefinition: Copy {
     /// Device descriptor / mask version (2 bytes, e.g., 0x07B0 for System B)
     const MASK_VERSION: &'static [u8; 2];
-    type ADT: AddressTable + 'static;
-    type AST: AssociationTable + 'static;
-    type COT: CommunicationObjectTable + 'static;
+
+    /// User-defined tables container.
+    ///
+    /// This type holds all the tables for your device. The required traits depend
+    /// on which features you use:
+    ///
+    /// - For group object communication, implement [`HasAddressTable`](memory::HasAddressTable),
+    ///   [`HasAssociationTable`](memory::HasAssociationTable), and
+    ///   [`HasCommunicationObjectTable`](memory::HasCommunicationObjectTable).
+    /// - For memory services, your [`MemoryMap`](memory::MemoryMap) implementation
+    ///   receives a reference to this type.
+    ///
+    /// You can add additional custom tables for memory services or other purposes.
+    /// The specific trait bounds are enforced by the layers that need them, not here.
+    type Tables: 'static;
+
     type P: ConstDefault;
     type CO: ComObjects;
     type LLB: layers::LinkLayerBuilder;
-    type IOB: InterfaceObjectsBuilder<Self::State>;
+    type IOB: InterfaceObjectsBuilder<Self::State, Self::Tables>;
+
     /// Runtime state shared between stack, layers, and interface objects.
     ///
     /// Use [`BasicStackState`] for simple devices, or implement your own
     /// [`StackState`] type for devices with additional runtime configuration.
     type State: StackState + 'static;
+
+    /// Memory map for A_Memory_Read/Write services.
+    ///
+    /// The memory map receives a reference to your `Tables` type when processing
+    /// memory read/write requests. You implement the dispatch logic to map
+    /// addresses to the appropriate tables.
+    ///
+    /// Use [`memory::NoMemoryMap`] if you don't need memory services.
+    type Mem: MemoryMap<Self::Tables> + 'static;
 }
 
-pub struct StackResources<D: StackDefinition, const BUF_SZ: usize = 128, const NUM_BUFS: usize = 4>
-where
-    D::ADT: AddressTable + 'static,
-    D::AST: TableMemory + 'static,
-    D::COT: CommunicationObjectTable + 'static,
-    D::CO: ComObjects,
-{
+pub struct StackResources<D: StackDefinition, const BUF_SZ: usize = 128, const NUM_BUFS: usize = 4> {
     inner: MaybeUninit<Inner<D>>,
     buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
     buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
     link_layer_resources: MaybeUninit<<D::LLB as LinkLayerBuilder>::Resources>,
-    interface_objects: MaybeUninit<<D::IOB as InterfaceObjectsBuilder<D::State>>::Objects<'static, D::ADT, D::AST, D::COT>>,
+    interface_objects: MaybeUninit<<D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>>,
 }
 
 impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResources<D, BUF_SZ, NUM_BUFS> {
@@ -705,7 +723,7 @@ pub struct Runner<'d, D: StackDefinition> {
 /// see the `testutil` crate in this repository.
 pub struct Stack<'d, D: StackDefinition> {
     inner: &'d Inner<D>,
-    interface_objects: &'d <D::IOB as InterfaceObjectsBuilder<D::State>>::Objects<'static, D::ADT, D::AST, D::COT>,
+    interface_objects: &'d <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>,
     app_request_sender: DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
 }
 
@@ -721,9 +739,8 @@ pub(crate) struct Inner<D: StackDefinition> {
     pub(crate) buffer_manager: RefCell<DynBufferManager<'static>>,
     pub(crate) app_service_channel:
         Channel<NoopRawMutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
-    pub(crate) adt: RefCell<D::ADT>,
-    pub(crate) ast: RefCell<D::AST>,
-    pub(crate) cot: RefCell<D::COT>,
+    /// User-defined tables container (ADT, AST, COT, and any custom tables)
+    pub(crate) tables: D::Tables,
     pub(crate) comm_objs: RefCell<D::CO>,
     pub(crate) event_channel:
         PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
@@ -731,6 +748,8 @@ pub(crate) struct Inner<D: StackDefinition> {
     pub(crate) state: D::State,
     /// Hook context for communication object hooks
     pub(crate) hook_context: <D::CO as ComObjects>::HookContext,
+    /// Memory map for A_Memory_Read/Write services
+    pub(crate) memory_map: D::Mem,
 }
 
 // Implement context traits for Inner
@@ -767,15 +786,24 @@ fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
 /// use [`new_with_state`] instead.
 pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
     resources: &'d mut StackResources<D, BUF_SZ, NUM_BUFS>,
-    adt: D::ADT,
-    ast: D::AST,
-    cot: D::COT,
+    tables: D::Tables,
     comm_objs: D::CO,
     hook_context: <D::CO as ComObjects>::HookContext,
     link_layer_builder: D::LLB,
     interface_objects_builder: D::IOB,
-) -> (Stack<'d, D>, Runner<'d, D>) {
-    new_with_state(resources, adt, ast, cot, comm_objs, hook_context, link_layer_builder, interface_objects_builder, D::State::default())
+) -> (Stack<'d, D>, Runner<'d, D>)
+where
+    D::State: Default,
+{
+    new_with_state(
+        resources,
+        tables,
+        comm_objs,
+        hook_context,
+        link_layer_builder,
+        interface_objects_builder,
+        D::State::default(),
+    )
 }
 
 /// Create a new KNX stack with custom state.
@@ -784,9 +812,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
 /// Use this when you need to configure the state with specific values (e.g., serial number).
 pub fn new_with_state<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
     resources: &'d mut StackResources<D, BUF_SZ, NUM_BUFS>,
-    adt: D::ADT,
-    ast: D::AST,
-    cot: D::COT,
+    tables: D::Tables,
     comm_objs: D::CO,
     hook_context: <D::CO as ComObjects>::HookContext,
     link_layer_builder: D::LLB,
@@ -802,13 +828,12 @@ pub fn new_with_state<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const 
     let inner = Inner {
         buffer_manager: RefCell::new(buffer_manager.dyn_buffer_manager()),
         app_service_channel: Channel::new(),
-        adt: RefCell::new(adt),
-        ast: RefCell::new(ast),
-        cot: RefCell::new(cot),
+        tables,
         comm_objs: RefCell::new(comm_objs),
         event_channel: PubSubChannel::new(),
         state,
         hook_context,
+        memory_map: D::Mem::default(),
     };
 
     let inner = &*resources.inner.write(inner);
@@ -818,11 +843,9 @@ pub fn new_with_state<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const 
     //         transmute the table references to 'static lifetime. The actual lifetime is 'd
     //         but the interface objects container needs 'static for its type parameter.
     let interface_objects = {
-        let adt_ref: &'static RefCell<D::ADT> = unsafe { core::mem::transmute(&inner.adt) };
-        let ast_ref: &'static RefCell<D::AST> = unsafe { core::mem::transmute(&inner.ast) };
-        let cot_ref: &'static RefCell<D::COT> = unsafe { core::mem::transmute(&inner.cot) };
+        let tables_ref: &'static D::Tables = unsafe { core::mem::transmute(&inner.tables) };
         let state_ref: &'static D::State = unsafe { core::mem::transmute(&inner.state) };
-        interface_objects_builder.build(adt_ref, ast_ref, cot_ref, state_ref)
+        interface_objects_builder.build(tables_ref, state_ref)
     };
     let interface_objects = &*resources.interface_objects.write(interface_objects);
 
@@ -845,7 +868,12 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
     ///
     /// # Arguments
     /// * `link_layer_resources` - Mutable reference to the link layer resources
-    pub async fn run(self, link_layer_resources: &'d mut <D::LLB as LinkLayerBuilder>::Resources) -> ! {
+    // FIXME: Figure out how to get rid of the trait bounds here on all the tables
+    //        Problem is all the process() methods in the layers require these traits
+    pub async fn run(self, link_layer_resources: &'d mut <D::LLB as LinkLayerBuilder>::Resources) -> !
+    where
+        D::Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
+    {
         // Create all the channels for layer to layer communication
         let ll_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
         let nl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
@@ -859,7 +887,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Create a transport layer
         let mut transport_layer = TransportLayer::<'_, D>::new(
             &self.stack.inner.buffer_manager,
-            &self.stack.inner.adt,
+            &self.stack.inner.tables,
             nl_channel.sender().into(),
             al_channel.sender().into(),
         );
@@ -867,13 +895,13 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Create an application layer
         let mut application_layer = ApplicationLayer::<'_, D>::new(
             &self.stack.inner.buffer_manager,
-            &self.stack.inner.ast,
-            &self.stack.inner.cot,
+            &self.stack.inner.tables,
             &self.stack.inner.comm_objs,
             &self.stack.inner.hook_context,
             &self.stack.inner.event_channel,
             self.interface_objects,
             &self.stack.inner.state,
+            &self.stack.inner.memory_map,
             self.app_request_receiver,
             tl_channel.sender().into(),
         );
@@ -1107,40 +1135,6 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         &self.inner.comm_objs
     }
 
-    /// Get access to the address table.
-    ///
-    /// Returns a reference to the `RefCell` containing the address table.
-    /// The address table maps TSAPs (Transport Service Access Points) to group addresses.
-    ///
-    /// # Returns
-    /// A reference to the `RefCell<D::ADT>` containing the address table
-    pub fn address_table(&self) -> &RefCell<D::ADT> {
-        &self.inner.adt
-    }
-
-    /// Get access to the association table.
-    ///
-    /// Returns a reference to the `RefCell` containing the association table.
-    /// The association table maps TSAPs to ASAPs (Application Service Access Points).
-    ///
-    /// # Returns
-    /// A reference to the `RefCell<D::AST>` containing the association table
-    pub fn association_table(&self) -> &RefCell<D::AST> {
-        &self.inner.ast
-    }
-
-    /// Get access to the communication object table.
-    ///
-    /// Returns a reference to the `RefCell` containing the communication object table.
-    /// The communication object table contains type and flag information for each
-    /// communication object (separate from the values stored in `objects()`).
-    ///
-    /// # Returns
-    /// A reference to the `RefCell<D::COT>` containing the communication object table
-    pub fn communication_object_table(&self) -> &RefCell<D::COT> {
-        &self.inner.cot
-    }
-
     /// Get access to the interface objects container.
     ///
     /// Returns a reference to the interface objects container created by the
@@ -1149,7 +1143,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     ///
     /// # Returns
     /// A reference to the interface objects container
-    pub fn interface_objects(&self) -> &<D::IOB as InterfaceObjectsBuilder<D::State>>::Objects<'static, D::ADT, D::AST, D::COT> {
+    pub fn interface_objects(&self) -> &<D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static> {
         self.interface_objects
     }
 
@@ -1299,5 +1293,55 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// structures like the COT.
     pub fn hook_context(&self) -> &<D::CO as ComObjects>::HookContext {
         &self.inner.hook_context
+    }
+}
+
+// Table accessor methods - only available when Tables implements the appropriate traits
+impl<'d, D: StackDefinition> Stack<'d, D>
+where
+    D::Tables: memory::HasAddressTable,
+{
+    /// Get access to the address table.
+    ///
+    /// Returns a reference to the `RefCell` containing the address table.
+    /// The address table maps TSAPs (Transport Service Access Points) to group addresses.
+    ///
+    /// # Returns
+    /// A reference to the `RefCell` containing the address table
+    pub fn address_table(&self) -> &RefCell<<D::Tables as memory::HasAddressTable>::ADT> {
+        self.inner.tables.adt()
+    }
+}
+
+impl<'d, D: StackDefinition> Stack<'d, D>
+where
+    D::Tables: memory::HasAssociationTable,
+{
+    /// Get access to the association table.
+    ///
+    /// Returns a reference to the `RefCell` containing the association table.
+    /// The association table maps TSAPs to ASAPs (Application Service Access Points).
+    ///
+    /// # Returns
+    /// A reference to the `RefCell` containing the association table
+    pub fn association_table(&self) -> &RefCell<<D::Tables as memory::HasAssociationTable>::AST> {
+        self.inner.tables.ast()
+    }
+}
+
+impl<'d, D: StackDefinition> Stack<'d, D>
+where
+    D::Tables: memory::HasCommunicationObjectTable,
+{
+    /// Get access to the communication object table.
+    ///
+    /// Returns a reference to the `RefCell` containing the communication object table.
+    /// The communication object table contains type and flag information for each
+    /// communication object (separate from the values stored in `objects()`).
+    ///
+    /// # Returns
+    /// A reference to the `RefCell` containing the communication object table
+    pub fn communication_object_table(&self) -> &RefCell<<D::Tables as memory::HasCommunicationObjectTable>::COT> {
+        self.inner.tables.cot()
     }
 }

@@ -31,6 +31,7 @@ use static_cell::StaticCell;
 
 use zweidraehte::{
     define_com_objects,
+    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
     messages::buffers::{Buffer, BufferManager, DynBufferManager, MessageBuffer},
     messages::knx::{KnxMessageBuffer, ServiceType},
     objects::comm::{ComObjectStatus, ComObjects},
@@ -597,35 +598,32 @@ pub mod device_info {
 /// - Index 3: Application Program Object
 /// - Index 4: Group Object Table Object
 /// - Index 5: IP Parameter Object
-pub struct KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
+pub struct KnxIpInterfaceObjects<'a, Tables, S>
 where
-    ADT: LoadableTable,
-    AST: LoadableTable,
-    COT: LoadableTable,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
+    <Tables as HasAddressTable>::ADT: LoadableTable,
+    <Tables as HasAssociationTable>::AST: LoadableTable,
+    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
     S: IpStackState,
 {
     pub device: RefCell<DeviceObject<'a, S>>,
-    pub addr_table: RefCell<AddressTableObject<'a, ADT>>,
-    pub asso_table: RefCell<AssociationTableObject<'a, AST>>,
+    pub addr_table: RefCell<AddressTableObject<'a, <Tables as HasAddressTable>::ADT>>,
+    pub asso_table: RefCell<AssociationTableObject<'a, <Tables as HasAssociationTable>::AST>>,
     pub app_program: RefCell<ApplicationProgramObject>,
-    pub group_object_table: RefCell<GroupObjectTableObject<'a, COT>>,
+    pub group_object_table: RefCell<GroupObjectTableObject<'a, <Tables as HasCommunicationObjectTable>::COT>>,
     pub ip_parameter: RefCell<IpParameterObject<'a, S>>,
 }
 
-impl<'a, ADT, AST, COT, S> KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
+impl<'a, Tables, S> KnxIpInterfaceObjects<'a, Tables, S>
 where
-    ADT: LoadableTable,
-    AST: LoadableTable,
-    COT: LoadableTable,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
+    <Tables as HasAddressTable>::ADT: LoadableTable,
+    <Tables as HasAssociationTable>::AST: LoadableTable,
+    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
     S: IpStackState,
 {
     /// Create new interface objects wrapping the provided tables
-    pub fn new(
-        addr_table: &'a RefCell<ADT>,
-        asso_table: &'a RefCell<AST>,
-        co_table: &'a RefCell<COT>,
-        state: &'a S,
-    ) -> Self {
+    pub fn new(tables: &'a Tables, state: &'a S) -> Self {
         // Create Device Object with full device information including max APDU length
         // Note: Serial number is read dynamically from StackState
         let device = DeviceObject::with_info(state, &DeviceInfo {
@@ -649,20 +647,21 @@ where
 
         Self {
             device: RefCell::new(device),
-            addr_table: RefCell::new(AddressTableObject::new(addr_table)),
-            asso_table: RefCell::new(AssociationTableObject::new(asso_table)),
+            addr_table: RefCell::new(AddressTableObject::new(tables.adt())),
+            asso_table: RefCell::new(AssociationTableObject::new(tables.ast())),
             app_program: RefCell::new(app_program),
-            group_object_table: RefCell::new(GroupObjectTableObject::new(co_table)),
+            group_object_table: RefCell::new(GroupObjectTableObject::new(tables.cot())),
             ip_parameter: RefCell::new(ip_parameter),
         }
     }
 }
 
-impl<'a, ADT, AST, COT, S> PropertyServiceHandler for KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
+impl<'a, Tables, S> PropertyServiceHandler for KnxIpInterfaceObjects<'a, Tables, S>
 where
-    ADT: LoadableTable,
-    AST: LoadableTable,
-    COT: LoadableTable,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
+    <Tables as HasAddressTable>::ADT: LoadableTable,
+    <Tables as HasAssociationTable>::AST: LoadableTable,
+    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
     S: IpStackState,
 {
     fn object_count(&self) -> u16 {
@@ -735,29 +734,26 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct KnxIpInterfaceObjectsBuilder;
 
-impl<S: IpStackState> InterfaceObjectsBuilder<S> for KnxIpInterfaceObjectsBuilder {
-    type Objects<'a, ADT, AST, COT>
-        = KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
+impl<S, Tables> InterfaceObjectsBuilder<S, Tables> for KnxIpInterfaceObjectsBuilder
+where
+    S: IpStackState,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
+    <Tables as HasAddressTable>::ADT: LoadableTable,
+    <Tables as HasAssociationTable>::AST: LoadableTable,
+    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
+{
+    type Objects<'a>
+        = KnxIpInterfaceObjects<'a, Tables, S>
     where
-        ADT: LoadableTable + 'a,
-        AST: LoadableTable + 'a,
-        COT: LoadableTable + 'a,
+        Tables: 'a,
         S: 'a;
 
-    fn build<'a, ADT, AST, COT>(
-        self,
-        addr_table: &'a RefCell<ADT>,
-        asso_table: &'a RefCell<AST>,
-        co_table: &'a RefCell<COT>,
-        state: &'a S,
-    ) -> Self::Objects<'a, ADT, AST, COT>
+    fn build<'a>(self, tables: &'a Tables, state: &'a S) -> Self::Objects<'a>
     where
-        ADT: LoadableTable,
-        AST: LoadableTable,
-        COT: LoadableTable,
+        Tables: 'a,
         S: 'a,
     {
-        KnxIpInterfaceObjects::new(addr_table, asso_table, co_table, state)
+        KnxIpInterfaceObjects::new(tables, state)
     }
 }
 
@@ -780,16 +776,201 @@ impl ConstDefault for TestParameters {
 #[derive(Debug, Clone, Copy)]
 pub struct ConformanceTestStack;
 
+/// Size of the linear memory region for conformance tests (256 bytes)
+pub const LINEAR_MEMORY_SIZE: usize = 256;
+
+/// Tables container for conformance tests.
+///
+/// This holds all the tables (ADT, AST, COT) used by the stack,
+/// implementing the accessor traits for group object communication
+/// and memory services.
+///
+/// Also includes a linear memory region for memory read/write tests
+/// that doesn't interfere with the actual table data.
+pub struct ConformanceTables {
+    pub adt: RefCell<conformance_config::AddrTab>,
+    pub ast: RefCell<conformance_config::AssoTab>,
+    pub cot: RefCell<conformance_config::CoTab>,
+    /// Linear memory region for A_Memory_Read/Write tests
+    pub linear_memory: RefCell<[u8; LINEAR_MEMORY_SIZE]>,
+}
+
+impl HasAddressTable for ConformanceTables {
+    type ADT = conformance_config::AddrTab;
+    fn adt(&self) -> &RefCell<Self::ADT> {
+        &self.adt
+    }
+}
+
+impl HasAssociationTable for ConformanceTables {
+    type AST = conformance_config::AssoTab;
+    fn ast(&self) -> &RefCell<Self::AST> {
+        &self.ast
+    }
+}
+
+impl HasCommunicationObjectTable for ConformanceTables {
+    type COT = conformance_config::CoTab;
+    fn cot(&self) -> &RefCell<Self::COT> {
+        &self.cot
+    }
+}
+
+/// Memory map for conformance tests.
+///
+/// Memory layout:
+/// - 0x0100-0x0115: Address Table (ADT) - 22 bytes max (11 entries * 2 bytes)
+/// - 0x0116-0x014F: Association Table (AST) - 48 bytes max (11 entries * 4 bytes + 4 header)
+/// - 0x0150-0x019F: Communication Object Table (COT) - 24 bytes max (11 entries * 2 bytes + 2 header)
+/// - 0x0200-0x02FF: Linear memory (256 bytes, read-write for tests)
+/// - 0x0300+: Protected memory (returns NotAccessible error)
+///
+/// This layout matches what the M-2.6 and M-2.7 conformance tests expect:
+/// - MEMPOS = 0x0200 (first accessible memory position for linear memory tests)
+/// - MEMPOS_LASTACCESS = 0x02FF (last accessible memory position)
+/// - MEMPOS_PROTECTED = 0x0300 (first protected memory position)
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ConformanceMemoryMap;
+
+impl ConformanceMemoryMap {
+    /// Base address for Address Table
+    pub const ADT_BASE: u16 = 0x0100;
+    /// Base address for Association Table
+    pub const AST_BASE: u16 = 0x0116;
+    /// Base address for Communication Object Table
+    pub const COT_BASE: u16 = 0x0150;
+    /// Base address for linear memory region (matches EITT MEMPOS)
+    pub const LINEAR_MEMORY_BASE: u16 = 0x0200;
+}
+
+impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap {
+    fn read(
+        &self,
+        tables: &ConformanceTables,
+        address: u16,
+        data: &mut [u8],
+    ) -> Result<usize, zweidraehte::memory::MemoryError> {
+        use zweidraehte::objects::tables::TableMemory;
+
+        let end_address = address.saturating_add(data.len() as u16);
+
+        // Address Table (ADT): 0x0100 - 0x0115
+        let adt = tables.adt.borrow();
+        let adt_data = adt.data_ref();
+        let adt_end = Self::ADT_BASE + adt_data.len() as u16;
+        if address >= Self::ADT_BASE && end_address <= adt_end {
+            let offset = (address - Self::ADT_BASE) as usize;
+            data.copy_from_slice(&adt_data[offset..offset + data.len()]);
+            return Ok(data.len());
+        }
+
+        // Association Table (AST): 0x0116 - 0x014F
+        let ast = tables.ast.borrow();
+        let ast_data = ast.data_ref();
+        let ast_end = Self::AST_BASE + ast_data.len() as u16;
+        if address >= Self::AST_BASE && end_address <= ast_end {
+            let offset = (address - Self::AST_BASE) as usize;
+            data.copy_from_slice(&ast_data[offset..offset + data.len()]);
+            return Ok(data.len());
+        }
+
+        // Communication Object Table (COT): 0x0150 - 0x019F
+        let cot = tables.cot.borrow();
+        let cot_data = cot.data_ref();
+        let cot_end = Self::COT_BASE + cot_data.len() as u16;
+        if address >= Self::COT_BASE && end_address <= cot_end {
+            let offset = (address - Self::COT_BASE) as usize;
+            data.copy_from_slice(&cot_data[offset..offset + data.len()]);
+            return Ok(data.len());
+        }
+
+        // Linear memory region: 0x0200 - 0x02FF (256 bytes)
+        if address >= Self::LINEAR_MEMORY_BASE
+            && end_address <= Self::LINEAR_MEMORY_BASE + LINEAR_MEMORY_SIZE as u16
+        {
+            let offset = (address - Self::LINEAR_MEMORY_BASE) as usize;
+            let mem = tables.linear_memory.borrow();
+            data.copy_from_slice(&mem[offset..offset + data.len()]);
+            return Ok(data.len());
+        }
+
+        // Address is outside accessible range or spans into protected memory
+        Err(zweidraehte::memory::MemoryError::NotAccessible)
+    }
+
+    fn write(
+        &self,
+        tables: &ConformanceTables,
+        address: u16,
+        data: &[u8],
+    ) -> Result<usize, zweidraehte::memory::MemoryError> {
+        use zweidraehte::objects::tables::TableMemory;
+
+        let end_address = address.saturating_add(data.len() as u16);
+
+        // Address Table (ADT): 0x0100 - 0x0115
+        {
+            let adt = tables.adt.borrow();
+            let adt_end = Self::ADT_BASE + adt.data_ref().len() as u16;
+            if address >= Self::ADT_BASE && end_address <= adt_end {
+                drop(adt);
+                let mut adt = tables.adt.borrow_mut();
+                let offset = (address - Self::ADT_BASE) as usize;
+                adt.data_ref_mut()[offset..offset + data.len()].copy_from_slice(data);
+                return Ok(data.len());
+            }
+        }
+
+        // Association Table (AST): 0x0116 - 0x014F
+        {
+            let ast = tables.ast.borrow();
+            let ast_end = Self::AST_BASE + ast.data_ref().len() as u16;
+            if address >= Self::AST_BASE && end_address <= ast_end {
+                drop(ast);
+                let mut ast = tables.ast.borrow_mut();
+                let offset = (address - Self::AST_BASE) as usize;
+                ast.data_ref_mut()[offset..offset + data.len()].copy_from_slice(data);
+                return Ok(data.len());
+            }
+        }
+
+        // Communication Object Table (COT): 0x0150 - 0x019F
+        {
+            let cot = tables.cot.borrow();
+            let cot_end = Self::COT_BASE + cot.data_ref().len() as u16;
+            if address >= Self::COT_BASE && end_address <= cot_end {
+                drop(cot);
+                let mut cot = tables.cot.borrow_mut();
+                let offset = (address - Self::COT_BASE) as usize;
+                cot.data_ref_mut()[offset..offset + data.len()].copy_from_slice(data);
+                return Ok(data.len());
+            }
+        }
+
+        // Linear memory region: 0x0200 - 0x02FF (256 bytes)
+        if address >= Self::LINEAR_MEMORY_BASE
+            && end_address <= Self::LINEAR_MEMORY_BASE + LINEAR_MEMORY_SIZE as u16
+        {
+            let offset = (address - Self::LINEAR_MEMORY_BASE) as usize;
+            let mut mem = tables.linear_memory.borrow_mut();
+            mem[offset..offset + data.len()].copy_from_slice(data);
+            return Ok(data.len());
+        }
+
+        // Address is outside accessible range or spans into protected memory
+        Err(zweidraehte::memory::MemoryError::NotAccessible)
+    }
+}
+
 impl StackDefinition for ConformanceTestStack {
     const MASK_VERSION: &'static [u8; 2] = &[0x57, 0xB0];
-    type ADT = conformance_config::AddrTab;
-    type AST = conformance_config::AssoTab;
-    type COT = conformance_config::CoTab;
+    type Tables = ConformanceTables;
     type P = TestParameters;
     type CO = ConformanceComObjects;
     type LLB = MockLinkLayerBuilder<16, 16>;
     type IOB = KnxIpInterfaceObjectsBuilder;
     type State = BasicIpStackState<MockIpPlatform>;
+    type Mem = ConformanceMemoryMap;
 }
 
 // ============================================================================
@@ -853,6 +1034,14 @@ impl FullStackHarness {
         // Create tables from configuration
         let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables();
 
+        // Create the tables container
+        let tables = ConformanceTables {
+            adt: RefCell::new(addr_tab),
+            ast: RefCell::new(asso_tab),
+            cot: RefCell::new(co_tab),
+            linear_memory: RefCell::new([0u8; LINEAR_MEMORY_SIZE]),
+        };
+
         // Create stack resources
         let resources = STACK_RESOURCES.init(StackResources::new());
 
@@ -869,9 +1058,7 @@ impl FullStackHarness {
         // Create stack
         let (stack, runner) = zweidraehte::new_with_state(
             resources,
-            addr_tab,
-            asso_tab,
-            co_tab,
+            tables,
             ConformanceComObjects::new(),
             hook_context,
             link_layer_builder,

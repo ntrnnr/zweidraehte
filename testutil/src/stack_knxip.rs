@@ -122,6 +122,7 @@ use zweidraehte::{
     define_com_objects,
     dpt::DPT_Switch,
     layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, KnxNetIpResources, servers},
+    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
     messages::knxip::KNXnetIPServiceType,
     messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium, ServiceFamily, SupportedService},
     objects::comm::{ComObjectIndex, ComObjects},
@@ -292,35 +293,32 @@ mod device_info {
 /// - Index 3: Application Program Object
 /// - Index 4: Group Object Table Object
 /// - Index 5: IP Parameter Object
-pub struct KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
+pub struct KnxIpInterfaceObjects<'a, Tables, S>
 where
-    ADT: zweidraehte::objects::tables::LoadableTable,
-    AST: zweidraehte::objects::tables::LoadableTable,
-    COT: zweidraehte::objects::tables::LoadableTable,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
+    <Tables as HasAddressTable>::ADT: LoadableTable,
+    <Tables as HasAssociationTable>::AST: LoadableTable,
+    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
     S: IpStackState,
 {
     pub device: RefCell<DeviceObject<'a, S>>,
-    pub addr_table: RefCell<AddressTableObject<'a, ADT>>,
-    pub asso_table: RefCell<AssociationTableObject<'a, AST>>,
+    pub addr_table: RefCell<AddressTableObject<'a, <Tables as HasAddressTable>::ADT>>,
+    pub asso_table: RefCell<AssociationTableObject<'a, <Tables as HasAssociationTable>::AST>>,
     pub app_program: RefCell<ApplicationProgramObject>,
-    pub group_object_table: RefCell<GroupObjectTableObject<'a, COT>>,
+    pub group_object_table: RefCell<GroupObjectTableObject<'a, <Tables as HasCommunicationObjectTable>::COT>>,
     pub ip_parameter: RefCell<IpParameterObject<'a, S>>,
 }
 
-impl<'a, ADT, AST, COT, S> KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
+impl<'a, Tables, S> KnxIpInterfaceObjects<'a, Tables, S>
 where
-    ADT: zweidraehte::objects::tables::LoadableTable,
-    AST: zweidraehte::objects::tables::LoadableTable,
-    COT: zweidraehte::objects::tables::LoadableTable,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
+    <Tables as HasAddressTable>::ADT: LoadableTable,
+    <Tables as HasAssociationTable>::AST: LoadableTable,
+    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
     S: IpStackState,
 {
     /// Create new interface objects wrapping the provided tables
-    pub fn new(
-        addr_table: &'a RefCell<ADT>,
-        asso_table: &'a RefCell<AST>,
-        co_table: &'a RefCell<COT>,
-        state: &'a S,
-    ) -> Self {
+    pub fn new(tables: &'a Tables, state: &'a S) -> Self {
         // Create Device Object with device information and state reference
         // Note: serial_number and manufacturer_id are read dynamically from StackState
         let device = DeviceObject::with_values(state, device_info::HARDWARE_TYPE);
@@ -338,20 +336,22 @@ where
 
         Self {
             device: RefCell::new(device),
-            addr_table: RefCell::new(AddressTableObject::new(addr_table)),
-            asso_table: RefCell::new(AssociationTableObject::new(asso_table)),
+            addr_table: RefCell::new(AddressTableObject::new(tables.adt())),
+            asso_table: RefCell::new(AssociationTableObject::new(tables.ast())),
+            // FIXME: we need an ApplicationProgramObject that wraps our app program - it needs to implement the appropriate state machine(s) for an application
             app_program: RefCell::new(app_program),
-            group_object_table: RefCell::new(GroupObjectTableObject::new(co_table)),
+            group_object_table: RefCell::new(GroupObjectTableObject::new(tables.cot())),
             ip_parameter: RefCell::new(ip_parameter),
         }
     }
 }
 
-impl<'a, ADT, AST, COT, S> PropertyServiceHandler for KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
+impl<'a, Tables, S> PropertyServiceHandler for KnxIpInterfaceObjects<'a, Tables, S>
 where
-    ADT: zweidraehte::objects::tables::LoadableTable,
-    AST: zweidraehte::objects::tables::LoadableTable,
-    COT: zweidraehte::objects::tables::LoadableTable,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
+    <Tables as HasAddressTable>::ADT: LoadableTable,
+    <Tables as HasAssociationTable>::AST: LoadableTable,
+    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
     S: IpStackState,
 {
     fn object_count(&self) -> u16 {
@@ -424,29 +424,54 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct KnxIpInterfaceObjectsBuilder;
 
-impl<S: IpStackState> InterfaceObjectsBuilder<S> for KnxIpInterfaceObjectsBuilder {
-    type Objects<'a, ADT, AST, COT>
-        = KnxIpInterfaceObjects<'a, ADT, AST, COT, S>
+impl<S, Tables> InterfaceObjectsBuilder<S, Tables> for KnxIpInterfaceObjectsBuilder
+where
+    S: IpStackState,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
+    <Tables as HasAddressTable>::ADT: LoadableTable,
+    <Tables as HasAssociationTable>::AST: LoadableTable,
+    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
+{
+    type Objects<'a>
+        = KnxIpInterfaceObjects<'a, Tables, S>
     where
-        ADT: LoadableTable + 'a,
-        AST: LoadableTable + 'a,
-        COT: LoadableTable + 'a,
+        Tables: 'a,
         S: 'a;
 
-    fn build<'a, ADT, AST, COT>(
-        self,
-        addr_table: &'a RefCell<ADT>,
-        asso_table: &'a RefCell<AST>,
-        co_table: &'a RefCell<COT>,
-        state: &'a S,
-    ) -> Self::Objects<'a, ADT, AST, COT>
+    fn build<'a>(self, tables: &'a Tables, state: &'a S) -> Self::Objects<'a>
     where
-        ADT: LoadableTable,
-        AST: LoadableTable,
-        COT: LoadableTable,
+        Tables: 'a,
         S: 'a,
     {
-        KnxIpInterfaceObjects::new(addr_table, asso_table, co_table, state)
+        KnxIpInterfaceObjects::new(tables, state)
+    }
+}
+
+/// Tables container for MyKnxStackWithKnxIp
+pub struct KnxIpTables {
+    pub adt: RefCell<stack_test_config::AddrTab>,
+    pub ast: RefCell<stack_test_config::AssoTab>,
+    pub cot: RefCell<stack_test_config::CoTab>,
+}
+
+impl HasAddressTable for KnxIpTables {
+    type ADT = stack_test_config::AddrTab;
+    fn adt(&self) -> &RefCell<Self::ADT> {
+        &self.adt
+    }
+}
+
+impl HasAssociationTable for KnxIpTables {
+    type AST = stack_test_config::AssoTab;
+    fn ast(&self) -> &RefCell<Self::AST> {
+        &self.ast
+    }
+}
+
+impl HasCommunicationObjectTable for KnxIpTables {
+    type COT = stack_test_config::CoTab;
+    fn cot(&self) -> &RefCell<Self::COT> {
+        &self.cot
     }
 }
 
@@ -454,14 +479,13 @@ impl<S: IpStackState> InterfaceObjectsBuilder<S> for KnxIpInterfaceObjectsBuilde
 pub struct MyKnxStackWithKnxIp;
 impl StackDefinition for MyKnxStackWithKnxIp {
     const MASK_VERSION: &'static [u8; 2] = &[0x57, 0xb0];
-    type ADT = stack_test_config::AddrTab;
-    type AST = stack_test_config::AssoTab;
-    type COT = stack_test_config::CoTab;
+    type Tables = KnxIpTables;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = KnxNetIpBuilder<2, 2>; // 2 sockets, 2 servers
     type IOB = KnxIpInterfaceObjectsBuilder;
     type State = BasicIpStackState<MockIpPlatform>;
+    type Mem = zweidraehte::memory::NoMemoryMap;
 }
 
 #[embassy_executor::task]
@@ -548,16 +572,17 @@ async fn main(spawner: Spawner) {
     // Create table instances with configuration data loaded
     let (addr_tab, asso_tab, co_tab) = stack_test_config::StackTestConfig::create_tables();
 
+    // Create the tables container
+    let tables = KnxIpTables { adt: RefCell::new(addr_tab), ast: RefCell::new(asso_tab), cot: RefCell::new(co_tab) };
+
     // Create stack resources - the stack takes ownership of the tables
     // and stores them in RefCells that we can access via the Stack handle
     static RESOURCES: StaticCell<StackResources<MyKnxStackWithKnxIp>> = StaticCell::new();
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
-        addr_tab,
-        asso_tab,
-        co_tab,
+        tables,
         comm_objs::AppComObjects::new(),
-        (),  // hook_context
+        (), // hook_context
         link_layer_builder,
         KnxIpInterfaceObjectsBuilder,
     );

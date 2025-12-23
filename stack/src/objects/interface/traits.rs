@@ -3,15 +3,12 @@
 //! These traits define the interface between concrete object implementations
 //! and the stack's management layer.
 
-use core::cell::RefCell;
 use core::net::Ipv4Addr;
 
 use crate::dpt::{
     InterfaceObjectType, PDT_Bitset16, PDT_Bitset8, PDT_Generic06, PDT_UnsignedChar,
     PDT_UnsignedInt, PDT_UnsignedLong,
 };
-use crate::objects::tables::LoadableTable;
-
 use super::{PropertyDescriptionResponse, PropertyDescriptor, PropertyError};
 
 // ============================================================================
@@ -440,14 +437,16 @@ pub trait LoadableInterfaceObject: InterfaceObject {
 /// `InterfaceObjects` container, which is then stored in the stack's
 /// internal state and accessible via a context trait.
 ///
+/// # Type Parameters
+///
+/// * `S` - The stack state type (e.g., `BasicStackState` or a custom type implementing `IpStackState`)
+/// * `Tables` - The user-defined tables container type (implements accessor traits)
+///
 /// # State Requirements
 ///
 /// Different interface objects may require different state trait bounds:
 /// - Basic devices only need `StackState`
 /// - KNXnet/IP devices need `IpStackState` (which extends `StackState`)
-///
-/// Use the `StateRequirement` associated type to specify the minimum state
-/// trait bound your interface objects need.
 ///
 /// # Example
 ///
@@ -462,59 +461,46 @@ pub trait LoadableInterfaceObject: InterfaceObject {
 /// }
 ///
 /// // The container that will hold all the interface objects
-/// pub struct KnxIpInterfaceObjects<'a, ADT, AST, COT> {
+/// pub struct KnxIpInterfaceObjects<'a, Tables> {
 ///     pub device: RefCell<DeviceObject>,
-///     pub addr_table: RefCell<AddressTableObject<'a, ADT>>,
-///     pub asso_table: RefCell<AssociationTableObject<'a, AST>>,
-///     pub app_program: RefCell<ApplicationProgramObject>,
-///     pub group_object_table: RefCell<GroupObjectTableObject<'a, COT>>,
-///     pub ip_parameter: RefCell<IpParameterObject>,
+///     pub addr_table: RefCell<AddressTableObject<'a, ...>>,
+///     // ...
 /// }
 ///
-/// impl InterfaceObjectsBuilder for KnxIpInterfaceObjectsBuilder {
-///     type Objects<'a, ADT, AST, COT> = KnxIpInterfaceObjects<'a, ADT, AST, COT>
+/// impl<Tables> InterfaceObjectsBuilder<MyState, Tables> for KnxIpInterfaceObjectsBuilder
+/// where
+///     Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
+/// {
+///     type Objects<'a> = KnxIpInterfaceObjects<'a, Tables>
 ///     where
-///         ADT: LoadableTable + 'a,
-///         AST: LoadableTable + 'a,
-///         COT: LoadableTable + 'a;
+///         Tables: 'a,
+///         MyState: 'a;
 ///
-///     fn build<'a, ADT, AST, COT>(
+///     fn build<'a>(
 ///         self,
-///         addr_table: &'a RefCell<ADT>,
-///         asso_table: &'a RefCell<AST>,
-///         co_table: &'a RefCell<COT>,
-///     ) -> Self::Objects<'a, ADT, AST, COT>
+///         tables: &'a Tables,
+///         state: &'a MyState,
+///     ) -> Self::Objects<'a>
 ///     where
-///         ADT: LoadableTable,
-///         AST: LoadableTable,
-///         COT: LoadableTable,
+///         Tables: 'a,
+///         MyState: 'a,
 ///     {
 ///         // Create and configure all interface objects
-///         let mut device = DeviceObject::new();
-///         device.serial_number = self.serial_number.into();
-///         device.manufacturer_id = self.manufacturer_id.into();
-///         // ... etc
-///
-///         KnxIpInterfaceObjects {
-///             device: RefCell::new(device),
-///             addr_table: RefCell::new(AddressTableObject::new(addr_table)),
-///             // ... etc
-///         }
+///         // Access tables via the HasAddressTable, HasAssociationTable, etc. traits
+///         // ...
 ///     }
 /// }
 /// ```
-pub trait InterfaceObjectsBuilder<S>: Sized {
+pub trait InterfaceObjectsBuilder<S, Tables>: Sized {
     /// The container type that holds all interface objects.
     ///
     /// This is a GAT (Generic Associated Type) that allows the container
     /// to hold references to the tables with the appropriate lifetimes.
     /// The container must implement `PropertyServiceHandler` so the
     /// ApplicationLayer can dispatch property read/write requests to it.
-    type Objects<'a, ADT, AST, COT>: PropertyServiceHandler
+    type Objects<'a>: PropertyServiceHandler
     where
-        ADT: LoadableTable + 'a,
-        AST: LoadableTable + 'a,
-        COT: LoadableTable + 'a,
+        Tables: 'a,
         S: 'a;
 
     /// Build the interface objects container.
@@ -523,24 +509,14 @@ pub trait InterfaceObjectsBuilder<S>: Sized {
     /// wrapping the provided table references as needed.
     ///
     /// # Arguments
-    /// * `addr_table` - Reference to the address table (stored in stack Inner)
-    /// * `asso_table` - Reference to the association table (stored in stack Inner)
-    /// * `co_table` - Reference to the communication object table (stored in stack Inner)
+    /// * `tables` - Reference to the user-defined tables container (stored in stack Inner)
     /// * `state` - Reference to the shared stack state (programming mode, etc.)
     ///
     /// # Returns
     /// The container holding all interface objects for this device.
-    fn build<'a, ADT, AST, COT>(
-        self,
-        addr_table: &'a RefCell<ADT>,
-        asso_table: &'a RefCell<AST>,
-        co_table: &'a RefCell<COT>,
-        state: &'a S,
-    ) -> Self::Objects<'a, ADT, AST, COT>
+    fn build<'a>(self, tables: &'a Tables, state: &'a S) -> Self::Objects<'a>
     where
-        ADT: LoadableTable,
-        AST: LoadableTable,
-        COT: LoadableTable,
+        Tables: 'a,
         S: 'a;
 }
 
@@ -576,26 +552,16 @@ pub trait InterfaceObjectsContext {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EmptyInterfaceObjectsBuilder;
 
-impl<S> InterfaceObjectsBuilder<S> for EmptyInterfaceObjectsBuilder {
-    type Objects<'a, ADT, AST, COT>
+impl<S, Tables> InterfaceObjectsBuilder<S, Tables> for EmptyInterfaceObjectsBuilder {
+    type Objects<'a>
         = ()
     where
-        ADT: LoadableTable + 'a,
-        AST: LoadableTable + 'a,
-        COT: LoadableTable + 'a,
+        Tables: 'a,
         S: 'a;
 
-    fn build<'a, ADT, AST, COT>(
-        self,
-        _addr_table: &'a RefCell<ADT>,
-        _asso_table: &'a RefCell<AST>,
-        _co_table: &'a RefCell<COT>,
-        _state: &'a S,
-    ) -> Self::Objects<'a, ADT, AST, COT>
+    fn build<'a>(self, _tables: &'a Tables, _state: &'a S) -> Self::Objects<'a>
     where
-        ADT: LoadableTable,
-        AST: LoadableTable,
-        COT: LoadableTable,
+        Tables: 'a,
         S: 'a,
     {
         // No interface objects created
