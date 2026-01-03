@@ -32,7 +32,7 @@
 
 use std::collections::BTreeMap;
 
-use super::helpers::{comment, expect, inject, inject_delay};
+use super::helpers::{comment, expect, inject, inject_delay, set_programming_mode};
 use crate::{TestCase, TestSuite, TestVariable};
 
 /// Create test variables for transport layer state machine tests
@@ -373,6 +373,8 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 66 47 D6 00 36 10 01 01", 3200),
                 // Finally disconnect after max retries
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 3200),
+                comment("Cleanup: Disable programming mode that was enabled by PropertyValueWrite"),
+                set_programming_mode(false),
                 comment("================================================================================"),
             ],
         },

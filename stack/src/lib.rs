@@ -145,7 +145,86 @@ pub trait StackState: Default {
     /// The serial number consists of 2 bytes manufacturer ID followed by
     /// 4 bytes device-specific identifier. Used for `A_IndividualAddressSerialNumber_Read/Write`.
     fn serial_number(&self) -> &[u8; 6];
+
+    // =========================================================================
+    // Authorization (A_Authorize_Request / A_Key_Write)
+    // =========================================================================
+
+    /// Get the maximum number of access levels supported.
+    ///
+    /// Returns 4 for levels 0-3, or 16 for levels 0-15.
+    /// Default is 4 (levels 0-3).
+    fn max_access_levels(&self) -> u8 {
+        4
+    }
+
+    /// Get the current access level for the connection.
+    ///
+    /// 0 = maximum access (full rights), 3 or 15 = minimum access.
+    /// Default is the minimum access level (no authorization).
+    fn current_access_level(&self) -> u8 {
+        self.max_access_levels() - 1
+    }
+
+    /// Set the current access level for the connection.
+    fn set_current_access_level(&self, _level: u8) {
+        // Default: do nothing
+    }
+
+    /// Get the default access level for new connections.
+    ///
+    /// This is the access level granted when a connection is opened without
+    /// explicit authorization. It corresponds to the first level that has
+    /// the default key (`0xFFFFFFFF`).
+    ///
+    /// For a device with keys[0]=0x00, keys[1]=0x12345678, keys[2]=0xFF..FF, keys[3]=0xFF..FF,
+    /// this would return 2 (the first match for 0xFFFFFFFF when walking from level 0 upward).
+    ///
+    /// Default implementation: returns level 3 (minimum access, "access for everyone").
+    /// Implementations with a key table should override this to call `authorize(&[0xFF, 0xFF, 0xFF, 0xFF])`.
+    fn default_access_level(&self) -> u8 {
+        self.max_access_levels() - 1 // Level 3 = minimum access = "access for everyone"
+    }
+
+    /// Authorize with a 4-byte key and return the associated access level.
+    ///
+    /// Returns the access level (0-3 or 0-15) associated with the key:
+    /// - If key matches a configured key: return the associated level (first match wins, walking from level 0)
+    /// - If key is not found in table: return max level (3 or 15, minimum access)
+    ///
+    /// Note: The key `0xFFFFFFFF` is NOT special - it must be found in the key table
+    /// like any other key. This allows devices to configure which level(s) use the default key.
+    ///
+    /// Default implementation: returns minimum access for all keys (no key table).
+    fn authorize(&self, _key: &[u8; 4]) -> u8 {
+        self.max_access_levels() - 1 // No key table -> minimum access
+    }
+
+    /// Write a new key for a specific access level.
+    ///
+    /// Arguments:
+    /// - `level`: The access level to set the key for
+    /// - `key`: The new 4-byte key
+    /// - `current_access_level`: The current access level of the connection
+    ///
+    /// Returns the level if successful, or 0xFF if:
+    /// - The level is invalid (>= max_access_levels)
+    /// - The current access level is higher than the target level
+    ///
+    /// If key is `0xFFFFFFFF`, the key for that level is deleted (set to invalid).
+    ///
+    /// Default implementation: always returns 0xFF (not supported).
+    fn key_write(&self, _level: u8, _key: &[u8; 4], _current_access_level: u8) -> u8 {
+        0xFF // Not supported by default
+    }
 }
+
+/// Number of authorization access levels supported (0-3).
+pub const MAX_ACCESS_LEVELS: usize = 4;
+
+/// Number of settable authorization keys (levels 0-2).
+/// Level 3 is "access for everyone" and has no key - it's what you get when auth fails.
+pub const NUM_AUTH_KEYS: usize = 3;
 
 /// A basic stack state implementation with individual address and programming mode.
 ///
@@ -153,21 +232,50 @@ pub trait StackState: Default {
 /// For more complex devices, implement your own `StackState` type.
 ///
 /// The default individual address is `1.0.1`.
+///
+/// ## Authorization
+///
+/// This state supports 4 access levels:
+/// - Level 0: Maximum access (system manufacturer)
+/// - Level 1: Device manufacturer access
+/// - Level 2: Configuration tool access (ETS)
+/// - Level 3: Minimum access ("access for everyone") - no key, always granted on auth failure
+///
+/// Only levels 0-2 have settable keys. Keys default to `0xFFFFFFFF`.
+/// When authorizing, the key table is walked from level 0 to find the first matching key.
+/// If no key matches, level 3 is returned.
 #[derive(Debug)]
 pub struct BasicStackState {
     individual_address: RefCell<IndividualAddress>,
     programming_mode: RefCell<bool>,
     routing_count: RefCell<u8>,
     serial_number: [u8; 6],
+    /// Authorization key table for levels 0-2 only.
+    /// Level 3 has no key - it's the fallback when no key matches.
+    /// 0xFFFFFFFF means "default key" (matches if provided).
+    auth_keys: RefCell<[[u8; 4]; NUM_AUTH_KEYS]>,
+    /// Current access level for this connection
+    current_access_level: RefCell<u8>,
 }
 
 impl Default for BasicStackState {
     fn default() -> Self {
+        // Default key table: all keys set to 0xFFFFFFFF (the default key).
+        //
+        // With this configuration, authorize(0xFFFFFFFF) returns 0 (first match).
+        // However, new connections start at level 3 (see default_access_level()).
+        // To get higher access, you must explicitly send A_Authorize_Request.
+        //
+        // This matches both:
+        // - M-2.6: New connections have level 3, can't access protected memory
+        // - M-2.11: Authorizing with 0xFFFFFFFF gives level 0
         Self {
             individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
             programming_mode: RefCell::new(false),
             routing_count: RefCell::new(6),                      // Default per KNX spec
             serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00], // Default: manufacturer 0x00FA
+            auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]), // All keys = default key
+            current_access_level: RefCell::new(0), // Start at level 0 (max access)
         }
     }
 }
@@ -180,6 +288,8 @@ impl BasicStackState {
             programming_mode: RefCell::new(false),
             routing_count: RefCell::new(6),
             serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00],
+            auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]), // All keys = default key (0xFFFFFFFF)
+            current_access_level: RefCell::new(0),
         }
     }
 
@@ -190,6 +300,20 @@ impl BasicStackState {
             programming_mode: RefCell::new(false),
             routing_count: RefCell::new(6),
             serial_number,
+            auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]), // All keys = default key (0xFFFFFFFF)
+            current_access_level: RefCell::new(0),
+        }
+    }
+
+    /// Set the authorization key for a specific level.
+    ///
+    /// This is useful for initializing the key table during test setup.
+    /// Only levels 0-2 are settable. Level 3 has no key (always granted on auth failure).
+    ///
+    /// A key of `0xFFFFFFFF` is treated as the "default key".
+    pub fn set_auth_key(&self, level: u8, key: [u8; 4]) {
+        if (level as usize) < NUM_AUTH_KEYS {
+            self.auth_keys.borrow_mut()[level as usize] = key;
         }
     }
 }
@@ -221,6 +345,59 @@ impl StackState for BasicStackState {
 
     fn serial_number(&self) -> &[u8; 6] {
         &self.serial_number
+    }
+
+    fn max_access_levels(&self) -> u8 {
+        MAX_ACCESS_LEVELS as u8
+    }
+
+    fn current_access_level(&self) -> u8 {
+        *self.current_access_level.borrow()
+    }
+
+    fn set_current_access_level(&self, level: u8) {
+        *self.current_access_level.borrow_mut() = level.min(MAX_ACCESS_LEVELS as u8 - 1);
+    }
+
+    fn default_access_level(&self) -> u8 {
+        // New connections get the access level for the default key (0xFFFFFFFF).
+        // This matches Calimero's behavior: if all keys are default, you get level 0.
+        // If keys are configured, you get the first level with default key.
+        self.authorize(&[0xFF, 0xFF, 0xFF, 0xFF])
+    }
+
+    fn authorize(&self, key: &[u8; 4]) -> u8 {
+        let keys = self.auth_keys.borrow();
+
+        // Check if key matches any configured key (levels 0-2 only)
+        // Level 3 has no key - it's what you get when no key matches
+        for level in 0..NUM_AUTH_KEYS {
+            if &keys[level] == key {
+                return level as u8;
+            }
+        }
+
+        // Key not found in table - level 3 (minimum access, "access for everyone")
+        (MAX_ACCESS_LEVELS - 1) as u8
+    }
+
+    fn key_write(&self, level: u8, key: &[u8; 4], current_access_level: u8) -> u8 {
+        // Check if level is valid (only levels 0-2 are settable, level 3 has no key)
+        if level as usize >= NUM_AUTH_KEYS {
+            return 0xFF; // Invalid level (includes level 3)
+        }
+
+        // Check if current access level allows writing to this level
+        // Can only write to levels >= current level (lower or equal access)
+        if current_access_level > level {
+            return 0xFF; // Access denied
+        }
+
+        // Write the key
+        let mut keys = self.auth_keys.borrow_mut();
+        keys[level as usize] = *key;
+
+        level
     }
 }
 
@@ -260,6 +437,9 @@ use core::net::Ipv4Addr;
 ///     // ...
 /// }
 /// ```
+// FIXME: I don't like that this requires delegating StackState methods manually.
+//        Need to find a better solution.
+//        Maybe the same as with the tables? One giant state composition object with StackState and IpStackState, then traits that access parts of it?
 pub trait IpStackState: StackState {
     // ========================================================================
     // Current values (read from platform/OS - typically read-only)
@@ -381,13 +561,15 @@ pub const DEFAULT_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
 ///
 /// For more complex devices or those with persistent storage, implement
 /// your own [`IpStackState`] type.
+///
+/// ## Authorization
+///
+/// Delegates to [`BasicStackState`] for authorization handling.
+/// See [`BasicStackState`] documentation for access level details.
 #[derive(Debug)]
 pub struct BasicIpStackState<P: IpPlatform> {
-    // Base state
-    individual_address: RefCell<IndividualAddress>,
-    programming_mode: RefCell<bool>,
-    routing_count: RefCell<u8>,
-    serial_number: [u8; 6],
+    /// Base stack state (individual address, programming mode, auth, etc.)
+    base: BasicStackState,
 
     // IP configured values
     configured_ip: RefCell<Ipv4Addr>,
@@ -434,10 +616,7 @@ pub trait IpPlatform {
 impl<P: IpPlatform + Default> Default for BasicIpStackState<P> {
     fn default() -> Self {
         Self {
-            individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
-            programming_mode: RefCell::new(false),
-            routing_count: RefCell::new(6),
-            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00], // Default: manufacturer 0x00FA
+            base: BasicStackState::default(),
             configured_ip: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
             configured_subnet: RefCell::new(Ipv4Addr::new(255, 255, 255, 0)),
             configured_gateway: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
@@ -466,7 +645,11 @@ impl<P: IpPlatform> BasicIpStackState<P> {
     where
         P: Default,
     {
-        Self { individual_address: RefCell::new(addr), platform, ..Default::default() }
+        Self {
+            base: BasicStackState::with_individual_address(addr),
+            platform,
+            ..Default::default()
+        }
     }
 
     /// Create a new `BasicIpStackState` with individual address, serial number, and platform.
@@ -474,37 +657,75 @@ impl<P: IpPlatform> BasicIpStackState<P> {
     where
         P: Default,
     {
-        Self { individual_address: RefCell::new(addr), serial_number, platform, ..Default::default() }
+        Self {
+            base: BasicStackState::with_address_and_serial(addr, serial_number),
+            platform,
+            ..Default::default()
+        }
+    }
+
+    /// Set the authorization key for a specific level.
+    ///
+    /// This is useful for initializing the key table during test setup.
+    /// Level 0 = max access, level 3 = min access.
+    ///
+    /// A key of `0xFFFFFFFF` is treated as the "default key" (not set).
+    pub fn set_auth_key(&self, level: u8, key: [u8; 4]) {
+        self.base.set_auth_key(level, key);
     }
 }
 
 impl<P: IpPlatform + Default> StackState for BasicIpStackState<P> {
     fn individual_address(&self) -> IndividualAddress {
-        *self.individual_address.borrow()
+        self.base.individual_address()
     }
 
     fn set_individual_address(&self, addr: IndividualAddress) {
-        *self.individual_address.borrow_mut() = addr;
+        self.base.set_individual_address(addr);
     }
 
     fn programming_mode(&self) -> bool {
-        *self.programming_mode.borrow()
+        self.base.programming_mode()
     }
 
     fn set_programming_mode(&self, enabled: bool) {
-        *self.programming_mode.borrow_mut() = enabled;
+        self.base.set_programming_mode(enabled);
     }
 
     fn routing_count(&self) -> u8 {
-        *self.routing_count.borrow()
+        self.base.routing_count()
     }
 
     fn set_routing_count(&self, count: u8) {
-        *self.routing_count.borrow_mut() = count & 0x07;
+        self.base.set_routing_count(count);
     }
 
     fn serial_number(&self) -> &[u8; 6] {
-        &self.serial_number
+        self.base.serial_number()
+    }
+
+    fn max_access_levels(&self) -> u8 {
+        self.base.max_access_levels()
+    }
+
+    fn current_access_level(&self) -> u8 {
+        self.base.current_access_level()
+    }
+
+    fn set_current_access_level(&self, level: u8) {
+        self.base.set_current_access_level(level);
+    }
+
+    fn default_access_level(&self) -> u8 {
+        self.base.default_access_level()
+    }
+
+    fn authorize(&self, key: &[u8; 4]) -> u8 {
+        self.base.authorize(key)
+    }
+
+    fn key_write(&self, level: u8, key: &[u8; 4], current_access_level: u8) -> u8 {
+        self.base.key_write(level, key, current_access_level)
     }
 }
 
@@ -911,6 +1132,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let mut transport_layer = TransportLayer::<'_, D>::new(
             &self.stack.inner.buffer_manager,
             &self.stack.inner.tables,
+            &self.stack.inner.state,
             nl_channel.sender().into(),
             al_channel.sender().into(),
         );

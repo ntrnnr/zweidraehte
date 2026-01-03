@@ -46,6 +46,7 @@ use zweidraehte::{
 
 use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle, MockLinkLayerResources};
 
+
 // ============================================================================
 // Communication Objects (BCU1-style with shadow objects)
 // ============================================================================
@@ -776,8 +777,14 @@ impl ConstDefault for TestParameters {
 #[derive(Debug, Clone, Copy)]
 pub struct ConformanceTestStack;
 
-/// Size of the linear memory region for conformance tests (256 bytes)
+/// Size of linear memory region (0x0200-0x02FF) - freely accessible
 pub const LINEAR_MEMORY_SIZE: usize = 256;
+/// Size of level 2 memory block (0x0300-0x03FF) - requires access level <= 2
+pub const LEVEL2_MEMORY_SIZE: usize = 256;
+/// Size of level 1 memory block (0x0400-0x04FF) - requires access level <= 1
+pub const LEVEL1_MEMORY_SIZE: usize = 256;
+/// Size of user memory region (0x7FF0-0x7FFF) - for A_UserMemory_Read/Write tests
+pub const USER_MEMORY_SIZE: usize = 16;
 
 /// Tables container for conformance tests.
 ///
@@ -791,8 +798,18 @@ pub struct ConformanceTables {
     pub adt: RefCell<conformance_config::AddrTab>,
     pub ast: RefCell<conformance_config::AssoTab>,
     pub cot: RefCell<conformance_config::CoTab>,
-    /// Linear memory region for A_Memory_Read/Write tests
+    /// Linear memory region for A_Memory_Read/Write tests (0x0200-0x02FF)
+    /// This is freely accessible (no access level restriction) for M-2.6/M-2.7 tests.
     pub linear_memory: RefCell<[u8; LINEAR_MEMORY_SIZE]>,
+    /// Level 2 memory block for authorization tests (0x0300-0x03FF)
+    /// Requires access level <= 2. Used by M-2.6 as "protected" and M-2.11 as level 2 block.
+    pub level2_memory: RefCell<[u8; LEVEL2_MEMORY_SIZE]>,
+    /// Level 1 memory block for M-2.11 authorization tests (0x0400-0x04FF)
+    /// Requires access level <= 1.
+    pub level1_memory: RefCell<[u8; LEVEL1_MEMORY_SIZE]>,
+    /// User memory region for A_UserMemory_Read/Write tests (0x7FF0-0x7FFF)
+    /// Used by M-2.31/M-2.32 tests.
+    pub user_memory: RefCell<[u8; USER_MEMORY_SIZE]>,
 }
 
 impl HasAddressTable for ConformanceTables {
@@ -822,13 +839,13 @@ impl HasCommunicationObjectTable for ConformanceTables {
 /// - 0x0100-0x0115: Address Table (ADT) - 22 bytes max (11 entries * 2 bytes)
 /// - 0x0116-0x014F: Association Table (AST) - 48 bytes max (11 entries * 4 bytes + 4 header)
 /// - 0x0150-0x019F: Communication Object Table (COT) - 24 bytes max (11 entries * 2 bytes + 2 header)
-/// - 0x0200-0x02FF: Linear memory (256 bytes, read-write for tests)
-/// - 0x0300+: Protected memory (returns NotAccessible error)
+/// - 0x0200-0x02FF: Linear memory (256 bytes) - freely accessible (no restriction)
+/// - 0x0300-0x03FF: Level 2 block (256 bytes) - requires access level <= 2
+/// - 0x0400-0x04FF: Level 1 block (256 bytes) - requires access level <= 1
 ///
-/// This layout matches what the M-2.6 and M-2.7 conformance tests expect:
-/// - MEMPOS = 0x0200 (first accessible memory position for linear memory tests)
-/// - MEMPOS_LASTACCESS = 0x02FF (last accessible memory position)
-/// - MEMPOS_PROTECTED = 0x0300 (first protected memory position)
+/// This layout matches what the conformance tests expect:
+/// - M-2.6/M-2.7: MEMPOS = 0x0200 (accessible), MEMPOS_PROTECTED = 0x0300 (protected for level 3)
+/// - M-2.11: MEM_START_BLOCK_LEVEL_1 = 0x0400, MEM_START_BLOCK_LEVEL_2 = 0x0300
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ConformanceMemoryMap;
 
@@ -839,8 +856,14 @@ impl ConformanceMemoryMap {
     pub const AST_BASE: u16 = 0x0116;
     /// Base address for Communication Object Table
     pub const COT_BASE: u16 = 0x0150;
-    /// Base address for linear memory region (matches EITT MEMPOS)
+    /// Base address for linear memory region (freely accessible)
     pub const LINEAR_MEMORY_BASE: u16 = 0x0200;
+    /// Base address for level 2 memory block (requires access level <= 2)
+    pub const LEVEL2_MEMORY_BASE: u16 = 0x0300;
+    /// Base address for level 1 memory block (requires access level <= 1)
+    pub const LEVEL1_MEMORY_BASE: u16 = 0x0400;
+    /// Base address for user memory region (for A_UserMemory_* tests)
+    pub const USER_MEMORY_BASE: u16 = 0x7FF0;
 }
 
 impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap {
@@ -849,7 +872,9 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
         tables: &ConformanceTables,
         address: u16,
         data: &mut [u8],
+        access_level: u8,
     ) -> Result<usize, zweidraehte::memory::MemoryError> {
+        use zweidraehte::memory::MemoryError;
         use zweidraehte::objects::tables::TableMemory;
 
         let end_address = address.saturating_add(data.len() as u16);
@@ -884,7 +909,9 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
             return Ok(data.len());
         }
 
-        // Linear memory region: 0x0200 - 0x02FF (256 bytes)
+        // Linear memory: 0x0200 - 0x02FF (256 bytes)
+        // Freely accessible - no access level restriction.
+        // Used by M-2.6/M-2.7 tests as "accessible" memory.
         if address >= Self::LINEAR_MEMORY_BASE
             && end_address <= Self::LINEAR_MEMORY_BASE + LINEAR_MEMORY_SIZE as u16
         {
@@ -894,8 +921,50 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
             return Ok(data.len());
         }
 
-        // Address is outside accessible range or spans into protected memory
-        Err(zweidraehte::memory::MemoryError::NotAccessible)
+        // Level 2 memory block: 0x0300 - 0x03FF (256 bytes)
+        // Requires access level <= 2 (levels 0, 1, or 2).
+        // For M-2.6 tests: "protected" (level 3 = no access).
+        // For M-2.11 tests: "level 2 block" accessible with default key.
+        if address >= Self::LEVEL2_MEMORY_BASE
+            && end_address <= Self::LEVEL2_MEMORY_BASE + LEVEL2_MEMORY_SIZE as u16
+        {
+            if access_level > 2 {
+                return Err(MemoryError::AccessDenied);
+            }
+            let offset = (address - Self::LEVEL2_MEMORY_BASE) as usize;
+            let mem = tables.level2_memory.borrow();
+            data.copy_from_slice(&mem[offset..offset + data.len()]);
+            return Ok(data.len());
+        }
+
+        // Level 1 memory block: 0x0400 - 0x04FF (256 bytes)
+        // Requires access level <= 1 (levels 0 or 1 only).
+        // Used by M-2.11 tests as "level 1 block".
+        if address >= Self::LEVEL1_MEMORY_BASE
+            && end_address <= Self::LEVEL1_MEMORY_BASE + LEVEL1_MEMORY_SIZE as u16
+        {
+            if access_level > 1 {
+                return Err(MemoryError::AccessDenied);
+            }
+            let offset = (address - Self::LEVEL1_MEMORY_BASE) as usize;
+            let mem = tables.level1_memory.borrow();
+            data.copy_from_slice(&mem[offset..offset + data.len()]);
+            return Ok(data.len());
+        }
+
+        // User memory region: 0x7FF0 - 0x7FFF (16 bytes)
+        // Freely accessible for A_UserMemory_Read/Write tests (M-2.31/M-2.32).
+        if address >= Self::USER_MEMORY_BASE
+            && end_address <= Self::USER_MEMORY_BASE + USER_MEMORY_SIZE as u16
+        {
+            let offset = (address - Self::USER_MEMORY_BASE) as usize;
+            let mem = tables.user_memory.borrow();
+            data.copy_from_slice(&mem[offset..offset + data.len()]);
+            return Ok(data.len());
+        }
+
+        // Address is outside accessible range
+        Err(MemoryError::NotAccessible)
     }
 
     fn write(
@@ -903,7 +972,9 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
         tables: &ConformanceTables,
         address: u16,
         data: &[u8],
+        access_level: u8,
     ) -> Result<usize, zweidraehte::memory::MemoryError> {
+        use zweidraehte::memory::MemoryError;
         use zweidraehte::objects::tables::TableMemory;
 
         let end_address = address.saturating_add(data.len() as u16);
@@ -947,7 +1018,9 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
             }
         }
 
-        // Linear memory region: 0x0200 - 0x02FF (256 bytes)
+        // Linear memory: 0x0200 - 0x02FF (256 bytes)
+        // Freely accessible - no access level restriction.
+        // Used by M-2.6/M-2.7 tests as "accessible" memory.
         if address >= Self::LINEAR_MEMORY_BASE
             && end_address <= Self::LINEAR_MEMORY_BASE + LINEAR_MEMORY_SIZE as u16
         {
@@ -957,8 +1030,50 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
             return Ok(data.len());
         }
 
-        // Address is outside accessible range or spans into protected memory
-        Err(zweidraehte::memory::MemoryError::NotAccessible)
+        // Level 2 memory block: 0x0300 - 0x03FF (256 bytes)
+        // Requires access level <= 2 (levels 0, 1, or 2).
+        // For M-2.6 tests: "protected" (level 3 = no access).
+        // For M-2.11 tests: "level 2 block" accessible with default key.
+        if address >= Self::LEVEL2_MEMORY_BASE
+            && end_address <= Self::LEVEL2_MEMORY_BASE + LEVEL2_MEMORY_SIZE as u16
+        {
+            if access_level > 2 {
+                return Err(MemoryError::AccessDenied);
+            }
+            let offset = (address - Self::LEVEL2_MEMORY_BASE) as usize;
+            let mut mem = tables.level2_memory.borrow_mut();
+            mem[offset..offset + data.len()].copy_from_slice(data);
+            return Ok(data.len());
+        }
+
+        // Level 1 memory block: 0x0400 - 0x04FF (256 bytes)
+        // Requires access level <= 1 (levels 0 or 1 only).
+        // Used by M-2.11 tests as "level 1 block".
+        if address >= Self::LEVEL1_MEMORY_BASE
+            && end_address <= Self::LEVEL1_MEMORY_BASE + LEVEL1_MEMORY_SIZE as u16
+        {
+            if access_level > 1 {
+                return Err(MemoryError::AccessDenied);
+            }
+            let offset = (address - Self::LEVEL1_MEMORY_BASE) as usize;
+            let mut mem = tables.level1_memory.borrow_mut();
+            mem[offset..offset + data.len()].copy_from_slice(data);
+            return Ok(data.len());
+        }
+
+        // User memory region: 0x7FF0 - 0x7FFF (16 bytes)
+        // Freely accessible for A_UserMemory_Read/Write tests (M-2.31/M-2.32).
+        if address >= Self::USER_MEMORY_BASE
+            && end_address <= Self::USER_MEMORY_BASE + USER_MEMORY_SIZE as u16
+        {
+            let offset = (address - Self::USER_MEMORY_BASE) as usize;
+            let mut mem = tables.user_memory.borrow_mut();
+            mem[offset..offset + data.len()].copy_from_slice(data);
+            return Ok(data.len());
+        }
+
+        // Address is outside accessible range
+        Err(MemoryError::NotAccessible)
     }
 }
 
@@ -1060,7 +1175,14 @@ impl FullStackHarness {
             adt: RefCell::new(addr_tab),
             ast: RefCell::new(asso_tab),
             cot: RefCell::new(co_tab),
-            linear_memory: RefCell::new([0u8; LINEAR_MEMORY_SIZE]),
+            // Initialize linear memory with 0x0F (M-2.10 MemoryBit tests expect this value)
+            linear_memory: RefCell::new([0x0F; LINEAR_MEMORY_SIZE]),
+            // Initialize level 2 memory with 0xAA (M-2.11 level 2 block test value)
+            level2_memory: RefCell::new([0xAA; LEVEL2_MEMORY_SIZE]),
+            // Initialize level 1 memory with 0xFF (M-2.11 level 1 block test value)
+            level1_memory: RefCell::new([0xFF; LEVEL1_MEMORY_SIZE]),
+            // Initialize user memory with 0xFF (erased flash state - M-2.32.2 expects unwritten areas to be 0xFF)
+            user_memory: RefCell::new([0xFF; USER_MEMORY_SIZE]),
         };
 
         // Create stack resources
@@ -1075,6 +1197,13 @@ impl FullStackHarness {
             device_info::SERIAL_NUMBER,
             MockIpPlatform::new(),
         );
+
+        // Keys are left at default (0xFFFFFFFF for all levels).
+        // The M-2.11 Test preparation phase will set up the keys:
+        // - Level 0: 0x00000000
+        // - Level 1: 0x12345678
+        // - Level 2: 0xFFFFFFFF (default)
+        // - Level 3: 0xFFFFFFFF (default)
 
         // Create stack
         let (stack, runner) = zweidraehte::new_with_state(

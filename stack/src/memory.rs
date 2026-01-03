@@ -129,6 +129,8 @@ pub enum MemoryError {
     NotAccessible,
     /// Address is read-only (for writes)
     WriteProtected,
+    /// Access denied due to insufficient authorization level
+    AccessDenied,
 }
 
 /// Trait for memory maps that dispatch reads/writes to tables.
@@ -142,14 +144,35 @@ pub enum MemoryError {
 pub trait MemoryMap<Tables>: Default {
     /// Read from memory at absolute address.
     ///
-    /// Returns the number of bytes read, or an error if the address is not accessible.
-    fn read(&self, tables: &Tables, address: u16, data: &mut [u8]) -> Result<usize, MemoryError>;
+    /// The `access_level` parameter indicates the current authorization level (0-3 typically).
+    /// Level 0 is maximum access, level 3 is minimum access.
+    /// Implementations can use this to restrict access to protected memory regions.
+    ///
+    /// Returns the number of bytes read, or an error if the address is not accessible
+    /// or access is denied due to insufficient authorization.
+    fn read(
+        &self,
+        tables: &Tables,
+        address: u16,
+        data: &mut [u8],
+        access_level: u8,
+    ) -> Result<usize, MemoryError>;
 
     /// Write to memory at absolute address.
     ///
+    /// The `access_level` parameter indicates the current authorization level (0-3 typically).
+    /// Level 0 is maximum access, level 3 is minimum access.
+    /// Implementations can use this to restrict access to protected memory regions.
+    ///
     /// Returns the number of bytes written, or an error if the address is not
-    /// accessible or write-protected.
-    fn write(&self, tables: &Tables, address: u16, data: &[u8]) -> Result<usize, MemoryError>;
+    /// accessible, write-protected, or access is denied due to insufficient authorization.
+    fn write(
+        &self,
+        tables: &Tables,
+        address: u16,
+        data: &[u8],
+        access_level: u8,
+    ) -> Result<usize, MemoryError>;
 }
 
 /// A memory map with no mapped regions.
@@ -163,11 +186,23 @@ pub trait MemoryMap<Tables>: Default {
 pub struct NoMemoryMap;
 
 impl<T> MemoryMap<T> for NoMemoryMap {
-    fn read(&self, _tables: &T, _address: u16, _data: &mut [u8]) -> Result<usize, MemoryError> {
+    fn read(
+        &self,
+        _tables: &T,
+        _address: u16,
+        _data: &mut [u8],
+        _access_level: u8,
+    ) -> Result<usize, MemoryError> {
         Err(MemoryError::NotAccessible)
     }
 
-    fn write(&self, _tables: &T, _address: u16, _data: &[u8]) -> Result<usize, MemoryError> {
+    fn write(
+        &self,
+        _tables: &T,
+        _address: u16,
+        _data: &[u8],
+        _access_level: u8,
+    ) -> Result<usize, MemoryError> {
         Err(MemoryError::NotAccessible)
     }
 }

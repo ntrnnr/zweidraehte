@@ -56,6 +56,10 @@ pub struct Connection {
     /// Queued incoming data message received while in OPEN_WAIT state
     /// Will be delivered to application layer when transitioning to OPEN_IDLE
     pub queued_incoming: Option<KnxMessageBuffer<Buffer<'static>>>,
+    /// Current access level for this connection (0 = max access, 3 = min access)
+    /// Reset to default (max access level - 1, typically 3) when connection opens.
+    /// Modified by A_Authorize_Request.
+    pub access_level: u8,
 }
 
 impl Default for Connection {
@@ -63,6 +67,9 @@ impl Default for Connection {
         Self::new()
     }
 }
+
+/// Default access level for new connections (minimum access = level 3)
+pub const DEFAULT_CONNECTION_ACCESS_LEVEL: u8 = 3;
 
 impl Connection {
     /// Create a new connection in the closed state
@@ -77,6 +84,7 @@ impl Connection {
             conn_timeout_deadline: None,
             pending_msg: None,
             queued_incoming: None,
+            access_level: DEFAULT_CONNECTION_ACCESS_LEVEL,
         }
     }
 
@@ -90,6 +98,7 @@ impl Connection {
         self.conn_timeout_deadline = None;
         self.pending_msg = None;
         self.queued_incoming = None;
+        self.access_level = DEFAULT_CONNECTION_ACCESS_LEVEL;
     }
 
     /// Check if there is queued incoming data

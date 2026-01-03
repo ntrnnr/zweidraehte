@@ -167,8 +167,19 @@ create_protocol_enum!(
 
         SystemNetworkParameterRead, 0x48,   "A_SystemNetworkParameter_Read";
 
+        UserMemoryRead,             0x80,   "A_UserMemory_Read";
+        UserMemoryResponse,         0x81,   "A_UserMemory_Response";
+        UserMemoryWrite,            0x82,   "A_UserMemory_Write";
+
+        UserManufacturerInfoRead,   0x85,   "A_UserManufacturerInfo_Read";
+        UserManufacturerInfoResponse, 0x86, "A_UserManufacturerInfo_Response";
         FunctionPropertyCommand,    0x87,   "A_FunctionPropertyCommand";
 
+        MemoryBitWrite,             0xd0,   "A_MemoryBit_Write";
+        AuthorizeRequest,           0xd1,   "A_Authorize_Request";
+        AuthorizeResponse,          0xd2,   "A_Authorize_Response";
+        KeyWrite,                   0xd3,   "A_Key_Write";
+        KeyResponse,                0xd4,   "A_Key_Response";
         PropertyValueRead,          0xd5,   "A_PropertyValue_Read";
         PropertyValueResponse,      0xd6,   "A_PropertyValue_Response";
         PropertyValueWrite,         0xd7,   "A_PropertyValue_Write";
@@ -178,12 +189,6 @@ create_protocol_enum!(
         IndividualAddressSerialNumberRead,      0xdc,   "A_IndividualAddressSerialNumber_Read";
         IndividualAddressSerialNumberResponse,  0xdd,   "A_IndividualAddressSerialNumber_Response";
         IndividualAddressSerialNumberWrite,     0xde,   "A_IndividualAddressSerialNumber_Write";
-
-        UserManufacturerInfoRead,   0x85,   "A_UserManufacturerInfo_Read";
-        UserManufacturerInfoResponse, 0x86, "A_UserManufacturerInfo_Response";
-
-        AuthorizeRequest,           0xd1,   "A_Authorize_Request";
-        AuthorizeResponse,          0xd2,   "A_Authorize_Response";
 
         Empty,                      0,      "<Empty>";
         _,                                  "Unknown APCI code 0x{:x}";
@@ -490,9 +495,17 @@ impl TpciField {
 ///   - PR: Priority
 ///   - A: Acknowledge (L_Data.req only)
 ///   - C: Confirm (L_Data.con only)
+/// Default access level for messages (minimum access = level 3)
+pub const DEFAULT_MESSAGE_ACCESS_LEVEL: u8 = 3;
+
 pub struct KnxMessageBuffer<B: Deref<Target = [u8]>> {
     service_type: ServiceType,
     buf: B,
+    /// Access level for this message (0 = max access, 3 = min access)
+    /// Set by transport layer for connection-oriented messages.
+    /// Defaults to minimum access (3) for connectionless messages.
+    // FIXME: Not sure if I like this...
+    access_level: u8,
 }
 
 impl<B: Deref<Target = [u8]>> core::fmt::Debug for KnxMessageBuffer<B> {
@@ -503,7 +516,7 @@ impl<B: Deref<Target = [u8]>> core::fmt::Debug for KnxMessageBuffer<B> {
 
 impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
     pub fn new(buf: B, service_type: ServiceType) -> Self {
-        KnxMessageBuffer { service_type, buf }
+        KnxMessageBuffer { service_type, buf, access_level: DEFAULT_MESSAGE_ACCESS_LEVEL }
     }
 
     /// Create a KnxMessageBuffer from a buffer, using a default service type.
@@ -511,7 +524,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
     /// This is useful when reconstructing a message from a raw buffer where
     /// the service type will be set separately.
     pub fn from_buffer(buf: B) -> Self {
-        KnxMessageBuffer { service_type: ServiceType::L_Data_Ind, buf }
+        KnxMessageBuffer { service_type: ServiceType::L_Data_Ind, buf, access_level: DEFAULT_MESSAGE_ACCESS_LEVEL }
     }
 
     /// Consume the message and return the inner buffer.
@@ -537,6 +550,16 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
 
     pub fn set_service_type(&mut self, service_type: ServiceType) {
         self.service_type = service_type;
+    }
+
+    /// Get the access level for this message (0 = max access, 3 = min access)
+    pub fn access_level(&self) -> u8 {
+        self.access_level
+    }
+
+    /// Set the access level for this message
+    pub fn set_access_level(&mut self, level: u8) {
+        self.access_level = level;
     }
 
     pub fn len(&self) -> usize {
@@ -1017,7 +1040,7 @@ mod tests {
         ];
 
         for (t, e) in KNX_TP1_TEST_FRAMES.iter().zip(EXPECTED_TPCIS.iter()) {
-            let msg = KnxMessageBuffer { buf: *t, service_type: ServiceType::L_Data_Ind };
+            let msg = KnxMessageBuffer::new(*t, ServiceType::L_Data_Ind);
             assert_eq!(msg.get_tpci(), *e, "TPCI code mismatch for test frame: {:x?}", t);
         }
     }

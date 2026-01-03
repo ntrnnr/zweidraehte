@@ -44,13 +44,13 @@ use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant, Timer};
 
 use crate::{
-    StackDefinition,
+    StackDefinition, StackState,
     address::IndividualAddress,
     memory::HasAddressTable,
     messages::{
         buffers::Buffer,
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
-        knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
+        knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci, DEFAULT_MESSAGE_ACCESS_LEVEL},
     },
     objects::tables::{AddressTable, LoadableTable},
 };
@@ -96,6 +96,8 @@ pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1,
     buffer_manager: &'a RefCell<crate::messages::buffers::DynBufferManager<'static>>,
     /// User-defined tables container (for accessing ADT via HasAddressTable trait)
     tables: &'a D::Tables,
+    /// Stack state (for accessing default access level)
+    state: &'a D::State,
     /// Channel to send messages to the network layer
     network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     /// Channel to send messages to the application layer
@@ -111,10 +113,11 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     pub fn new(
         buffer_manager: &'a RefCell<crate::messages::buffers::DynBufferManager<'static>>,
         tables: &'a D::Tables,
+        state: &'a D::State,
         network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         application_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
-        Self { buffer_manager, tables, network_layer, application_layer, connections: ConnectionTable::new() }
+        Self { buffer_manager, tables, state, network_layer, application_layer, connections: ConnectionTable::new() }
     }
 }
 
@@ -245,7 +248,15 @@ where
 
         // For connect events, we need to allocate a connection slot
         let conn = if matches!(event, TlEvent::ReceivedConnect { .. }) {
-            self.connections.allocate_incoming(source)
+            // Allocate new connection and set the default access level
+            let mut conn = self.connections.allocate_incoming(source);
+            if let Some(c) = conn.as_mut() {
+                // Set access level to the default (first unset key level)
+                let default_level = self.state.default_access_level();
+                debug!("TL setting connection access level to {} (default)", default_level);
+                c.access_level = default_level;
+            }
+            conn
         } else {
             self.connections.find_incoming(source)
         };
@@ -450,6 +461,15 @@ where
             None => return msg.error().build(),
         };
 
+        // Update connection's access level from the message if explicitly set
+        // (set by application layer after authorization)
+        // Only update if the message has a non-default access level to avoid
+        // overwriting the current level with the default on every message
+        let msg_access_level = msg.access_level();
+        if msg_access_level != DEFAULT_MESSAGE_ACCESS_LEVEL {
+            conn.access_level = msg_access_level;
+        }
+
         let seq_no = conn.seq_no_send;
         let actions = process_event(conn, TlEvent::RequestData { dest });
 
@@ -585,6 +605,10 @@ where
                 TlAction::IndicateData { source: _ } => {
                     if let Some(mut msg) = msg_for_data.take() {
                         msg.set_service_type(ServiceType::T_Data_Ind);
+                        // Set access level from connection state
+                        if let Some(conn) = self.connections.find_any(remote_addr) {
+                            msg.set_access_level(conn.access_level);
+                        }
                         self.application_layer.send(LayerOp::Indication(msg)).await;
                     }
                 }
@@ -604,8 +628,10 @@ where
                 TlAction::DeliverQueuedData { source: _ } => {
                     // Deliver any queued incoming data to the application layer
                     if let Some(conn) = self.connections.find_any(remote_addr) {
+                        let access_level = conn.access_level;
                         if let Some(mut queued_msg) = conn.queued_incoming.take() {
                             queued_msg.set_service_type(ServiceType::T_Data_Ind);
+                            queued_msg.set_access_level(access_level);
                             debug!("TL delivering queued data from {}", remote_addr);
                             self.application_layer
                                 .send(LayerOp::Indication(IndicationMessage::indication(queued_msg)))

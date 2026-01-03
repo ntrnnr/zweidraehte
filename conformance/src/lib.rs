@@ -216,16 +216,30 @@ impl TestCase {
 pub struct TestSuite {
     pub name: &'static str,
     pub variables: BTreeMap<String, TestVariable>,
+    /// Optional preparation steps that run once before all test cases in the suite
+    pub preparation: Vec<TestStep>,
     pub cases: Vec<TestCase>,
+    /// Optional teardown steps that run once after all test cases in the suite
+    pub teardown: Vec<TestStep>,
 }
 
 impl TestSuite {
     pub fn new(name: &'static str, variables: BTreeMap<String, TestVariable>) -> Self {
-        Self { name, variables, cases: Vec::new() }
+        Self { name, variables, preparation: Vec::new(), cases: Vec::new(), teardown: Vec::new() }
+    }
+
+    pub fn with_preparation(mut self, preparation: Vec<TestStep>) -> Self {
+        self.preparation = preparation;
+        self
     }
 
     pub fn with_cases(mut self, cases: Vec<TestCase>) -> Self {
         self.cases = cases;
+        self
+    }
+
+    pub fn with_teardown(mut self, teardown: Vec<TestStep>) -> Self {
+        self.teardown = teardown;
         self
     }
 }

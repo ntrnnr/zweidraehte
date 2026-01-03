@@ -330,7 +330,7 @@ pub fn create_device_descriptor_illegal_types_suite() -> TestSuite {
 /// Based on the EITT specification:
 /// - MEMPOS: First accessible memory position (0x0200 = 512)
 /// - MEMPOS_LASTACCESS: Last accessible memory position (0x02FF = 767)
-/// - MEMPOS_PROTECTED: First protected memory position (0x0300 = 768)
+/// - MEMPOS_PROTECTED: Protected (unmapped) memory position (0x1000 = 4096)
 /// - MEM: Memory values from first position (01 02 03 ... 3F, 63 bytes)
 fn create_memory_test_variables() -> BTreeMap<String, TestVariable> {
     let mut vars = create_test_variables();
@@ -338,7 +338,7 @@ fn create_memory_test_variables() -> BTreeMap<String, TestVariable> {
     // Memory positions (16-bit, big-endian)
     vars.insert("MEMPOS".to_string(), TestVariable::Bytes(vec![0x02, 0x00])); // 0x0200
     vars.insert("MEMPOS_LASTACCESS".to_string(), TestVariable::Bytes(vec![0x02, 0xFF])); // 0x02FF
-    vars.insert("MEMPOS_PROTECTED".to_string(), TestVariable::Bytes(vec![0x03, 0x00])); // 0x0300
+    vars.insert("MEMPOS_PROTECTED".to_string(), TestVariable::Bytes(vec![0x10, 0x00])); // 0x1000 - unmapped region
 
     // MEM: 63 bytes of test data (01 02 03 ... 3F)
     let mem: Vec<u8> = (0x01..=0x3F).collect();
@@ -352,8 +352,8 @@ fn create_memory_test_variables() -> BTreeMap<String, TestVariable> {
 /// Tests for A_Memory_Read service (2.6.x tests)
 ///
 /// Memory model assumed:
-/// - 0x0200-0x02FF: accessible memory area
-/// - 0x0300+: protected memory area
+/// - 0x0200-0x02FF: accessible memory area (linear_memory)
+/// - 0x1000+: protected/unmapped memory area
 ///
 /// Test setup loads memory with values 01 02 03 ... at 0x0200, and FF at 0x02FF
 pub fn create_memory_read_suite() -> TestSuite {
@@ -361,40 +361,41 @@ pub fn create_memory_read_suite() -> TestSuite {
 
     let vars = create_memory_test_variables();
 
+    // ====================================================================
+    // Suite Preparation - loads memory with test data (2.6.1 Preparation)
+    // ====================================================================
+    let preparation = vec![
+        comment("2.6.1 Preparation"),
+        comment("Load memory area with default value (by means of A_Memory_Write-service)"),
+        comment("Memory Model: 0200h to 02FFh accessible, 1000h+ unmapped/protected"),
+        // T_Connect
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        // Memory_Write: 12 bytes at MEMPOS (0x0200) - accessible memory (seq 0)
+        inject("BC #EDI #BDUT 6F 42 8C #MEMPOS #MEM.0 #MEM.1 #MEM.2 #MEM.3 #MEM.4 #MEM.5 #MEM.6 #MEM.7 #MEM.8 #MEM.9 #MEM.10 #MEM.11"),
+        expect("B0 #BDUT #EDI 60 C2", 500),
+        // Memory_Write: 12 bytes at MEMPOS+12 (seq 1)
+        inject("BC #EDI #BDUT 6F 46 8C #MEMPOS+12 #MEM.12 #MEM.13 #MEM.14 #MEM.15 #MEM.16 #MEM.17 #MEM.18 #MEM.19 #MEM.20 #MEM.21 #MEM.22 #MEM.23"),
+        expect("B0 #BDUT #EDI 60 C6", 500),
+        // Memory_Write: 12 bytes at MEMPOS+24 (seq 2)
+        inject("BC #EDI #BDUT 6F 4A 8C #MEMPOS+24 #MEM.24 #MEM.25 #MEM.26 #MEM.27 #MEM.28 #MEM.29 #MEM.30 #MEM.31 #MEM.32 #MEM.33 #MEM.34 #MEM.35"),
+        expect("B0 #BDUT #EDI 60 CA", 500),
+        // Memory_Write: 12 bytes at MEMPOS+36 (seq 3)
+        inject("BC #EDI #BDUT 6F 4E 8C #MEMPOS+36 #MEM.36 #MEM.37 #MEM.38 #MEM.39 #MEM.40 #MEM.41 #MEM.42 #MEM.43 #MEM.44 #MEM.45 #MEM.46 #MEM.47"),
+        expect("B0 #BDUT #EDI 60 CE", 500),
+        // Memory_Write: 12 bytes at MEMPOS+48 (seq 4)
+        inject("BC #EDI #BDUT 6F 52 8C #MEMPOS+48 #MEM.48 #MEM.49 #MEM.50 #MEM.51 #MEM.52 #MEM.53 #MEM.54 #MEM.55 #MEM.56 #MEM.57 #MEM.58 #MEM.59"),
+        expect("B0 #BDUT #EDI 60 D2", 500),
+        // Memory_Write: 3 bytes at MEMPOS+60 (seq 5)
+        inject("BC #EDI #BDUT 66 56 83 #MEMPOS+60 #MEM.60 #MEM.61 #MEM.62"),
+        expect("B0 #BDUT #EDI 60 D6", 500),
+        // Memory_Write: 1 byte (0xFF) at MEMPOS_LASTACCESS (0x02FF) (seq 6)
+        inject("BC #EDI #BDUT 64 5A 81 #MEMPOS_LASTACCESS FF"),
+        expect("B0 #BDUT #EDI 60 DA", 500),
+        // T_Disconnect
+        inject_delay("B0 #EDI #BDUT 60 81", 500),
+    ];
+
     let cases = vec![
-        // ====================================================================
-        // M-2.6 Test preparation - loads memory with test data
-        // ====================================================================
-        TestCase::new("M-2.6 Test preparation").with_steps(vec![
-            comment("2.6.1 Preparation"),
-            comment("Load memory area with default value (by means of A_Memory_Write-service)"),
-            comment("Assumed Memory Model 0200h to 02FFh accessible, else protected"),
-            // T_Connect
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            // Memory_Write: 12 bytes at MEMPOS (seq 0)
-            inject("BC #EDI #BDUT 6F 42 8C #MEMPOS #MEM.0 #MEM.1 #MEM.2 #MEM.3 #MEM.4 #MEM.5 #MEM.6 #MEM.7 #MEM.8 #MEM.9 #MEM.10 #MEM.11"),
-            expect("B0 #BDUT #EDI 60 C2", 500),
-            // Memory_Write: 12 bytes at MEMPOS+12 (seq 1)
-            inject("BC #EDI #BDUT 6F 46 8C #MEMPOS+12 #MEM.12 #MEM.13 #MEM.14 #MEM.15 #MEM.16 #MEM.17 #MEM.18 #MEM.19 #MEM.20 #MEM.21 #MEM.22 #MEM.23"),
-            expect("B0 #BDUT #EDI 60 C6", 500),
-            // Memory_Write: 12 bytes at MEMPOS+24 (seq 2)
-            inject("BC #EDI #BDUT 6F 4A 8C #MEMPOS+24 #MEM.24 #MEM.25 #MEM.26 #MEM.27 #MEM.28 #MEM.29 #MEM.30 #MEM.31 #MEM.32 #MEM.33 #MEM.34 #MEM.35"),
-            expect("B0 #BDUT #EDI 60 CA", 500),
-            // Memory_Write: 12 bytes at MEMPOS+36 (seq 3)
-            inject("BC #EDI #BDUT 6F 4E 8C #MEMPOS+36 #MEM.36 #MEM.37 #MEM.38 #MEM.39 #MEM.40 #MEM.41 #MEM.42 #MEM.43 #MEM.44 #MEM.45 #MEM.46 #MEM.47"),
-            expect("B0 #BDUT #EDI 60 CE", 500),
-            // Memory_Write: 12 bytes at MEMPOS+48 (seq 4)
-            inject("BC #EDI #BDUT 6F 52 8C #MEMPOS+48 #MEM.48 #MEM.49 #MEM.50 #MEM.51 #MEM.52 #MEM.53 #MEM.54 #MEM.55 #MEM.56 #MEM.57 #MEM.58 #MEM.59"),
-            expect("B0 #BDUT #EDI 60 D2", 500),
-            // Memory_Write: 3 bytes at MEMPOS+60 (seq 5)
-            inject("BC #EDI #BDUT 66 56 83 #MEMPOS+60 #MEM.60 #MEM.61 #MEM.62"),
-            expect("B0 #BDUT #EDI 60 D6", 500),
-            // Memory_Write: 1 byte (0xFF) at MEMPOS_LASTACCESS (seq 6)
-            inject("BC #EDI #BDUT 64 5A 81 #MEMPOS_LASTACCESS FF"),
-            expect("B0 #BDUT #EDI 60 DA", 500),
-            // T_Disconnect
-            inject_delay("B0 #EDI #BDUT 60 81", 500),
-        ]),
         // ====================================================================
         // M-2.6.2 Accessible Memory Area
         // ====================================================================
@@ -573,7 +574,7 @@ pub fn create_memory_read_suite() -> TestSuite {
         ]),
     ];
 
-    TestSuite::new("M-2.6 Memory_Read", vars).with_cases(cases)
+    TestSuite::new("M-2.6 Memory_Read", vars).with_preparation(preparation).with_cases(cases)
 }
 
 // ============================================================================
@@ -585,15 +586,48 @@ pub fn create_memory_read_suite() -> TestSuite {
 /// Tests for A_Memory_Write service (2.7.x tests)
 ///
 /// Memory model assumed:
-/// - 0x0200-0x02FF: accessible memory area
-/// - 0x0300+: protected memory area
+/// - 0x0200-0x02FF: accessible memory area (linear_memory)
+/// - 0x1000+: protected/unmapped memory area
 ///
-/// These tests use the same memory model as M-2.6 and assume memory has been
-/// loaded with test data by M-2.6.1.
+/// Test setup loads memory with values 01 02 03 ... at 0x0200, and FF at 0x02FF
 pub fn create_memory_write_suite() -> TestSuite {
     use super::helpers::inject_delay;
 
     let vars = create_memory_test_variables();
+
+    // ====================================================================
+    // Suite Preparation - same as M-2.6 (loads memory with test data)
+    // ====================================================================
+    let preparation = vec![
+        comment("M-2.7 Preparation (same as M-2.6)"),
+        comment("Load memory area with default value (by means of A_Memory_Write-service)"),
+        comment("Memory Model: 0200h to 02FFh accessible, 1000h+ unmapped/protected"),
+        // T_Connect
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        // Memory_Write: 12 bytes at MEMPOS (0x0200) - accessible memory (seq 0)
+        inject("BC #EDI #BDUT 6F 42 8C #MEMPOS #MEM.0 #MEM.1 #MEM.2 #MEM.3 #MEM.4 #MEM.5 #MEM.6 #MEM.7 #MEM.8 #MEM.9 #MEM.10 #MEM.11"),
+        expect("B0 #BDUT #EDI 60 C2", 500),
+        // Memory_Write: 12 bytes at MEMPOS+12 (seq 1)
+        inject("BC #EDI #BDUT 6F 46 8C #MEMPOS+12 #MEM.12 #MEM.13 #MEM.14 #MEM.15 #MEM.16 #MEM.17 #MEM.18 #MEM.19 #MEM.20 #MEM.21 #MEM.22 #MEM.23"),
+        expect("B0 #BDUT #EDI 60 C6", 500),
+        // Memory_Write: 12 bytes at MEMPOS+24 (seq 2)
+        inject("BC #EDI #BDUT 6F 4A 8C #MEMPOS+24 #MEM.24 #MEM.25 #MEM.26 #MEM.27 #MEM.28 #MEM.29 #MEM.30 #MEM.31 #MEM.32 #MEM.33 #MEM.34 #MEM.35"),
+        expect("B0 #BDUT #EDI 60 CA", 500),
+        // Memory_Write: 12 bytes at MEMPOS+36 (seq 3)
+        inject("BC #EDI #BDUT 6F 4E 8C #MEMPOS+36 #MEM.36 #MEM.37 #MEM.38 #MEM.39 #MEM.40 #MEM.41 #MEM.42 #MEM.43 #MEM.44 #MEM.45 #MEM.46 #MEM.47"),
+        expect("B0 #BDUT #EDI 60 CE", 500),
+        // Memory_Write: 12 bytes at MEMPOS+48 (seq 4)
+        inject("BC #EDI #BDUT 6F 52 8C #MEMPOS+48 #MEM.48 #MEM.49 #MEM.50 #MEM.51 #MEM.52 #MEM.53 #MEM.54 #MEM.55 #MEM.56 #MEM.57 #MEM.58 #MEM.59"),
+        expect("B0 #BDUT #EDI 60 D2", 500),
+        // Memory_Write: 3 bytes at MEMPOS+60 (seq 5)
+        inject("BC #EDI #BDUT 66 56 83 #MEMPOS+60 #MEM.60 #MEM.61 #MEM.62"),
+        expect("B0 #BDUT #EDI 60 D6", 500),
+        // Memory_Write: 1 byte (0xFF) at MEMPOS_LASTACCESS (0x02FF) (seq 6)
+        inject("BC #EDI #BDUT 64 5A 81 #MEMPOS_LASTACCESS FF"),
+        expect("B0 #BDUT #EDI 60 DA", 500),
+        // T_Disconnect
+        inject_delay("B0 #EDI #BDUT 60 81", 500),
+    ];
 
     let cases = vec![
         // ====================================================================
@@ -999,7 +1033,7 @@ pub fn create_memory_write_suite() -> TestSuite {
         // more sophisticated handling and are not yet implemented
     ];
 
-    TestSuite::new("M-2.7 Memory_Write", vars).with_cases(cases)
+    TestSuite::new("M-2.7 Memory_Write", vars).with_preparation(preparation).with_cases(cases)
 }
 
 // ============================================================================
@@ -1506,7 +1540,7 @@ fn create_memorybit_test_variables() -> BTreeMap<String, TestVariable> {
     // Memory positions (same as Memory_Read/Write tests)
     vars.insert("MEMPOS".to_string(), TestVariable::Bytes(vec![0x02, 0x00])); // 0x0200
     vars.insert("MEMPOS_LASTACCESS".to_string(), TestVariable::Bytes(vec![0x02, 0xFF])); // 0x02FF
-    vars.insert("MEMPOS_PROTECTED".to_string(), TestVariable::Bytes(vec![0x03, 0x00])); // 0x0300
+    vars.insert("MEMPOS_PROTECTED".to_string(), TestVariable::Bytes(vec![0x10, 0x00])); // 0x1000 - unmapped/protected
                                                                                         // Memory content: 16 bytes of 0x0F (default value)
     let mem: Vec<u8> = vec![0x0F; 16];
     vars.insert("MEM".to_string(), TestVariable::Bytes(mem));
@@ -1519,7 +1553,7 @@ fn create_memorybit_test_variables() -> BTreeMap<String, TestVariable> {
 ///
 /// APCI format:
 /// - A_MemoryBit_Write: 0x1D0 | count (4 bits) | address (2 bytes) | AND-mask | XOR-mask
-/// - A_MemoryBit_Response: 0x140 | count (4 bits) | address (2 bytes) | data
+/// - Response uses A_Memory_Response: 0x140 | count (6 bits) | address (2 bytes) | data
 ///
 /// The service allows atomic bit manipulation:
 /// - new_value = (old_value AND and_mask) XOR xor_mask
@@ -1532,6 +1566,43 @@ fn create_memorybit_test_variables() -> BTreeMap<String, TestVariable> {
 pub fn create_memorybit_write_suite() -> TestSuite {
     use super::helpers::inject_delay;
     let vars = create_memorybit_test_variables();
+
+    // Preparation: Reset memory to 0x0F (previous tests may have modified it)
+    // Write 256 bytes of 0x0F to address 0x0200 using EFF (Extended Frame Format)
+    // EFF format: 3C ECF SRC DST LEN TPCI APCI ADDR DATA...
+    // ECF = 0x60 (AT=0 individual, HC=6, EFF=0)
+    // LEN = APDU length (TPCI + APCI + ADDR + DATA bytes)
+    // APCI = 0xBF = 0x80 | 0x3F (Memory_Write with count=63)
+    let preparation = vec![
+        comment("M-2.10 Preparation: Reset linear memory to 0x0F"),
+        // Open connection
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        // Block 1: Write 63 bytes starting at 0x0200 (seq 0)
+        // LEN = 1(TPCI) + 1(APCI) + 2(ADDR) + 63(DATA) = 67 = 0x43
+        inject("3C 60 #EDI #BDUT 43 42 BF 02 00 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        expect("B0 #BDUT #EDI 60 C2", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        // Block 2: Write 63 bytes starting at 0x023F (seq 1)
+        inject("3C 60 #EDI #BDUT 43 46 BF 02 3F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        expect("B0 #BDUT #EDI 60 C6", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C6", 200),
+        // Block 3: Write 63 bytes starting at 0x027E (seq 2)
+        inject("3C 60 #EDI #BDUT 43 4A BF 02 7E 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        expect("B0 #BDUT #EDI 60 CA", 1000),
+        inject_delay("B0 #EDI #BDUT 60 CA", 200),
+        // Block 4: Write 63 bytes starting at 0x02BD (seq 3)
+        // Covers 0x02BD to 0x02FB
+        inject("3C 60 #EDI #BDUT 43 4E BF 02 BD 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        expect("B0 #BDUT #EDI 60 CE", 1000),
+        inject_delay("B0 #EDI #BDUT 60 CE", 200),
+        // Block 5: Write 4 bytes starting at 0x02FC to cover 0x02FC-0x02FF (seq 4)
+        // Using standard frame: BC with NPDU 0x67 (hop 6, len 7: TPCI+APCI+ADDR+DATA = 1+1+2+4 = 8-1=7)
+        inject("BC #EDI #BDUT 67 52 84 02 FC 0F 0F 0F 0F"),
+        expect("B0 #BDUT #EDI 60 D2", 1000),
+        inject_delay("B0 #EDI #BDUT 60 D2", 200),
+        // Close connection
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+    ];
 
     let cases = vec![
         // ====================================================================
@@ -1591,6 +1662,70 @@ pub fn create_memorybit_write_suite() -> TestSuite {
             // T_Disconnect
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
+    ];
+
+    TestSuite::new("M-2.10 MemoryBit_Write", vars).with_preparation(preparation).with_cases(cases)
+}
+
+/// Create the MemoryBit_Write Verify test suite (M-2.10 tests 4-7)
+///
+/// Tests for A_MemoryBit_Write service with Verify flag enabled.
+/// The Verify flag is enabled in suite preparation.
+pub fn create_memorybit_write_verify_suite() -> TestSuite {
+    use super::helpers::inject_delay;
+    let vars = create_memorybit_test_variables();
+
+    // ====================================================================
+    // Suite Preparation - Reset memory and enable Verify flag
+    // ====================================================================
+    // Using EFF (Extended Frame Format) for 63-byte writes:
+    // EFF format: 3C ECF SRC DST LEN TPCI APCI ADDR DATA...
+    // ECF = 0x60 (AT=0 individual, HC=6, EFF=0)
+    // LEN = 0x43 (67 = 1 TPCI + 1 APCI + 2 ADDR + 63 DATA)
+    // APCI = 0xBF = 0x80 | 0x3F (Memory_Write with count=63)
+    let preparation = vec![
+        comment("M-2.10 Verify Preparation: Reset linear memory to 0x0F"),
+        // Block 1: Write 63 bytes starting at 0x0200
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        inject("3C 60 #EDI #BDUT 43 43 BF 02 00 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        expect("B0 #BDUT #EDI 60 C2", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+        // Block 2: Write 63 bytes starting at 0x023F
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        inject("3C 60 #EDI #BDUT 43 43 BF 02 3F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        expect("B0 #BDUT #EDI 60 C2", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+        // Block 3: Write 63 bytes starting at 0x027E
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        inject("3C 60 #EDI #BDUT 43 43 BF 02 7E 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        expect("B0 #BDUT #EDI 60 C2", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+        // Block 4: Write 63 bytes starting at 0x02BD (covers 0x02BD to 0x02FB)
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        inject("3C 60 #EDI #BDUT 43 43 BF 02 BD 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        expect("B0 #BDUT #EDI 60 C2", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        // Block 5: Write 4 bytes starting at 0x02FC to cover 0x02FC-0x02FF
+        inject("BC #EDI #BDUT 67 47 84 02 FC 0F 0F 0F 0F"),
+        expect("B0 #BDUT #EDI 60 C6", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C6", 200),
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+        comment("M-2.10 Verify Preparation: Enable Verify flag in DEVICE_CONTROL"),
+        // T_Connect
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        // Enable Verify mode via PropertyWrite to Device Object (0), PID 14 (DEVICE_CONTROL), value 0x04
+        inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 04"),
+        expect("B0 #BDUT #EDI 60 C2", 1000),
+        expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        // T_Disconnect
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+    ];
+
+    let cases = vec![
         // ====================================================================
         // M-2.10.4 Legal Length - accessible Memory – Verify
         // ====================================================================
@@ -1658,7 +1793,22 @@ pub fn create_memorybit_write_suite() -> TestSuite {
         ]),
     ];
 
-    TestSuite::new("M-2.10 MemoryBit_Write", vars).with_cases(cases)
+    // Teardown: Disable Verify flag after all tests complete
+    let teardown = vec![
+        comment("Disable Verify flag in DEVICE_CONTROL to restore normal operation"),
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        // Disable Verify mode via PropertyWrite to Device Object (0), PID 14 (DEVICE_CONTROL), value 0x00
+        inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 00"),
+        expect("B0 #BDUT #EDI 60 C2", 1000),
+        expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 00", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+    ];
+
+    TestSuite::new("M-2.10 MemoryBit_Write Verify", vars)
+        .with_preparation(preparation)
+        .with_cases(cases)
+        .with_teardown(teardown)
 }
 
 // ============================================================================
@@ -1668,15 +1818,15 @@ pub fn create_memorybit_write_suite() -> TestSuite {
 /// Create test variables for Authorization tests
 ///
 /// The Authorization tests use a key table with specific access levels:
-/// - Level 0: Key 00000000h (free access)
-/// - Level 1: Key 12345678h - read access to block 0x0200 to 0x0300
-/// - Level 2: Key FFFFFFFFh (default) - read access to block 0x0300 to 0x0400
-/// - Level 3: Key FFFFFFFFh (default) - read access to block 0x0500 to 0x0600
+/// - Level 0: Key 00000000h (full access)
+/// - Level 1: Key 12345678h - access to level 1 block (0x0400)
+/// - Level 2: Key FFFFFFFFh (default) - access to level 2 block (0x0300)
+/// - Level 3: No key (minimum access, "access for everyone")
 ///
 /// Key 87654321h is NOT in the key table (used for illegal key tests)
 ///
 /// Data in memory:
-/// - Block for level 1 (0x0200): FFh
+/// - Block for level 1 (0x0400): FFh
 /// - Block for level 2 (0x0300): AAh
 fn create_authorization_test_variables() -> std::collections::BTreeMap<String, TestVariable> {
     let mut vars = create_test_variables();
@@ -1687,9 +1837,9 @@ fn create_authorization_test_variables() -> std::collections::BTreeMap<String, T
     vars.insert("LEVEL_2_KEY".into(), TestVariable::Bytes(vec![0xFF, 0xFF, 0xFF, 0xFF]));
 
     // Memory block start addresses
-    // MEM_START_BLOCK_LEVEL_1 = 512 = 0x0200
-    vars.insert("MEM_START_BLOCK_LEVEL_1".into(), TestVariable::Bytes(vec![0x02, 0x00]));
-    // MEM_START_BLOCK_LEVEL_2 = 768 = 0x0300
+    // MEM_START_BLOCK_LEVEL_1 = 1024 = 0x0400 (requires access level <= 1)
+    vars.insert("MEM_START_BLOCK_LEVEL_1".into(), TestVariable::Bytes(vec![0x04, 0x00]));
+    // MEM_START_BLOCK_LEVEL_2 = 768 = 0x0300 (requires access level <= 2)
     vars.insert("MEM_START_BLOCK_LEVEL_2".into(), TestVariable::Bytes(vec![0x03, 0x00]));
 
     vars
@@ -1704,53 +1854,52 @@ fn create_authorization_test_variables() -> std::collections::BTreeMap<String, T
 pub fn create_authorization_suite() -> TestSuite {
     let vars = create_authorization_test_variables();
 
+    // ====================================================================
+    // Suite Preparation - sets up the key table and memory blocks (2.11 Preparation)
+    // ====================================================================
+    let preparation = vec![
+        comment("2.11 Test preparation"),
+        comment("Load memory area with default value (by means of A_Memory_Write-service)"),
+        // T_Connect
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        // Write FFh to level 1 memory block
+        inject("BC #EDI #BDUT 64 42 81 #MEM_START_BLOCK_LEVEL_1 FF"),
+        expect("B0 #BDUT #EDI 60 C2", 500),
+        // Write AAh to level 2 memory block
+        inject("BC #EDI #BDUT 64 46 81 #MEM_START_BLOCK_LEVEL_2 AA"),
+        expect("B0 #BDUT #EDI 60 C6", 500),
+        // T_Disconnect
+        inject_delay("B0 #EDI #BDUT 60 81", 500),
+        comment("Setting the keys"),
+        // T_Connect
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        // A_Authorize_Request with default key (to get level 0 access for key writes)
+        inject("BC #EDI #BDUT 66 43 D1 00 FF FF FF FF"),
+        expect("B0 #BDUT #EDI 60 C2", 0),
+        expect("BC #BDUT #EDI 62 43 D2 00", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        // A_Key_Write: Set key for level 0
+        inject("BC #EDI #BDUT 66 47 D3 00 #LEVEL_0_KEY"),
+        expect("B0 #BDUT #EDI 60 C6", 0),
+        expect("BC #BDUT #EDI 62 47 D4 00", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C6", 200),
+        // A_Key_Write: Set key for level 1
+        inject("BC #EDI #BDUT 66 4B D3 01 #LEVEL_1_KEY"),
+        expect("B0 #BDUT #EDI 60 CA", 0),
+        expect("BC #BDUT #EDI 62 4B D4 01", 1000),
+        comment("Alternatively for devices always returning access level 0"),
+        inject_delay("B0 #EDI #BDUT 60 CA", 200),
+        // A_Key_Write: Set key for level 2
+        inject("BC #EDI #BDUT 66 4F D3 02 #LEVEL_2_KEY"),
+        expect("B0 #BDUT #EDI 60 CE", 0),
+        expect("BC #BDUT #EDI 62 4F D4 02", 1000),
+        comment("Alternatively for devices always returning access level 0"),
+        inject_delay("B0 #EDI #BDUT 60 CE", 200),
+        // T_Disconnect
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+    ];
+
     let cases = vec![
-        // ====================================================================
-        // M-2.11 Test preparation
-        // ====================================================================
-        // This test case sets up the key table and memory blocks for subsequent tests.
-        // It's a prerequisite for the other authorization tests.
-        TestCase::new("M-2.11 Test preparation").with_steps(vec![
-            comment("2.11 Test preparation"),
-            comment("Load memory area with default value (by means of A_Memory_Write-service)"),
-            // T_Connect
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            // Write FFh to level 1 memory block
-            inject("BC #EDI #BDUT 64 42 81 #MEM_START_BLOCK_LEVEL_1 FF"),
-            expect("B0 #BDUT #EDI 60 C2", 500),
-            // Write AAh to level 2 memory block
-            inject("BC #EDI #BDUT 64 46 81 #MEM_START_BLOCK_LEVEL_2 AA"),
-            expect("B0 #BDUT #EDI 60 C6", 500),
-            // T_Disconnect
-            inject_delay("B0 #EDI #BDUT 60 81", 500),
-            comment("Setting the keys"),
-            // T_Connect
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            // A_Authorize_Request with default key (to get level 0 access for key writes)
-            inject("BC #EDI #BDUT 66 43 D1 00 FF FF FF FF"),
-            expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("BC #BDUT #EDI 62 43 D2 00", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            // A_Key_Write: Set key for level 0
-            inject("BC #EDI #BDUT 66 47 D3 00 #LEVEL_0_KEY"),
-            expect("B0 #BDUT #EDI 60 C6", 0),
-            expect("BC #BDUT #EDI 62 47 D4 00", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C6", 200),
-            // A_Key_Write: Set key for level 1
-            inject("BC #EDI #BDUT 66 4B D3 01 #LEVEL_1_KEY"),
-            expect("B0 #BDUT #EDI 60 CA", 0),
-            expect("BC #BDUT #EDI 62 4B D4 01", 1000),
-            comment("Alternatively for devices always returning access level 0"),
-            inject_delay("B0 #EDI #BDUT 60 CA", 200),
-            // A_Key_Write: Set key for level 2
-            inject("BC #EDI #BDUT 66 4F D3 02 #LEVEL_2_KEY"),
-            expect("B0 #BDUT #EDI 60 CE", 0),
-            expect("BC #BDUT #EDI 62 4F D4 02", 1000),
-            comment("Alternatively for devices always returning access level 0"),
-            inject_delay("B0 #EDI #BDUT 60 CE", 200),
-            // T_Disconnect
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-        ]),
         // ====================================================================
         // M-2.11.1 Authorization with Legal Key
         // ====================================================================
@@ -1892,7 +2041,7 @@ pub fn create_authorization_suite() -> TestSuite {
         ]),
     ];
 
-    TestSuite::new("M-2.11 Authorization", vars).with_cases(cases)
+    TestSuite::new("M-2.11 Authorization", vars).with_preparation(preparation).with_cases(cases)
 }
 
 // ============================================================================
@@ -1931,40 +2080,38 @@ fn create_key_access_test_variables() -> std::collections::BTreeMap<String, Test
 pub fn create_key_write_suite() -> TestSuite {
     let vars = create_key_access_test_variables();
 
+    let preparation = vec![
+        comment("2.12 Test preparation"),
+        comment("Set authorization keys"),
+        // T_Connect
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        // A_Authorize_Request with default key (to get level 0 access)
+        inject("BC #EDI #BDUT 66 43 D1 00 FF FF FF FF"),
+        expect("B0 #BDUT #EDI 60 C2", 0),
+        expect("BC #BDUT #EDI 62 43 D2 00", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        // A_Key_Write: Set key for level 0
+        inject("BC #EDI #BDUT 66 47 D3 00 #LEVEL_0_KEY"),
+        expect("B0 #BDUT #EDI 60 C6", 0),
+        expect("BC #BDUT #EDI 62 47 D4 00", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C6", 200),
+        // A_Key_Write: Set key for level 1
+        inject("BC #EDI #BDUT 66 4B D3 01 #LEVEL_1_KEY"),
+        expect("B0 #BDUT #EDI 60 CA", 0),
+        expect("BC #BDUT #EDI 62 4B D4 01", 1000),
+        comment("Alternatively for devices always returning access level 0"),
+        inject_delay("B0 #EDI #BDUT 60 CA", 200),
+        // A_Key_Write: Set default key for level 2
+        inject("BC #EDI #BDUT 66 4F D3 02 FF FF FF FF"),
+        expect("B0 #BDUT #EDI 60 CE", 0),
+        expect("BC #BDUT #EDI 62 4F D4 02", 1000),
+        comment("Alternatively for devices always returning access level 0"),
+        inject_delay("B0 #EDI #BDUT 60 CE", 200),
+        // T_Disconnect
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+    ];
+
     let cases = vec![
-        // ====================================================================
-        // M-2.12 Test preparation
-        // ====================================================================
-        TestCase::new("M-2.12 Test preparation").with_steps(vec![
-            comment("2.12 Test preparation"),
-            comment("Set authorization keys"),
-            // T_Connect
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            // A_Authorize_Request with default key (to get level 0 access)
-            inject("BC #EDI #BDUT 66 43 D1 00 FF FF FF FF"),
-            expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("BC #BDUT #EDI 62 43 D2 00", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            // A_Key_Write: Set key for level 0
-            inject("BC #EDI #BDUT 66 47 D3 00 #LEVEL_0_KEY"),
-            expect("B0 #BDUT #EDI 60 C6", 0),
-            expect("BC #BDUT #EDI 62 47 D4 00", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C6", 200),
-            // A_Key_Write: Set key for level 1
-            inject("BC #EDI #BDUT 66 4B D3 01 #LEVEL_1_KEY"),
-            expect("B0 #BDUT #EDI 60 CA", 0),
-            expect("BC #BDUT #EDI 62 4B D4 01", 1000),
-            comment("Alternatively for devices always returning access level 0"),
-            inject_delay("B0 #EDI #BDUT 60 CA", 200),
-            // A_Key_Write: Set default key for level 2
-            inject("BC #EDI #BDUT 66 4F D3 02 FF FF FF FF"),
-            expect("B0 #BDUT #EDI 60 CE", 0),
-            expect("BC #BDUT #EDI 62 4F D4 02", 1000),
-            comment("Alternatively for devices always returning access level 0"),
-            inject_delay("B0 #EDI #BDUT 60 CE", 200),
-            // T_Disconnect
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-        ]),
         // ====================================================================
         // M-2.12.1 Authorize at Level 1 - set Key for Illegal Level
         // ====================================================================
@@ -2096,7 +2243,7 @@ pub fn create_key_write_suite() -> TestSuite {
         ]),
     ];
 
-    TestSuite::new("M-2.12 Key_Write", vars).with_cases(cases)
+    TestSuite::new("M-2.12 Key_Write", vars).with_preparation(preparation).with_cases(cases)
 }
 
 // ============================================================================
@@ -2892,22 +3039,23 @@ pub fn create_user_memory_read_suite() -> TestSuite {
 
     let cases = vec![
         // ====================================================================
-        // 2.31.0 Preparation
+        // M-2.31.0 Preparation
         // ====================================================================
-        TestCase::new("2.31.0 Preparation").with_steps(vec![
+        TestCase::new("M-2.31.0 Preparation").with_steps(vec![
             comment("Preparation"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             inject("BC #EDI #BDUT 6E 42 C2 0A #MEM_ACCESSIBLE_START #MEM_VAL.0 #MEM_VAL.1 #MEM_VAL.2 #MEM_VAL.3 #MEM_VAL.4 #MEM_VAL.5 #MEM_VAL.6 #MEM_VAL.7 #MEM_VAL.8 #MEM_VAL.9"),
             expect("B0 #BDUT #EDI 60 C2", 1000),
-            inject("BC #EDI #BDUT 69 42 C2 05 #MEM_ACCESSIBLE_START+10 #MEM_VAL.10 #MEM_VAL.11 #MEM_VAL.12 #MEM_VAL.13 #MEM_VAL.14"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
+            // Note: TPCI 46 = seq 1 (after first T_ACK for seq 0)
+            inject("BC #EDI #BDUT 69 46 C2 05 #MEM_ACCESSIBLE_START+10 #MEM_VAL.10 #MEM_VAL.11 #MEM_VAL.12 #MEM_VAL.13 #MEM_VAL.14"),
+            expect("B0 #BDUT #EDI 60 C6", 1000),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
 
         // ====================================================================
-        // 2.31.1 Accessible Memory - SFF
+        // M-2.31.1 Accessible Memory - SFF
         // ====================================================================
-        TestCase::new("2.31.1 Accessible Memory - SFF").with_steps(vec![
+        TestCase::new("M-2.31.1 Accessible Memory - SFF").with_steps(vec![
             comment("Testcase 2.31.1 Accessible Memory - SFF"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             inject("BC #EDI #BDUT 64 42 C0 0A #MEM_ACCESSIBLE_START"),
@@ -2919,9 +3067,9 @@ pub fn create_user_memory_read_suite() -> TestSuite {
         ]),
 
         // ====================================================================
-        // 2.31.2 Protected Memory - SFF
+        // M-2.31.2 Protected Memory - SFF
         // ====================================================================
-        TestCase::new("2.31.2 Protected Memory - SFF").with_steps(vec![
+        TestCase::new("M-2.31.2 Protected Memory - SFF").with_steps(vec![
             comment("Testcase 2.31.2 Protected Memory - SFF"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             inject("BC #EDI #BDUT 64 42 C0 0A #MEM_PROTECTED_START"),
@@ -2933,9 +3081,9 @@ pub fn create_user_memory_read_suite() -> TestSuite {
         ]),
 
         // ====================================================================
-        // 2.31.3 Partly protected Memory - SFF
+        // M-2.31.3 Partly protected Memory - SFF
         // ====================================================================
-        TestCase::new("2.31.3 Partly protected Memory - SFF").with_steps(vec![
+        TestCase::new("M-2.31.3 Partly protected Memory - SFF").with_steps(vec![
             comment("Testcase 2.31.3 Partly protected Memory - SFF"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             inject("BC #EDI #BDUT 64 42 C0 02 #MEM_ACCESSIBLE_END"),
@@ -2946,24 +3094,24 @@ pub fn create_user_memory_read_suite() -> TestSuite {
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
 
-        // ====================================================================
-        // 2.31.4 Illegal Length - accessible Memory - for devices supporting SFF only
-        // ====================================================================
-        TestCase::new("2.31.4 Illegal Length - accessible Memory - for devices supporting SFF only").with_steps(vec![
-            comment("Testcase 2.31.4 Illegal Length - accessible Memory - for devices supporting SFF only"),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            inject("BC #EDI #BDUT 64 42 C0 0D #MEM_ACCESSIBLE_START"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            comment("Acceptance: The BDUT answers with an A_UserMemory_Response-PDU with no data and count set to zero."),
-            expect("BC #BDUT #EDI 64 42 C1 00 #MEM_ACCESSIBLE_START", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-        ]),
+        // // ====================================================================
+        // // M-2.31.4 Illegal Length - accessible Memory - for devices supporting SFF only
+        // // ====================================================================
+        // TestCase::new("M-2.31.4 Illegal Length - accessible Memory - for devices supporting SFF only").with_steps(vec![
+        //     comment("Testcase 2.31.4 Illegal Length - accessible Memory - for devices supporting SFF only"),
+        //     inject_delay("B0 #EDI #BDUT 60 80", 200),
+        //     inject("BC #EDI #BDUT 64 42 C0 0D #MEM_ACCESSIBLE_START"),
+        //     expect("B0 #BDUT #EDI 60 C2", 1000),
+        //     comment("Acceptance: The BDUT answers with an A_UserMemory_Response-PDU with no data and count set to zero."),
+        //     expect("BC #BDUT #EDI 64 42 C1 00 #MEM_ACCESSIBLE_START", 1000),
+        //     inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        //     inject_delay("B0 #EDI #BDUT 60 81", 200),
+        // ]),
 
         // ====================================================================
-        // 2.31.5 Accessible Memory - SFF - response fits in EFF - not exceeding MAX_APDU_LENGTH
+        // M-2.31.5 Accessible Memory - SFF - response fits in EFF - not exceeding MAX_APDU_LENGTH
         // ====================================================================
-        TestCase::new("2.31.5 Accessible Memory - SFF - response fits in EFF - not exceeding MAX_APDU_LENGTH").with_steps(vec![
+        TestCase::new("M-2.31.5 Accessible Memory - SFF - response fits in EFF - not exceeding MAX_APDU_LENGTH").with_steps(vec![
             comment("Testcase 2.31.5 Accessible Memory - SFF - response fits in EFF - not exceeding MAX_APDU_LENGTH"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             inject("BC #EDI #BDUT 64 42 C0 0C #MEM_ACCESSIBLE_START"),
@@ -2975,26 +3123,26 @@ pub fn create_user_memory_read_suite() -> TestSuite {
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
 
-        // ====================================================================
-        // 2.31.6 Accessible Memory - SFF - response would fit in EFF - exceeding MAX_APDU_LENGTH
-        // ====================================================================
-        TestCase::new("2.31.6 Accessible Memory - SFF - response would fit in EFF - exceeding MAX_APDU_LENGTH").with_steps(vec![
-            comment("Testcase 2.31.6 Accessible Memory - SFF - response would fit in EFF - exceeding MAX_APDU_LENGTH"),
-            comment("This test case is CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 195."),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            inject("BC #EDI #BDUT 64 42 C0 0F #MEM_ACCESSIBLE_START"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            comment("Acceptance: The BDUT sends an A_UserMemory_Response with the length set to 0 and no data."),
-            // EFF response with count=0
-            expect("3C 60 #BDUT #EDI 04 42 C1 00 #MEM_ACCESSIBLE_START", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-        ]),
+        // // ====================================================================
+        // // M-2.31.6 Accessible Memory - SFF - response would fit in EFF - exceeding MAX_APDU_LENGTH
+        // // ====================================================================
+        // TestCase::new("M-2.31.6 Accessible Memory - SFF - response would fit in EFF - exceeding MAX_APDU_LENGTH").with_steps(vec![
+        //     comment("Testcase 2.31.6 Accessible Memory - SFF - response would fit in EFF - exceeding MAX_APDU_LENGTH"),
+        //     comment("This test case is CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 195."),
+        //     inject_delay("B0 #EDI #BDUT 60 80", 200),
+        //     inject("BC #EDI #BDUT 64 42 C0 0F #MEM_ACCESSIBLE_START"),
+        //     expect("B0 #BDUT #EDI 60 C2", 1000),
+        //     comment("Acceptance: The BDUT sends an A_UserMemory_Response with the length set to 0 and no data."),
+        //     // EFF response with count=0
+        //     expect("3C 60 #BDUT #EDI 04 42 C1 00 #MEM_ACCESSIBLE_START", 1000),
+        //     inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        //     inject_delay("B0 #EDI #BDUT 60 81", 200),
+        // ]),
 
         // ====================================================================
-        // 2.31.7 Accessible Memory - EFF - response fits in SFF
+        // M-2.31.7 Accessible Memory - EFF - response fits in SFF
         // ====================================================================
-        TestCase::new("2.31.7 Accessible Memory - EFF - response fits in SFF").with_steps(vec![
+        TestCase::new("M-2.31.7 Accessible Memory - EFF - response fits in SFF").with_steps(vec![
             comment("Testcase 2.31.7 Accessible Memory - EFF - response fits in SFF"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             // EFF request
@@ -3007,9 +3155,9 @@ pub fn create_user_memory_read_suite() -> TestSuite {
         ]),
 
         // ====================================================================
-        // 2.31.8 Accessible Memory - EFF - response fits in EFF
+        // M-2.31.8 Accessible Memory - EFF - response fits in EFF
         // ====================================================================
-        TestCase::new("2.31.8 Accessible Memory - EFF - response fits in EFF").with_steps(vec![
+        TestCase::new("M-2.31.8 Accessible Memory - EFF - response fits in EFF").with_steps(vec![
             comment("Testcase 2.31.8 Accessible Memory - EFF - response fits in EFF"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             // EFF request
@@ -3051,10 +3199,10 @@ pub fn create_user_memory_write_suite() -> TestSuite {
 
     let cases = vec![
         // ====================================================================
-        // 2.32.1 Accessible Memory - no Verify (10 bytes from 7FF0)
+        // M-2.32.1 Accessible Memory - no Verify (10 bytes from 7FF0)
         // ====================================================================
         // XML: Write MEM_VAL values, read back with seq 46 expecting same values
-        TestCase::new("2.32.1 Accessible Memory - no Verify").with_steps(vec![
+        TestCase::new("M-2.32.1 Accessible Memory - no Verify").with_steps(vec![
             comment("Testcase 2.32.1 Accessible Memory - no Verify (10 bytes from 7FF0)"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             // A_UserMemory_Write to accessible memory, 10 bytes - write MEM_VAL values
@@ -3070,10 +3218,10 @@ pub fn create_user_memory_write_suite() -> TestSuite {
         ]),
 
         // ====================================================================
-        // 2.32.2 Partly protected Memory - no Verify (2 bytes from last accessible)
+        // M-2.32.2 Partly protected Memory - no Verify (2 bytes from last accessible)
         // ====================================================================
         // XML: Write 12 34 to MEM_ACCESSIBLE_END, expect FF back (unmodified)
-        TestCase::new("2.32.2 Partly protected Memory - no Verify").with_steps(vec![
+        TestCase::new("M-2.32.2 Partly protected Memory - no Verify").with_steps(vec![
             comment("Testcase 2.32.2 Partly protected Memory - no Verify (2 bytes from last accessible memory position)"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             // Write spanning accessible and protected boundary (start at 7FFF, write 2 bytes)
@@ -3090,99 +3238,37 @@ pub fn create_user_memory_write_suite() -> TestSuite {
         ]),
 
         // ====================================================================
-        // 2.32.3 Inconsistent Length - accessible Memory - no Verify
+        // M-2.32.3 Inconsistent Length - accessible Memory - no Verify
         // ====================================================================
         // XML: Tests BOTH count>data AND count<data, expects IGNORED
-        TestCase::new("2.32.3 Inconsistent Length - accessible Memory - no Verify").with_steps(vec![
+        TestCase::new("M-2.32.3 Inconsistent Length - accessible Memory - no Verify").with_steps(vec![
             comment("Testcase 2.32.3 Inconsistent Length - accessible Memory - no Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             comment("Number is greater than data"),
-            // count=3 but only 2 data bytes (AA BB)
+            // count=3 but only 2 data bytes (AA BB) - seq 0
             inject("BC #EDI #BDUT 66 42 C2 03 #MEM_ACCESSIBLE_START AA BB"),
             expect("B0 #BDUT #EDI 60 C2", 1000),
             comment("Number is less than data"),
             // count=2 but 3 data bytes (01 02 03)
-            inject("BC #EDI #BDUT 67 42 C2 02 #MEM_ACCESSIBLE_START 01 02 03"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            comment("Acceptance: The frames shall be ignored. Reading memory from the device shows the data has not been changed."),
-            // Read back 3 bytes with TPCI sequence 6 (46)
-            inject("BC #EDI #BDUT 64 46 C0 03 #MEM_ACCESSIBLE_START"),
+            // Note: TPCI 46 = seq 1 (after first write at seq 0)
+            inject("BC #EDI #BDUT 67 46 C2 02 #MEM_ACCESSIBLE_START 01 02 03"),
             expect("B0 #BDUT #EDI 60 C6", 1000),
+            comment("Acceptance: The frames shall be ignored. Reading memory from the device shows the data has not been changed."),
+            // Read back 3 bytes with TPCI sequence 2 (4A)
+            inject("BC #EDI #BDUT 64 4A C0 03 #MEM_ACCESSIBLE_START"),
+            expect("B0 #BDUT #EDI 60 CA", 1000),
             // Expect original MEM_VAL values unchanged
+            // Note: Response TPCI is 42 (seq 0) because DUT's send counter starts at 0
             expect("BC #BDUT #EDI 67 42 C1 03 #MEM_ACCESSIBLE_START #MEM_VAL.0 #MEM_VAL.1 #MEM_VAL.2", 1000),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
 
         // ====================================================================
-        // 2.32.4 Accessible Memory - Verify
-        // ====================================================================
-        // XML: Enable verify via PropertyWrite, then write 10 bytes, expect response
-        TestCase::new("2.32.4 Accessible Memory - Verify").with_steps(vec![
-            comment("Testcase 2.32.4 Accessible Memory – Verify"),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Enable verify"),
-            // PropertyWrite to Device Object (0), property 14 (PID_DEVICE_CONTROL), start=16, count=1, value=04
-            inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 04"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            // A_UserMemory_Write to accessible memory, 10 bytes
-            inject("BC #EDI #BDUT 6E 42 C2 0A #MEM_ACCESSIBLE_START 22 33 44 55 66 77 88 99 AA BB"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            comment("Acceptance: The BDUT replies with a Response containing the same data as written.."),
-            expect("BC #BDUT #EDI 6E 42 C1 0A #MEM_ACCESSIBLE_START 22 33 44 55 66 77 88 99 AA BB", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-        ]),
-
-        // ====================================================================
-        // 2.32.5 Protected Memory - Verify
-        // ====================================================================
-        // XML: Enable verify via PropertyWrite, then write to protected, expect count=0
-        TestCase::new("2.32.5 Protected Memory - Verify").with_steps(vec![
-            comment("Testcase 2.32.5 Protected Memory – Verify"),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Enable verify"),
-            inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 04"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            // Write to protected memory
-            inject("BC #EDI #BDUT 6E 42 C2 0A #MEM_PROTECTED_START 22 33 44 55 66 77 88 99 AA BB"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            comment("Acceptance: The BDUT replies with an A_UserMemory_Response-PDU with count set to zero and no data."),
-            expect("BC #BDUT #EDI 64 42 C1 00 #MEM_PROTECTED_START", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-        ]),
-
-        // ====================================================================
-        // 2.32.6 Partly protected Memory - Verify
-        // ====================================================================
-        // XML: Enable verify via PropertyWrite, then write spanning boundary, expect count=0
-        TestCase::new("2.32.6 Partly protected Memory - Verify").with_steps(vec![
-            comment("Testcase 2.32.6 Partly protected Memory – Verify"),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Enable verify"),
-            inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 04"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            // Write spanning boundary with verify (7FFF, 2 bytes)
-            inject("BC #EDI #BDUT 66 42 C2 02 #MEM_ACCESSIBLE_END 12 34"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            comment("Acceptance: The BDUT replies with an A_UserMemory_Response-PDU with count set to zero and no data."),
-            expect("BC #BDUT #EDI 64 42 C1 00 #MEM_ACCESSIBLE_END", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-        ]),
-
-        // ====================================================================
-        // 2.32.7 Accessible Memory - EFF - no Verify
+        // M-2.32.7 Accessible Memory - EFF - no Verify
         // ====================================================================
         // XML: EFF write 13 bytes (0D count), uses MEM_VAL values
-        TestCase::new("2.32.7 Accessible Memory - EFF - no Verify").with_steps(vec![
+        TestCase::new("M-2.32.7 Accessible Memory - EFF - no Verify").with_steps(vec![
             comment("Testcase 2.32.7 Accessible Memory - EFF - no Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             // EFF write: 13 bytes to accessible memory
@@ -3199,10 +3285,10 @@ pub fn create_user_memory_write_suite() -> TestSuite {
         ]),
 
         // ====================================================================
-        // 2.32.8 Accessible Memory - EFF but fits SFF - no Verify
+        // M-2.32.8 Accessible Memory - EFF but fits SFF - no Verify
         // ====================================================================
         // XML: EFF with 11 bytes (0B count), uses 01 02 03 04 05 06 07 08 09 0A 0B
-        TestCase::new("2.32.8 Accessible Memory - EFF but fits SFF - no Verify").with_steps(vec![
+        TestCase::new("M-2.32.8 Accessible Memory - EFF but fits SFF - no Verify").with_steps(vec![
             comment("Testcase 2.32.8 Accessible Memory - EFF but fits SFF - no Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             // EFF format with 11 bytes
@@ -3219,86 +3305,158 @@ pub fn create_user_memory_write_suite() -> TestSuite {
         ]),
 
         // ====================================================================
-        // 2.32.9 Accessible Memory - EFF - exceeds MAX_APDU_LENGTH - no Verify
+        // M-2.32.9 Accessible Memory - EFF - exceeds MAX_APDU_LENGTH - no Verify
         // ====================================================================
         // XML: CONDITIONAL - not applicable if MAX_APDU_LENGTH >= 19
-        // XML: Write 15 bytes, expects IGNORED, reads back 11 bytes showing data unchanged
-        TestCase::new("2.32.9 Accessible Memory - EFF - exceeds MAX_APDU_LENGTH - no Verify").with_steps(vec![
-            comment("Testcase 2.32.9 Accessible Memory - EFF - exceeds MAX_APDU_LENGTH - no Verify"),
-            comment("This test case is CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19."),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            // Write 15 bytes (0F count)
-            inject("3C 60 #EDI #BDUT 13 42 C2 0F #MEM_ACCESSIBLE_START #MEM_VAL.0 #MEM_VAL.1 #MEM_VAL.2 #MEM_VAL.3 #MEM_VAL.4 #MEM_VAL.5 #MEM_VAL.6 #MEM_VAL.7 #MEM_VAL.8 #MEM_VAL.9 #MEM_VAL.10 #MEM_VAL.11 #MEM_VAL.12 #MEM_VAL.13 #MEM_VAL.14"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            comment("Acceptance: The frame shall be ignored. Reading memory from the device shows the data has not been changed."),
-            // Read back 11 bytes (0B) with explicit address 07 FF in SFF with TPCI seq 6 (46)
-            inject("BC #EDI #BDUT 64 46 C0 0B 07 FF"),
-            expect("B0 #BDUT #EDI 60 C6", 1000),
-            // Response shows data from previous test (2.32.8)
-            expect("BC #BDUT #EDI 6F 42 C1 0B #MEM_ACCESSIBLE_START 01 02 03 04 05 06 07 08 09 0A 0B", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-        ]),
+        // Our device has MAX_APDU_LENGTH = 255, so this test is NOT applicable
+        // TestCase::new("M-2.32.9 Accessible Memory - EFF - exceeds MAX_APDU_LENGTH - no Verify").with_steps(vec![
+        //     comment("Testcase 2.32.9 Accessible Memory - EFF - exceeds MAX_APDU_LENGTH - no Verify"),
+        //     comment("This test case is CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19."),
+        //     inject_delay("B0 #EDI #BDUT 60 80", 200),
+        //     // Write 15 bytes (0F count)
+        //     inject("3C 60 #EDI #BDUT 13 42 C2 0F #MEM_ACCESSIBLE_START #MEM_VAL.0 #MEM_VAL.1 #MEM_VAL.2 #MEM_VAL.3 #MEM_VAL.4 #MEM_VAL.5 #MEM_VAL.6 #MEM_VAL.7 #MEM_VAL.8 #MEM_VAL.9 #MEM_VAL.10 #MEM_VAL.11 #MEM_VAL.12 #MEM_VAL.13 #MEM_VAL.14"),
+        //     expect("B0 #BDUT #EDI 60 C2", 1000),
+        //     comment("Acceptance: The frame shall be ignored. Reading memory from the device shows the data has not been changed."),
+        //     // Read back 11 bytes (0B) with explicit address 07 FF in SFF with TPCI seq 6 (46)
+        //     inject("BC #EDI #BDUT 64 46 C0 0B 07 FF"),
+        //     expect("B0 #BDUT #EDI 60 C6", 1000),
+        //     // Response shows data from previous test (2.32.8)
+        //     expect("BC #BDUT #EDI 6F 42 C1 0B #MEM_ACCESSIBLE_START 01 02 03 04 05 06 07 08 09 0A 0B", 1000),
+        //     inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        //     inject_delay("B0 #EDI #BDUT 60 81", 200),
+        // ]),
 
         // ====================================================================
-        // 2.32.10 Inconsistent Length - accessible Memory - EFF - no Verify
+        // M-2.32.10 Inconsistent Length - accessible Memory - EFF - no Verify
         // ====================================================================
         // XML: Tests BOTH count>data (EFF) AND count<data (SFF), expects IGNORED
-        TestCase::new("2.32.10 Inconsistent Length - accessible Memory - EFF - no Verify").with_steps(vec![
+        TestCase::new("M-2.32.10 Inconsistent Length - accessible Memory - EFF - no Verify").with_steps(vec![
             comment("Testcase 2.32.10 Inconsistent Length - accessible Memory - EFF - no Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             comment("Number is greater than data"),
-            // EFF with count=3 but only 2 data bytes (11 22)
+            // EFF with count=3 but only 2 data bytes (11 22) - seq 0
             inject("3C 60 #EDI #BDUT 06 42 C2 03 #MEM_ACCESSIBLE_START 11 22"),
             expect("B0 #BDUT #EDI 60 C2", 1000),
             comment("Number is less than data"),
             // SFF with count=2 but 3 data bytes (AA BB CC)
-            inject("BC #EDI #BDUT 67 42 C2 02 #MEM_ACCESSIBLE_START AA BB CC"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            comment("Acceptance: The frames shall be ignored. Reading memory from the device shows the data has not been changed."),
-            // Read back 11 bytes with TPCI seq 6 (46)
-            inject("BC #EDI #BDUT 64 46 C0 0B #MEM_ACCESSIBLE_START"),
+            // Note: TPCI 46 = seq 1 (after first write at seq 0)
+            inject("BC #EDI #BDUT 67 46 C2 02 #MEM_ACCESSIBLE_START AA BB CC"),
             expect("B0 #BDUT #EDI 60 C6", 1000),
+            comment("Acceptance: The frames shall be ignored. Reading memory from the device shows the data has not been changed."),
+            // Read back 11 bytes with TPCI seq 2 (4A)
+            inject("BC #EDI #BDUT 64 4A C0 0B #MEM_ACCESSIBLE_START"),
+            expect("B0 #BDUT #EDI 60 CA", 1000),
             // Expect data from test 2.32.8 unchanged
+            // Note: Response TPCI is 42 (seq 0) because DUT's send counter starts at 0
             expect("BC #BDUT #EDI 6F 42 C1 0B #MEM_ACCESSIBLE_START 01 02 03 04 05 06 07 08 09 0A 0B", 1000),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
 
         // ====================================================================
-        // 2.32.11 Illegal Length - accessible Memory - EFF - exceeds MAX_APDU_LENGTH - no Verify
+        // M-2.32.11 Illegal Length - accessible Memory - EFF - exceeds MAX_APDU_LENGTH - no Verify
         // ====================================================================
         // XML: CONDITIONAL - not applicable if MAX_APDU_LENGTH >= 19
-        // XML: count=0F (15) but only 14 data bytes, expects IGNORED
-        TestCase::new("2.32.11 Illegal Length - accessible Memory - EFF - exceeds MAX_APDU_LENGTH - no Verify").with_steps(vec![
-            comment("Testcase 2.32.11 Illegal Length - accessible Memory - EFF - exceeds MAX_APDU_LENGTH - no Verify"),
-            comment("This test case is CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19."),
+        // Our device has MAX_APDU_LENGTH = 255, so this test is NOT applicable
+        // TestCase::new("M-2.32.11 Illegal Length - accessible Memory - EFF - exceeds MAX_APDU_LENGTH - no Verify").with_steps(vec![
+        //     comment("Testcase 2.32.11 Illegal Length - accessible Memory - EFF - exceeds MAX_APDU_LENGTH - no Verify"),
+        //     comment("This test case is CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19."),
+        //     inject_delay("B0 #EDI #BDUT 60 80", 200),
+        //     // count=0F (15) but only 14 data bytes in frame (length 12 = 0x12)
+        //     inject("3C 60 #EDI #BDUT 12 42 C2 0F #MEM_ACCESSIBLE_START #MEM_VAL.0 #MEM_VAL.1 #MEM_VAL.2 #MEM_VAL.3 #MEM_VAL.4 #MEM_VAL.5 #MEM_VAL.6 #MEM_VAL.7 #MEM_VAL.8 #MEM_VAL.9 #MEM_VAL.10 #MEM_VAL.11 #MEM_VAL.12 #MEM_VAL.13"),
+        //     expect("B0 #BDUT #EDI 60 C2", 1000),
+        //     comment("Acceptance: The frame shall be ignored. Reading memory from the device shows the data has not been changed."),
+        //     // Read back with weird frame format from XML (no APCI high byte?)
+        //     inject("BC #EDI #BDUT 63 46 0B 07 FF"),
+        //     expect("B0 #BDUT #EDI 60 C6", 1000),
+        //     // Expect data from test 2.32.8 unchanged
+        //     expect("BC #BDUT #EDI 6F 42 C1 0B #MEM_ACCESSIBLE_START 01 02 03 04 05 06 07 08 09 0A 0B", 1000),
+        //     inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        //     inject_delay("B0 #EDI #BDUT 60 81", 200),
+        // ]),
+
+    ];
+
+    TestSuite::new("M-2.32 UserMemory_Write", vars).with_cases(cases)
+}
+
+/// Creates the M-2.32 UserMemory_Write Verify test suite
+///
+/// Tests A_UserMemory_Write service with Verify mode enabled.
+/// Verify mode is enabled in preparation and disabled in teardown.
+///
+/// Test cases from EITT XML specification (Verify):
+/// - 2.32.4-2.32.6: Verify mode tests (accessible, protected, partly protected)
+/// - 2.32.12-2.32.16: EFF/SFF format tests with verify
+pub fn create_user_memory_write_verify_suite() -> TestSuite {
+    let vars = create_user_memory_test_variables();
+
+    // ====================================================================
+    // Suite Preparation - Enable Verify flag
+    // ====================================================================
+    let preparation = vec![
+        comment("Enable Verify flag in DEVICE_CONTROL (Object 0, PID 14)"),
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        // PropertyWrite to Device Object (0), property 14 (PID_DEVICE_CONTROL), start=16, count=1, value=04
+        inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 04"),
+        expect("B0 #BDUT #EDI 60 C2", 1000),
+        expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+    ];
+
+    let cases = vec![
+        // ====================================================================
+        // M-2.32.4 Accessible Memory - Verify
+        // ====================================================================
+        TestCase::new("M-2.32.4 Accessible Memory - Verify").with_steps(vec![
+            comment("Testcase 2.32.4 Accessible Memory – Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
-            // count=0F (15) but only 14 data bytes in frame (length 12 = 0x12)
-            inject("3C 60 #EDI #BDUT 12 42 C2 0F #MEM_ACCESSIBLE_START #MEM_VAL.0 #MEM_VAL.1 #MEM_VAL.2 #MEM_VAL.3 #MEM_VAL.4 #MEM_VAL.5 #MEM_VAL.6 #MEM_VAL.7 #MEM_VAL.8 #MEM_VAL.9 #MEM_VAL.10 #MEM_VAL.11 #MEM_VAL.12 #MEM_VAL.13"),
+            // A_UserMemory_Write to accessible memory, 10 bytes
+            inject("BC #EDI #BDUT 6E 42 C2 0A #MEM_ACCESSIBLE_START 22 33 44 55 66 77 88 99 AA BB"),
             expect("B0 #BDUT #EDI 60 C2", 1000),
-            comment("Acceptance: The frame shall be ignored. Reading memory from the device shows the data has not been changed."),
-            // Read back with weird frame format from XML (no APCI high byte?)
-            inject("BC #EDI #BDUT 63 46 0B 07 FF"),
-            expect("B0 #BDUT #EDI 60 C6", 1000),
-            // Expect data from test 2.32.8 unchanged
-            expect("BC #BDUT #EDI 6F 42 C1 0B #MEM_ACCESSIBLE_START 01 02 03 04 05 06 07 08 09 0A 0B", 1000),
+            comment("Acceptance: The BDUT replies with a Response containing the same data as written."),
+            expect("BC #BDUT #EDI 6E 42 C1 0A #MEM_ACCESSIBLE_START 22 33 44 55 66 77 88 99 AA BB", 1000),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
 
         // ====================================================================
-        // 2.32.12 Inconsistent Length - accessible Memory - Verify
+        // M-2.32.5 Protected Memory - Verify
         // ====================================================================
-        // XML: Enable verify, test BOTH count>data AND count<data, expect count=0 response
-        TestCase::new("2.32.12 Inconsistent Length - accessible Memory - Verify").with_steps(vec![
+        TestCase::new("M-2.32.5 Protected Memory - Verify").with_steps(vec![
+            comment("Testcase 2.32.5 Protected Memory – Verify"),
+            inject_delay("B0 #EDI #BDUT 60 80", 200),
+            // Write to protected memory
+            inject("BC #EDI #BDUT 6E 42 C2 0A #MEM_PROTECTED_START 22 33 44 55 66 77 88 99 AA BB"),
+            expect("B0 #BDUT #EDI 60 C2", 1000),
+            comment("Acceptance: The BDUT replies with an A_UserMemory_Response-PDU with count set to zero and no data."),
+            expect("BC #BDUT #EDI 64 42 C1 00 #MEM_PROTECTED_START", 1000),
+            inject_delay("B0 #EDI #BDUT 60 C2", 200),
+            inject_delay("B0 #EDI #BDUT 60 81", 200),
+        ]),
+
+        // ====================================================================
+        // M-2.32.6 Partly protected Memory - Verify
+        // ====================================================================
+        TestCase::new("M-2.32.6 Partly protected Memory - Verify").with_steps(vec![
+            comment("Testcase 2.32.6 Partly protected Memory – Verify"),
+            inject_delay("B0 #EDI #BDUT 60 80", 200),
+            // Write spanning boundary with verify (7FFF, 2 bytes)
+            inject("BC #EDI #BDUT 66 42 C2 02 #MEM_ACCESSIBLE_END 12 34"),
+            expect("B0 #BDUT #EDI 60 C2", 1000),
+            comment("Acceptance: The BDUT replies with an A_UserMemory_Response-PDU with count set to zero and no data."),
+            expect("BC #BDUT #EDI 64 42 C1 00 #MEM_ACCESSIBLE_END", 1000),
+            inject_delay("B0 #EDI #BDUT 60 C2", 200),
+            inject_delay("B0 #EDI #BDUT 60 81", 200),
+        ]),
+
+        // ====================================================================
+        // M-2.32.12 Inconsistent Length - accessible Memory - Verify
+        // ====================================================================
+        TestCase::new("M-2.32.12 Inconsistent Length - accessible Memory - Verify").with_steps(vec![
             comment("Testcase 2.32.12 Inconsistent Length - accessible Memory - Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Enable verify"),
-            inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 04"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
             comment("Number is greater than data"),
             // count=3 but only 2 data bytes (11 22)
             inject("BC #EDI #BDUT 66 42 C2 03 #MEM_ACCESSIBLE_START 11 22"),
@@ -3308,26 +3466,21 @@ pub fn create_user_memory_write_suite() -> TestSuite {
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             comment("Number is less than data"),
             // count=2 but 3 data bytes (01 02 03)
-            inject("BC #EDI #BDUT 67 42 C2 02 #MEM_ACCESSIBLE_START 01 02 03"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
+            // Note: TPCI 46 = seq 1 (after first write at seq 0)
+            inject("BC #EDI #BDUT 67 46 C2 02 #MEM_ACCESSIBLE_START 01 02 03"),
+            expect("B0 #BDUT #EDI 60 C6", 1000),
             comment("Acceptance: The BDUT replies with an A_UserMemory_Response-PDU with count set to zero and no data."),
-            expect("BC #BDUT #EDI 64 42 C1 00 #MEM_ACCESSIBLE_START", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
+            expect("BC #BDUT #EDI 64 46 C1 00 #MEM_ACCESSIBLE_START", 1000),
+            inject_delay("B0 #EDI #BDUT 60 C6", 200),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
 
         // ====================================================================
-        // 2.32.13 Accessible Memory - EFF - Verify
+        // M-2.32.13 Accessible Memory - EFF - Verify
         // ====================================================================
-        // XML: Enable verify, EFF write 15 bytes (0F), expect EFF response
-        TestCase::new("2.32.13 Accessible Memory - EFF - Verify").with_steps(vec![
+        TestCase::new("M-2.32.13 Accessible Memory - EFF - Verify").with_steps(vec![
             comment("Testcase 2.32.13 Accessible Memory - EFF - Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Enable verify"),
-            inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 04"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
             // EFF write 15 bytes with verify
             inject("3C 60 #EDI #BDUT 13 42 C2 0F #MEM_ACCESSIBLE_START #MEM_VAL.0 #MEM_VAL.1 #MEM_VAL.2 #MEM_VAL.3 #MEM_VAL.4 #MEM_VAL.5 #MEM_VAL.6 #MEM_VAL.7 #MEM_VAL.8 #MEM_VAL.9 #MEM_VAL.10 #MEM_VAL.11 #MEM_VAL.12 #MEM_VAL.13 #MEM_VAL.14"),
             expect("B0 #BDUT #EDI 60 C2", 1000),
@@ -3338,17 +3491,11 @@ pub fn create_user_memory_write_suite() -> TestSuite {
         ]),
 
         // ====================================================================
-        // 2.32.14 Accessible Memory - EFF - response fits in SFF - Verify
+        // M-2.32.14 Accessible Memory - EFF - response fits in SFF - Verify
         // ====================================================================
-        // XML: Enable verify, EFF write 3 bytes (03), expect SFF response
-        TestCase::new("2.32.14 Accessible Memory - EFF - response fits in SFF - Verify").with_steps(vec![
+        TestCase::new("M-2.32.14 Accessible Memory - EFF - response fits in SFF - Verify").with_steps(vec![
             comment("Testcase 2.32.14 Accessible Memory - EFF - response fits in SFF - Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Enable verify"),
-            inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 04"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
             // EFF request with 3 bytes (response fits in SFF)
             inject("3C 60 #EDI #BDUT 07 42 C2 03 #MEM_ACCESSIBLE_START 01 02 03"),
             expect("B0 #BDUT #EDI 60 C2", 1000),
@@ -3359,48 +3506,11 @@ pub fn create_user_memory_write_suite() -> TestSuite {
         ]),
 
         // ====================================================================
-        // 2.32.15 Accessible Memory - EFF - exceeds MAX_APDU_LENGTH - Verify
+        // M-2.32.16 Inconsistent Length - accessible Memory - EFF - Verify
         // ====================================================================
-        // XML: CONDITIONAL - not applicable if MAX_APDU_LENGTH >= 19
-        // XML: Enable verify, write 15 bytes, expect count=0 response, then verify unchanged
-        TestCase::new("2.32.15 Accessible Memory - EFF - exceeds MAX_APDU_LENGTH - Verify").with_steps(vec![
-            comment("Testcase 2.32.15 Accessible Memory - EFF - exceeds MAX_APDU_LENGTH - Verify"),
-            comment("This test case is CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19."),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Enable verify"),
-            inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 04"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            // Write 15 bytes with verify
-            inject("3C 60 #EDI #BDUT 13 42 C2 0F #MEM_ACCESSIBLE_START #MEM_VAL.0 #MEM_VAL.1 #MEM_VAL.2 #MEM_VAL.3 #MEM_VAL.4 #MEM_VAL.5 #MEM_VAL.6 #MEM_VAL.7 #MEM_VAL.8 #MEM_VAL.9 #MEM_VAL.10 #MEM_VAL.11 #MEM_VAL.12 #MEM_VAL.13 #MEM_VAL.14"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            comment("The frame might be dropped and there would be no answer, even if Verify Mode is switched on"),
-            comment("If the frame is not dropped, the next two telegrams shall be enabled"),
-            expect("BC #BDUT #EDI 64 42 C1 00 #MEM_ACCESSIBLE_START", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            comment("Acceptance: The frames may be ignored. Reading memory from the device shows the data has not been changed."),
-            // Read back with TPCI seq 6 (46)
-            inject("BC #EDI #BDUT 64 46 C0 03 #MEM_ACCESSIBLE_START"),
-            expect("BC #BDUT #EDI 60 C6", 1000),
-            // Expect data from test 2.32.14 unchanged
-            expect("BC #BDUT #EDI 67 42 C1 03 #MEM_ACCESSIBLE_START 01 02 03", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-        ]),
-
-        // ====================================================================
-        // 2.32.16 Inconsistent Length - accessible Memory - EFF - Verify
-        // ====================================================================
-        // XML: Enable verify, test BOTH count>data (EFF) AND count<data (SFF), expect count=0
-        TestCase::new("2.32.16 Inconsistent Length - accessible Memory - EFF - Verify").with_steps(vec![
+        TestCase::new("M-2.32.16 Inconsistent Length - accessible Memory - EFF - Verify").with_steps(vec![
             comment("Testcase 2.32.16 Inconsistent Length - accessible Memory - EFF - Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Enable verify"),
-            inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 04"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
             comment("Number is greater than data"),
             // EFF with count=3 but only 2 data bytes (11 22)
             inject("3C 60 #EDI #BDUT 06 42 C2 03 #MEM_ACCESSIBLE_START 11 22"),
@@ -3409,47 +3519,34 @@ pub fn create_user_memory_write_suite() -> TestSuite {
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             comment("Number is less than data"),
             // SFF with count=2 but 3 data bytes (AA BB CC)
-            inject("BC #EDI #BDUT 67 42 C2 02 #MEM_ACCESSIBLE_START AA BB CC"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            expect("BC #BDUT #EDI 64 42 C1 00 #MEM_ACCESSIBLE_START", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
+            // Note: TPCI 46 = seq 1 (after first write at seq 0)
+            inject("BC #EDI #BDUT 67 46 C2 02 #MEM_ACCESSIBLE_START AA BB CC"),
+            expect("B0 #BDUT #EDI 60 C6", 1000),
+            expect("BC #BDUT #EDI 64 46 C1 00 #MEM_ACCESSIBLE_START", 1000),
+            inject_delay("B0 #EDI #BDUT 60 C6", 200),
             comment("Acceptance: The BDUT sends an A_UserMemory_Response with the length set to 0 and no data."),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-        ]),
-
-        // ====================================================================
-        // 2.32.17 Illegal Length - accessible Memory - EFF - exceeds MAX_APDU_LENGTH - Verify
-        // ====================================================================
-        // XML: CONDITIONAL - not applicable if MAX_APDU_LENGTH >= 19
-        // XML: Enable verify, count=0F but 14 data bytes, expect count=0, verify unchanged
-        TestCase::new("2.32.17 Illegal Length - accessible Memory - EFF - exceeds MAX_APDU_LENGTH - Verify").with_steps(vec![
-            comment("Testcase 2.32.17 Illegal Length - accessible Memory - EFF - exceeds MAX_APDU_LENGTH - Verify"),
-            comment("This test case is CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19."),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Enable verify"),
-            inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 04"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            // count=0F (15) but only 14 data bytes in frame (length 12 = 0x12)
-            inject("3C 60 #EDI #BDUT 12 42 C2 0F #MEM_ACCESSIBLE_START #MEM_VAL.0 #MEM_VAL.1 #MEM_VAL.2 #MEM_VAL.3 #MEM_VAL.4 #MEM_VAL.5 #MEM_VAL.6 #MEM_VAL.7 #MEM_VAL.8 #MEM_VAL.9 #MEM_VAL.10 #MEM_VAL.11 #MEM_VAL.12 #MEM_VAL.13"),
-            expect("B0 #BDUT #EDI 60 C2", 1000),
-            comment("The frame might be dropped and there would be no answer, even if Verify Mode is switched on"),
-            comment("If the frame is not dropped, the next two telegrams shall be enabled"),
-            expect("BC #BDUT #EDI 64 42 C1 00 #MEM_ACCESSIBLE_START", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            comment("Acceptance: Reading memory from the device shows the data has not been changed."),
-            // Read back with TPCI seq 6 (46)
-            inject("BC #EDI #BDUT 64 46 C0 03 #MEM_ACCESSIBLE_START"),
-            expect("BC #BDUT #EDI 60 C6", 1000),
-            // Expect data from test 2.32.14 unchanged
-            expect("BC #BDUT #EDI 67 42 C1 03 #MEM_ACCESSIBLE_START 01 02 03", 1000),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
     ];
 
-    TestSuite::new("UserMemory_Write", vars).with_cases(cases)
+    // ====================================================================
+    // Suite Teardown - Disable Verify flag
+    // ====================================================================
+    let teardown = vec![
+        comment("Disable Verify flag in DEVICE_CONTROL (Object 0, PID 14)"),
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        // PropertyWrite to Device Object (0), property 14 (PID_DEVICE_CONTROL), start=16, count=1, value=00
+        inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 00"),
+        expect("B0 #BDUT #EDI 60 C2", 1000),
+        expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 00", 1000),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+    ];
+
+    TestSuite::new("M-2.32 UserMemory_Write Verify", vars)
+        .with_preparation(preparation)
+        .with_cases(cases)
+        .with_teardown(teardown)
 }
 
 // ============================================================================

@@ -164,59 +164,75 @@ where
                         LayerOp::Indication(mut ind) => {
                             debug!("AL APCI code: {:?}", ind.get_apci_code());
                             match ind.get_apci_code() {
-                            // --- Group Communication ---
-                            a @ (ApciCode::GroupValueWrite | ApciCode::GroupValueResponse) => {
-                                self.handle_group_value_write_or_response(&mut ind, a).await;
-                            }
-                            ApciCode::GroupValueRead => {
-                                self.handle_group_value_read(&ind).await;
-                            }
+                                // --- Group Communication ---
+                                a @ (ApciCode::GroupValueWrite | ApciCode::GroupValueResponse) => {
+                                    self.handle_group_value_write_or_response(&mut ind, a).await;
+                                }
+                                ApciCode::GroupValueRead => {
+                                    self.handle_group_value_read(&ind).await;
+                                }
 
-                            // --- Property Services ---
-                            // FIXME: Not validated to work yet
-                            ApciCode::PropertyDescriptionRead => {
-                                self.handle_property_description_read(&ind).await;
-                            }
-                            ApciCode::PropertyValueRead => {
-                                self.handle_property_value_read(&ind).await;
-                            }
-                            ApciCode::PropertyValueWrite => {
-                                self.handle_property_value_write(&ind).await;
-                            }
+                                // --- Property Services ---
+                                // FIXME: Not validated to work yet
+                                ApciCode::PropertyDescriptionRead => {
+                                    self.handle_property_description_read(&ind).await;
+                                }
+                                ApciCode::PropertyValueRead => {
+                                    self.handle_property_value_read(&ind).await;
+                                }
+                                ApciCode::PropertyValueWrite => {
+                                    self.handle_property_value_write(&ind).await;
+                                }
 
-                            // --- Device Management ---
-                            ApciCode::DeviceDescriptorRead => {
-                                self.handle_device_descriptor_read(&ind).await;
+                                // --- Device Management ---
+                                ApciCode::DeviceDescriptorRead => {
+                                    self.handle_device_descriptor_read(&ind).await;
+                                }
+                                ApciCode::IndividualAddressRead => {
+                                    self.handle_individual_address_read(&ind).await;
+                                }
+                                ApciCode::IndividualAddressWrite => {
+                                    self.handle_individual_address_write(&ind).await;
+                                }
+                                ApciCode::IndividualAddressSerialNumberRead => {
+                                    self.handle_individual_address_serial_number_read(&ind).await;
+                                }
+                                ApciCode::IndividualAddressSerialNumberWrite => {
+                                    self.handle_individual_address_serial_number_write(&ind).await;
+                                }
+                                ApciCode::AdcRead => {
+                                    self.handle_adc_read(&ind).await;
+                                }
+                                ApciCode::MemoryRead => {
+                                    self.handle_memory_read(&ind).await;
+                                }
+                                ApciCode::MemoryWrite => {
+                                    self.handle_memory_write(&ind).await;
+                                }
+                                ApciCode::MemoryBitWrite => {
+                                    self.handle_memorybit_write(&ind).await;
+                                }
+                                ApciCode::UserMemoryRead => {
+                                    self.handle_user_memory_read(&ind).await;
+                                }
+                                ApciCode::UserMemoryWrite => {
+                                    self.handle_user_memory_write(&ind).await;
+                                }
+                                ApciCode::UserManufacturerInfoRead => {
+                                    self.handle_user_manufacturer_info_read(&ind).await;
+                                }
+                                ApciCode::AuthorizeRequest => {
+                                    self.handle_authorize_request(&ind).await;
+                                }
+                                ApciCode::KeyWrite => {
+                                    self.handle_key_write(&ind).await;
+                                }
+                                // ApciCode::Restart => { ... }
+                                _ => {
+                                    warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
+                                }
                             }
-                            ApciCode::IndividualAddressRead => {
-                                self.handle_individual_address_read(&ind).await;
-                            }
-                            ApciCode::IndividualAddressWrite => {
-                                self.handle_individual_address_write(&ind).await;
-                            }
-                            ApciCode::IndividualAddressSerialNumberRead => {
-                                self.handle_individual_address_serial_number_read(&ind).await;
-                            }
-                            ApciCode::IndividualAddressSerialNumberWrite => {
-                                self.handle_individual_address_serial_number_write(&ind).await;
-                            }
-                            ApciCode::AdcRead => {
-                                self.handle_adc_read(&ind).await;
-                            }
-                            ApciCode::MemoryRead => {
-                                self.handle_memory_read(&ind).await;
-                            }
-                            ApciCode::MemoryWrite => {
-                                self.handle_memory_write(&ind).await;
-                            }
-                            ApciCode::UserManufacturerInfoRead => {
-                                self.handle_user_manufacturer_info_read(&ind).await;
-                            }
-                            // ApciCode::Restart => { ... }
-                            _ => {
-                                warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
-                            }
-                        }},
+                        }
                         _ => {
                             warn!("AL unexpected LayerOp variant");
                         }
@@ -1241,12 +1257,12 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         debug!("AL ADC_Read: channel={}, count={}", channel, count);
 
-        // Determine transport service type
+        // ADC_Read is only valid in connection-oriented mode (T_Data_Ind)
+        // Per KNX spec and conformance test M-2.20, ADC services require a connection
         let transport_service = match ind.service_type() {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
             other => {
-                warn!("AL ADC_Read unexpected service type: {:?}", other);
+                debug!("AL ADC_Read requires connection-oriented mode, got {:?}", other);
                 return;
             }
         };
@@ -1265,10 +1281,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             (0u8, 0x0000u16)
         };
 
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::AdcResponse, transport_service)
-            .with_data(|data| {
+        let msg =
+            ind.respond_with(msg_buf).with_application(ApciCode::AdcResponse, transport_service).with_data(|data| {
                 // Set channel in low 6 bits of APCI byte 1
                 data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0) | channel;
                 // Count
@@ -1302,6 +1316,12 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         use crate::memory::MemoryMap;
         use crate::messages::builder::IndicationExt;
 
+        // Memory_Read is only valid on connection-oriented transport
+        if ind.service_type() != ServiceType::T_Data_Ind {
+            warn!("AL Memory_Read rejected: connection-oriented only");
+            return;
+        }
+
         // Memory_Read APDU: [APCI:2] [address:2]
         // Minimum length: MSG_APCI + 4 = 10 bytes
         const MIN_LEN: usize = offsets::MSG_APCI + 4;
@@ -1317,19 +1337,11 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         debug!("AL Memory_Read: address=0x{:04X}, count={}", address, count);
 
-        // Determine transport service type
-        let transport_service = match ind.service_type() {
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
-            other => {
-                warn!("AL Memory_Read unexpected service type: {:?}", other);
-                return;
-            }
-        };
-
         // Read from memory map first to determine response size
+        // Pass access level from the message (set by transport layer from connection state)
+        let access_level = ind.access_level();
         let mut data = [0u8; 63]; // Max count is 63 (6 bits)
-        let result = self.memory_map.read(self.tables, address, &mut data[..(count as usize)]);
+        let result = self.memory_map.read(self.tables, address, &mut data[..(count as usize)], access_level);
 
         let response_count = match result {
             Ok(bytes_read) => bytes_read as u8,
@@ -1343,7 +1355,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         let msg = ind
             .respond_with(msg_buf)
-            .with_application(ApciCode::MemoryReadResponse, transport_service)
+            .with_application(ApciCode::MemoryReadResponse, ServiceType::T_Data_Req)
             .with_data(|msg_data| {
                 // Set count in low 6 bits of APCI byte 1
                 msg_data[offsets::MSG_APCI + 1] = (msg_data[offsets::MSG_APCI + 1] & 0xC0) | response_count;
@@ -1379,6 +1391,12 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         use crate::messages::builder::IndicationExt;
         use crate::objects::interface::pid;
 
+        // Memory_Write is only valid on connection-oriented transport
+        if ind.service_type() != ServiceType::T_Data_Ind {
+            warn!("AL Memory_Write rejected: connection-oriented only");
+            return;
+        }
+
         // Memory_Write APDU: [APCI:2] [address:2] [data:count]
         // Minimum length without data: MSG_APCI + 4 = 10 bytes
         const MIN_LEN: usize = offsets::MSG_APCI + 4;
@@ -1409,12 +1427,15 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         debug!("AL Memory_Write: address=0x{:04X}, count={}", address, count);
 
+        // Get access level from the message (set by transport layer from connection state)
+        let access_level = ind.access_level();
+
         // If length is inconsistent, don't write and respond with count=0
         // Otherwise, write to memory map
         let response_count = if length_inconsistent {
             0 // Length inconsistency: response with count=0
         } else {
-            match self.memory_map.write(self.tables, address, data) {
+            match self.memory_map.write(self.tables, address, data, access_level) {
                 Ok(bytes_written) => {
                     debug!("AL Memory_Write: wrote {} bytes to 0x{:04X}", bytes_written, address);
                     bytes_written as u8
@@ -1440,16 +1461,6 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
-        // Determine transport service type
-        let transport_service = match ind.service_type() {
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
-            other => {
-                warn!("AL Memory_Write unexpected service type: {:?}", other);
-                return;
-            }
-        };
-
         // Send Memory_Response with written data (or count=0 on error)
         // Response: APCI(2) + address(2) + data(response_count) = 4 + response_count bytes APDU
         let response_len = offsets::MSG_APCI + 4 + (response_count as usize);
@@ -1457,7 +1468,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         let msg = ind
             .respond_with(msg_buf)
-            .with_application(ApciCode::MemoryReadResponse, transport_service)
+            .with_application(ApciCode::MemoryReadResponse, ServiceType::T_Data_Req)
             .with_data(|msg_data| {
                 // Set count in low 6 bits of APCI byte 1
                 msg_data[offsets::MSG_APCI + 1] = (msg_data[offsets::MSG_APCI + 1] & 0xC0) | response_count;
@@ -1475,6 +1486,388 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         let confirmation = self.transport_layer.request(msg).await;
         trace!("AL Memory_Response confirmation: {:?}", confirmation.service_type());
+    }
+
+    /// Handle `A_MemoryBit_Write.ind`
+    ///
+    /// Performs atomic bit-level memory manipulation using AND and XOR masks.
+    /// Formula: new_value = (old_value AND and_mask) XOR xor_mask
+    ///
+    /// Message format (incoming):
+    /// - APDU[0-1]: APCI (0x1D0 with count in low 4 bits of byte 1)
+    /// - APDU[2-3]: Address (2 bytes, big-endian)
+    /// - APDU[4..4+count]: AND masks (count bytes)
+    /// - APDU[4+count..4+2*count]: XOR masks (count bytes)
+    ///
+    /// Response format (if Verify enabled):
+    /// - APDU[0-1]: APCI (0x140 with count in low 4 bits of byte 1)
+    /// - APDU[2-3]: Address (2 bytes, big-endian)
+    /// - APDU[4..4+count]: Resulting data (count bytes)
+    ///
+    /// Legal length: count must be 1-5 bytes
+    async fn handle_memorybit_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::memory::MemoryMap;
+
+        // MemoryBit_Write is only valid on connection-oriented transport
+        if ind.service_type() != ServiceType::T_Data_Ind {
+            warn!("AL MemoryBit_Write rejected: connection-oriented only");
+            return;
+        }
+
+        // MemoryBit_Write APDU: [APCI:2] [address:2] [AND_masks:count] [XOR_masks:count]
+        // Minimum length with count=1: MSG_APCI + 4 + 1 + 1 = 12 bytes
+        const MIN_LEN: usize = offsets::MSG_APCI + 6;
+
+        if ind.len() < MIN_LEN {
+            error!("MemoryBit_Write message too short: {} < {}", ind.len(), MIN_LEN);
+            return;
+        }
+
+        let buf = ind.buf();
+        // For MemoryBit_Write with extended APCI 0x1D0:
+        // Format: [APCI:2] [count:1] [address:2] [AND_masks:count] [XOR_masks:count]
+        // The count is at MSG_APCI+2 (first byte after the 2-byte APCI field)
+        let count = buf[offsets::MSG_APCI + 2] & 0x0F; // Only low 4 bits for count
+        let address = u16::from_be_bytes([buf[offsets::MSG_APCI + 3], buf[offsets::MSG_APCI + 4]]);
+
+        // Legal count is 1-5 bytes
+        if count == 0 || count > 5 {
+            warn!("MemoryBit_Write illegal count: {} (APCI+1={:02X})", count, buf[offsets::MSG_APCI + 1]);
+            // Respond with count=0 on illegal length
+            self.send_memorybit_response(ind, address, 0, &[]).await;
+            return;
+        }
+
+        // Verify data length: need 2 (APCI) + 1 (count) + 2 (address) + count (AND) + count (XOR) bytes
+        let expected_len = offsets::MSG_APCI + 5 + (count as usize) * 2;
+        if ind.len() != expected_len {
+            warn!(
+                "MemoryBit_Write length mismatch: expected {} bytes, got {} (count={})",
+                expected_len,
+                ind.len(),
+                count
+            );
+            // Respond with count=0 on length mismatch
+            self.send_memorybit_response(ind, address, 0, &[]).await;
+            return;
+        }
+
+        debug!("AL MemoryBit_Write: address=0x{:04X}, count={}", address, count);
+
+        // AND masks start after APCI (2 bytes) + count (1 byte) + address (2 bytes) = MSG_APCI + 5
+        let and_masks = &buf[offsets::MSG_APCI + 5..offsets::MSG_APCI + 5 + count as usize];
+        // XOR masks follow AND masks
+        let xor_masks = &buf[offsets::MSG_APCI + 5 + count as usize..offsets::MSG_APCI + 5 + 2 * count as usize];
+
+        // Get access level from the message
+        let access_level = ind.access_level();
+
+        // Read current memory values
+        let mut current_data = [0u8; 5]; // Max 5 bytes
+        let read_count = current_data[..count as usize].len();
+
+        let read_result = self.memory_map.read(self.tables, address, &mut current_data[..read_count], access_level);
+
+        match read_result {
+            Ok(_) => {
+                // Apply bit manipulation: new = (old AND and_mask) XOR xor_mask
+                let mut new_data = [0u8; 5];
+                for i in 0..count as usize {
+                    new_data[i] = (current_data[i] & and_masks[i]) ^ xor_masks[i];
+                }
+
+                // Write back the modified data
+                match self.memory_map.write(self.tables, address, &new_data[..count as usize], access_level) {
+                    Ok(_) => {
+                        debug!("AL MemoryBit_Write: wrote {} bytes to 0x{:04X}", count, address);
+                        // Check if Verify is enabled - if so, send response with new data
+                        self.send_memorybit_response(ind, address, count, &new_data[..count as usize]).await;
+                    }
+                    Err(e) => {
+                        warn!("AL MemoryBit_Write write failed: address=0x{:04X}, error={:?}", address, e);
+                        // Respond with count=0 on write error
+                        self.send_memorybit_response(ind, address, 0, &[]).await;
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("AL MemoryBit_Write read failed: address=0x{:04X}, error={:?}", address, e);
+                // Respond with count=0 on read error
+                self.send_memorybit_response(ind, address, 0, &[]).await;
+            }
+        }
+    }
+
+    /// Send A_Memory_Response (in response to A_MemoryBit_Write)
+    ///
+    /// Per KNX spec 3.5.5: "the TSDU is an A_Memory_Response-PDU"
+    /// Only sends a response if Verify flag is enabled in DEVICE_CONTROL (Object 0, PID 14, bit 2)
+    async fn send_memorybit_response(
+        &mut self,
+        ind: &IndicationMessage<Buffer<'static>>,
+        address: u16,
+        count: u8,
+        data: &[u8],
+    ) {
+        use crate::messages::builder::IndicationExt;
+        use crate::objects::interface::pid;
+
+        // Check if Verify flag is set in DEVICE_CONTROL (Object 0, PID 14)
+        // Bit 2 (0x04) is the Verify flag
+        let mut device_control = [0u8; 1];
+        let verify_enabled = self
+            .interface_object_server
+            .property_value_read(0, pid::DEVICE_CONTROL, 1, 1, &mut device_control)
+            .map(|_| device_control[0] & 0x04 != 0)
+            .unwrap_or(false);
+
+        if !verify_enabled {
+            // No response when Verify is not enabled
+            return;
+        }
+
+        // Send A_Memory_Response (same format as response to A_Memory_Read)
+        // Response format: [APCI:2 with count in low 4 bits of byte 1] [address:2] [data:count]
+        // The count is embedded in the APCI code (0x140 | count), same as A_Memory_Response
+        let response_len = offsets::MSG_APCI + 4 + (count as usize);
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::MemoryReadResponse, ServiceType::T_Data_Req)
+            .with_data(|msg_data| {
+                // Override the APCI encoding - A_Memory_Response has count embedded
+                // APCI 0x140 with count in bits 0-3 spans across MSG_APCI and MSG_APCI+1
+                // MSG_APCI bits 1-0 contain upper bits of APCI (should be 10 = 2 for 0x140)
+                // MSG_APCI+1 contains 0x40 | count
+                msg_data[offsets::MSG_APCI] = (msg_data[offsets::MSG_APCI] & 0xFC) | 2;
+                msg_data[offsets::MSG_APCI + 1] = 0x40 | (count & 0x0F);
+                // Address (big-endian)
+                msg_data[offsets::MSG_APCI + 2] = (address >> 8) as u8;
+                msg_data[offsets::MSG_APCI + 3] = address as u8;
+                // Copy data if count > 0
+                if count > 0 {
+                    msg_data[offsets::MSG_APCI + 4..offsets::MSG_APCI + 4 + count as usize].copy_from_slice(data);
+                }
+            });
+
+        debug!("AL sending A_Memory_Response (for MemoryBit_Write): address=0x{:04X}, count={}", address, count);
+
+        let confirmation = self.transport_layer.request(msg).await;
+        trace!("AL A_Memory_Response confirmation: {:?}", confirmation.service_type());
+    }
+
+    /// Handle `A_UserMemory_Read.ind`
+    ///
+    /// Reads from user memory at the specified 20-bit address.
+    /// User memory uses a 4-bit address extension in the APCI byte combined with
+    /// a 16-bit address to provide a 20-bit address space.
+    ///
+    /// Message format (incoming):
+    /// - APDU[0]: High 2 bits of APCI (TPCI/APCI byte)
+    /// - APDU[1]: 0xC0 | addr_ext (4 bits) - UserMemoryRead code with address extension
+    /// - APDU[2]: count (8 bits) - byte count
+    /// - APDU[3-4]: Address (16 bits, big-endian)
+    ///
+    /// Response format:
+    /// - APDU[0]: High 2 bits of APCI
+    /// - APDU[1]: 0xC1 | addr_ext (4 bits) - UserMemoryResponse code with address extension
+    /// - APDU[2]: count (8 bits) - byte count (0 on error)
+    /// - APDU[3-4]: Address (16 bits, big-endian)
+    /// - APDU[5+]: Data (count bytes, if successful)
+    async fn handle_user_memory_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::memory::MemoryMap;
+        use crate::messages::builder::IndicationExt;
+
+        // UserMemory_Read is only valid on connection-oriented transport
+        if ind.service_type() != ServiceType::T_Data_Ind {
+            warn!("AL UserMemory_Read rejected: connection-oriented only");
+            return;
+        }
+
+        // UserMemory_Read APDU: [APCI:2] [count:1] [address:2]
+        // Minimum length: MSG_APCI + 5 = 11 bytes
+        const MIN_LEN: usize = offsets::MSG_APCI + 5;
+
+        if ind.len() < MIN_LEN {
+            error!("UserMemory_Read message too short: {} < {}", ind.len(), MIN_LEN);
+            return;
+        }
+
+        let buf = ind.buf();
+        // Address extension is in bits 3-2 of the second APCI byte (bits 1-0 = sub-type)
+        let addr_ext = ((buf[offsets::MSG_APCI + 1] >> 2) & 0x03) as u32;
+        let count = buf[offsets::MSG_APCI + 2];
+        let address_low = u16::from_be_bytes([buf[offsets::MSG_APCI + 3], buf[offsets::MSG_APCI + 4]]);
+        // Full 18-bit address = (addr_ext << 16) | address_low
+        let full_address = (addr_ext << 16) | (address_low as u32);
+
+        debug!("AL UserMemory_Read: address=0x{:05X}, count={}", full_address, count);
+
+        // Read from memory map first to determine response size
+        // Pass access level from the message (set by transport layer from connection state)
+        let access_level = ind.access_level();
+        let mut data = [0u8; 255]; // Max count is 255 (8 bits)
+        let max_read = core::cmp::min(count as usize, data.len());
+        // UserMemory uses 16-bit address for the memory map interface (address extension is for user address space)
+        let result = self.memory_map.read(self.tables, address_low, &mut data[..max_read], access_level);
+
+        let response_count = match result {
+            Ok(bytes_read) => bytes_read as u8,
+            Err(_) => 0, // Error: return count=0
+        };
+
+        // Response: APCI(2) + count(1) + address(2) + data(response_count) = 5 + response_count bytes APDU
+        // On error, response_count is 0 and no data is sent (just APCI + count + address)
+        let response_len = offsets::MSG_APCI + 5 + (response_count as usize);
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::UserMemoryResponse, ServiceType::T_Data_Req)
+            .with_data(|msg_data| {
+                // Address extension goes in bits 3-2 of APCI byte 1 (bits 1-0 contain sub-type Read/Response/Write)
+                msg_data[offsets::MSG_APCI + 1] =
+                    (msg_data[offsets::MSG_APCI + 1] & 0xF3) | ((addr_ext as u8 & 0x03) << 2);
+                // Count
+                msg_data[offsets::MSG_APCI + 2] = response_count;
+                // Address (big-endian)
+                msg_data[offsets::MSG_APCI + 3] = (address_low >> 8) as u8;
+                msg_data[offsets::MSG_APCI + 4] = address_low as u8;
+                // Copy data if successful
+                if response_count > 0 {
+                    msg_data[offsets::MSG_APCI + 5..offsets::MSG_APCI + 5 + response_count as usize]
+                        .copy_from_slice(&data[..response_count as usize]);
+                }
+            });
+
+        debug!("AL sending UserMemory_Response: address=0x{:05X}, count={}", full_address, response_count);
+
+        let confirmation = self.transport_layer.request(msg).await;
+        trace!("AL UserMemory_Response confirmation: {:?}", confirmation.service_type());
+    }
+
+    /// Handle `A_UserMemory_Write.ind`
+    ///
+    /// Writes to user memory at the specified 20-bit address.
+    /// User memory uses a 4-bit address extension in the APCI byte combined with
+    /// a 16-bit address to provide a 20-bit address space.
+    ///
+    /// Message format (incoming):
+    /// - APDU[0]: High 2 bits of APCI (TPCI/APCI byte)
+    /// - APDU[1]: 0xC2 | addr_ext (4 bits) - UserMemoryWrite code with address extension
+    /// - APDU[2]: count (8 bits) - byte count
+    /// - APDU[3-4]: Address (16 bits, big-endian)
+    /// - APDU[5+]: Data (count bytes)
+    ///
+    /// If the Verify flag is set in DEVICE_CONTROL (PID 14), a UserMemory_Response is sent.
+    async fn handle_user_memory_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::memory::MemoryMap;
+        use crate::messages::builder::IndicationExt;
+        use crate::objects::interface::pid;
+
+        // UserMemory_Write is only valid on connection-oriented transport
+        if ind.service_type() != ServiceType::T_Data_Ind {
+            warn!("AL UserMemory_Write rejected: connection-oriented only");
+            return;
+        }
+
+        // UserMemory_Write APDU: [APCI:2] [count:1] [address:2] [data:count]
+        // Minimum length without data: MSG_APCI + 5 = 11 bytes
+        const MIN_LEN: usize = offsets::MSG_APCI + 5;
+
+        if ind.len() < MIN_LEN {
+            error!("UserMemory_Write message too short: {} < {}", ind.len(), MIN_LEN);
+            return;
+        }
+
+        let buf = ind.buf();
+        // Address extension is in bits 3-2 of the second APCI byte (bits 1-0 = sub-type)
+        let addr_ext = ((buf[offsets::MSG_APCI + 1] >> 2) & 0x03) as u32;
+        let count = buf[offsets::MSG_APCI + 2];
+        let address_low = u16::from_be_bytes([buf[offsets::MSG_APCI + 3], buf[offsets::MSG_APCI + 4]]);
+        // Full 18-bit address = (addr_ext << 16) | address_low
+        let full_address = (addr_ext << 16) | (address_low as u32);
+
+        // Verify data length matches count field exactly (length consistency check)
+        let expected_len = offsets::MSG_APCI + 5 + (count as usize);
+        let length_inconsistent = ind.len() != expected_len;
+
+        if length_inconsistent {
+            warn!(
+                "UserMemory_Write length inconsistency: expected {} bytes, got {} (count={})",
+                expected_len,
+                ind.len(),
+                count
+            );
+        }
+
+        let data = &buf[offsets::MSG_APCI + 5..core::cmp::min(ind.len(), offsets::MSG_APCI + 5 + count as usize)];
+
+        debug!("AL UserMemory_Write: address=0x{:05X}, count={}", full_address, count);
+
+        // Get access level from the message (set by transport layer from connection state)
+        let access_level = ind.access_level();
+
+        // If length is inconsistent, don't write and respond with count=0
+        // Otherwise, write to memory map
+        let response_count = if length_inconsistent {
+            0 // Length inconsistency: response with count=0
+        } else {
+            match self.memory_map.write(self.tables, address_low, data, access_level) {
+                Ok(bytes_written) => {
+                    debug!("AL UserMemory_Write: wrote {} bytes to 0x{:05X}", bytes_written, full_address);
+                    bytes_written as u8
+                }
+                Err(e) => {
+                    warn!("AL UserMemory_Write failed: address=0x{:05X}, error={:?}", full_address, e);
+                    0 // Error: response with count=0
+                }
+            }
+        };
+
+        // Check if Verify flag is set in DEVICE_CONTROL (Object 0, PID 14)
+        // Bit 2 (0x04) is the Verify flag
+        let mut device_control = [0u8; 1];
+        let verify_enabled = self
+            .interface_object_server
+            .property_value_read(0, pid::DEVICE_CONTROL, 1, 1, &mut device_control)
+            .map(|_| device_control[0] & 0x04 != 0)
+            .unwrap_or(false);
+
+        if !verify_enabled {
+            // No response when Verify is not enabled
+            return;
+        }
+
+        // Send UserMemory_Response with written data (or count=0 on error)
+        // Response: APCI(2) + count(1) + address(2) + data(response_count) = 5 + response_count bytes APDU
+        let response_len = offsets::MSG_APCI + 5 + (response_count as usize);
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::UserMemoryResponse, ServiceType::T_Data_Req)
+            .with_data(|msg_data| {
+                // Address extension goes in bits 3-2 of APCI byte 1 (bits 1-0 contain sub-type Read/Response/Write)
+                msg_data[offsets::MSG_APCI + 1] =
+                    (msg_data[offsets::MSG_APCI + 1] & 0xF3) | ((addr_ext as u8 & 0x03) << 2);
+                // Count
+                msg_data[offsets::MSG_APCI + 2] = response_count;
+                // Address (big-endian)
+                msg_data[offsets::MSG_APCI + 3] = (address_low >> 8) as u8;
+                msg_data[offsets::MSG_APCI + 4] = address_low as u8;
+                // Copy data if successful
+                if response_count > 0 {
+                    msg_data[offsets::MSG_APCI + 5..offsets::MSG_APCI + 5 + response_count as usize]
+                        .copy_from_slice(data);
+                }
+            });
+
+        debug!("AL sending UserMemory_Response (verify): address=0x{:05X}, count={}", full_address, response_count);
+
+        let confirmation = self.transport_layer.request(msg).await;
+        trace!("AL UserMemory_Response confirmation: {:?}", confirmation.service_type());
     }
 
     /// Handle `A_UserManufacturerInfo_Read.ind`
@@ -1523,6 +1916,134 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         let confirmation = self.transport_layer.request(msg).await;
         trace!("AL UserManufacturerInfo_Response confirmation: {:?}", confirmation.service_type());
+    }
+
+    /// Handle `A_Authorize_Request.ind`
+    ///
+    /// Authorizes with a 4-byte key and responds with the associated access level.
+    ///
+    /// Message format (incoming):
+    /// - APDU[0-1]: APCI (0x03D1 - Authorize_Request)
+    /// - APDU[2]: Reserved (should be 0)
+    /// - APDU[3-6]: Key (4 bytes, big-endian)
+    ///
+    /// Response format:
+    /// - APDU[0-1]: APCI (0x03D2 - Authorize_Response)
+    /// - APDU[2]: Access level (0 = max access, 3 or 15 = min access)
+    async fn handle_authorize_request(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::messages::builder::IndicationExt;
+
+        // Authorize_Request APDU: [APCI:2][Reserved:1][Key:4] = 7 bytes
+        const EXPECTED_LEN: usize = offsets::MSG_APCI + 7;
+
+        if ind.len() < EXPECTED_LEN {
+            error!("Authorize_Request message too short: {} < {}", ind.len(), EXPECTED_LEN);
+            return;
+        }
+
+        let buf = ind.buf();
+        let key: [u8; 4] = [
+            buf[offsets::MSG_APCI + 3],
+            buf[offsets::MSG_APCI + 4],
+            buf[offsets::MSG_APCI + 5],
+            buf[offsets::MSG_APCI + 6],
+        ];
+
+        debug!("AL Authorize_Request: key={:02x?}", key);
+
+        // Authorize with the key - returns the access level for this key
+        let access_level = self.state.authorize(&key);
+
+        debug!("AL Authorize_Request: granted level {}", access_level);
+
+        // Authorize is only valid on connection-oriented transport
+        if ind.service_type() != ServiceType::T_Data_Ind {
+            warn!("AL Authorize_Request rejected: connection-oriented only");
+            return;
+        }
+        let transport_service = ServiceType::T_Data_Req;
+
+        // Response: APCI(2) + Level(1) = 3 bytes
+        const RESPONSE_LEN: usize = offsets::MSG_APCI + 3;
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+
+        let mut msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::AuthorizeResponse, transport_service)
+            .with_data(|data| {
+                data[offsets::MSG_APCI + 2] = access_level;
+            });
+
+        // Set access level on the message so TL can update connection state
+        msg.set_access_level(access_level);
+
+        debug!("AL sending Authorize_Response: level={}", access_level);
+
+        let confirmation = self.transport_layer.request(msg).await;
+        trace!("AL Authorize_Response confirmation: {:?}", confirmation.service_type());
+    }
+
+    /// Handle `A_Key_Write.ind`
+    ///
+    /// Writes a new key for a specific access level.
+    ///
+    /// Message format (incoming):
+    /// - APDU[0-1]: APCI (0x03D3 - Key_Write)
+    /// - APDU[2]: Access level to set key for
+    /// - APDU[3-6]: New key (4 bytes)
+    ///
+    /// Response format:
+    /// - APDU[0-1]: APCI (0x03D4 - Key_Response)
+    /// - APDU[2]: Access level (or 0xFF on error)
+    async fn handle_key_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        use crate::messages::builder::IndicationExt;
+
+        // Key_Write APDU: [APCI:2][Level:1][Key:4] = 7 bytes
+        const EXPECTED_LEN: usize = offsets::MSG_APCI + 7;
+
+        if ind.len() < EXPECTED_LEN {
+            error!("Key_Write message too short: {} < {}", ind.len(), EXPECTED_LEN);
+            return;
+        }
+
+        let buf = ind.buf();
+        let level = buf[offsets::MSG_APCI + 2];
+        let key: [u8; 4] = [
+            buf[offsets::MSG_APCI + 3],
+            buf[offsets::MSG_APCI + 4],
+            buf[offsets::MSG_APCI + 5],
+            buf[offsets::MSG_APCI + 6],
+        ];
+
+        // Get current access level from the message (set by transport layer from connection)
+        let current_access_level = ind.access_level();
+        debug!("AL Key_Write: level={}, key={:02x?}, current_access_level={}", level, key, current_access_level);
+
+        // Perform the key write
+        let result_level = self.state.key_write(level, &key, current_access_level);
+
+        debug!("AL Key_Write: result={}", result_level);
+
+        // Key_Write is only valid on connection-oriented transport
+        if ind.service_type() != ServiceType::T_Data_Ind {
+            warn!("AL Key_Write rejected: connection-oriented only");
+            return;
+        }
+        let transport_service = ServiceType::T_Data_Req;
+
+        // Response: APCI(2) + Level(1) = 3 bytes
+        const RESPONSE_LEN: usize = offsets::MSG_APCI + 3;
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+
+        let msg =
+            ind.respond_with(msg_buf).with_application(ApciCode::KeyResponse, transport_service).with_data(|data| {
+                data[offsets::MSG_APCI + 2] = result_level;
+            });
+
+        debug!("AL sending Key_Response: level={}", result_level);
+
+        let confirmation = self.transport_layer.request(msg).await;
+        trace!("AL Key_Response confirmation: {:?}", confirmation.service_type());
     }
 }
 

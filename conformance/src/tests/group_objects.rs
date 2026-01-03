@@ -1022,7 +1022,7 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
         },
     ];
 
-    TestSuite { name: "Group Objects UINT1 Tests", variables: vars, cases }
+    TestSuite::new("Group Objects UINT1 Tests", vars).with_cases(cases)
 }
 
 // ============================================================================

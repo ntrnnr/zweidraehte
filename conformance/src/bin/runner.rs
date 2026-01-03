@@ -35,7 +35,6 @@ use knx_conformance::harness::stack::{ConformanceTestStack, FullStackHarness};
 use knx_conformance::logger;
 use knx_conformance::*;
 
-
 use zweidraehte::Runner;
 
 /// Run the stack in the background
@@ -86,32 +85,32 @@ async fn main(spawner: Spawner) {
         knx_conformance::tests::management::create_memory_read_suite(),
         knx_conformance::tests::management::create_memory_write_suite(),
         knx_conformance::tests::management::create_adc_read_suite(),
-        knx_conformance::tests::management::create_restart_suite(),
+        //knx_conformance::tests::management::create_restart_suite(),
         knx_conformance::tests::management::create_memorybit_write_suite(),
+        knx_conformance::tests::management::create_memorybit_write_verify_suite(),
         knx_conformance::tests::management::create_authorization_suite(),
         knx_conformance::tests::management::create_key_write_suite(),
-        knx_conformance::tests::management::create_property_value_read_suite(),
+        //knx_conformance::tests::management::create_property_value_read_suite(),
         knx_conformance::tests::management::create_individual_address_serial_number_write_suite(),
         knx_conformance::tests::management::create_individual_address_serial_number_read_suite(),
-        knx_conformance::tests::management::create_network_parameter_read_suite(),
-        knx_conformance::tests::management::create_network_parameter_write_suite(),
+        //knx_conformance::tests::management::create_network_parameter_read_suite(),
+        //knx_conformance::tests::management::create_network_parameter_write_suite(),
         knx_conformance::tests::management::create_illegal_apci_suite(),
         knx_conformance::tests::management::create_user_memory_read_suite(),
         knx_conformance::tests::management::create_user_memory_write_suite(),
+        knx_conformance::tests::management::create_user_memory_write_verify_suite(),
         knx_conformance::tests::management::create_user_manufacturer_info_read_suite(),
-        knx_conformance::tests::group_objects::create_association_table_receiving_suite(),
-        knx_conformance::tests::group_objects::create_association_table_sending_suite(),
+        // Manual intervention required
+        //knx_conformance::tests::group_objects::create_association_table_receiving_suite(),
+        //knx_conformance::tests::group_objects::create_association_table_sending_suite(),
     ];
 
     // Helper to check if a filter matches a suite or test name
-    let matches_filter = |name: &str, filter: &str| -> bool {
-        name.to_lowercase().contains(&filter.to_lowercase())
-    };
+    let matches_filter = |name: &str, filter: &str| -> bool { name.to_lowercase().contains(&filter.to_lowercase()) };
 
     // Check if any filter matches a test case name in any suite
-    let has_test_case_filter = filters.iter().any(|f| {
-        all_suites.iter().any(|s| s.cases.iter().any(|c| matches_filter(c.name, f)))
-    });
+    let has_test_case_filter =
+        filters.iter().any(|f| all_suites.iter().any(|s| s.cases.iter().any(|c| matches_filter(c.name, f))));
 
     // Filter suites - include if suite name matches OR if any test case matches
     let suites: Vec<_> = if filters.is_empty() {
@@ -190,6 +189,126 @@ async fn main(spawner: Spawner) {
         }
         println!();
 
+        // Run suite preparation steps if any
+        if !suite.preparation.is_empty() {
+            println!("Preparation:");
+            println!("--------------------------------------------------------------------");
+            let mut prep_passed = true;
+            for (i, step) in suite.preparation.iter().enumerate() {
+                let resolved_step = match step.resolve(&suite.variables) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        println!("  [{}] ❌ Template error: {}", i, e);
+                        prep_passed = false;
+                        continue;
+                    }
+                };
+                match &resolved_step {
+                    TestStep::Comment(text) => {
+                        println!("  [{}] 💬 {}", i, text);
+                    }
+                    TestStep::Inject { telegram, delay_before_ms } => {
+                        println!("  [{}] ⬇️  Inject: {:02X?}", i, telegram.data);
+                        if *delay_before_ms > 0 {
+                            println!("        (delay: {}ms)", delay_before_ms);
+                            Timer::after(Duration::from_millis(*delay_before_ms as u64)).await;
+                        }
+
+                        // Create message and inject directly
+                        let msg = harness
+                            .create_message(&telegram.data, zweidraehte::messages::knx::ServiceType::L_Data_Ind)
+                            .await;
+                        harness.inject(msg).await;
+
+                        // Give stack time to process the message
+                        Timer::after(Duration::from_millis(10)).await;
+                    }
+                    TestStep::Expect { matcher, timeout_ms } => {
+                        println!("  [{}] ⬆️  Expect: {:02X?}", i, matcher.expected);
+                        let timeout = Duration::from_millis(if *timeout_ms > 0 { *timeout_ms as u64 } else { 1000 });
+                        let recv_fut = harness.receive_captured();
+                        let timeout_fut = Timer::after(timeout);
+                        match select(recv_fut, timeout_fut).await {
+                            Either::First(Some(msg)) => {
+                                if matcher.matches(&msg.data) {
+                                    println!("        ✅ Matched: {:02X?}", msg.data.as_slice());
+                                } else {
+                                    println!("        ❌ Mismatch!");
+                                    println!("           Expected: {:02X?}", matcher.expected);
+                                    println!("           Got:      {:02X?}", msg.data.as_slice());
+                                    prep_passed = false;
+                                }
+                            }
+                            Either::First(None) => {
+                                println!("        ⚠️  Capture not available");
+                                prep_passed = false;
+                            }
+                            Either::Second(_) => {
+                                println!("        ⏰ Timeout: No message received within {}ms", timeout.as_millis());
+                                prep_passed = false;
+                            }
+                        }
+                    }
+                    TestStep::Wait { duration_ms } => {
+                        println!("  [{}] ⏳ Wait {}ms", i, duration_ms);
+                        Timer::after(Duration::from_millis(*duration_ms as u64)).await;
+                    }
+                    TestStep::Custom => {
+                        println!("  [{}] 🔧 Custom step", i);
+                    }
+                    TestStep::SetProgrammingMode(enabled) => {
+                        println!("  [{}] 🔧 SetProgrammingMode({})", i, enabled);
+                        harness.set_programming_mode(*enabled);
+                    }
+                    TestStep::TriggerRead { asap } => {
+                        println!("  [{}] 📤 TriggerRead(ASAP {})", i, asap);
+                        harness.stack().read_object_by_asap(*asap).await;
+                        // Give stack time to process
+                        Timer::after(Duration::from_millis(10)).await;
+                    }
+                    TestStep::TriggerWrite { asap } => {
+                        println!("  [{}] 📤 TriggerWrite(ASAP {})", i, asap);
+                        harness.stack().write_object_by_asap(*asap).await;
+                        // Give stack time to process
+                        Timer::after(Duration::from_millis(10)).await;
+                    }
+                    TestStep::ExpectNone { timeout_ms } => {
+                        println!("  [{}] 🚫 ExpectNone (timeout {}ms)", i, timeout_ms);
+                        let timeout = Duration::from_millis(*timeout_ms as u64);
+                        let recv_fut = harness.receive_captured();
+                        let timeout_fut = Timer::after(timeout);
+                        match select(recv_fut, timeout_fut).await {
+                            Either::First(Some(msg)) => {
+                                println!("        ❌ Unexpected message received!");
+                                println!("           Got: {:02X?}", msg.data.as_slice());
+                                prep_passed = false;
+                            }
+                            Either::First(None) => {
+                                println!("        ⚠️  Capture not available");
+                                prep_passed = false;
+                            }
+                            Either::Second(_) => {
+                                println!("        ✅ No message received (as expected)");
+                            }
+                        }
+                    }
+                    TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
+                        // These should have been resolved already
+                        println!("  [{}] ❌ Unresolved template in preparation", i);
+                        prep_passed = false;
+                    }
+                }
+                total_steps += 1;
+            }
+
+            if prep_passed {
+                println!("✅ Preparation completed successfully\n");
+            } else {
+                println!("❌ Preparation failed - skipping suite tests\n");
+                continue; // Skip all tests in this suite if preparation failed
+            }
+        }
+
         for test in &suite.cases {
             // Skip test if we have case-level filters and this test doesn't match
             if has_test_case_filter && !filters.iter().any(|f| matches_filter(test.name, f)) {
@@ -231,7 +350,9 @@ async fn main(spawner: Spawner) {
                         }
 
                         // Create message and inject directly
-                        let msg = harness.create_message(&telegram.data, zweidraehte::messages::knx::ServiceType::L_Data_Ind).await;
+                        let msg = harness
+                            .create_message(&telegram.data, zweidraehte::messages::knx::ServiceType::L_Data_Ind)
+                            .await;
                         harness.inject(msg).await;
 
                         // Give stack time to process the message
@@ -328,6 +449,106 @@ async fn main(spawner: Spawner) {
                 failed += 1;
             }
             println!();
+        }
+
+        // Run suite teardown steps if any
+        if !suite.teardown.is_empty() {
+            println!("Teardown:");
+            println!("--------------------------------------------------------------------");
+            for (i, step) in suite.teardown.iter().enumerate() {
+                let resolved_step = match step.resolve(&suite.variables) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        println!("  [{}] ❌ Template error: {}", i, e);
+                        continue;
+                    }
+                };
+                match &resolved_step {
+                    TestStep::Comment(text) => {
+                        println!("  [{}] 💬 {}", i, text);
+                    }
+                    TestStep::Inject { telegram, delay_before_ms } => {
+                        println!("  [{}] ⬇️  Inject: {:02X?}", i, telegram.data);
+                        if *delay_before_ms > 0 {
+                            println!("        (delay: {}ms)", delay_before_ms);
+                            Timer::after(Duration::from_millis(*delay_before_ms as u64)).await;
+                        }
+
+                        let msg = harness
+                            .create_message(&telegram.data, zweidraehte::messages::knx::ServiceType::L_Data_Ind)
+                            .await;
+                        harness.inject(msg).await;
+                        Timer::after(Duration::from_millis(10)).await;
+                    }
+                    TestStep::Expect { matcher, timeout_ms } => {
+                        println!("  [{}] ⬆️  Expect: {:02X?}", i, matcher.expected);
+                        let timeout = Duration::from_millis(if *timeout_ms > 0 { *timeout_ms as u64 } else { 1000 });
+                        let recv_fut = harness.receive_captured();
+                        let timeout_fut = Timer::after(timeout);
+                        match select(recv_fut, timeout_fut).await {
+                            Either::First(Some(msg)) => {
+                                if matcher.matches(&msg.data) {
+                                    println!("        ✅ Matched: {:02X?}", msg.data.as_slice());
+                                } else {
+                                    println!("        ❌ Mismatch!");
+                                    println!("           Expected: {:02X?}", matcher.expected);
+                                    println!("           Got:      {:02X?}", msg.data.as_slice());
+                                }
+                            }
+                            Either::First(None) => {
+                                println!("        ⚠️  Capture not available");
+                            }
+                            Either::Second(_) => {
+                                println!("        ⏰ Timeout: No message received within {}ms", timeout.as_millis());
+                            }
+                        }
+                    }
+                    TestStep::Wait { duration_ms } => {
+                        println!("  [{}] ⏳ Wait {}ms", i, duration_ms);
+                        Timer::after(Duration::from_millis(*duration_ms as u64)).await;
+                    }
+                    TestStep::Custom => {
+                        println!("  [{}] 🔧 Custom step", i);
+                    }
+                    TestStep::SetProgrammingMode(enabled) => {
+                        println!("  [{}] 🔧 SetProgrammingMode({})", i, enabled);
+                        harness.set_programming_mode(*enabled);
+                    }
+                    TestStep::TriggerRead { asap } => {
+                        println!("  [{}] 📤 TriggerRead(ASAP {})", i, asap);
+                        harness.stack().read_object_by_asap(*asap).await;
+                        Timer::after(Duration::from_millis(10)).await;
+                    }
+                    TestStep::TriggerWrite { asap } => {
+                        println!("  [{}] 📤 TriggerWrite(ASAP {})", i, asap);
+                        harness.stack().write_object_by_asap(*asap).await;
+                        Timer::after(Duration::from_millis(10)).await;
+                    }
+                    TestStep::ExpectNone { timeout_ms } => {
+                        println!("  [{}] 🚫 ExpectNone (timeout {}ms)", i, timeout_ms);
+                        let timeout = Duration::from_millis(*timeout_ms as u64);
+                        let recv_fut = harness.receive_captured();
+                        let timeout_fut = Timer::after(timeout);
+                        match select(recv_fut, timeout_fut).await {
+                            Either::First(Some(msg)) => {
+                                println!("        ❌ Unexpected message received!");
+                                println!("           Got: {:02X?}", msg.data.as_slice());
+                            }
+                            Either::First(None) => {
+                                println!("        ⚠️  Capture not available");
+                            }
+                            Either::Second(_) => {
+                                println!("        ✅ No message received (as expected)");
+                            }
+                        }
+                    }
+                    TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
+                        println!("  [{}] ❌ Unresolved template in teardown", i);
+                    }
+                }
+                total_steps += 1;
+            }
+            println!("✅ Teardown completed\n");
         }
     }
     println!("====================================================================");

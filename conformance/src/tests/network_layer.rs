@@ -219,6 +219,8 @@ pub fn create_network_layer_suite() -> TestSuite {
                 inject("BC #EDI 00 00 F1 01 00"),
                 comment("Acceptance: The BDUT shall answer with Routing Count 6."),
                 expect("BC #BDUT 00 00 E1 01 40", 200),
+                comment("Cleanup: Deactivate ProgMode"),
+                set_programming_mode(false),
             ],
         },
     ];
