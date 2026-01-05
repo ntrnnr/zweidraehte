@@ -30,3 +30,9 @@ test-case = { workspace = true }
 defmt = ["dep:defmt"]
 log = ["dep:log"]
 test-util = []
+std = []
+usb = ["std", "dep:async-hid", "dep:futures-lite"]
+
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
+async-hid = { workspace = true, optional = true }
+futures-lite = { workspace = true, optional = true }

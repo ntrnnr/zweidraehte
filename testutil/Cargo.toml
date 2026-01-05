@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-zweidraehte = { path = "../stack", features = ["log", "test-util"] }
+zweidraehte = { path = "../stack", features = ["log", "test-util", "usb"] }
 knx-conformance = { path = "../conformance" }
 platform = { path = "../platform", features = ["log", "linux"] }
 
@@ -27,6 +27,9 @@ paste = { workspace = true }
 env_logger = "0.11"
 log = "0.4"
 chrono = "0.4"
+async-hid = { workspace = true }
+futures-lite = { workspace = true }
+libc = "0.2"
 
 [[bin]]
 name = "testutil"
@@ -47,3 +50,7 @@ path = "src/stack_knxip.rs"
 [[bin]]
 name = "busmon"
 path = "src/busmon.rs"
+
+[[bin]]
+name = "usb_test"
+path = "src/usb_test.rs"

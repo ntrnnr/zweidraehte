@@ -172,6 +172,172 @@ impl<'a> SerializablePacket for CemiLDataBuilder<'a> {
 }
 
 // ============================================================================
+// CEMI BUFFER WRAPPER
+// ============================================================================
+
+/// A buffer containing a cEMI frame
+///
+/// This wrapper provides typed access to cEMI frame contents without parsing
+/// into a separate structure. It's used by the USB transport layer to send
+/// and receive raw cEMI frames.
+///
+/// ## cEMI Frame Structure
+///
+/// ```text
+/// Byte 0:      Message Code (0x11 = L_Data.req, 0x29 = L_Data.ind, 0x2e = L_Data.con, etc.)
+/// Byte 1:      Additional Info Length (N)
+/// Byte 2..2+N: Additional Info
+/// Byte 2+N..:  Frame data (control fields, addresses, TPCI/APCI, data)
+/// ```
+#[derive(Debug)]
+pub struct CemiBuffer<B> {
+    inner: B,
+}
+
+impl<B: MessageBuffer> CemiBuffer<B> {
+    /// Create a new CemiBuffer wrapping an existing buffer
+    ///
+    /// The buffer should already contain valid cEMI data.
+    pub fn new(inner: B) -> Self {
+        Self { inner }
+    }
+
+    /// Create a CemiBuffer by building a cEMI frame from components
+    pub fn build(mut inner: B, message_code: CemiMessageCode, additional_info: &[u8], frame_data: &[u8]) -> Self {
+        let total_len = 2 + additional_info.len() + frame_data.len();
+        inner.resize(total_len, 0);
+
+        inner[0] = message_code.into();
+        inner[1] = additional_info.len() as u8;
+
+        if !additional_info.is_empty() {
+            inner[2..2 + additional_info.len()].copy_from_slice(additional_info);
+        }
+
+        let frame_start = 2 + additional_info.len();
+        inner[frame_start..frame_start + frame_data.len()].copy_from_slice(frame_data);
+
+        Self { inner }
+    }
+
+    /// Get the message code
+    pub fn message_code(&self) -> CemiMessageCode {
+        if self.inner.len() > 0 {
+            CemiMessageCode::try_from(self.inner[0]).unwrap_or(CemiMessageCode::Other(self.inner[0]))
+        } else {
+            CemiMessageCode::Other(0)
+        }
+    }
+
+    /// Get the additional info length
+    pub fn additional_info_len(&self) -> usize {
+        if self.inner.len() > 1 {
+            self.inner[1] as usize
+        } else {
+            0
+        }
+    }
+
+    /// Get the additional info bytes
+    pub fn additional_info(&self) -> &[u8] {
+        let add_len = self.additional_info_len();
+        if self.inner.len() >= 2 + add_len {
+            &self.inner[2..2 + add_len]
+        } else {
+            &[]
+        }
+    }
+
+    /// Get the frame data (everything after message code and additional info)
+    ///
+    /// This is the KNX frame starting from the control fields.
+    pub fn frame_data(&self) -> &[u8] {
+        let add_len = self.additional_info_len();
+        let start = 2 + add_len;
+        if self.inner.len() > start {
+            &self.inner[start..]
+        } else {
+            &[]
+        }
+    }
+
+    /// Get the frame data mutably
+    pub fn frame_data_mut(&mut self) -> &mut [u8] {
+        let add_len = self.additional_info_len();
+        let start = 2 + add_len;
+        if self.inner.len() > start {
+            &mut self.inner[start..]
+        } else {
+            &mut []
+        }
+    }
+
+    /// Get the raw cEMI frame bytes
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.inner[..]
+    }
+
+    /// Get the raw cEMI frame bytes mutably
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.inner[..]
+    }
+
+    /// Get the total length of the cEMI frame
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Check if the buffer is empty
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Unwrap and return the inner buffer
+    pub fn into_inner(self) -> B {
+        self.inner
+    }
+
+    /// Get a reference to the inner buffer
+    pub fn inner(&self) -> &B {
+        &self.inner
+    }
+
+    /// Get a mutable reference to the inner buffer
+    pub fn inner_mut(&mut self) -> &mut B {
+        &mut self.inner
+    }
+
+    /// Check if this is an L_Data.req message
+    pub fn is_l_data_req(&self) -> bool {
+        matches!(self.message_code(), CemiMessageCode::LDataReq)
+    }
+
+    /// Check if this is an L_Data.ind message
+    pub fn is_l_data_ind(&self) -> bool {
+        matches!(self.message_code(), CemiMessageCode::LDataInd)
+    }
+
+    /// Check if this is an L_Data.con message
+    pub fn is_l_data_con(&self) -> bool {
+        matches!(self.message_code(), CemiMessageCode::LDataCon)
+    }
+
+    /// Check if this is a local device management message (M_PropRead/Write)
+    pub fn is_device_management(&self) -> bool {
+        matches!(
+            self.inner.get(0),
+            Some(0xFC) | Some(0xFB) | Some(0xF6) | Some(0xF5)
+        )
+    }
+}
+
+impl<B: MessageBuffer + Clone> Clone for CemiBuffer<B> {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone() }
+    }
+}
+
+// ============================================================================
 // CONVERSION FUNCTIONS
 // ============================================================================
 
