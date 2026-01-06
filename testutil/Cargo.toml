@@ -54,3 +54,7 @@ path = "src/busmon.rs"
 [[bin]]
 name = "usb_test"
 path = "src/usb_test.rs"
+
+[[bin]]
+name = "seqno_test"
+path = "src/seqno_test.rs"

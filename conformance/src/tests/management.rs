@@ -775,18 +775,18 @@ pub fn create_memory_write_suite() -> TestSuite {
             expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 400),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             comment("Number is greater than data"),
-            // Memory_Write: length=3 (0x83) but only 2 bytes of data (seq 1)
-            inject("BC #EDI #BDUT 65 46 83 #MEMPOS 12 34"),
-            expect("B0 #BDUT #EDI 60 C6", 0),
+            // Memory_Write: length=3 (0x83) but only 2 bytes of data (seq 0)
+            inject("BC #EDI #BDUT 65 42 83 #MEMPOS 12 34"),
+            expect("B0 #BDUT #EDI 60 C2", 0),
             comment("Acceptance: The BDUT sends an A_Memory_Response with the length set to 0 and no data."),
+            expect("BC #BDUT #EDI 63 42 40 #MEMPOS", 400),
+            inject_delay("B0 #EDI #BDUT 60 C2", 200),
+            comment("Number is less than data"),
+            // Memory_Write: length=2 (0x82) but 3 bytes of data (seq 1)
+            inject("BC #EDI #BDUT 66 46 82 #MEMPOS AA BB CC"),
+            expect("B0 #BDUT #EDI 60 C6", 0),
             expect("BC #BDUT #EDI 63 46 40 #MEMPOS", 400),
             inject_delay("B0 #EDI #BDUT 60 C6", 200),
-            comment("Number is less than data"),
-            // Memory_Write: length=2 (0x82) but 3 bytes of data (seq 2)
-            inject("BC #EDI #BDUT 66 4A 82 #MEMPOS AA BB CC"),
-            expect("B0 #BDUT #EDI 60 CA", 0),
-            expect("BC #BDUT #EDI 63 4A 40 #MEMPOS", 400),
-            inject_delay("B0 #EDI #BDUT 60 CA", 200),
             comment("Acceptance: The BDUT sends an A_Memory_Response with the length set to 0 and no data. The memory has not been altered."),
             // T_Disconnect
             inject_delay("B0 #EDI #BDUT 60 81", 200),
@@ -3241,6 +3241,14 @@ pub fn create_user_memory_write_suite() -> TestSuite {
         // M-2.32.3 Inconsistent Length - accessible Memory - no Verify
         // ====================================================================
         // XML: Tests BOTH count>data AND count<data, expects IGNORED
+        //
+        // NOTE: The XML specification shows BOTH malformed writes using seqno=0, implying
+        // that rejected frames don't increment the transport layer sequence counter. This
+        // is WRONG. The transport layer has no knowledge of application layer validity -
+        // it sees a valid T_Data frame, increments its counter, ACKs it, and delivers the
+        // APDU to the upper layer. The application layer then rejects the malformed APDU.
+        // This matches the behavior in Memory_Write test 2.7.3 which correctly uses
+        // incrementing sequence numbers (0, 1, 2). We follow the sane interpretation here.
         TestCase::new("M-2.32.3 Inconsistent Length - accessible Memory - no Verify").with_steps(vec![
             comment("Testcase 2.32.3 Inconsistent Length - accessible Memory - no Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
@@ -3249,8 +3257,7 @@ pub fn create_user_memory_write_suite() -> TestSuite {
             inject("BC #EDI #BDUT 66 42 C2 03 #MEM_ACCESSIBLE_START AA BB"),
             expect("B0 #BDUT #EDI 60 C2", 1000),
             comment("Number is less than data"),
-            // count=2 but 3 data bytes (01 02 03)
-            // Note: TPCI 46 = seq 1 (after first write at seq 0)
+            // count=2 but 3 data bytes (01 02 03) - seq 1
             inject("BC #EDI #BDUT 67 46 C2 02 #MEM_ACCESSIBLE_START 01 02 03"),
             expect("B0 #BDUT #EDI 60 C6", 1000),
             comment("Acceptance: The frames shall be ignored. Reading memory from the device shows the data has not been changed."),
@@ -3330,6 +3337,14 @@ pub fn create_user_memory_write_suite() -> TestSuite {
         // M-2.32.10 Inconsistent Length - accessible Memory - EFF - no Verify
         // ====================================================================
         // XML: Tests BOTH count>data (EFF) AND count<data (SFF), expects IGNORED
+        //
+        // NOTE: The XML specification shows BOTH malformed writes using seqno=0, implying
+        // that rejected frames don't increment the transport layer sequence counter. This
+        // is WRONG. The transport layer has no knowledge of application layer validity -
+        // it sees a valid T_Data frame, increments its counter, ACKs it, and delivers the
+        // APDU to the upper layer. The application layer then rejects the malformed APDU.
+        // This matches the behavior in Memory_Write test 2.7.3 which correctly uses
+        // incrementing sequence numbers (0, 1, 2). We follow the sane interpretation here.
         TestCase::new("M-2.32.10 Inconsistent Length - accessible Memory - EFF - no Verify").with_steps(vec![
             comment("Testcase 2.32.10 Inconsistent Length - accessible Memory - EFF - no Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
@@ -3338,8 +3353,7 @@ pub fn create_user_memory_write_suite() -> TestSuite {
             inject("3C 60 #EDI #BDUT 06 42 C2 03 #MEM_ACCESSIBLE_START 11 22"),
             expect("B0 #BDUT #EDI 60 C2", 1000),
             comment("Number is less than data"),
-            // SFF with count=2 but 3 data bytes (AA BB CC)
-            // Note: TPCI 46 = seq 1 (after first write at seq 0)
+            // SFF with count=2 but 3 data bytes (AA BB CC) - seq 1
             inject("BC #EDI #BDUT 67 46 C2 02 #MEM_ACCESSIBLE_START AA BB CC"),
             expect("B0 #BDUT #EDI 60 C6", 1000),
             comment("Acceptance: The frames shall be ignored. Reading memory from the device shows the data has not been changed."),
@@ -3454,19 +3468,25 @@ pub fn create_user_memory_write_verify_suite() -> TestSuite {
         // ====================================================================
         // M-2.32.12 Inconsistent Length - accessible Memory - Verify
         // ====================================================================
+        // NOTE: The XML specification shows BOTH malformed writes using seqno=0, implying
+        // that rejected frames don't increment the transport layer sequence counter. This
+        // is WRONG. The transport layer has no knowledge of application layer validity -
+        // it sees a valid T_Data frame, increments its counter, ACKs it, and delivers the
+        // APDU to the upper layer. The application layer then rejects the malformed APDU.
+        // This matches the behavior in Memory_Write test 2.7.7 which correctly uses
+        // incrementing sequence numbers. We follow the sane interpretation here.
         TestCase::new("M-2.32.12 Inconsistent Length - accessible Memory - Verify").with_steps(vec![
             comment("Testcase 2.32.12 Inconsistent Length - accessible Memory - Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             comment("Number is greater than data"),
-            // count=3 but only 2 data bytes (11 22)
+            // count=3 but only 2 data bytes (11 22) - seq 0
             inject("BC #EDI #BDUT 66 42 C2 03 #MEM_ACCESSIBLE_START 11 22"),
             expect("B0 #BDUT #EDI 60 C2", 1000),
             comment("Acceptance: The BDUT replies with an A_UserMemory_Response-PDU with count set to zero and no data."),
             expect("BC #BDUT #EDI 64 42 C1 00 #MEM_ACCESSIBLE_START", 1000),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             comment("Number is less than data"),
-            // count=2 but 3 data bytes (01 02 03)
-            // Note: TPCI 46 = seq 1 (after first write at seq 0)
+            // count=2 but 3 data bytes (01 02 03) - seq 1
             inject("BC #EDI #BDUT 67 46 C2 02 #MEM_ACCESSIBLE_START 01 02 03"),
             expect("B0 #BDUT #EDI 60 C6", 1000),
             comment("Acceptance: The BDUT replies with an A_UserMemory_Response-PDU with count set to zero and no data."),
@@ -3508,18 +3528,24 @@ pub fn create_user_memory_write_verify_suite() -> TestSuite {
         // ====================================================================
         // M-2.32.16 Inconsistent Length - accessible Memory - EFF - Verify
         // ====================================================================
+        // NOTE: The XML specification shows BOTH malformed writes using seqno=0, implying
+        // that rejected frames don't increment the transport layer sequence counter. This
+        // is WRONG. The transport layer has no knowledge of application layer validity -
+        // it sees a valid T_Data frame, increments its counter, ACKs it, and delivers the
+        // APDU to the upper layer. The application layer then rejects the malformed APDU.
+        // This matches the behavior in Memory_Write test 2.7.7 which correctly uses
+        // incrementing sequence numbers. We follow the sane interpretation here.
         TestCase::new("M-2.32.16 Inconsistent Length - accessible Memory - EFF - Verify").with_steps(vec![
             comment("Testcase 2.32.16 Inconsistent Length - accessible Memory - EFF - Verify"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             comment("Number is greater than data"),
-            // EFF with count=3 but only 2 data bytes (11 22)
+            // EFF with count=3 but only 2 data bytes (11 22) - seq 0
             inject("3C 60 #EDI #BDUT 06 42 C2 03 #MEM_ACCESSIBLE_START 11 22"),
             expect("B0 #BDUT #EDI 60 C2", 1000),
             expect("BC #BDUT #EDI 64 42 C1 00 #MEM_ACCESSIBLE_START", 1000),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             comment("Number is less than data"),
-            // SFF with count=2 but 3 data bytes (AA BB CC)
-            // Note: TPCI 46 = seq 1 (after first write at seq 0)
+            // SFF with count=2 but 3 data bytes (AA BB CC) - seq 1
             inject("BC #EDI #BDUT 67 46 C2 02 #MEM_ACCESSIBLE_START AA BB CC"),
             expect("B0 #BDUT #EDI 60 C6", 1000),
             expect("BC #BDUT #EDI 64 46 C1 00 #MEM_ACCESSIBLE_START", 1000),
