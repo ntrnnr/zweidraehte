@@ -400,14 +400,15 @@ where
         prop_id: u8,
         start_idx: u16,
         data: &[u8],
-    ) -> Result<(), PropertyError> {
+        response_buf: &mut [u8],
+    ) -> Result<usize, PropertyError> {
         match object_idx {
-            0 => self.device.borrow_mut().write_property(prop_id, start_idx, data),
-            1 => self.addr_table.borrow_mut().write_property(prop_id, start_idx, data),
-            2 => self.asso_table.borrow_mut().write_property(prop_id, start_idx, data),
-            3 => self.app_program.borrow_mut().write_property(prop_id, start_idx, data),
-            4 => self.group_object_table.borrow_mut().write_property(prop_id, start_idx, data),
-            5 => self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data),
+            0 => self.device.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
+            1 => self.addr_table.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
+            2 => self.asso_table.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
+            3 => self.app_program.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
+            4 => self.group_object_table.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
+            5 => self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }

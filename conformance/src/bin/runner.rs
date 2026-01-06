@@ -100,6 +100,19 @@ async fn main(spawner: Spawner) {
         knx_conformance::tests::management::create_user_memory_write_suite(),
         knx_conformance::tests::management::create_user_memory_write_verify_suite(),
         knx_conformance::tests::management::create_user_manufacturer_info_read_suite(),
+        // Load State Machine Tests
+        knx_conformance::tests::load_state_machines::create_preparation_suite(),
+        knx_conformance::tests::load_state_machines::create_unloaded_state_suite(),
+        knx_conformance::tests::load_state_machines::create_loaded_state_suite(),
+        knx_conformance::tests::load_state_machines::create_loading_state_suite(),
+        knx_conformance::tests::load_state_machines::create_error_state_suite(),
+        knx_conformance::tests::load_state_machines::create_no_access_rights_suite(),
+        // Run State Machine Tests
+        knx_conformance::tests::run_state_machines::create_preparation_suite(),
+        knx_conformance::tests::run_state_machines::create_halted_state_suite(),
+        knx_conformance::tests::run_state_machines::create_running_state_suite(),
+        knx_conformance::tests::run_state_machines::create_ready_state_suite(),
+        knx_conformance::tests::run_state_machines::create_terminated_state_suite(),
         // Manual intervention required
         //knx_conformance::tests::group_objects::create_association_table_receiving_suite(),
         //knx_conformance::tests::group_objects::create_association_table_sending_suite(),
@@ -158,6 +171,19 @@ async fn main(spawner: Spawner) {
         println!("      M-2.31 UserMemory_Read");
         println!("      M-2.32 UserMemory_Write");
         println!("      M-2.33 UserManufacturerInfo_Read");
+        println!("  - Load State Machine Tests:");
+        println!("      L-2.1 Test Preparation");
+        println!("      L-2.2 Tests with initial state LOAD_STATE_UNLOADED");
+        println!("      L-2.3 Tests with initial state LOAD_STATE_LOADED");
+        println!("      L-2.4 Tests with initial state LOAD_STATE_LOADING");
+        println!("      L-2.5 Tests with initial state LOAD_STATE_ERROR");
+        println!("      L-2.6 Test without access rights");
+        println!("  - Run State Machine Tests:");
+        println!("      R-2.1 Test preparation");
+        println!("      R-2.2 Tests with initial state RUNSTATE_HALTED");
+        println!("      R-2.3 Tests with initial state RUNSTATE_RUNNING");
+        println!("      R-2.4 Tests with initial state RUNSTATE_READY");
+        println!("      R-2.5 Tests with initial state RUNSTATE_TERMINATED");
         std::process::exit(1);
     }
 

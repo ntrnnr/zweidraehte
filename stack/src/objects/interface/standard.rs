@@ -497,14 +497,26 @@ impl<'a, T: LoadableTable, S: TableObjectSpec> InterfaceObject for TableInterfac
         }
     }
 
-    fn write_property(&mut self, pid: u8, start_idx: u16, data: &[u8]) -> Result<(), PropertyError> {
+    fn write_property(
+        &mut self,
+        pid: u8,
+        start_idx: u16,
+        data: &[u8],
+        response_buf: &mut [u8],
+    ) -> Result<usize, PropertyError> {
         match pid {
             super::pid::OBJECT_TYPE | super::pid::TABLE_REFERENCE | super::pid::MCB_TABLE => {
                 Err(PropertyError::WriteNotAllowed)
             }
             super::pid::LOAD_STATE_CONTROL => {
+                // Write the load event to the state machine
                 self.table.borrow_mut().write_lsm(data);
-                Ok(())
+                // Response contains the resulting load state (1 byte), not the echoed data
+                if response_buf.is_empty() {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                response_buf[0] = self.table.borrow().read_lsm()[0];
+                Ok(1)
             }
             super::pid::TABLE => {
                 let mut table = self.table.borrow_mut();
@@ -524,7 +536,11 @@ impl<'a, T: LoadableTable, S: TableObjectSpec> InterfaceObject for TableInterfac
                 }
 
                 table_data[byte_start..byte_start + data.len()].copy_from_slice(data);
-                Ok(())
+
+                // Echo back written data
+                let len = data.len().min(response_buf.len());
+                response_buf[..len].copy_from_slice(&data[..len]);
+                Ok(len)
             }
             _ => Err(PropertyError::InvalidPropertyId),
         }

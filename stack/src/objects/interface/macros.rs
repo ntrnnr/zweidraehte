@@ -313,7 +313,8 @@ macro_rules! define_interface_object {
                 pid: u8,
                 start_idx: u16,
                 data: &[u8],
-            ) -> Result<(), $crate::objects::interface::PropertyError> {
+                response_buf: &mut [u8],
+            ) -> Result<usize, $crate::objects::interface::PropertyError> {
                 if start_idx != 1 {
                     return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
                 }
@@ -324,7 +325,11 @@ macro_rules! define_interface_object {
                     }
                     $(
                         $pid_path => {
-                            $crate::define_interface_object!(@write_static $access, self.$field_name, data)
+                            $crate::define_interface_object!(@write_static $access, self.$field_name, data)?;
+                            // Echo back written data
+                            let len = data.len().min(response_buf.len());
+                            response_buf[..len].copy_from_slice(&data[..len]);
+                            Ok(len)
                         }
                     )*
                     _ => Err($crate::objects::interface::PropertyError::InvalidPropertyId),
@@ -560,7 +565,8 @@ macro_rules! define_interface_object {
                 pid: u8,
                 start_idx: u16,
                 data: &[u8],
-            ) -> Result<(), $crate::objects::interface::PropertyError> {
+                response_buf: &mut [u8],
+            ) -> Result<usize, $crate::objects::interface::PropertyError> {
                 if start_idx != 1 {
                     return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
                 }
@@ -572,19 +578,31 @@ macro_rules! define_interface_object {
                     // Static properties
                     $(
                         $pid_path => {
-                            $crate::define_interface_object!(@write_static $access, self.$field_name, data)
+                            $crate::define_interface_object!(@write_static $access, self.$field_name, data)?;
+                            // Echo back written data
+                            let len = data.len().min(response_buf.len());
+                            response_buf[..len].copy_from_slice(&data[..len]);
+                            Ok(len)
                         }
                     )*
                     // State-backed properties (closure-based)
                     $($(
                         $state_pid_path => {
-                            $crate::define_interface_object!(@write_state_property $state_access, self.state, data, $write_state, $write_data, $write_expr)
+                            $crate::define_interface_object!(@write_state_property $state_access, self.state, data, $write_state, $write_data, $write_expr)?;
+                            // Echo back written data
+                            let len = data.len().min(response_buf.len());
+                            response_buf[..len].copy_from_slice(&data[..len]);
+                            Ok(len)
                         }
                     )*)?
                     // Shorthand ReadWrite properties
                     $($(
                         $rw_pid_path => {
-                            $crate::define_interface_object!(@write_shorthand self.state, $rw_getter, $rw_pdt, data)
+                            $crate::define_interface_object!(@write_shorthand self.state, $rw_getter, $rw_pdt, data)?;
+                            // Echo back written data
+                            let len = data.len().min(response_buf.len());
+                            response_buf[..len].copy_from_slice(&data[..len]);
+                            Ok(len)
                         }
                     )*)?
                     // Shorthand ReadOnly properties

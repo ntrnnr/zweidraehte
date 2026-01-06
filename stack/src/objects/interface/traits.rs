@@ -283,16 +283,20 @@ pub trait PropertyServiceHandler {
     /// * `prop_id` - Property ID to write
     /// * `start_idx` - 1-based start index for array properties
     /// * `data` - Data to write
+    /// * `response_buf` - Buffer for response data (may differ from written data, e.g., for LOAD_STATE_CONTROL)
     ///
     /// # Returns
-    /// `Ok(())` on success or error
+    /// `Ok(response_len)` - Number of bytes written to response_buf on success
+    /// For most properties, this echoes the written data.
+    /// For LOAD_STATE_CONTROL, this returns the resulting load state (1 byte).
     fn property_value_write(
         &self,
         object_idx: u16,
         prop_id: u8,
         start_idx: u16,
         data: &[u8],
-    ) -> Result<(), PropertyError>;
+        response_buf: &mut [u8],
+    ) -> Result<usize, PropertyError>;
 }
 
 // ============================================================================
@@ -373,11 +377,20 @@ pub trait InterfaceObject {
     /// * `pid` - Property ID to write
     /// * `start_idx` - 1-based start index for array properties (use 1 for single values)
     /// * `data` - Data to write
+    /// * `response_buf` - Buffer for response data (may differ from written data)
     ///
     /// # Returns
-    /// * `Ok(())` - Write successful
+    /// * `Ok(response_len)` - Number of bytes written to response_buf
+    ///   For most properties, this echoes the written data.
+    ///   For LOAD_STATE_CONTROL, this returns the resulting load state (1 byte).
     /// * `Err(PropertyError)` - If the write fails
-    fn write_property(&mut self, pid: u8, start_idx: u16, data: &[u8]) -> Result<(), PropertyError>;
+    fn write_property(
+        &mut self,
+        pid: u8,
+        start_idx: u16,
+        data: &[u8],
+        response_buf: &mut [u8],
+    ) -> Result<usize, PropertyError>;
 
     /// Get current element count for an array property
     ///
@@ -603,7 +616,8 @@ impl PropertyServiceHandler for () {
         _prop_id: u8,
         _start_idx: u16,
         _data: &[u8],
-    ) -> Result<(), PropertyError> {
+        _response_buf: &mut [u8],
+    ) -> Result<usize, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
     }
 }

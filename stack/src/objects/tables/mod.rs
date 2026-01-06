@@ -603,7 +603,8 @@ impl<T: TableMemory> Table<T> {
                 LoadState::Loading => (LoadState::Unloaded, LoadAction::Unload),
                 LoadState::Err => (LoadState::Unloaded, LoadAction::Unload),
             },
-            _ => panic!("Invalid event for load state machine"),
+            // Unknown load events are ignored - state remains unchanged
+            _ => (cur_state, LoadAction::None),
         }
     }
 }

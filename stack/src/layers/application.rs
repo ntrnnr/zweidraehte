@@ -836,13 +836,17 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             object_idx, prop_id, count, start_idx, data_len
         );
 
-        // Perform the write
-        let result = self.interface_object_server.property_value_write(object_idx, prop_id, start_idx, data);
+        // Perform the write - the response may differ from written data (e.g., LOAD_STATE_CONTROL)
+        // Use a stack buffer for the response data
+        // FIXME: stack usage - consider a better approach for large properties
+        let mut response_data = [0u8; 64]; // Should be enough for any property response
+        let result =
+            self.interface_object_server.property_value_write(object_idx, prop_id, start_idx, data, &mut response_data);
 
         match result {
-            Ok(()) => {
-                // Success: echo back the written data
-                let response_len = offsets::MSG_APCI + 6 + data_len;
+            Ok(response_data_len) => {
+                // Success: send response with the data returned by the write operation
+                let response_len = offsets::MSG_APCI + 6 + response_data_len;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
 
                 let msg = ind
@@ -854,11 +858,12 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                         response_buf[offsets::MSG_APCI + 4] = (count_start >> 8) as u8;
                         response_buf[offsets::MSG_APCI + 5] = count_start as u8;
 
-                        // Echo back the written data
-                        response_buf[offsets::MSG_APCI + 6..offsets::MSG_APCI + 6 + data_len].copy_from_slice(data);
+                        // Copy response data (may be echoed write data or transformed data like load state)
+                        response_buf[offsets::MSG_APCI + 6..offsets::MSG_APCI + 6 + response_data_len]
+                            .copy_from_slice(&response_data[..response_data_len]);
                     });
 
-                debug!("AL sending PropertyValueResponse (write success): {} bytes", data_len);
+                debug!("AL sending PropertyValueResponse (write success): {} bytes", response_data_len);
 
                 let confirmation = self.transport_layer.request(msg).await;
                 trace!("AL PropertyValueResponse (write) confirmation: {:?}", confirmation.service_type());
