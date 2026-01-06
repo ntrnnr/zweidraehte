@@ -765,28 +765,35 @@ pub fn create_memory_write_suite() -> TestSuite {
         // ====================================================================
         // M-2.7.7 Length inconsistency – Verify on
         // ====================================================================
+        // NOTE: The XML specification shows PropertyValueWrite using seqno=0, then
+        // Memory_Write also using seqno=0. This is WRONG. The transport layer
+        // increments recv_seq after any successfully received T_Data frame, regardless
+        // of application layer semantics. After PropertyValueWrite with seqno=0,
+        // the next frame must use seqno=1. This matches test 2.7.3 which correctly
+        // uses incrementing sequence numbers. We follow the sane interpretation here.
         TestCase::new("M-2.7.7 Length inconsistency - Verify on").with_steps(vec![
             comment("Testcase 2.7.7 Length inconsistency - accessible Memory - Verify"),
             // T_Connect
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             comment("Enable verify"),
+            // PropertyValueWrite with seq 0 to enable verify mode
             inject("BC #EDI #BDUT 66 43 D7 00 0E 10 01 04"),
             expect("B0 #BDUT #EDI 60 C2", 0),
             expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 04", 400),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             comment("Number is greater than data"),
-            // Memory_Write: length=3 (0x83) but only 2 bytes of data (seq 0)
-            inject("BC #EDI #BDUT 65 42 83 #MEMPOS 12 34"),
-            expect("B0 #BDUT #EDI 60 C2", 0),
-            comment("Acceptance: The BDUT sends an A_Memory_Response with the length set to 0 and no data."),
-            expect("BC #BDUT #EDI 63 42 40 #MEMPOS", 400),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            comment("Number is less than data"),
-            // Memory_Write: length=2 (0x82) but 3 bytes of data (seq 1)
-            inject("BC #EDI #BDUT 66 46 82 #MEMPOS AA BB CC"),
+            // Memory_Write: length=3 (0x83) but only 2 bytes of data (seq 1)
+            inject("BC #EDI #BDUT 65 46 83 #MEMPOS 12 34"),
             expect("B0 #BDUT #EDI 60 C6", 0),
+            comment("Acceptance: The BDUT sends an A_Memory_Response with the length set to 0 and no data."),
             expect("BC #BDUT #EDI 63 46 40 #MEMPOS", 400),
             inject_delay("B0 #EDI #BDUT 60 C6", 200),
+            comment("Number is less than data"),
+            // Memory_Write: length=2 (0x82) but 3 bytes of data (seq 2)
+            inject("BC #EDI #BDUT 66 4A 82 #MEMPOS AA BB CC"),
+            expect("B0 #BDUT #EDI 60 CA", 0),
+            expect("BC #BDUT #EDI 63 4A 40 #MEMPOS", 400),
+            inject_delay("B0 #EDI #BDUT 60 CA", 200),
             comment("Acceptance: The BDUT sends an A_Memory_Response with the length set to 0 and no data. The memory has not been altered."),
             // T_Disconnect
             inject_delay("B0 #EDI #BDUT 60 81", 200),
