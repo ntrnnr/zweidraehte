@@ -582,12 +582,16 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
 /// Property IDs and Object Indexes for USB KNX Interface
 ///
 /// Object layout:
-/// - Object 0 (Device Object): PID 57/58 for individual address
+/// - Object 0 (Device Object): PID 56 for max APDU length, PID 57/58 for individual address
 /// - Object 8 (cEMI Server Object): PID 52 for communication mode
 pub mod properties {
     /// Communication mode (0x00 = DLL, 0x01 = Bus Monitor)
     /// Located on cEMI Server Object (Object 8)
     pub const PID_COMM_MODE: u8 = 0x34; // PID 52
+
+    /// Maximum APDU length supported by the interface
+    /// Located on Device Object (Object 0)
+    pub const PID_MAX_APDU_LENGTH: u8 = 0x38; // PID 56
 
     /// Client Subnetwork Address (area.line byte of individual address)
     /// Located on Device Object (Object 0)
@@ -600,7 +604,7 @@ pub mod properties {
     /// cEMI Server Object (Object Index 8) - used for comm mode
     pub const CEMI_SERVER_OBJECT: u8 = 0x08;
 
-    /// Device Object (Object Index 0) - used for individual address
+    /// Device Object (Object Index 0) - used for individual address and device properties
     pub const DEVICE_OBJECT: u8 = 0x00;
 }
 

@@ -102,6 +102,10 @@ impl Default for UsbLinkLayerBuilder {
     }
 }
 
+/// Default max APDU length if the interface doesn't report one
+/// (standard TP1 without extended frame format)
+const DEFAULT_MAX_APDU_LENGTH: u16 = 14;
+
 impl UsbLinkLayerBuilder {
     /// Read the interface's individual address from the device
     async fn read_individual_address<'a, D: UsbHidDevice>(
@@ -139,6 +143,28 @@ impl UsbLinkLayerBuilder {
         transport.prop_write(properties::DEVICE_OBJECT, properties::PID_DEVICE_ADDR, &[address.device()]).await?;
 
         Ok(())
+    }
+
+    /// Read the maximum APDU length supported by the interface
+    ///
+    /// This reads PID 56 (MAX_APDU_LENGTH) from the Device Object (Object 0).
+    /// The value is a 16-bit unsigned integer representing the maximum APDU size
+    /// the interface can handle.
+    async fn read_max_apdu_length<'a, D: UsbHidDevice>(
+        transport: &mut UsbCemiTransport<'a, D>,
+    ) -> Result<u16, super::device::UsbHidError> {
+        let data = transport
+            .prop_read(properties::DEVICE_OBJECT, properties::PID_MAX_APDU_LENGTH)
+            .await?;
+
+        // Property response format: msg_code(1) + obj_type(2) + obj_instance(1) + pid(1) + count_idx(2) + data
+        // The actual value is at offset 7, and it's a 16-bit big-endian value
+        if data.len() < 9 {
+            return Err(super::device::UsbHidError::InvalidReport);
+        }
+
+        let max_apdu = u16::from_be_bytes([data[7], data[8]]);
+        Ok(max_apdu)
     }
 }
 
@@ -218,6 +244,21 @@ impl LinkLayerBuilder for UsbLinkLayerBuilder {
                 }
             }
 
+            // Read max APDU length from interface
+            let max_apdu_length = match Self::read_max_apdu_length(&mut transport).await {
+                Ok(len) => {
+                    info!("USB Link Layer: Interface max APDU length: {} bytes", len);
+                    len
+                }
+                Err(e) => {
+                    warn!(
+                        "USB Link Layer: Failed to read max APDU length: {:?}, using default {}",
+                        e, DEFAULT_MAX_APDU_LENGTH
+                    );
+                    DEFAULT_MAX_APDU_LENGTH
+                }
+            };
+
             // Check bus connection
             match transport.get_bus_connection_status().await {
                 Ok(connected) => {
@@ -240,6 +281,7 @@ impl LinkLayerBuilder for UsbLinkLayerBuilder {
                 network_layer,
                 pending_tx: None,
                 timeout_deadline: None,
+                max_apdu_length,
             };
 
             link_layer.process(inbox).await
@@ -262,6 +304,8 @@ struct UsbLinkLayer<'a, D: UsbHidDevice> {
     network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     pending_tx: Option<PendingTransmission>,
     timeout_deadline: Option<Instant>,
+    /// Maximum APDU length supported by the USB interface
+    max_apdu_length: u16,
 }
 
 impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
@@ -327,6 +371,28 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
 
         // Convert internal KNX format to cEMI L_Data.req
         let cemi_buffer = knx_to_cemi_message(message, CemiMessageCode::LDataReq);
+
+        // Check APDU length against interface maximum
+        // cEMI structure: msg_code(1) + add_info_len(1) + [add_info(N)] + ctrl1(1) + ctrl2(1) + src(2) + dst(2) + npdu_len(1) + apdu...
+        // The NPDU length field (at offset 8 if no additional info) contains the APDU length
+        // APDU length = npdu_len byte value (which counts TPCI/APCI + data bytes)
+        let add_info_len = if cemi_buffer.len() > 1 { cemi_buffer[1] as usize } else { 0 };
+        let npdu_len_offset = 2 + add_info_len + 6; // skip msg_code, add_info_len, add_info, ctrl1, ctrl2, src(2), dst(2)
+
+        if cemi_buffer.len() > npdu_len_offset {
+            let apdu_length = cemi_buffer[npdu_len_offset] as u16;
+
+            if apdu_length > self.max_apdu_length {
+                warn!(
+                    "USB Link Layer: APDU length {} exceeds interface maximum {} - rejecting frame",
+                    apdu_length, self.max_apdu_length
+                );
+                let mut msg = KnxMessageBuffer::new(cemi_buffer, ServiceType::L_Data_Con);
+                msg.ctrl_field_mut().set_c(Confirm::Err);
+                response_tx.send(ConfirmationMessage::confirmation(msg)).await;
+                return;
+            }
+        }
 
         // Log cEMI format after conversion
         info!("USB Link Layer: TX cEMI: {:02X?}", &cemi_buffer[..]);
