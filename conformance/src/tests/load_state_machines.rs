@@ -31,7 +31,10 @@ pub fn create_test_variables() -> BTreeMap<String, TestVariable> {
     vars.insert("EDI".to_string(), TestVariable::Bytes(vec![0xAF, 0xFE]));
     vars.insert("BDUT".to_string(), TestVariable::Bytes(vec![0x10, 0x01]));
     vars.insert("TEST_OBJ_INDEX".to_string(), TestVariable::Bytes(vec![0x02]));
+    // Default key for level 0 - matches the stack's initial key configuration
     vars.insert("LEV_0_KEY".to_string(), TestVariable::Bytes(vec![0xFF, 0xFF, 0xFF, 0xFF]));
+    // Non-default key used by L-2.6 to test access denial
+    vars.insert("LEV_0_KEY_NONDEFAULT".to_string(), TestVariable::Bytes(vec![0xAA, 0xAA, 0xAA, 0xAA]));
     vars
 }
 
@@ -1227,30 +1230,66 @@ pub fn create_error_state_suite() -> TestSuite {
 /// when no authorization has been performed. The device should return an error
 /// response with count=0 (no elements) indicating access denied.
 ///
-/// NOTE: According to KNX spec, the device should deny access with count=0 response:
-///   `BC #BDUT #EDI 65 43 D6 #TEST_OBJ_INDEX 05 00 01`
-/// However, our current implementation does not enforce access rights on
-/// PID_LOAD_STATE_CONTROL and allows the operation. This test currently expects
-/// the non-conformant success response. TODO: Implement proper access control.
+/// The test sets up a non-default key for level 0 (0xAAAAAAAA), then attempts
+/// to write without authorization and expects access denied. Finally it restores
+/// the default key.
 pub fn create_no_access_rights_suite() -> TestSuite {
     let vars = create_test_variables();
+
+    // Preparation: Set level 0 key to non-default value so unauthenticated
+    // connections get access level 1 instead of level 0
+    let preparation = vec![
+        comment("Preparation: Set level 0 key to non-default value"),
+        comment("Connect to BDUT"),
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        comment("Authorize with default key (0xFFFFFFFF) to get level 0 access"),
+        inject("BC #EDI #BDUT 66 43 D1 00 FF FF FF FF"),
+        expect("B0 #BDUT #EDI 60 C2", 0),
+        expect("BC #BDUT #EDI 62 43 D2 00", 400),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        comment("A_Key_Write: Set key for level 0 to 0xAAAAAAAA"),
+        inject("BC #EDI #BDUT 66 47 D3 00 #LEV_0_KEY_NONDEFAULT"),
+        expect("B0 #BDUT #EDI 60 C6", 0),
+        expect("BC #BDUT #EDI 62 47 D4 00", 400),
+        inject_delay("B0 #EDI #BDUT 60 C6", 200),
+        comment("Close connection"),
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+    ];
+
+    // Teardown: Restore level 0 key to default (0xFFFFFFFF)
+    let teardown = vec![
+        comment("Cleanup: Restore level 0 key to default (0xFFFFFFFF)"),
+        comment("Connect to BDUT"),
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        comment("Authorize with the key we set (0xAAAAAAAA)"),
+        inject("BC #EDI #BDUT 66 43 D1 00 #LEV_0_KEY_NONDEFAULT"),
+        expect("B0 #BDUT #EDI 60 C2", 0),
+        expect("BC #BDUT #EDI 62 43 D2 00", 400),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        comment("A_Key_Write: Restore default key for level 0"),
+        inject("BC #EDI #BDUT 66 47 D3 00 FF FF FF FF"),
+        expect("B0 #BDUT #EDI 60 C6", 0),
+        expect("BC #BDUT #EDI 62 47 D4 00", 400),
+        inject_delay("B0 #EDI #BDUT 60 C6", 200),
+        comment("Close connection"),
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+    ];
+
     let cases = vec![
         // ====================================================================
         // L-2.6 Test without access rights
         // ====================================================================
         TestCase::new("L-2.6 Test without access rights").with_steps(vec![
             comment("Testcase 2.6 Test without access rights"),
-            comment("Connect to BDUT"),
+            comment("Connect to BDUT without authorization"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("No authorization!"),
+            comment("No authorization! Connection has default access level 3."),
             comment("Send to association table object a LOAD_EVENT_UNLOAD"),
             comment("Acceptance: BDUT denies access to load state machine"),
             inject("BC #EDI #BDUT 6F 43 D7 #TEST_OBJ_INDEX 05 10 01 04 00 00 00 00 00 00 00 00 00"),
             expect("B0 #BDUT #EDI 60 C2", 0),
-            // TODO: Spec expects access denied with count=0:
-            //   expect("BC #BDUT #EDI 65 43 D6 #TEST_OBJ_INDEX 05 00 01", 400),
-            // Current implementation allows access, returns success with load state:
-            expect("BC #BDUT #EDI 66 43 D6 #TEST_OBJ_INDEX 05 10 01 00", 400),
+            // Access denied response: count=0, start_idx=1 (no data payload)
+            expect("BC #BDUT #EDI 65 43 D6 #TEST_OBJ_INDEX 05 00 01", 400),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             comment("Close connection with BDUT"),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
@@ -1258,7 +1297,10 @@ pub fn create_no_access_rights_suite() -> TestSuite {
         ]),
     ];
 
-    TestSuite::new("L-2.6 Test without access rights", vars).with_cases(cases)
+    TestSuite::new("L-2.6 Test without access rights", vars)
+        .with_preparation(preparation)
+        .with_cases(cases)
+        .with_teardown(teardown)
 }
 
 /// Get all load state machine test suites

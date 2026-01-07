@@ -262,9 +262,10 @@ pub trait PropertyServiceHandler {
     /// * `start_idx` - 1-based start index for array properties
     /// * `count` - Number of elements to read
     /// * `buf` - Buffer to write data into
+    /// * `access_level` - Caller's access level (0 = full access, 3 = minimal)
     ///
     /// # Returns
-    /// Number of bytes written or error
+    /// Number of bytes written or error (including `AccessDenied` if insufficient access)
     fn property_value_read(
         &self,
         object_idx: u16,
@@ -272,6 +273,7 @@ pub trait PropertyServiceHandler {
         start_idx: u16,
         count: u16,
         buf: &mut [u8],
+        access_level: u8,
     ) -> Result<usize, PropertyError>;
 
     /// Handle A_PropertyValue_Write request
@@ -284,11 +286,13 @@ pub trait PropertyServiceHandler {
     /// * `start_idx` - 1-based start index for array properties
     /// * `data` - Data to write
     /// * `response_buf` - Buffer for response data (may differ from written data, e.g., for LOAD_STATE_CONTROL)
+    /// * `access_level` - Caller's access level (0 = full access, 3 = minimal)
     ///
     /// # Returns
     /// `Ok(response_len)` - Number of bytes written to response_buf on success
     /// For most properties, this echoes the written data.
     /// For LOAD_STATE_CONTROL, this returns the resulting load state (1 byte).
+    /// Returns `AccessDenied` if insufficient access level.
     fn property_value_write(
         &self,
         object_idx: u16,
@@ -296,6 +300,7 @@ pub trait PropertyServiceHandler {
         start_idx: u16,
         data: &[u8],
         response_buf: &mut [u8],
+        access_level: u8,
     ) -> Result<usize, PropertyError>;
 }
 
@@ -606,6 +611,7 @@ impl PropertyServiceHandler for () {
         _start_idx: u16,
         _count: u16,
         _buf: &mut [u8],
+        _access_level: u8,
     ) -> Result<usize, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
     }
@@ -617,6 +623,7 @@ impl PropertyServiceHandler for () {
         _start_idx: u16,
         _data: &[u8],
         _response_buf: &mut [u8],
+        _access_level: u8,
     ) -> Result<usize, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
     }

@@ -712,7 +712,11 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let count = (count_start >> 12) as u16;
         let start_idx = count_start & 0x0FFF;
 
-        debug!("AL PropertyValueRead: obj={}, prop_id={}, count={}, start={}", object_idx, prop_id, count, start_idx);
+        let access_level = ind.access_level();
+        debug!(
+            "AL PropertyValueRead: obj={}, prop_id={}, count={}, start={}, access_level={}",
+            object_idx, prop_id, count, start_idx, access_level
+        );
 
         // Allocate a buffer for the response data
         // Max APDU size is typically 14 bytes for TP1, so max data is about 8 bytes
@@ -721,8 +725,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let mut data_buf = [0u8; MAX_PROPERTY_DATA];
 
         // Query the interface object server
-        let result =
-            self.interface_object_server.property_value_read(object_idx, prop_id, start_idx, count, &mut data_buf);
+        let result = self
+            .interface_object_server
+            .property_value_read(object_idx, prop_id, start_idx, count, &mut data_buf, access_level);
 
         match result {
             Ok(data_len) => {
@@ -831,17 +836,19 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let data_len = ind.len() - data_start;
         let data = &buf[data_start..data_start + data_len];
 
+        let access_level = ind.access_level();
         debug!(
-            "AL PropertyValueWrite: obj={}, prop_id={}, count={}, start={}, data_len={}",
-            object_idx, prop_id, count, start_idx, data_len
+            "AL PropertyValueWrite: obj={}, prop_id={}, count={}, start={}, data_len={}, access_level={}",
+            object_idx, prop_id, count, start_idx, data_len, access_level
         );
 
         // Perform the write - the response may differ from written data (e.g., LOAD_STATE_CONTROL)
         // Use a stack buffer for the response data
         // FIXME: stack usage - consider a better approach for large properties
         let mut response_data = [0u8; 64]; // Should be enough for any property response
-        let result =
-            self.interface_object_server.property_value_write(object_idx, prop_id, start_idx, data, &mut response_data);
+        let result = self
+            .interface_object_server
+            .property_value_write(object_idx, prop_id, start_idx, data, &mut response_data, access_level);
 
         match result {
             Ok(response_data_len) => {
@@ -1457,7 +1464,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let mut device_control = [0u8; 1];
         let verify_enabled = self
             .interface_object_server
-            .property_value_read(0, pid::DEVICE_CONTROL, 1, 1, &mut device_control)
+            .property_value_read(0, pid::DEVICE_CONTROL, 1, 1, &mut device_control, 0) // Internal: full access
             .map(|_| device_control[0] & 0x04 != 0)
             .unwrap_or(false);
 
@@ -1622,7 +1629,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let mut device_control = [0u8; 1];
         let verify_enabled = self
             .interface_object_server
-            .property_value_read(0, pid::DEVICE_CONTROL, 1, 1, &mut device_control)
+            .property_value_read(0, pid::DEVICE_CONTROL, 1, 1, &mut device_control, 0) // Internal: full access
             .map(|_| device_control[0] & 0x04 != 0)
             .unwrap_or(false);
 
@@ -1836,7 +1843,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let mut device_control = [0u8; 1];
         let verify_enabled = self
             .interface_object_server
-            .property_value_read(0, pid::DEVICE_CONTROL, 1, 1, &mut device_control)
+            .property_value_read(0, pid::DEVICE_CONTROL, 1, 1, &mut device_control, 0) // Internal: full access
             .map(|_| device_control[0] & 0x04 != 0)
             .unwrap_or(false);
 

@@ -46,7 +46,6 @@ use zweidraehte::{
 
 use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle, MockLinkLayerResources};
 
-
 // ============================================================================
 // Communication Objects (BCU1-style with shadow objects)
 // ============================================================================
@@ -693,7 +692,26 @@ where
         start_idx: u16,
         count: u16,
         buf: &mut [u8],
+        access_level: u8,
     ) -> Result<usize, PropertyError> {
+        // Check access level first (in separate scope to release borrow)
+        {
+            let desc = match object_idx {
+                0 => self.device.borrow().property_descriptor_by_id(prop_id),
+                1 => self.addr_table.borrow().property_descriptor_by_id(prop_id),
+                2 => self.asso_table.borrow().property_descriptor_by_id(prop_id),
+                3 => self.app_program.borrow().property_descriptor_by_id(prop_id),
+                4 => self.group_object_table.borrow().property_descriptor_by_id(prop_id),
+                5 => self.ip_parameter.borrow().property_descriptor_by_id(prop_id),
+                _ => return Err(PropertyError::InvalidObjectIndex),
+            };
+            if let Some((_, desc)) = desc {
+                if !desc.can_read(access_level) {
+                    return Err(PropertyError::AccessDenied);
+                }
+            }
+        }
+
         match object_idx {
             0 => self.device.borrow().read_property(prop_id, start_idx, count, buf),
             1 => self.addr_table.borrow().read_property(prop_id, start_idx, count, buf),
@@ -712,7 +730,26 @@ where
         start_idx: u16,
         data: &[u8],
         response_buf: &mut [u8],
+        access_level: u8,
     ) -> Result<usize, PropertyError> {
+        // Check access level first (in separate scope to release borrow)
+        {
+            let desc = match object_idx {
+                0 => self.device.borrow().property_descriptor_by_id(prop_id),
+                1 => self.addr_table.borrow().property_descriptor_by_id(prop_id),
+                2 => self.asso_table.borrow().property_descriptor_by_id(prop_id),
+                3 => self.app_program.borrow().property_descriptor_by_id(prop_id),
+                4 => self.group_object_table.borrow().property_descriptor_by_id(prop_id),
+                5 => self.ip_parameter.borrow().property_descriptor_by_id(prop_id),
+                _ => return Err(PropertyError::InvalidObjectIndex),
+            };
+            if let Some((_, desc)) = desc {
+                if !desc.can_write(access_level) {
+                    return Err(PropertyError::AccessDenied);
+                }
+            }
+        }
+
         match object_idx {
             0 => self.device.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
             1 => self.addr_table.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
@@ -913,9 +950,7 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
         // Linear memory: 0x0200 - 0x02FF (256 bytes)
         // Freely accessible - no access level restriction.
         // Used by M-2.6/M-2.7 tests as "accessible" memory.
-        if address >= Self::LINEAR_MEMORY_BASE
-            && end_address <= Self::LINEAR_MEMORY_BASE + LINEAR_MEMORY_SIZE as u16
-        {
+        if address >= Self::LINEAR_MEMORY_BASE && end_address <= Self::LINEAR_MEMORY_BASE + LINEAR_MEMORY_SIZE as u16 {
             let offset = (address - Self::LINEAR_MEMORY_BASE) as usize;
             let mem = tables.linear_memory.borrow();
             data.copy_from_slice(&mem[offset..offset + data.len()]);
@@ -926,9 +961,7 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
         // Requires access level <= 2 (levels 0, 1, or 2).
         // For M-2.6 tests: "protected" (level 3 = no access).
         // For M-2.11 tests: "level 2 block" accessible with default key.
-        if address >= Self::LEVEL2_MEMORY_BASE
-            && end_address <= Self::LEVEL2_MEMORY_BASE + LEVEL2_MEMORY_SIZE as u16
-        {
+        if address >= Self::LEVEL2_MEMORY_BASE && end_address <= Self::LEVEL2_MEMORY_BASE + LEVEL2_MEMORY_SIZE as u16 {
             if access_level > 2 {
                 return Err(MemoryError::AccessDenied);
             }
@@ -941,9 +974,7 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
         // Level 1 memory block: 0x0400 - 0x04FF (256 bytes)
         // Requires access level <= 1 (levels 0 or 1 only).
         // Used by M-2.11 tests as "level 1 block".
-        if address >= Self::LEVEL1_MEMORY_BASE
-            && end_address <= Self::LEVEL1_MEMORY_BASE + LEVEL1_MEMORY_SIZE as u16
-        {
+        if address >= Self::LEVEL1_MEMORY_BASE && end_address <= Self::LEVEL1_MEMORY_BASE + LEVEL1_MEMORY_SIZE as u16 {
             if access_level > 1 {
                 return Err(MemoryError::AccessDenied);
             }
@@ -955,9 +986,7 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
 
         // User memory region: 0x7FF0 - 0x7FFF (16 bytes)
         // Freely accessible for A_UserMemory_Read/Write tests (M-2.31/M-2.32).
-        if address >= Self::USER_MEMORY_BASE
-            && end_address <= Self::USER_MEMORY_BASE + USER_MEMORY_SIZE as u16
-        {
+        if address >= Self::USER_MEMORY_BASE && end_address <= Self::USER_MEMORY_BASE + USER_MEMORY_SIZE as u16 {
             let offset = (address - Self::USER_MEMORY_BASE) as usize;
             let mem = tables.user_memory.borrow();
             data.copy_from_slice(&mem[offset..offset + data.len()]);
@@ -1022,9 +1051,7 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
         // Linear memory: 0x0200 - 0x02FF (256 bytes)
         // Freely accessible - no access level restriction.
         // Used by M-2.6/M-2.7 tests as "accessible" memory.
-        if address >= Self::LINEAR_MEMORY_BASE
-            && end_address <= Self::LINEAR_MEMORY_BASE + LINEAR_MEMORY_SIZE as u16
-        {
+        if address >= Self::LINEAR_MEMORY_BASE && end_address <= Self::LINEAR_MEMORY_BASE + LINEAR_MEMORY_SIZE as u16 {
             let offset = (address - Self::LINEAR_MEMORY_BASE) as usize;
             let mut mem = tables.linear_memory.borrow_mut();
             mem[offset..offset + data.len()].copy_from_slice(data);
@@ -1035,9 +1062,7 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
         // Requires access level <= 2 (levels 0, 1, or 2).
         // For M-2.6 tests: "protected" (level 3 = no access).
         // For M-2.11 tests: "level 2 block" accessible with default key.
-        if address >= Self::LEVEL2_MEMORY_BASE
-            && end_address <= Self::LEVEL2_MEMORY_BASE + LEVEL2_MEMORY_SIZE as u16
-        {
+        if address >= Self::LEVEL2_MEMORY_BASE && end_address <= Self::LEVEL2_MEMORY_BASE + LEVEL2_MEMORY_SIZE as u16 {
             if access_level > 2 {
                 return Err(MemoryError::AccessDenied);
             }
@@ -1050,9 +1075,7 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
         // Level 1 memory block: 0x0400 - 0x04FF (256 bytes)
         // Requires access level <= 1 (levels 0 or 1 only).
         // Used by M-2.11 tests as "level 1 block".
-        if address >= Self::LEVEL1_MEMORY_BASE
-            && end_address <= Self::LEVEL1_MEMORY_BASE + LEVEL1_MEMORY_SIZE as u16
-        {
+        if address >= Self::LEVEL1_MEMORY_BASE && end_address <= Self::LEVEL1_MEMORY_BASE + LEVEL1_MEMORY_SIZE as u16 {
             if access_level > 1 {
                 return Err(MemoryError::AccessDenied);
             }
@@ -1064,9 +1087,7 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
 
         // User memory region: 0x7FF0 - 0x7FFF (16 bytes)
         // Freely accessible for A_UserMemory_Read/Write tests (M-2.31/M-2.32).
-        if address >= Self::USER_MEMORY_BASE
-            && end_address <= Self::USER_MEMORY_BASE + USER_MEMORY_SIZE as u16
-        {
+        if address >= Self::USER_MEMORY_BASE && end_address <= Self::USER_MEMORY_BASE + USER_MEMORY_SIZE as u16 {
             let offset = (address - Self::USER_MEMORY_BASE) as usize;
             let mut mem = tables.user_memory.borrow_mut();
             mem[offset..offset + data.len()].copy_from_slice(data);
@@ -1087,9 +1108,8 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
 /// - Byte 4: Version (0x04)
 /// - Byte 5: Link management support (bit 7=0) + Logical tag base (0x05)
 /// - Bytes 6-13: Channel information (4 channels)
-pub const CONFORMANCE_DD2: [u8; 14] = [
-    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
-];
+pub const CONFORMANCE_DD2: [u8; 14] =
+    [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E];
 
 /// User Manufacturer Info for conformance tests.
 ///
@@ -1198,13 +1218,6 @@ impl FullStackHarness {
             device_info::SERIAL_NUMBER,
             MockIpPlatform::new(),
         );
-
-        // Keys are left at default (0xFFFFFFFF for all levels).
-        // The M-2.11 Test preparation phase will set up the keys:
-        // - Level 0: 0x00000000
-        // - Level 1: 0x12345678
-        // - Level 2: 0xFFFFFFFF (default)
-        // - Level 3: 0xFFFFFFFF (default)
 
         // Create stack
         let (stack, runner) = zweidraehte::new_with_state(

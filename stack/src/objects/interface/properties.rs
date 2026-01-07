@@ -108,13 +108,21 @@ impl PropertyDescriptor {
     }
 
     /// Check if reading is allowed at the given access level
-    pub const fn can_read(&self, level: u8) -> bool {
-        matches!(self.access, PropertyAccess::ReadOnly | PropertyAccess::ReadWrite) && level >= self.read_level
+    ///
+    /// In KNX, lower access level = more permissions (0 = full access, 3 = minimal).
+    /// A property with `read_level=0` requires the caller to have access level 0.
+    /// A property with `read_level=3` can be read by anyone (levels 0-3).
+    pub const fn can_read(&self, caller_level: u8) -> bool {
+        matches!(self.access, PropertyAccess::ReadOnly | PropertyAccess::ReadWrite) && caller_level <= self.read_level
     }
 
     /// Check if writing is allowed at the given access level
-    pub const fn can_write(&self, level: u8) -> bool {
-        matches!(self.access, PropertyAccess::ReadWrite | PropertyAccess::WriteOnly) && level >= self.write_level
+    ///
+    /// In KNX, lower access level = more permissions (0 = full access, 3 = minimal).
+    /// A property with `write_level=0` requires the caller to have access level 0.
+    /// A property with `write_level=3` can be written by anyone (levels 0-3).
+    pub const fn can_write(&self, caller_level: u8) -> bool {
+        matches!(self.access, PropertyAccess::ReadWrite | PropertyAccess::WriteOnly) && caller_level <= self.write_level
     }
 }
 

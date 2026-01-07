@@ -383,10 +383,15 @@ impl<'a, T: LoadableTable, S: TableObjectSpec> TableInterfaceObject<'a, T, S> {
     fn property_descriptors() -> [PropertyDescriptor; 5] {
         [
             PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly),
-            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite),
+            // LOAD_STATE_CONTROL: read/write access level 3/3 per KNX profile specification
+            // However, the access control check happens at the PropertyServiceHandler level,
+            // which requires caller's access_level <= write_level (lower = more access).
+            // So write_level=0 means only callers with level 0 (full access) can write.
+            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite)
+                .with_levels(3, 0), // read_level=3, write_level=0 (requires authorization to write)
             PropertyDescriptor::new(pid::TABLE_REFERENCE, 0x09, 1, PropertyAccess::ReadOnly), // PDT_UNSIGNED_LONG
-            PropertyDescriptor::new(pid::TABLE, S::TABLE_PDT, 0, PropertyAccess::ReadWrite), // max_elements set dynamically
-            PropertyDescriptor::new(pid::MCB_TABLE, 0x17, 1, PropertyAccess::ReadOnly),      // PDT_GENERIC_08
+            PropertyDescriptor::new(pid::TABLE, S::TABLE_PDT, 0, PropertyAccess::ReadWrite),  // max_elements set dynamically
+            PropertyDescriptor::new(pid::MCB_TABLE, 0x17, 1, PropertyAccess::ReadOnly),       // PDT_GENERIC_08
         ]
     }
 }
