@@ -78,16 +78,17 @@ pub struct PropertyDescriptor {
     pub max_elements: u16,
     /// Access rights
     pub access: PropertyAccess,
-    /// Write access level (0-15, 0 = no restriction, 15 = most restricted)
+    /// Write access level (0-3, 0 = most restricted, 3 = no restriction)
     pub write_level: u8,
-    /// Read access level (0-15, 0 = no restriction, 15 = most restricted)
+    /// Read access level (0-3, 0 = most restricted, 3 = no restriction)
     pub read_level: u8,
 }
 
 impl PropertyDescriptor {
     /// Create a new property descriptor with default access levels (unrestricted)
+    /// Default read/write levels are 3, meaning anyone can access (levels 0-3 all pass the check).
     pub const fn new(pid: u8, pdt_id: u8, max_elements: u16, access: PropertyAccess) -> Self {
-        Self { pid, pdt_id, max_elements, access, write_level: 0, read_level: 0 }
+        Self { pid, pdt_id, max_elements, access, write_level: 3, read_level: 3 }
     }
 
     /// Create a property descriptor for a type implementing PropertyDataDefinition
