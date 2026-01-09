@@ -600,8 +600,12 @@ async fn main(spawner: Spawner) {
     println!("  - Routing Server: RoutingIndication, RoutingBusy, RoutingLostMessage");
 
     // Create table instances with configuration data loaded
-    // Memory-mapped access is not supported (NoMemoryMap), so table references are 0
-    let (addr_tab, asso_tab, co_tab) = stack_test_config::StackTestConfig::create_tables(0, 0, 0);
+    // Define table reference addresses for memory-mapped access
+    // These match a typical System B memory layout
+    const ADT_BASE: u32 = 0x0100;
+    const AST_BASE: u32 = 0x0200;
+    const COT_BASE: u32 = 0x0300;
+    let (addr_tab, asso_tab, co_tab) = stack_test_config::StackTestConfig::create_tables(ADT_BASE, AST_BASE, COT_BASE);
 
     // Create application table - starts loaded and running for this demo
     let mut app_table = Application::<()>::new();

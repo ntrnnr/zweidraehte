@@ -1,38 +1,43 @@
-//! Tables container for System B devices.
+//! Persistent state container for System B devices.
 //!
-//! This module provides [`SystemBTables`], a container for all the tables
-//! required by a System B device, with support for persistence.
+//! This module provides [`SystemBState`], a container for all the persistent
+//! state required by a System B device, including tables and configuration.
 
 use core::cell::RefCell;
 
 use const_default::ConstDefault;
 
 use crate::{
+    address::IndividualAddress,
     memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
     objects::tables::{
-        LoadableTable, RunnableTable, Table, TableMemory,
-        addr7::AddrTab7Impl,
-        app::Application,
-        asso6::AssoTab6Impl,
+        LoadableTable, RunnableTable, Table, addr7::AddrTab7Impl, app::Application, asso6::AssoTab6Impl,
         co7::CoTab7Impl,
     },
 };
 
-use super::{PersistedApplication, PersistedState, PersistedTable};
+use super::{PersistedIpConfig, PersistedState};
 
-/// Tables container for System B devices.
+/// Persistent state container for System B devices.
 ///
-/// Contains all the tables required by a System B device:
+/// Contains all state that must survive power cycles:
+///
+/// ## Tables
 /// - Address Table (ADT): Maps TSAP → Group Address
 /// - Association Table (AST): Maps TSAP → ASAP
 /// - Group Object Table (COT): Communication object type + flags
 /// - Application Program (APP): Application data + Load/Run state machines
 ///
+/// ## Configuration
+/// - Individual address
+/// - Authorization keys (levels 0-2)
+/// - IP configuration (for 57B0 devices)
+///
 /// # Persistence
 ///
-/// Tables can be loaded from and saved to [`PersistedState`].
-/// Use [`from_persisted`](Self::from_persisted) to restore tables from storage,
-/// and [`to_persisted`](Self::to_persisted) to prepare tables for saving.
+/// State can be converted to/from [`PersistedState`] for storage.
+/// Use [`from_persisted`](Self::from_persisted) to restore from storage,
+/// and [`to_persisted`](Self::to_persisted) to prepare for saving.
 ///
 /// # Generic Parameters
 ///
@@ -40,18 +45,27 @@ use super::{PersistedApplication, PersistedState, PersistedTable};
 /// - `ADT_SIZE`: Address table size in bytes (2 + MAX_ADDR * 2)
 /// - `AST_SIZE`: Association table size in bytes (2 + MAX_ASSO * 4)
 /// - `COT_SIZE`: Group object table size in bytes (2 + MAX_CO * 2)
-/// - `APP_SIZE`: Maximum application data size in bytes
 /// - `P`: Application parameters type (stored in application table)
 ///
 /// Use [`SystemBDeviceExt::ADT_SIZE`](super::SystemBDeviceExt) etc. to compute
 /// sizes from entry counts.
-pub struct SystemBTables<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    const APP_SIZE: usize,
-    P: ConstDefault = (),
-> {
+pub struct SystemBState<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault = ()> {
+    // ========================================================================
+    // Configuration (persisted)
+    // ========================================================================
+    /// Device individual address.
+    pub individual_address: IndividualAddress,
+
+    /// Authorization keys for levels 0-2.
+    /// Level 3 has no key (it's the fallback when no key matches).
+    pub auth_keys: [[u8; 4]; 3],
+
+    /// IP-specific configuration (only for 57B0 devices).
+    pub ip_config: Option<PersistedIpConfig>,
+
+    // ========================================================================
+    // Tables (persisted)
+    // ========================================================================
     /// Address table (TSAP → Group Address mapping).
     pub adt: RefCell<Table<AddrTab7Impl<ADT_SIZE>>>,
 
@@ -65,12 +79,19 @@ pub struct SystemBTables<
     pub app: RefCell<Application<P>>,
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize, P: ConstDefault>
-    SystemBTables<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE, P>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault>
+    SystemBState<ADT_SIZE, AST_SIZE, COT_SIZE, P>
 {
-    /// Create new tables in unloaded state.
+    /// Create new state with factory defaults.
+    ///
+    /// - Individual address: 15.15.255 (unassigned)
+    /// - Auth keys: All default (0xFFFFFFFF)
+    /// - Tables: Unloaded
     pub fn new() -> Self {
         Self {
+            individual_address: IndividualAddress::new(15, 15, 255),
+            auth_keys: [[0xFF; 4]; 3],
+            ip_config: None,
             adt: RefCell::new(Table::new()),
             ast: RefCell::new(Table::new()),
             cot: RefCell::new(Table::new()),
@@ -78,122 +99,46 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const 
         }
     }
 
-    /// Create tables from persisted state.
+    /// Create new state with factory defaults and IP configuration.
     ///
-    /// Restores table data and load states from storage.
+    /// Same as [`new`](Self::new) but initializes IP config with defaults.
+    pub fn new_ip() -> Self {
+        Self { ip_config: Some(PersistedIpConfig::default()), ..Self::new() }
+    }
+
+    /// Create state from persisted storage.
+    ///
+    /// Restores all configuration and table data from storage.
     /// The application's run state is always set to `Halted` - it must
     /// be explicitly restarted after boot.
-    pub fn from_persisted(
-        persisted: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE>,
-    ) -> Self {
+    pub fn from_persisted(persisted: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>) -> Self {
         Self {
-            adt: RefCell::new(Self::table_from_persisted(&persisted.address_table)),
-            ast: RefCell::new(Self::table_from_persisted(&persisted.association_table)),
-            cot: RefCell::new(Self::table_from_persisted(&persisted.group_object_table)),
-            app: RefCell::new(Self::app_from_persisted(&persisted.application)),
+            individual_address: persisted.individual_address,
+            auth_keys: persisted.auth_keys,
+            ip_config: persisted.ip_config,
+            adt: RefCell::new(persisted.address_table),
+            ast: RefCell::new(persisted.association_table),
+            cot: RefCell::new(persisted.group_object_table),
+            app: RefCell::new(persisted.application),
         }
     }
 
-    /// Export tables to persisted state components.
+    /// Export state to persisted format for storage.
     ///
-    /// Returns the table data ready for inclusion in a [`PersistedState`].
-    pub fn to_persisted(
-        &self,
-    ) -> (
-        PersistedTable<ADT_SIZE>,
-        PersistedTable<AST_SIZE>,
-        PersistedTable<COT_SIZE>,
-        PersistedApplication<APP_SIZE>,
-    ) {
-        (
-            self.table_to_persisted(&self.adt.borrow()),
-            self.table_to_persisted(&self.ast.borrow()),
-            self.table_to_persisted(&self.cot.borrow()),
-            self.app_to_persisted(&self.app.borrow()),
-        )
-    }
-
-    /// Helper to create a table from persisted data.
-    fn table_from_persisted<T, const SIZE: usize>(
-        persisted: &PersistedTable<SIZE>,
-    ) -> Table<T>
+    /// Clones the current state for persistence.
+    pub fn to_persisted(&self) -> PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>
     where
-        T: TableMemory,
+        P: Clone,
     {
-        let mut table = Table::<T>::new();
-        table.set_load_state(persisted.load_state);
-
-        // Copy data
-        let data_ref = table.data_ref_mut();
-        let len = persisted.data.len().min(data_ref.len());
-        data_ref[..len].copy_from_slice(&persisted.data[..len]);
-
-        // Copy MCB
-        let mcb_len = persisted.mcb.len().min(8);
-        table.mcb_bytes_mut()[..mcb_len].copy_from_slice(&persisted.mcb[..mcb_len]);
-
-        table
-    }
-
-    /// Helper to export a table to persisted form.
-    fn table_to_persisted<T, const SIZE: usize>(
-        &self,
-        table: &Table<T>,
-    ) -> PersistedTable<SIZE>
-    where
-        T: TableMemory,
-    {
-        let mut data = [0u8; SIZE];
-        let table_data = table.data_ref();
-        let len = table_data.len().min(SIZE);
-        data[..len].copy_from_slice(&table_data[..len]);
-
-        let mut mcb = [0u8; 8];
-        mcb.copy_from_slice(table.mcb_bytes());
-
-        PersistedTable {
-            load_state: table.load_state(),
-            data,
-            mcb,
-        }
-    }
-
-    /// Helper to create an application from persisted data.
-    fn app_from_persisted(persisted: &PersistedApplication<APP_SIZE>) -> Application<P> {
-        let mut app = Application::<P>::new();
-
-        // Restore load state
-        app.inner_mut().set_load_state(persisted.load_state);
-
-        // Copy data
-        let data_ref = app.inner_mut().data_ref_mut();
-        let len = persisted.data.len().min(data_ref.len());
-        data_ref[..len].copy_from_slice(&persisted.data[..len]);
-
-        // Copy MCB
-        let mcb_len = persisted.mcb.len().min(8);
-        app.inner_mut().mcb_bytes_mut()[..mcb_len].copy_from_slice(&persisted.mcb[..mcb_len]);
-
-        // Run state is always Halted on boot - must be explicitly restarted
-        // (already default from Application::new())
-
-        app
-    }
-
-    /// Helper to export an application to persisted form.
-    fn app_to_persisted(&self, app: &Application<P>) -> PersistedApplication<APP_SIZE> {
-        let mut data = [0u8; APP_SIZE];
-        let app_data = app.inner().data_ref();
-        let len = app_data.len().min(APP_SIZE);
-        data[..len].copy_from_slice(&app_data[..len]);
-
-        let mut mcb = [0u8; 8];
-        mcb.copy_from_slice(app.inner().mcb_bytes());
-
-        PersistedApplication {
-            load_state: app.inner().load_state(),
-            data,
-            mcb,
+        PersistedState {
+            version: PersistedState::<ADT_SIZE, AST_SIZE, COT_SIZE, P>::VERSION,
+            individual_address: self.individual_address,
+            auth_keys: self.auth_keys,
+            address_table: (*self.adt.borrow()).clone(),
+            association_table: (*self.ast.borrow()).clone(),
+            group_object_table: (*self.cot.borrow()).clone(),
+            application: (*self.app.borrow()).clone(),
+            ip_config: self.ip_config.clone(),
         }
     }
 
@@ -211,8 +156,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const 
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize, P: ConstDefault>
-    Default for SystemBTables<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE, P>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault> Default
+    for SystemBState<ADT_SIZE, AST_SIZE, COT_SIZE, P>
 {
     fn default() -> Self {
         Self::new()
@@ -223,8 +168,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const 
 // Trait Implementations for Stack Integration
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize, P: ConstDefault>
-    HasAddressTable for SystemBTables<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE, P>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault> HasAddressTable
+    for SystemBState<ADT_SIZE, AST_SIZE, COT_SIZE, P>
 {
     type ADT = Table<AddrTab7Impl<ADT_SIZE>>;
 
@@ -233,8 +178,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const 
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize, P: ConstDefault>
-    HasAssociationTable for SystemBTables<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE, P>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault> HasAssociationTable
+    for SystemBState<ADT_SIZE, AST_SIZE, COT_SIZE, P>
 {
     type AST = Table<AssoTab6Impl<AST_SIZE>>;
 
@@ -243,8 +188,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const 
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize, P: ConstDefault>
-    HasCommunicationObjectTable for SystemBTables<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE, P>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault> HasCommunicationObjectTable
+    for SystemBState<ADT_SIZE, AST_SIZE, COT_SIZE, P>
 {
     type COT = Table<CoTab7Impl<COT_SIZE>>;
 
@@ -265,8 +210,8 @@ pub trait HasApplication {
     fn app(&self) -> &RefCell<Self::APP>;
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize, P: ConstDefault>
-    HasApplication for SystemBTables<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE, P>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault> HasApplication
+    for SystemBState<ADT_SIZE, AST_SIZE, COT_SIZE, P>
 {
     type APP = Application<P>;
 
@@ -274,3 +219,10 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const 
         &self.app
     }
 }
+
+/// Deprecated alias for [`SystemBState`].
+///
+/// Use [`SystemBState`] instead - this alias exists only for backward compatibility.
+#[deprecated(since = "0.2.0", note = "Use SystemBState instead")]
+pub type SystemBTables<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P = ()> =
+    SystemBState<ADT_SIZE, AST_SIZE, COT_SIZE, P>;

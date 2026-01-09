@@ -8,7 +8,7 @@ use crate::address::GroupAddress;
 use super::{AddressTable, Table, TableMemory};
 
 #[serde_as]
-#[derive(Debug, ConstDefault, Serialize, Deserialize)]
+#[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
 pub struct AddrTab7Impl<const N: usize> {
     #[serde_as(as = "[_; N]")]
     data: [u8; N],

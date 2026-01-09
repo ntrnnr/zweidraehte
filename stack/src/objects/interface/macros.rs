@@ -186,6 +186,8 @@ macro_rules! define_interface_object {
                     <$crate::dpt::PDT_UnsignedInt as $crate::dpt::PropertyDataDefinition>::ID,
                     1,
                     $crate::objects::interface::PropertyAccess::ReadOnly,
+                    3, // read_level
+                    3, // write_level
                 ),
                 // User-defined properties follow
                 $(
@@ -194,6 +196,8 @@ macro_rules! define_interface_object {
                         <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
                         1,
                         $crate::objects::interface::PropertyAccess::$access,
+                        3, // read_level
+                        3, // write_level
                     ),
                 )*
             ];
@@ -417,6 +421,8 @@ macro_rules! define_interface_object {
                     <$crate::dpt::PDT_UnsignedInt as $crate::dpt::PropertyDataDefinition>::ID,
                     1,
                     $crate::objects::interface::PropertyAccess::ReadOnly,
+                    3, // read_level
+                    3, // write_level
                 ),
                 // Static properties
                 $(
@@ -425,6 +431,8 @@ macro_rules! define_interface_object {
                         <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
                         1,
                         $crate::objects::interface::PropertyAccess::$access,
+                        3, // read_level
+                        3, // write_level
                     ),
                 )*
                 // State-backed properties (closure-based)
@@ -434,6 +442,8 @@ macro_rules! define_interface_object {
                         <$state_pdt as $crate::dpt::PropertyDataDefinition>::ID,
                         1,
                         $crate::objects::interface::PropertyAccess::$state_access,
+                        3, // read_level
+                        3, // write_level
                     ),
                 )*)?
                 // Shorthand ReadWrite properties
@@ -443,6 +453,8 @@ macro_rules! define_interface_object {
                         <$rw_pdt as $crate::dpt::PropertyDataDefinition>::ID,
                         1,
                         $crate::objects::interface::PropertyAccess::ReadWrite,
+                        3, // read_level
+                        3, // write_level
                     ),
                 )*)?
                 // Shorthand ReadOnly properties
@@ -452,6 +464,8 @@ macro_rules! define_interface_object {
                         <$ro_pdt as $crate::dpt::PropertyDataDefinition>::ID,
                         1,
                         $crate::objects::interface::PropertyAccess::ReadOnly,
+                        3, // read_level
+                        3, // write_level
                     ),
                 )*)?
             ];

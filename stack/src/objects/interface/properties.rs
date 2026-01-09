@@ -85,27 +85,43 @@ pub struct PropertyDescriptor {
 }
 
 impl PropertyDescriptor {
-    /// Create a new property descriptor with default access levels (unrestricted)
-    /// Default read/write levels are 3, meaning anyone can access (levels 0-3 all pass the check).
-    pub const fn new(pid: u8, pdt_id: u8, max_elements: u16, access: PropertyAccess) -> Self {
-        Self { pid, pdt_id, max_elements, access, write_level: 3, read_level: 3 }
+    /// Create a new property descriptor with specified access levels.
+    ///
+    /// Access levels range from 0-3, where:
+    /// - 0 = most restricted (requires full access/authorization)
+    /// - 3 = unrestricted (anyone can access)
+    ///
+    /// A caller with level N can access a property if their level <= the property's level.
+    pub const fn new(
+        pid: u8,
+        pdt_id: u8,
+        max_elements: u16,
+        access: PropertyAccess,
+        read_level: u8,
+        write_level: u8,
+    ) -> Self {
+        Self { pid, pdt_id, max_elements, access, write_level: write_level & 0x0F, read_level: read_level & 0x0F }
     }
 
     /// Create a property descriptor for a type implementing PropertyDataDefinition
-    pub const fn from_type<T: PropertyDataDefinition>(pid: u8, access: PropertyAccess) -> Self {
-        Self::new(pid, T::ID, 1, access)
+    pub const fn from_type<T: PropertyDataDefinition>(
+        pid: u8,
+        access: PropertyAccess,
+        read_level: u8,
+        write_level: u8,
+    ) -> Self {
+        Self::new(pid, T::ID, 1, access, read_level, write_level)
     }
 
     /// Create a property descriptor for an array property
-    pub const fn array<T: PropertyDataDefinition>(pid: u8, max_elements: u16, access: PropertyAccess) -> Self {
-        Self::new(pid, T::ID, max_elements, access)
-    }
-
-    /// Set access levels (builder pattern)
-    pub const fn with_levels(mut self, read_level: u8, write_level: u8) -> Self {
-        self.read_level = read_level & 0x0F;
-        self.write_level = write_level & 0x0F;
-        self
+    pub const fn array<T: PropertyDataDefinition>(
+        pid: u8,
+        max_elements: u16,
+        access: PropertyAccess,
+        read_level: u8,
+        write_level: u8,
+    ) -> Self {
+        Self::new(pid, T::ID, max_elements, access, read_level, write_level)
     }
 
     /// Check if reading is allowed at the given access level

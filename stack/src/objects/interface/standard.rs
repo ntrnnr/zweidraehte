@@ -370,15 +370,13 @@ impl<'a, T: LoadableTable + RunnableTable> ApplicationProgramObject<'a, T> {
     /// Get property descriptors for application program object.
     fn property_descriptors() -> [PropertyDescriptor; 5] {
         [
-            PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly),
+            PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 3),
             // LOAD_STATE_CONTROL: read=3 (anyone), write=0 (requires authorization)
-            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite)
-                .with_levels(3, 0),
+            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 0),
             // RUN_STATE_CONTROL: read=3 (anyone), write=0 (requires authorization)
-            PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite)
-                .with_levels(3, 0),
-            PropertyDescriptor::new(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadOnly),
-            PropertyDescriptor::new(pid::PEI_TYPE, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadOnly),
+            PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 0),
+            PropertyDescriptor::new(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadOnly, 3, 3),
+            PropertyDescriptor::new(pid::PEI_TYPE, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadOnly, 3, 3),
         ]
     }
 }
@@ -555,16 +553,15 @@ impl<'a, T: LoadableTable, S: TableObjectSpec> TableInterfaceObject<'a, T, S> {
     /// Get property descriptors for table objects
     fn property_descriptors() -> [PropertyDescriptor; 5] {
         [
-            PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly),
+            PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 3),
             // LOAD_STATE_CONTROL: read/write access level 3/3 per KNX profile specification
             // However, the access control check happens at the PropertyServiceHandler level,
             // which requires caller's access_level <= write_level (lower = more access).
             // So write_level=0 means only callers with level 0 (full access) can write.
-            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite)
-                .with_levels(3, 0), // read_level=3, write_level=0 (requires authorization to write)
-            PropertyDescriptor::new(pid::TABLE_REFERENCE, PDT_UnsignedLong::ID, 1, PropertyAccess::ReadOnly),
-            PropertyDescriptor::new(pid::TABLE, S::TABLE_PDT, 0, PropertyAccess::ReadWrite), // max_elements set dynamically
-            PropertyDescriptor::new(pid::MCB_TABLE, PDT_Generic08::ID, 1, PropertyAccess::ReadOnly),
+            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 0),
+            PropertyDescriptor::new(pid::TABLE_REFERENCE, PDT_UnsignedLong::ID, 1, PropertyAccess::ReadOnly, 3, 3),
+            PropertyDescriptor::new(pid::TABLE, S::TABLE_PDT, 0, PropertyAccess::ReadWrite, 3, 3), // max_elements set dynamically
+            PropertyDescriptor::new(pid::MCB_TABLE, PDT_Generic08::ID, 1, PropertyAccess::ReadOnly, 3, 3),
         ]
     }
 }
@@ -939,5 +936,74 @@ mod tests {
         let len = obj.read_property(pid::TABLE, 0, 1, &mut buf).unwrap();
         assert_eq!(len, 2);
         assert_eq!(&buf[0..2], &[0x00, 0x02]);
+    }
+
+    #[test]
+    fn test_table_reference_after_load() {
+        use crate::objects::tables::{LoadEvent, LoadableTable};
+
+        let addr_table = RefCell::new(AddrTab7::<20>::new());
+        let mut obj = AddressTableObject::new(&addr_table, 0x1234);
+
+        // TABLE_REFERENCE should be 0 initially (unloaded)
+        let mut buf = [0u8; 10];
+        let len = obj.read_property(pid::TABLE_REFERENCE, 1, 1, &mut buf).unwrap();
+        assert_eq!(len, 4);
+        assert_eq!(&buf[0..4], &[0x00, 0x00, 0x00, 0x00]);
+
+        // Start loading
+        obj.write_property(pid::LOAD_STATE_CONTROL, 1, &[LoadEvent::StartLoading.into()], &mut buf).unwrap();
+
+        // Allocate via RelativeData segment - this sets the TABLE_REFERENCE
+        // Format: [event][segment_type][mcb_data...]
+        // MCB data: [requested_memory_size:4][mode:1][fill:1][crc:2]
+        let alloc_data = [
+            LoadEvent::AdditionalLoadControls.into(),
+            0x0B, // RelativeData segment
+            0x00, 0x00, 0x00, 0x08, // 8 bytes requested
+            0x01, // mode = fill enabled
+            0xFF, // fill byte
+            0x00, 0x00, // CRC placeholder
+        ];
+        obj.write_property(pid::LOAD_STATE_CONTROL, 1, &alloc_data, &mut buf).unwrap();
+
+        // Now TABLE_REFERENCE should be set to 0x1234
+        let len = obj.read_property(pid::TABLE_REFERENCE, 1, 1, &mut buf).unwrap();
+        assert_eq!(len, 4);
+        assert_eq!(&buf[0..4], &[0x00, 0x00, 0x12, 0x34]);
+
+        // Complete loading
+        obj.write_property(pid::LOAD_STATE_CONTROL, 1, &[LoadEvent::LoadCompleted.into()], &mut buf).unwrap();
+
+        // TABLE_REFERENCE should still be 0x1234
+        let len = obj.read_property(pid::TABLE_REFERENCE, 1, 1, &mut buf).unwrap();
+        assert_eq!(len, 4);
+        assert_eq!(&buf[0..4], &[0x00, 0x00, 0x12, 0x34]);
+
+        // Unload - TABLE_REFERENCE should be cleared to 0
+        obj.write_property(pid::LOAD_STATE_CONTROL, 1, &[LoadEvent::Unload.into()], &mut buf).unwrap();
+        let len = obj.read_property(pid::TABLE_REFERENCE, 1, 1, &mut buf).unwrap();
+        assert_eq!(len, 4);
+        assert_eq!(&buf[0..4], &[0x00, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_table_reference_with_preloaded_data() {
+        use crate::objects::tables::Table;
+        use crate::objects::tables::addr7::AddrTab7Impl;
+
+        // Create a table with pre-loaded data and table_reference
+        let preloaded_table: Table<AddrTab7Impl<20>> = Table::with_data(
+            &[0x00, 0x01, 0x10, 0x00], // count=1, addr=2/0/0
+            0xABCD,
+        );
+        let addr_table = RefCell::new(preloaded_table);
+        let obj = AddressTableObject::new(&addr_table, 0x1234); // alloc_address ignored for preloaded
+
+        // TABLE_REFERENCE should be 0xABCD (from with_data)
+        let mut buf = [0u8; 10];
+        let len = obj.read_property(pid::TABLE_REFERENCE, 1, 1, &mut buf).unwrap();
+        assert_eq!(len, 4);
+        assert_eq!(&buf[0..4], &[0x00, 0x00, 0xAB, 0xCD]);
     }
 }

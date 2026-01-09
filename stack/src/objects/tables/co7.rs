@@ -28,7 +28,7 @@ impl ComObjectDescriptor {
 }
 
 #[serde_as]
-#[derive(Debug, ConstDefault, Serialize, Deserialize)]
+#[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
 pub struct CoTab7Impl<const N: usize> {
     #[serde_as(as = "[_; N]")]
     data: [u8; N],

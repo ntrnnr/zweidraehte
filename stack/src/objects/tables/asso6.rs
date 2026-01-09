@@ -6,7 +6,7 @@ use zerocopy::big_endian::U16;
 use super::{AssociationTable, Table, TableMemory};
 
 #[serde_as]
-#[derive(Debug, ConstDefault, Serialize, Deserialize)]
+#[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
 pub struct AssoTab6Impl<const N: usize> {
     #[serde_as(as = "[_; N]")]
     data: [u8; N],

@@ -55,9 +55,8 @@ use zweidraehte::{
     IpPlatform, Runner, StackDefinition, StackResources,
     address::IndividualAddress,
     bcus::system_b::{
-        DeviceStorage, IpDeviceState, KnxIpDevice,
-        KnxIpInterfaceObjectsBuilder, PersistedState, SystemBDevice, SystemBDeviceExt,
-        SystemBMemoryMap, SystemBTables,
+        DeviceStorage, IpDeviceState, KnxIpDevice, KnxIpInterfaceObjectsBuilder, PersistedState, SystemBDevice,
+        SystemBDeviceExt, SystemBMemoryMap, SystemBState,
     },
     define_com_objects,
     layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, KnxNetIpResources, servers},
@@ -97,10 +96,7 @@ impl Default for JsonStorage {
 impl JsonStorage {
     /// Create a new JSON storage with the given file path.
     pub fn new<P: Into<PathBuf>>(path: P) -> Self {
-        Self {
-            path: path.into(),
-            dirty: false,
-        }
+        Self { path: path.into(), dirty: false }
     }
 
     /// Get the path to the storage file.
@@ -151,9 +147,14 @@ impl std::error::Error for JsonStorageError {
 impl DeviceStorage for JsonStorage {
     type Error = JsonStorageError;
 
-    fn load<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize>(
+    fn load<
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        P: const_default::ConstDefault + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    >(
         &mut self,
-    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE>>, Self::Error> {
+    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>>, Self::Error> {
         // Check if the file exists
         if !self.path.exists() {
             log::info!("No saved state at {:?}, using factory defaults", self.path);
@@ -166,16 +167,20 @@ impl DeviceStorage for JsonStorage {
         file.read_to_string(&mut contents)?;
 
         // Parse the JSON
-        let state: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE> =
-            serde_json::from_str(&contents)?;
+        let state: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P> = serde_json::from_str(&contents)?;
 
         log::info!("Loaded device state from {:?}", self.path);
         Ok(Some(state))
     }
 
-    fn save<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize>(
+    fn save<
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        P: const_default::ConstDefault + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    >(
         &mut self,
-        state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE>,
+        state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>,
     ) -> Result<(), Self::Error> {
         // Serialize to JSON with pretty printing for readability
         let json = serde_json::to_string_pretty(state)?;
@@ -313,30 +318,22 @@ impl IpPlatform for MockIpPlatform {
 }
 
 // ============================================================================
-// Tables type alias using SystemBTables
+// State type alias using SystemBState
 // ============================================================================
 
-/// Tables container using System B sizing.
+/// State container using System B sizing.
 ///
 /// The const generics are computed from the device's MAX_* constants:
 /// - ADT_SIZE = 2 + MAX_ADDRESSES * 2 = 34 bytes
 /// - AST_SIZE = 2 + MAX_ASSOCIATIONS * 4 = 66 bytes
 /// - COT_SIZE = 2 + MAX_COM_OBJECTS * 2 = 18 bytes
-/// - APP_SIZE = MAX_APP_DATA = 256 bytes
-pub type MyTables = SystemBTables<
-    { MySystemBDevice::ADT_SIZE },
-    { MySystemBDevice::AST_SIZE },
-    { MySystemBDevice::COT_SIZE },
-    { MySystemBDevice::APP_SIZE },
->;
+/// - P = () (no application-specific data)
+pub type MyState =
+    SystemBState<{ MySystemBDevice::ADT_SIZE }, { MySystemBDevice::AST_SIZE }, { MySystemBDevice::COT_SIZE }>;
 
 /// Type alias for the persisted state with our device's table sizes.
-pub type MyPersistedState = PersistedState<
-    { MySystemBDevice::ADT_SIZE },
-    { MySystemBDevice::AST_SIZE },
-    { MySystemBDevice::COT_SIZE },
-    { MySystemBDevice::APP_SIZE },
->;
+pub type MyPersistedState =
+    PersistedState<{ MySystemBDevice::ADT_SIZE }, { MySystemBDevice::AST_SIZE }, { MySystemBDevice::COT_SIZE }>;
 
 /// Default path for the device state JSON file.
 const STATE_FILE_PATH: &str = "system_b_device_state.json";
@@ -366,7 +363,7 @@ pub struct MySystemBStack;
 impl StackDefinition for MySystemBStack {
     const MASK_VERSION: &'static [u8; 2] = &MySystemBDevice::MASK_VERSION;
 
-    type Tables = MyTables;
+    type Tables = MyState;
     type P = ();
     type CO = comm_objs::SystemBComObjects;
     type LLB = KnxNetIpBuilder<2, 2>;
@@ -380,10 +377,7 @@ impl StackDefinition for MySystemBStack {
 // ============================================================================
 
 #[embassy_executor::task]
-async fn run_stack(
-    runner: Runner<'static, MySystemBStack>,
-    link_layer_resources: &'static mut KnxNetIpResources<2>,
-) {
+async fn run_stack(runner: Runner<'static, MySystemBStack>, link_layer_resources: &'static mut KnxNetIpResources<2>) {
     println!("Running System B KNX/IP stack...");
     runner.run(link_layer_resources).await;
 }
@@ -396,8 +390,11 @@ async fn main(spawner: Spawner) {
 
     // Print device information
     println!("Device Configuration:");
-    println!("  Mask Version: {:02X}{:02X} (KNX/IP System B)",
-        MySystemBDevice::MASK_VERSION[0], MySystemBDevice::MASK_VERSION[1]);
+    println!(
+        "  Mask Version: {:02X}{:02X} (KNX/IP System B)",
+        MySystemBDevice::MASK_VERSION[0],
+        MySystemBDevice::MASK_VERSION[1]
+    );
     println!("  Serial Number: {:02X?}", MySystemBDevice::SERIAL_NUMBER);
     println!("  Manufacturer ID: {:04X}", MySystemBDevice::manufacturer_id());
     println!("  Hardware Type: {:02X?}", MySystemBDevice::HARDWARE_TYPE);
@@ -412,109 +409,86 @@ async fn main(spawner: Spawner) {
     println!("  ADT Size: {} bytes", MySystemBDevice::ADT_SIZE);
     println!("  AST Size: {} bytes", MySystemBDevice::AST_SIZE);
     println!("  COT Size: {} bytes", MySystemBDevice::COT_SIZE);
-    println!("  APP Size: {} bytes", MySystemBDevice::APP_SIZE);
     println!();
     println!("Memory Map Layout (base: 0x{:04X}):", MY_MEMORY_MAP.layout().base_address);
-    println!("  Address Table:     0x{:04X} - 0x{:04X} ({} bytes)",
+    println!(
+        "  Address Table:     0x{:04X} - 0x{:04X} ({} bytes)",
         MY_MEMORY_MAP.layout().adt_address(),
         MY_MEMORY_MAP.layout().adt_address() + MY_MEMORY_MAP.layout().adt_size as u16 - 1,
-        MY_MEMORY_MAP.layout().adt_size);
-    println!("  Association Table: 0x{:04X} - 0x{:04X} ({} bytes)",
+        MY_MEMORY_MAP.layout().adt_size
+    );
+    println!(
+        "  Association Table: 0x{:04X} - 0x{:04X} ({} bytes)",
         MY_MEMORY_MAP.layout().ast_address(),
         MY_MEMORY_MAP.layout().ast_address() + MY_MEMORY_MAP.layout().ast_size as u16 - 1,
-        MY_MEMORY_MAP.layout().ast_size);
-    println!("  Group Object Table: 0x{:04X} - 0x{:04X} ({} bytes)",
+        MY_MEMORY_MAP.layout().ast_size
+    );
+    println!(
+        "  Group Object Table: 0x{:04X} - 0x{:04X} ({} bytes)",
         MY_MEMORY_MAP.layout().cot_address(),
         MY_MEMORY_MAP.layout().cot_address() + MY_MEMORY_MAP.layout().cot_size as u16 - 1,
-        MY_MEMORY_MAP.layout().cot_size);
-    println!("  Application Data:  0x{:04X} - 0x{:04X} ({} bytes)",
+        MY_MEMORY_MAP.layout().cot_size
+    );
+    println!(
+        "  Application Data:  0x{:04X} - 0x{:04X} ({} bytes)",
         MY_MEMORY_MAP.layout().app_address(),
         MY_MEMORY_MAP.layout().app_address() + MY_MEMORY_MAP.layout().app_size as u16 - 1,
-        MY_MEMORY_MAP.layout().app_size);
+        MY_MEMORY_MAP.layout().app_size
+    );
     println!("  Total mapped:      {} bytes", MY_MEMORY_MAP.layout().total_size);
     println!();
 
     // Create storage and try to load persisted state
     let mut storage = JsonStorage::new(STATE_FILE_PATH);
-    let (tables, persisted_state) = match storage.load::<
-        { MySystemBDevice::ADT_SIZE },
-        { MySystemBDevice::AST_SIZE },
-        { MySystemBDevice::COT_SIZE },
-        { MySystemBDevice::APP_SIZE },
-    >() {
-        Ok(Some(state)) => {
+    let state = match storage
+        .load::<{ MySystemBDevice::ADT_SIZE }, { MySystemBDevice::AST_SIZE }, { MySystemBDevice::COT_SIZE }, ()>()
+    {
+        Ok(Some(persisted)) => {
             println!("Loaded persisted state from {}", STATE_FILE_PATH);
-            println!("  Individual Address: {}", state.individual_address);
-            println!("  Address Table: {:?}", state.address_table.load_state);
-            println!("  Association Table: {:?}", state.association_table.load_state);
-            println!("  Group Object Table: {:?}", state.group_object_table.load_state);
-            println!("  Application: {:?}", state.application.load_state);
+            println!("  Individual Address: {}", persisted.individual_address);
+            println!("  Address Table: {:?}", persisted.address_table.load_state());
+            println!("  Association Table: {:?}", persisted.association_table.load_state());
+            println!("  Group Object Table: {:?}", persisted.group_object_table.load_state());
+            println!("  Application: {:?}", persisted.application.inner().load_state());
             println!();
 
-            let tables = MyTables::from_persisted(&state);
-            (tables, state)
+            MyState::from_persisted(persisted)
         }
         Ok(None) => {
             println!("No persisted state found, using test configuration");
             println!();
 
-            // Create tables and load test configuration
-            let mut tables = MyTables::new();
-            load_test_configuration(&mut tables);
-
-            // Create initial persisted state with test configuration
-            let (adt, ast, cot, app) = tables.to_persisted();
-            let state = MyPersistedState {
-                version: MyPersistedState::VERSION,
-                individual_address: IndividualAddress::new(1, 2, 3),
-                auth_keys: [[0xFF; 4]; 3],
-                address_table: adt,
-                association_table: ast,
-                group_object_table: cot,
-                application: app,
-                ip_config: Some(Default::default()),
-            };
+            // Create state with test configuration
+            let mut state = MyState::new_ip();
+            state.individual_address = IndividualAddress::new(1, 2, 3);
+            load_test_configuration(&mut state);
 
             // Save the initial state
-            if let Err(e) = storage.save(&state) {
+            if let Err(e) = storage.save(&state.to_persisted()) {
                 log::error!("Failed to save initial state: {}", e);
             }
 
-            (tables, state)
+            state
         }
         Err(e) => {
             println!("Error loading persisted state: {}", e);
             println!("Using test configuration instead");
             println!();
 
-            // Create tables with test configuration as fallback
-            let mut tables = MyTables::new();
-            load_test_configuration(&mut tables);
+            // Create state with test configuration as fallback
+            let mut state = MyState::new_ip();
+            state.individual_address = IndividualAddress::new(1, 2, 3);
+            load_test_configuration(&mut state);
 
-            let (adt, ast, cot, app) = tables.to_persisted();
-            let state = MyPersistedState {
-                version: MyPersistedState::VERSION,
-                individual_address: IndividualAddress::new(1, 2, 3),
-                auth_keys: [[0xFF; 4]; 3],
-                address_table: adt,
-                association_table: ast,
-                group_object_table: cot,
-                application: app,
-                ip_config: Some(Default::default()),
-            };
-
-            (tables, state)
+            state
         }
     };
 
     // Keep reference to the current individual address
-    let individual_address = persisted_state.individual_address;
+    let individual_address = state.individual_address;
 
     // Create KNX/IP servers
-    let control_endpoint = HPAI::Ipv4Udp {
-        addr: "192.168.1.200".parse().unwrap(),
-        port: 3671
-    };
+    let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.1.200".parse().unwrap(), port: 3671 };
 
     let device_info = DeviceInformation {
         medium: KNXMedium::KNXIP,
@@ -527,29 +501,19 @@ async fn main(spawner: Spawner) {
         friendly_name: *b"System B Test\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
     };
 
-    let supported_services = &[
-        SupportedService { family: ServiceFamily::Core, version: 1 },
-        SupportedService { family: ServiceFamily::Routing, version: 1 },
-    ];
+    let supported_services = &[SupportedService { family: ServiceFamily::Core, version: 1 }, SupportedService {
+        family: ServiceFamily::Routing,
+        version: 1,
+    }];
 
-    let discovery_server = servers::DiscoveryServer::new(
-        control_endpoint,
-        device_info,
-        supported_services
-    );
-    let routing_server = servers::RoutingServer::new(
-        Ipv4Addr::new(224, 0, 23, 12),
-        3671
-    );
+    let discovery_server = servers::DiscoveryServer::new(control_endpoint, device_info, supported_services);
+    let routing_server = servers::RoutingServer::new(Ipv4Addr::new(224, 0, 23, 12), 3671);
 
     let link_layer_builder = KnxNetIpBuilder::<2, 2>::new(MySystemBDevice::INTERFACE_NAME)
         .add_server(
             discovery_server,
             &[KNXnetIPServiceType::SearchRequest, KNXnetIPServiceType::DescriptionRequest],
-            &[
-                EndpointType::new_udp(Ipv4Addr::new(224, 0, 23, 12), 3671),
-                EndpointType::new_udp_any(3671),
-            ],
+            &[EndpointType::new_udp(Ipv4Addr::new(224, 0, 23, 12), 3671), EndpointType::new_udp_any(3671)],
         )
         .add_server(
             routing_server,
@@ -573,16 +537,16 @@ async fn main(spawner: Spawner) {
     let device_state = IpDeviceState::<MySystemBDevice>::from_persisted(
         JsonStorage::new(STATE_FILE_PATH),
         MockIpPlatform::default(),
-        persisted_state.individual_address,
-        persisted_state.auth_keys,
-        persisted_state.ip_config.clone(),
+        state.individual_address,
+        state.auth_keys,
+        state.ip_config.clone(),
     );
 
     // Create stack resources and initialize the stack
     static RESOURCES: StaticCell<StackResources<MySystemBStack>> = StaticCell::new();
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
-        tables,
+        state,
         comm_objs::SystemBComObjects::new(),
         (),
         link_layer_builder,
@@ -648,26 +612,40 @@ async fn main(spawner: Spawner) {
     }
 }
 
-/// Load test configuration into the tables.
+/// Load test configuration into the state.
 ///
 /// This simulates ETS configuration loading via the Load State Machine.
-fn load_test_configuration(tables: &mut MyTables) {
+fn load_test_configuration(state: &mut MyState) {
     use zweidraehte::objects::tables::TableMemory;
+
+    // Get the memory layout addresses for TABLE_REFERENCE
+    let layout = MY_MEMORY_MAP.layout();
+    let adt_addr = layout.adt_address() as u32;
+    let ast_addr = layout.ast_address() as u32;
+    let cot_addr = layout.cot_address() as u32;
+    let _app_addr = layout.app_address() as u32; // Application doesn't use RelativeData allocation
 
     // Load Address Table
     {
-        let mut adt = tables.adt.borrow_mut();
+        let mut adt = state.adt.borrow_mut();
         adt.write_lsm(&[LoadEvent::StartLoading.into()], None);
 
-        // Allocate table space
-        adt.write_lsm(&[
-            LoadEvent::AdditionalLoadControls.into(),
-            0x0B, // AllocAbsDataSeg
-            0x00, 0x00, 0x00, 0x0A, // Size: 10 bytes (2 count + 4 addresses)
-            0x01, // Fill
-            0xFF, // Fill value
-            0x00, 0x00,
-        ], None);
+        // Allocate table space - pass the table reference address
+        adt.write_lsm(
+            &[
+                LoadEvent::AdditionalLoadControls.into(),
+                0x0B, // AllocAbsDataSeg
+                0x00,
+                0x00,
+                0x00,
+                0x0A, // Size: 10 bytes (2 count + 4 addresses)
+                0x01, // Fill
+                0xFF, // Fill value
+                0x00,
+                0x00,
+            ],
+            Some(adt_addr),
+        );
 
         // Write address data: 4 group addresses
         // [count:2][ga1:2][ga2:2][ga3:2][ga4:2]
@@ -683,17 +661,24 @@ fn load_test_configuration(tables: &mut MyTables) {
 
     // Load Association Table
     {
-        let mut ast = tables.ast.borrow_mut();
+        let mut ast = state.ast.borrow_mut();
         ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
 
-        ast.write_lsm(&[
-            LoadEvent::AdditionalLoadControls.into(),
-            0x0B, // AllocAbsDataSeg
-            0x00, 0x00, 0x00, 0x12, // Size: 18 bytes (2 count + 4 assoc * 4)
-            0x01, // Fill
-            0xFF, // Fill value
-            0x00, 0x00,
-        ], None);
+        ast.write_lsm(
+            &[
+                LoadEvent::AdditionalLoadControls.into(),
+                0x0B, // AllocAbsDataSeg
+                0x00,
+                0x00,
+                0x00,
+                0x12, // Size: 18 bytes (2 count + 4 assoc * 4)
+                0x01, // Fill
+                0xFF, // Fill value
+                0x00,
+                0x00,
+            ],
+            Some(ast_addr),
+        );
 
         let table_data = ast.data_ref_mut();
         // [count:2][tsap1:2][asap1:2][tsap2:2][asap2:2]...
@@ -716,17 +701,24 @@ fn load_test_configuration(tables: &mut MyTables) {
 
     // Load Group Object Table
     {
-        let mut cot = tables.cot.borrow_mut();
+        let mut cot = state.cot.borrow_mut();
         cot.write_lsm(&[LoadEvent::StartLoading.into()], None);
 
-        cot.write_lsm(&[
-            LoadEvent::AdditionalLoadControls.into(),
-            0x0B, // AllocAbsDataSeg
-            0x00, 0x00, 0x00, 0x0A, // Size: 10 bytes (2 count + 4 co * 2)
-            0x01, // Fill
-            0xFF, // Fill value
-            0x00, 0x00,
-        ], None);
+        cot.write_lsm(
+            &[
+                LoadEvent::AdditionalLoadControls.into(),
+                0x0B, // AllocAbsDataSeg
+                0x00,
+                0x00,
+                0x00,
+                0x0A, // Size: 10 bytes (2 count + 4 co * 2)
+                0x01, // Fill
+                0xFF, // Fill value
+                0x00,
+                0x00,
+            ],
+            Some(cot_addr),
+        );
 
         let table_data = cot.data_ref_mut();
         // [count:2][type1:1][flags1:1][type2:1][flags2:1]...
@@ -745,7 +737,7 @@ fn load_test_configuration(tables: &mut MyTables) {
 
     // Load Application
     {
-        let mut app = tables.app.borrow_mut();
+        let mut app = state.app.borrow_mut();
         app.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
         // Start the application

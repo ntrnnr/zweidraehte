@@ -628,7 +628,7 @@ pub struct McbData {
 // TODO: Add trait MemoryAccessible which uses pointers of the objects and checks bounds when reading/writing raw?
 //       Maybe not necessary as w already have TableMemory which could do this
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Table<T: TableMemory> {
     // TODO: add alloc() and free() to TableMemory and use these instead of directly filling them? Would allow for Boxed Tables etc.
     pub(super) table: T,
@@ -691,6 +691,16 @@ impl<T: TableMemory> Table<T> {
     /// Get a mutable reference to the MCB (Memory Control Block) bytes.
     pub fn mcb_bytes_mut(&mut self) -> &mut [u8] {
         self.mcb_table.as_mut_bytes()
+    }
+
+    /// Get the table reference (base address in KNX device's virtual address space).
+    pub fn table_reference(&self) -> u32 {
+        self.table_reference
+    }
+
+    /// Set the table reference (for persistence restore).
+    pub fn set_table_reference(&mut self, reference: u32) {
+        self.table_reference = reference;
     }
 
     fn next_state(event: LoadEvent, cur_state: LoadState) -> (LoadState, LoadAction) {
@@ -846,7 +856,7 @@ impl<T: TableMemory> TableMemory for Table<T> {
 /// The run state depends on the load state:
 /// - Unloading forces run state to HALTED
 /// - RESTART only transitions to RUNNING if loaded
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunnableApplication<T: LoadableTable> {
     /// The underlying loadable table
     pub(super) table: T,

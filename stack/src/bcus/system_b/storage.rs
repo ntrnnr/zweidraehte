@@ -5,10 +5,19 @@
 
 use core::net::Ipv4Addr;
 
+use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 
-use crate::{address::IndividualAddress, objects::tables::LoadState};
+use crate::{
+    address::IndividualAddress,
+    objects::tables::{
+        Table,
+        addr7::AddrTab7Impl,
+        app::Application,
+        asso6::AssoTab6Impl,
+        co7::CoTab7Impl,
+    },
+};
 
 /// Trait for persisting device state to storage.
 ///
@@ -47,18 +56,18 @@ pub trait DeviceStorage: Sized {
     /// - `ADT_SIZE`: Address table size in bytes (2 + MAX_ADDR * 2)
     /// - `AST_SIZE`: Association table size in bytes (2 + MAX_ASSO * 4)
     /// - `COT_SIZE`: Group object table size in bytes (2 + MAX_CO * 2)
-    /// - `APP_SIZE`: Application data size in bytes
-    fn load<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize>(
+    /// - `P`: Application parameters type
+    fn load<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault + Serialize + for<'de> Deserialize<'de>>(
         &mut self,
-    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE>>, Self::Error>;
+    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>>, Self::Error>;
 
     /// Save persistent state to storage.
     ///
     /// This should atomically replace the previous state to prevent
     /// corruption on power loss during write.
-    fn save<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize>(
+    fn save<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault + Serialize + for<'de> Deserialize<'de>>(
         &mut self,
-        state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE>,
+        state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>,
     ) -> Result<(), Self::Error>;
 
     /// Mark state as dirty (needs save).
@@ -93,7 +102,7 @@ pub trait DeviceStorage: Sized {
 /// - `ADT_SIZE`: Address table size (typically 2 + MAX_ADDR * 2)
 /// - `AST_SIZE`: Association table size (typically 2 + MAX_ASSO * 4)
 /// - `COT_SIZE`: Group object table size (typically 2 + MAX_CO * 2)
-/// - `APP_SIZE`: Application data size
+/// - `P`: Application parameters type
 ///
 /// Use [`table_sizes`] to calculate these from the max entry counts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,7 +110,7 @@ pub struct PersistedState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    const APP_SIZE: usize,
+    P: ConstDefault = (),
 > {
     /// Version of the persisted state format.
     ///
@@ -118,16 +127,16 @@ pub struct PersistedState<
     pub auth_keys: [[u8; 4]; 3],
 
     /// Address table (TSAP → Group Address mapping).
-    pub address_table: PersistedTable<ADT_SIZE>,
+    pub address_table: Table<AddrTab7Impl<ADT_SIZE>>,
 
     /// Association table (TSAP → ASAP mapping).
-    pub association_table: PersistedTable<AST_SIZE>,
+    pub association_table: Table<AssoTab6Impl<AST_SIZE>>,
 
     /// Group object table (CO type + flags).
-    pub group_object_table: PersistedTable<COT_SIZE>,
+    pub group_object_table: Table<CoTab7Impl<COT_SIZE>>,
 
     /// Application program data.
-    pub application: PersistedApplication<APP_SIZE>,
+    pub application: Application<P>,
 
     /// IP-specific configuration (only for 57B0 devices).
     ///
@@ -135,11 +144,11 @@ pub struct PersistedState<
     pub ip_config: Option<PersistedIpConfig>,
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize>
-    PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault>
+    PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>
 {
     /// Current version of the persisted state format.
-    pub const VERSION: u8 = 1;
+    pub const VERSION: u8 = 2;
 
     /// Create a new persisted state with factory defaults.
     pub fn factory_default() -> Self {
@@ -147,10 +156,10 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const 
             version: Self::VERSION,
             individual_address: IndividualAddress::new(15, 15, 255),
             auth_keys: [[0xFF; 4]; 3], // All keys = default key
-            address_table: PersistedTable::default(),
-            association_table: PersistedTable::default(),
-            group_object_table: PersistedTable::default(),
-            application: PersistedApplication::default(),
+            address_table: Table::new(),
+            association_table: Table::new(),
+            group_object_table: Table::new(),
+            application: Application::new(),
             ip_config: None,
         }
     }
@@ -172,7 +181,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const 
 ///
 /// ```rust,ignore
 /// const SIZES: (usize, usize, usize) = table_sizes(64, 64, 32);
-/// type MyPersistedState = PersistedState<{ SIZES.0 }, { SIZES.1 }, { SIZES.2 }, 256>;
+/// type MyPersistedState = PersistedState<{ SIZES.0 }, { SIZES.1 }, { SIZES.2 }, ()>;
 /// ```
 pub const fn table_sizes(max_addr: usize, max_asso: usize, max_co: usize) -> (usize, usize, usize) {
     (
@@ -180,64 +189,6 @@ pub const fn table_sizes(max_addr: usize, max_asso: usize, max_co: usize) -> (us
         2 + max_asso * 4, // AST: 2-byte count + 4 bytes per entry
         2 + max_co * 2,   // COT: 2-byte count + 2 bytes per entry
     )
-}
-
-/// Persisted table data.
-///
-/// Contains the table's load state, raw data, and MCB (Memory Control Block).
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedTable<const SIZE: usize> {
-    /// Current load state of the table.
-    pub load_state: LoadState,
-
-    /// Raw table data.
-    #[serde_as(as = "[_; SIZE]")]
-    pub data: [u8; SIZE],
-
-    /// Memory Control Block (8 bytes).
-    ///
-    /// Contains allocated size, mode, fill value, and CRC.
-    pub mcb: [u8; 8],
-}
-
-impl<const SIZE: usize> Default for PersistedTable<SIZE> {
-    fn default() -> Self {
-        Self {
-            load_state: LoadState::Unloaded,
-            data: [0; SIZE],
-            mcb: [0; 8],
-        }
-    }
-}
-
-/// Persisted application program data.
-///
-/// Similar to [`PersistedTable`] but does NOT include run state.
-/// The run state is volatile - the application always starts in
-/// `Halted` state and must be explicitly restarted after boot.
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedApplication<const SIZE: usize> {
-    /// Current load state of the application.
-    pub load_state: LoadState,
-
-    /// Raw application data.
-    #[serde_as(as = "[_; SIZE]")]
-    pub data: [u8; SIZE],
-
-    /// Memory Control Block (8 bytes).
-    pub mcb: [u8; 8],
-}
-
-impl<const SIZE: usize> Default for PersistedApplication<SIZE> {
-    fn default() -> Self {
-        Self {
-            load_state: LoadState::Unloaded,
-            data: [0; SIZE],
-            mcb: [0; 8],
-        }
-    }
 }
 
 /// Persisted IP configuration (for 57B0 devices).
@@ -320,15 +271,15 @@ pub struct NoStorage;
 impl DeviceStorage for NoStorage {
     type Error = core::convert::Infallible;
 
-    fn load<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize>(
+    fn load<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault + Serialize + for<'de> Deserialize<'de>>(
         &mut self,
-    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE>>, Self::Error> {
+    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>>, Self::Error> {
         Ok(None) // No saved state
     }
 
-    fn save<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, const APP_SIZE: usize>(
+    fn save<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault + Serialize + for<'de> Deserialize<'de>>(
         &mut self,
-        _state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, APP_SIZE>,
+        _state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>,
     ) -> Result<(), Self::Error> {
         Ok(()) // Silently discard
     }

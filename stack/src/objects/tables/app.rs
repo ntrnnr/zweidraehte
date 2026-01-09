@@ -18,6 +18,7 @@
 //! The type alias `Application<D>` provides the complete stack.
 
 use const_default::ConstDefault;
+use serde::{Deserialize, Serialize};
 
 use super::{RunnableApplication, Table, TableMemory};
 
@@ -25,7 +26,7 @@ use super::{RunnableApplication, Table, TableMemory};
 ///
 /// Generic over `D`, which is application-specific data that can be stored
 /// alongside the application program object.
-#[derive(Debug, ConstDefault)]
+#[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
 pub struct ApplicationImpl<D: ConstDefault> {
     _data: D,
 }
