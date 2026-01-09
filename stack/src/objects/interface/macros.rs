@@ -777,9 +777,10 @@ mod tests {
     #[test]
     fn test_read_write_property() {
         let mut obj = TestDeviceObject::new();
+        let mut resp_buf = [0u8; 8];
 
         // Write serial number
-        obj.write_property(pid::SERIAL_NUMBER, 1, &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
+        obj.write_property(pid::SERIAL_NUMBER, 1, &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06], &mut resp_buf)
             .unwrap();
 
         // Read it back
@@ -794,13 +795,14 @@ mod tests {
     #[test]
     fn test_read_only_write_fails() {
         let mut obj = TestDeviceObject::new();
+        let mut resp_buf = [0u8; 8];
 
         // Try to write read-only property
-        let result = obj.write_property(pid::MANUFACTURER_ID, 1, &[0x12, 0x34]);
+        let result = obj.write_property(pid::MANUFACTURER_ID, 1, &[0x12, 0x34], &mut resp_buf);
         assert_eq!(result, Err(PropertyError::WriteNotAllowed));
 
         // Object type should also be read-only
-        let result = obj.write_property(pid::OBJECT_TYPE, 1, &[0x00, 0x01]);
+        let result = obj.write_property(pid::OBJECT_TYPE, 1, &[0x00, 0x01], &mut resp_buf);
         assert_eq!(result, Err(PropertyError::WriteNotAllowed));
     }
 

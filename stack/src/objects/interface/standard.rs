@@ -31,7 +31,7 @@ use crate::dpt::{
     InterfaceObjectType, PDT_Generic01, PDT_Generic02, PDT_Generic05, PDT_Generic06, PDT_Generic10, PDT_UnsignedChar,
     PDT_UnsignedInt, PropertyDataDefinition,
 };
-use crate::objects::tables::LoadableTable;
+use crate::objects::tables::{LoadableTable, RunnableTable};
 
 use super::{InterfaceObject, PropertyAccess, PropertyDescriptor, PropertyError, pid};
 
@@ -273,25 +273,214 @@ impl<'a, S: IpStackState> IpParameterObject<'a, S> {
 // Application Program Object (Object Type 3)
 // ============================================================================
 
-crate::define_interface_object! {
-    /// Application Program Object - Object Type 3
-    ///
-    /// Contains information about the loaded application program.
-    ///
-    /// # Properties
-    ///
-    /// | PID | Name | Type | Access |
-    /// |-----|------|------|--------|
-    /// | 1 | Object Type | PDT_UNSIGNED_INT | RO |
-    /// | 5 | Load State Control | PDT_UNSIGNED_CHAR | RW |
-    /// | 6 | Run State Control | PDT_UNSIGNED_CHAR | RW |
-    /// | 13 | Program Version | PDT_GENERIC_05 | RO |
-    /// | 16 | PEI Type | PDT_UNSIGNED_CHAR | RO |
-    pub struct ApplicationProgramObject: InterfaceObjectType::ApplicationProgram {
-        pid::LOAD_STATE_CONTROL => load_state: PDT_UnsignedChar, ReadWrite;
-        pid::RUN_STATE_CONTROL => run_state: PDT_UnsignedChar, ReadWrite;
-        pid::PROGRAM_VERSION => program_version: PDT_Generic05, ReadOnly;
-        pid::PEI_TYPE => pei_type: PDT_UnsignedChar, ReadOnly
+// ============================================================================
+// Application Program Object (with proper state machines)
+// ============================================================================
+
+/// Application Program Object - Object Type 3
+///
+/// This is the proper implementation of the Application Program Object that
+/// wraps a [`RunnableApplication<T>`](crate::objects::tables::RunnableApplication)
+/// and implements both the Load State Machine and Run State Machine.
+///
+/// The application object is unique among interface objects because it has
+/// two state machines:
+/// - **Load State Machine**: Controls loading/unloading of application data
+/// - **Run State Machine**: Controls execution state (HALTED, RUNNING, etc.)
+///
+/// # KNX Properties
+///
+/// | PID | Name | Type | Access | Description |
+/// |-----|------|------|--------|-------------|
+/// | 1 | Object Type | PDT_UNSIGNED_INT | RO | Object type identifier (3) |
+/// | 5 | Load State Control | PDT_CONTROL | RW | Load state machine |
+/// | 6 | Run State Control | PDT_CONTROL | RW | Run state machine |
+/// | 13 | Program Version | PDT_GENERIC_05 | RO | Application program version |
+/// | 16 | PEI Type | PDT_UNSIGNED_CHAR | RO | PEI type (0 for none) |
+///
+/// # Type Parameters
+///
+/// * `T` - The underlying application table type (must implement both
+///   [`LoadableTable`] and [`RunnableTable`])
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use zweidraehte::objects::tables::app::Application;
+/// use zweidraehte::objects::interface::ApplicationProgramObject;
+///
+/// // Create the underlying application table
+/// let app_table = RefCell::new(Application::<()>::new());
+///
+/// // Create the interface object wrapping it
+/// let app_obj = ApplicationProgramObject::new(&app_table);
+/// ```
+pub struct ApplicationProgramObject<'a, T: LoadableTable + RunnableTable> {
+    app: &'a RefCell<T>,
+    program_version: PDT_Generic05,
+    pei_type: PDT_UnsignedChar,
+}
+
+impl<'a, T: LoadableTable + RunnableTable> ApplicationProgramObject<'a, T> {
+    /// Create a new application program object wrapping an existing
+    /// application table.
+    pub fn new(app: &'a RefCell<T>) -> Self {
+        Self {
+            app,
+            program_version: PDT_Generic05::default(),
+            pei_type: PDT_UnsignedChar::default(),
+        }
+    }
+
+    /// Create with specific program version and PEI type.
+    pub fn with_info(app: &'a RefCell<T>, program_version: PDT_Generic05, pei_type: PDT_UnsignedChar) -> Self {
+        Self { app, program_version, pei_type }
+    }
+
+    /// Get the program version.
+    pub fn program_version(&self) -> &PDT_Generic05 {
+        &self.program_version
+    }
+
+    /// Set the program version.
+    pub fn set_program_version(&mut self, version: PDT_Generic05) {
+        self.program_version = version;
+    }
+
+    /// Get the PEI type.
+    pub fn pei_type(&self) -> &PDT_UnsignedChar {
+        &self.pei_type
+    }
+
+    /// Set the PEI type.
+    pub fn set_pei_type(&mut self, pei_type: PDT_UnsignedChar) {
+        self.pei_type = pei_type;
+    }
+
+    /// Get property descriptors for application program object.
+    fn property_descriptors() -> [PropertyDescriptor; 5] {
+        [
+            PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly),
+            // LOAD_STATE_CONTROL: read=3 (anyone), write=0 (requires authorization)
+            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite)
+                .with_levels(3, 0),
+            // RUN_STATE_CONTROL: read=3 (anyone), write=0 (requires authorization)
+            PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite)
+                .with_levels(3, 0),
+            PropertyDescriptor::new(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadOnly),
+            PropertyDescriptor::new(pid::PEI_TYPE, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadOnly),
+        ]
+    }
+}
+
+impl<'a, T: LoadableTable + RunnableTable> InterfaceObject for ApplicationProgramObject<'a, T> {
+    fn object_type(&self) -> InterfaceObjectType {
+        InterfaceObjectType::ApplicationProgram
+    }
+
+    fn property_count(&self) -> u16 {
+        5
+    }
+
+    fn property_descriptor_by_index(&self, prop_idx: u16) -> Option<PropertyDescriptor> {
+        Self::property_descriptors().get(prop_idx as usize).copied()
+    }
+
+    fn property_descriptor_by_id(&self, pid: u8) -> Option<(u16, PropertyDescriptor)> {
+        Self::property_descriptors()
+            .iter()
+            .enumerate()
+            .find(|(_, d)| d.pid == pid)
+            .map(|(i, d)| (i as u16, *d))
+    }
+
+    fn read_property(&self, pid: u8, _start_idx: u16, _count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
+        match pid {
+            super::pid::OBJECT_TYPE => {
+                if buf.len() < 2 {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                let obj_type: u16 = InterfaceObjectType::ApplicationProgram.into();
+                buf[0..2].copy_from_slice(&obj_type.to_be_bytes());
+                Ok(2)
+            }
+            super::pid::LOAD_STATE_CONTROL => {
+                if buf.is_empty() {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                buf[0] = self.app.borrow().read_lsm()[0];
+                Ok(1)
+            }
+            super::pid::RUN_STATE_CONTROL => {
+                if buf.is_empty() {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                buf[0] = self.app.borrow().read_rsm()[0];
+                Ok(1)
+            }
+            super::pid::PROGRAM_VERSION => {
+                let data: &[u8] = self.program_version.as_ref();
+                if buf.len() < data.len() {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                buf[..data.len()].copy_from_slice(data);
+                Ok(data.len())
+            }
+            super::pid::PEI_TYPE => {
+                if buf.is_empty() {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                buf[0] = self.pei_type.as_ref()[0];
+                Ok(1)
+            }
+            _ => Err(PropertyError::InvalidPropertyId),
+        }
+    }
+
+    fn write_property(
+        &mut self,
+        pid: u8,
+        _start_idx: u16,
+        data: &[u8],
+        response_buf: &mut [u8],
+    ) -> Result<usize, PropertyError> {
+        match pid {
+            super::pid::OBJECT_TYPE | super::pid::PROGRAM_VERSION | super::pid::PEI_TYPE => {
+                Err(PropertyError::WriteNotAllowed)
+            }
+            super::pid::LOAD_STATE_CONTROL => {
+                // Write the load event to the state machine
+                self.app.borrow_mut().write_lsm(data);
+                // Response contains the resulting load state (1 byte)
+                if response_buf.is_empty() {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                response_buf[0] = self.app.borrow().read_lsm()[0];
+                Ok(1)
+            }
+            super::pid::RUN_STATE_CONTROL => {
+                // Write the run event to the state machine
+                self.app.borrow_mut().write_rsm(data);
+                // Response contains the resulting run state (1 byte)
+                if response_buf.is_empty() {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                response_buf[0] = self.app.borrow().read_rsm()[0];
+                Ok(1)
+            }
+            _ => Err(PropertyError::InvalidPropertyId),
+        }
+    }
+
+    fn property_element_count(&self, pid: u8) -> Result<u16, PropertyError> {
+        match pid {
+            super::pid::OBJECT_TYPE
+            | super::pid::LOAD_STATE_CONTROL
+            | super::pid::RUN_STATE_CONTROL
+            | super::pid::PROGRAM_VERSION
+            | super::pid::PEI_TYPE => Ok(1),
+            _ => Err(PropertyError::InvalidPropertyId),
+        }
     }
 }
 
@@ -662,7 +851,8 @@ mod tests {
         assert_eq!(buf[0], 0x00); // Unloaded
 
         // Start loading
-        obj.write_property(pid::LOAD_STATE_CONTROL, 1, &[LoadEvent::StartLoading.into()]).unwrap();
+        let mut resp_buf = [0u8; 4];
+        obj.write_property(pid::LOAD_STATE_CONTROL, 1, &[LoadEvent::StartLoading.into()], &mut resp_buf).unwrap();
 
         let len = obj.read_property(pid::LOAD_STATE_CONTROL, 1, 1, &mut buf).unwrap();
         assert_eq!(len, 1);
@@ -790,17 +980,18 @@ mod tests {
     fn test_table_object_write_protection() {
         let addr_table = RefCell::new(AddrTab7::<10>::new());
         let mut obj = AddressTableObject::new(&addr_table);
+        let mut resp_buf = [0u8; 10];
 
         // OBJECT_TYPE should not be writable
-        let result = obj.write_property(pid::OBJECT_TYPE, 1, &[0x00, 0x00]);
+        let result = obj.write_property(pid::OBJECT_TYPE, 1, &[0x00, 0x00], &mut resp_buf);
         assert!(matches!(result, Err(PropertyError::WriteNotAllowed)));
 
         // TABLE_REFERENCE should not be writable
-        let result = obj.write_property(pid::TABLE_REFERENCE, 1, &[0x00, 0x00, 0x00, 0x00]);
+        let result = obj.write_property(pid::TABLE_REFERENCE, 1, &[0x00, 0x00, 0x00, 0x00], &mut resp_buf);
         assert!(matches!(result, Err(PropertyError::WriteNotAllowed)));
 
         // MCB_TABLE should not be writable
-        let result = obj.write_property(pid::MCB_TABLE, 1, &[0x00; 8]);
+        let result = obj.write_property(pid::MCB_TABLE, 1, &[0x00; 8], &mut resp_buf);
         assert!(matches!(result, Err(PropertyError::WriteNotAllowed)));
     }
 
@@ -808,9 +999,10 @@ mod tests {
     fn test_table_object_write_data() {
         let addr_table = RefCell::new(AddrTab7::<20>::new());
         let mut obj = AddressTableObject::new(&addr_table);
+        let mut resp_buf = [0u8; 10];
 
         // Write count and entries via TABLE property
-        obj.write_property(pid::TABLE, 0, &[0x00, 0x02]).unwrap(); // count = 2
+        obj.write_property(pid::TABLE, 0, &[0x00, 0x02], &mut resp_buf).unwrap(); // count = 2
 
         // Verify it was written
         let mut buf = [0u8; 10];

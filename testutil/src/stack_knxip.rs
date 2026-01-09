@@ -131,7 +131,7 @@ use zweidraehte::{
         InterfaceObject, InterfaceObjectsBuilder, IpParameterObject, PropertyDescriptionResponse, PropertyError,
         PropertyServiceHandler,
     },
-    objects::tables::LoadableTable,
+    objects::tables::{LoadableTable, RunnableTable, LoadEvent, RunEvent, app::Application},
 };
 
 #[derive(Debug, ConstDefault)]
@@ -293,43 +293,32 @@ mod device_info {
 /// - Index 3: Application Program Object
 /// - Index 4: Group Object Table Object
 /// - Index 5: IP Parameter Object
-pub struct KnxIpInterfaceObjects<'a, Tables, S>
+pub struct KnxIpInterfaceObjects<'a, S>
 where
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
-    <Tables as HasAddressTable>::ADT: LoadableTable,
-    <Tables as HasAssociationTable>::AST: LoadableTable,
-    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
     S: IpStackState,
 {
     pub device: RefCell<DeviceObject<'a, S>>,
-    pub addr_table: RefCell<AddressTableObject<'a, <Tables as HasAddressTable>::ADT>>,
-    pub asso_table: RefCell<AssociationTableObject<'a, <Tables as HasAssociationTable>::AST>>,
-    pub app_program: RefCell<ApplicationProgramObject>,
-    pub group_object_table: RefCell<GroupObjectTableObject<'a, <Tables as HasCommunicationObjectTable>::COT>>,
+    pub addr_table: RefCell<AddressTableObject<'a, stack_test_config::AddrTab>>,
+    pub asso_table: RefCell<AssociationTableObject<'a, stack_test_config::AssoTab>>,
+    pub app_program: RefCell<ApplicationProgramObject<'a, Application<()>>>,
+    pub group_object_table: RefCell<GroupObjectTableObject<'a, stack_test_config::CoTab>>,
     pub ip_parameter: RefCell<IpParameterObject<'a, S>>,
 }
 
-impl<'a, Tables, S> KnxIpInterfaceObjects<'a, Tables, S>
+impl<'a, S> KnxIpInterfaceObjects<'a, S>
 where
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
-    <Tables as HasAddressTable>::ADT: LoadableTable,
-    <Tables as HasAssociationTable>::AST: LoadableTable,
-    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
     S: IpStackState,
 {
     /// Create new interface objects wrapping the provided tables
-    pub fn new(tables: &'a Tables, state: &'a S) -> Self {
+    pub fn new(tables: &'a KnxIpTables, state: &'a S) -> Self {
         // Create Device Object with device information and state reference
         // Note: serial_number and manufacturer_id are read dynamically from StackState
         let device = DeviceObject::with_values(state, device_info::HARDWARE_TYPE);
 
-        // Create Application Program Object
-        let mut app_program = ApplicationProgramObject::new();
-        app_program.program_version = device_info::PROGRAM_VERSION.into();
-        app_program.pei_type = device_info::PEI_TYPE.into();
-        // Load state starts as "loaded" for this demo
-        app_program.load_state = 0x01.into(); // Loaded
-        app_program.run_state = 0x01.into(); // Running
+        // Create Application Program Object wrapping the application table
+        let mut app_program = ApplicationProgramObject::new(tables.app());
+        app_program.set_program_version(device_info::PROGRAM_VERSION.into());
+        app_program.set_pei_type(device_info::PEI_TYPE.into());
 
         // Create IP Parameter Object
         let ip_parameter = IpParameterObject::with_state(state);
@@ -338,7 +327,6 @@ where
             device: RefCell::new(device),
             addr_table: RefCell::new(AddressTableObject::new(tables.adt())),
             asso_table: RefCell::new(AssociationTableObject::new(tables.ast())),
-            // FIXME: we need an ApplicationProgramObject that wraps our app program - it needs to implement the appropriate state machine(s) for an application
             app_program: RefCell::new(app_program),
             group_object_table: RefCell::new(GroupObjectTableObject::new(tables.cot())),
             ip_parameter: RefCell::new(ip_parameter),
@@ -346,12 +334,8 @@ where
     }
 }
 
-impl<'a, Tables, S> PropertyServiceHandler for KnxIpInterfaceObjects<'a, Tables, S>
+impl<'a, S> PropertyServiceHandler for KnxIpInterfaceObjects<'a, S>
 where
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
-    <Tables as HasAddressTable>::ADT: LoadableTable,
-    <Tables as HasAssociationTable>::AST: LoadableTable,
-    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
     S: IpStackState,
 {
     fn object_count(&self) -> u16 {
@@ -382,7 +366,26 @@ where
         start_idx: u16,
         count: u16,
         buf: &mut [u8],
+        access_level: u8,
     ) -> Result<usize, PropertyError> {
+        // Check access level first (in separate scope to release borrow)
+        {
+            let desc = match object_idx {
+                0 => self.device.borrow().property_descriptor_by_id(prop_id),
+                1 => self.addr_table.borrow().property_descriptor_by_id(prop_id),
+                2 => self.asso_table.borrow().property_descriptor_by_id(prop_id),
+                3 => self.app_program.borrow().property_descriptor_by_id(prop_id),
+                4 => self.group_object_table.borrow().property_descriptor_by_id(prop_id),
+                5 => self.ip_parameter.borrow().property_descriptor_by_id(prop_id),
+                _ => return Err(PropertyError::InvalidObjectIndex),
+            };
+            if let Some((_, desc)) = desc {
+                if !desc.can_read(access_level) {
+                    return Err(PropertyError::AccessDenied);
+                }
+            }
+        }
+
         match object_idx {
             0 => self.device.borrow().read_property(prop_id, start_idx, count, buf),
             1 => self.addr_table.borrow().read_property(prop_id, start_idx, count, buf),
@@ -401,7 +404,26 @@ where
         start_idx: u16,
         data: &[u8],
         response_buf: &mut [u8],
+        access_level: u8,
     ) -> Result<usize, PropertyError> {
+        // Check access level first (in separate scope to release borrow)
+        {
+            let desc = match object_idx {
+                0 => self.device.borrow().property_descriptor_by_id(prop_id),
+                1 => self.addr_table.borrow().property_descriptor_by_id(prop_id),
+                2 => self.asso_table.borrow().property_descriptor_by_id(prop_id),
+                3 => self.app_program.borrow().property_descriptor_by_id(prop_id),
+                4 => self.group_object_table.borrow().property_descriptor_by_id(prop_id),
+                5 => self.ip_parameter.borrow().property_descriptor_by_id(prop_id),
+                _ => return Err(PropertyError::InvalidObjectIndex),
+            };
+            if let Some((_, desc)) = desc {
+                if !desc.can_write(access_level) {
+                    return Err(PropertyError::AccessDenied);
+                }
+            }
+        }
+
         match object_idx {
             0 => self.device.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
             1 => self.addr_table.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
@@ -425,23 +447,19 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct KnxIpInterfaceObjectsBuilder;
 
-impl<S, Tables> InterfaceObjectsBuilder<S, Tables> for KnxIpInterfaceObjectsBuilder
+impl<S> InterfaceObjectsBuilder<S, KnxIpTables> for KnxIpInterfaceObjectsBuilder
 where
     S: IpStackState,
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
-    <Tables as HasAddressTable>::ADT: LoadableTable,
-    <Tables as HasAssociationTable>::AST: LoadableTable,
-    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
 {
     type Objects<'a>
-        = KnxIpInterfaceObjects<'a, Tables, S>
+        = KnxIpInterfaceObjects<'a, S>
     where
-        Tables: 'a,
+        KnxIpTables: 'a,
         S: 'a;
 
-    fn build<'a>(self, tables: &'a Tables, state: &'a S) -> Self::Objects<'a>
+    fn build<'a>(self, tables: &'a KnxIpTables, state: &'a S) -> Self::Objects<'a>
     where
-        Tables: 'a,
+        KnxIpTables: 'a,
         S: 'a,
     {
         KnxIpInterfaceObjects::new(tables, state)
@@ -453,6 +471,8 @@ pub struct KnxIpTables {
     pub adt: RefCell<stack_test_config::AddrTab>,
     pub ast: RefCell<stack_test_config::AssoTab>,
     pub cot: RefCell<stack_test_config::CoTab>,
+    /// Application program table (holds both load and run state machines)
+    pub app: RefCell<Application<()>>,
 }
 
 impl HasAddressTable for KnxIpTables {
@@ -473,6 +493,13 @@ impl HasCommunicationObjectTable for KnxIpTables {
     type COT = stack_test_config::CoTab;
     fn cot(&self) -> &RefCell<Self::COT> {
         &self.cot
+    }
+}
+
+impl KnxIpTables {
+    /// Get a reference to the application program table
+    pub fn app(&self) -> &RefCell<Application<()>> {
+        &self.app
     }
 }
 
@@ -573,8 +600,20 @@ async fn main(spawner: Spawner) {
     // Create table instances with configuration data loaded
     let (addr_tab, asso_tab, co_tab) = stack_test_config::StackTestConfig::create_tables();
 
+    // Create application table - starts loaded and running for this demo
+    let mut app_table = Application::<()>::new();
+    // Load and start the application
+    app_table.write_lsm(&[LoadEvent::StartLoading.into()]);
+    app_table.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+    app_table.write_rsm(&[RunEvent::Restart.into()]);
+
     // Create the tables container
-    let tables = KnxIpTables { adt: RefCell::new(addr_tab), ast: RefCell::new(asso_tab), cot: RefCell::new(co_tab) };
+    let tables = KnxIpTables {
+        adt: RefCell::new(addr_tab),
+        ast: RefCell::new(asso_tab),
+        cot: RefCell::new(co_tab),
+        app: RefCell::new(app_table),
+    };
 
     // Create stack resources - the stack takes ownership of the tables
     // and stores them in RefCells that we can access via the Stack handle
@@ -600,7 +639,7 @@ async fn main(spawner: Spawner) {
     println!("  - Association Table Object: wraps stack's association table");
     println!(
         "  - Application Program Object: program_version = {:02X?}",
-        interface_objects.app_program.borrow().program_version.as_ref()
+        interface_objects.app_program.borrow().program_version().as_ref()
     );
     println!("  - Group Object Table Object: wraps stack's CO table");
     // TODO: Re-enable once IpParameterObject supports InterfaceObjectsBuilder trait bounds

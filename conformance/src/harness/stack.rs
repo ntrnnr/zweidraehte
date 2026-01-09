@@ -40,7 +40,7 @@ use zweidraehte::{
         GroupObjectTableObject, InterfaceObject, InterfaceObjectsBuilder, IpParameterObject,
         PropertyDescriptionResponse, PropertyError, PropertyServiceHandler,
     },
-    objects::tables::LoadableTable,
+    objects::tables::{LoadableTable, RunnableTable, app::Application},
     BasicIpStackState, IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
 };
 
@@ -598,32 +598,24 @@ pub mod device_info {
 /// - Index 3: Application Program Object
 /// - Index 4: Group Object Table Object
 /// - Index 5: IP Parameter Object
-pub struct KnxIpInterfaceObjects<'a, Tables, S>
+pub struct KnxIpInterfaceObjects<'a, S>
 where
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
-    <Tables as HasAddressTable>::ADT: LoadableTable,
-    <Tables as HasAssociationTable>::AST: LoadableTable,
-    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
     S: IpStackState,
 {
     pub device: RefCell<DeviceObject<'a, S>>,
-    pub addr_table: RefCell<AddressTableObject<'a, <Tables as HasAddressTable>::ADT>>,
-    pub asso_table: RefCell<AssociationTableObject<'a, <Tables as HasAssociationTable>::AST>>,
-    pub app_program: RefCell<ApplicationProgramObject>,
-    pub group_object_table: RefCell<GroupObjectTableObject<'a, <Tables as HasCommunicationObjectTable>::COT>>,
+    pub addr_table: RefCell<AddressTableObject<'a, conformance_config::AddrTab>>,
+    pub asso_table: RefCell<AssociationTableObject<'a, conformance_config::AssoTab>>,
+    pub app_program: RefCell<ApplicationProgramObject<'a, Application<()>>>,
+    pub group_object_table: RefCell<GroupObjectTableObject<'a, conformance_config::CoTab>>,
     pub ip_parameter: RefCell<IpParameterObject<'a, S>>,
 }
 
-impl<'a, Tables, S> KnxIpInterfaceObjects<'a, Tables, S>
+impl<'a, S> KnxIpInterfaceObjects<'a, S>
 where
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
-    <Tables as HasAddressTable>::ADT: LoadableTable,
-    <Tables as HasAssociationTable>::AST: LoadableTable,
-    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
     S: IpStackState,
 {
     /// Create new interface objects wrapping the provided tables
-    pub fn new(tables: &'a Tables, state: &'a S) -> Self {
+    pub fn new(tables: &'a ConformanceTables, state: &'a S) -> Self {
         // Create Device Object with full device information including max APDU length
         // Note: Serial number is read dynamically from StackState
         let device = DeviceObject::with_info(state, &DeviceInfo {
@@ -634,13 +626,10 @@ where
             device_descriptor: device_info::DEVICE_DESCRIPTOR,
         });
 
-        // Create Application Program Object
-        let mut app_program = ApplicationProgramObject::new();
-        app_program.program_version = device_info::PROGRAM_VERSION.into();
-        app_program.pei_type = device_info::PEI_TYPE.into();
-        // Load state starts as "loaded" for this demo
-        app_program.load_state = 0x01.into(); // Loaded
-        app_program.run_state = 0x01.into(); // Running
+        // Create Application Program Object wrapping the application table
+        let mut app_program = ApplicationProgramObject::new(tables.app());
+        app_program.set_program_version(device_info::PROGRAM_VERSION.into());
+        app_program.set_pei_type(device_info::PEI_TYPE.into());
 
         // Create IP Parameter Object
         let ip_parameter = IpParameterObject::with_state(state);
@@ -656,12 +645,8 @@ where
     }
 }
 
-impl<'a, Tables, S> PropertyServiceHandler for KnxIpInterfaceObjects<'a, Tables, S>
+impl<'a, S> PropertyServiceHandler for KnxIpInterfaceObjects<'a, S>
 where
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
-    <Tables as HasAddressTable>::ADT: LoadableTable,
-    <Tables as HasAssociationTable>::AST: LoadableTable,
-    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
     S: IpStackState,
 {
     fn object_count(&self) -> u16 {
@@ -773,23 +758,19 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct KnxIpInterfaceObjectsBuilder;
 
-impl<S, Tables> InterfaceObjectsBuilder<S, Tables> for KnxIpInterfaceObjectsBuilder
+impl<S> InterfaceObjectsBuilder<S, ConformanceTables> for KnxIpInterfaceObjectsBuilder
 where
     S: IpStackState,
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
-    <Tables as HasAddressTable>::ADT: LoadableTable,
-    <Tables as HasAssociationTable>::AST: LoadableTable,
-    <Tables as HasCommunicationObjectTable>::COT: LoadableTable,
 {
     type Objects<'a>
-        = KnxIpInterfaceObjects<'a, Tables, S>
+        = KnxIpInterfaceObjects<'a, S>
     where
-        Tables: 'a,
+        ConformanceTables: 'a,
         S: 'a;
 
-    fn build<'a>(self, tables: &'a Tables, state: &'a S) -> Self::Objects<'a>
+    fn build<'a>(self, tables: &'a ConformanceTables, state: &'a S) -> Self::Objects<'a>
     where
-        Tables: 'a,
+        ConformanceTables: 'a,
         S: 'a,
     {
         KnxIpInterfaceObjects::new(tables, state)
@@ -826,7 +807,7 @@ pub const USER_MEMORY_SIZE: usize = 16;
 
 /// Tables container for conformance tests.
 ///
-/// This holds all the tables (ADT, AST, COT) used by the stack,
+/// This holds all the tables (ADT, AST, COT, APP) used by the stack,
 /// implementing the accessor traits for group object communication
 /// and memory services.
 ///
@@ -836,6 +817,8 @@ pub struct ConformanceTables {
     pub adt: RefCell<conformance_config::AddrTab>,
     pub ast: RefCell<conformance_config::AssoTab>,
     pub cot: RefCell<conformance_config::CoTab>,
+    /// Application program table (holds both load and run state machines)
+    pub app: RefCell<Application<()>>,
     /// Linear memory region for A_Memory_Read/Write tests (0x0200-0x02FF)
     /// This is freely accessible (no access level restriction) for M-2.6/M-2.7 tests.
     pub linear_memory: RefCell<[u8; LINEAR_MEMORY_SIZE]>,
@@ -868,6 +851,13 @@ impl HasCommunicationObjectTable for ConformanceTables {
     type COT = conformance_config::CoTab;
     fn cot(&self) -> &RefCell<Self::COT> {
         &self.cot
+    }
+}
+
+impl ConformanceTables {
+    /// Get a reference to the application program table
+    pub fn app(&self) -> &RefCell<Application<()>> {
+        &self.app
     }
 }
 
@@ -1191,11 +1181,20 @@ impl FullStackHarness {
         // Create tables from configuration
         let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables();
 
+        // Create application table - starts loaded and running for conformance tests
+        use zweidraehte::objects::tables::{LoadEvent, RunEvent};
+        let mut app_table = Application::<()>::new();
+        // Load and start the application
+        app_table.write_lsm(&[LoadEvent::StartLoading.into()]);
+        app_table.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        app_table.write_rsm(&[RunEvent::Restart.into()]);
+
         // Create the tables container
         let tables = ConformanceTables {
             adt: RefCell::new(addr_tab),
             ast: RefCell::new(asso_tab),
             cot: RefCell::new(co_tab),
+            app: RefCell::new(app_table),
             // Initialize linear memory with 0x0F (M-2.10 MemoryBit tests expect this value)
             linear_memory: RefCell::new([0x0F; LINEAR_MEMORY_SIZE]),
             // Initialize level 2 memory with 0xAA (M-2.11 level 2 block test value)

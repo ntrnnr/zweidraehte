@@ -503,6 +503,75 @@ create_protocol_enum!(
     }
 );
 
+// ============================================================================
+// Run State Machine Types
+// ============================================================================
+
+/// Run state machine states for the Application Program Object.
+///
+/// The run state machine controls the execution state of the application program.
+/// It interacts with the load state machine - the application can only run when loaded.
+///
+/// States:
+/// - `Halted` (0x00): Application is halted (not running). Default state when unloaded.
+/// - `Running` (0x01): Application is running normally.
+/// - `Ready` (0x02): Intermediate state - conditions being checked before running.
+/// - `Terminated` (0x03): Application explicitly stopped via RUNCONTROL_STOP.
+create_protocol_enum!(
+    #[derive(Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
+    pub enum RunState: u8 {
+        Halted          , 0x00, "Halted";
+        Running         , 0x01, "Running";
+        Ready           , 0x02, "Ready";
+        Terminated      , 0x03, "Terminated";
+    }
+);
+
+/// Run control events for PID_RUN_STATE_CONTROL (0x06).
+///
+/// These events control the run state machine transitions:
+/// - `NoOp` (0x00): No operation - state remains unchanged.
+/// - `Restart` (0x01): Restart the application. Transitions to Running if loaded.
+/// - `Stop` (0x02): Stop the application. Transitions to Terminated state.
+create_protocol_enum!(
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum RunEvent: u8 {
+        NoOp            , 0x00, "NoOp";
+        Restart         , 0x01, "Restart";
+        Stop            , 0x02, "Stop";
+        _,                      "Unknown Run Event 0x{:x}";
+    }
+);
+
+/// Trait for objects that have a run state machine.
+///
+/// This trait is separate from `LoadableTable` because the run state machine
+/// has different semantics - it controls application execution rather than
+/// data loading. The run state depends on the load state (app must be loaded
+/// to run), so implementations typically need access to both.
+pub trait RunnableTable {
+    /// Get the current run state.
+    fn run_state(&self) -> RunState;
+
+    /// Process a run state control command.
+    ///
+    /// The `data` buffer contains the run control event (first byte) followed
+    /// by optional additional data (currently unused).
+    ///
+    /// Returns the resulting run state after processing the event.
+    fn write_rsm(&mut self, data: &[u8]) -> RunState;
+
+    /// Read the current run state as a single byte.
+    fn read_rsm(&self) -> [u8; 1] {
+        [self.run_state().into()]
+    }
+
+    /// Check if the application is currently running.
+    fn is_running(&self) -> bool {
+        self.run_state() == RunState::Running
+    }
+}
+
 create_protocol_enum!(
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum LoadSegment: u8 {
@@ -690,6 +759,168 @@ impl<T: TableMemory> TableMemory for Table<T> {
 
     fn write(&mut self, offset: usize, data: &[u8]) {
         self.table.write(offset, data)
+    }
+}
+
+// ============================================================================
+// Runnable Application Wrapper
+// ============================================================================
+
+/// Wrapper that adds a Run State Machine to any LoadableTable.
+///
+/// This follows the same pattern as `Table<T>`:
+/// - `Table<T>` wraps `TableMemory` and adds Load State Machine
+/// - `RunnableApplication<T>` wraps `LoadableTable` and adds Run State Machine
+///
+/// The run state machine has the following states:
+/// - HALTED (0x00): Application not running
+/// - RUNNING (0x01): Application running
+/// - READY (0x02): Intermediate state (conditions being checked)
+/// - TERMINATED (0x03): Application explicitly stopped
+///
+/// The run state depends on the load state:
+/// - Unloading forces run state to HALTED
+/// - RESTART only transitions to RUNNING if loaded
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunnableApplication<T: LoadableTable> {
+    /// The underlying loadable table
+    pub(super) table: T,
+    /// Run state for the application
+    pub(super) run_state: RunState,
+}
+
+impl<T: LoadableTable + ConstDefault> ConstDefault for RunnableApplication<T> {
+    const DEFAULT: Self = Self::new();
+}
+
+impl<T: LoadableTable + ConstDefault> RunnableApplication<T> {
+    /// Create a new runnable application in unloaded/halted state.
+    pub const fn new() -> Self {
+        Self {
+            table: T::DEFAULT,
+            run_state: RunState::Halted,
+        }
+    }
+}
+
+impl<T: LoadableTable> RunnableApplication<T> {
+    /// Create a runnable application from an existing loadable table.
+    /// The run state will be HALTED initially.
+    pub fn from_table(table: T) -> Self {
+        Self {
+            table,
+            run_state: RunState::Halted,
+        }
+    }
+
+    /// Compute the next run state based on event and load state.
+    ///
+    /// State transition table based on KNX conformance tests:
+    ///
+    /// | Current State | Event   | Load State | Next State  |
+    /// |---------------|---------|------------|-------------|
+    /// | HALTED        | NO_OP   | any        | HALTED      |
+    /// | HALTED        | RESTART | Loaded     | RUNNING     |
+    /// | HALTED        | RESTART | !Loaded    | HALTED      |
+    /// | HALTED        | STOP    | any        | TERMINATED  |
+    /// | RUNNING       | NO_OP   | any        | RUNNING     |
+    /// | RUNNING       | RESTART | any        | RUNNING     |
+    /// | RUNNING       | STOP    | any        | TERMINATED  |
+    /// | READY         | NO_OP   | any        | READY       |
+    /// | READY         | RESTART | Loaded     | RUNNING     |
+    /// | READY         | STOP    | any        | TERMINATED  |
+    /// | TERMINATED    | NO_OP   | any        | TERMINATED  |
+    /// | TERMINATED    | RESTART | Loaded     | RUNNING     |
+    /// | TERMINATED    | RESTART | !Loaded    | HALTED      |
+    /// | TERMINATED    | STOP    | any        | TERMINATED  |
+    fn next_run_state(&self, event: RunEvent) -> RunState {
+        let is_loaded = self.table.is_loaded();
+
+        match event {
+            RunEvent::NoOp => self.run_state,
+            RunEvent::Restart => {
+                if is_loaded {
+                    // If loaded, restart transitions to RUNNING
+                    RunState::Running
+                } else {
+                    // If not loaded, stay in current state (or HALTED if terminated)
+                    match self.run_state {
+                        RunState::Terminated => RunState::Halted,
+                        other => other,
+                    }
+                }
+            }
+            RunEvent::Stop => RunState::Terminated,
+            // Unknown events are ignored - state remains unchanged
+            RunEvent::Other(_) => self.run_state,
+        }
+    }
+}
+
+// Delegate TableMemory to inner table
+impl<T: LoadableTable + TableMemory> TableMemory for RunnableApplication<T> {
+    fn data_ref(&self) -> &[u8] {
+        self.table.data_ref()
+    }
+
+    fn data_ref_mut(&mut self) -> &mut [u8] {
+        self.table.data_ref_mut()
+    }
+
+    fn max_size() -> usize {
+        T::max_size()
+    }
+
+    fn read(&self, offset: usize, data: &mut [u8]) {
+        self.table.read(offset, data)
+    }
+
+    fn write(&mut self, offset: usize, data: &[u8]) {
+        self.table.write(offset, data)
+    }
+}
+
+// Delegate LoadableTable to inner table, but also update run state on unload
+impl<T: LoadableTable> LoadableTable for RunnableApplication<T> {
+    fn write_lsm(&mut self, buf: &[u8]) {
+        // Check if this is an unload event
+        let is_unload = !buf.is_empty() && buf[0] == LoadEvent::Unload.into();
+
+        // Process the load event
+        self.table.write_lsm(buf);
+
+        // If unloaded, force run state to HALTED
+        if is_unload || !self.table.is_loaded() {
+            // Only reset to HALTED if we were running or ready
+            if matches!(self.run_state, RunState::Running | RunState::Ready) {
+                self.run_state = RunState::Halted;
+            }
+        }
+    }
+
+    fn read_lsm(&self) -> [u8; 1] {
+        self.table.read_lsm()
+    }
+
+    fn is_loaded(&self) -> bool {
+        self.table.is_loaded()
+    }
+}
+
+// Implement RunnableTable
+impl<T: LoadableTable> RunnableTable for RunnableApplication<T> {
+    fn run_state(&self) -> RunState {
+        self.run_state
+    }
+
+    fn write_rsm(&mut self, data: &[u8]) -> RunState {
+        if data.is_empty() {
+            return self.run_state;
+        }
+
+        let event = RunEvent::from(data[0]);
+        self.run_state = self.next_run_state(event);
+        self.run_state
     }
 }
 
