@@ -316,19 +316,21 @@ where
         let device = DeviceObject::with_values(state, device_info::HARDWARE_TYPE);
 
         // Create Application Program Object wrapping the application table
-        let mut app_program = ApplicationProgramObject::new(tables.app());
+        // Using 0 for alloc address since NoMemoryMap is used (no memory-mapped access)
+        let mut app_program = ApplicationProgramObject::new(tables.app(), 0);
         app_program.set_program_version(device_info::PROGRAM_VERSION.into());
         app_program.set_pei_type(device_info::PEI_TYPE.into());
 
         // Create IP Parameter Object
         let ip_parameter = IpParameterObject::with_state(state);
 
+        // Using 0 for alloc addresses since NoMemoryMap is used (no memory-mapped access)
         Self {
             device: RefCell::new(device),
-            addr_table: RefCell::new(AddressTableObject::new(tables.adt())),
-            asso_table: RefCell::new(AssociationTableObject::new(tables.ast())),
+            addr_table: RefCell::new(AddressTableObject::new(tables.adt(), 0)),
+            asso_table: RefCell::new(AssociationTableObject::new(tables.ast(), 0)),
             app_program: RefCell::new(app_program),
-            group_object_table: RefCell::new(GroupObjectTableObject::new(tables.cot())),
+            group_object_table: RefCell::new(GroupObjectTableObject::new(tables.cot(), 0)),
             ip_parameter: RefCell::new(ip_parameter),
         }
     }
@@ -598,13 +600,14 @@ async fn main(spawner: Spawner) {
     println!("  - Routing Server: RoutingIndication, RoutingBusy, RoutingLostMessage");
 
     // Create table instances with configuration data loaded
-    let (addr_tab, asso_tab, co_tab) = stack_test_config::StackTestConfig::create_tables();
+    // Memory-mapped access is not supported (NoMemoryMap), so table references are 0
+    let (addr_tab, asso_tab, co_tab) = stack_test_config::StackTestConfig::create_tables(0, 0, 0);
 
     // Create application table - starts loaded and running for this demo
     let mut app_table = Application::<()>::new();
     // Load and start the application
-    app_table.write_lsm(&[LoadEvent::StartLoading.into()]);
-    app_table.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+    app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+    app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
     app_table.write_rsm(&[RunEvent::Restart.into()]);
 
     // Create the tables container
@@ -625,6 +628,7 @@ async fn main(spawner: Spawner) {
         (), // hook_context
         link_layer_builder,
         KnxIpInterfaceObjectsBuilder,
+        BasicIpStackState::default(),
     );
 
     // The interface objects are now stored inside the stack (in StackResources)

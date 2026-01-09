@@ -64,8 +64,8 @@ impl<D: ConstDefault> TableMemory for ApplicationImpl<D> {
 /// let mut app: Application<()> = Application::new();
 ///
 /// // Load the application
-/// app.write_lsm(&[LoadEvent::StartLoading.into()]);
-/// app.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+/// app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+/// app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 /// assert!(app.is_loaded());
 ///
 /// // Start running
@@ -109,11 +109,11 @@ mod tests {
         let mut app: Application<()> = Application::new();
 
         // Start loading
-        app.write_lsm(&[LoadEvent::StartLoading.into()]);
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
         assert_eq!(app.read_lsm()[0], LoadState::Loading.into());
 
         // Complete loading
-        app.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
         assert_eq!(app.read_lsm()[0], LoadState::Loaded.into());
 
         // RESTART when loaded should transition to RUNNING
@@ -126,15 +126,15 @@ mod tests {
         let mut app: Application<()> = Application::new();
 
         // Load the application
-        app.write_lsm(&[LoadEvent::StartLoading.into()]);
-        app.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         // Start running
         app.write_rsm(&[RunEvent::Restart.into()]);
         assert_eq!(app.run_state(), RunState::Running);
 
         // Unload should reset run state to HALTED
-        app.write_lsm(&[LoadEvent::Unload.into()]);
+        app.write_lsm(&[LoadEvent::Unload.into()], None);
         assert_eq!(app.read_lsm()[0], LoadState::Unloaded.into());
         assert_eq!(app.run_state(), RunState::Halted);
     }
@@ -148,8 +148,8 @@ mod tests {
         assert_eq!(app.run_state(), RunState::Halted);
 
         // Load and start running
-        app.write_lsm(&[LoadEvent::StartLoading.into()]);
-        app.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
         app.write_rsm(&[RunEvent::Restart.into()]);
         assert_eq!(app.run_state(), RunState::Running);
 

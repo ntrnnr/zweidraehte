@@ -28,12 +28,15 @@ use core::marker::PhantomData;
 
 use crate::StackState;
 use crate::dpt::{
-    InterfaceObjectType, PDT_Generic01, PDT_Generic02, PDT_Generic05, PDT_Generic06, PDT_Generic10, PDT_UnsignedChar,
-    PDT_UnsignedInt, PropertyDataDefinition,
+    InterfaceObjectType, PDT_Generic01, PDT_Generic02, PDT_Generic04, PDT_Generic05, PDT_Generic06, PDT_Generic08,
+    PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong, PropertyDataDefinition,
 };
 use crate::objects::tables::{LoadableTable, RunnableTable};
 
-use super::{InterfaceObject, PropertyAccess, PropertyDescriptor, PropertyError, pid};
+use super::{
+    ArrayPropertyWithPrefixRead, ArrayPropertyWithPrefixWrite, InterfaceObject, PropertyAccess, PropertyDescriptor,
+    PropertyError, PropertyRead, pid,
+};
 
 // ============================================================================
 // Device Object (Object Type 0)
@@ -174,7 +177,7 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 use core::net::Ipv4Addr;
 
 use crate::IpStackState;
-use crate::dpt::{PDT_Bitset8, PDT_Bitset16, PDT_UnsignedLong};
+use crate::dpt::{PDT_Bitset8, PDT_Bitset16};
 use crate::objects::interface::Ipv4Property;
 
 /// Default KNX System Setup multicast address: 224.0.23.12
@@ -312,11 +315,13 @@ impl<'a, S: IpStackState> IpParameterObject<'a, S> {
 /// // Create the underlying application table
 /// let app_table = RefCell::new(Application::<()>::new());
 ///
-/// // Create the interface object wrapping it
-/// let app_obj = ApplicationProgramObject::new(&app_table);
+/// // Create the interface object wrapping it (with allocation address 0x400)
+/// let app_obj = ApplicationProgramObject::new(&app_table, 0x400);
 /// ```
 pub struct ApplicationProgramObject<'a, T: LoadableTable + RunnableTable> {
     app: &'a RefCell<T>,
+    /// Virtual address to assign during RelativeData allocation
+    alloc_address: u32,
     program_version: PDT_Generic05,
     pei_type: PDT_UnsignedChar,
 }
@@ -324,17 +329,22 @@ pub struct ApplicationProgramObject<'a, T: LoadableTable + RunnableTable> {
 impl<'a, T: LoadableTable + RunnableTable> ApplicationProgramObject<'a, T> {
     /// Create a new application program object wrapping an existing
     /// application table.
-    pub fn new(app: &'a RefCell<T>) -> Self {
-        Self {
-            app,
-            program_version: PDT_Generic05::default(),
-            pei_type: PDT_UnsignedChar::default(),
-        }
+    ///
+    /// # Arguments
+    /// * `app` - Reference to the application table
+    /// * `alloc_address` - Virtual address to assign during RelativeData allocation
+    pub fn new(app: &'a RefCell<T>, alloc_address: u32) -> Self {
+        Self { app, alloc_address, program_version: PDT_Generic05::default(), pei_type: PDT_UnsignedChar::default() }
     }
 
     /// Create with specific program version and PEI type.
-    pub fn with_info(app: &'a RefCell<T>, program_version: PDT_Generic05, pei_type: PDT_UnsignedChar) -> Self {
-        Self { app, program_version, pei_type }
+    pub fn with_info(
+        app: &'a RefCell<T>,
+        alloc_address: u32,
+        program_version: PDT_Generic05,
+        pei_type: PDT_UnsignedChar,
+    ) -> Self {
+        Self { app, alloc_address, program_version, pei_type }
     }
 
     /// Get the program version.
@@ -387,52 +397,19 @@ impl<'a, T: LoadableTable + RunnableTable> InterfaceObject for ApplicationProgra
     }
 
     fn property_descriptor_by_id(&self, pid: u8) -> Option<(u16, PropertyDescriptor)> {
-        Self::property_descriptors()
-            .iter()
-            .enumerate()
-            .find(|(_, d)| d.pid == pid)
-            .map(|(i, d)| (i as u16, *d))
+        Self::property_descriptors().iter().enumerate().find(|(_, d)| d.pid == pid).map(|(i, d)| (i as u16, *d))
     }
 
-    fn read_property(&self, pid: u8, _start_idx: u16, _count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
+    fn read_property(&self, pid: u8, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
         match pid {
             super::pid::OBJECT_TYPE => {
-                if buf.len() < 2 {
-                    return Err(PropertyError::BufferTooSmall);
-                }
                 let obj_type: u16 = InterfaceObjectType::ApplicationProgram.into();
-                buf[0..2].copy_from_slice(&obj_type.to_be_bytes());
-                Ok(2)
+                obj_type.to_be_bytes().read_property(start_idx, count, buf)
             }
-            super::pid::LOAD_STATE_CONTROL => {
-                if buf.is_empty() {
-                    return Err(PropertyError::BufferTooSmall);
-                }
-                buf[0] = self.app.borrow().read_lsm()[0];
-                Ok(1)
-            }
-            super::pid::RUN_STATE_CONTROL => {
-                if buf.is_empty() {
-                    return Err(PropertyError::BufferTooSmall);
-                }
-                buf[0] = self.app.borrow().read_rsm()[0];
-                Ok(1)
-            }
-            super::pid::PROGRAM_VERSION => {
-                let data: &[u8] = self.program_version.as_ref();
-                if buf.len() < data.len() {
-                    return Err(PropertyError::BufferTooSmall);
-                }
-                buf[..data.len()].copy_from_slice(data);
-                Ok(data.len())
-            }
-            super::pid::PEI_TYPE => {
-                if buf.is_empty() {
-                    return Err(PropertyError::BufferTooSmall);
-                }
-                buf[0] = self.pei_type.as_ref()[0];
-                Ok(1)
-            }
+            super::pid::LOAD_STATE_CONTROL => self.app.borrow().read_lsm().read_property(start_idx, count, buf),
+            super::pid::RUN_STATE_CONTROL => self.app.borrow().read_rsm().read_property(start_idx, count, buf),
+            super::pid::PROGRAM_VERSION => self.program_version.read_property(start_idx, count, buf),
+            super::pid::PEI_TYPE => self.pei_type.read_property(start_idx, count, buf),
             _ => Err(PropertyError::InvalidPropertyId),
         }
     }
@@ -449,8 +426,8 @@ impl<'a, T: LoadableTable + RunnableTable> InterfaceObject for ApplicationProgra
                 Err(PropertyError::WriteNotAllowed)
             }
             super::pid::LOAD_STATE_CONTROL => {
-                // Write the load event to the state machine
-                self.app.borrow_mut().write_lsm(data);
+                // Write the load event to the state machine, providing the allocation address
+                self.app.borrow_mut().write_lsm(data, Some(self.alloc_address));
                 // Response contains the resulting load state (1 byte)
                 if response_buf.is_empty() {
                     return Err(PropertyError::BufferTooSmall);
@@ -554,18 +531,25 @@ pub trait TableObjectSpec {
 /// |-----|------|------|--------|-------------|
 /// | 1 | Object Type | PDT_UNSIGNED_INT | RO | Object type identifier |
 /// | 5 | Load State Control | PDT_CONTROL | RW | Load state machine |
-/// | 7 | Table Reference | PDT_UNSIGNED_LONG | RO | Pointer to table (legacy) |
+/// | 7 | Table Reference | PDT_UNSIGNED_LONG | RO | Base address of allocated table memory |
 /// | 23 | Table | varies | RW* | Direct table data access |
 /// | 27 | MCB Table | PDT_GENERIC_08 | RO | Memory control block |
 pub struct TableInterfaceObject<'a, T: LoadableTable, S: TableObjectSpec> {
     table: &'a RefCell<T>,
+    /// Virtual address to assign to this table during RelativeData allocation
+    alloc_address: u32,
     _spec: PhantomData<S>,
 }
 
 impl<'a, T: LoadableTable, S: TableObjectSpec> TableInterfaceObject<'a, T, S> {
-    /// Create a new table interface object wrapping an existing table
-    pub fn new(table: &'a RefCell<T>) -> Self {
-        Self { table, _spec: PhantomData }
+    /// Create a new table interface object wrapping an existing table.
+    ///
+    /// # Arguments
+    /// * `table` - Reference to the table
+    /// * `alloc_address` - Virtual address to assign during RelativeData allocation.
+    ///   Per KNX spec, this is set when memory is allocated and cleared on unload.
+    pub fn new(table: &'a RefCell<T>, alloc_address: u32) -> Self {
+        Self { table, alloc_address, _spec: PhantomData }
     }
 
     /// Get property descriptors for table objects
@@ -578,9 +562,9 @@ impl<'a, T: LoadableTable, S: TableObjectSpec> TableInterfaceObject<'a, T, S> {
             // So write_level=0 means only callers with level 0 (full access) can write.
             PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite)
                 .with_levels(3, 0), // read_level=3, write_level=0 (requires authorization to write)
-            PropertyDescriptor::new(pid::TABLE_REFERENCE, 0x09, 1, PropertyAccess::ReadOnly), // PDT_UNSIGNED_LONG
-            PropertyDescriptor::new(pid::TABLE, S::TABLE_PDT, 0, PropertyAccess::ReadWrite),  // max_elements set dynamically
-            PropertyDescriptor::new(pid::MCB_TABLE, 0x17, 1, PropertyAccess::ReadOnly),       // PDT_GENERIC_08
+            PropertyDescriptor::new(pid::TABLE_REFERENCE, PDT_UnsignedLong::ID, 1, PropertyAccess::ReadOnly),
+            PropertyDescriptor::new(pid::TABLE, S::TABLE_PDT, 0, PropertyAccess::ReadWrite), // max_elements set dynamically
+            PropertyDescriptor::new(pid::MCB_TABLE, PDT_Generic08::ID, 1, PropertyAccess::ReadOnly),
         ]
     }
 }
@@ -618,74 +602,29 @@ impl<'a, T: LoadableTable, S: TableObjectSpec> InterfaceObject for TableInterfac
     fn read_property(&self, pid: u8, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
         match pid {
             super::pid::OBJECT_TYPE => {
-                if buf.len() < 2 {
-                    return Err(PropertyError::BufferTooSmall);
-                }
                 let obj_type: u16 = S::OBJECT_TYPE.into();
-                buf[0..2].copy_from_slice(&obj_type.to_be_bytes());
-                Ok(2)
+                obj_type.to_be_bytes().read_property(start_idx, count, buf)
             }
-            super::pid::LOAD_STATE_CONTROL => {
-                if buf.is_empty() {
-                    return Err(PropertyError::BufferTooSmall);
-                }
-                buf[0] = self.table.borrow().read_lsm()[0];
-                Ok(1)
-            }
+            super::pid::LOAD_STATE_CONTROL => self.table.borrow().read_lsm().read_property(start_idx, count, buf),
             super::pid::TABLE_REFERENCE => {
-                // Legacy property - return pointer value (we use 0 as placeholder)
-                if buf.len() < 4 {
-                    return Err(PropertyError::BufferTooSmall);
-                }
-                buf[0..4].copy_from_slice(&0u32.to_be_bytes());
-                Ok(4)
+                // Base address of the allocated table memory for memory read/write operations
+                // Set during RelativeData allocation, cleared on unload
+                self.table.borrow().table_reference().to_be_bytes().read_property(start_idx, count, buf)
             }
             super::pid::TABLE => {
-                // Direct table data access - array property
+                // Array property - use appropriate trait based on table format
                 let table = self.table.borrow();
-                let data = table.data_ref();
-
-                // start_idx 0 means read element count
-                if start_idx == 0 {
-                    if buf.len() < 2 {
-                        return Err(PropertyError::BufferTooSmall);
-                    }
-                    // Return current element count from first 2 bytes if has prefix
-                    if S::HAS_COUNT_PREFIX && data.len() >= 2 {
-                        buf[0..2].copy_from_slice(&data[0..2]);
-                    } else {
-                        let count = (data.len() / S::ENTRY_SIZE) as u16;
-                        buf[0..2].copy_from_slice(&count.to_be_bytes());
-                    }
-                    return Ok(2);
-                }
-
-                // Calculate byte offset based on table format
-                let byte_start = if S::HAS_COUNT_PREFIX {
-                    // Data starts after 2-byte count, 1-indexed
-                    2 + ((start_idx - 1) as usize) * S::ENTRY_SIZE
+                if S::HAS_COUNT_PREFIX {
+                    table.data_ref().read_array_with_prefix(start_idx, count, S::ENTRY_SIZE, buf)
                 } else {
-                    (start_idx as usize) * S::ENTRY_SIZE
-                };
-                let byte_count = (count as usize) * S::ENTRY_SIZE;
-
-                if byte_start >= data.len() {
-                    return Err(PropertyError::InvalidStartIndex);
+                    use super::ArrayPropertyRead;
+                    table.data_ref().read_array_property(start_idx, count, S::ENTRY_SIZE, buf)
                 }
-
-                let available = data.len() - byte_start;
-                let to_copy = byte_count.min(available).min(buf.len());
-
-                buf[..to_copy].copy_from_slice(&data[byte_start..byte_start + to_copy]);
-                Ok(to_copy)
             }
             super::pid::MCB_TABLE => {
-                // Memory Control Block - 8 bytes
-                if buf.len() < 8 {
-                    return Err(PropertyError::BufferTooSmall);
-                }
-                buf[0..8].fill(0);
-                Ok(8)
+                // Memory Control Block - 8 bytes (PDT_GENERIC_08)
+                // The MCB is populated during load (RelativeData segment) and CRC calculated on LoadEnd
+                self.table.borrow().mcb_bytes().read_property(start_idx, count, buf)
             }
             _ => Err(PropertyError::InvalidPropertyId),
         }
@@ -703,8 +642,8 @@ impl<'a, T: LoadableTable, S: TableObjectSpec> InterfaceObject for TableInterfac
                 Err(PropertyError::WriteNotAllowed)
             }
             super::pid::LOAD_STATE_CONTROL => {
-                // Write the load event to the state machine
-                self.table.borrow_mut().write_lsm(data);
+                // Write the load event to the state machine, providing the allocation address
+                self.table.borrow_mut().write_lsm(data, Some(self.alloc_address));
                 // Response contains the resulting load state (1 byte), not the echoed data
                 if response_buf.is_empty() {
                     return Err(PropertyError::BufferTooSmall);
@@ -713,26 +652,17 @@ impl<'a, T: LoadableTable, S: TableObjectSpec> InterfaceObject for TableInterfac
                 Ok(1)
             }
             super::pid::TABLE => {
+                // Array property - use appropriate trait based on table format
                 let mut table = self.table.borrow_mut();
-                let table_data = table.data_ref_mut();
-
-                // Calculate byte offset based on table format
-                let byte_start = if start_idx == 0 {
-                    0
-                } else if S::HAS_COUNT_PREFIX {
-                    2 + ((start_idx - 1) as usize) * S::ENTRY_SIZE
+                let written = if S::HAS_COUNT_PREFIX {
+                    table.data_ref_mut().write_array_with_prefix(start_idx, data, S::ENTRY_SIZE)?
                 } else {
-                    (start_idx as usize) * S::ENTRY_SIZE
+                    use super::ArrayPropertyWrite;
+                    table.data_ref_mut().write_array_property(start_idx, data, S::ENTRY_SIZE)?
                 };
 
-                if byte_start + data.len() > table_data.len() {
-                    return Err(PropertyError::InvalidStartIndex);
-                }
-
-                table_data[byte_start..byte_start + data.len()].copy_from_slice(data);
-
                 // Echo back written data
-                let len = data.len().min(response_buf.len());
+                let len = written.min(response_buf.len());
                 response_buf[..len].copy_from_slice(&data[..len]);
                 Ok(len)
             }
@@ -747,11 +677,11 @@ impl<'a, T: LoadableTable, S: TableObjectSpec> InterfaceObject for TableInterfac
             super::pid::TABLE_REFERENCE => Ok(1),
             super::pid::TABLE => {
                 let table = self.table.borrow();
-                let data = table.data_ref();
-                if S::HAS_COUNT_PREFIX && data.len() >= 2 {
-                    Ok(u16::from_be_bytes([data[0], data[1]]))
+                if S::HAS_COUNT_PREFIX {
+                    Ok(table.data_ref().element_count_from_prefix())
                 } else {
-                    Ok((data.len() / S::ENTRY_SIZE) as u16)
+                    use super::ArrayPropertyRead;
+                    Ok(table.data_ref().element_count(S::ENTRY_SIZE))
                 }
             }
             super::pid::MCB_TABLE => Ok(1),
@@ -770,7 +700,7 @@ pub struct AddressTableSpec;
 impl TableObjectSpec for AddressTableSpec {
     const OBJECT_TYPE: InterfaceObjectType = InterfaceObjectType::AddressTable;
     const ENTRY_SIZE: usize = 2; // Group Address = 2 bytes
-    const TABLE_PDT: u8 = 0x11; // PDT_GENERIC_02
+    const TABLE_PDT: u8 = PDT_UnsignedInt::ID; // 2-byte entries
     const HAS_COUNT_PREFIX: bool = true;
 }
 
@@ -780,7 +710,7 @@ pub struct AssociationTableSpec;
 impl TableObjectSpec for AssociationTableSpec {
     const OBJECT_TYPE: InterfaceObjectType = InterfaceObjectType::AssociationTable;
     const ENTRY_SIZE: usize = 4; // TSAP + ASAP = 4 bytes
-    const TABLE_PDT: u8 = 0x13; // PDT_GENERIC_04
+    const TABLE_PDT: u8 = PDT_Generic04::ID;
     const HAS_COUNT_PREFIX: bool = true;
 }
 
@@ -790,7 +720,7 @@ pub struct GroupObjectTableSpec;
 impl TableObjectSpec for GroupObjectTableSpec {
     const OBJECT_TYPE: InterfaceObjectType = InterfaceObjectType::GroupObjectTable;
     const ENTRY_SIZE: usize = 2; // Type + Flags = 2 bytes
-    const TABLE_PDT: u8 = 0x11; // PDT_GENERIC_02
+    const TABLE_PDT: u8 = PDT_Generic02::ID;
     const HAS_COUNT_PREFIX: bool = true;
 }
 
@@ -828,7 +758,7 @@ mod tests {
     #[test]
     fn test_address_table_object_type() {
         let addr_table = RefCell::new(AddrTab7::<10>::new());
-        let obj = AddressTableObject::new(&addr_table);
+        let obj = AddressTableObject::new(&addr_table, 0x100);
 
         assert_eq!(obj.object_type(), InterfaceObjectType::AddressTable);
 
@@ -842,7 +772,7 @@ mod tests {
     #[test]
     fn test_address_table_load_state() {
         let addr_table = RefCell::new(AddrTab7::<10>::new());
-        let mut obj = AddressTableObject::new(&addr_table);
+        let mut obj = AddressTableObject::new(&addr_table, 0x100);
 
         // Should start unloaded
         let mut buf = [0u8; 4];
@@ -873,7 +803,7 @@ mod tests {
             table.data_ref_mut()[6..8].copy_from_slice(&[0x00, 0x03]); // GA 0/0/3
         }
 
-        let obj = AddressTableObject::new(&addr_table);
+        let obj = AddressTableObject::new(&addr_table, 0x100);
 
         // Read element count (start_idx = 0)
         let mut buf = [0u8; 10];
@@ -895,7 +825,7 @@ mod tests {
     #[test]
     fn test_address_table_property_descriptors() {
         let addr_table = RefCell::new(AddrTab7::<10>::new());
-        let obj = AddressTableObject::new(&addr_table);
+        let obj = AddressTableObject::new(&addr_table, 0x100);
 
         assert_eq!(obj.property_count(), 5);
 
@@ -926,7 +856,7 @@ mod tests {
             table.data_ref_mut()[6..10].copy_from_slice(&[0x00, 0x02, 0x00, 0x02]); // TSAP 2 -> ASAP 2
         }
 
-        let obj = AssociationTableObject::new(&asso_table);
+        let obj = AssociationTableObject::new(&asso_table, 0x200);
 
         assert_eq!(obj.object_type(), InterfaceObjectType::AssociationTable);
 
@@ -955,7 +885,7 @@ mod tests {
             table.data_ref_mut()[4..6].copy_from_slice(&[0x08, 0x44]); // Type Byte2, flags T
         }
 
-        let obj = GroupObjectTableObject::new(&co_table);
+        let obj = GroupObjectTableObject::new(&co_table, 0x300);
 
         assert_eq!(obj.object_type(), InterfaceObjectType::GroupObjectTable);
 
@@ -979,7 +909,7 @@ mod tests {
     #[test]
     fn test_table_object_write_protection() {
         let addr_table = RefCell::new(AddrTab7::<10>::new());
-        let mut obj = AddressTableObject::new(&addr_table);
+        let mut obj = AddressTableObject::new(&addr_table, 0x100);
         let mut resp_buf = [0u8; 10];
 
         // OBJECT_TYPE should not be writable
@@ -998,7 +928,7 @@ mod tests {
     #[test]
     fn test_table_object_write_data() {
         let addr_table = RefCell::new(AddrTab7::<20>::new());
-        let mut obj = AddressTableObject::new(&addr_table);
+        let mut obj = AddressTableObject::new(&addr_table, 0x100);
         let mut resp_buf = [0u8; 10];
 
         // Write count and entries via TABLE property

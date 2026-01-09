@@ -415,29 +415,63 @@ pub fn cemi_to_knx_message<B: MessageBuffer>(mut msg: B) -> B {
     msg
 }
 
-pub fn knx_to_cemi_message<B: MessageBuffer>(mut msg: B, message_code: CemiMessageCode) -> B {
-    let len = msg.len();
+/// Convert internal KNX message to cEMI format in-place at a specified offset.
+///
+/// The KNX message data should already be present at `buffer[offset..]`.
+/// The buffer must have room for expansion (3 extra bytes for cEMI header + ctrl2).
+///
+/// # KNX to cEMI Transformation
+///
+/// KNX format (at `offset`):
+/// ```text
+///   [ctrl1][src_hi][src_lo][dst_hi][dst_lo][npdu][tpci/apci...]
+/// ```
+///
+/// cEMI format (after conversion, at `offset`):
+/// ```text
+///   [msg_code][add_info_len=0][ctrl1][ctrl2][src_hi][src_lo][dst_hi][dst_lo][npdu_len][tpci/apci...]
+/// ```
+///
+/// # Arguments
+/// * `buffer` - The buffer containing KNX data at `offset` with room for expansion
+/// * `offset` - Starting offset where the cEMI frame should begin (use 0 for no offset)
+/// * `knx_len` - Length of the KNX message data
+/// * `message_code` - The cEMI message code (L_Data.req, L_Data.ind, etc.)
+///
+/// # Returns
+/// The final length of the cEMI frame (original knx_len + 3)
+pub fn knx_to_cemi_message(
+    buffer: &mut [u8],
+    offset: usize,
+    knx_len: usize,
+    message_code: CemiMessageCode,
+) -> usize {
+    // Save the original NPDU value before shifting (needed for ctrl2)
+    let orig_npdu = buffer[offset + 5];
 
-    // Save the original NPDU value before shifting
-    let orig_npdu = msg[5];
-
-    // Shift data into the right positions
-    msg.set_len(len + 3);
-    for i in (0..len).rev() {
+    // Shift data to make room for cEMI header (2 bytes) and ctrl2 (1 byte)
+    // Everything shifts right by 3, but ctrl1 only shifts by 2 (to make room for msg_code and add_info_len)
+    for i in (0..knx_len).rev() {
         if i == 0 {
-            msg[i + 2] = msg[i];
+            buffer[offset + i + 2] = buffer[offset + i]; // ctrl1 shifts by 2
         } else {
-            msg[i + 3] = msg[i];
+            buffer[offset + i + 3] = buffer[offset + i]; // everything else shifts by 3
         }
     }
 
-    msg[3] = orig_npdu; // Extended control field: AT/HC/EFF from original NPDU
-    msg[8] = (len - 7) as u8; // Length field for extended frame
+    // Set cEMI header
+    buffer[offset] = message_code.into();     // msg_code
+    buffer[offset + 1] = 0;                   // add_info_len = 0
 
-    msg[0] = message_code.into(); // Message code
-    msg[1] = 0; // Additional info length
+    // ctrl1 is now at offset + 2 (was shifted)
+    // Set ctrl2 at offset + 3
+    buffer[offset + 3] = orig_npdu;           // ctrl2: AT/HC/EFF from original npdu
 
-    msg
+    // Set npdu_len at offset + 8 (after ctrl1, ctrl2, src(2), dst(2))
+    buffer[offset + 8] = (knx_len - 7) as u8; // Length of TPCI/APCI + data
+
+    // Return final cEMI length
+    knx_len + 3
 }
 
 // ============================================================================
@@ -657,13 +691,17 @@ mod tests {
         // - Dest: 0x08 0x01 (1/0/1)
         // - NPDU: 0xe0 (AT=1 group, HC=7, EFF=0)
         // - TPCI/APCI + data: 0x00 0x81
-        let knx_data = &[0xbc, 0x11, 0x01, 0x08, 0x01, 0xe0, 0x00, 0x81];
+        let knx_data = [0xbc, 0x11, 0x01, 0x08, 0x01, 0xe0, 0x00, 0x81];
+        let knx_len = knx_data.len();
 
-        // Convert to cEMI
-        let buffer = TestBuffer::new(knx_data);
-        let result = knx_to_cemi_message(buffer, CemiMessageCode::LDataInd);
+        // Create buffer with room for expansion (3 extra bytes)
+        let mut buffer = [0u8; 11];
+        buffer[..knx_len].copy_from_slice(&knx_data);
 
-        println!("{:x?}", result);
+        // Convert to cEMI in-place
+        let cemi_len = knx_to_cemi_message(&mut buffer, 0, knx_len, CemiMessageCode::LDataInd);
+
+        println!("{:x?}", &buffer[..cemi_len]);
 
         // Expected cEMI format:
         // - Message code: 0x29
@@ -674,17 +712,17 @@ mod tests {
         // - Dest: 0x08 0x01
         // - NPDU Length: 0x02 (TPCI/APCI + data)
         // - TPCI/APCI + data: 0x00 0x81
-        assert_eq!(result.len(), 11);
-        assert_eq!(result[0], 0x29); // Message code
-        assert_eq!(result[1], 0x00); // Add info len
-        assert_eq!(result[2], 0xbc); // Control Field 1
-        assert_eq!(result[3], 0xe0); // Control Field 2 (AT|HC + length)
-        assert_eq!(result[4], 0x11); // Source high
-        assert_eq!(result[5], 0x01); // Source low
-        assert_eq!(result[6], 0x08); // Dest high
-        assert_eq!(result[7], 0x01); // Dest low
-        assert_eq!(result[8], 0x01); // NPDU length
-        assert_eq!(result[9], 0x00); // TPCI/APCI
-        assert_eq!(result[10], 0x81); // Data
+        assert_eq!(cemi_len, 11);
+        assert_eq!(buffer[0], 0x29); // Message code
+        assert_eq!(buffer[1], 0x00); // Add info len
+        assert_eq!(buffer[2], 0xbc); // Control Field 1
+        assert_eq!(buffer[3], 0xe0); // Control Field 2 (AT|HC + length)
+        assert_eq!(buffer[4], 0x11); // Source high
+        assert_eq!(buffer[5], 0x01); // Source low
+        assert_eq!(buffer[6], 0x08); // Dest high
+        assert_eq!(buffer[7], 0x01); // Dest low
+        assert_eq!(buffer[8], 0x01); // NPDU length
+        assert_eq!(buffer[9], 0x00); // TPCI/APCI
+        assert_eq!(buffer[10], 0x81); // Data
     }
 }

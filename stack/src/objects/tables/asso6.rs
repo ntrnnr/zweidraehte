@@ -255,7 +255,7 @@ mod test {
         assert_eq!(ast.read_lsm(), [LoadState::Unloaded.into()]);
 
         // Begin loading
-        ast.write_lsm(&[LoadEvent::StartLoading.into()]);
+        ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
         assert_eq!(ast.read_lsm(), [LoadState::Loading.into()]);
 
         // Allocate a table with space for 2 entries (4 words total including length field)
@@ -270,7 +270,7 @@ mod test {
             0xff,
             0x00,
             0x00,
-        ]);
+        ], None);
         assert_eq!(ast.read_lsm(), [LoadState::Loading.into()]);
         assert_eq!(&ast.data_ref()[0..8], &[0xff; 8]);
 
@@ -288,7 +288,7 @@ mod test {
         assert_eq!(&ast.data_ref()[0..10], &[0x00, 0x02, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04]);
 
         // Issue load complete
-        ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        ast.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
         assert_eq!(ast.read_lsm(), [LoadState::Loaded.into()]);
     }
 
@@ -298,7 +298,7 @@ mod test {
         let mut ast = AssoTab6::<10>::new();
 
         // Setup an empty table (length = 0)
-        ast.write_lsm(&[LoadEvent::StartLoading.into()]);
+        ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
         ast.write_lsm(&[
             LoadEvent::AdditionalLoadControls.into(),
             0x0B,
@@ -310,9 +310,9 @@ mod test {
             0xff,
             0x00,
             0x00,
-        ]);
+        ], None);
         ast.write(0, &[0x00, 0x00]); // Length: 0 entries
-        ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        ast.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         assert_eq!(ast.entry_count(), 0);
         assert!(ast.is_empty());
@@ -352,7 +352,7 @@ mod test {
         // TSAP 3 → ASAP 4
         // TSAP 5 → ASAP 6
         // TSAP 5 → ASAP 7 (multiple ASAPs for same TSAP)
-        ast.write_lsm(&[LoadEvent::StartLoading.into()]);
+        ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
         ast.write_lsm(&[
             LoadEvent::AdditionalLoadControls.into(),
             0x0B,
@@ -364,7 +364,7 @@ mod test {
             0xff,
             0x00,
             0x00,
-        ]);
+        ], None);
         ast.write(0, &[0x00, 0x04]); // 4 entries
         ast.write(2, &[0x00, 0x01]); // Entry 1: TSAP = 1
         ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 2
@@ -374,7 +374,7 @@ mod test {
         ast.write(12, &[0x00, 0x06]); // Entry 3: ASAP = 6
         ast.write(14, &[0x00, 0x05]); // Entry 4: TSAP = 5 (duplicate)
         ast.write(16, &[0x00, 0x07]); // Entry 4: ASAP = 7
-        ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        ast.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         // Test finding ASAPs for TSAP 5 (which has multiple ASAPs)
         let mut idx = 0;
@@ -402,7 +402,7 @@ mod test {
         // ASAP 3 ← TSAP 4
         // ASAP 5 ← TSAP 6
         // ASAP 5 ← TSAP 7 (multiple TSAPs for same ASAP)
-        ast.write_lsm(&[LoadEvent::StartLoading.into()]);
+        ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
         ast.write_lsm(&[
             LoadEvent::AdditionalLoadControls.into(),
             0x0B,
@@ -414,7 +414,7 @@ mod test {
             0xff,
             0x00,
             0x00,
-        ]);
+        ], None);
         ast.write(0, &[0x00, 0x04]); // 4 entries
         ast.write(2, &[0x00, 0x02]); // Entry 1: TSAP = 2
         ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 2
@@ -424,7 +424,7 @@ mod test {
         ast.write(12, &[0x00, 0x06]); // Entry 3: ASAP = 6
         ast.write(14, &[0x00, 0x07]); // Entry 4: TSAP = 7
         ast.write(16, &[0x00, 0x06]); // Entry 4: ASAP = 6 (duplicate)
-        ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        ast.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         // Test finding TSAPs for ASAP 6 (which has multiple TSAPs)
         let mut idx = 0;
@@ -452,7 +452,7 @@ mod test {
         // ASAP 3 ← TSAP 4
         // ASAP 5 ← TSAP 6
         // ASAP 5 ← TSAP 7 (multiple TSAPs for same ASAP - should return first match)
-        ast.write_lsm(&[LoadEvent::StartLoading.into()]);
+        ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
         ast.write_lsm(&[
             LoadEvent::AdditionalLoadControls.into(),
             0x0B,
@@ -464,7 +464,7 @@ mod test {
             0xff,
             0x00,
             0x00,
-        ]);
+        ], None);
         ast.write(0, &[0x00, 0x04]); // 4 entries
         ast.write(2, &[0x00, 0x02]); // Entry 1: TSAP = 2
         ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 2
@@ -474,7 +474,7 @@ mod test {
         ast.write(12, &[0x00, 0x06]); // Entry 3: ASAP = 6
         ast.write(14, &[0x00, 0x07]); // Entry 4: TSAP = 7
         ast.write(16, &[0x00, 0x06]); // Entry 4: ASAP = 6 (duplicate)
-        ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        ast.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         // Test finding first TSAP for each ASAP
         assert_eq!(ast.tsaps_for_asap(2).next(), Some(2));
@@ -495,7 +495,7 @@ mod test {
     //     // ASAP 3 ← TSAP 4
     //     // ASAP 5 ← TSAP 6
     //     // ASAP 5 ← TSAP 7 (multiple TSAPs for same ASAP - should return first match)
-    //     ast.write_lsm(&[LoadEvent::StartLoading.into()]);
+    //     ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
     //     ast.write_lsm(&[
     //         LoadEvent::AdditionalLoadControls.into(),
     //         0x0B,
@@ -507,7 +507,7 @@ mod test {
     //         0xff,
     //         0x00,
     //         0x00,
-    //     ]);
+    //     ], None);
     //     ast.write(0, &[0x00, 0x04]); // 4 entries
     //     ast.write(2, &[0x00, 0x02]); // Entry 1: TSAP = 2
     //     ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 1+1 (stored as 2)
@@ -517,7 +517,7 @@ mod test {
     //     ast.write(12, &[0x00, 0x06]); // Entry 3: ASAP = 5+1 (stored as 6)
     //     ast.write(14, &[0x00, 0x07]); // Entry 4: TSAP = 7
     //     ast.write(16, &[0x00, 0x06]); // Entry 4: ASAP = 5+1 (stored as 6) (duplicate)
-    //     ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+    //     ast.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
     //     // Test finding association index for each ASAP
     //     assert_eq!(ast.get_association_index_for_asap(1), Some(1)); // Index for ASAP 1
@@ -537,7 +537,7 @@ mod test {
         // TSAP 1 → ASAP 10, ASAP 11
         // TSAP 2 → ASAP 20
         // TSAP 3 → ASAP 30, ASAP 31, ASAP 32
-        ast.write_lsm(&[LoadEvent::StartLoading.into()]);
+        ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
         ast.write_lsm(&[
             LoadEvent::AdditionalLoadControls.into(),
             0x0B,
@@ -549,7 +549,7 @@ mod test {
             0xff,
             0x00,
             0x00,
-        ]);
+        ], None);
         ast.write(0, &[0x00, 0x06]); // 6 entries
         // TSAP 1 → ASAP 11
         ast.write(2, &[0x00, 0x01]);
@@ -569,7 +569,7 @@ mod test {
         // TSAP 3 → ASAP 33
         ast.write(22, &[0x00, 0x03]);
         ast.write(24, &[0x00, 0x21]); // ASAP 33
-        ast.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        ast.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         // Test ASAP iterator for TSAP 1
         let asaps: Vec<u16> = ast.asaps_for_tsap(1).collect();

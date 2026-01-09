@@ -123,7 +123,7 @@ mod test {
         assert_eq!(ct.read_lsm(), [LoadState::Unloaded.into()]);
 
         // Begin loading
-        ct.write_lsm(&[LoadEvent::StartLoading.into()]);
+        ct.write_lsm(&[LoadEvent::StartLoading.into()], None);
         assert_eq!(ct.read_lsm(), [LoadState::Loading.into()]);
 
         // Allocate a table with space for 3 communication objects
@@ -138,7 +138,7 @@ mod test {
             0xff,
             0x00,
             0x00,
-        ]);
+        ], None);
         assert_eq!(ct.read_lsm(), [LoadState::Loading.into()]);
         assert_eq!(&ct.data_ref()[0..8], &[0xff; 8]);
 
@@ -156,7 +156,7 @@ mod test {
         assert_eq!(&ct.data_ref()[0..8], &[0x00, 0x03, 0x00, 0xDC, 0x08, 0x44, 0x0A, 0x94]);
 
         // Issue load complete
-        ct.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        ct.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
         assert_eq!(ct.read_lsm(), [LoadState::Loaded.into()]);
     }
 
@@ -165,14 +165,14 @@ mod test {
         let mut ct = CoTab7::<10>::new();
 
         // Setup a test table with 3 com objects
-        ct.write_lsm(&[LoadEvent::StartLoading.into()]);
-        ct.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x08, 0x01, 0xff, 0x00, 0x00]);
+        ct.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        ct.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x08, 0x01, 0xff, 0x00, 0x00], None);
 
         ct.write(0, &[0x00, 0x03]); // Length: 3 entries
         ct.write(2, &[0x00, 0xDC]); // Com Object 1: Bit1, RTWU config
         ct.write(4, &[0x08, 0x44]); // Com Object 2: Byte2, T config
         ct.write(6, &[0x0A, 0x94]); // Com Object 3: Byte4, WU config
-        ct.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        ct.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         // Test accessing each object
         let obj1 = ct.com_object(1).unwrap();
@@ -209,12 +209,12 @@ mod test {
         let mut ct = CoTab7::<10>::new();
 
         // Setup a test table with 1 com object
-        ct.write_lsm(&[LoadEvent::StartLoading.into()]);
-        ct.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x04, 0x01, 0xff, 0x00, 0x00]);
+        ct.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        ct.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x04, 0x01, 0xff, 0x00, 0x00], None);
 
         ct.write(0, &[0x00, 0x01]); // Length: 1 entry
         ct.write(2, &[0x00, 0xDC]); // Com Object 1: Bit1, RTWU config
-        ct.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        ct.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         // Get original object
         let original = ct.com_object(1).unwrap();
@@ -243,15 +243,15 @@ mod test {
         let mut ct = CoTab7::<10>::new();
 
         // Setup a test table with 4 com objects with different flags
-        ct.write_lsm(&[LoadEvent::StartLoading.into()]);
-        ct.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x0A, 0x01, 0xff, 0x00, 0x00]);
+        ct.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        ct.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x0A, 0x01, 0xff, 0x00, 0x00], None);
 
         ct.write(0, &[0x00, 0x04]); // Length: 4 entries
         ct.write(2, &[0x00, 0xDC]); // Com Object 1: RTWU config
         ct.write(4, &[0x08, 0x44]); // Com Object 2: T config
         ct.write(6, &[0x0A, 0x94]); // Com Object 3: WU config
         ct.write(8, &[0x07, 0x4C]); // Com Object 4: RT config
-        ct.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        ct.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         // Test object 1 properties (RTWU config)
         let obj1 = ct.com_object(1).unwrap();

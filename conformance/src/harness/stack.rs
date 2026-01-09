@@ -627,19 +627,21 @@ where
         });
 
         // Create Application Program Object wrapping the application table
-        let mut app_program = ApplicationProgramObject::new(tables.app());
+        // APP doesn't have a fixed memory address in conformance tests
+        let mut app_program = ApplicationProgramObject::new(tables.app(), 0);
         app_program.set_program_version(device_info::PROGRAM_VERSION.into());
         app_program.set_pei_type(device_info::PEI_TYPE.into());
 
         // Create IP Parameter Object
         let ip_parameter = IpParameterObject::with_state(state);
 
+        // Use ConformanceMemoryMap addresses for tables
         Self {
             device: RefCell::new(device),
-            addr_table: RefCell::new(AddressTableObject::new(tables.adt())),
-            asso_table: RefCell::new(AssociationTableObject::new(tables.ast())),
+            addr_table: RefCell::new(AddressTableObject::new(tables.adt(), ConformanceMemoryMap::ADT_BASE as u32)),
+            asso_table: RefCell::new(AssociationTableObject::new(tables.ast(), ConformanceMemoryMap::AST_BASE as u32)),
             app_program: RefCell::new(app_program),
-            group_object_table: RefCell::new(GroupObjectTableObject::new(tables.cot())),
+            group_object_table: RefCell::new(GroupObjectTableObject::new(tables.cot(), ConformanceMemoryMap::COT_BASE as u32)),
             ip_parameter: RefCell::new(ip_parameter),
         }
     }
@@ -1178,15 +1180,20 @@ impl FullStackHarness {
         let (link_layer_builder, handle) =
             MockLinkLayerBuilder::<16, 16>::with_capture(injection_channel, capture_channel);
 
-        // Create tables from configuration
-        let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables();
+        // Create tables from configuration with their memory-mapped base addresses
+        let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables(
+            ConformanceMemoryMap::ADT_BASE as u32,
+            ConformanceMemoryMap::AST_BASE as u32,
+            ConformanceMemoryMap::COT_BASE as u32,
+        );
 
         // Create application table - starts loaded and running for conformance tests
         use zweidraehte::objects::tables::{LoadEvent, RunEvent};
         let mut app_table = Application::<()>::new();
-        // Load and start the application
-        app_table.write_lsm(&[LoadEvent::StartLoading.into()]);
-        app_table.write_lsm(&[LoadEvent::LoadCompleted.into()]);
+        // Load and start the application (using None for alloc_address since these are
+        // simple state transitions without RelativeData allocation)
+        app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
         app_table.write_rsm(&[RunEvent::Restart.into()]);
 
         // Create the tables container
@@ -1219,7 +1226,7 @@ impl FullStackHarness {
         );
 
         // Create stack
-        let (stack, runner) = zweidraehte::new_with_state(
+        let (stack, runner) = zweidraehte::new(
             resources,
             tables,
             ConformanceComObjects::new(),

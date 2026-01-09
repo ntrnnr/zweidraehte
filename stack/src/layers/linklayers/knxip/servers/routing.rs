@@ -17,13 +17,16 @@ use embassy_time::Instant;
 use heapless::Vec;
 
 use crate::{
-    encoding::cemi::{CemiLData, CemiMessageCode, cemi_to_knx_message, knx_to_cemi_message},
+    encoding::cemi::{CemiLData, CemiMessageCode, cemi_to_knx_message},
     messages::{
         buffers::{Buffer, MessageBuffer},
         knx::KnxMessageBuffer,
-        knxip::{KNXnetIPServiceType, RoutingBusy, RoutingIndication, RoutingIndicationBuilder},
+        knxip::{
+            KNXnetIPServiceType, KNXNETIP_HEADER_SIZE, RoutingBusy, RoutingIndication,
+            RoutingIndicationFromKnx,
+        },
     },
-    util::packets::{ParseBuffer, SerializeBuffer},
+    util::packets::ParseBuffer,
 };
 
 use super::{KnxNetIpServer, PendingResponse, ServerContext, ServerError};
@@ -347,30 +350,30 @@ impl RoutingServer {
         self.timekeeper.get_wait_time()
     }
 
-    /// Create a RoutingIndication message from a KNX message
+    /// Create a RoutingIndication message from a KNX message.
+    ///
+    /// Uses a single buffer allocation and in-place cEMI conversion.
     async fn create_routing_indication<'a>(
         &self,
         message: &KnxMessageBuffer<Buffer<'static>>,
         context: &ServerContext<'a>,
     ) -> Result<PendingResponse, ServerError> {
-        // Determine message code from service type
-        let message_code = CemiMessageCode::from_service_type(message.service_type());
+        let knx_len = message.len();
+        let required_size = RoutingIndicationFromKnx::required_size(knx_len);
 
-        // Convert internal KNX format to cEMI format
-        // Allocate a temporary buffer and copy the KNX message data
-        let mut temp_buffer = context.alloc_buffer().await;
-        temp_buffer.fill_from_slice(message.buf());
-        let cemi_buffer = knx_to_cemi_message(temp_buffer, message_code);
-
-        // Allocate a buffer for the final response
+        // Allocate a single buffer for the entire packet
         let mut buffer = context.alloc_buffer().await;
+        buffer.resize(required_size, 0);
 
-        // Build and serialize the RoutingIndication with the cEMI frame
-        let routing_builder = RoutingIndicationBuilder::new(&cemi_buffer);
-        buffer.serialize(&routing_builder);
+        // Copy KNX data to correct position (after header space)
+        buffer[KNXNETIP_HEADER_SIZE..][..knx_len].copy_from_slice(message.buf());
+
+        // Build the packet in-place using zero-copy builder
+        let message_code = CemiMessageCode::from_service_type(message.service_type());
+        let final_len = RoutingIndicationFromKnx::new(&mut buffer, knx_len, message_code).build();
+        buffer.set_len(final_len);
 
         let destination = SocketAddrV4::new(self.multicast_addr, self.port);
-
         Ok(PendingResponse { buffer, destination })
     }
 }

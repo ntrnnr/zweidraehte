@@ -9,11 +9,21 @@
 
 use core::mem;
 
-use zerocopy::{SplitByteSlice, SplitByteSliceMut, big_endian::U16};
+use zerocopy::{IntoBytes, SplitByteSlice, SplitByteSliceMut, big_endian::U16};
 
-use crate::{messages::knxip::error::*, util::packets::*};
+use crate::{
+    encoding::cemi::{CemiMessageCode, knx_to_cemi_message},
+    messages::knxip::error::*,
+    util::packets::*,
+};
 
 use super::{KNXnetIPServiceType, KNXnetIPVersion, raw::KNXnetIPHeader};
+
+/// Size of the KNXnet/IP header in bytes.
+pub const KNXNETIP_HEADER_SIZE: usize = mem::size_of::<KNXnetIPHeader>();
+
+/// Extra bytes added during KNX to cEMI conversion (msg_code + add_info_len + ctrl2).
+pub const CEMI_EXPANSION: usize = 3;
 
 // ============================================================================
 // ROUTING INDICATION
@@ -63,7 +73,20 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RoutingIndication<B> {
     }
 }
 
-/// Builder for RoutingIndication message
+/// Create a RoutingIndication KNXnet/IP header for the given cEMI frame length.
+fn routing_indication_header(cemi_len: usize) -> KNXnetIPHeader {
+    let total_len = KNXNETIP_HEADER_SIZE + cemi_len;
+    KNXnetIPHeader {
+        header_size: KNXNETIP_HEADER_SIZE as u8,
+        version: KNXnetIPVersion::Version10.into(),
+        service_type: U16::from(u16::from(KNXnetIPServiceType::RoutingIndication)),
+        total_length: (total_len as u16).into(),
+    }
+}
+
+/// Builder for RoutingIndication message from an existing cEMI frame.
+///
+/// Use this when you already have cEMI-formatted data.
 pub struct RoutingIndicationBuilder<'a> {
     pub cemi_frame: &'a [u8],
 }
@@ -76,21 +99,87 @@ impl<'a> RoutingIndicationBuilder<'a> {
 
 impl<'a> SerializablePacket for RoutingIndicationBuilder<'a> {
     fn bytes_len(&self) -> usize {
-        mem::size_of::<KNXnetIPHeader>() + self.cemi_frame.len()
+        KNXNETIP_HEADER_SIZE + self.cemi_frame.len()
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
-        let header = KNXnetIPHeader {
-            header_size: mem::size_of::<KNXnetIPHeader>() as u8,
-            version: KNXnetIPVersion::Version10.into(),
-            service_type: U16::from(u16::from(KNXnetIPServiceType::RoutingIndication)),
-            total_length: (self.bytes_len() as u16).into(),
-        };
+        let header = routing_indication_header(self.cemi_frame.len());
         bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
 
-        // Write cEMI frame
         let mut cemi_buf = bv.take_front(self.cemi_frame.len()).expect("too few bytes for cEMI frame");
         cemi_buf.deref_mut().copy_from_slice(self.cemi_frame);
+    }
+}
+
+/// Zero-copy builder for RoutingIndication from internal KNX format.
+///
+/// This builder works in-place on a buffer that already contains KNX data
+/// at the correct offset (after the header). It transforms the data to cEMI
+/// format and writes the header, without any intermediate copies.
+///
+/// # Usage
+///
+/// ```ignore
+/// // Buffer layout before: [empty header space][KNX data...]
+/// // Buffer layout after:  [KNXnetIP header][cEMI frame...]
+///
+/// let mut buffer = alloc_buffer();
+/// buffer.resize(KNXNETIP_HEADER_SIZE + knx_len + CEMI_EXPANSION, 0);
+///
+/// // Copy KNX data to correct position (after header)
+/// buffer[KNXNETIP_HEADER_SIZE..][..knx_len].copy_from_slice(knx_data);
+///
+/// // Build in-place
+/// let total_len = RoutingIndicationFromKnx::new(&mut buffer, knx_len, message_code).build();
+/// buffer.set_len(total_len);
+/// ```
+pub struct RoutingIndicationFromKnx<'a> {
+    buffer: &'a mut [u8],
+    knx_len: usize,
+    message_code: CemiMessageCode,
+}
+
+impl<'a> RoutingIndicationFromKnx<'a> {
+    /// Create a new zero-copy builder.
+    ///
+    /// # Arguments
+    /// * `buffer` - Buffer with KNX data already at offset `KNXNETIP_HEADER_SIZE`
+    /// * `knx_len` - Length of the KNX data
+    /// * `message_code` - cEMI message code (L_Data.req, L_Data.ind, etc.)
+    ///
+    /// # Panics
+    /// Panics if the buffer is too small for the final packet.
+    pub fn new(buffer: &'a mut [u8], knx_len: usize, message_code: CemiMessageCode) -> Self {
+        let required = KNXNETIP_HEADER_SIZE + knx_len + CEMI_EXPANSION;
+        debug_assert!(
+            buffer.len() >= required,
+            "buffer too small: need {} bytes, have {}",
+            required,
+            buffer.len()
+        );
+        Self { buffer, knx_len, message_code }
+    }
+
+    /// Build the RoutingIndication packet in-place.
+    ///
+    /// Returns the total packet length.
+    pub fn build(self) -> usize {
+        let cemi_len = self.knx_len + CEMI_EXPANSION;
+        let total_len = KNXNETIP_HEADER_SIZE + cemi_len;
+
+        // Convert KNX to cEMI format in-place (data is already at KNXNETIP_HEADER_SIZE)
+        knx_to_cemi_message(self.buffer, KNXNETIP_HEADER_SIZE, self.knx_len, self.message_code);
+
+        // Write header
+        let header = routing_indication_header(cemi_len);
+        self.buffer[..KNXNETIP_HEADER_SIZE].copy_from_slice(header.as_bytes());
+
+        total_len
+    }
+
+    /// Calculate the required buffer size for a given KNX message length.
+    pub const fn required_size(knx_len: usize) -> usize {
+        KNXNETIP_HEADER_SIZE + knx_len + CEMI_EXPANSION
     }
 }
 

@@ -240,16 +240,23 @@ macro_rules! knx_stack_config {
                 &self.co7_data
             }
 
-            /// Create table instances with the configuration data loaded
-            pub fn create_tables() -> (AddrTab, AssoTab, CoTab) {
+            /// Create table instances with the configuration data loaded.
+            ///
+            /// # Arguments
+            /// * `adt_address` - Base address for the Address Table in the KNX device's virtual address space
+            /// * `ast_address` - Base address for the Association Table
+            /// * `cot_address` - Base address for the Communication Object Table
+            ///
+            /// These addresses are used by management clients for memory-mapped access to the tables.
+            pub fn create_tables(adt_address: u32, ast_address: u32, cot_address: u32) -> (AddrTab, AssoTab, CoTab) {
                 use $crate::objects::tables::Table;
 
                 const CONFIG: $name = $name::new();
 
-                // Create tables with pre-loaded data, bypassing the load state machine
-                let addr_tab = Table::with_data(CONFIG.addr7_data());
-                let asso_tab = Table::with_data(CONFIG.asso6_data());
-                let co_tab = Table::with_data(CONFIG.co7_data());
+                // Create tables with pre-loaded data and their virtual addresses
+                let addr_tab = Table::with_data(CONFIG.addr7_data(), adt_address);
+                let asso_tab = Table::with_data(CONFIG.asso6_data(), ast_address);
+                let co_tab = Table::with_data(CONFIG.co7_data(), cot_address);
 
                 (addr_tab, asso_tab, co_tab)
             }

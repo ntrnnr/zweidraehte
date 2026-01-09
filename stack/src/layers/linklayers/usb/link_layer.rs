@@ -369,8 +369,12 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
         // Log internal KNX format before conversion
         debug!("USB Link Layer: TX internal KNX format: {:02X?}", &message[..]);
 
-        // Convert internal KNX format to cEMI L_Data.req
-        let cemi_buffer = knx_to_cemi_message(message, CemiMessageCode::LDataReq);
+        // Convert internal KNX format to cEMI L_Data.req in-place
+        let knx_len = message.len();
+        let mut cemi_buffer = message;
+        cemi_buffer.resize(knx_len + 3, 0); // Make room for cEMI expansion
+        let cemi_len = knx_to_cemi_message(&mut cemi_buffer, 0, knx_len, CemiMessageCode::LDataReq);
+        cemi_buffer.set_len(cemi_len);
 
         // Check APDU length against interface maximum
         // cEMI structure: msg_code(1) + add_info_len(1) + [add_info(N)] + ctrl1(1) + ctrl2(1) + src(2) + dst(2) + npdu_len(1) + apdu...

@@ -58,3 +58,7 @@ path = "src/usb_test.rs"
 [[bin]]
 name = "seqno_test"
 path = "src/seqno_test.rs"
+
+[[bin]]
+name = "stack_system_b"
+path = "src/stack_system_b.rs"

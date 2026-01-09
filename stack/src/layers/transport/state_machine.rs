@@ -145,6 +145,9 @@ pub enum TlAction {
 
     /// Store the current message for possible retransmission
     StorePendingMessage,
+
+    /// Clear the pending message (on successful ACK)
+    ClearPendingMessage,
 }
 
 // ============================================================================
@@ -358,6 +361,7 @@ pub fn process_event(conn: &mut Connection, event: TlEvent) -> ActionBuffer {
             conn.state = ConnectionState::OpenIdle;
             conn.inc_seq_send();
             actions.push(TlAction::StopAckTimer);
+            actions.push(TlAction::ClearPendingMessage); // Free the retransmission buffer
             actions.push(TlAction::StartConnTimer); // Start connection timeout when returning to OPEN_IDLE
             actions.push(TlAction::ConfirmData { dest: source, success: true });
             // Deliver any queued incoming data now that we're back in OPEN_IDLE
@@ -540,6 +544,7 @@ mod tests {
 
         let mut iter = actions.iter();
         assert_eq!(iter.next(), Some(TlAction::StopAckTimer));
+        assert_eq!(iter.next(), Some(TlAction::ClearPendingMessage)); // Free retransmission buffer
         assert_eq!(iter.next(), Some(TlAction::StartConnTimer)); // Restart connection timeout
         assert_eq!(iter.next(), Some(TlAction::ConfirmData { dest, success: true }));
     }

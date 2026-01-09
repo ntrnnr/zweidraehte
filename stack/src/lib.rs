@@ -4,6 +4,7 @@
 #![feature(generic_const_exprs)]
 #![feature(type_alias_impl_trait)]
 #![feature(never_type)]
+#![feature(associated_type_defaults)]
 
 // Re-export paste for use in macros
 #[doc(hidden)]
@@ -1023,38 +1024,12 @@ fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
     (sender.into(), receiver.into())
 }
 
-/// Create a new KNX stack with default state.
+/// Create a new KNX stack.
 ///
-/// This function creates a stack using `D::State::default()` for the state.
-/// For custom state initialization (e.g., with a specific serial number),
-/// use [`new_with_state`] instead.
+/// The `state` parameter contains the device state including individual address,
+/// authentication keys, and other configuration. Use the device-specific state
+/// type's constructor (e.g., `IpDeviceState::from_persisted()`) to create it.
 pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
-    resources: &'d mut StackResources<D, BUF_SZ, NUM_BUFS>,
-    tables: D::Tables,
-    comm_objs: D::CO,
-    hook_context: <D::CO as ComObjects>::HookContext,
-    link_layer_builder: D::LLB,
-    interface_objects_builder: D::IOB,
-) -> (Stack<'d, D>, Runner<'d, D>)
-where
-    D::State: Default,
-{
-    new_with_state(
-        resources,
-        tables,
-        comm_objs,
-        hook_context,
-        link_layer_builder,
-        interface_objects_builder,
-        D::State::default(),
-    )
-}
-
-/// Create a new KNX stack with custom state.
-///
-/// This function allows passing a pre-configured state instead of using the default.
-/// Use this when you need to configure the state with specific values (e.g., serial number).
-pub fn new_with_state<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
     resources: &'d mut StackResources<D, BUF_SZ, NUM_BUFS>,
     tables: D::Tables,
     comm_objs: D::CO,

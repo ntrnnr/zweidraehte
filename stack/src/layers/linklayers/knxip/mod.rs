@@ -18,7 +18,12 @@ use platform::{AsyncUdpMulticastSocket, UdpMulticastSocketOptions, get_interface
 use crate::{
     context::BufferManagerContext,
     layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
-    messages::{buffers::*, builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage}, knx::*, knxip::*},
+    messages::{
+        buffers::*,
+        builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
+        knx::*,
+        knxip::*,
+    },
 };
 
 pub mod servers;
@@ -608,12 +613,21 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
                         // This is actually OK - the message will be dropped
                     }
                 } else if send_success {
-                    pending.response_tx.send(pending.message.into_inner().confirm().build()).await;
+                    // Restore L_Data_Req service type before building confirmation
+                    // (we changed it to L_Data_Ind for the routing protocol)
+                    // FIXME: I don't like this approach of modifying the message like this
+                    let mut inner = pending.message.into_inner();
+                    inner.set_service_type(ServiceType::L_Data_Req);
+                    pending.response_tx.send(inner.confirm().build()).await;
                 } else if send_error {
-                    pending.response_tx.send(pending.message.into_inner().error().build()).await;
+                    let mut inner = pending.message.into_inner();
+                    inner.set_service_type(ServiceType::L_Data_Req);
+                    pending.response_tx.send(inner.error().build()).await;
                 } else {
                     // No server could handle it - send error
-                    pending.response_tx.send(pending.message.into_inner().error().build()).await;
+                    let mut inner = pending.message.into_inner();
+                    inner.set_service_type(ServiceType::L_Data_Req);
+                    pending.response_tx.send(inner.error().build()).await;
                 }
             } else {
                 // This entry is not expired yet, move to next
@@ -701,7 +715,21 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
         let response_channel = unsafe { self.resources.response_channel.assume_init_ref() };
 
         loop {
-            // Process any expired retry requests first
+            // First, drain any pending responses to free their buffers
+            // This is important because retry queue processing may need these buffers
+            while let Ok(pending_response) = response_channel.try_receive() {
+                let destination = pending_response.destination;
+                let data = &pending_response.buffer[..];
+
+                debug!("Sending {} byte response to {} (drain)", data.len(), destination);
+
+                if !self.socket_descriptors.is_empty() {
+                    let _ = self.send_on_socket(0, data, destination).await;
+                }
+                // pending_response is dropped here, freeing its buffer
+            }
+
+            // Process any expired retry requests
             self.process_retry_queue(response_channel).await;
 
             // Select between socket receives, inbox messages, pending responses, and retry timer
@@ -827,13 +855,21 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                                             // Create server context with buffer manager and network layer channel
                                             let context =
                                                 ServerContext::new(self.buffer_manager, self.network_layer_tx);
-                                            match server.handler.on_request(&**msg_opt.as_ref().unwrap(), &context).await {
+                                            match server
+                                                .handler
+                                                .on_request(&**msg_opt.as_ref().unwrap(), &context)
+                                                .await
+                                            {
                                                 Ok(responses) => {
                                                     for response in responses {
                                                         response_channel.send(response).await;
                                                     }
-                                                    // Send confirmation
-                                                    response_tx.send(msg_opt.take().unwrap().into_inner().confirm().build()).await;
+                                                    // Send confirmation - restore L_Data_Req service type
+                                                    // (we changed it to L_Data_Ind for the routing protocol)
+                                                    // FIXME: I don't like this approach of modifying the message like this
+                                                    let mut inner = msg_opt.take().unwrap().into_inner();
+                                                    inner.set_service_type(ServiceType::L_Data_Req);
+                                                    response_tx.send(inner.confirm().build()).await;
                                                     handled = true;
                                                     break;
                                                 }
@@ -874,7 +910,11 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
 
                                     if !handled {
                                         // No server could handle it - send error
-                                        response_tx.send(msg_opt.take().unwrap().into_inner().error().build()).await;
+                                        // Restore L_Data_Req service type before building confirmation
+                                        // FIXME: I don't like this approach of modifying the message like this
+                                        let mut inner = msg_opt.take().unwrap().into_inner();
+                                        inner.set_service_type(ServiceType::L_Data_Req);
+                                        response_tx.send(inner.error().build()).await;
                                     }
                                 }
                                 _ => {

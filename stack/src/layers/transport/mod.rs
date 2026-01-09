@@ -478,20 +478,39 @@ where
         msg.set_dest_addr(DestinationAddress::Individual(dest));
         msg.set_service_type(ServiceType::N_Data_Req);
 
-        // Store a copy for potential retransmission
-        // We need to allocate a new buffer and copy the message content
-        let pending_buffer = self.buffer_manager.borrow().alloc_from_slice(&*msg.buf()).await;
-        let pending_msg = KnxMessageBuffer::new(pending_buffer, msg.service_type());
+        // Store the original message for potential retransmission.
+        // We keep the original buffer as pending_msg and send a copy.
+        // This order is important to avoid deadlock: we first store the original,
+        // then allocate a copy. If we tried to allocate while still holding
+        // the original for sending, we could exhaust the buffer pool.
+        let service_type = msg.service_type();
         if let Some(conn) = self.connections.find_any(dest) {
-            conn.pending_msg = Some(pending_msg);
+            conn.pending_msg = Some(msg);
         }
+
+        // Now allocate a fresh buffer for sending (original is safely stored)
+        let send_buffer = {
+            let pending = self.connections.find_any(dest).and_then(|c| c.pending_msg.as_ref());
+            if let Some(pm) = pending {
+                self.buffer_manager.borrow().alloc_from_slice(&*pm.buf()).await
+            } else {
+                // Should not happen, but handle gracefully
+                return KnxMessageBuffer::new(
+                    self.buffer_manager.borrow().alloc_with_size(0).await,
+                    service_type,
+                )
+                .error()
+                .build();
+            }
+        };
+        let send_msg = KnxMessageBuffer::new(send_buffer, service_type);
 
         // Execute other actions (start timer, etc.)
         self.execute_actions_no_send(actions, dest).await;
 
-        // Send the data
-        trace!("Transport layer sending data to Network layer: {:x?}", msg);
-        let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
+        // Send the copy
+        trace!("Transport layer sending data to Network layer: {:x?}", send_msg);
+        let mut confirmation = self.network_layer.request(RequestMessage::request(send_msg)).await;
 
         // We don't return confirmation immediately - we wait for ACK
         // For now, return immediate confirmation (TODO: proper async confirmation)
@@ -689,6 +708,14 @@ where
                 }
                 TlAction::SendData { dest: _ } => {
                     // Handled in the caller (handle_data_request)
+                }
+                TlAction::ClearPendingMessage => {
+                    // Clear the pending message to free the buffer
+                    if let Some(conn) = self.connections.find_any(remote_addr) {
+                        if conn.pending_msg.take().is_some() {
+                            debug!("TL cleared pending message for {}", remote_addr);
+                        }
+                    }
                 }
             }
         }

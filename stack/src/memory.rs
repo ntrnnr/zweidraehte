@@ -175,6 +175,10 @@ pub trait MemoryMap<Tables>: Default {
     ) -> Result<usize, MemoryError>;
 }
 
+// ============================================================================
+// No Memory Map
+// ============================================================================
+
 /// A memory map with no mapped regions.
 ///
 /// This is the default memory map that rejects all memory access.

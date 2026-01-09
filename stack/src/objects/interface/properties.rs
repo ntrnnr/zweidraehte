@@ -186,87 +186,314 @@ impl PropertyDescriptionResponse {
     }
 }
 
-/// Helper trait for property value storage
+// ============================================================================
+// Property Read/Write Traits
+// ============================================================================
+
+/// Trait for reading a single-value property with KNX semantics.
 ///
-/// This trait abstracts over different ways a property value can be stored:
-/// - Direct field in a struct
-/// - Part of a table's data
-/// - Computed value
-pub trait PropertyStorage {
-    /// Read property data into buffer
-    ///
-    /// # Arguments
-    /// * `start_idx` - 1-based start index (1 = first element)
-    /// * `count` - Number of elements to read
-    /// * `buf` - Buffer to write data into
-    ///
-    /// # Returns
-    /// Number of bytes written, or error
-    fn read(&self, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError>;
-
-    /// Write property data from buffer
-    ///
-    /// # Arguments
-    /// * `start_idx` - 1-based start index (1 = first element)
-    /// * `data` - Data to write
-    ///
-    /// # Returns
-    /// Ok(()) on success, or error
-    fn write(&mut self, start_idx: u16, data: &[u8]) -> Result<(), PropertyError>;
-
-    /// Get current element count
-    fn element_count(&self) -> u16;
+/// Handles:
+/// - `start_idx=0`: Returns element count (1) as 2 bytes big-endian
+/// - `start_idx=1, count=1`: Copies data to buffer
+/// - Other combinations: Returns `InvalidStartIndex` error
+///
+/// # Example
+/// ```ignore
+/// fn read_property(&self, pid: u8, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
+///     match pid {
+///         pid::PROGRAM_VERSION => self.program_version.read_property(start_idx, count, buf),
+///         pid::PEI_TYPE => self.pei_type.read_property(start_idx, count, buf),
+///         _ => Err(PropertyError::InvalidPropertyId),
+///     }
+/// }
+/// ```
+pub trait PropertyRead {
+    /// Read this property with KNX semantics.
+    fn read_property(&self, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError>;
 }
 
-/// Simple single-value property storage wrapper
-pub struct SingleValueProperty<T> {
-    value: T,
+/// Trait for writing a single-value property with KNX semantics.
+///
+/// Handles:
+/// - `start_idx=1`: Copies data to property
+/// - Other: Returns `InvalidStartIndex` error
+pub trait PropertyWrite {
+    /// Write this property with KNX semantics. Returns bytes written.
+    fn write_property(&mut self, start_idx: u16, data: &[u8]) -> Result<usize, PropertyError>;
 }
 
-impl<T> SingleValueProperty<T> {
-    pub const fn new(value: T) -> Self {
-        Self { value }
-    }
-
-    pub fn get(&self) -> &T {
-        &self.value
-    }
-
-    pub fn get_mut(&mut self) -> &mut T {
-        &mut self.value
-    }
-
-    pub fn set(&mut self, value: T) {
-        self.value = value;
-    }
-}
-
-impl<T: AsRef<[u8]> + AsMut<[u8]>> PropertyStorage for SingleValueProperty<T> {
-    fn read(&self, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
+/// Blanket implementation for any type that can be viewed as bytes.
+/// This covers all PDT types (PDT_Generic06, PDT_UnsignedInt, etc.)
+impl<T: AsRef<[u8]>> PropertyRead for T {
+    fn read_property(&self, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
+        // Handle element count query (start_idx=0 per KNX spec)
+        if start_idx == 0 {
+            if buf.len() < 2 {
+                return Err(PropertyError::BufferTooSmall);
+            }
+            buf[0] = 0;
+            buf[1] = 1; // Single element
+            return Ok(2);
+        }
         if start_idx != 1 || count != 1 {
             return Err(PropertyError::InvalidStartIndex);
         }
-        let data = self.value.as_ref();
+        let data = self.as_ref();
         if buf.len() < data.len() {
             return Err(PropertyError::BufferTooSmall);
         }
         buf[..data.len()].copy_from_slice(data);
         Ok(data.len())
     }
+}
 
-    fn write(&mut self, start_idx: u16, data: &[u8]) -> Result<(), PropertyError> {
+/// Blanket implementation for any type that can be mutably viewed as bytes.
+impl<T: AsMut<[u8]>> PropertyWrite for T {
+    fn write_property(&mut self, start_idx: u16, data: &[u8]) -> Result<usize, PropertyError> {
         if start_idx != 1 {
             return Err(PropertyError::InvalidStartIndex);
         }
-        let target = self.value.as_mut();
+        let target = self.as_mut();
         if data.len() > target.len() {
             return Err(PropertyError::BufferTooSmall);
         }
         target[..data.len()].copy_from_slice(data);
-        Ok(())
-    }
-
-    fn element_count(&self) -> u16 {
-        1
+        Ok(data.len())
     }
 }
+
+// ============================================================================
+// Array Property Read/Write Traits
+// ============================================================================
+
+/// Trait for reading an array property with KNX semantics.
+///
+/// Array properties store multiple elements of the same size. The trait handles:
+/// - `start_idx=0`: Returns current element count as 2 bytes big-endian
+/// - `start_idx>=1`: Returns requested elements starting at the given 1-based index
+///
+/// # Example
+/// ```ignore
+/// fn read_property(&self, pid: u8, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
+///     match pid {
+///         pid::TABLE => self.table_data.read_array_property(start_idx, count, 2, buf), // 2 bytes per element
+///         _ => Err(PropertyError::InvalidPropertyId),
+///     }
+/// }
+/// ```
+pub trait ArrayPropertyRead {
+    /// Read array property with KNX semantics.
+    ///
+    /// # Arguments
+    /// * `start_idx` - 1-based start index (0 = query element count)
+    /// * `count` - Number of elements to read
+    /// * `element_size` - Size of each element in bytes
+    /// * `buf` - Output buffer
+    fn read_array_property(
+        &self,
+        start_idx: u16,
+        count: u16,
+        element_size: usize,
+        buf: &mut [u8],
+    ) -> Result<usize, PropertyError>;
+
+    /// Get the current element count for this array property.
+    fn element_count(&self, element_size: usize) -> u16;
+}
+
+/// Trait for writing an array property with KNX semantics.
+pub trait ArrayPropertyWrite {
+    /// Write array property with KNX semantics. Returns bytes written.
+    ///
+    /// # Arguments
+    /// * `start_idx` - 1-based start index (0 = write at beginning, e.g., for count prefix)
+    /// * `data` - Data to write
+    /// * `element_size` - Size of each element in bytes
+    fn write_array_property(
+        &mut self,
+        start_idx: u16,
+        data: &[u8],
+        element_size: usize,
+    ) -> Result<usize, PropertyError>;
+}
+
+/// Blanket implementation for slices.
+impl<T: AsRef<[u8]>> ArrayPropertyRead for T {
+    fn read_array_property(
+        &self,
+        start_idx: u16,
+        count: u16,
+        element_size: usize,
+        buf: &mut [u8],
+    ) -> Result<usize, PropertyError> {
+        let data = self.as_ref();
+
+        // start_idx=0 means query element count
+        if start_idx == 0 {
+            if buf.len() < 2 {
+                return Err(PropertyError::BufferTooSmall);
+            }
+            let elem_count = (data.len() / element_size) as u16;
+            buf[0..2].copy_from_slice(&elem_count.to_be_bytes());
+            return Ok(2);
+        }
+
+        // Calculate byte offset (1-indexed)
+        let byte_start = ((start_idx - 1) as usize) * element_size;
+        let byte_count = (count as usize) * element_size;
+
+        if byte_start >= data.len() {
+            return Err(PropertyError::InvalidStartIndex);
+        }
+
+        let available = data.len() - byte_start;
+        let to_copy = byte_count.min(available).min(buf.len());
+
+        buf[..to_copy].copy_from_slice(&data[byte_start..byte_start + to_copy]);
+        Ok(to_copy)
+    }
+
+    fn element_count(&self, element_size: usize) -> u16 {
+        (self.as_ref().len() / element_size) as u16
+    }
+}
+
+/// Blanket implementation for mutable slices.
+impl<T: AsMut<[u8]>> ArrayPropertyWrite for T {
+    fn write_array_property(
+        &mut self,
+        start_idx: u16,
+        data: &[u8],
+        element_size: usize,
+    ) -> Result<usize, PropertyError> {
+        let target = self.as_mut();
+
+        // Calculate byte offset (start_idx=0 means write at beginning)
+        let byte_start = if start_idx == 0 {
+            0
+        } else {
+            ((start_idx - 1) as usize) * element_size
+        };
+
+        if byte_start + data.len() > target.len() {
+            return Err(PropertyError::InvalidStartIndex);
+        }
+
+        target[byte_start..byte_start + data.len()].copy_from_slice(data);
+        Ok(data.len())
+    }
+}
+
+// ============================================================================
+// Array Property with Count Prefix
+// ============================================================================
+
+/// Trait for reading an array property that has a 2-byte count prefix.
+///
+/// Many KNX table properties store data as: [count:2][entry1][entry2]...
+/// This trait handles that format, reading the count from the first 2 bytes.
+pub trait ArrayPropertyWithPrefixRead {
+    /// Read array property with count prefix.
+    ///
+    /// # Arguments
+    /// * `start_idx` - 1-based start index (0 = query element count from prefix)
+    /// * `count` - Number of elements to read
+    /// * `element_size` - Size of each element in bytes
+    /// * `buf` - Output buffer
+    fn read_array_with_prefix(
+        &self,
+        start_idx: u16,
+        count: u16,
+        element_size: usize,
+        buf: &mut [u8],
+    ) -> Result<usize, PropertyError>;
+
+    /// Get the element count from the 2-byte prefix.
+    fn element_count_from_prefix(&self) -> u16;
+}
+
+/// Trait for writing an array property with count prefix.
+pub trait ArrayPropertyWithPrefixWrite {
+    /// Write array property with count prefix. Returns bytes written.
+    fn write_array_with_prefix(
+        &mut self,
+        start_idx: u16,
+        data: &[u8],
+        element_size: usize,
+    ) -> Result<usize, PropertyError>;
+}
+
+impl<T: AsRef<[u8]>> ArrayPropertyWithPrefixRead for T {
+    fn read_array_with_prefix(
+        &self,
+        start_idx: u16,
+        count: u16,
+        element_size: usize,
+        buf: &mut [u8],
+    ) -> Result<usize, PropertyError> {
+        let data = self.as_ref();
+
+        // start_idx=0 means query element count (read from prefix)
+        if start_idx == 0 {
+            if buf.len() < 2 {
+                return Err(PropertyError::BufferTooSmall);
+            }
+            if data.len() >= 2 {
+                buf[0..2].copy_from_slice(&data[0..2]);
+            } else {
+                buf[0] = 0;
+                buf[1] = 0;
+            }
+            return Ok(2);
+        }
+
+        // Data starts after 2-byte count prefix, 1-indexed
+        let byte_start = 2 + ((start_idx - 1) as usize) * element_size;
+        let byte_count = (count as usize) * element_size;
+
+        if byte_start >= data.len() {
+            return Err(PropertyError::InvalidStartIndex);
+        }
+
+        let available = data.len() - byte_start;
+        let to_copy = byte_count.min(available).min(buf.len());
+
+        buf[..to_copy].copy_from_slice(&data[byte_start..byte_start + to_copy]);
+        Ok(to_copy)
+    }
+
+    fn element_count_from_prefix(&self) -> u16 {
+        let data = self.as_ref();
+        if data.len() >= 2 {
+            u16::from_be_bytes([data[0], data[1]])
+        } else {
+            0
+        }
+    }
+}
+
+impl<T: AsMut<[u8]>> ArrayPropertyWithPrefixWrite for T {
+    fn write_array_with_prefix(
+        &mut self,
+        start_idx: u16,
+        data: &[u8],
+        element_size: usize,
+    ) -> Result<usize, PropertyError> {
+        let target = self.as_mut();
+
+        // Calculate byte offset
+        let byte_start = if start_idx == 0 {
+            0 // Write at beginning (e.g., the count prefix itself)
+        } else {
+            2 + ((start_idx - 1) as usize) * element_size
+        };
+
+        if byte_start + data.len() > target.len() {
+            return Err(PropertyError::InvalidStartIndex);
+        }
+
+        target[byte_start..byte_start + data.len()].copy_from_slice(data);
+        Ok(data.len())
+    }
+}
+

@@ -621,8 +621,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         match response {
             Ok(desc) => {
-                // Allocate response message: APCI(2) + ObjectIdx(1) + PropId(1) + PropIdx(1) + TypeMax(2) + Access(1) = 8
-                const RESPONSE_LEN: usize = offsets::MSG_APCI + 8;
+                // Allocate response message: APCI(2) + ObjectIdx(1) + PropId(1) + PropIdx(1) + Type(1) + MaxElements(2) + Access(1) = 9
+                const RESPONSE_LEN: usize = offsets::MSG_APCI + 9;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
 
                 let msg = ind
@@ -641,20 +641,25 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 trace!("AL PropertyDescriptionResponse confirmation: {:?}", confirmation.service_type());
             }
             Err(e) => {
-                // Send negative response with prop_id = 0 to indicate error
+                // Send negative response: echo back ObjIdx and PID, set all descriptor fields to 0
                 warn!("AL PropertyDescriptionRead failed: {:?}", e);
 
-                const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
+                // Full response: APCI(2) + ObjIdx(1) + PID(1) + PropIdx(1) + Type(1) + MaxNo(2) + Access(1) = 9
+                const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 9;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
 
                 let msg = ind
                     .respond_with(msg_buf)
                     .with_application(ApciCode::PropertyDescriptionResponse, response_service_type)
                     .with_data(|data| {
-                        // Error response: prop_id = 0 indicates "no such property"
+                        // Echo back ObjIdx, PID, PropIdx from request; set descriptor fields to 0
                         data[offsets::MSG_APCI + 2] = object_idx as u8;
-                        data[offsets::MSG_APCI + 3] = 0; // prop_id = 0 indicates error
+                        data[offsets::MSG_APCI + 3] = prop_id;
                         data[offsets::MSG_APCI + 4] = prop_idx;
+                        data[offsets::MSG_APCI + 5] = 0; // Type (WrEnab=0, PDT=0)
+                        data[offsets::MSG_APCI + 6] = 0; // MaxNo high byte
+                        data[offsets::MSG_APCI + 7] = 0; // MaxNo low byte
+                        data[offsets::MSG_APCI + 8] = 0; // Access (ReadAcc=0, WriteAcc=0)
                     });
 
                 let confirmation = self.transport_layer.request(msg).await;
@@ -725,15 +730,30 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let mut data_buf = [0u8; MAX_PROPERTY_DATA];
 
         // Query the interface object server
-        let result = self
-            .interface_object_server
-            .property_value_read(object_idx, prop_id, start_idx, count, &mut data_buf, access_level);
+        let result = self.interface_object_server.property_value_read(
+            object_idx,
+            prop_id,
+            start_idx,
+            count,
+            &mut data_buf,
+            access_level,
+        );
 
         match result {
             Ok(data_len) => {
                 // Allocate response message: APCI(2) + ObjIdx(1) + PropId(1) + Count+StartIdx(2) + Data(N)
                 let response_len = offsets::MSG_APCI + 6 + data_len;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+
+                // Build the response count_start field
+                // Per KNX spec: if start_idx=0 (element count query), response must have nr_of_elem=1
+                let response_count_start = if start_idx == 0 {
+                    // Element count query: respond with count=1, start_idx=0
+                    (1u16 << 12) | 0
+                } else {
+                    // Normal read: echo back the original count_start
+                    count_start
+                };
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -742,8 +762,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                         // Fill in the response header
                         data[offsets::MSG_APCI + 2] = object_idx as u8;
                         data[offsets::MSG_APCI + 3] = prop_id;
-                        data[offsets::MSG_APCI + 4] = (count_start >> 8) as u8;
-                        data[offsets::MSG_APCI + 5] = count_start as u8;
+                        data[offsets::MSG_APCI + 4] = (response_count_start >> 8) as u8;
+                        data[offsets::MSG_APCI + 5] = response_count_start as u8;
 
                         // Copy the data
                         data[offsets::MSG_APCI + 6..offsets::MSG_APCI + 6 + data_len]
@@ -846,9 +866,14 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         // Use a stack buffer for the response data
         // FIXME: stack usage - consider a better approach for large properties
         let mut response_data = [0u8; 64]; // Should be enough for any property response
-        let result = self
-            .interface_object_server
-            .property_value_write(object_idx, prop_id, start_idx, data, &mut response_data, access_level);
+        let result = self.interface_object_server.property_value_write(
+            object_idx,
+            prop_id,
+            start_idx,
+            data,
+            &mut response_data,
+            access_level,
+        );
 
         match result {
             Ok(response_data_len) => {

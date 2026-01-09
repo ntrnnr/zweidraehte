@@ -168,6 +168,7 @@ async fn main(spawner: Spawner) {
         (),  // hook_context
         link_layer_builder,
         EmptyInterfaceObjectsBuilder,
+        BasicStackState::default(),
     );
 
     // Create link layer resources

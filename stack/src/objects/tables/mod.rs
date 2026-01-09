@@ -21,9 +21,25 @@ pub trait TableMemory: ConstDefault + Sized {
 }
 
 pub trait LoadableTable: TableMemory {
-    fn write_lsm(&mut self, buf: &[u8]);
+    /// Process a load state machine command.
+    ///
+    /// # Arguments
+    /// * `buf` - Load control data (event byte followed by segment data for allocation)
+    /// * `alloc_address` - Virtual address to assign during RelativeData allocation.
+    fn write_lsm(&mut self, buf: &[u8], alloc_address: Option<u32>);
     fn read_lsm(&self) -> [u8; 1];
     fn is_loaded(&self) -> bool;
+
+    /// Get a reference to the MCB (Memory Control Block) data.
+    /// The MCB is 8 bytes: [requested_memory_size:4][mode:1][fill:1][crc:2]
+    fn mcb_bytes(&self) -> &[u8];
+
+    /// Get the table reference (base address in the KNX device's virtual address space).
+    ///
+    /// Management clients use this for memory-mapped access to the table data.
+    /// This is NOT a real memory pointer - it's a virtual address assigned by the
+    /// device's memory manager during allocation.
+    fn table_reference(&self) -> u32;
 }
 
 pub trait AddressTable: LoadableTable {
@@ -337,9 +353,7 @@ impl ComObjectType {
     pub fn size_in_bytes(&self) -> (usize, bool) {
         match *self {
             // Uint types (0-6): All are 1 byte, but only Uint1-Uint6 fit in short format
-            Self::Uint1 | Self::Uint2 | Self::Uint3 | Self::Uint4 | Self::Uint5 | Self::Uint6 => {
-                (1, true)
-            }
+            Self::Uint1 | Self::Uint2 | Self::Uint3 | Self::Uint4 | Self::Uint5 | Self::Uint6 => (1, true),
             Self::Uint7 | Self::Byte1 => (1, false),
             Self::Byte2 => (2, false),
             Self::Byte3 => (3, false),
@@ -620,6 +634,8 @@ pub struct Table<T: TableMemory> {
     pub(super) table: T,
     pub(super) state: LoadState,
     pub(super) mcb_table: PDT_Generic08,
+    /// Base address of allocated memory, set during RelativeData allocation, cleared on unload
+    pub(super) table_reference: u32,
 }
 
 impl<T: TableMemory> ConstDefault for Table<T> {
@@ -628,16 +644,53 @@ impl<T: TableMemory> ConstDefault for Table<T> {
 
 impl<T: TableMemory> Table<T> {
     pub const fn new() -> Self {
-        Self { table: T::DEFAULT, state: LoadState::Unloaded, mcb_table: PDT_Generic08::with_value([0; 8]) }
+        Self {
+            table: T::DEFAULT,
+            state: LoadState::Unloaded,
+            mcb_table: PDT_Generic08::with_value([0; 8]),
+            table_reference: 0,
+        }
     }
 
     /// Create a table with pre-loaded data, bypassing the load state machine.
     /// This is useful for compile-time configurations where the data is known at build time.
-    pub fn with_data(data: &[u8]) -> Self {
+    ///
+    /// # Arguments
+    /// * `data` - The table data to preload
+    /// * `table_reference` - The base address in the KNX device's virtual address space
+    ///   for memory-mapped access by management clients
+    pub fn with_data(data: &[u8], table_reference: u32) -> Self {
         let mut table = Self::new();
         table.table.data_ref_mut()[..data.len()].copy_from_slice(data);
         table.state = LoadState::Loaded;
+        table.table_reference = table_reference;
+        // Initialize MCB with data size and CRC
+        let stored_mcb = McbData::mut_from_bytes(table.mcb_table.as_mut_bytes()).unwrap();
+        stored_mcb.requested_memory_size.set(data.len() as u32);
+        stored_mcb.mode = 0x00;
+        stored_mcb.fill = 0xFF;
+        stored_mcb.crc.set(crc16_ccitt(data));
         table
+    }
+
+    /// Get the current load state.
+    pub fn load_state(&self) -> LoadState {
+        self.state
+    }
+
+    /// Set the load state directly (for persistence restore).
+    pub fn set_load_state(&mut self, state: LoadState) {
+        self.state = state;
+    }
+
+    /// Get a reference to the MCB (Memory Control Block) bytes.
+    pub fn mcb_bytes(&self) -> &[u8] {
+        self.mcb_table.as_bytes()
+    }
+
+    /// Get a mutable reference to the MCB (Memory Control Block) bytes.
+    pub fn mcb_bytes_mut(&mut self) -> &mut [u8] {
+        self.mcb_table.as_mut_bytes()
     }
 
     fn next_state(event: LoadEvent, cur_state: LoadState) -> (LoadState, LoadAction) {
@@ -679,7 +732,7 @@ impl<T: TableMemory> Table<T> {
 }
 
 impl<T: TableMemory> LoadableTable for Table<T> {
-    fn write_lsm(&mut self, mut buf: &[u8]) {
+    fn write_lsm(&mut self, mut buf: &[u8], alloc_address: Option<u32>) {
         let mut buf = &mut buf;
         let (mut new_state, action) = Self::next_state(buf.take_front(1).unwrap()[0].into(), self.state);
 
@@ -706,6 +759,10 @@ impl<T: TableMemory> LoadableTable for Table<T> {
                             stored_mcb.mode = 0x00;
                             stored_mcb.fill = 0xFF;
                             stored_mcb.crc.set(0xFFFF);
+
+                            if let Some(addr) = alloc_address {
+                                self.table_reference = addr;
+                            }
                         } else {
                             new_state = LoadState::Err;
                         }
@@ -722,7 +779,7 @@ impl<T: TableMemory> LoadableTable for Table<T> {
             LoadAction::Unload => {
                 self.mcb_table.set_value([0; 8]);
                 self.table.data_ref_mut().fill(0);
-                // TODO: set table ref to 0
+                self.table_reference = 0;
             }
             LoadAction::None => {}
             _ => new_state = LoadState::Err,
@@ -737,6 +794,14 @@ impl<T: TableMemory> LoadableTable for Table<T> {
 
     fn is_loaded(&self) -> bool {
         self.state == LoadState::Loaded
+    }
+
+    fn mcb_bytes(&self) -> &[u8] {
+        self.mcb_table.as_bytes()
+    }
+
+    fn table_reference(&self) -> u32 {
+        self.table_reference
     }
 }
 
@@ -796,10 +861,7 @@ impl<T: LoadableTable + ConstDefault> ConstDefault for RunnableApplication<T> {
 impl<T: LoadableTable + ConstDefault> RunnableApplication<T> {
     /// Create a new runnable application in unloaded/halted state.
     pub const fn new() -> Self {
-        Self {
-            table: T::DEFAULT,
-            run_state: RunState::Halted,
-        }
+        Self { table: T::DEFAULT, run_state: RunState::Halted }
     }
 }
 
@@ -807,10 +869,17 @@ impl<T: LoadableTable> RunnableApplication<T> {
     /// Create a runnable application from an existing loadable table.
     /// The run state will be HALTED initially.
     pub fn from_table(table: T) -> Self {
-        Self {
-            table,
-            run_state: RunState::Halted,
-        }
+        Self { table, run_state: RunState::Halted }
+    }
+
+    /// Get a reference to the underlying loadable table.
+    pub fn inner(&self) -> &T {
+        &self.table
+    }
+
+    /// Get a mutable reference to the underlying loadable table.
+    pub fn inner_mut(&mut self) -> &mut T {
+        &mut self.table
     }
 
     /// Compute the next run state based on event and load state.
@@ -882,12 +951,12 @@ impl<T: LoadableTable + TableMemory> TableMemory for RunnableApplication<T> {
 
 // Delegate LoadableTable to inner table, but also update run state on unload
 impl<T: LoadableTable> LoadableTable for RunnableApplication<T> {
-    fn write_lsm(&mut self, buf: &[u8]) {
+    fn write_lsm(&mut self, buf: &[u8], alloc_address: Option<u32>) {
         // Check if this is an unload event
         let is_unload = !buf.is_empty() && buf[0] == LoadEvent::Unload.into();
 
         // Process the load event
-        self.table.write_lsm(buf);
+        self.table.write_lsm(buf, alloc_address);
 
         // If unloaded, force run state to HALTED
         if is_unload || !self.table.is_loaded() {
@@ -904,6 +973,14 @@ impl<T: LoadableTable> LoadableTable for RunnableApplication<T> {
 
     fn is_loaded(&self) -> bool {
         self.table.is_loaded()
+    }
+
+    fn mcb_bytes(&self) -> &[u8] {
+        self.table.mcb_bytes()
+    }
+
+    fn table_reference(&self) -> u32 {
+        self.table.table_reference()
     }
 }
 

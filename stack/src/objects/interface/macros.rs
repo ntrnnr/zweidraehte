@@ -269,19 +269,20 @@ macro_rules! define_interface_object {
                 buf: &mut [u8],
             ) -> Result<usize, $crate::objects::interface::PropertyError> {
                 // Validate start_idx and count for single-element properties
-                if start_idx != 1 || count != 1 {
-                    // For single-element properties, only start_idx=1, count=1 is valid
-                    // Array properties would need different handling
-                    if start_idx == 0 && count == 0 {
-                        // Special case: query current element count
-                        // Return 1 for single-element properties
-                        if buf.len() >= 2 {
-                            buf[0] = 0;
-                            buf[1] = 1;
-                            return Ok(2);
-                        }
-                        return Err($crate::objects::interface::PropertyError::BufferTooSmall);
+                // Special case: start_idx=0 means query element count (regardless of count value)
+                // Per KNX spec, when start_idx=0, return the current number of elements
+                if start_idx == 0 {
+                    // Return 1 for single-element properties (2 bytes, big-endian)
+                    if buf.len() >= 2 {
+                        buf[0] = 0;
+                        buf[1] = 1;
+                        return Ok(2);
                     }
+                    return Err($crate::objects::interface::PropertyError::BufferTooSmall);
+                }
+
+                // For single-element properties, only start_idx=1, count=1 is valid
+                if start_idx != 1 || count != 1 {
                     return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
                 }
 
@@ -315,6 +316,7 @@ macro_rules! define_interface_object {
                 data: &[u8],
                 response_buf: &mut [u8],
             ) -> Result<usize, $crate::objects::interface::PropertyError> {
+                // For single-element properties, only start_idx=1 is valid for writes
                 if start_idx != 1 {
                     return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
                 }
@@ -500,15 +502,20 @@ macro_rules! define_interface_object {
                 buf: &mut [u8],
             ) -> Result<usize, $crate::objects::interface::PropertyError> {
                 // Validate start_idx and count for single-element properties
-                if start_idx != 1 || count != 1 {
-                    if start_idx == 0 && count == 0 {
-                        if buf.len() >= 2 {
-                            buf[0] = 0;
-                            buf[1] = 1;
-                            return Ok(2);
-                        }
-                        return Err($crate::objects::interface::PropertyError::BufferTooSmall);
+                // Special case: start_idx=0 means query element count (regardless of count value)
+                // Per KNX spec, when start_idx=0, return the current number of elements
+                if start_idx == 0 {
+                    // Return 1 for single-element properties (2 bytes, big-endian)
+                    if buf.len() >= 2 {
+                        buf[0] = 0;
+                        buf[1] = 1;
+                        return Ok(2);
                     }
+                    return Err($crate::objects::interface::PropertyError::BufferTooSmall);
+                }
+
+                // For single-element properties, only start_idx=1, count=1 is valid
+                if start_idx != 1 || count != 1 {
                     return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
                 }
 
@@ -567,6 +574,7 @@ macro_rules! define_interface_object {
                 data: &[u8],
                 response_buf: &mut [u8],
             ) -> Result<usize, $crate::objects::interface::PropertyError> {
+                // For single-element properties, only start_idx=1 is valid for writes
                 if start_idx != 1 {
                     return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
                 }
