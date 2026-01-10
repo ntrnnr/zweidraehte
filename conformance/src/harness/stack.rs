@@ -749,6 +749,35 @@ where
     }
 }
 
+impl<'a, S> zweidraehte::objects::interface::HasDeviceObject for KnxIpInterfaceObjects<'a, S>
+where
+    S: IpStackState,
+{
+    fn device_control(&self) -> zweidraehte::dpt::DeviceControl {
+        self.device.borrow().device_control
+    }
+
+    fn set_device_control(&self, value: zweidraehte::dpt::DeviceControl) {
+        self.device.borrow_mut().device_control = value;
+    }
+
+    fn programming_mode(&self) -> zweidraehte::dpt::ProgrammingMode {
+        self.device.borrow().programming_mode
+    }
+
+    fn set_programming_mode(&self, value: zweidraehte::dpt::ProgrammingMode) {
+        self.device.borrow_mut().programming_mode = value;
+    }
+
+    fn routing_count(&self) -> zweidraehte::dpt::RoutingCount {
+        self.device.borrow().routing_count
+    }
+
+    fn set_routing_count(&self, value: zweidraehte::dpt::RoutingCount) {
+        self.device.borrow_mut().routing_count = value;
+    }
+}
+
 // ============================================================================
 // Interface Objects Builder
 // ============================================================================
@@ -1275,7 +1304,8 @@ impl FullStackHarness {
     ///
     /// When enabled, the device responds to A_IndividualAddress_Read broadcasts.
     pub fn set_programming_mode(&self, enabled: bool) {
-        self.stack.set_programming_mode(enabled);
+        use zweidraehte::objects::interface::HasDeviceObject;
+        self.stack.interface_objects().set_programming_mode_enabled(enabled);
     }
 
     /// Drain all pending captured messages from the channel

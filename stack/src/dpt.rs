@@ -743,6 +743,365 @@ impl From<PDT_Enum8> for SystemError {
 //     }
 // }
 
+// ============================================================================
+// Semantic Property Wrapper Types
+// ============================================================================
+//
+// These types provide type-safe, ergonomic access to KNX property values.
+// Instead of raw byte arrays, they expose named accessors for individual
+// bits and fields according to the KNX specification.
+
+/// Device Control flags (PID 14, DPT 21.002)
+///
+/// This property controls device behavior and is part of the Device Object (index 0).
+///
+/// # Bit Layout
+/// - Bit 0: Safe State - Device is in safe/fail-safe state
+/// - Bit 1: Reserved
+/// - Bit 2: Verify Mode - Memory write verification enabled
+/// - Bits 3-7: Reserved
+///
+/// # Example
+/// ```ignore
+/// let dc = DeviceControl::new();
+/// if dc.verify_mode() {
+///     // Send verification response after memory write
+/// }
+/// ```
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct DeviceControl(u8);
+
+impl DeviceControl {
+    /// Create a new DeviceControl with all flags cleared
+    #[inline]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Create a DeviceControl from a raw byte value
+    #[inline]
+    pub const fn from_byte(value: u8) -> Self {
+        Self(value)
+    }
+
+    /// Get the raw byte value
+    #[inline]
+    pub const fn as_byte(&self) -> u8 {
+        self.0
+    }
+
+    /// Check if verify mode is enabled (bit 2)
+    ///
+    /// When enabled, the device sends a Memory_Response after Memory_Write
+    /// to confirm the written data.
+    #[inline]
+    pub const fn verify_mode(&self) -> bool {
+        self.0 & 0x04 != 0
+    }
+
+    /// Set verify mode (bit 2)
+    #[inline]
+    pub fn set_verify_mode(&mut self, enabled: bool) {
+        if enabled {
+            self.0 |= 0x04;
+        } else {
+            self.0 &= !0x04;
+        }
+    }
+
+    /// Check if safe state is active (bit 0)
+    ///
+    /// When set, the device is in a fail-safe state.
+    #[inline]
+    pub const fn safe_state(&self) -> bool {
+        self.0 & 0x01 != 0
+    }
+
+    /// Set safe state flag (bit 0)
+    #[inline]
+    pub fn set_safe_state(&mut self, enabled: bool) {
+        if enabled {
+            self.0 |= 0x01;
+        } else {
+            self.0 &= !0x01;
+        }
+    }
+}
+
+impl fmt::Debug for DeviceControl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeviceControl")
+            .field("safe_state", &self.safe_state())
+            .field("verify_mode", &self.verify_mode())
+            .field("raw", &format_args!("0x{:02X}", self.0))
+            .finish()
+    }
+}
+
+impl AsRef<[u8]> for DeviceControl {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        core::slice::from_ref(&self.0)
+    }
+}
+
+impl AsMut<[u8]> for DeviceControl {
+    #[inline]
+    fn as_mut(&mut self) -> &mut [u8] {
+        core::slice::from_mut(&mut self.0)
+    }
+}
+
+impl From<u8> for DeviceControl {
+    #[inline]
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
+}
+
+impl From<DeviceControl> for u8 {
+    #[inline]
+    fn from(value: DeviceControl) -> Self {
+        value.0
+    }
+}
+
+impl From<[u8; 1]> for DeviceControl {
+    #[inline]
+    fn from(value: [u8; 1]) -> Self {
+        Self(value[0])
+    }
+}
+
+impl From<DeviceControl> for [u8; 1] {
+    #[inline]
+    fn from(value: DeviceControl) -> Self {
+        [value.0]
+    }
+}
+
+/// Programming Mode flag (PID 54)
+///
+/// When programming mode is active, the device responds to broadcast
+/// address programming requests and can have its individual address changed.
+///
+/// # Bit Layout
+/// - Bit 0: Programming mode enabled
+/// - Bits 1-7: Reserved (should be 0)
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct ProgrammingMode(u8);
+
+impl ProgrammingMode {
+    /// Create with programming mode disabled
+    #[inline]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Create from a raw byte value
+    #[inline]
+    pub const fn from_byte(value: u8) -> Self {
+        Self(value)
+    }
+
+    /// Get the raw byte value
+    #[inline]
+    pub const fn as_byte(&self) -> u8 {
+        self.0
+    }
+
+    /// Check if programming mode is enabled
+    #[inline]
+    pub const fn enabled(&self) -> bool {
+        self.0 & 0x01 != 0
+    }
+
+    /// Set programming mode
+    #[inline]
+    pub fn set_enabled(&mut self, enabled: bool) {
+        if enabled {
+            self.0 = 0x01;
+        } else {
+            self.0 = 0x00;
+        }
+    }
+}
+
+impl fmt::Debug for ProgrammingMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProgrammingMode")
+            .field("enabled", &self.enabled())
+            .finish()
+    }
+}
+
+impl AsRef<[u8]> for ProgrammingMode {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        core::slice::from_ref(&self.0)
+    }
+}
+
+impl AsMut<[u8]> for ProgrammingMode {
+    #[inline]
+    fn as_mut(&mut self) -> &mut [u8] {
+        core::slice::from_mut(&mut self.0)
+    }
+}
+
+impl From<bool> for ProgrammingMode {
+    #[inline]
+    fn from(enabled: bool) -> Self {
+        Self(if enabled { 0x01 } else { 0x00 })
+    }
+}
+
+impl From<ProgrammingMode> for bool {
+    #[inline]
+    fn from(value: ProgrammingMode) -> Self {
+        value.enabled()
+    }
+}
+
+impl From<u8> for ProgrammingMode {
+    #[inline]
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
+}
+
+impl From<[u8; 1]> for ProgrammingMode {
+    #[inline]
+    fn from(value: [u8; 1]) -> Self {
+        Self(value[0])
+    }
+}
+
+impl From<ProgrammingMode> for [u8; 1] {
+    #[inline]
+    fn from(value: ProgrammingMode) -> Self {
+        [value.0]
+    }
+}
+
+/// Routing Count (PID 51)
+///
+/// The hop count for outgoing messages. Valid range is 0-7.
+/// Default value per KNX specification is 6.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct RoutingCount(u8);
+
+impl RoutingCount {
+    /// Default routing count per KNX specification
+    pub const DEFAULT: u8 = 6;
+
+    /// Create with default routing count (6)
+    #[inline]
+    pub const fn new() -> Self {
+        Self(Self::DEFAULT)
+    }
+
+    /// Create from a raw value (clamped to 0-7)
+    #[inline]
+    pub const fn from_value(value: u8) -> Self {
+        Self(value & 0x07)
+    }
+
+    /// Get the routing count value (0-7)
+    #[inline]
+    pub const fn value(&self) -> u8 {
+        self.0
+    }
+
+    /// Set the routing count (clamped to 0-7)
+    #[inline]
+    pub fn set_value(&mut self, value: u8) {
+        self.0 = value & 0x07;
+    }
+}
+
+impl Default for RoutingCount {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for RoutingCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RoutingCount({})", self.0)
+    }
+}
+
+impl AsRef<[u8]> for RoutingCount {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        core::slice::from_ref(&self.0)
+    }
+}
+
+impl AsMut<[u8]> for RoutingCount {
+    #[inline]
+    fn as_mut(&mut self) -> &mut [u8] {
+        core::slice::from_mut(&mut self.0)
+    }
+}
+
+impl From<u8> for RoutingCount {
+    #[inline]
+    fn from(value: u8) -> Self {
+        Self::from_value(value)
+    }
+}
+
+impl From<RoutingCount> for u8 {
+    #[inline]
+    fn from(value: RoutingCount) -> Self {
+        value.0
+    }
+}
+
+impl From<[u8; 1]> for RoutingCount {
+    #[inline]
+    fn from(value: [u8; 1]) -> Self {
+        Self::from_value(value[0])
+    }
+}
+
+impl From<RoutingCount> for [u8; 1] {
+    #[inline]
+    fn from(value: RoutingCount) -> Self {
+        [value.0]
+    }
+}
+
+// ============================================================================
+// PropertyDataDefinition implementations for semantic types
+// ============================================================================
+//
+// These allow the semantic types to be used in the define_interface_object! macro
+// which needs the PDT type ID for property descriptors.
+
+/// DeviceControl uses PDT_GENERIC_01 (ID 0x11) - 1 byte
+impl const PropertyDataDefinition for DeviceControl {
+    const SIZE: usize = 1;
+    const ID: u8 = 0x11; // PDT_GENERIC_01
+}
+
+/// ProgrammingMode uses PDT_GENERIC_01 (ID 0x11) - 1 byte
+impl const PropertyDataDefinition for ProgrammingMode {
+    const SIZE: usize = 1;
+    const ID: u8 = 0x11; // PDT_GENERIC_01
+}
+
+/// RoutingCount uses PDT_UNSIGNED_CHAR (ID 0x02) - 1 byte
+impl const PropertyDataDefinition for RoutingCount {
+    const SIZE: usize = 1;
+    const ID: u8 = 0x02; // PDT_UNSIGNED_CHAR
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

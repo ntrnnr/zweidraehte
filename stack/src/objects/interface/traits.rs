@@ -628,3 +628,123 @@ impl PropertyServiceHandler for () {
         Err(PropertyError::InvalidObjectIndex)
     }
 }
+
+/// Implement HasDeviceObject for () (empty container) for testing purposes
+impl HasDeviceObject for () {
+    fn device_control(&self) -> DeviceControl {
+        DeviceControl::new()
+    }
+
+    fn set_device_control(&self, _value: DeviceControl) {}
+
+    fn programming_mode(&self) -> ProgrammingMode {
+        ProgrammingMode::new()
+    }
+
+    fn set_programming_mode(&self, _value: ProgrammingMode) {}
+
+    fn routing_count(&self) -> RoutingCount {
+        RoutingCount::new()
+    }
+
+    fn set_routing_count(&self, _value: RoutingCount) {}
+}
+
+// ============================================================================
+// Typed Property Access Traits
+// ============================================================================
+//
+// These traits provide type-safe access to interface object properties
+// without going through the PropertyServiceHandler byte-buffer protocol.
+// They are used by stack layers that need direct access to specific properties.
+
+use crate::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
+
+/// Trait for containers that provide access to DeviceObject properties.
+///
+/// This trait enables type-safe access to the DeviceObject's semantic properties
+/// (like `DeviceControl`, `ProgrammingMode`, `RoutingCount`) without going through
+/// the `PropertyServiceHandler` byte-buffer protocol.
+///
+/// # Usage
+///
+/// Stack layers that need access to device properties can require this trait:
+///
+/// ```rust,ignore
+/// impl<D: StackDefinition> ApplicationLayer<D>
+/// where
+///     <D::IOB as InterfaceObjectsBuilder<...>>::Objects: HasDeviceObject,
+/// {
+///     fn handle_memory_write(&mut self, ...) {
+///         // Type-safe, ergonomic access to verify mode
+///         if self.interface_objects.device_control().verify_mode() {
+///             // Send verification response
+///         }
+///     }
+/// }
+/// ```
+pub trait HasDeviceObject {
+    /// Get the DeviceControl property (PID 14).
+    ///
+    /// Returns the device control flags including verify mode and safe state.
+    fn device_control(&self) -> DeviceControl;
+
+    /// Set the DeviceControl property (PID 14).
+    fn set_device_control(&self, value: DeviceControl);
+
+    /// Get the ProgrammingMode property (PID 54).
+    ///
+    /// Returns whether the device is in programming mode.
+    fn programming_mode(&self) -> ProgrammingMode;
+
+    /// Set the ProgrammingMode property (PID 54).
+    fn set_programming_mode(&self, value: ProgrammingMode);
+
+    /// Get the RoutingCount property (PID 51).
+    ///
+    /// Returns the hop count for outgoing messages.
+    fn routing_count(&self) -> RoutingCount;
+
+    /// Set the RoutingCount property (PID 51).
+    fn set_routing_count(&self, value: RoutingCount);
+
+    // ========================================================================
+    // Convenience methods with direct types
+    // ========================================================================
+
+    /// Check if verify mode is enabled.
+    ///
+    /// When verify mode is enabled, the device sends Memory_Response
+    /// after Memory_Write to confirm the written data.
+    #[inline]
+    fn verify_mode(&self) -> bool {
+        self.device_control().verify_mode()
+    }
+
+    /// Check if programming mode is enabled.
+    ///
+    /// When programming mode is active, the device responds to broadcast
+    /// address programming requests.
+    #[inline]
+    fn is_programming_mode(&self) -> bool {
+        self.programming_mode().enabled()
+    }
+
+    /// Set programming mode enabled/disabled.
+    #[inline]
+    fn set_programming_mode_enabled(&self, enabled: bool) {
+        self.set_programming_mode(ProgrammingMode::from(enabled));
+    }
+
+    /// Get the routing count value (0-7).
+    #[inline]
+    fn routing_count_value(&self) -> u8 {
+        self.routing_count().value()
+    }
+
+    /// Set the routing count value (clamped to 0-7).
+    #[inline]
+    fn set_routing_count_value(&self, value: u8) {
+        self.set_routing_count(RoutingCount::from_value(value));
+    }
+}

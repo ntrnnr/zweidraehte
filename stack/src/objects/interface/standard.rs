@@ -28,8 +28,9 @@ use core::marker::PhantomData;
 
 use crate::StackState;
 use crate::dpt::{
-    InterfaceObjectType, PDT_Generic01, PDT_Generic02, PDT_Generic04, PDT_Generic05, PDT_Generic06, PDT_Generic08,
-    PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong, PropertyDataDefinition,
+    DeviceControl, InterfaceObjectType, PDT_Generic02, PDT_Generic04, PDT_Generic05, PDT_Generic06, PDT_Generic08,
+    PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong, ProgrammingMode, PropertyDataDefinition,
+    RoutingCount,
 };
 use crate::objects::tables::{LoadableTable, RunnableTable};
 
@@ -49,7 +50,7 @@ crate::define_interface_object! {
     /// for all KNX devices. It is always Object Index 0.
     ///
     /// This implementation holds a reference to the stack state for dynamic
-    /// properties like programming mode and individual address components.
+    /// properties like individual address components.
     ///
     /// # Properties
     ///
@@ -58,11 +59,11 @@ crate::define_interface_object! {
     /// | 1 | Object Type | PDT_UNSIGNED_INT | RO |
     /// | 11 | Serial Number | PDT_GENERIC_06 | RO | (state-backed)
     /// | 12 | Manufacturer ID | PDT_UNSIGNED_INT | RO | (derived from serial number bytes 0-1)
-    /// | 14 | Device Control | PDT_GENERIC_01 | RW |
+    /// | 14 | Device Control | DeviceControl | RW |
     /// | 15 | Order Info | PDT_GENERIC_10 | RO |
     /// | 25 | Version | PDT_GENERIC_02 | RO |
-    /// | 51 | Routing Count | PDT_UNSIGNED_CHAR | RW | (state-backed)
-    /// | 54 | Programming Mode | PDT_GENERIC_01 | RW |
+    /// | 51 | Routing Count | RoutingCount | RW |
+    /// | 54 | Programming Mode | ProgrammingMode | RW |
     /// | 56 | Max APDU Length | PDT_UNSIGNED_INT | RO |
     /// | 57 | Subnet Address | PDT_UNSIGNED_CHAR | RO |
     /// | 58 | Device Address | PDT_UNSIGNED_CHAR | RO |
@@ -71,13 +72,16 @@ crate::define_interface_object! {
     pub struct DeviceObject<'a, S: StackState>: InterfaceObjectType::Device
         with state: &'a S
     {
-        // Static properties (stored in struct)
-        pid::DEVICE_CONTROL => device_control: PDT_Generic01, ReadWrite,
+        // Static properties (stored in struct) with semantic wrapper types
+        pid::DEVICE_CONTROL => device_control: DeviceControl, ReadWrite,
         pid::ORDER_INFO => order_info: PDT_Generic10, ReadOnly,
         pid::VERSION => version: PDT_Generic02, ReadOnly,
         pid::MAX_APDU_LENGTH => max_apdu_length: PDT_UnsignedInt, ReadOnly,
         pid::HARDWARE_TYPE => hardware_type: PDT_Generic06, ReadOnly,
-        pid::DEVICE_DESCRIPTOR => device_descriptor: PDT_UnsignedInt, ReadOnly
+        pid::DEVICE_DESCRIPTOR => device_descriptor: PDT_UnsignedInt, ReadOnly,
+        // These are now stored directly in the DeviceObject with semantic types
+        pid::ROUTING_COUNT => routing_count: RoutingCount, ReadWrite,
+        pid::PROGMODE => programming_mode: ProgrammingMode, ReadWrite
     }
     state {
         // State-backed properties (read/written via closures)
@@ -95,16 +99,6 @@ crate::define_interface_object! {
             },
             write: |_s, _data| Err(crate::objects::interface::PropertyError::WriteNotAllowed)
         }: PDT_UnsignedInt, ReadOnly,
-
-        pid::ROUTING_COUNT => {
-            read: |s| [s.routing_count()],
-            write: |s, data| { s.set_routing_count(data[0]); Ok(()) }
-        }: PDT_UnsignedChar, ReadWrite,
-
-        pid::PROGMODE => {
-            read: |s| [if s.programming_mode() { 0x01 } else { 0x00 }],
-            write: |s, data| { s.set_programming_mode(data[0] != 0); Ok(()) }
-        }: PDT_Generic01, ReadWrite,
 
         pid::SUBNET_ADDRESS => {
             read: |s| {

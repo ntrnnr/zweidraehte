@@ -80,14 +80,12 @@ pub enum ReadObjectError {
 ///
 /// pub struct MyDeviceState {
 ///     individual_address: RefCell<IndividualAddress>,
-///     programming_mode: RefCell<bool>,
 /// }
 ///
 /// impl Default for MyDeviceState {
 ///     fn default() -> Self {
 ///         Self {
 ///             individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
-///             programming_mode: RefCell::new(false),
 ///         }
 ///     }
 /// }
@@ -101,12 +99,8 @@ pub enum ReadObjectError {
 ///         *self.individual_address.borrow_mut() = addr;
 ///     }
 ///
-///     fn programming_mode(&self) -> bool {
-///         *self.programming_mode.borrow()
-///     }
-///
-///     fn set_programming_mode(&self, enabled: bool) {
-///         *self.programming_mode.borrow_mut() = enabled;
+///     fn serial_number(&self) -> &[u8; 6] {
+///         &[0x00, 0xFA, 0x00, 0x00, 0x00, 0x00]
 ///     }
 /// }
 /// ```
@@ -122,24 +116,6 @@ pub trait StackState: Default {
     /// This is typically set during device configuration or via
     /// `A_IndividualAddress_Write` when in programming mode.
     fn set_individual_address(&self, addr: IndividualAddress);
-
-    /// Get the programming mode flag.
-    ///
-    /// When programming mode is active, the device responds to `A_IndividualAddress_Read`
-    /// broadcasts and can have its individual address changed.
-    fn programming_mode(&self) -> bool;
-
-    /// Set the programming mode flag.
-    fn set_programming_mode(&self, enabled: bool);
-
-    /// Get the routing count (hop count) for outgoing messages.
-    ///
-    /// This value (0-7) is placed in the network layer control field.
-    /// Default is 6 per KNX specification.
-    fn routing_count(&self) -> u8;
-
-    /// Set the routing count (hop count) for outgoing messages.
-    fn set_routing_count(&self, count: u8);
 
     /// Get the device serial number (6 bytes).
     ///
@@ -248,8 +224,6 @@ pub const NUM_AUTH_KEYS: usize = 3;
 #[derive(Debug)]
 pub struct BasicStackState {
     individual_address: RefCell<IndividualAddress>,
-    programming_mode: RefCell<bool>,
-    routing_count: RefCell<u8>,
     serial_number: [u8; 6],
     /// Authorization key table for levels 0-2 only.
     /// Level 3 has no key - it's the fallback when no key matches.
@@ -272,8 +246,6 @@ impl Default for BasicStackState {
         // - M-2.11: Authorizing with 0xFFFFFFFF gives level 0
         Self {
             individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
-            programming_mode: RefCell::new(false),
-            routing_count: RefCell::new(6),                      // Default per KNX spec
             serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00], // Default: manufacturer 0x00FA
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]), // All keys = default key
             current_access_level: RefCell::new(0), // Start at level 0 (max access)
@@ -286,8 +258,6 @@ impl BasicStackState {
     pub fn with_individual_address(addr: IndividualAddress) -> Self {
         Self {
             individual_address: RefCell::new(addr),
-            programming_mode: RefCell::new(false),
-            routing_count: RefCell::new(6),
             serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00],
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]), // All keys = default key (0xFFFFFFFF)
             current_access_level: RefCell::new(0),
@@ -298,8 +268,6 @@ impl BasicStackState {
     pub fn with_address_and_serial(addr: IndividualAddress, serial_number: [u8; 6]) -> Self {
         Self {
             individual_address: RefCell::new(addr),
-            programming_mode: RefCell::new(false),
-            routing_count: RefCell::new(6),
             serial_number,
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]), // All keys = default key (0xFFFFFFFF)
             current_access_level: RefCell::new(0),
@@ -326,22 +294,6 @@ impl StackState for BasicStackState {
 
     fn set_individual_address(&self, addr: IndividualAddress) {
         *self.individual_address.borrow_mut() = addr;
-    }
-
-    fn programming_mode(&self) -> bool {
-        *self.programming_mode.borrow()
-    }
-
-    fn set_programming_mode(&self, enabled: bool) {
-        *self.programming_mode.borrow_mut() = enabled;
-    }
-
-    fn routing_count(&self) -> u8 {
-        *self.routing_count.borrow()
-    }
-
-    fn set_routing_count(&self, count: u8) {
-        *self.routing_count.borrow_mut() = count & 0x07; // Only 3 bits (0-7)
     }
 
     fn serial_number(&self) -> &[u8; 6] {
@@ -427,8 +379,6 @@ use core::net::Ipv4Addr;
 /// pub struct MyIpDeviceState {
 ///     // Base state
 ///     individual_address: RefCell<IndividualAddress>,
-///     programming_mode: RefCell<bool>,
-///     routing_count: RefCell<u8>,
 ///     // IP state
 ///     configured_ip: RefCell<Ipv4Addr>,
 ///     configured_subnet: RefCell<Ipv4Addr>,
@@ -685,22 +635,6 @@ impl<P: IpPlatform + Default> StackState for BasicIpStackState<P> {
         self.base.set_individual_address(addr);
     }
 
-    fn programming_mode(&self) -> bool {
-        self.base.programming_mode()
-    }
-
-    fn set_programming_mode(&self, enabled: bool) {
-        self.base.set_programming_mode(enabled);
-    }
-
-    fn routing_count(&self) -> u8 {
-        self.base.routing_count()
-    }
-
-    fn set_routing_count(&self, count: u8) {
-        self.base.set_routing_count(count);
-    }
-
     fn serial_number(&self) -> &[u8; 6] {
         self.base.serial_number()
     }
@@ -922,7 +856,7 @@ impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResour
 /// You must call [`Runner::run()`] in a background task for the KNX stack to work.
 pub struct Runner<'d, D: StackDefinition> {
     stack: Stack<'d, D>,
-    interface_objects: &'d dyn crate::objects::interface::PropertyServiceHandler,
+    interface_objects: &'d <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>,
     app_request_receiver: DynamicReceiver<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     link_layer_builder: D::LLB,
 }
@@ -1092,6 +1026,8 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
     pub async fn run(self, link_layer_resources: &'d mut <D::LLB as LinkLayerBuilder>::Resources) -> !
     where
         D::Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
+        <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>:
+            objects::interface::HasDeviceObject,
     {
         // Create all the channels for layer to layer communication
         let ll_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
@@ -1469,33 +1405,6 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// * `addr` - The new individual address
     pub fn set_individual_address(&self, addr: IndividualAddress) {
         self.inner.state.set_individual_address(addr);
-    }
-
-    /// Check if programming mode is active.
-    ///
-    /// When programming mode is active, the device responds to `A_IndividualAddress_Read`
-    /// broadcasts. This is typically activated by pressing a physical programming button
-    /// on the device, or set via the DeviceObject property PID 54.
-    ///
-    /// # Returns
-    /// `true` if programming mode is active, `false` otherwise
-    pub fn programming_mode(&self) -> bool {
-        self.inner.state.programming_mode()
-    }
-
-    /// Set the programming mode flag.
-    ///
-    /// When programming mode is active, the device responds to `A_IndividualAddress_Read`
-    /// broadcasts. This is typically activated by pressing a physical programming button
-    /// on the device.
-    ///
-    /// # Arguments
-    /// * `enabled` - `true` to enable programming mode, `false` to disable it
-    ///
-    /// # Note
-    /// This can also be accessed via the DeviceObject property PID 54.
-    pub fn set_programming_mode(&self, enabled: bool) {
-        self.inner.state.set_programming_mode(enabled);
     }
 
     /// Get access to the runtime state.

@@ -38,7 +38,7 @@ use crate::{
     },
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
-        interface::PropertyServiceHandler,
+        interface::{HasDeviceObject, InterfaceObjectsBuilder, PropertyServiceHandler},
         tables::{AssociationTable, CommunicationObjectTable},
     },
 };
@@ -84,12 +84,14 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     event_channel:
         &'a PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
 
-    // --- Property services ---
-    #[allow(dead_code)] // TODO: implement property services
-    interface_object_server: &'a dyn PropertyServiceHandler,
+    // --- Interface objects ---
+    /// Interface objects container with typed access to device properties.
+    /// Provides both PropertyServiceHandler for management protocol and
+    /// HasDeviceObject for direct property access.
+    interface_objects: &'a <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>,
 
     // --- Device state ---
-    /// Runtime state (programming mode, etc.)
+    /// Runtime state (individual address, serial number, etc.)
     state: &'a D::State,
 
     // --- Memory access ---
@@ -120,7 +122,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             2,
             1,
         >,
-        interface_object_server: &'a dyn PropertyServiceHandler,
+        interface_objects: &'a <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>,
         state: &'a D::State,
         memory_map: &'a D::Mem,
         app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
@@ -132,7 +134,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             comm_objects,
             hook_context,
             event_channel,
-            interface_object_server,
+            interface_objects,
             state,
             memory_map,
             app_request_receiver,
@@ -148,6 +150,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D>
 where
     D::Tables: HasAssociationTable + HasCommunicationObjectTable,
+    <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>: HasDeviceObject,
 {
     type Buffer = Buffer<'static>;
 
@@ -617,7 +620,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         debug!("AL PropertyDescriptionRead: obj={}, prop_id={}, prop_idx={}", object_idx, prop_id, prop_idx);
 
         // Query the interface object server
-        let response = self.interface_object_server.property_description_read(object_idx, prop_id, prop_idx);
+        let response = self.interface_objects.property_description_read(object_idx, prop_id, prop_idx);
 
         match response {
             Ok(desc) => {
@@ -730,7 +733,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let mut data_buf = [0u8; MAX_PROPERTY_DATA];
 
         // Query the interface object server
-        let result = self.interface_object_server.property_value_read(
+        let result = self.interface_objects.property_value_read(
             object_idx,
             prop_id,
             start_idx,
@@ -866,7 +869,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         // Use a stack buffer for the response data
         // FIXME: stack usage - consider a better approach for large properties
         let mut response_data = [0u8; 64]; // Should be enough for any property response
-        let result = self.interface_object_server.property_value_write(
+        let result = self.interface_objects.property_value_write(
             object_idx,
             prop_id,
             start_idx,
@@ -930,7 +933,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 // Device Management Services (A_DeviceDescriptor_Read, ...)
 // ============================================================================
 
-impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
+impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
+where
+    <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>: HasDeviceObject,
+{
     /// Handle `A_DeviceDescriptor_Read.ind`
     ///
     /// Responds with the device descriptor (mask version) for descriptor type 0.
@@ -1077,7 +1083,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         // Only respond if device is in programming mode
         // Per KNX spec, A_IndividualAddress_Read should only be responded to when
         // the device is in programming mode (e.g., programming button pressed)
-        if !self.state.programming_mode() {
+        if !self.interface_objects.is_programming_mode() {
             trace!("AL IndividualAddressRead ignored (not in programming mode)");
             return;
         }
@@ -1124,7 +1130,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         }
 
         // Only accept if device is in programming mode
-        if !self.state.programming_mode() {
+        if !self.interface_objects.is_programming_mode() {
             trace!("AL IndividualAddressWrite ignored (not in programming mode)");
             return;
         }
@@ -1426,7 +1432,6 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     async fn handle_memory_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
         use crate::memory::MemoryMap;
         use crate::messages::builder::IndicationExt;
-        use crate::objects::interface::pid;
 
         // Memory_Write is only valid on connection-oriented transport
         if ind.service_type() != ServiceType::T_Data_Ind {
@@ -1485,15 +1490,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         };
 
         // Check if Verify flag is set in DEVICE_CONTROL (Object 0, PID 14)
-        // Bit 2 (0x04) is the Verify flag
-        let mut device_control = [0u8; 1];
-        let verify_enabled = self
-            .interface_object_server
-            .property_value_read(0, pid::DEVICE_CONTROL, 1, 1, &mut device_control, 0) // Internal: full access
-            .map(|_| device_control[0] & 0x04 != 0)
-            .unwrap_or(false);
-
-        if !verify_enabled {
+        // Using the typed accessor from HasDeviceObject trait
+        if !self.interface_objects.verify_mode() {
             // No response when Verify is not enabled
             return;
         }
@@ -1647,18 +1645,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         data: &[u8],
     ) {
         use crate::messages::builder::IndicationExt;
-        use crate::objects::interface::pid;
 
         // Check if Verify flag is set in DEVICE_CONTROL (Object 0, PID 14)
-        // Bit 2 (0x04) is the Verify flag
-        let mut device_control = [0u8; 1];
-        let verify_enabled = self
-            .interface_object_server
-            .property_value_read(0, pid::DEVICE_CONTROL, 1, 1, &mut device_control, 0) // Internal: full access
-            .map(|_| device_control[0] & 0x04 != 0)
-            .unwrap_or(false);
-
-        if !verify_enabled {
+        // Using the typed accessor from HasDeviceObject trait
+        if !self.interface_objects.verify_mode() {
             // No response when Verify is not enabled
             return;
         }
@@ -1801,7 +1791,6 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     async fn handle_user_memory_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
         use crate::memory::MemoryMap;
         use crate::messages::builder::IndicationExt;
-        use crate::objects::interface::pid;
 
         // UserMemory_Write is only valid on connection-oriented transport
         if ind.service_type() != ServiceType::T_Data_Ind {
@@ -1864,15 +1853,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         };
 
         // Check if Verify flag is set in DEVICE_CONTROL (Object 0, PID 14)
-        // Bit 2 (0x04) is the Verify flag
-        let mut device_control = [0u8; 1];
-        let verify_enabled = self
-            .interface_object_server
-            .property_value_read(0, pid::DEVICE_CONTROL, 1, 1, &mut device_control, 0) // Internal: full access
-            .map(|_| device_control[0] & 0x04 != 0)
-            .unwrap_or(false);
-
-        if !verify_enabled {
+        // Using the typed accessor from HasDeviceObject trait
+        if !self.interface_objects.verify_mode() {
             // No response when Verify is not enabled
             return;
         }

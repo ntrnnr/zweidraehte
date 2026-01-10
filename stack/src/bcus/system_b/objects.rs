@@ -381,6 +381,81 @@ where
 }
 
 // ============================================================================
+// HasDeviceObject implementations
+// ============================================================================
+
+use crate::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
+use crate::objects::interface::HasDeviceObject;
+
+impl<'a, S, ADT, AST, COT, APP> HasDeviceObject
+    for SystemBInterfaceObjects<'a, S, ADT, AST, COT, APP>
+where
+    S: StackState,
+    ADT: LoadableTable,
+    AST: LoadableTable,
+    COT: LoadableTable,
+    APP: LoadableTable + RunnableTable,
+{
+    fn device_control(&self) -> DeviceControl {
+        self.device.borrow().device_control
+    }
+
+    fn set_device_control(&self, value: DeviceControl) {
+        self.device.borrow_mut().device_control = value;
+    }
+
+    fn programming_mode(&self) -> ProgrammingMode {
+        self.device.borrow().programming_mode
+    }
+
+    fn set_programming_mode(&self, value: ProgrammingMode) {
+        self.device.borrow_mut().programming_mode = value;
+    }
+
+    fn routing_count(&self) -> RoutingCount {
+        self.device.borrow().routing_count
+    }
+
+    fn set_routing_count(&self, value: RoutingCount) {
+        self.device.borrow_mut().routing_count = value;
+    }
+}
+
+impl<'a, S, ADT, AST, COT, APP> HasDeviceObject
+    for KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP>
+where
+    S: IpStackState,
+    ADT: LoadableTable,
+    AST: LoadableTable,
+    COT: LoadableTable,
+    APP: LoadableTable + RunnableTable,
+{
+    fn device_control(&self) -> DeviceControl {
+        self.base.device_control()
+    }
+
+    fn set_device_control(&self, value: DeviceControl) {
+        self.base.set_device_control(value);
+    }
+
+    fn programming_mode(&self) -> ProgrammingMode {
+        self.base.programming_mode()
+    }
+
+    fn set_programming_mode(&self, value: ProgrammingMode) {
+        self.base.set_programming_mode(value);
+    }
+
+    fn routing_count(&self) -> RoutingCount {
+        self.base.routing_count()
+    }
+
+    fn set_routing_count(&self, value: RoutingCount) {
+        self.base.set_routing_count(value);
+    }
+}
+
+// ============================================================================
 // Helper functions for creating interface objects with SystemBDevice
 // ============================================================================
 

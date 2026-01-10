@@ -51,14 +51,8 @@ pub struct DeviceState<D: SystemBDevice> {
     // ========================================================================
     // Runtime state (volatile, reset on boot)
     // ========================================================================
-    /// Programming mode flag (volatile, always false on boot).
-    programming_mode: Cell<bool>,
-
     /// Current access level for connection (volatile).
     current_access_level: Cell<u8>,
-
-    /// Routing count / hop count (volatile, default 6).
-    routing_count: Cell<u8>,
 
     // ========================================================================
     // Storage management
@@ -80,9 +74,7 @@ impl<D: SystemBDevice> DeviceState<D> {
         Self {
             individual_address: Cell::new(IndividualAddress::new(15, 15, 255)),
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
-            programming_mode: Cell::new(false),
             current_access_level: Cell::new((MAX_ACCESS_LEVELS - 1) as u8),
-            routing_count: Cell::new(6),
             storage: RefCell::new(storage),
             dirty: Cell::new(false),
             _phantom: PhantomData,
@@ -100,9 +92,7 @@ impl<D: SystemBDevice> DeviceState<D> {
         Self {
             individual_address: Cell::new(individual_address),
             auth_keys: RefCell::new(auth_keys),
-            programming_mode: Cell::new(false),
             current_access_level: Cell::new((MAX_ACCESS_LEVELS - 1) as u8),
-            routing_count: Cell::new(6),
             storage: RefCell::new(storage),
             dirty: Cell::new(false),
             _phantom: PhantomData,
@@ -152,24 +142,6 @@ where
     fn set_individual_address(&self, addr: IndividualAddress) {
         self.individual_address.set(addr);
         self.mark_dirty();
-    }
-
-    fn programming_mode(&self) -> bool {
-        self.programming_mode.get()
-    }
-
-    fn set_programming_mode(&self, enabled: bool) {
-        self.programming_mode.set(enabled);
-        // NOT persisted - always false on boot
-    }
-
-    fn routing_count(&self) -> u8 {
-        self.routing_count.get()
-    }
-
-    fn set_routing_count(&self, count: u8) {
-        self.routing_count.set(count & 0x07);
-        // NOT persisted
     }
 
     fn serial_number(&self) -> &[u8; 6] {
@@ -374,22 +346,6 @@ where
 
     fn set_individual_address(&self, addr: IndividualAddress) {
         self.base.set_individual_address(addr);
-    }
-
-    fn programming_mode(&self) -> bool {
-        self.base.programming_mode()
-    }
-
-    fn set_programming_mode(&self, enabled: bool) {
-        self.base.set_programming_mode(enabled);
-    }
-
-    fn routing_count(&self) -> u8 {
-        self.base.routing_count()
-    }
-
-    fn set_routing_count(&self, count: u8) {
-        self.base.set_routing_count(count);
     }
 
     fn serial_number(&self) -> &[u8; 6] {
