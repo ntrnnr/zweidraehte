@@ -90,6 +90,7 @@ where
     /// - `app`: Reference to the application
     /// - `program_version`: Application program version (5 bytes)
     /// - `pei_type`: PEI type (0 = no PEI)
+    /// - `routing_count`: Routing count (hop count) for outgoing messages (0-7)
     pub fn new(
         state: &'a S,
         device_info: &DeviceInfo,
@@ -100,9 +101,12 @@ where
         app: &'a RefCell<APP>,
         program_version: [u8; 5],
         pei_type: u8,
+        routing_count: u8,
     ) -> Self {
+        let mut device = DeviceObject::with_info(state, device_info);
+        device.routing_count = crate::dpt::RoutingCount::from(routing_count);
         Self {
-            device: RefCell::new(DeviceObject::with_info(state, device_info)),
+            device: RefCell::new(device),
             address_table: RefCell::new(AddressTableObject::new(adt, layout.adt_address() as u32)),
             association_table: RefCell::new(AssociationTableObject::new(ast, layout.ast_address() as u32)),
             group_object_table: RefCell::new(GroupObjectTableObject::new(cot, layout.cot_address() as u32)),
@@ -271,6 +275,7 @@ where
         app: &'a RefCell<APP>,
         program_version: [u8; 5],
         pei_type: u8,
+        routing_count: u8,
     ) -> Self {
         Self {
             base: SystemBInterfaceObjects::new(
@@ -283,6 +288,7 @@ where
                 app,
                 program_version,
                 pei_type,
+                routing_count,
             ),
             ip_parameter: RefCell::new(IpParameterObject::with_state(state)),
         }

@@ -9,7 +9,7 @@ use const_default::ConstDefault;
 
 use crate::{
     address::IndividualAddress,
-    memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
+    memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRoutingCount},
     objects::tables::{
         LoadableTable, RunnableTable, Table, addr7::AddrTab7Impl, app::Application, asso6::AssoTab6Impl,
         co7::CoTab7Impl,
@@ -60,6 +60,10 @@ pub struct SystemBState<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_
     /// Level 3 has no key (it's the fallback when no key matches).
     pub auth_keys: [[u8; 4]; 3],
 
+    /// Routing count (hop count) for outgoing messages.
+    /// Value 0-7, default is 6 per KNX specification.
+    pub routing_count: u8,
+
     /// IP-specific configuration (only for 57B0 devices).
     pub ip_config: Option<PersistedIpConfig>,
 
@@ -91,6 +95,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
         Self {
             individual_address: IndividualAddress::new(15, 15, 255),
             auth_keys: [[0xFF; 4]; 3],
+            routing_count: 6,
             ip_config: None,
             adt: RefCell::new(Table::new()),
             ast: RefCell::new(Table::new()),
@@ -115,6 +120,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
         Self {
             individual_address: persisted.individual_address,
             auth_keys: persisted.auth_keys,
+            routing_count: persisted.routing_count,
             ip_config: persisted.ip_config,
             adt: RefCell::new(persisted.address_table),
             ast: RefCell::new(persisted.association_table),
@@ -134,6 +140,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
             version: PersistedState::<ADT_SIZE, AST_SIZE, COT_SIZE, P>::VERSION,
             individual_address: self.individual_address,
             auth_keys: self.auth_keys,
+            routing_count: self.routing_count,
             address_table: (*self.adt.borrow()).clone(),
             association_table: (*self.ast.borrow()).clone(),
             group_object_table: (*self.cot.borrow()).clone(),
@@ -205,6 +212,14 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 
     fn app(&self) -> &RefCell<Self::APP> {
         &self.app
+    }
+}
+
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault> HasRoutingCount
+    for SystemBState<ADT_SIZE, AST_SIZE, COT_SIZE, P>
+{
+    fn routing_count(&self) -> u8 {
+        self.routing_count
     }
 }
 

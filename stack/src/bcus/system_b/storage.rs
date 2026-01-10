@@ -19,6 +19,11 @@ use crate::{
     },
 };
 
+/// Default routing count (6 per KNX specification).
+const fn default_routing_count() -> u8 {
+    6
+}
+
 /// Trait for persisting device state to storage.
 ///
 /// Implementations can target various storage backends:
@@ -126,6 +131,12 @@ pub struct PersistedState<
     /// Key value `[0xFF, 0xFF, 0xFF, 0xFF]` is the "default key".
     pub auth_keys: [[u8; 4]; 3],
 
+    /// Routing count (hop count) for outgoing messages.
+    ///
+    /// Value 0-7, default is 6 per KNX specification.
+    #[serde(default = "default_routing_count")]
+    pub routing_count: u8,
+
     /// Address table (TSAP → Group Address mapping).
     pub address_table: Table<AddrTab7Impl<ADT_SIZE>>,
 
@@ -156,6 +167,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
             version: Self::VERSION,
             individual_address: IndividualAddress::new(15, 15, 255),
             auth_keys: [[0xFF; 4]; 3], // All keys = default key
+            routing_count: 6,          // Default per KNX spec
             address_table: Table::new(),
             association_table: Table::new(),
             group_object_table: Table::new(),

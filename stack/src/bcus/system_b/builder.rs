@@ -5,7 +5,7 @@
 
 use crate::{
     IpStackState, StackState,
-    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
+    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable, HasRoutingCount},
     objects::interface::InterfaceObjectsBuilder,
     objects::tables::{LoadableTable, RunnableTable},
 };
@@ -51,7 +51,7 @@ impl<S, Tables, D> InterfaceObjectsBuilder<S, Tables> for SystemBInterfaceObject
 where
     D: SystemBDevice,
     S: StackState,
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
     Tables::ADT: LoadableTable,
     Tables::AST: LoadableTable,
     Tables::COT: LoadableTable,
@@ -81,6 +81,7 @@ where
             tables.app(),
             D::PROGRAM_VERSION,
             D::PEI_TYPE,
+            tables.routing_count(),
         )
     }
 }
@@ -121,7 +122,7 @@ impl<S, Tables, D> InterfaceObjectsBuilder<S, Tables> for KnxIpInterfaceObjectsB
 where
     D: SystemBDevice,
     S: IpStackState,
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
     Tables::ADT: LoadableTable,
     Tables::AST: LoadableTable,
     Tables::COT: LoadableTable,
@@ -151,6 +152,7 @@ where
             tables.app(),
             D::PROGRAM_VERSION,
             D::PEI_TYPE,
+            tables.routing_count(),
         )
     }
 }

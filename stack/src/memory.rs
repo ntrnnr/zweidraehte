@@ -130,6 +130,15 @@ pub trait HasApplication {
     fn app(&self) -> &RefCell<Self::APP>;
 }
 
+/// Trait for types that provide a routing count.
+///
+/// The routing count (hop count) determines how many routers a message
+/// can pass through. Value 0-7, default is 6 per KNX specification.
+pub trait HasRoutingCount {
+    /// Get the routing count.
+    fn routing_count(&self) -> u8;
+}
+
 // ============================================================================
 // Memory Map
 // ============================================================================

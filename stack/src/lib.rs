@@ -51,7 +51,7 @@ use crate::{
         network::NetworkLayer,
         transport::TransportLayer,
     },
-    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable, MemoryMap},
+    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable, HasRoutingCount, MemoryMap},
     messages::buffers::{Buffer, BufferManager, DynBufferManager},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
