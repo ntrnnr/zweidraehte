@@ -52,13 +52,7 @@ impl MemoryLayout {
     /// - `max_asso`: Maximum associations (determines AST size)
     /// - `max_co`: Maximum communication objects (determines COT size)
     /// - `max_app`: Maximum application data size
-    pub const fn calculate(
-        base_address: u16,
-        max_addr: usize,
-        max_asso: usize,
-        max_co: usize,
-        max_app: usize,
-    ) -> Self {
+    pub const fn calculate(base_address: u16, max_addr: usize, max_asso: usize, max_co: usize, max_app: usize) -> Self {
         // AddrTab7: 2-byte count + 2 bytes per entry
         let adt_size = 2 + max_addr * 2;
 
@@ -152,19 +146,8 @@ impl SystemBMemoryMap {
     /// Create a new memory map for the given table sizes.
     ///
     /// Uses the default base address (0x0100).
-    pub const fn for_device(
-        max_addr: usize,
-        max_asso: usize,
-        max_co: usize,
-        max_app: usize,
-    ) -> Self {
-        Self::new(MemoryLayout::calculate(
-            Self::DEFAULT_BASE_ADDRESS,
-            max_addr,
-            max_asso,
-            max_co,
-            max_app,
-        ))
+    pub const fn for_device(max_addr: usize, max_asso: usize, max_co: usize, max_app: usize) -> Self {
+        Self::new(MemoryLayout::calculate(Self::DEFAULT_BASE_ADDRESS, max_addr, max_asso, max_co, max_app))
     }
 
     /// Get the memory layout.
@@ -173,24 +156,11 @@ impl SystemBMemoryMap {
     }
 }
 
-impl Default for SystemBMemoryMap {
-    fn default() -> Self {
-        // Default with reasonable sizes
-        Self::for_device(64, 64, 32, 256)
-    }
-}
-
 impl<Tables> MemoryMap<Tables> for SystemBMemoryMap
 where
     Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication,
 {
-    fn read(
-        &self,
-        tables: &Tables,
-        address: u16,
-        data: &mut [u8],
-        _access_level: u8,
-    ) -> Result<usize, MemoryError> {
+    fn read(&self, tables: &Tables, address: u16, data: &mut [u8], _access_level: u8) -> Result<usize, MemoryError> {
         let layout = &self.layout;
 
         // Check if address is within our mapped range
@@ -248,13 +218,7 @@ where
         }
     }
 
-    fn write(
-        &self,
-        tables: &Tables,
-        address: u16,
-        data: &[u8],
-        _access_level: u8,
-    ) -> Result<usize, MemoryError> {
+    fn write(&self, tables: &Tables, address: u16, data: &[u8], _access_level: u8) -> Result<usize, MemoryError> {
         let layout = &self.layout;
 
         // Check if address is within our mapped range

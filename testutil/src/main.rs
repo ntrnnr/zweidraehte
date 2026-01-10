@@ -19,7 +19,7 @@ use zweidraehte::{
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
         comm::ComObjects,
-        interface::EmptyInterfaceObjectsBuilder,
+        interface::PropertyServiceHandler,
         tables::{
             AddressTable, AssociationTable, CommunicationObjectTable, addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7,
         },
@@ -89,9 +89,19 @@ impl StackDefinition for MyKnxStack {
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = MockLinkLayerBuilder<8>;
-    type IOB = EmptyInterfaceObjectsBuilder;
     type State = BasicStackState;
     type Mem = zweidraehte::memory::NoMemoryMap;
+
+    // Empty interface objects - this stack doesn't have interface objects
+    type InterfaceObjects<'a> = ();
+
+    fn create_interface_objects<'a>(_tables: &'a Self::Tables, _state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    where
+        Self::Tables: 'a,
+        Self::State: 'a,
+    {
+        ()
+    }
 }
 
 #[embassy_executor::task]
@@ -167,8 +177,8 @@ async fn main(spawner: Spawner) {
         comm_objs::AppComObjects::new(),
         (),  // hook_context
         link_layer_builder,
-        EmptyInterfaceObjectsBuilder,
         BasicStackState::default(),
+        zweidraehte::memory::NoMemoryMap,
     );
 
     // Create link layer resources

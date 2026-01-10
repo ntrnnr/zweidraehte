@@ -162,7 +162,7 @@ pub enum MemoryError {
 ///
 /// The trait receives a reference to the user's tables container, allowing full
 /// flexibility in the dispatch logic.
-pub trait MemoryMap<Tables>: Default {
+pub trait MemoryMap<Tables> {
     /// Read from memory at absolute address.
     ///
     /// The `access_level` parameter indicates the current authorization level (0-3 typically).

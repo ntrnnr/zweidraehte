@@ -2,33 +2,44 @@ use embassy_sync::channel::DynamicSender;
 
 use crate::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage};
 use crate::messages::knx::*;
+use crate::objects::interface::HasDeviceObject;
 use crate::{StackState, messages::buffers::Buffer};
 
 use super::{ActorRequest, Inbox, Layer, LayerOp};
 
 /// Network layer for the KNX stack
-pub struct NetworkLayer<'a, S: StackState> {
+pub struct NetworkLayer<'a, S: StackState, IO: HasDeviceObject> {
     state: &'a S,
-    default_hop_count: u8,
+    interface_objects: &'a IO,
 
     link_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
 }
 
-impl<'a, S: StackState> NetworkLayer<'a, S> {
+impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
     /// Create a new Network Layer with a reference to the shared stack state
+    /// and interface objects.
+    ///
+    /// The routing count (hop count) for outgoing messages is read dynamically
+    /// from the device object in the interface objects.
     pub fn new(
         state: &'a S,
-        default_hop_count: u8,
+        interface_objects: &'a IO,
 
         link_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
-        Self { state, default_hop_count, link_layer, transport_layer }
+        Self { state, interface_objects, link_layer, transport_layer }
+    }
+
+    /// Get the current routing count from the device object.
+    #[inline]
+    fn routing_count(&self) -> u8 {
+        self.interface_objects.routing_count_value()
     }
 }
 
-impl<'a, S: StackState> Layer<'a> for NetworkLayer<'a, S> {
+impl<'a, S: StackState, IO: HasDeviceObject> Layer<'a> for NetworkLayer<'a, S, IO> {
     type Buffer = Buffer<'static>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
@@ -52,7 +63,7 @@ impl<'a, S: StackState> Layer<'a> for NetworkLayer<'a, S> {
     }
 }
 
-impl<'a, S: StackState> NetworkLayer<'a, S> {
+impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
     async fn handle_indication(&mut self, mut msg: IndicationMessage<Buffer<'static>>) {
         debug!("NL indication: {:?}", msg);
 
@@ -104,7 +115,7 @@ impl<'a, S: StackState> NetworkLayer<'a, S> {
                 ctrl.set_a(AckType::AckDontCare);
                 ctrl.set_c(Confirm::NoError);
 
-                msg.convert_hop_count_type_to_hop_count(self.default_hop_count);
+                msg.convert_hop_count_type_to_hop_count(self.routing_count());
                 msg.set_source_addr(self.state.individual_address());
                 msg.set_service_type(ServiceType::L_Data_Req);
 

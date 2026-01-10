@@ -10,19 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     address::IndividualAddress,
-    objects::tables::{
-        Table,
-        addr7::AddrTab7Impl,
-        app::Application,
-        asso6::AssoTab6Impl,
-        co7::CoTab7Impl,
-    },
+    objects::tables::{Table, addr7::AddrTab7Impl, app::Application, asso6::AssoTab6Impl, co7::CoTab7Impl},
 };
-
-/// Default routing count (6 per KNX specification).
-const fn default_routing_count() -> u8 {
-    6
-}
 
 /// Trait for persisting device state to storage.
 ///
@@ -62,7 +51,12 @@ pub trait DeviceStorage: Sized {
     /// - `AST_SIZE`: Association table size in bytes (2 + MAX_ASSO * 4)
     /// - `COT_SIZE`: Group object table size in bytes (2 + MAX_CO * 2)
     /// - `P`: Application parameters type
-    fn load<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault + Serialize + for<'de> Deserialize<'de>>(
+    fn load<
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        P: ConstDefault + Serialize + for<'de> Deserialize<'de>,
+    >(
         &mut self,
     ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>>, Self::Error>;
 
@@ -70,7 +64,12 @@ pub trait DeviceStorage: Sized {
     ///
     /// This should atomically replace the previous state to prevent
     /// corruption on power loss during write.
-    fn save<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault + Serialize + for<'de> Deserialize<'de>>(
+    fn save<
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        P: ConstDefault + Serialize + for<'de> Deserialize<'de>,
+    >(
         &mut self,
         state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>,
     ) -> Result<(), Self::Error>;
@@ -111,12 +110,7 @@ pub trait DeviceStorage: Sized {
 ///
 /// Use [`table_sizes`] to calculate these from the max entry counts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedState<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    P: ConstDefault = (),
-> {
+pub struct PersistedState<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault = ()> {
     /// Version of the persisted state format.
     ///
     /// Increment this when making breaking changes to allow migration.
@@ -132,9 +126,6 @@ pub struct PersistedState<
     pub auth_keys: [[u8; 4]; 3],
 
     /// Routing count (hop count) for outgoing messages.
-    ///
-    /// Value 0-7, default is 6 per KNX specification.
-    #[serde(default = "default_routing_count")]
     pub routing_count: u8,
 
     /// Address table (TSAP → Group Address mapping).
@@ -159,7 +150,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>
 {
     /// Current version of the persisted state format.
-    pub const VERSION: u8 = 2;
+    pub const VERSION: u8 = 1;
 
     /// Create a new persisted state with factory defaults.
     pub fn factory_default() -> Self {
@@ -178,10 +169,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 
     /// Create a new persisted state with factory defaults and IP config.
     pub fn factory_default_ip() -> Self {
-        Self {
-            ip_config: Some(PersistedIpConfig::default()),
-            ..Self::factory_default()
-        }
+        Self { ip_config: Some(PersistedIpConfig::default()), ..Self::factory_default() }
     }
 }
 
@@ -283,13 +271,23 @@ pub struct NoStorage;
 impl DeviceStorage for NoStorage {
     type Error = core::convert::Infallible;
 
-    fn load<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault + Serialize + for<'de> Deserialize<'de>>(
+    fn load<
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        P: ConstDefault + Serialize + for<'de> Deserialize<'de>,
+    >(
         &mut self,
     ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>>, Self::Error> {
         Ok(None) // No saved state
     }
 
-    fn save<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault + Serialize + for<'de> Deserialize<'de>>(
+    fn save<
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        P: ConstDefault + Serialize + for<'de> Deserialize<'de>,
+    >(
         &mut self,
         _state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>,
     ) -> Result<(), Self::Error> {

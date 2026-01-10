@@ -1,8 +1,17 @@
 //! Interface objects containers for System B devices.
 //!
-//! This module provides containers that group all interface objects required
-//! for System B devices, implementing the [`PropertyServiceHandler`] trait
-//! to dispatch property reads/writes to the appropriate object.
+//! This module provides composable interface object containers for System B devices.
+//! The containers implement [`PropertyServiceHandler`] to dispatch property reads/writes
+//! to the appropriate object.
+//!
+//! # Composable Design
+//!
+//! Interface objects are composed using tuples:
+//! - `SystemBObjects`: Base 5 objects (Device, ADT, AST, COT, APP) - indices 0-4
+//! - `IpObjects`: IP Parameter Object - index 5
+//!
+//! KNX/IP devices use `(SystemBObjects, IpObjects)`, which automatically handles
+//! dispatch via the tuple `PropertyServiceHandler` implementation.
 //!
 //! # Object Indices
 //!
@@ -20,19 +29,25 @@ use core::cell::RefCell;
 
 use crate::{
     IpStackState, StackState,
-    dpt::{PDT_Generic05, PDT_UnsignedChar},
+    dpt::{DeviceControl, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
     objects::interface::{
-        InterfaceObject, PropertyDescriptionResponse, PropertyDescriptor, PropertyError,
-        PropertyServiceHandler,
-        AddressTableObject, ApplicationProgramObject, AssociationTableObject,
-        DeviceInfo, DeviceObject, GroupObjectTableObject, IpParameterObject,
+        AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
+        GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PropertyDescriptionResponse,
+        PropertyDescriptor, PropertyError, PropertyServiceHandler,
     },
     objects::tables::{LoadableTable, RunnableTable},
 };
 
-use super::SystemBDevice;
+use super::{SystemBDevice, SystemBDeviceExt};
+use crate::memory::{
+    HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRoutingCount,
+};
 
-/// Interface objects container for base System B devices.
+// ============================================================================
+// SystemBObjects - Base 5 Interface Objects
+// ============================================================================
+
+/// Base interface objects for System B devices (indices 0-4).
 ///
 /// Contains the 5 mandatory interface objects:
 /// - Device Object (index 0)
@@ -41,8 +56,13 @@ use super::SystemBDevice;
 /// - Group Object Table Object (index 3)
 /// - Application Program Object (index 4)
 ///
-/// The objects are wrapped in `RefCell` to allow interior mutability through
-/// the `PropertyServiceHandler` trait which takes `&self` for all methods.
+/// For KNX/IP devices, compose this with [`IpObjects`] using a tuple:
+/// ```rust,ignore
+/// type MyObjects<'a, S, ADT, AST, COT, APP> = (
+///     SystemBObjects<'a, S, ADT, AST, COT, APP>,
+///     IpObjects<'a, S>,
+/// );
+/// ```
 ///
 /// # Type Parameters
 ///
@@ -51,7 +71,7 @@ use super::SystemBDevice;
 /// - `AST`: Association table type
 /// - `COT`: Communication object table type
 /// - `APP`: Application type (implementing both LoadableTable and RunnableTable)
-pub struct SystemBInterfaceObjects<'a, S, ADT, AST, COT, APP>
+pub struct SystemBObjects<'a, S, ADT, AST, COT, APP>
 where
     S: StackState,
     ADT: LoadableTable,
@@ -66,7 +86,7 @@ where
     application_program: RefCell<ApplicationProgramObject<'a, APP>>,
 }
 
-impl<'a, S, ADT, AST, COT, APP> SystemBInterfaceObjects<'a, S, ADT, AST, COT, APP>
+impl<'a, S, ADT, AST, COT, APP> SystemBObjects<'a, S, ADT, AST, COT, APP>
 where
     S: StackState,
     ADT: LoadableTable,
@@ -104,7 +124,7 @@ where
         routing_count: u8,
     ) -> Self {
         let mut device = DeviceObject::with_info(state, device_info);
-        device.routing_count = crate::dpt::RoutingCount::from(routing_count);
+        device.routing_count = RoutingCount::from(routing_count);
         Self {
             device: RefCell::new(device),
             address_table: RefCell::new(AddressTableObject::new(adt, layout.adt_address() as u32)),
@@ -142,8 +162,7 @@ where
     }
 }
 
-impl<'a, S, ADT, AST, COT, APP> PropertyServiceHandler
-    for SystemBInterfaceObjects<'a, S, ADT, AST, COT, APP>
+impl<'a, S, ADT, AST, COT, APP> PropertyServiceHandler for SystemBObjects<'a, S, ADT, AST, COT, APP>
 where
     S: StackState,
     ADT: LoadableTable,
@@ -224,177 +243,7 @@ where
     }
 }
 
-// ============================================================================
-// KNX/IP Interface Objects (adds IP Parameter Object)
-// ============================================================================
-
-/// Interface objects container for KNX/IP devices (57B0).
-///
-/// Extends [`SystemBInterfaceObjects`] with the IP Parameter Object at index 5.
-///
-/// Contains 6 interface objects:
-/// - Device Object (index 0)
-/// - Address Table Object (index 1)
-/// - Association Table Object (index 2)
-/// - Group Object Table Object (index 3)
-/// - Application Program Object (index 4)
-/// - IP Parameter Object (index 5)
-pub struct KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP>
-where
-    S: IpStackState,
-    ADT: LoadableTable,
-    AST: LoadableTable,
-    COT: LoadableTable,
-    APP: LoadableTable + RunnableTable,
-{
-    /// Base System B objects (indices 0-4)
-    base: SystemBInterfaceObjects<'a, S, ADT, AST, COT, APP>,
-    /// IP Parameter Object (index 5)
-    ip_parameter: RefCell<IpParameterObject<'a, S>>,
-}
-
-impl<'a, S, ADT, AST, COT, APP> KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP>
-where
-    S: IpStackState,
-    ADT: LoadableTable,
-    AST: LoadableTable,
-    COT: LoadableTable,
-    APP: LoadableTable + RunnableTable,
-{
-    /// Number of interface objects in this container.
-    pub const OBJECT_COUNT: u16 = 6;
-
-    /// Create a new KNX/IP interface objects container.
-    pub fn new(
-        state: &'a S,
-        device_info: &DeviceInfo,
-        layout: &super::memory_map::MemoryLayout,
-        adt: &'a RefCell<ADT>,
-        ast: &'a RefCell<AST>,
-        cot: &'a RefCell<COT>,
-        app: &'a RefCell<APP>,
-        program_version: [u8; 5],
-        pei_type: u8,
-        routing_count: u8,
-    ) -> Self {
-        Self {
-            base: SystemBInterfaceObjects::new(
-                state,
-                device_info,
-                layout,
-                adt,
-                ast,
-                cot,
-                app,
-                program_version,
-                pei_type,
-                routing_count,
-            ),
-            ip_parameter: RefCell::new(IpParameterObject::with_state(state)),
-        }
-    }
-
-    /// Get a reference to the base System B objects.
-    pub fn base(&self) -> &SystemBInterfaceObjects<'a, S, ADT, AST, COT, APP> {
-        &self.base
-    }
-
-    /// Get a reference to the IP Parameter Object.
-    pub fn ip_parameter(&self) -> &RefCell<IpParameterObject<'a, S>> {
-        &self.ip_parameter
-    }
-}
-
-impl<'a, S, ADT, AST, COT, APP> PropertyServiceHandler
-    for KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP>
-where
-    S: IpStackState,
-    ADT: LoadableTable,
-    AST: LoadableTable,
-    COT: LoadableTable,
-    APP: LoadableTable + RunnableTable,
-{
-    fn object_count(&self) -> u16 {
-        Self::OBJECT_COUNT
-    }
-
-    fn property_description_read(
-        &self,
-        object_idx: u16,
-        prop_id: u8,
-        prop_idx: u8,
-    ) -> Result<PropertyDescriptionResponse, PropertyError> {
-        if object_idx < 5 {
-            self.base.property_description_read(object_idx, prop_id, prop_idx)
-        } else if object_idx == 5 {
-            self.ip_parameter.borrow().property_description(object_idx, prop_id, prop_idx)
-        } else {
-            Err(PropertyError::InvalidObjectIndex)
-        }
-    }
-
-    fn property_value_read(
-        &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        count: u16,
-        buf: &mut [u8],
-        access_level: u8,
-    ) -> Result<usize, PropertyError> {
-        if object_idx < 5 {
-            self.base.property_value_read(object_idx, prop_id, start_idx, count, buf, access_level)
-        } else if object_idx == 5 {
-            // Check access level for IP parameter object
-            if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(prop_id) {
-                if !desc.can_read(access_level) {
-                    return Err(PropertyError::AccessDenied);
-                }
-            } else {
-                return Err(PropertyError::InvalidPropertyId);
-            }
-            self.ip_parameter.borrow().read_property(prop_id, start_idx, count, buf)
-        } else {
-            Err(PropertyError::InvalidObjectIndex)
-        }
-    }
-
-    fn property_value_write(
-        &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        data: &[u8],
-        response_buf: &mut [u8],
-        access_level: u8,
-    ) -> Result<usize, PropertyError> {
-        if object_idx < 5 {
-            self.base.property_value_write(object_idx, prop_id, start_idx, data, response_buf, access_level)
-        } else if object_idx == 5 {
-            // Check access level for IP parameter object
-            if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(prop_id) {
-                if !desc.can_write(access_level) {
-                    return Err(PropertyError::AccessDenied);
-                }
-            } else {
-                return Err(PropertyError::InvalidPropertyId);
-            }
-            self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data, response_buf)
-        } else {
-            Err(PropertyError::InvalidObjectIndex)
-        }
-    }
-}
-
-// ============================================================================
-// HasDeviceObject implementations
-// ============================================================================
-
-use crate::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
-use crate::objects::interface::HasDeviceObject;
-
-impl<'a, S, ADT, AST, COT, APP> HasDeviceObject
-    for SystemBInterfaceObjects<'a, S, ADT, AST, COT, APP>
+impl<'a, S, ADT, AST, COT, APP> HasDeviceObject for SystemBObjects<'a, S, ADT, AST, COT, APP>
 where
     S: StackState,
     ADT: LoadableTable,
@@ -427,42 +276,132 @@ where
     }
 }
 
-impl<'a, S, ADT, AST, COT, APP> HasDeviceObject
-    for KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP>
-where
-    S: IpStackState,
-    ADT: LoadableTable,
-    AST: LoadableTable,
-    COT: LoadableTable,
-    APP: LoadableTable + RunnableTable,
-{
-    fn device_control(&self) -> DeviceControl {
-        self.base.device_control()
+// ============================================================================
+// IpObjects - IP Parameter Object
+// ============================================================================
+
+/// IP interface objects for KNX/IP devices (index 5).
+///
+/// Contains only the IP Parameter Object. Compose with [`SystemBObjects`]
+/// using a tuple to create a complete KNX/IP device:
+///
+/// ```rust,ignore
+/// let objects: (SystemBObjects<...>, IpObjects<...>) = (base, ip);
+/// // objects.object_count() == 6
+/// ```
+///
+/// The tuple's `PropertyServiceHandler` implementation automatically handles
+/// index offsetting - IpObjects receives index 0 for what is logically index 5.
+pub struct IpObjects<'a, S: IpStackState> {
+    ip_parameter: RefCell<IpParameterObject<'a, S>>,
+}
+
+impl<'a, S: IpStackState> IpObjects<'a, S> {
+    /// Number of interface objects in this container.
+    pub const OBJECT_COUNT: u16 = 1;
+
+    /// Create new IP objects.
+    pub fn new(state: &'a S) -> Self {
+        Self { ip_parameter: RefCell::new(IpParameterObject::with_state(state)) }
     }
 
-    fn set_device_control(&self, value: DeviceControl) {
-        self.base.set_device_control(value);
+    /// Get a reference to the IP Parameter Object.
+    pub fn ip_parameter(&self) -> &RefCell<IpParameterObject<'a, S>> {
+        &self.ip_parameter
+    }
+}
+
+impl<'a, S: IpStackState> PropertyServiceHandler for IpObjects<'a, S> {
+    fn object_count(&self) -> u16 {
+        Self::OBJECT_COUNT
     }
 
-    fn programming_mode(&self) -> ProgrammingMode {
-        self.base.programming_mode()
+    fn property_description_read(
+        &self,
+        object_idx: u16,
+        prop_id: u8,
+        prop_idx: u8,
+    ) -> Result<PropertyDescriptionResponse, PropertyError> {
+        if object_idx == 0 {
+            // Note: We need to report the actual object index (5) in the response,
+            // but the tuple impl calls us with 0. The caller handles this.
+            self.ip_parameter.borrow().property_description(object_idx, prop_id, prop_idx)
+        } else {
+            Err(PropertyError::InvalidObjectIndex)
+        }
     }
 
-    fn set_programming_mode(&self, value: ProgrammingMode) {
-        self.base.set_programming_mode(value);
+    fn property_value_read(
+        &self,
+        object_idx: u16,
+        prop_id: u8,
+        start_idx: u16,
+        count: u16,
+        buf: &mut [u8],
+        access_level: u8,
+    ) -> Result<usize, PropertyError> {
+        if object_idx == 0 {
+            // Check access level
+            if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(prop_id) {
+                if !desc.can_read(access_level) {
+                    return Err(PropertyError::AccessDenied);
+                }
+            } else {
+                return Err(PropertyError::InvalidPropertyId);
+            }
+            self.ip_parameter.borrow().read_property(prop_id, start_idx, count, buf)
+        } else {
+            Err(PropertyError::InvalidObjectIndex)
+        }
     }
 
-    fn routing_count(&self) -> RoutingCount {
-        self.base.routing_count()
-    }
-
-    fn set_routing_count(&self, value: RoutingCount) {
-        self.base.set_routing_count(value);
+    fn property_value_write(
+        &self,
+        object_idx: u16,
+        prop_id: u8,
+        start_idx: u16,
+        data: &[u8],
+        response_buf: &mut [u8],
+        access_level: u8,
+    ) -> Result<usize, PropertyError> {
+        if object_idx == 0 {
+            // Check access level
+            if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(prop_id) {
+                if !desc.can_write(access_level) {
+                    return Err(PropertyError::AccessDenied);
+                }
+            } else {
+                return Err(PropertyError::InvalidPropertyId);
+            }
+            self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data, response_buf)
+        } else {
+            Err(PropertyError::InvalidObjectIndex)
+        }
     }
 }
 
 // ============================================================================
-// Helper functions for creating interface objects with SystemBDevice
+// KNX/IP Interface Objects - Composed Type
+// ============================================================================
+
+/// Interface objects for KNX/IP devices (57B0).
+///
+/// This is a type alias for the tuple `(SystemBObjects, IpObjects)`.
+/// The tuple's `PropertyServiceHandler` and `HasDeviceObject` implementations
+/// automatically handle dispatch to the appropriate component.
+///
+/// Contains 6 interface objects:
+/// - Device Object (index 0)
+/// - Address Table Object (index 1)
+/// - Association Table Object (index 2)
+/// - Group Object Table Object (index 3)
+/// - Application Program Object (index 4)
+/// - IP Parameter Object (index 5)
+pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP> =
+    (SystemBObjects<'a, S, ADT, AST, COT, APP>, IpObjects<'a, S>);
+
+// ============================================================================
+// Helper functions
 // ============================================================================
 
 /// Create a DeviceInfo struct from a SystemBDevice type.
@@ -474,4 +413,71 @@ pub fn device_info_from<D: SystemBDevice>() -> DeviceInfo {
         max_apdu_length: if D::MASK_VERSION == [0x57, 0xB0] { 254 } else { 14 },
         device_descriptor: u16::from_be_bytes(D::MASK_VERSION),
     }
+}
+
+/// Create base System B interface objects (5 objects: indices 0-4).
+///
+/// Use this function in your `StackDefinition::create_interface_objects` implementation
+/// for non-IP System B devices.
+///
+/// # Type Parameters
+///
+/// - `D`: Device type implementing [`SystemBDevice`]
+/// - `S`: State type implementing [`StackState`]
+/// - `Tables`: Tables type implementing the required traits
+pub fn create_system_b_objects<'a, D, S, Tables>(
+    tables: &'a Tables,
+    state: &'a S,
+) -> SystemBObjects<'a, S, Tables::ADT, Tables::AST, Tables::COT, Tables::APP>
+where
+    D: SystemBDevice + SystemBDeviceExt,
+    S: StackState,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
+    Tables::ADT: LoadableTable,
+    Tables::AST: LoadableTable,
+    Tables::COT: LoadableTable,
+    Tables::APP: LoadableTable + RunnableTable,
+{
+    let device_info = device_info_from::<D>();
+    let layout = D::memory_layout();
+    SystemBObjects::new(
+        state,
+        &device_info,
+        &layout,
+        tables.adt(),
+        tables.ast(),
+        tables.cot(),
+        tables.app(),
+        D::PROGRAM_VERSION,
+        D::PEI_TYPE,
+        tables.routing_count(),
+    )
+}
+
+/// Create KNX/IP interface objects (6 objects: indices 0-5).
+///
+/// Use this function in your `StackDefinition::create_interface_objects` implementation
+/// for KNX/IP System B devices (57B0).
+///
+/// # Type Parameters
+///
+/// - `D`: Device type implementing [`SystemBDevice`]
+/// - `S`: State type implementing [`IpStackState`]
+/// - `Tables`: Tables type implementing the required traits
+pub fn create_knxip_objects<'a, D, S, Tables>(
+    tables: &'a Tables,
+    state: &'a S,
+) -> KnxIpInterfaceObjects<'a, S, Tables::ADT, Tables::AST, Tables::COT, Tables::APP>
+where
+    D: SystemBDevice + SystemBDeviceExt,
+    S: IpStackState,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
+    Tables::ADT: LoadableTable,
+    Tables::AST: LoadableTable,
+    Tables::COT: LoadableTable,
+    Tables::APP: LoadableTable + RunnableTable,
+{
+    let base = create_system_b_objects::<D, S, Tables>(tables, state);
+    let ip = IpObjects::new(state);
+    (base, ip)
 }

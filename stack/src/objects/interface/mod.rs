@@ -18,19 +18,23 @@
 //!
 //! # Usage Pattern
 //!
-//! Applications implement [`InterfaceObjectsBuilder`] to create their interface objects:
+//! Applications implement `create_interface_objects` on their `StackDefinition` type:
 //!
 //! ```rust,ignore
-//! impl InterfaceObjectsBuilder for MyConfig {
-//!     type Objects<'a> = MyInterfaceObjects<'a> where Self: 'a;
-//!     
-//!     fn build_interface_objects(&self, ctx: &StackContext) -> Self::Objects<'_> {
-//!         MyInterfaceObjects::new(...)
+//! impl StackDefinition for MyDevice {
+//!     type InterfaceObjects<'a> = MyInterfaceObjects<'a, Self::State>;
+//!
+//!     fn create_interface_objects<'a>(tables: &'a Self::Tables, state: &'a Self::State) -> Self::InterfaceObjects<'a>
+//!     where
+//!         Self::Tables: 'a,
+//!         Self::State: 'a,
+//!     {
+//!         MyInterfaceObjects::new(tables, state)
 //!     }
 //! }
 //! ```
 //!
-//! The `Objects` type must implement [`PropertyServiceHandler`], which handles
+//! The `InterfaceObjects` type must implement [`PropertyServiceHandler`], which handles
 //! property requests by dispatching to the appropriate object based on index.
 //!
 //! # Standard Object Layout

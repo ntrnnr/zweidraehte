@@ -38,7 +38,7 @@ use crate::{
     },
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
-        interface::{HasDeviceObject, InterfaceObjectsBuilder, PropertyServiceHandler},
+        interface::{HasDeviceObject, PropertyServiceHandler},
         tables::{AssociationTable, CommunicationObjectTable},
     },
 };
@@ -88,7 +88,7 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     /// Interface objects container with typed access to device properties.
     /// Provides both PropertyServiceHandler for management protocol and
     /// HasDeviceObject for direct property access.
-    interface_objects: &'a <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>,
+    interface_objects: &'a D::InterfaceObjects<'static>,
 
     // --- Device state ---
     /// Runtime state (individual address, serial number, etc.)
@@ -122,7 +122,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             2,
             1,
         >,
-        interface_objects: &'a <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>,
+        interface_objects: &'a D::InterfaceObjects<'static>,
         state: &'a D::State,
         memory_map: &'a D::Mem,
         app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
@@ -150,7 +150,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D>
 where
     D::Tables: HasAssociationTable + HasCommunicationObjectTable,
-    <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>: HasDeviceObject,
+    D::InterfaceObjects<'static>: HasDeviceObject,
 {
     type Buffer = Buffer<'static>;
 
@@ -935,7 +935,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
 where
-    <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>: HasDeviceObject,
+    D::InterfaceObjects<'static>: HasDeviceObject,
 {
     /// Handle `A_DeviceDescriptor_Read.ind`
     ///

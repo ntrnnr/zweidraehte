@@ -81,19 +81,19 @@
 //! }
 //! ```
 
-mod traits;
-mod storage;
-mod state;
-mod tables;
 mod memory_map;
 mod objects;
-mod builder;
+mod state;
+mod storage;
+mod tables;
+mod traits;
 
-pub use traits::{SystemBDevice, SystemBDeviceExt, KnxIpDevice, TpDevice};
-pub use storage::{DeviceStorage, PersistedState, PersistedIpConfig, NoStorage, table_sizes};
-pub use state::{DeviceState, IpDeviceState};
-pub use tables::SystemBState;
 pub use crate::memory::HasApplication;
-pub use memory_map::{SystemBMemoryMap, MemoryLayout};
-pub use objects::{SystemBInterfaceObjects, KnxIpInterfaceObjects, device_info_from};
-pub use builder::{SystemBInterfaceObjectsBuilder, KnxIpInterfaceObjectsBuilder};
+pub use memory_map::{MemoryLayout, SystemBMemoryMap};
+pub use objects::{
+    IpObjects, KnxIpInterfaceObjects, SystemBObjects, create_knxip_objects, create_system_b_objects, device_info_from,
+};
+pub use state::{DeviceState, IpDeviceState};
+pub use storage::{DeviceStorage, NoStorage, PersistedIpConfig, PersistedState, table_sizes};
+pub use tables::SystemBTables;
+pub use traits::{KnxIpDevice, SystemBDevice, SystemBDeviceExt, TpDevice};

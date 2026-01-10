@@ -5,11 +5,10 @@
 
 use core::net::Ipv4Addr;
 
-use crate::dpt::{
-    InterfaceObjectType, PDT_Bitset16, PDT_Bitset8, PDT_Generic06, PDT_UnsignedChar,
-    PDT_UnsignedInt, PDT_UnsignedLong,
-};
 use super::{PropertyDescriptionResponse, PropertyDescriptor, PropertyError};
+use crate::dpt::{
+    InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong,
+};
 
 // ============================================================================
 // State Property Value Conversion
@@ -438,106 +437,6 @@ pub trait LoadableInterfaceObject: InterfaceObject {
     fn process_load_control(&mut self, data: &[u8]) -> Result<(), PropertyError>;
 }
 
-// FIXME: The interface objects builder could also load and deserialize stored data from storage (flash, JSON etc.)
-
-// ============================================================================
-// Interface Objects Builder
-// ============================================================================
-
-/// Builder trait for creating interface objects.
-///
-/// This trait follows the same pattern as `LinkLayerBuilder` - the application
-/// defines an implementation that specifies which interface objects to create
-/// for a particular device type. Different `StackDefinition`s can have
-/// completely different sets of interface objects.
-///
-/// The builder is consumed during stack initialization to create the
-/// `InterfaceObjects` container, which is then stored in the stack's
-/// internal state and accessible via a context trait.
-///
-/// # Type Parameters
-///
-/// * `S` - The stack state type (e.g., `BasicStackState` or a custom type implementing `IpStackState`)
-/// * `Tables` - The user-defined tables container type (implements accessor traits)
-///
-/// # State Requirements
-///
-/// Different interface objects may require different state trait bounds:
-/// - Basic devices only need `StackState`
-/// - KNXnet/IP devices need `IpStackState` (which extends `StackState`)
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use zweidraehte::objects::interface::*;
-/// use core::cell::RefCell;
-///
-/// // A simple KNXnet/IP device with standard objects
-/// pub struct KnxIpInterfaceObjectsBuilder {
-///     pub serial_number: [u8; 6],
-///     pub manufacturer_id: u16,
-/// }
-///
-/// // The container that will hold all the interface objects
-/// pub struct KnxIpInterfaceObjects<'a, Tables> {
-///     pub device: RefCell<DeviceObject>,
-///     pub addr_table: RefCell<AddressTableObject<'a, ...>>,
-///     // ...
-/// }
-///
-/// impl<Tables> InterfaceObjectsBuilder<MyState, Tables> for KnxIpInterfaceObjectsBuilder
-/// where
-///     Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
-/// {
-///     type Objects<'a> = KnxIpInterfaceObjects<'a, Tables>
-///     where
-///         Tables: 'a,
-///         MyState: 'a;
-///
-///     fn build<'a>(
-///         self,
-///         tables: &'a Tables,
-///         state: &'a MyState,
-///     ) -> Self::Objects<'a>
-///     where
-///         Tables: 'a,
-///         MyState: 'a,
-///     {
-///         // Create and configure all interface objects
-///         // Access tables via the HasAddressTable, HasAssociationTable, etc. traits
-///         // ...
-///     }
-/// }
-/// ```
-pub trait InterfaceObjectsBuilder<S, Tables>: Sized {
-    /// The container type that holds all interface objects.
-    ///
-    /// This is a GAT (Generic Associated Type) that allows the container
-    /// to hold references to the tables with the appropriate lifetimes.
-    /// The container must implement `PropertyServiceHandler` so the
-    /// ApplicationLayer can dispatch property read/write requests to it.
-    type Objects<'a>: PropertyServiceHandler
-    where
-        Tables: 'a,
-        S: 'a;
-
-    /// Build the interface objects container.
-    ///
-    /// This method consumes the builder and creates all interface objects,
-    /// wrapping the provided table references as needed.
-    ///
-    /// # Arguments
-    /// * `tables` - Reference to the user-defined tables container (stored in stack Inner)
-    /// * `state` - Reference to the shared stack state (programming mode, etc.)
-    ///
-    /// # Returns
-    /// The container holding all interface objects for this device.
-    fn build<'a>(self, tables: &'a Tables, state: &'a S) -> Self::Objects<'a>
-    where
-        Tables: 'a,
-        S: 'a;
-}
-
 /// Context trait for accessing interface objects from within the stack.
 ///
 /// This trait is implemented by types that have access to the interface
@@ -550,46 +449,10 @@ pub trait InterfaceObjectsContext {
     /// Get a reference to the interface objects container
     fn interface_objects(&self) -> &Self::Objects;
 }
-// ============================================================================
-// Empty Interface Objects Builder
-// ============================================================================
-
-/// An empty interface objects builder that creates no interface objects.
-///
-/// This is useful for testing or when interface objects are not needed.
-/// The resulting container is an empty unit type `()`.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// impl StackDefinition for MyTestStack {
-///     type IOB = EmptyInterfaceObjectsBuilder;
-///     // ...
-/// }
-/// ```
-#[derive(Debug, Clone, Copy, Default)]
-pub struct EmptyInterfaceObjectsBuilder;
-
-impl<S, Tables> InterfaceObjectsBuilder<S, Tables> for EmptyInterfaceObjectsBuilder {
-    type Objects<'a>
-        = ()
-    where
-        Tables: 'a,
-        S: 'a;
-
-    fn build<'a>(self, _tables: &'a Tables, _state: &'a S) -> Self::Objects<'a>
-    where
-        Tables: 'a,
-        S: 'a,
-    {
-        // No interface objects created
-    }
-}
-
 /// Implement PropertyServiceHandler for () (empty container)
 ///
-/// This allows `EmptyInterfaceObjectsBuilder` to work - it returns `()` which
-/// handles all property requests by returning "no objects".
+/// This allows using `()` as interface objects when no interface objects are needed.
+/// All property requests return "no objects".
 impl PropertyServiceHandler for () {
     fn object_count(&self) -> u16 {
         0
@@ -651,6 +514,118 @@ impl HasDeviceObject for () {
 }
 
 // ============================================================================
+// Tuple-Based Interface Object Composition
+// ============================================================================
+//
+// These implementations enable composing interface objects from multiple
+// parts using tuples. For example, a KNX/IP device can be:
+//   (SystemBObjects, IpObjects)
+// And a router could be:
+//   (SystemBObjects, IpObjects, RouterObjects)
+//
+// Each part handles its own object indices, and the tuple impl routes
+// requests to the appropriate part based on the cumulative object count.
+
+/// Implement PropertyServiceHandler for 2-tuples (Base, Extension).
+///
+/// This enables composing interface objects from parts. The base handles
+/// objects 0..base.object_count(), and the extension handles the rest
+/// with indices offset by the base count.
+impl<A, B> PropertyServiceHandler for (A, B)
+where
+    A: PropertyServiceHandler,
+    B: PropertyServiceHandler,
+{
+    fn object_count(&self) -> u16 {
+        self.0.object_count() + self.1.object_count()
+    }
+
+    fn property_description_read(
+        &self,
+        object_idx: u16,
+        prop_id: u8,
+        prop_idx: u8,
+    ) -> Result<PropertyDescriptionResponse, PropertyError> {
+        let base_count = self.0.object_count();
+        if object_idx < base_count {
+            self.0.property_description_read(object_idx, prop_id, prop_idx)
+        } else {
+            // Delegate to extension with local index, then restore global index in response
+            let mut response = self.1.property_description_read(object_idx - base_count, prop_id, prop_idx)?;
+            response.object_idx = object_idx;
+            Ok(response)
+        }
+    }
+
+    fn property_value_read(
+        &self,
+        object_idx: u16,
+        prop_id: u8,
+        start_idx: u16,
+        count: u16,
+        buf: &mut [u8],
+        access_level: u8,
+    ) -> Result<usize, PropertyError> {
+        let base_count = self.0.object_count();
+        if object_idx < base_count {
+            self.0.property_value_read(object_idx, prop_id, start_idx, count, buf, access_level)
+        } else {
+            self.1.property_value_read(object_idx - base_count, prop_id, start_idx, count, buf, access_level)
+        }
+    }
+
+    fn property_value_write(
+        &self,
+        object_idx: u16,
+        prop_id: u8,
+        start_idx: u16,
+        data: &[u8],
+        response_buf: &mut [u8],
+        access_level: u8,
+    ) -> Result<usize, PropertyError> {
+        let base_count = self.0.object_count();
+        if object_idx < base_count {
+            self.0.property_value_write(object_idx, prop_id, start_idx, data, response_buf, access_level)
+        } else {
+            self.1.property_value_write(object_idx - base_count, prop_id, start_idx, data, response_buf, access_level)
+        }
+    }
+}
+
+/// Implement HasDeviceObject for 2-tuples by delegating to the first element.
+///
+/// The DeviceObject is always in the base (first element) of the tuple,
+/// so we delegate all device property access to it.
+impl<A, B> HasDeviceObject for (A, B)
+where
+    A: HasDeviceObject,
+{
+    fn device_control(&self) -> DeviceControl {
+        self.0.device_control()
+    }
+
+    fn set_device_control(&self, value: DeviceControl) {
+        self.0.set_device_control(value);
+    }
+
+    fn programming_mode(&self) -> ProgrammingMode {
+        self.0.programming_mode()
+    }
+
+    fn set_programming_mode(&self, value: ProgrammingMode) {
+        self.0.set_programming_mode(value);
+    }
+
+    fn routing_count(&self) -> RoutingCount {
+        self.0.routing_count()
+    }
+
+    fn set_routing_count(&self, value: RoutingCount) {
+        self.0.set_routing_count(value);
+    }
+}
+
+// ============================================================================
 // Typed Property Access Traits
 // ============================================================================
 //
@@ -673,7 +648,7 @@ use crate::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
 /// ```rust,ignore
 /// impl<D: StackDefinition> ApplicationLayer<D>
 /// where
-///     <D::IOB as InterfaceObjectsBuilder<...>>::Objects: HasDeviceObject,
+///     D::InterfaceObjects<'static>: HasDeviceObject,
 /// {
 ///     fn handle_memory_write(&mut self, ...) {
 ///         // Type-safe, ergonomic access to verify mode

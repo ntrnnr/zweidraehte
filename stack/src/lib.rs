@@ -55,7 +55,7 @@ use crate::{
     messages::buffers::{Buffer, BufferManager, DynBufferManager},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
-        interface::InterfaceObjectsBuilder,
+        interface::{HasDeviceObject, PropertyServiceHandler},
     },
 };
 
@@ -779,7 +779,6 @@ pub trait StackDefinition: Copy {
     type P: ConstDefault;
     type CO: ComObjects;
     type LLB: layers::LinkLayerBuilder;
-    type IOB: InterfaceObjectsBuilder<Self::State, Self::Tables>;
 
     /// Runtime state shared between stack, layers, and interface objects.
     ///
@@ -795,6 +794,35 @@ pub trait StackDefinition: Copy {
     ///
     /// Use [`memory::NoMemoryMap`] if you don't need memory services.
     type Mem: MemoryMap<Self::Tables> + 'static;
+
+    /// Interface objects container type.
+    ///
+    /// This holds all interface objects for property service handling.
+    /// The container must implement `PropertyServiceHandler` for property access.
+    ///
+    /// If the device has a DeviceObject, implement `HasDeviceObject` on this type
+    /// to enable device-level configuration (programming mode, verify mode, etc.).
+    /// This is required by [`Runner::run`] when running the stack.
+    type InterfaceObjects<'a>: PropertyServiceHandler
+    where
+        Self::State: 'a,
+        Self::Tables: 'a;
+
+    /// Create interface objects container.
+    ///
+    /// This method is called during stack initialization to create the interface
+    /// objects that handle property service requests (A_PropertyValue_Read/Write, etc.).
+    ///
+    /// # Arguments
+    /// * `tables` - Reference to the tables container (stored in stack Inner)
+    /// * `state` - Reference to the shared stack state
+    ///
+    /// # Returns
+    /// The container holding all interface objects for this device.
+    fn create_interface_objects<'a>(tables: &'a Self::Tables, state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    where
+        Self::Tables: 'a,
+        Self::State: 'a;
 }
 
 pub struct StackResources<D: StackDefinition, const BUF_SZ: usize = 128, const NUM_BUFS: usize = 4> {
@@ -802,7 +830,7 @@ pub struct StackResources<D: StackDefinition, const BUF_SZ: usize = 128, const N
     buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
     buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
     link_layer_resources: MaybeUninit<<D::LLB as LinkLayerBuilder>::Resources>,
-    interface_objects: MaybeUninit<<D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>>,
+    interface_objects: MaybeUninit<D::InterfaceObjects<'static>>,
 }
 
 impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResources<D, BUF_SZ, NUM_BUFS> {
@@ -822,7 +850,7 @@ impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResour
 /// You must call [`Runner::run()`] in a background task for the KNX stack to work.
 pub struct Runner<'d, D: StackDefinition> {
     stack: Stack<'d, D>,
-    interface_objects: &'d <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>,
+    interface_objects: &'d D::InterfaceObjects<'static>,
     app_request_receiver: DynamicReceiver<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     link_layer_builder: D::LLB,
 }
@@ -868,7 +896,7 @@ pub struct Runner<'d, D: StackDefinition> {
 /// see the `testutil` crate in this repository.
 pub struct Stack<'d, D: StackDefinition> {
     inner: &'d Inner<D>,
-    interface_objects: &'d <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>,
+    interface_objects: &'d D::InterfaceObjects<'static>,
     app_request_sender: DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
 }
 
@@ -929,14 +957,20 @@ fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
 /// The `state` parameter contains the device state including individual address,
 /// authentication keys, and other configuration. Use the device-specific state
 /// type's constructor (e.g., `IpDeviceState::from_persisted()`) to create it.
+///
+/// The `memory_map` parameter defines how memory addresses are mapped to tables
+/// for A_Memory_Read/Write services. It must be configured with the same table
+/// sizes as used for the device's tables (ADT, AST, COT sizes). Use
+/// `SystemBMemoryMap::for_device()` with your device's MAX_ADDRESSES, MAX_ASSOCIATIONS,
+/// etc. constants to create a properly configured memory map.
 pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
     resources: &'d mut StackResources<D, BUF_SZ, NUM_BUFS>,
     tables: D::Tables,
     comm_objs: D::CO,
     hook_context: <D::CO as ComObjects>::HookContext,
     link_layer_builder: D::LLB,
-    interface_objects_builder: D::IOB,
     state: D::State,
+    memory_map: D::Mem,
 ) -> (Stack<'d, D>, Runner<'d, D>) {
     // SAFETY: We are creating a reference to the buffers that are stored in the `StackResources` struct,
     //         which lives at least as long as `Inner`
@@ -952,7 +986,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         event_channel: PubSubChannel::new(),
         state,
         hook_context,
-        memory_map: D::Mem::default(),
+        memory_map,
     };
 
     let inner = &*resources.inner.write(inner);
@@ -964,7 +998,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     let interface_objects = {
         let tables_ref: &'static D::Tables = unsafe { core::mem::transmute(&inner.tables) };
         let state_ref: &'static D::State = unsafe { core::mem::transmute(&inner.state) };
-        interface_objects_builder.build(tables_ref, state_ref)
+        D::create_interface_objects(tables_ref, state_ref)
     };
     let interface_objects = &*resources.interface_objects.write(interface_objects);
 
@@ -992,8 +1026,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
     pub async fn run(self, link_layer_resources: &'d mut <D::LLB as LinkLayerBuilder>::Resources) -> !
     where
         D::Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
-        <D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static>:
-            objects::interface::HasDeviceObject,
+        D::InterfaceObjects<'static>: HasDeviceObject,
     {
         // Create all the channels for layer to layer communication
         let ll_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
@@ -1001,9 +1034,10 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let tl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
         let al_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
 
-        // Create a network layer with reference to stack state for individual address
+        // Create a network layer with reference to stack state and interface objects.
+        // The routing count (hop count) for outgoing messages is read from the device object.
         let mut network_layer =
-            NetworkLayer::new(&self.stack.inner.state, 6, ll_channel.sender().into(), tl_channel.sender().into());
+            NetworkLayer::new(&self.stack.inner.state, self.interface_objects, ll_channel.sender().into(), tl_channel.sender().into());
 
         // Create a transport layer
         let mut transport_layer = TransportLayer::<'_, D>::new(
@@ -1259,13 +1293,13 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
 
     /// Get access to the interface objects container.
     ///
-    /// Returns a reference to the interface objects container created by the
-    /// `InterfaceObjectsBuilder` during stack initialization. The container
-    /// type is determined by the `IOB` associated type in the `StackDefinition`.
+    /// Returns a reference to the interface objects container created during
+    /// stack initialization. The container type is determined by the
+    /// `InterfaceObjects` associated type in the `StackDefinition`.
     ///
     /// # Returns
     /// A reference to the interface objects container
-    pub fn interface_objects(&self) -> &<D::IOB as InterfaceObjectsBuilder<D::State, D::Tables>>::Objects<'static> {
+    pub fn interface_objects(&self) -> &D::InterfaceObjects<'static> {
         self.interface_objects
     }
 

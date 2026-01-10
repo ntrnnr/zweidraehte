@@ -209,14 +209,6 @@ pub fn peek_hpai_structure_length(bytes: &[u8]) -> ParseResult<u8> {
     Ok(header.struct_len)
 }
 
-// ============================================================================
-// DEPRECATED/COMPATIBILITY TYPES
-// ============================================================================
-
-// Type alias for backward compatibility during migration
-#[deprecated(since = "0.1.0", note = "Use `Endpoint` instead")]
-pub type DynamicHPAI = HPAI;
-
 #[cfg(test)]
 mod test {
     use core::net::Ipv4Addr;

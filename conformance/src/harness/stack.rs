@@ -37,7 +37,7 @@ use zweidraehte::{
     objects::comm::{ComObjectStatus, ComObjects},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
-        GroupObjectTableObject, InterfaceObject, InterfaceObjectsBuilder, IpParameterObject,
+        GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject,
         PropertyDescriptionResponse, PropertyError, PropertyServiceHandler,
     },
     objects::tables::{LoadableTable, RunnableTable, app::Application},
@@ -782,30 +782,12 @@ where
 // Interface Objects Builder
 // ============================================================================
 
-/// Builder for KNXnet/IP interface objects
-///
-/// This builder is consumed during stack initialization to create the
-/// `KnxIpInterfaceObjects` container with all required interface objects.
-#[derive(Debug, Clone, Copy)]
-pub struct KnxIpInterfaceObjectsBuilder;
-
-impl<S> InterfaceObjectsBuilder<S, ConformanceTables> for KnxIpInterfaceObjectsBuilder
-where
-    S: IpStackState,
-{
-    type Objects<'a>
-        = KnxIpInterfaceObjects<'a, S>
-    where
-        ConformanceTables: 'a,
-        S: 'a;
-
-    fn build<'a>(self, tables: &'a ConformanceTables, state: &'a S) -> Self::Objects<'a>
-    where
-        ConformanceTables: 'a,
-        S: 'a,
-    {
-        KnxIpInterfaceObjects::new(tables, state)
-    }
+/// Create KNX/IP interface objects for conformance testing.
+pub fn create_conformance_interface_objects<'a, S: IpStackState>(
+    tables: &'a ConformanceTables,
+    state: &'a S,
+) -> KnxIpInterfaceObjects<'a, S> {
+    KnxIpInterfaceObjects::new(tables, state)
 }
 
 // ============================================================================
@@ -1146,9 +1128,18 @@ impl StackDefinition for ConformanceTestStack {
     type P = TestParameters;
     type CO = ConformanceComObjects;
     type LLB = MockLinkLayerBuilder<16, 16>;
-    type IOB = KnxIpInterfaceObjectsBuilder;
     type State = BasicIpStackState<MockIpPlatform>;
     type Mem = ConformanceMemoryMap;
+
+    type InterfaceObjects<'a> = KnxIpInterfaceObjects<'a, Self::State>;
+
+    fn create_interface_objects<'a>(tables: &'a Self::Tables, state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    where
+        Self::Tables: 'a,
+        Self::State: 'a,
+    {
+        create_conformance_interface_objects(tables, state)
+    }
 }
 
 // ============================================================================
@@ -1261,8 +1252,8 @@ impl FullStackHarness {
             ConformanceComObjects::new(),
             hook_context,
             link_layer_builder,
-            KnxIpInterfaceObjectsBuilder,
             state,
+            ConformanceMemoryMap,
         );
 
         // Patch the hook context with the COT reference

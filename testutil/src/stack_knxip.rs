@@ -128,8 +128,8 @@ use zweidraehte::{
     objects::comm::{ComObjectIndex, ComObjects},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
-        InterfaceObject, InterfaceObjectsBuilder, IpParameterObject, PropertyDescriptionResponse, PropertyError,
-        PropertyServiceHandler,
+        InterfaceObject, IpParameterObject, PropertyDescriptionResponse, PropertyError,
+        PropertyServiceHandler, HasDeviceObject,
     },
     objects::tables::{LoadableTable, RunnableTable, LoadEvent, RunEvent, app::Application},
 };
@@ -468,33 +468,15 @@ where
 }
 
 // ============================================================================
-// Interface Objects Builder
+// Interface Objects Creation
 // ============================================================================
 
-/// Builder for KNXnet/IP interface objects
-///
-/// This builder is consumed during stack initialization to create the
-/// `KnxIpInterfaceObjects` container with all required interface objects.
-#[derive(Debug, Clone, Copy)]
-pub struct KnxIpInterfaceObjectsBuilder;
-
-impl<S> InterfaceObjectsBuilder<S, KnxIpTables> for KnxIpInterfaceObjectsBuilder
-where
-    S: IpStackState,
-{
-    type Objects<'a>
-        = KnxIpInterfaceObjects<'a, S>
-    where
-        KnxIpTables: 'a,
-        S: 'a;
-
-    fn build<'a>(self, tables: &'a KnxIpTables, state: &'a S) -> Self::Objects<'a>
-    where
-        KnxIpTables: 'a,
-        S: 'a,
-    {
-        KnxIpInterfaceObjects::new(tables, state)
-    }
+/// Create KNX/IP interface objects for the stack.
+pub fn create_knxip_interface_objects<'a, S: IpStackState>(
+    tables: &'a KnxIpTables,
+    state: &'a S,
+) -> KnxIpInterfaceObjects<'a, S> {
+    KnxIpInterfaceObjects::new(tables, state)
 }
 
 /// Tables container for MyKnxStackWithKnxIp
@@ -542,9 +524,18 @@ impl StackDefinition for MyKnxStackWithKnxIp {
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = KnxNetIpBuilder<2, 2>; // 2 sockets, 2 servers
-    type IOB = KnxIpInterfaceObjectsBuilder;
     type State = BasicIpStackState<MockIpPlatform>;
     type Mem = zweidraehte::memory::NoMemoryMap;
+
+    type InterfaceObjects<'a> = KnxIpInterfaceObjects<'a, Self::State>;
+
+    fn create_interface_objects<'a>(tables: &'a Self::Tables, state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    where
+        Self::Tables: 'a,
+        Self::State: 'a,
+    {
+        create_knxip_interface_objects(tables, state)
+    }
 }
 
 #[embassy_executor::task]
@@ -660,8 +651,8 @@ async fn main(spawner: Spawner) {
         comm_objs::AppComObjects::new(),
         (), // hook_context
         link_layer_builder,
-        KnxIpInterfaceObjectsBuilder,
         BasicIpStackState::default(),
+        zweidraehte::memory::NoMemoryMap,
     );
 
     // The interface objects are now stored inside the stack (in StackResources)
