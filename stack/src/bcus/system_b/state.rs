@@ -49,12 +49,6 @@ pub struct DeviceState<D: SystemBDevice> {
     pub(crate) auth_keys: RefCell<[[u8; 4]; NUM_AUTH_KEYS]>,
 
     // ========================================================================
-    // Runtime state (volatile, reset on boot)
-    // ========================================================================
-    /// Current access level for connection (volatile).
-    current_access_level: Cell<u8>,
-
-    // ========================================================================
     // Storage management
     // ========================================================================
     /// Storage backend for persistence.
@@ -74,7 +68,6 @@ impl<D: SystemBDevice> DeviceState<D> {
         Self {
             individual_address: Cell::new(IndividualAddress::new(15, 15, 255)),
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
-            current_access_level: Cell::new((MAX_ACCESS_LEVELS - 1) as u8),
             storage: RefCell::new(storage),
             dirty: Cell::new(false),
             _phantom: PhantomData,
@@ -92,7 +85,6 @@ impl<D: SystemBDevice> DeviceState<D> {
         Self {
             individual_address: Cell::new(individual_address),
             auth_keys: RefCell::new(auth_keys),
-            current_access_level: Cell::new((MAX_ACCESS_LEVELS - 1) as u8),
             storage: RefCell::new(storage),
             dirty: Cell::new(false),
             _phantom: PhantomData,
@@ -151,14 +143,6 @@ where
 
     fn max_access_levels(&self) -> u8 {
         MAX_ACCESS_LEVELS as u8
-    }
-
-    fn current_access_level(&self) -> u8 {
-        self.current_access_level.get()
-    }
-
-    fn set_current_access_level(&self, level: u8) {
-        self.current_access_level.set(level.min((MAX_ACCESS_LEVELS - 1) as u8));
     }
 
     fn default_access_level(&self) -> u8 {
@@ -354,14 +338,6 @@ where
 
     fn max_access_levels(&self) -> u8 {
         self.base.max_access_levels()
-    }
-
-    fn current_access_level(&self) -> u8 {
-        self.base.current_access_level()
-    }
-
-    fn set_current_access_level(&self, level: u8) {
-        self.base.set_current_access_level(level);
     }
 
     fn default_access_level(&self) -> u8 {

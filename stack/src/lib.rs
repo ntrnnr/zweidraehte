@@ -135,19 +135,6 @@ pub trait StackState: Default {
         4
     }
 
-    /// Get the current access level for the connection.
-    ///
-    /// 0 = maximum access (full rights), 3 or 15 = minimum access.
-    /// Default is the minimum access level (no authorization).
-    fn current_access_level(&self) -> u8 {
-        self.max_access_levels() - 1
-    }
-
-    /// Set the current access level for the connection.
-    fn set_current_access_level(&self, _level: u8) {
-        // Default: do nothing
-    }
-
     /// Get the default access level for new connections.
     ///
     /// This is the access level granted when a connection is opened without
@@ -229,8 +216,6 @@ pub struct BasicStackState {
     /// Level 3 has no key - it's the fallback when no key matches.
     /// 0xFFFFFFFF means "default key" (matches if provided).
     auth_keys: RefCell<[[u8; 4]; NUM_AUTH_KEYS]>,
-    /// Current access level for this connection
-    current_access_level: RefCell<u8>,
 }
 
 impl Default for BasicStackState {
@@ -248,7 +233,6 @@ impl Default for BasicStackState {
             individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
             serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00], // Default: manufacturer 0x00FA
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]), // All keys = default key
-            current_access_level: RefCell::new(0), // Start at level 0 (max access)
         }
     }
 }
@@ -259,8 +243,7 @@ impl BasicStackState {
         Self {
             individual_address: RefCell::new(addr),
             serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00],
-            auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]), // All keys = default key (0xFFFFFFFF)
-            current_access_level: RefCell::new(0),
+            auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
         }
     }
 
@@ -269,8 +252,7 @@ impl BasicStackState {
         Self {
             individual_address: RefCell::new(addr),
             serial_number,
-            auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]), // All keys = default key (0xFFFFFFFF)
-            current_access_level: RefCell::new(0),
+            auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
         }
     }
 
@@ -302,14 +284,6 @@ impl StackState for BasicStackState {
 
     fn max_access_levels(&self) -> u8 {
         MAX_ACCESS_LEVELS as u8
-    }
-
-    fn current_access_level(&self) -> u8 {
-        *self.current_access_level.borrow()
-    }
-
-    fn set_current_access_level(&self, level: u8) {
-        *self.current_access_level.borrow_mut() = level.min(MAX_ACCESS_LEVELS as u8 - 1);
     }
 
     fn default_access_level(&self) -> u8 {
@@ -641,14 +615,6 @@ impl<P: IpPlatform + Default> StackState for BasicIpStackState<P> {
 
     fn max_access_levels(&self) -> u8 {
         self.base.max_access_levels()
-    }
-
-    fn current_access_level(&self) -> u8 {
-        self.base.current_access_level()
-    }
-
-    fn set_current_access_level(&self, level: u8) {
-        self.base.set_current_access_level(level);
     }
 
     fn default_access_level(&self) -> u8 {
