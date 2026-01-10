@@ -92,9 +92,8 @@ mod builder;
 pub use traits::{SystemBDevice, SystemBDeviceExt, KnxIpDevice, TpDevice};
 pub use storage::{DeviceStorage, PersistedState, PersistedIpConfig, NoStorage, table_sizes};
 pub use state::{DeviceState, IpDeviceState};
-pub use tables::{SystemBState, HasApplication};
-#[allow(deprecated)]
-pub use tables::SystemBTables;
+pub use tables::SystemBState;
+pub use crate::memory::HasApplication;
 pub use memory_map::{SystemBMemoryMap, MemoryLayout};
 pub use objects::{SystemBInterfaceObjects, KnxIpInterfaceObjects, device_info_from};
 pub use builder::{SystemBInterfaceObjectsBuilder, KnxIpInterfaceObjectsBuilder};

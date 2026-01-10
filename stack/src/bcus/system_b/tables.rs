@@ -9,7 +9,7 @@ use const_default::ConstDefault;
 
 use crate::{
     address::IndividualAddress,
-    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
+    memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
     objects::tables::{
         LoadableTable, RunnableTable, Table, addr7::AddrTab7Impl, app::Application, asso6::AssoTab6Impl,
         co7::CoTab7Impl,
@@ -198,18 +198,6 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-/// Trait for types that contain an Application Program.
-///
-/// This is used by interface objects and the memory map to access
-/// the application's load and run state machines.
-pub trait HasApplication {
-    /// The concrete application type.
-    type APP: LoadableTable + RunnableTable;
-
-    /// Get a reference to the application.
-    fn app(&self) -> &RefCell<Self::APP>;
-}
-
 impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault> HasApplication
     for SystemBState<ADT_SIZE, AST_SIZE, COT_SIZE, P>
 {
@@ -220,9 +208,3 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-/// Deprecated alias for [`SystemBState`].
-///
-/// Use [`SystemBState`] instead - this alias exists only for backward compatibility.
-#[deprecated(since = "0.2.0", note = "Use SystemBState instead")]
-pub type SystemBTables<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P = ()> =
-    SystemBState<ADT_SIZE, AST_SIZE, COT_SIZE, P>;

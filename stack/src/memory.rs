@@ -79,7 +79,7 @@
 
 use core::cell::RefCell;
 
-use crate::objects::tables::{AddressTable, AssociationTable, CommunicationObjectTable};
+use crate::objects::tables::{AddressTable, AssociationTable, CommunicationObjectTable, LoadableTable, RunnableTable};
 
 // ============================================================================
 // Table Accessor Traits
@@ -116,6 +116,18 @@ pub trait HasCommunicationObjectTable {
     type COT: CommunicationObjectTable;
     /// Get a reference to the communication object table
     fn cot(&self) -> &RefCell<Self::COT>;
+}
+
+/// Trait for types that contain an Application Program.
+///
+/// This is used by interface objects and the memory map to access
+/// the application's load and run state machines.
+pub trait HasApplication {
+    /// The concrete application type.
+    type APP: LoadableTable + RunnableTable;
+
+    /// Get a reference to the application.
+    fn app(&self) -> &RefCell<Self::APP>;
 }
 
 // ============================================================================
