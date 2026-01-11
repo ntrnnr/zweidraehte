@@ -131,7 +131,7 @@ use zweidraehte::{
         InterfaceObject, IpParameterObject, PropertyDescriptionResponse, PropertyError,
         PropertyServiceHandler, HasDeviceObject,
     },
-    objects::tables::{LoadableTable, RunnableTable, LoadEvent, RunEvent, app::Application},
+    objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadEvent, RunEvent, app::Application},
 };
 
 #[derive(Debug, ConstDefault)]

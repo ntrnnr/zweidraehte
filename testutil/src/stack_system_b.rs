@@ -63,7 +63,7 @@ use zweidraehte::{
     messages::knxip::KNXnetIPServiceType,
     messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium, ServiceFamily, SupportedService},
     objects::comm::ComObjects,
-    objects::tables::{LoadEvent, LoadableTable, RunEvent, RunnableTable},
+    objects::tables::{LoadEvent, HasLoadStateMachine, RunEvent, HasRunStateMachine},
 };
 
 // ============================================================================

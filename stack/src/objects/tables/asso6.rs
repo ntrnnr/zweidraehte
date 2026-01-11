@@ -242,7 +242,7 @@ pub type AssoTab6<const MAX_ENTRIES: usize> = Table<AssoTab6Impl<{ (MAX_ENTRIES 
 
 #[cfg(test)]
 mod test {
-    use crate::objects::tables::{AssociationTable, LoadEvent, LoadState, LoadableTable, TableMemory};
+    use crate::objects::tables::{AssociationTable, LoadEvent, LoadState, HasLoadStateMachine, TableMemory};
 
     use super::AssoTab6;
 

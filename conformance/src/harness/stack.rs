@@ -40,7 +40,7 @@ use zweidraehte::{
         GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject,
         PropertyDescriptionResponse, PropertyError, PropertyServiceHandler,
     },
-    objects::tables::{LoadableTable, RunnableTable, app::Application},
+    objects::tables::{HasLoadStateMachine, HasRunStateMachine, app::Application},
     BasicIpStackState, IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
 };
 

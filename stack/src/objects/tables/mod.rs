@@ -20,7 +20,7 @@ pub trait TableMemory: ConstDefault + Sized {
     fn write(&mut self, offset: usize, data: &[u8]);
 }
 
-pub trait LoadableTable: TableMemory {
+pub trait HasLoadStateMachine: TableMemory {
     /// Process a load state machine command.
     ///
     /// # Arguments
@@ -42,7 +42,7 @@ pub trait LoadableTable: TableMemory {
     fn table_reference(&self) -> u32;
 }
 
-pub trait AddressTable: LoadableTable {
+pub trait AddressTable: HasLoadStateMachine {
     fn max_entries(&self) -> usize;
     fn entry_count(&self) -> u16;
 
@@ -51,7 +51,7 @@ pub trait AddressTable: LoadableTable {
     fn contains(&self, address: GroupAddress) -> bool;
 }
 
-pub trait AssociationTable: LoadableTable {
+pub trait AssociationTable: HasLoadStateMachine {
     fn max_entries(&self) -> usize;
     fn entry_count(&self) -> u16;
 
@@ -480,7 +480,7 @@ pub struct ComObjectTableEntry {
     pub flags: ComObjectFlags,
 }
 
-pub trait CommunicationObjectTable: LoadableTable {
+pub trait CommunicationObjectTable: HasLoadStateMachine {
     fn max_entries(&self) -> usize;
     fn entry_count(&self) -> u16;
 
@@ -559,11 +559,11 @@ create_protocol_enum!(
 
 /// Trait for objects that have a run state machine.
 ///
-/// This trait is separate from `LoadableTable` because the run state machine
+/// This trait is separate from `HasLoadStateMachine` because the run state machine
 /// has different semantics - it controls application execution rather than
 /// data loading. The run state depends on the load state (app must be loaded
 /// to run), so implementations typically need access to both.
-pub trait RunnableTable {
+pub trait HasRunStateMachine {
     /// Get the current run state.
     fn run_state(&self) -> RunState;
 
@@ -741,7 +741,7 @@ impl<T: TableMemory> Table<T> {
     }
 }
 
-impl<T: TableMemory> LoadableTable for Table<T> {
+impl<T: TableMemory> HasLoadStateMachine for Table<T> {
     fn write_lsm(&mut self, mut buf: &[u8], alloc_address: Option<u32>) {
         let mut buf = &mut buf;
         let (mut new_state, action) = Self::next_state(buf.take_front(1).unwrap()[0].into(), self.state);
@@ -841,11 +841,11 @@ impl<T: TableMemory> TableMemory for Table<T> {
 // Runnable Application Wrapper
 // ============================================================================
 
-/// Wrapper that adds a Run State Machine to any LoadableTable.
+/// Wrapper that adds a Run State Machine to any HasLoadStateMachine.
 ///
 /// This follows the same pattern as `Table<T>`:
 /// - `Table<T>` wraps `TableMemory` and adds Load State Machine
-/// - `RunnableApplication<T>` wraps `LoadableTable` and adds Run State Machine
+/// - `RunnableApplication<T>` wraps `HasLoadStateMachine` and adds Run State Machine
 ///
 /// The run state machine has the following states:
 /// - HALTED (0x00): Application not running
@@ -857,25 +857,25 @@ impl<T: TableMemory> TableMemory for Table<T> {
 /// - Unloading forces run state to HALTED
 /// - RESTART only transitions to RUNNING if loaded
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunnableApplication<T: LoadableTable> {
+pub struct RunnableApplication<T: HasLoadStateMachine> {
     /// The underlying loadable table
     pub(super) table: T,
     /// Run state for the application
     pub(super) run_state: RunState,
 }
 
-impl<T: LoadableTable + ConstDefault> ConstDefault for RunnableApplication<T> {
+impl<T: HasLoadStateMachine + ConstDefault> ConstDefault for RunnableApplication<T> {
     const DEFAULT: Self = Self::new();
 }
 
-impl<T: LoadableTable + ConstDefault> RunnableApplication<T> {
+impl<T: HasLoadStateMachine + ConstDefault> RunnableApplication<T> {
     /// Create a new runnable application in unloaded/halted state.
     pub const fn new() -> Self {
         Self { table: T::DEFAULT, run_state: RunState::Halted }
     }
 }
 
-impl<T: LoadableTable> RunnableApplication<T> {
+impl<T: HasLoadStateMachine> RunnableApplication<T> {
     /// Create a runnable application from an existing loadable table.
     /// The run state will be HALTED initially.
     pub fn from_table(table: T) -> Self {
@@ -937,7 +937,7 @@ impl<T: LoadableTable> RunnableApplication<T> {
 }
 
 // Delegate TableMemory to inner table
-impl<T: LoadableTable + TableMemory> TableMemory for RunnableApplication<T> {
+impl<T: HasLoadStateMachine + TableMemory> TableMemory for RunnableApplication<T> {
     fn data_ref(&self) -> &[u8] {
         self.table.data_ref()
     }
@@ -959,8 +959,8 @@ impl<T: LoadableTable + TableMemory> TableMemory for RunnableApplication<T> {
     }
 }
 
-// Delegate LoadableTable to inner table, but also update run state on unload
-impl<T: LoadableTable> LoadableTable for RunnableApplication<T> {
+// Delegate HasLoadStateMachine to inner table, but also update run state on unload
+impl<T: HasLoadStateMachine> HasLoadStateMachine for RunnableApplication<T> {
     fn write_lsm(&mut self, buf: &[u8], alloc_address: Option<u32>) {
         // Check if this is an unload event
         let is_unload = !buf.is_empty() && buf[0] == LoadEvent::Unload.into();
@@ -994,8 +994,8 @@ impl<T: LoadableTable> LoadableTable for RunnableApplication<T> {
     }
 }
 
-// Implement RunnableTable
-impl<T: LoadableTable> RunnableTable for RunnableApplication<T> {
+// Implement HasRunStateMachine
+impl<T: HasLoadStateMachine> HasRunStateMachine for RunnableApplication<T> {
     fn run_state(&self) -> RunState {
         self.run_state
     }

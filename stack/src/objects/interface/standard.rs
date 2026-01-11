@@ -15,7 +15,7 @@
 //! # Table Objects
 //!
 //! Table objects share a common implementation via [`TableInterfaceObject<T, S>`] where:
-//! - `T` is the underlying table type (implementing [`LoadableTable`])
+//! - `T` is the underlying table type (implementing [`HasLoadStateMachine`])
 //! - `S` is a marker type implementing [`TableObjectSpec`] that provides object-specific constants
 //!
 //! Type aliases are provided for convenience:
@@ -32,7 +32,7 @@ use crate::dpt::{
     PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong, ProgrammingMode, PropertyDataDefinition,
     RoutingCount,
 };
-use crate::objects::tables::{LoadableTable, RunnableTable};
+use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine};
 
 use super::{
     ArrayPropertyWithPrefixRead, ArrayPropertyWithPrefixWrite, InterfaceObject, PropertyAccess, PropertyDescriptor,
@@ -298,7 +298,7 @@ impl<'a, S: IpStackState> IpParameterObject<'a, S> {
 /// # Type Parameters
 ///
 /// * `T` - The underlying application table type (must implement both
-///   [`LoadableTable`] and [`RunnableTable`])
+///   [`HasLoadStateMachine`] and [`HasRunStateMachine`])
 ///
 /// # Example
 ///
@@ -312,7 +312,7 @@ impl<'a, S: IpStackState> IpParameterObject<'a, S> {
 /// // Create the interface object wrapping it (with allocation address 0x400)
 /// let app_obj = ApplicationProgramObject::new(&app_table, 0x400);
 /// ```
-pub struct ApplicationProgramObject<'a, T: LoadableTable + RunnableTable> {
+pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     app: &'a RefCell<T>,
     /// Virtual address to assign during RelativeData allocation
     alloc_address: u32,
@@ -320,7 +320,7 @@ pub struct ApplicationProgramObject<'a, T: LoadableTable + RunnableTable> {
     pei_type: PDT_UnsignedChar,
 }
 
-impl<'a, T: LoadableTable + RunnableTable> ApplicationProgramObject<'a, T> {
+impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'a, T> {
     /// Create a new application program object wrapping an existing
     /// application table.
     ///
@@ -375,7 +375,7 @@ impl<'a, T: LoadableTable + RunnableTable> ApplicationProgramObject<'a, T> {
     }
 }
 
-impl<'a, T: LoadableTable + RunnableTable> InterfaceObject for ApplicationProgramObject<'a, T> {
+impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for ApplicationProgramObject<'a, T> {
     fn object_type(&self) -> InterfaceObjectType {
         InterfaceObjectType::ApplicationProgram
     }
@@ -514,7 +514,7 @@ pub trait TableObjectSpec {
 ///
 /// # Type Parameters
 ///
-/// * `T` - The underlying table type (must implement `LoadableTable`)
+/// * `T` - The underlying table type (must implement `HasLoadStateMachine`)
 /// * `S` - A marker type implementing `TableObjectSpec` for object-specific constants
 ///
 /// # KNX Properties (common to all table objects)
@@ -526,14 +526,14 @@ pub trait TableObjectSpec {
 /// | 7 | Table Reference | PDT_UNSIGNED_LONG | RO | Base address of allocated table memory |
 /// | 23 | Table | varies | RW* | Direct table data access |
 /// | 27 | MCB Table | PDT_GENERIC_08 | RO | Memory control block |
-pub struct TableInterfaceObject<'a, T: LoadableTable, S: TableObjectSpec> {
+pub struct TableInterfaceObject<'a, T: HasLoadStateMachine, S: TableObjectSpec> {
     table: &'a RefCell<T>,
     /// Virtual address to assign to this table during RelativeData allocation
     alloc_address: u32,
     _spec: PhantomData<S>,
 }
 
-impl<'a, T: LoadableTable, S: TableObjectSpec> TableInterfaceObject<'a, T, S> {
+impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T, S> {
     /// Create a new table interface object wrapping an existing table.
     ///
     /// # Arguments
@@ -560,7 +560,7 @@ impl<'a, T: LoadableTable, S: TableObjectSpec> TableInterfaceObject<'a, T, S> {
     }
 }
 
-impl<'a, T: LoadableTable, S: TableObjectSpec> InterfaceObject for TableInterfaceObject<'a, T, S> {
+impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableInterfaceObject<'a, T, S> {
     fn object_type(&self) -> InterfaceObjectType {
         S::OBJECT_TYPE
     }
@@ -934,7 +934,7 @@ mod tests {
 
     #[test]
     fn test_table_reference_after_load() {
-        use crate::objects::tables::{LoadEvent, LoadableTable};
+        use crate::objects::tables::{LoadEvent, HasLoadStateMachine};
 
         let addr_table = RefCell::new(AddrTab7::<20>::new());
         let mut obj = AddressTableObject::new(&addr_table, 0x1234);

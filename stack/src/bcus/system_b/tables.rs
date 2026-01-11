@@ -11,7 +11,7 @@ use crate::{
     address::IndividualAddress,
     memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRoutingCount},
     objects::tables::{
-        LoadableTable, RunnableTable, Table, addr7::AddrTab7Impl, app::Application, asso6::AssoTab6Impl,
+        HasLoadStateMachine, HasRunStateMachine, Table, addr7::AddrTab7Impl, app::Application, asso6::AssoTab6Impl,
         co7::CoTab7Impl,
     },
 };

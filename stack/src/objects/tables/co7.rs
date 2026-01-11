@@ -111,7 +111,7 @@ pub type CoTab7<const MAX_ENTRIES: usize> = Table<CoTab7Impl<{ (MAX_ENTRIES + 1)
 
 #[cfg(test)]
 mod test {
-    use crate::objects::tables::{LoadEvent, LoadState, LoadableTable, Priority, TableMemory};
+    use crate::objects::tables::{LoadEvent, LoadState, HasLoadStateMachine, Priority, TableMemory};
 
     use super::{CoTab7, ComObjectFlags, ComObjectType};
 

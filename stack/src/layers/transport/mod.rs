@@ -52,7 +52,7 @@ use crate::{
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
         knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci, DEFAULT_MESSAGE_ACCESS_LEVEL},
     },
-    objects::tables::{AddressTable, LoadableTable},
+    objects::tables::{AddressTable, HasLoadStateMachine},
 };
 
 use super::{ActorRequest, Inbox, Layer, LayerOp};

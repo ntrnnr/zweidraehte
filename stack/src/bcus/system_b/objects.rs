@@ -35,7 +35,7 @@ use crate::{
         GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PropertyDescriptionResponse,
         PropertyDescriptor, PropertyError, PropertyServiceHandler,
     },
-    objects::tables::{LoadableTable, RunnableTable},
+    objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
 
 use super::{SystemBDevice, SystemBDeviceExt};
@@ -70,14 +70,14 @@ use crate::memory::{
 /// - `ADT`: Address table type
 /// - `AST`: Association table type
 /// - `COT`: Communication object table type
-/// - `APP`: Application type (implementing both LoadableTable and RunnableTable)
+/// - `APP`: Application type (implementing both HasLoadStateMachine and HasRunStateMachine)
 pub struct SystemBObjects<'a, S, ADT, AST, COT, APP>
 where
     S: StackState,
-    ADT: LoadableTable,
-    AST: LoadableTable,
-    COT: LoadableTable,
-    APP: LoadableTable + RunnableTable,
+    ADT: HasLoadStateMachine,
+    AST: HasLoadStateMachine,
+    COT: HasLoadStateMachine,
+    APP: HasLoadStateMachine + HasRunStateMachine,
 {
     device: RefCell<DeviceObject<'a, S>>,
     address_table: RefCell<AddressTableObject<'a, ADT>>,
@@ -89,10 +89,10 @@ where
 impl<'a, S, ADT, AST, COT, APP> SystemBObjects<'a, S, ADT, AST, COT, APP>
 where
     S: StackState,
-    ADT: LoadableTable,
-    AST: LoadableTable,
-    COT: LoadableTable,
-    APP: LoadableTable + RunnableTable,
+    ADT: HasLoadStateMachine,
+    AST: HasLoadStateMachine,
+    COT: HasLoadStateMachine,
+    APP: HasLoadStateMachine + HasRunStateMachine,
 {
     /// Number of interface objects in this container.
     pub const OBJECT_COUNT: u16 = 5;
@@ -165,10 +165,10 @@ where
 impl<'a, S, ADT, AST, COT, APP> PropertyServiceHandler for SystemBObjects<'a, S, ADT, AST, COT, APP>
 where
     S: StackState,
-    ADT: LoadableTable,
-    AST: LoadableTable,
-    COT: LoadableTable,
-    APP: LoadableTable + RunnableTable,
+    ADT: HasLoadStateMachine,
+    AST: HasLoadStateMachine,
+    COT: HasLoadStateMachine,
+    APP: HasLoadStateMachine + HasRunStateMachine,
 {
     fn object_count(&self) -> u16 {
         Self::OBJECT_COUNT
@@ -246,10 +246,10 @@ where
 impl<'a, S, ADT, AST, COT, APP> HasDeviceObject for SystemBObjects<'a, S, ADT, AST, COT, APP>
 where
     S: StackState,
-    ADT: LoadableTable,
-    AST: LoadableTable,
-    COT: LoadableTable,
-    APP: LoadableTable + RunnableTable,
+    ADT: HasLoadStateMachine,
+    AST: HasLoadStateMachine,
+    COT: HasLoadStateMachine,
+    APP: HasLoadStateMachine + HasRunStateMachine,
 {
     fn device_control(&self) -> DeviceControl {
         self.device.borrow().device_control
@@ -433,10 +433,10 @@ where
     D: SystemBDevice + SystemBDeviceExt,
     S: StackState,
     Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
-    Tables::ADT: LoadableTable,
-    Tables::AST: LoadableTable,
-    Tables::COT: LoadableTable,
-    Tables::APP: LoadableTable + RunnableTable,
+    Tables::ADT: HasLoadStateMachine,
+    Tables::AST: HasLoadStateMachine,
+    Tables::COT: HasLoadStateMachine,
+    Tables::APP: HasLoadStateMachine + HasRunStateMachine,
 {
     let device_info = device_info_from::<D>();
     let layout = D::memory_layout();
@@ -472,10 +472,10 @@ where
     D: SystemBDevice + SystemBDeviceExt,
     S: IpStackState,
     Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
-    Tables::ADT: LoadableTable,
-    Tables::AST: LoadableTable,
-    Tables::COT: LoadableTable,
-    Tables::APP: LoadableTable + RunnableTable,
+    Tables::ADT: HasLoadStateMachine,
+    Tables::AST: HasLoadStateMachine,
+    Tables::COT: HasLoadStateMachine,
+    Tables::APP: HasLoadStateMachine + HasRunStateMachine,
 {
     let base = create_system_b_objects::<D, S, Tables>(tables, state);
     let ip = IpObjects::new(state);

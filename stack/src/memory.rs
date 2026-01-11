@@ -79,7 +79,7 @@
 
 use core::cell::RefCell;
 
-use crate::objects::tables::{AddressTable, AssociationTable, CommunicationObjectTable, LoadableTable, RunnableTable};
+use crate::objects::tables::{AddressTable, AssociationTable, CommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine};
 
 // ============================================================================
 // Table Accessor Traits
@@ -124,7 +124,7 @@ pub trait HasCommunicationObjectTable {
 /// the application's load and run state machines.
 pub trait HasApplication {
     /// The concrete application type.
-    type APP: LoadableTable + RunnableTable;
+    type APP: HasLoadStateMachine + HasRunStateMachine;
 
     /// Get a reference to the application.
     fn app(&self) -> &RefCell<Self::APP>;

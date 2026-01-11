@@ -12,8 +12,8 @@
 //!
 //! The types compose as follows:
 //! - `ApplicationImpl<D>` - Raw memory storage (implements `TableMemory`)
-//! - `Table<ApplicationImpl<D>>` - Adds load state machine (implements `LoadableTable`)
-//! - `RunnableApplication<Table<ApplicationImpl<D>>>` - Adds run state machine (implements `RunnableTable`)
+//! - `Table<ApplicationImpl<D>>` - Adds load state machine (implements `HasLoadStateMachine`)
+//! - `RunnableApplication<Table<ApplicationImpl<D>>>` - Adds run state machine (implements `HasRunStateMachine`)
 //!
 //! The type alias `Application<D>` provides the complete stack.
 
@@ -78,7 +78,7 @@ pub type Application<D> = RunnableApplication<Table<ApplicationImpl<D>>>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::objects::tables::{LoadEvent, LoadState, LoadableTable, RunEvent, RunState, RunnableTable};
+    use crate::objects::tables::{LoadEvent, LoadState, HasLoadStateMachine, RunEvent, RunState, HasRunStateMachine};
 
     #[test]
     fn test_initial_state() {
