@@ -77,8 +77,8 @@ pub enum ApplicationLayerServiceResponse {
 pub struct ApplicationLayer<'a, D: StackDefinition> {
     // --- Shared stack resources ---
     buffer_manager: &'a RefCell<DynBufferManager<'static>>,
-    /// User-defined tables container (for accessing AST/COT via accessor traits)
-    tables: &'a D::Tables,
+    /// Unified device state (contains tables and runtime configuration)
+    state: &'a D::State,
     comm_objects: &'a RefCell<D::CO>,
     hook_context: &'a <D::CO as ComObjects>::HookContext,
     event_channel:
@@ -89,10 +89,6 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     /// Provides both PropertyServiceHandler for management protocol and
     /// HasDeviceObject for direct property access.
     interface_objects: &'a D::InterfaceObjects<'static>,
-
-    // --- Device state ---
-    /// Runtime state (individual address, serial number, etc.)
-    state: &'a D::State,
 
     // --- Memory access ---
     /// Memory map for A_Memory_Read/Write services
@@ -112,7 +108,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         buffer_manager: &'a RefCell<DynBufferManager<'static>>,
-        tables: &'a D::Tables,
+        state: &'a D::State,
         comm_objects: &'a RefCell<D::CO>,
         hook_context: &'a <D::CO as ComObjects>::HookContext,
         event_channel: &'a PubSubChannel<
@@ -123,19 +119,17 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             1,
         >,
         interface_objects: &'a D::InterfaceObjects<'static>,
-        state: &'a D::State,
         memory_map: &'a D::Mem,
         app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
         transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
         Self {
             buffer_manager,
-            tables,
+            state,
             comm_objects,
             hook_context,
             event_channel,
             interface_objects,
-            state,
             memory_map,
             app_request_receiver,
             transport_layer,
@@ -149,7 +143,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
 impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D>
 where
-    D::Tables: HasAssociationTable + HasCommunicationObjectTable,
+    D::State: HasAssociationTable + HasCommunicationObjectTable,
     D::InterfaceObjects<'static>: HasDeviceObject,
 {
     type Buffer = Buffer<'static>;
@@ -266,7 +260,7 @@ where
 
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
 where
-    D::Tables: HasAssociationTable + HasCommunicationObjectTable,
+    D::State: HasAssociationTable + HasCommunicationObjectTable,
 {
     /// Handle `A_GroupValue_Write.ind` or `A_GroupValue_Response.ind`
     ///
@@ -288,10 +282,10 @@ where
 
         trace!("AL incoming TSAP: {:?}", ind.get_connection_nr());
 
-        for asap in self.tables.ast().borrow().asaps_for_tsap(ind.get_connection_nr()) {
+        for asap in self.state.ast().borrow().asaps_for_tsap(ind.get_connection_nr()) {
             trace!("AL processing ASAP: {}", asap);
 
-            let Some(cot_info) = self.tables.cot().borrow().get_object(asap) else {
+            let Some(cot_info) = self.state.cot().borrow().get_object(asap) else {
                 error!("Invalid ASAP: {}", asap);
                 continue;
             };
@@ -387,10 +381,10 @@ where
         let tsap = ind.get_connection_nr();
         trace!("AL incoming TSAP: {:?}", tsap);
 
-        for asap in self.tables.ast().borrow().asaps_for_tsap(tsap) {
+        for asap in self.state.ast().borrow().asaps_for_tsap(tsap) {
             trace!("AL processing GroupValueRead for ASAP: {}", asap);
 
-            let Some(cot_info) = self.tables.cot().borrow().get_object(asap) else {
+            let Some(cot_info) = self.state.cot().borrow().get_object(asap) else {
                 error!("Invalid ASAP: {}", asap);
                 continue;
             };
@@ -446,7 +440,7 @@ where
         // FIXME: check if device is configured at all:
         //        following needs to be loaded: Addr, Assoc, Cotab and App
 
-        let Some(cot_info) = self.tables.cot().borrow().get_object(asap) else {
+        let Some(cot_info) = self.state.cot().borrow().get_object(asap) else {
             error!("Invalid ASAP: {}", asap);
             // FIXME: return error to caller?
             return;
@@ -484,7 +478,7 @@ where
         self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::Busy);
 
         // We only send to the first TSAP per spec
-        if let Some(tsap) = self.tables.ast().borrow().get_sending_tsap(asap) {
+        if let Some(tsap) = self.state.ast().borrow().get_sending_tsap(asap) {
             trace!("AL found sending TSAP {} for ASAP {}", tsap, asap);
 
             // Determine the length of this comm obj and the offset in the message
@@ -1384,7 +1378,7 @@ where
         // Pass access level from the message (set by transport layer from connection state)
         let access_level = ind.access_level();
         let mut data = [0u8; 63]; // Max count is 63 (6 bits)
-        let result = self.memory_map.read(self.tables, address, &mut data[..(count as usize)], access_level);
+        let result = self.memory_map.read(self.state, address, &mut data[..(count as usize)], access_level);
 
         let response_count = match result {
             Ok(bytes_read) => bytes_read as u8,
@@ -1477,7 +1471,7 @@ where
         let response_count = if length_inconsistent {
             0 // Length inconsistency: response with count=0
         } else {
-            match self.memory_map.write(self.tables, address, data, access_level) {
+            match self.memory_map.write(self.state, address, data, access_level) {
                 Ok(bytes_written) => {
                     debug!("AL Memory_Write: wrote {} bytes to 0x{:04X}", bytes_written, address);
                     bytes_written as u8
@@ -1601,7 +1595,7 @@ where
         let mut current_data = [0u8; 5]; // Max 5 bytes
         let read_count = current_data[..count as usize].len();
 
-        let read_result = self.memory_map.read(self.tables, address, &mut current_data[..read_count], access_level);
+        let read_result = self.memory_map.read(self.state, address, &mut current_data[..read_count], access_level);
 
         match read_result {
             Ok(_) => {
@@ -1612,7 +1606,7 @@ where
                 }
 
                 // Write back the modified data
-                match self.memory_map.write(self.tables, address, &new_data[..count as usize], access_level) {
+                match self.memory_map.write(self.state, address, &new_data[..count as usize], access_level) {
                     Ok(_) => {
                         debug!("AL MemoryBit_Write: wrote {} bytes to 0x{:04X}", count, address);
                         // Check if Verify is enabled - if so, send response with new data
@@ -1737,7 +1731,7 @@ where
         let mut data = [0u8; 255]; // Max count is 255 (8 bits)
         let max_read = core::cmp::min(count as usize, data.len());
         // UserMemory uses 16-bit address for the memory map interface (address extension is for user address space)
-        let result = self.memory_map.read(self.tables, address_low, &mut data[..max_read], access_level);
+        let result = self.memory_map.read(self.state, address_low, &mut data[..max_read], access_level);
 
         let response_count = match result {
             Ok(bytes_read) => bytes_read as u8,
@@ -1840,7 +1834,7 @@ where
         let response_count = if length_inconsistent {
             0 // Length inconsistency: response with count=0
         } else {
-            match self.memory_map.write(self.tables, address_low, data, access_level) {
+            match self.memory_map.write(self.state, address_low, data, access_level) {
                 Ok(bytes_written) => {
                     debug!("AL UserMemory_Write: wrote {} bytes to 0x{:05X}", bytes_written, full_address);
                     bytes_written as u8

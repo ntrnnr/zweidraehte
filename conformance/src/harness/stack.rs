@@ -41,7 +41,7 @@ use zweidraehte::{
         PropertyDescriptionResponse, PropertyError, PropertyServiceHandler,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine, app::Application},
-    BasicIpStackState, IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
+    IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
 };
 
 use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle, MockLinkLayerResources};
@@ -598,24 +598,18 @@ pub mod device_info {
 /// - Index 3: Application Program Object
 /// - Index 4: Group Object Table Object
 /// - Index 5: IP Parameter Object
-pub struct KnxIpInterfaceObjects<'a, S>
-where
-    S: IpStackState,
-{
-    pub device: RefCell<DeviceObject<'a, S>>,
+pub struct KnxIpInterfaceObjects<'a> {
+    pub device: RefCell<DeviceObject<'a, ConformanceState>>,
     pub addr_table: RefCell<AddressTableObject<'a, conformance_config::AddrTab>>,
     pub asso_table: RefCell<AssociationTableObject<'a, conformance_config::AssoTab>>,
     pub app_program: RefCell<ApplicationProgramObject<'a, Application<()>>>,
     pub group_object_table: RefCell<GroupObjectTableObject<'a, conformance_config::CoTab>>,
-    pub ip_parameter: RefCell<IpParameterObject<'a, S>>,
+    pub ip_parameter: RefCell<IpParameterObject<'a, ConformanceState>>,
 }
 
-impl<'a, S> KnxIpInterfaceObjects<'a, S>
-where
-    S: IpStackState,
-{
-    /// Create new interface objects wrapping the provided tables
-    pub fn new(tables: &'a ConformanceTables, state: &'a S) -> Self {
+impl<'a> KnxIpInterfaceObjects<'a> {
+    /// Create new interface objects wrapping the provided state
+    pub fn new(state: &'a ConformanceState) -> Self {
         // Create Device Object with full device information including max APDU length
         // Note: Serial number is read dynamically from StackState
         let device = DeviceObject::with_info(state, &DeviceInfo {
@@ -628,7 +622,7 @@ where
 
         // Create Application Program Object wrapping the application table
         // APP doesn't have a fixed memory address in conformance tests
-        let mut app_program = ApplicationProgramObject::new(tables.app(), 0);
+        let mut app_program = ApplicationProgramObject::new(&state.app, 0);
         app_program.set_program_version(device_info::PROGRAM_VERSION.into());
         app_program.set_pei_type(device_info::PEI_TYPE.into());
 
@@ -638,19 +632,16 @@ where
         // Use ConformanceMemoryMap addresses for tables
         Self {
             device: RefCell::new(device),
-            addr_table: RefCell::new(AddressTableObject::new(tables.adt(), ConformanceMemoryMap::ADT_BASE as u32)),
-            asso_table: RefCell::new(AssociationTableObject::new(tables.ast(), ConformanceMemoryMap::AST_BASE as u32)),
+            addr_table: RefCell::new(AddressTableObject::new(&state.adt, ConformanceMemoryMap::ADT_BASE as u32)),
+            asso_table: RefCell::new(AssociationTableObject::new(&state.ast, ConformanceMemoryMap::AST_BASE as u32)),
             app_program: RefCell::new(app_program),
-            group_object_table: RefCell::new(GroupObjectTableObject::new(tables.cot(), ConformanceMemoryMap::COT_BASE as u32)),
+            group_object_table: RefCell::new(GroupObjectTableObject::new(&state.cot, ConformanceMemoryMap::COT_BASE as u32)),
             ip_parameter: RefCell::new(ip_parameter),
         }
     }
 }
 
-impl<'a, S> PropertyServiceHandler for KnxIpInterfaceObjects<'a, S>
-where
-    S: IpStackState,
-{
+impl<'a> PropertyServiceHandler for KnxIpInterfaceObjects<'a> {
     fn object_count(&self) -> u16 {
         6 // Device, AddrTable, AssoTable, AppProgram, GroupObjectTable, IpParameter
     }
@@ -749,10 +740,7 @@ where
     }
 }
 
-impl<'a, S> zweidraehte::objects::interface::HasDeviceObject for KnxIpInterfaceObjects<'a, S>
-where
-    S: IpStackState,
-{
+impl<'a> zweidraehte::objects::interface::HasDeviceObject for KnxIpInterfaceObjects<'a> {
     fn device_control(&self) -> zweidraehte::dpt::DeviceControl {
         self.device.borrow().device_control
     }
@@ -783,11 +771,8 @@ where
 // ============================================================================
 
 /// Create KNX/IP interface objects for conformance testing.
-pub fn create_conformance_interface_objects<'a, S: IpStackState>(
-    tables: &'a ConformanceTables,
-    state: &'a S,
-) -> KnxIpInterfaceObjects<'a, S> {
-    KnxIpInterfaceObjects::new(tables, state)
+pub fn create_conformance_interface_objects<'a>(state: &'a ConformanceState) -> KnxIpInterfaceObjects<'a> {
+    KnxIpInterfaceObjects::new(state)
 }
 
 // ============================================================================
@@ -818,20 +803,46 @@ pub const LEVEL1_MEMORY_SIZE: usize = 256;
 /// Size of user memory region (0x7FF0-0x7FFF) - for A_UserMemory_Read/Write tests
 pub const USER_MEMORY_SIZE: usize = 16;
 
-/// Tables container for conformance tests.
+/// Unified state for conformance tests.
 ///
-/// This holds all the tables (ADT, AST, COT, APP) used by the stack,
-/// implementing the accessor traits for group object communication
-/// and memory services.
+/// Combines runtime state (individual address, auth keys, IP config) with
+/// ETS-loaded tables (ADT, AST, COT, APP) and test memory regions.
 ///
-/// Also includes a linear memory region for memory read/write tests
-/// that doesn't interfere with the actual table data.
-pub struct ConformanceTables {
+/// This implements both `StackState`/`IpStackState` for runtime configuration
+/// and `Has*Table` traits for table access.
+pub struct ConformanceState {
+    // ========================================================================
+    // Runtime State
+    // ========================================================================
+    individual_address: core::cell::Cell<zweidraehte::address::IndividualAddress>,
+    auth_keys: RefCell<[[u8; 4]; 3]>,
+
+    // ========================================================================
+    // IP State
+    // ========================================================================
+    platform: MockIpPlatform,
+    configured_ip: RefCell<Ipv4Addr>,
+    configured_subnet: RefCell<Ipv4Addr>,
+    configured_gateway: RefCell<Ipv4Addr>,
+    ip_assignment_method: RefCell<u8>,
+    routing_multicast: RefCell<Ipv4Addr>,
+    ttl: RefCell<u8>,
+    friendly_name: RefCell<[u8; 30]>,
+    friendly_name_len: RefCell<usize>,
+    project_installation_id: RefCell<u16>,
+
+    // ========================================================================
+    // Tables (ADT, AST, COT, APP)
+    // ========================================================================
     pub adt: RefCell<conformance_config::AddrTab>,
     pub ast: RefCell<conformance_config::AssoTab>,
     pub cot: RefCell<conformance_config::CoTab>,
     /// Application program table (holds both load and run state machines)
     pub app: RefCell<Application<()>>,
+
+    // ========================================================================
+    // Test Memory Regions
+    // ========================================================================
     /// Linear memory region for A_Memory_Read/Write tests (0x0200-0x02FF)
     /// This is freely accessible (no access level restriction) for M-2.6/M-2.7 tests.
     pub linear_memory: RefCell<[u8; LINEAR_MEMORY_SIZE]>,
@@ -846,31 +857,227 @@ pub struct ConformanceTables {
     pub user_memory: RefCell<[u8; USER_MEMORY_SIZE]>,
 }
 
-impl HasAddressTable for ConformanceTables {
+impl ConformanceState {
+    /// Create new conformance state with test defaults.
+    pub fn new(
+        addr_tab: conformance_config::AddrTab,
+        asso_tab: conformance_config::AssoTab,
+        co_tab: conformance_config::CoTab,
+        app_table: Application<()>,
+        platform: MockIpPlatform,
+    ) -> Self {
+        Self {
+            individual_address: core::cell::Cell::new(zweidraehte::address::IndividualAddress::new(1, 0, 1)),
+            auth_keys: RefCell::new([[0xFF; 4]; 3]),
+            platform,
+            configured_ip: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
+            configured_subnet: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
+            configured_gateway: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
+            ip_assignment_method: RefCell::new(0x04), // DHCP
+            routing_multicast: RefCell::new(zweidraehte::DEFAULT_MULTICAST_ADDR),
+            ttl: RefCell::new(16),
+            friendly_name: RefCell::new([0; 30]),
+            friendly_name_len: RefCell::new(0),
+            project_installation_id: RefCell::new(0),
+            adt: RefCell::new(addr_tab),
+            ast: RefCell::new(asso_tab),
+            cot: RefCell::new(co_tab),
+            app: RefCell::new(app_table),
+            linear_memory: RefCell::new([0x0F; LINEAR_MEMORY_SIZE]),
+            level2_memory: RefCell::new([0xAA; LEVEL2_MEMORY_SIZE]),
+            level1_memory: RefCell::new([0xFF; LEVEL1_MEMORY_SIZE]),
+            user_memory: RefCell::new([0xFF; USER_MEMORY_SIZE]),
+        }
+    }
+}
+
+// ============================================================================
+// StackState Implementation for ConformanceState
+// ============================================================================
+
+impl Default for ConformanceState {
+    fn default() -> Self {
+        use zweidraehte::objects::tables::Table;
+        Self::new(
+            Table::new(),
+            Table::new(),
+            Table::new(),
+            Application::new(),
+            MockIpPlatform::new(),
+        )
+    }
+}
+
+impl zweidraehte::StackState for ConformanceState {
+    fn individual_address(&self) -> zweidraehte::address::IndividualAddress {
+        self.individual_address.get()
+    }
+
+    fn set_individual_address(&self, addr: zweidraehte::address::IndividualAddress) {
+        self.individual_address.set(addr);
+    }
+
+    fn serial_number(&self) -> &[u8; 6] {
+        &device_info::SERIAL_NUMBER
+    }
+
+    fn max_access_levels(&self) -> u8 {
+        4
+    }
+
+    fn default_access_level(&self) -> u8 {
+        self.authorize(&[0xFF, 0xFF, 0xFF, 0xFF])
+    }
+
+    fn authorize(&self, key: &[u8; 4]) -> u8 {
+        let keys = self.auth_keys.borrow();
+        for level in 0..3 {
+            if &keys[level] == key {
+                return level as u8;
+            }
+        }
+        3 // Minimum access
+    }
+
+    fn key_write(&self, level: u8, key: &[u8; 4], current_access_level: u8) -> u8 {
+        if level >= 3 {
+            return 0xFF;
+        }
+        if current_access_level > level {
+            return 0xFF;
+        }
+        self.auth_keys.borrow_mut()[level as usize] = *key;
+        level
+    }
+}
+
+impl IpStackState for ConformanceState {
+    fn current_ip_address(&self) -> Ipv4Addr {
+        self.platform.current_ip_address()
+    }
+
+    fn current_subnet_mask(&self) -> Ipv4Addr {
+        self.platform.current_subnet_mask()
+    }
+
+    fn current_default_gateway(&self) -> Ipv4Addr {
+        self.platform.current_default_gateway()
+    }
+
+    fn mac_address(&self) -> [u8; 6] {
+        self.platform.mac_address()
+    }
+
+    fn current_ip_assignment_method(&self) -> u8 {
+        self.platform.current_ip_assignment_method()
+    }
+
+    fn ip_capabilities(&self) -> u8 {
+        self.platform.ip_capabilities()
+    }
+
+    fn knxnetip_device_capabilities(&self) -> u16 {
+        self.platform.knxnetip_device_capabilities()
+    }
+
+    fn configured_ip_address(&self) -> Ipv4Addr {
+        *self.configured_ip.borrow()
+    }
+
+    fn set_configured_ip_address(&self, addr: Ipv4Addr) {
+        *self.configured_ip.borrow_mut() = addr;
+    }
+
+    fn configured_subnet_mask(&self) -> Ipv4Addr {
+        *self.configured_subnet.borrow()
+    }
+
+    fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
+        *self.configured_subnet.borrow_mut() = mask;
+    }
+
+    fn configured_default_gateway(&self) -> Ipv4Addr {
+        *self.configured_gateway.borrow()
+    }
+
+    fn set_configured_default_gateway(&self, gateway: Ipv4Addr) {
+        *self.configured_gateway.borrow_mut() = gateway;
+    }
+
+    fn ip_assignment_method(&self) -> u8 {
+        *self.ip_assignment_method.borrow()
+    }
+
+    fn set_ip_assignment_method(&self, method: u8) {
+        *self.ip_assignment_method.borrow_mut() = method;
+    }
+
+    fn routing_multicast_address(&self) -> Ipv4Addr {
+        *self.routing_multicast.borrow()
+    }
+
+    fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
+        *self.routing_multicast.borrow_mut() = addr;
+    }
+
+    fn ttl(&self) -> u8 {
+        *self.ttl.borrow()
+    }
+
+    fn set_ttl(&self, ttl: u8) {
+        *self.ttl.borrow_mut() = ttl;
+    }
+
+    fn friendly_name_len(&self) -> usize {
+        *self.friendly_name_len.borrow()
+    }
+
+    fn friendly_name(&self, buf: &mut [u8]) -> usize {
+        let name = self.friendly_name.borrow();
+        let len = self.friendly_name_len().min(buf.len());
+        buf[..len].copy_from_slice(&name[..len]);
+        len
+    }
+
+    fn set_friendly_name(&self, name: &[u8]) {
+        let mut fname = self.friendly_name.borrow_mut();
+        let len = name.len().min(30);
+        fname[..len].copy_from_slice(&name[..len]);
+        fname[len..].fill(0);
+        *self.friendly_name_len.borrow_mut() = len;
+    }
+
+    fn project_installation_id(&self) -> u16 {
+        *self.project_installation_id.borrow()
+    }
+
+    fn set_project_installation_id(&self, id: u16) {
+        *self.project_installation_id.borrow_mut() = id;
+    }
+}
+
+// ============================================================================
+// Table Accessor Trait Implementations for ConformanceState
+// ============================================================================
+
+impl HasAddressTable for ConformanceState {
     type ADT = conformance_config::AddrTab;
     fn adt(&self) -> &RefCell<Self::ADT> {
         &self.adt
     }
 }
 
-impl HasAssociationTable for ConformanceTables {
+impl HasAssociationTable for ConformanceState {
     type AST = conformance_config::AssoTab;
     fn ast(&self) -> &RefCell<Self::AST> {
         &self.ast
     }
 }
 
-impl HasCommunicationObjectTable for ConformanceTables {
+impl HasCommunicationObjectTable for ConformanceState {
     type COT = conformance_config::CoTab;
     fn cot(&self) -> &RefCell<Self::COT> {
         &self.cot
-    }
-}
-
-impl ConformanceTables {
-    /// Get a reference to the application program table
-    pub fn app(&self) -> &RefCell<Application<()>> {
-        &self.app
     }
 }
 
@@ -907,10 +1114,10 @@ impl ConformanceMemoryMap {
     pub const USER_MEMORY_BASE: u16 = 0x7FF0;
 }
 
-impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap {
+impl zweidraehte::memory::MemoryMap<ConformanceState> for ConformanceMemoryMap {
     fn read(
         &self,
-        tables: &ConformanceTables,
+        tables: &ConformanceState,
         address: u16,
         data: &mut [u8],
         access_level: u8,
@@ -1002,7 +1209,7 @@ impl zweidraehte::memory::MemoryMap<ConformanceTables> for ConformanceMemoryMap 
 
     fn write(
         &self,
-        tables: &ConformanceTables,
+        tables: &ConformanceState,
         address: u16,
         data: &[u8],
         access_level: u8,
@@ -1124,21 +1331,19 @@ impl StackDefinition for ConformanceTestStack {
     const MASK_VERSION: &'static [u8; 2] = &[0x57, 0xB0];
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
-    type Tables = ConformanceTables;
     type P = TestParameters;
     type CO = ConformanceComObjects;
     type LLB = MockLinkLayerBuilder<16, 16>;
-    type State = BasicIpStackState<MockIpPlatform>;
+    type State = ConformanceState;
     type Mem = ConformanceMemoryMap;
 
-    type InterfaceObjects<'a> = KnxIpInterfaceObjects<'a, Self::State>;
+    type InterfaceObjects<'a> = KnxIpInterfaceObjects<'a>;
 
-    fn create_interface_objects<'a>(tables: &'a Self::Tables, state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
-        Self::Tables: 'a,
         Self::State: 'a,
     {
-        create_conformance_interface_objects(tables, state)
+        create_conformance_interface_objects(state)
     }
 }
 
@@ -1216,21 +1421,14 @@ impl FullStackHarness {
         app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
         app_table.write_rsm(&[RunEvent::Restart.into()]);
 
-        // Create the tables container
-        let tables = ConformanceTables {
-            adt: RefCell::new(addr_tab),
-            ast: RefCell::new(asso_tab),
-            cot: RefCell::new(co_tab),
-            app: RefCell::new(app_table),
-            // Initialize linear memory with 0x0F (M-2.10 MemoryBit tests expect this value)
-            linear_memory: RefCell::new([0x0F; LINEAR_MEMORY_SIZE]),
-            // Initialize level 2 memory with 0xAA (M-2.11 level 2 block test value)
-            level2_memory: RefCell::new([0xAA; LEVEL2_MEMORY_SIZE]),
-            // Initialize level 1 memory with 0xFF (M-2.11 level 1 block test value)
-            level1_memory: RefCell::new([0xFF; LEVEL1_MEMORY_SIZE]),
-            // Initialize user memory with 0xFF (erased flash state - M-2.32.2 expects unwritten areas to be 0xFF)
-            user_memory: RefCell::new([0xFF; USER_MEMORY_SIZE]),
-        };
+        // Create unified conformance state (combines tables + runtime state)
+        let state = ConformanceState::new(
+            addr_tab,
+            asso_tab,
+            co_tab,
+            app_table,
+            MockIpPlatform::new(),
+        );
 
         // Create stack resources
         let resources = STACK_RESOURCES.init(StackResources::new());
@@ -1238,17 +1436,9 @@ impl FullStackHarness {
         // Create hook context (initially with null COT pointer)
         let hook_context = ConformanceHookContext::new();
 
-        // Create stack state with test serial number
-        let state = BasicIpStackState::with_address_and_serial(
-            zweidraehte::address::IndividualAddress::new(1, 0, 1),
-            device_info::SERIAL_NUMBER,
-            MockIpPlatform::new(),
-        );
-
         // Create stack
         let (stack, runner) = zweidraehte::new(
             resources,
-            tables,
             ConformanceComObjects::new(),
             hook_context,
             link_layer_builder,

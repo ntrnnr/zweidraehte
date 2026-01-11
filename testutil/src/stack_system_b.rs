@@ -5,9 +5,8 @@
 //!
 //! - `SystemBDevice` trait for device identity constants
 //! - `KnxIpDevice` trait for KNX/IP configuration
-//! - `SystemBTables` for automatic table container creation
+//! - `IpSystemBDeviceState` for unified state (tables + runtime state)
 //! - `create_knxip_objects` for interface objects creation
-//! - `IpDeviceState` for runtime state
 //!
 //! ## Architecture
 //!
@@ -18,7 +17,9 @@
 //!    - Serial number, hardware type, program version
 //!    - Table capacities (addresses, associations, com objects)
 //!
-//! 2. **Tables** (`SystemBTables`):
+//! 2. **Unified State** (`IpSystemBDeviceState`):
+//!    - Individual address, programming mode, access level
+//!    - IP configuration
 //!    - Address Table (group address → TSAP mapping)
 //!    - Association Table (TSAP → ASAP mapping)
 //!    - Group Object Table (communication object config)
@@ -31,12 +32,6 @@
 //!    - Group Object Table Object (index 3)
 //!    - Application Program Object (index 4)
 //!    - IP Parameter Object (index 5)
-//!
-//! 4. **Runtime State** (`IpDeviceState`):
-//!    - Individual address
-//!    - Programming mode
-//!    - IP configuration
-//!    - Access level
 
 #![feature(adt_const_params)]
 
@@ -52,11 +47,11 @@ use env_logger::Env;
 use platform::address::EthernetAddress;
 use static_cell::StaticCell;
 use zweidraehte::{
-    IpPlatform, Runner, StackDefinition, StackResources,
+    IpPlatform, Runner, StackDefinition, StackResources, StackState,
     address::IndividualAddress,
     bcus::system_b::{
-        DeviceStorage, IpDeviceState, KnxIpDevice, KnxIpInterfaceObjects, PersistedIpConfig, PersistedState,
-        SystemBDevice, SystemBDeviceExt, SystemBMemoryMap, SystemBTables, create_knxip_objects,
+        DeviceStorage, IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, PersistedState,
+        SystemBDevice, SystemBDeviceExt, SystemBMemoryMap, create_knxip_objects,
     },
     define_com_objects,
     layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, KnxNetIpResources, servers},
@@ -318,18 +313,23 @@ impl IpPlatform for MockIpPlatform {
 }
 
 // ============================================================================
-// Tables type alias using SystemBTables
+// State type alias using IpSystemBDeviceState
 // ============================================================================
 
-/// Tables container using System B sizing.
+/// Unified state type combining tables + runtime state.
 ///
 /// The const generics are computed from the device's MAX_* constants:
 /// - ADT_SIZE = 2 + MAX_ADDRESSES * 2 = 34 bytes
 /// - AST_SIZE = 2 + MAX_ASSOCIATIONS * 4 = 66 bytes
 /// - COT_SIZE = 2 + MAX_COM_OBJECTS * 2 = 18 bytes
 /// - P = () (no application-specific data)
-pub type MyTables =
-    SystemBTables<{ MySystemBDevice::ADT_SIZE }, { MySystemBDevice::AST_SIZE }, { MySystemBDevice::COT_SIZE }>;
+pub type MyState = IpSystemBDeviceState<
+    { MySystemBDevice::ADT_SIZE },
+    { MySystemBDevice::AST_SIZE },
+    { MySystemBDevice::COT_SIZE },
+    (),
+    MySystemBDevice,
+>;
 
 /// Type alias for the persisted state with our device's table sizes.
 pub type MyPersistedState =
@@ -363,28 +363,26 @@ pub struct MySystemBStack;
 impl StackDefinition for MySystemBStack {
     const MASK_VERSION: &'static [u8; 2] = &MySystemBDevice::MASK_VERSION;
 
-    type Tables = MyTables;
     type P = ();
     type CO = comm_objs::SystemBComObjects;
     type LLB = KnxNetIpBuilder<2, 2>;
-    type State = IpDeviceState<MySystemBDevice>;
+    type State = MyState;
     type Mem = SystemBMemoryMap;
 
     type InterfaceObjects<'a> = KnxIpInterfaceObjects<
         'a,
         Self::State,
-        <Self::Tables as zweidraehte::memory::HasAddressTable>::ADT,
-        <Self::Tables as zweidraehte::memory::HasAssociationTable>::AST,
-        <Self::Tables as zweidraehte::memory::HasCommunicationObjectTable>::COT,
-        <Self::Tables as zweidraehte::memory::HasApplication>::APP,
+        <Self::State as zweidraehte::memory::HasAddressTable>::ADT,
+        <Self::State as zweidraehte::memory::HasAssociationTable>::AST,
+        <Self::State as zweidraehte::memory::HasCommunicationObjectTable>::COT,
+        <Self::State as zweidraehte::memory::HasApplication>::APP,
     >;
 
-    fn create_interface_objects<'a>(tables: &'a Self::Tables, state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
-        Self::Tables: 'a,
         Self::State: 'a,
     {
-        create_knxip_objects::<MySystemBDevice, _, _>(tables, state)
+        create_knxip_objects::<MySystemBDevice, _>(state)
     }
 }
 
@@ -456,7 +454,7 @@ async fn main(spawner: Spawner) {
 
     // Create storage and try to load persisted state
     let mut storage = JsonStorage::new(STATE_FILE_PATH);
-    let (tables, individual_address, auth_keys, ip_config) = match storage
+    let device_state: MyState = match storage
         .load::<{ MySystemBDevice::ADT_SIZE }, { MySystemBDevice::AST_SIZE }, { MySystemBDevice::COT_SIZE }, ()>()
     {
         Ok(Some(persisted)) => {
@@ -468,45 +466,47 @@ async fn main(spawner: Spawner) {
             println!("  Application: {:?}", persisted.application.inner().load_state());
             println!();
 
-            let individual_address = persisted.individual_address;
-            let auth_keys = persisted.auth_keys;
-            let ip_config = persisted.ip_config.clone();
-            let tables = MyTables::from_persisted(persisted);
-            (tables, individual_address, auth_keys, ip_config)
+            MyState::from_persisted(
+                JsonStorage::new(STATE_FILE_PATH),
+                MockIpPlatform::default(),
+                persisted,
+            )
         }
         Ok(None) => {
             println!("No persisted state found, using test configuration");
             println!();
 
-            // Create tables with test configuration
-            let mut tables = MyTables::new();
-            let individual_address = IndividualAddress::new(1, 2, 3);
-            let auth_keys = [[0xFF; 4]; 3]; // Default keys
-            let ip_config = Some(PersistedIpConfig::default());
+            // Create unified state with default values
+            let state = MyState::new(
+                JsonStorage::new(STATE_FILE_PATH),
+                MockIpPlatform::default(),
+            );
+            state.set_individual_address(IndividualAddress::new(1, 2, 3));
 
-            load_test_configuration(&mut tables);
+            load_test_configuration(&state);
 
             // Save the initial state
-            if let Err(e) = storage.save(&tables.to_persisted(individual_address, auth_keys, ip_config.clone())) {
+            if let Err(e) = storage.save(&state.to_persisted()) {
                 log::error!("Failed to save initial state: {}", e);
             }
 
-            (tables, individual_address, auth_keys, ip_config)
+            state
         }
         Err(e) => {
             println!("Error loading persisted state: {}", e);
             println!("Using test configuration instead");
             println!();
 
-            // Create tables with test configuration as fallback
-            let mut tables = MyTables::new();
-            let individual_address = IndividualAddress::new(1, 2, 3);
-            let auth_keys = [[0xFF; 4]; 3];
-            let ip_config = Some(PersistedIpConfig::default());
+            // Create unified state with default values as fallback
+            let state = MyState::new(
+                JsonStorage::new(STATE_FILE_PATH),
+                MockIpPlatform::default(),
+            );
+            state.set_individual_address(IndividualAddress::new(1, 2, 3));
 
-            load_test_configuration(&mut tables);
+            load_test_configuration(&state);
 
-            (tables, individual_address, auth_keys, ip_config)
+            state
         }
     };
 
@@ -516,7 +516,7 @@ async fn main(spawner: Spawner) {
     let device_info = DeviceInformation {
         medium: KNXMedium::KNXIP,
         device_status: DeviceStatus::None,
-        individual_address,
+        individual_address: device_state.individual_address(),
         project_installation_identifier: 0x5678,
         knx_serial_number: MySystemBDevice::SERIAL_NUMBER,
         routing_multicast_address: Ipv4Addr::new(224, 0, 23, 12),
@@ -553,20 +553,10 @@ async fn main(spawner: Spawner) {
     println!("  Multicast: 224.0.23.12:3671");
     println!();
 
-    // Create device state from loaded/default data
-    let device_state = IpDeviceState::<MySystemBDevice>::from_persisted(
-        JsonStorage::new(STATE_FILE_PATH),
-        MockIpPlatform::default(),
-        individual_address,
-        auth_keys,
-        ip_config,
-    );
-
     // Create stack resources and initialize the stack
     static RESOURCES: StaticCell<StackResources<MySystemBStack>> = StaticCell::new();
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
-        tables,
         comm_objs::SystemBComObjects::new(),
         (),
         link_layer_builder,
@@ -632,10 +622,11 @@ async fn main(spawner: Spawner) {
     }
 }
 
-/// Load test configuration into the tables.
+/// Load test configuration into the state's tables.
 ///
 /// This simulates ETS configuration loading via the Load State Machine.
-fn load_test_configuration(tables: &mut MyTables) {
+fn load_test_configuration(state: &MyState) {
+    use zweidraehte::memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable, HasApplication};
     use zweidraehte::objects::tables::TableMemory;
 
     // Get the memory layout addresses for TABLE_REFERENCE
@@ -647,7 +638,7 @@ fn load_test_configuration(tables: &mut MyTables) {
 
     // Load Address Table
     {
-        let mut adt = tables.adt.borrow_mut();
+        let mut adt = state.adt().borrow_mut();
         adt.write_lsm(&[LoadEvent::StartLoading.into()], None);
 
         // Allocate table space - pass the table reference address
@@ -681,7 +672,7 @@ fn load_test_configuration(tables: &mut MyTables) {
 
     // Load Association Table
     {
-        let mut ast = tables.ast.borrow_mut();
+        let mut ast = state.ast().borrow_mut();
         ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
 
         ast.write_lsm(
@@ -721,7 +712,7 @@ fn load_test_configuration(tables: &mut MyTables) {
 
     // Load Group Object Table
     {
-        let mut cot = tables.cot.borrow_mut();
+        let mut cot = state.cot().borrow_mut();
         cot.write_lsm(&[LoadEvent::StartLoading.into()], None);
 
         cot.write_lsm(
@@ -757,7 +748,7 @@ fn load_test_configuration(tables: &mut MyTables) {
 
     // Load Application
     {
-        let mut app = tables.app.borrow_mut();
+        let mut app = state.app().borrow_mut();
         app.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
         // Start the application

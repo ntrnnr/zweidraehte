@@ -423,20 +423,17 @@ pub fn device_info_from<D: SystemBDevice>() -> DeviceInfo {
 /// # Type Parameters
 ///
 /// - `D`: Device type implementing [`SystemBDevice`]
-/// - `S`: State type implementing [`StackState`]
-/// - `Tables`: Tables type implementing the required traits
-pub fn create_system_b_objects<'a, D, S, Tables>(
-    tables: &'a Tables,
+/// - `S`: Unified state type implementing [`StackState`] and the required table traits
+pub fn create_system_b_objects<'a, D, S>(
     state: &'a S,
-) -> SystemBObjects<'a, S, Tables::ADT, Tables::AST, Tables::COT, Tables::APP>
+) -> SystemBObjects<'a, S, S::ADT, S::AST, S::COT, S::APP>
 where
     D: SystemBDevice + SystemBDeviceExt,
-    S: StackState,
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
-    Tables::ADT: HasLoadStateMachine,
-    Tables::AST: HasLoadStateMachine,
-    Tables::COT: HasLoadStateMachine,
-    Tables::APP: HasLoadStateMachine + HasRunStateMachine,
+    S: StackState + HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
+    S::ADT: HasLoadStateMachine,
+    S::AST: HasLoadStateMachine,
+    S::COT: HasLoadStateMachine,
+    S::APP: HasLoadStateMachine + HasRunStateMachine,
 {
     let device_info = device_info_from::<D>();
     let layout = D::memory_layout();
@@ -444,13 +441,13 @@ where
         state,
         &device_info,
         &layout,
-        tables.adt(),
-        tables.ast(),
-        tables.cot(),
-        tables.app(),
+        state.adt(),
+        state.ast(),
+        state.cot(),
+        state.app(),
         D::PROGRAM_VERSION,
         D::PEI_TYPE,
-        tables.routing_count(),
+        state.routing_count(),
     )
 }
 
@@ -462,22 +459,19 @@ where
 /// # Type Parameters
 ///
 /// - `D`: Device type implementing [`SystemBDevice`]
-/// - `S`: State type implementing [`IpStackState`]
-/// - `Tables`: Tables type implementing the required traits
-pub fn create_knxip_objects<'a, D, S, Tables>(
-    tables: &'a Tables,
+/// - `S`: Unified state type implementing [`IpStackState`] and the required table traits
+pub fn create_knxip_objects<'a, D, S>(
     state: &'a S,
-) -> KnxIpInterfaceObjects<'a, S, Tables::ADT, Tables::AST, Tables::COT, Tables::APP>
+) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP>
 where
     D: SystemBDevice + SystemBDeviceExt,
-    S: IpStackState,
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
-    Tables::ADT: HasLoadStateMachine,
-    Tables::AST: HasLoadStateMachine,
-    Tables::COT: HasLoadStateMachine,
-    Tables::APP: HasLoadStateMachine + HasRunStateMachine,
+    S: IpStackState + HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
+    S::ADT: HasLoadStateMachine,
+    S::AST: HasLoadStateMachine,
+    S::COT: HasLoadStateMachine,
+    S::APP: HasLoadStateMachine + HasRunStateMachine,
 {
-    let base = create_system_b_objects::<D, S, Tables>(tables, state);
+    let base = create_system_b_objects::<D, S>(state);
     let ip = IpObjects::new(state);
     (base, ip)
 }

@@ -106,7 +106,7 @@
 
 #![feature(adt_const_params)]
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use const_default::ConstDefault;
 use embassy_executor::Spawner;
@@ -117,7 +117,7 @@ use platform::address::EthernetAddress;
 use static_cell::StaticCell;
 use std::net::Ipv4Addr;
 use zweidraehte::{
-    BasicIpStackState, IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
+    IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
     address::IndividualAddress,
     define_com_objects,
     dpt::DPT_Switch,
@@ -307,17 +307,20 @@ where
 
 impl<'a, S> KnxIpInterfaceObjects<'a, S>
 where
-    S: IpStackState,
+    S: IpStackState + HasAddressTable<ADT = stack_test_config::AddrTab>
+        + HasAssociationTable<AST = stack_test_config::AssoTab>
+        + HasCommunicationObjectTable<COT = stack_test_config::CoTab>
+        + HasApplication<APP = Application<()>>,
 {
-    /// Create new interface objects wrapping the provided tables
-    pub fn new(tables: &'a KnxIpTables, state: &'a S) -> Self {
+    /// Create new interface objects from unified state
+    pub fn new(state: &'a S) -> Self {
         // Create Device Object with device information and state reference
         // Note: serial_number and manufacturer_id are read dynamically from StackState
         let device = DeviceObject::with_values(state, device_info::HARDWARE_TYPE);
 
         // Create Application Program Object wrapping the application table
         // Using 0 for alloc address since NoMemoryMap is used (no memory-mapped access)
-        let mut app_program = ApplicationProgramObject::new(tables.app(), 0);
+        let mut app_program = ApplicationProgramObject::new(state.app(), 0);
         app_program.set_program_version(device_info::PROGRAM_VERSION.into());
         app_program.set_pei_type(device_info::PEI_TYPE.into());
 
@@ -327,10 +330,10 @@ where
         // Using 0 for alloc addresses since NoMemoryMap is used (no memory-mapped access)
         Self {
             device: RefCell::new(device),
-            addr_table: RefCell::new(AddressTableObject::new(tables.adt(), 0)),
-            asso_table: RefCell::new(AssociationTableObject::new(tables.ast(), 0)),
+            addr_table: RefCell::new(AddressTableObject::new(state.adt(), 0)),
+            asso_table: RefCell::new(AssociationTableObject::new(state.ast(), 0)),
             app_program: RefCell::new(app_program),
-            group_object_table: RefCell::new(GroupObjectTableObject::new(tables.cot(), 0)),
+            group_object_table: RefCell::new(GroupObjectTableObject::new(state.cot(), 0)),
             ip_parameter: RefCell::new(ip_parameter),
         }
     }
@@ -472,15 +475,24 @@ where
 // ============================================================================
 
 /// Create KNX/IP interface objects for the stack.
-pub fn create_knxip_interface_objects<'a, S: IpStackState>(
-    tables: &'a KnxIpTables,
-    state: &'a S,
-) -> KnxIpInterfaceObjects<'a, S> {
-    KnxIpInterfaceObjects::new(tables, state)
+pub fn create_knxip_interface_objects<'a, S>(state: &'a S) -> KnxIpInterfaceObjects<'a, S>
+where
+    S: IpStackState + HasAddressTable<ADT = stack_test_config::AddrTab>
+        + HasAssociationTable<AST = stack_test_config::AssoTab>
+        + HasCommunicationObjectTable<COT = stack_test_config::CoTab>
+        + HasApplication<APP = Application<()>>,
+{
+    KnxIpInterfaceObjects::new(state)
 }
 
-/// Tables container for MyKnxStackWithKnxIp
-pub struct KnxIpTables {
+/// Unified state container for MyKnxStackWithKnxIp
+///
+/// Combines tables + IP state into a single struct.
+pub struct KnxIpState<P: IpPlatform> {
+    // Runtime state
+    individual_address: Cell<IndividualAddress>,
+    platform: P,
+    // Tables
     pub adt: RefCell<stack_test_config::AddrTab>,
     pub ast: RefCell<stack_test_config::AssoTab>,
     pub cot: RefCell<stack_test_config::CoTab>,
@@ -488,53 +500,205 @@ pub struct KnxIpTables {
     pub app: RefCell<Application<()>>,
 }
 
-impl HasAddressTable for KnxIpTables {
+impl<P: IpPlatform> KnxIpState<P> {
+    pub fn new(platform: P, individual_address: IndividualAddress) -> Self {
+        Self {
+            individual_address: Cell::new(individual_address),
+            platform,
+            adt: RefCell::new(stack_test_config::AddrTab::new()),
+            ast: RefCell::new(stack_test_config::AssoTab::new()),
+            cot: RefCell::new(stack_test_config::CoTab::new()),
+            app: RefCell::new(Application::new()),
+        }
+    }
+
+    pub fn with_tables(
+        platform: P,
+        individual_address: IndividualAddress,
+        adt: stack_test_config::AddrTab,
+        ast: stack_test_config::AssoTab,
+        cot: stack_test_config::CoTab,
+        app: Application<()>,
+    ) -> Self {
+        Self {
+            individual_address: Cell::new(individual_address),
+            platform,
+            adt: RefCell::new(adt),
+            ast: RefCell::new(ast),
+            cot: RefCell::new(cot),
+            app: RefCell::new(app),
+        }
+    }
+}
+
+impl<P: IpPlatform + Default> Default for KnxIpState<P> {
+    fn default() -> Self {
+        Self::new(P::default(), IndividualAddress::new(1, 1, 0))
+    }
+}
+
+impl<P: IpPlatform + Default> zweidraehte::StackState for KnxIpState<P> {
+    fn individual_address(&self) -> IndividualAddress {
+        self.individual_address.get()
+    }
+
+    fn set_individual_address(&self, addr: IndividualAddress) {
+        self.individual_address.set(addr);
+    }
+
+    fn serial_number(&self) -> &[u8; 6] {
+        &device_info::SERIAL_NUMBER
+    }
+}
+
+impl<P: IpPlatform + Default> IpStackState for KnxIpState<P> {
+    fn current_ip_address(&self) -> core::net::Ipv4Addr {
+        self.platform.current_ip_address()
+    }
+
+    fn current_subnet_mask(&self) -> core::net::Ipv4Addr {
+        self.platform.current_subnet_mask()
+    }
+
+    fn current_default_gateway(&self) -> core::net::Ipv4Addr {
+        self.platform.current_default_gateway()
+    }
+
+    fn mac_address(&self) -> [u8; 6] {
+        self.platform.mac_address()
+    }
+
+    fn current_ip_assignment_method(&self) -> u8 {
+        self.platform.current_ip_assignment_method()
+    }
+
+    fn ip_assignment_method(&self) -> u8 {
+        0x02 // Manual
+    }
+
+    fn set_ip_assignment_method(&self, _method: u8) {
+        // Not implemented for this simple state
+    }
+
+    fn ip_capabilities(&self) -> u8 {
+        self.platform.ip_capabilities()
+    }
+
+    fn knxnetip_device_capabilities(&self) -> u16 {
+        self.platform.knxnetip_device_capabilities()
+    }
+
+    fn friendly_name_len(&self) -> usize {
+        0
+    }
+
+    fn friendly_name(&self, _buf: &mut [u8]) -> usize {
+        0 // No friendly name set
+    }
+
+    fn set_friendly_name(&self, _name: &[u8]) {
+        // Not implemented for this simple state
+    }
+
+    fn configured_ip_address(&self) -> core::net::Ipv4Addr {
+        self.platform.current_ip_address()
+    }
+
+    fn set_configured_ip_address(&self, _addr: core::net::Ipv4Addr) {
+        // Not implemented for this simple state
+    }
+
+    fn configured_subnet_mask(&self) -> core::net::Ipv4Addr {
+        self.platform.current_subnet_mask()
+    }
+
+    fn set_configured_subnet_mask(&self, _mask: core::net::Ipv4Addr) {
+        // Not implemented for this simple state
+    }
+
+    fn configured_default_gateway(&self) -> core::net::Ipv4Addr {
+        self.platform.current_default_gateway()
+    }
+
+    fn set_configured_default_gateway(&self, _gateway: core::net::Ipv4Addr) {
+        // Not implemented for this simple state
+    }
+
+    fn routing_multicast_address(&self) -> core::net::Ipv4Addr {
+        core::net::Ipv4Addr::new(224, 0, 23, 12)
+    }
+
+    fn set_routing_multicast_address(&self, _addr: core::net::Ipv4Addr) {
+        // Not implemented for this simple state
+    }
+
+    fn ttl(&self) -> u8 {
+        16
+    }
+
+    fn set_ttl(&self, _ttl: u8) {
+        // Not implemented for this simple state
+    }
+
+    fn project_installation_id(&self) -> u16 {
+        device_info::PROJECT_INSTALLATION_ID
+    }
+
+    fn set_project_installation_id(&self, _id: u16) {
+        // Not implemented for this simple state
+    }
+}
+
+impl<P: IpPlatform> HasAddressTable for KnxIpState<P> {
     type ADT = stack_test_config::AddrTab;
     fn adt(&self) -> &RefCell<Self::ADT> {
         &self.adt
     }
 }
 
-impl HasAssociationTable for KnxIpTables {
+impl<P: IpPlatform> HasAssociationTable for KnxIpState<P> {
     type AST = stack_test_config::AssoTab;
     fn ast(&self) -> &RefCell<Self::AST> {
         &self.ast
     }
 }
 
-impl HasCommunicationObjectTable for KnxIpTables {
+impl<P: IpPlatform> HasCommunicationObjectTable for KnxIpState<P> {
     type COT = stack_test_config::CoTab;
     fn cot(&self) -> &RefCell<Self::COT> {
         &self.cot
     }
 }
 
-impl KnxIpTables {
-    /// Get a reference to the application program table
-    pub fn app(&self) -> &RefCell<Application<()>> {
+use zweidraehte::memory::HasApplication;
+
+impl<P: IpPlatform> HasApplication for KnxIpState<P> {
+    type APP = Application<()>;
+    fn app(&self) -> &RefCell<Self::APP> {
         &self.app
     }
 }
+
+/// Unified state type for this test stack.
+pub type MyState = KnxIpState<MockIpPlatform>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MyKnxStackWithKnxIp;
 impl StackDefinition for MyKnxStackWithKnxIp {
     const MASK_VERSION: &'static [u8; 2] = &[0x57, 0xb0];
-    type Tables = KnxIpTables;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = KnxNetIpBuilder<2, 2>; // 2 sockets, 2 servers
-    type State = BasicIpStackState<MockIpPlatform>;
+    type State = MyState;
     type Mem = zweidraehte::memory::NoMemoryMap;
 
     type InterfaceObjects<'a> = KnxIpInterfaceObjects<'a, Self::State>;
 
-    fn create_interface_objects<'a>(tables: &'a Self::Tables, state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
-        Self::Tables: 'a,
         Self::State: 'a,
     {
-        create_knxip_interface_objects(tables, state)
+        create_knxip_interface_objects(state)
     }
 }
 
@@ -634,24 +798,25 @@ async fn main(spawner: Spawner) {
     app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
     app_table.write_rsm(&[RunEvent::Restart.into()]);
 
-    // Create the tables container
-    let tables = KnxIpTables {
-        adt: RefCell::new(addr_tab),
-        ast: RefCell::new(asso_tab),
-        cot: RefCell::new(co_tab),
-        app: RefCell::new(app_table),
-    };
+    // Create the unified state container (tables + IP state)
+    let state = KnxIpState::with_tables(
+        MockIpPlatform::default(),
+        CONFIG.individual_address,
+        addr_tab,
+        asso_tab,
+        co_tab,
+        app_table,
+    );
 
-    // Create stack resources - the stack takes ownership of the tables
-    // and stores them in RefCells that we can access via the Stack handle
+    // Create stack resources - the stack takes ownership of the state
+    // and stores it so we can access via the Stack handle
     static RESOURCES: StaticCell<StackResources<MyKnxStackWithKnxIp>> = StaticCell::new();
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
-        tables,
         comm_objs::AppComObjects::new(),
         (), // hook_context
         link_layer_builder,
-        BasicIpStackState::default(),
+        state,
         zweidraehte::memory::NoMemoryMap,
     );
 

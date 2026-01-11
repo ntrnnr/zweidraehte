@@ -94,9 +94,7 @@ enum TimeoutType {
 pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1, const MAX_OUTGOING: usize = 0> {
     /// Buffer manager for allocating messages
     buffer_manager: &'a RefCell<crate::messages::buffers::DynBufferManager<'static>>,
-    /// User-defined tables container (for accessing ADT via HasAddressTable trait)
-    tables: &'a D::Tables,
-    /// Stack state (for accessing default access level)
+    /// Unified device state (contains tables and runtime state)
     state: &'a D::State,
     /// Channel to send messages to the network layer
     network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
@@ -112,19 +110,18 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     /// Create a new Transport Layer
     pub fn new(
         buffer_manager: &'a RefCell<crate::messages::buffers::DynBufferManager<'static>>,
-        tables: &'a D::Tables,
         state: &'a D::State,
         network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         application_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
-        Self { buffer_manager, tables, state, network_layer, application_layer, connections: ConnectionTable::new() }
+        Self { buffer_manager, state, network_layer, application_layer, connections: ConnectionTable::new() }
     }
 }
 
 impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>
 where
-    D::Tables: HasAddressTable,
+    D::State: HasAddressTable,
 {
     // ========================================================================
     // Indication Handling (from Network Layer)
@@ -141,8 +138,8 @@ where
             ServiceType::N_GroupData_Ind => {
                 if let Some(Tpci::DataGroup) = msg.get_tpci()
                     && let DestinationAddress::Group(g) = msg.get_dest_addr()
-                    && self.tables.adt().borrow().is_loaded()
-                    && let Some(conn_nr) = self.tables.adt().borrow().get_tsap(g)
+                    && self.state.adt().borrow().is_loaded()
+                    && let Some(conn_nr) = self.state.adt().borrow().get_tsap(g)
                 {
                     msg.set_connection_nr(conn_nr);
                     msg.set_service_type(ServiceType::T_GroupData_Ind);
@@ -340,8 +337,8 @@ where
     ) -> ConfirmationMessage<Buffer<'static>> {
         trace!("T_GroupData_Req: {:?}", msg);
 
-        if self.tables.adt().borrow().is_loaded()
-            && let Some(dst_addr) = self.tables.adt().borrow().get_address(msg.get_connection_nr())
+        if self.state.adt().borrow().is_loaded()
+            && let Some(dst_addr) = self.state.adt().borrow().get_address(msg.get_connection_nr())
         {
             trace!("TL conn_nr -> group addr: {}", dst_addr);
             let original_conn_nr = msg.get_connection_nr();
@@ -823,7 +820,7 @@ where
 impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> Layer<'a>
     for TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>
 where
-    D::Tables: HasAddressTable,
+    D::State: HasAddressTable,
 {
     type Buffer = Buffer<'static>;
 

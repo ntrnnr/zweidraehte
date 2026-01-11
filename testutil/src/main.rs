@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
 use core::cell::RefCell;
 use zweidraehte::{
-    BasicStackState, Runner, StackDefinition, StackResources, define_com_objects,
+    Runner, StackDefinition, StackResources, StackState, define_com_objects,
+    address::IndividualAddress,
     dpt::DPT_Switch,
     memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
@@ -53,28 +54,67 @@ pub struct MyKnxStackStoredData {
     co_tab: CoTab7<30>,
 }
 
-/// User-defined tables container for MyKnxStack
-pub struct MyTables {
+/// Unified device state for MyKnxStack
+pub struct MyState {
+    // Runtime state
+    individual_address: core::cell::Cell<IndividualAddress>,
+    // Tables
     pub adt: RefCell<AddrTab7<30>>,
     pub ast: RefCell<AssoTab6<15>>,
     pub cot: RefCell<CoTab7<30>>,
 }
 
-impl HasAddressTable for MyTables {
+impl MyState {
+    pub fn new(adt: AddrTab7<30>, ast: AssoTab6<15>, cot: CoTab7<30>) -> Self {
+        Self {
+            individual_address: core::cell::Cell::new(IndividualAddress::new(1, 0, 1)),
+            adt: RefCell::new(adt),
+            ast: RefCell::new(ast),
+            cot: RefCell::new(cot),
+        }
+    }
+}
+
+impl Default for MyState {
+    fn default() -> Self {
+        Self {
+            individual_address: core::cell::Cell::new(IndividualAddress::new(1, 0, 1)),
+            adt: RefCell::new(AddrTab7::<30>::new()),
+            ast: RefCell::new(AssoTab6::<15>::new()),
+            cot: RefCell::new(CoTab7::<30>::new()),
+        }
+    }
+}
+
+impl StackState for MyState {
+    fn individual_address(&self) -> IndividualAddress {
+        self.individual_address.get()
+    }
+
+    fn set_individual_address(&self, addr: IndividualAddress) {
+        self.individual_address.set(addr);
+    }
+
+    fn serial_number(&self) -> &[u8; 6] {
+        &[0x00, 0xFA, 0x00, 0x00, 0x00, 0x01]
+    }
+}
+
+impl HasAddressTable for MyState {
     type ADT = AddrTab7<30>;
     fn adt(&self) -> &RefCell<Self::ADT> {
         &self.adt
     }
 }
 
-impl HasAssociationTable for MyTables {
+impl HasAssociationTable for MyState {
     type AST = AssoTab6<15>;
     fn ast(&self) -> &RefCell<Self::AST> {
         &self.ast
     }
 }
 
-impl HasCommunicationObjectTable for MyTables {
+impl HasCommunicationObjectTable for MyState {
     type COT = CoTab7<30>;
     fn cot(&self) -> &RefCell<Self::COT> {
         &self.cot
@@ -85,19 +125,17 @@ impl HasCommunicationObjectTable for MyTables {
 pub struct MyKnxStack;
 impl StackDefinition for MyKnxStack {
     const MASK_VERSION: &'static [u8; 2] = &[0x07, 0xb0];
-    type Tables = MyTables;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = MockLinkLayerBuilder<8>;
-    type State = BasicStackState;
+    type State = MyState;
     type Mem = zweidraehte::memory::NoMemoryMap;
 
     // Empty interface objects - this stack doesn't have interface objects
     type InterfaceObjects<'a> = ();
 
-    fn create_interface_objects<'a>(_tables: &'a Self::Tables, _state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(_state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
-        Self::Tables: 'a,
         Self::State: 'a,
     {
         ()
@@ -164,20 +202,19 @@ async fn main(spawner: Spawner) {
     // The builder is consumed when creating the stack, the handle is kept for injection
     let (link_layer_builder, mock_ll_handle) = MockLinkLayerBuilder::new(injection_channel);
 
-    // Create the tables container
-    let tables = MyTables {
-        adt: RefCell::new(stored_data.addr_tab),
-        ast: RefCell::new(stored_data.asso_tab),
-        cot: RefCell::new(stored_data.co_tab),
-    };
+    // Create the unified state (tables + runtime state)
+    let state = MyState::new(
+        stored_data.addr_tab,
+        stored_data.asso_tab,
+        stored_data.co_tab,
+    );
 
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
-        tables,
         comm_objs::AppComObjects::new(),
         (),  // hook_context
         link_layer_builder,
-        BasicStackState::default(),
+        state,
         zweidraehte::memory::NoMemoryMap,
     );
 
