@@ -31,7 +31,7 @@ pub mod util;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
 
-use core::{cell::RefCell, mem::MaybeUninit};
+use core::{cell::{Cell, RefCell}, mem::MaybeUninit};
 
 use const_default::ConstDefault;
 use embassy_sync::{
@@ -123,6 +123,44 @@ pub trait StackState: Default {
     /// 4 bytes device-specific identifier. Used for `A_IndividualAddressSerialNumber_Read/Write`.
     fn serial_number(&self) -> &[u8; 6];
 
+    /// Get the runtime maximum APDU length.
+    ///
+    /// This value is reported via PID 56 (MAX_APDU_LENGTH) in the Device Object.
+    /// It represents the actual limit based on detected hardware capabilities:
+    ///
+    /// - USB interface maximum frame size
+    /// - TP1 MAC type (standard vs Extended Frame Format)
+    /// - Other link layer constraints
+    ///
+    /// **Important**: This value must be ≤ [`StackDefinition::MAX_APDU_LENGTH`],
+    /// which determines the compile-time buffer allocation.
+    ///
+    /// Common values:
+    /// - 14: Standard TP1 without Extended Frame Format
+    /// - 255: TP1 with EFF or KNX/IP
+    ///
+    /// Default implementation returns 255 (full EFF/KNX/IP support).
+    /// Override this in your state implementation to return a value based on
+    /// detected hardware capabilities.
+    fn max_apdu_length(&self) -> u16 {
+        crate::config::MAX_APDU_LENGTH_EXTENDED
+    }
+
+    /// Set the runtime maximum APDU length.
+    ///
+    /// This is called by the link layer after detecting hardware capabilities.
+    /// For example, a TP1 link layer may detect that the interface doesn't
+    /// support Extended Frame Format and set this to 14 bytes.
+    ///
+    /// The value should not exceed [`StackDefinition::MAX_APDU_LENGTH`] which
+    /// determines the compile-time buffer allocation.
+    ///
+    /// Default implementation does nothing (for state implementations that
+    /// don't support runtime APDU length changes).
+    fn set_max_apdu_length(&self, _length: u16) {
+        // Default: no-op for implementations that don't support this
+    }
+
     // =========================================================================
     // Authorization (A_Authorize_Request / A_Key_Write)
     // =========================================================================
@@ -212,6 +250,8 @@ pub const NUM_AUTH_KEYS: usize = 3;
 pub struct BasicStackState {
     individual_address: RefCell<IndividualAddress>,
     serial_number: [u8; 6],
+    /// Runtime maximum APDU length (may be constrained by link layer).
+    max_apdu_length: Cell<u16>,
     /// Authorization key table for levels 0-2 only.
     /// Level 3 has no key - it's the fallback when no key matches.
     /// 0xFFFFFFFF means "default key" (matches if provided).
@@ -232,6 +272,7 @@ impl Default for BasicStackState {
         Self {
             individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
             serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00], // Default: manufacturer 0x00FA
+            max_apdu_length: Cell::new(config::MAX_APDU_LENGTH_EXTENDED),
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]), // All keys = default key
         }
     }
@@ -243,6 +284,7 @@ impl BasicStackState {
         Self {
             individual_address: RefCell::new(addr),
             serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00],
+            max_apdu_length: Cell::new(config::MAX_APDU_LENGTH_EXTENDED),
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
         }
     }
@@ -252,6 +294,7 @@ impl BasicStackState {
         Self {
             individual_address: RefCell::new(addr),
             serial_number,
+            max_apdu_length: Cell::new(config::MAX_APDU_LENGTH_EXTENDED),
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
         }
     }
@@ -280,6 +323,14 @@ impl StackState for BasicStackState {
 
     fn serial_number(&self) -> &[u8; 6] {
         &self.serial_number
+    }
+
+    fn max_apdu_length(&self) -> u16 {
+        self.max_apdu_length.get()
+    }
+
+    fn set_max_apdu_length(&self, length: u16) {
+        self.max_apdu_length.set(length);
     }
 
     fn max_access_levels(&self) -> u8 {
@@ -613,6 +664,14 @@ impl<P: IpPlatform + Default> StackState for BasicIpStackState<P> {
         self.base.serial_number()
     }
 
+    fn max_apdu_length(&self) -> u16 {
+        self.base.max_apdu_length()
+    }
+
+    fn set_max_apdu_length(&self, length: u16) {
+        self.base.set_max_apdu_length(length);
+    }
+
     fn max_access_levels(&self) -> u8 {
         self.base.max_access_levels()
     }
@@ -738,6 +797,24 @@ pub trait StackDefinition: Copy {
     /// Device descriptor type 0 / mask version (2 bytes, e.g., 0x07B0 for System B)
     const MASK_VERSION: &'static [u8; 2];
 
+    /// Maximum APDU length for compile-time buffer allocation.
+    ///
+    /// This is the APDU payload size (not the full buffer size). The actual buffer
+    /// size is calculated by [`config::buffer_size_for_apdu()`] which adds:
+    /// - Frame overhead (6 bytes): ctrl + src + dst + npdu
+    /// - Headroom (16 bytes): for cEMI expansion + KNXnet/IP headers
+    ///
+    /// For the actual runtime limit (which can be lower based on detected hardware),
+    /// see [`StackState::max_apdu_length()`]. The runtime limit is what gets
+    /// reported via PID 56 (MAX_APDU_LENGTH) in the Device Object.
+    ///
+    /// Common values:
+    /// - [`config::MAX_APDU_LENGTH_TP1_STANDARD`] (14): Standard TP1 without EFF
+    /// - [`config::MAX_APDU_LENGTH_EXTENDED`] (255): TP1 with EFF or KNX/IP
+    ///
+    /// Default is 255 (full support for extended frames).
+    const MAX_APDU_LENGTH: u16 = config::MAX_APDU_LENGTH_EXTENDED;
+
     /// Device descriptor type 2 (14 bytes, optional).
     ///
     /// DD2 contains extended device information:
@@ -817,7 +894,44 @@ pub trait StackDefinition: Copy {
         Self::State: 'a;
 }
 
-pub struct StackResources<D: StackDefinition, const BUF_SZ: usize = 128, const NUM_BUFS: usize = 4> {
+/// Pre-allocated resources for the KNX stack.
+///
+/// # Buffer Sizing
+///
+/// The buffer size should be calculated from [`StackDefinition::MAX_APDU_LENGTH`]
+/// using [`config::buffer_size_for_apdu()`]. This includes:
+/// - Frame overhead (9 bytes): for cEMI compatibility
+/// - APDU data (up to `MAX_APDU_LENGTH`)
+/// - Headroom (16 bytes): for zero-copy header prepending
+///
+/// # Example
+///
+/// ```ignore
+/// use zweidraehte::config::{MAX_APDU_LENGTH_TP1_STANDARD, buffer_size_for_apdu};
+///
+/// impl StackDefinition for MyDevice {
+///     const MASK_VERSION: &'static [u8; 2] = &[0x07, 0xB0];
+///     const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_TP1_STANDARD; // 14 bytes
+///     // ... other fields
+/// }
+///
+/// // Buffer size is 39 bytes (14 + 9 overhead + 16 headroom)
+/// static RESOURCES: StaticCell<StackResources<MyDevice, { buffer_size_for_apdu(MyDevice::MAX_APDU_LENGTH) }>> = StaticCell::new();
+/// ```
+///
+/// # Type Parameters
+///
+/// - `D`: Your stack definition implementing [`StackDefinition`]
+/// - `BUF_SZ`: Size of each buffer. Use `buffer_size_for_apdu(D::MAX_APDU_LENGTH)`
+/// - `NUM_BUFS`: Number of buffers in the pool (default: 4)
+///
+/// # Note on Buffer Size
+///
+/// We would like to automatically derive `BUF_SZ` from `D::MAX_APDU_LENGTH`,
+/// but Rust's `generic_const_exprs` feature is still incomplete and causes
+/// overflow errors when used with static declarations. Until this is fixed,
+/// users must explicitly specify the buffer size.
+pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize = 4> {
     inner: MaybeUninit<Inner<D>>,
     buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
     buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
@@ -920,6 +1034,14 @@ impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
     fn buffer_manager(&self) -> &RefCell<DynBufferManager<'static>> {
         &self.buffer_manager
     }
+
+    fn max_apdu_length(&self) -> u16 {
+        self.state.max_apdu_length()
+    }
+
+    fn set_max_apdu_length(&self, length: u16) {
+        self.state.set_max_apdu_length(length);
+    }
 }
 
 fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'a, D> {
@@ -965,6 +1087,16 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     state: D::State,
     memory_map: D::Mem,
 ) -> (Stack<'d, D>, Runner<'d, D>) {
+    // Validate that runtime max_apdu_length doesn't exceed compile-time buffer allocation
+    let runtime_max_apdu = state.max_apdu_length();
+    assert!(
+        runtime_max_apdu <= D::MAX_APDU_LENGTH,
+        "StackState::max_apdu_length() ({}) exceeds StackDefinition::MAX_APDU_LENGTH ({}). \
+         The runtime limit must not exceed the compile-time buffer allocation.",
+        runtime_max_apdu,
+        D::MAX_APDU_LENGTH
+    );
+
     // SAFETY: We are creating a reference to the buffers that are stored in the `StackResources` struct,
     //         which lives at least as long as `Inner`
     let buffers = resources.buffers.write([[0; _]; _]);

@@ -1,3 +1,26 @@
+//! Message buffer management for the KNX stack.
+//!
+//! This module provides:
+//! - [`MessageBuffer`] trait for buffers with headroom support
+//! - [`Buffer`] - a managed buffer from the pool
+//! - [`BufferManager`] - pre-allocated buffer pool
+//! - [`DynBufferManager`] - dynamic interface to the buffer pool
+//!
+//! # Buffer Sizing
+//!
+//! Use [`crate::config::buffer_size_for_apdu`] to calculate the required buffer size
+//! based on the maximum APDU length your device supports:
+//!
+//! ```ignore
+//! use zweidraehte::config::{buffer_size_for_apdu, MAX_APDU_LENGTH_EXTENDED};
+//!
+//! // For a KNX/IP device with full APDU support
+//! const BUFFER_SIZE: usize = buffer_size_for_apdu(MAX_APDU_LENGTH_EXTENDED); // 280
+//!
+//! // Create stack resources with this buffer size
+//! let resources = StackResources::<MyDevice, BUFFER_SIZE, 4>::new();
+//! ```
+
 use core::{
     ops::{Deref, DerefMut},
     ptr::NonNull,
@@ -8,14 +31,7 @@ use embassy_sync::{
     channel::{self, Channel, DynamicReceiver, DynamicSender},
 };
 
-/// Default headroom reserved at the start of each buffer.
-///
-/// This allows for in-place format conversions and header prepending:
-/// - cEMI expansion: 3 bytes (msg_code + add_info_len + ctrl2)
-/// - KNXnet/IP header: 6 bytes
-/// - TP1 extended frame: 2 bytes (ext ctrl + length)
-/// - Extra padding for alignment and future use
-pub const DEFAULT_HEADROOM: usize = 16;
+use crate::config::DEFAULT_HEADROOM;
 
 /// Error type for buffer operations
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -171,6 +171,9 @@ pub enum ServerError {
     /// Server is busy/throttled and cannot process the request yet.
     /// The u16 value indicates how many milliseconds the caller should wait before retrying.
     Busy(u16),
+    /// Frame APDU exceeds the configured maximum APDU length.
+    /// Contains (received_length, max_allowed).
+    FrameTooLarge(u16, u16),
 }
 
 /// A response that is ready to be sent
@@ -189,6 +192,8 @@ pub struct ServerContext<'a> {
     buffer_manager: &'a RefCell<DynBufferManager<'static>>,
     /// Channel to send messages up to the network layer
     network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+    /// Maximum APDU length this device can handle
+    max_apdu_length: u16,
 }
 
 impl<'a> ServerContext<'a> {
@@ -196,8 +201,14 @@ impl<'a> ServerContext<'a> {
     pub fn new(
         buffer_manager: &'a RefCell<DynBufferManager<'static>>,
         network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        max_apdu_length: u16,
     ) -> Self {
-        Self { buffer_manager, network_layer_tx }
+        Self { buffer_manager, network_layer_tx, max_apdu_length }
+    }
+
+    /// Get the maximum APDU length this device can handle
+    pub fn max_apdu_length(&self) -> u16 {
+        self.max_apdu_length
     }
 
     /// Send an indication to the network layer (L_Data.ind)
@@ -355,6 +366,7 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<MAX_SOC
         resources: &'res mut KnxNetIpResources<MAX_SOCKETS>,
         buffer_manager: &'res RefCell<DynBufferManager<'static>>,
         network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
+        max_apdu_length: u16,
     ) -> KnxNetIp<'res, MAX_SOCKETS, MAX_SERVERS> {
         // Initialize response channel
         let response_channel = resources.response_channel.write(Channel::new());
@@ -485,6 +497,7 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<MAX_SOC
             local_addr: interface_addr,
             network_layer_tx,
             retry_queue: Vec::new(),
+            max_apdu_length,
         }
     }
 }
@@ -506,7 +519,8 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> LinkLayerBuilder
         CTX: crate::context::BufferManagerContext,
     {
         // Build the link layer instance
-        let mut link_layer = self.build(resources, context.buffer_manager(), network_layer);
+        let mut link_layer =
+            self.build(resources, context.buffer_manager(), network_layer, context.max_apdu_length());
 
         // Run the link layer's process loop
         async move { link_layer.process(inbox).await }
@@ -548,6 +562,8 @@ pub struct KnxNetIp<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
     network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
     /// Queue of messages waiting to be retried after rate limiting
     retry_queue: Vec<PendingRequest, MAX_RETRY_QUEUE_SIZE>,
+    /// Maximum APDU length this device can handle (for filtering oversized frames)
+    max_apdu_length: u16,
 }
 
 impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MAX_SOCKETS, MAX_SERVERS> {
@@ -571,7 +587,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
 
                 for server in &mut self.server_instances {
                     if server.handler.supports_requests() {
-                        let context = ServerContext::new(self.buffer_manager, self.network_layer_tx);
+                        let context = ServerContext::new(self.buffer_manager, self.network_layer_tx, self.max_apdu_length);
                         match server.handler.on_request(&*pending.message, &context).await {
                             Ok(responses) => {
                                 // Success! Send responses and confirmation
@@ -794,7 +810,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                             for server in &mut self.server_instances {
                                 if server.handles(service_type, socket_idx) {
                                     // Create server context with buffer manager and network layer channel
-                                    let context = ServerContext::new(self.buffer_manager, self.network_layer_tx);
+                                    let context = ServerContext::new(self.buffer_manager, self.network_layer_tx, self.max_apdu_length);
 
                                     match server
                                         .handler
@@ -858,7 +874,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                                         if server.handler.supports_requests() {
                                             // Create server context with buffer manager and network layer channel
                                             let context =
-                                                ServerContext::new(self.buffer_manager, self.network_layer_tx);
+                                                ServerContext::new(self.buffer_manager, self.network_layer_tx, self.max_apdu_length);
                                             match server
                                                 .handler
                                                 .on_request(&**msg_opt.as_ref().unwrap(), &context)

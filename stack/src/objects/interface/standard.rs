@@ -64,7 +64,7 @@ crate::define_interface_object! {
     /// | 25 | Version | PDT_GENERIC_02 | RO |
     /// | 51 | Routing Count | RoutingCount | RW |
     /// | 54 | Programming Mode | ProgrammingMode | RW |
-    /// | 56 | Max APDU Length | PDT_UNSIGNED_INT | RO |
+    /// | 56 | Max APDU Length | PDT_UNSIGNED_INT | RO | (state-backed)
     /// | 57 | Subnet Address | PDT_UNSIGNED_CHAR | RO |
     /// | 58 | Device Address | PDT_UNSIGNED_CHAR | RO |
     /// | 78 | Hardware Type | PDT_GENERIC_06 | RO |
@@ -76,7 +76,6 @@ crate::define_interface_object! {
         pid::DEVICE_CONTROL => device_control: DeviceControl, ReadWrite,
         pid::ORDER_INFO => order_info: PDT_Generic10, ReadOnly,
         pid::VERSION => version: PDT_Generic02, ReadOnly,
-        pid::MAX_APDU_LENGTH => max_apdu_length: PDT_UnsignedInt, ReadOnly,
         pid::HARDWARE_TYPE => hardware_type: PDT_Generic06, ReadOnly,
         pid::DEVICE_DESCRIPTOR => device_descriptor: PDT_UnsignedInt, ReadOnly,
         // These are now stored directly in the DeviceObject with semantic types
@@ -97,6 +96,12 @@ crate::define_interface_object! {
                 let sn = s.serial_number();
                 [sn[0], sn[1]]
             },
+            write: |_s, _data| Err(crate::objects::interface::PropertyError::WriteNotAllowed)
+        }: PDT_UnsignedInt, ReadOnly,
+
+        // Max APDU length is read from StackState (may be constrained by link layer)
+        pid::MAX_APDU_LENGTH => {
+            read: |s| s.max_apdu_length().to_be_bytes(),
             write: |_s, _data| Err(crate::objects::interface::PropertyError::WriteNotAllowed)
         }: PDT_UnsignedInt, ReadOnly,
 
@@ -121,8 +126,8 @@ crate::define_interface_object! {
 
 /// Device information for creating a DeviceObject
 ///
-/// Note: Serial number is not included here because it's read dynamically
-/// from the `StackState::serial_number()` method.
+/// Note: Serial number and max APDU length are not included here because
+/// they are read dynamically from the `StackState`.
 pub struct DeviceInfo {
     /// Order information (10 bytes, manufacturer-specific)
     pub order_info: [u8; 10],
@@ -130,8 +135,6 @@ pub struct DeviceInfo {
     pub hardware_type: [u8; 6],
     /// Firmware version (2 bytes: magic.version.revision encoded)
     pub version: [u8; 2],
-    /// Maximum APDU length supported (typically 14 for TP, higher for IP)
-    pub max_apdu_length: u16,
     /// Device descriptor (mask version, e.g., 0x07B0 for System B)
     pub device_descriptor: u16,
 }
@@ -139,12 +142,12 @@ pub struct DeviceInfo {
 impl<'a, S: StackState> DeviceObject<'a, S> {
     /// Create a new device object with custom static values
     ///
-    /// Serial number and manufacturer ID are read dynamically from the StackState.
+    /// Serial number, manufacturer ID, and max APDU length are read dynamically
+    /// from the StackState.
     pub fn with_info(state: &'a S, info: &DeviceInfo) -> Self {
         let mut obj = Self::new(state);
         obj.order_info = PDT_Generic10::with_value(info.order_info);
         obj.version = PDT_Generic02::with_value(info.version);
-        obj.max_apdu_length = PDT_UnsignedInt::with_value(info.max_apdu_length);
         obj.hardware_type = PDT_Generic06::with_value(info.hardware_type);
         obj.device_descriptor = PDT_UnsignedInt::with_value(info.device_descriptor);
         obj
@@ -152,13 +155,13 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 
     /// Create a new device object with basic values (legacy API)
     ///
-    /// Serial number and manufacturer ID are read dynamically from the StackState.
+    /// Serial number, manufacturer ID, and max APDU length are read dynamically
+    /// from the StackState.
     pub fn with_values(state: &'a S, hardware_type_val: [u8; 6]) -> Self {
         Self::with_info(state, &DeviceInfo {
             order_info: [0; 10],
             hardware_type: hardware_type_val,
             version: [0x00, 0x01],     // Version 0.0.1
-            max_apdu_length: 14,       // Standard TP APDU length
             device_descriptor: 0x07B0, // System B
         })
     }

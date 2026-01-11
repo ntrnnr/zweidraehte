@@ -405,12 +405,14 @@ pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP> =
 // ============================================================================
 
 /// Create a DeviceInfo struct from a SystemBDevice type.
+///
+/// Note: `max_apdu_length` is not included here because it's read dynamically
+/// from `StackState::max_apdu_length()`.
 pub fn device_info_from<D: SystemBDevice>() -> DeviceInfo {
     DeviceInfo {
         order_info: [0; 10], // Manufacturer-specific, usually left empty
         hardware_type: D::HARDWARE_TYPE,
         version: [0x00, 0x01], // Default version 0.0.1
-        max_apdu_length: if D::MASK_VERSION == [0x57, 0xB0] { 254 } else { 14 },
         device_descriptor: u16::from_be_bytes(D::MASK_VERSION),
     }
 }

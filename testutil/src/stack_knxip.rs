@@ -128,8 +128,8 @@ use zweidraehte::{
     objects::comm::{ComObjectIndex, ComObjects},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
-        InterfaceObject, IpParameterObject, PropertyDescriptionResponse, PropertyError,
-        PropertyServiceHandler, HasDeviceObject,
+        HasDeviceObject, InterfaceObject, IpParameterObject, PropertyDescriptionResponse, PropertyError,
+        PropertyServiceHandler,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadEvent, RunEvent, app::Application},
 };
@@ -307,7 +307,8 @@ where
 
 impl<'a, S> KnxIpInterfaceObjects<'a, S>
 where
-    S: IpStackState + HasAddressTable<ADT = stack_test_config::AddrTab>
+    S: IpStackState
+        + HasAddressTable<ADT = stack_test_config::AddrTab>
         + HasAssociationTable<AST = stack_test_config::AssoTab>
         + HasCommunicationObjectTable<COT = stack_test_config::CoTab>
         + HasApplication<APP = Application<()>>,
@@ -315,7 +316,6 @@ where
     /// Create new interface objects from unified state
     pub fn new(state: &'a S) -> Self {
         // Create Device Object with device information and state reference
-        // Note: serial_number and manufacturer_id are read dynamically from StackState
         let device = DeviceObject::with_values(state, device_info::HARDWARE_TYPE);
 
         // Create Application Program Object wrapping the application table
@@ -477,7 +477,8 @@ where
 /// Create KNX/IP interface objects for the stack.
 pub fn create_knxip_interface_objects<'a, S>(state: &'a S) -> KnxIpInterfaceObjects<'a, S>
 where
-    S: IpStackState + HasAddressTable<ADT = stack_test_config::AddrTab>
+    S: IpStackState
+        + HasAddressTable<ADT = stack_test_config::AddrTab>
         + HasAssociationTable<AST = stack_test_config::AssoTab>
         + HasCommunicationObjectTable<COT = stack_test_config::CoTab>
         + HasApplication<APP = Application<()>>,
@@ -810,7 +811,12 @@ async fn main(spawner: Spawner) {
 
     // Create stack resources - the stack takes ownership of the state
     // and stores it so we can access via the Stack handle
-    static RESOURCES: StaticCell<StackResources<MyKnxStackWithKnxIp>> = StaticCell::new();
+    static RESOURCES: StaticCell<
+        StackResources<
+            MyKnxStackWithKnxIp,
+            { zweidraehte::config::buffer_size_for_apdu(MyKnxStackWithKnxIp::MAX_APDU_LENGTH) },
+        >,
+    > = StaticCell::new();
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
         comm_objs::AppComObjects::new(),

@@ -1,11 +1,58 @@
-//! KNX Stack Configuration Macros
+//! KNX Stack Configuration
+//!
+//! This module provides:
+//! - Constants for APDU sizes and buffer configuration
+//! - Ergonomic macros to define static KNX device configurations
+//!
+//! # APDU Size: Compile-Time vs Runtime
+//!
+//! The stack uses a two-tier approach for APDU sizes:
+//!
+//! 1. **Compile-time allocation** ([`StackDefinition::MAX_APDU_LENGTH`]):
+//!    Determines the buffer size allocated in [`StackResources`](crate::StackResources).
+//!    This is the maximum APDU size that can ever be handled by the stack.
+//!
+//! 2. **Runtime limit** ([`StackState::max_apdu_length()`](crate::StackState::max_apdu_length)):
+//!    The actual limit reported via PID 56 (MAX_APDU_LENGTH) in the Device Object.
+//!    This can be dynamically adjusted based on the detected link layer (e.g., USB
+//!    interface capabilities, TP1 MAC type).
+//!
+//! The runtime limit must always be ≤ the compile-time allocation.
+//!
+//! # APDU Size Constants
+//!
+//! The APDU (Application Protocol Data Unit) is the payload portion of a KNX message.
+//! Different KNX mediums support different maximum APDU sizes:
+//!
+//! - **Standard TP1** (no Extended Frame Format): 15 bytes
+//! - **TP1 with EFF**: up to 255 bytes
+//! - **KNX/IP**: up to 255 bytes
+//!
+//! Note: The APDU size is just the payload. The full buffer also needs space for
+//! the frame header (ctrl, addresses, npdu) and headroom for protocol encapsulation.
+//! Use [`buffer_size_for_apdu()`] to calculate the required buffer size.
+//!
+//! The [`MaxApduLength`] enum provides common configurations.
+//!
+//! # Buffer Size Calculation
+//!
+//! Use [`buffer_size_for_apdu`] to calculate the required buffer size
+//! for a given maximum APDU length. The buffer must accommodate:
+//! - Control byte (1)
+//! - Source address (2)
+//! - Destination address (2)
+//! - NPDU/hop count (1)
+//! - APDU (variable)
+//! - Headroom for protocol headers (16 bytes)
+//!
+//! # Configuration Macros
 //!
 //! Provides ergonomic macros to define static KNX device configurations including:
 //! - Group address table (GAT/ADT7)
 //! - Association table (ASSO6)
 //! - Communication object table (CO7)
 //!
-//! # Example
+//! ## Example
 //!
 //! ```ignore
 //! use zweidraehte::config::knx_stack_config;
@@ -30,6 +77,116 @@
 //!     },
 //! }
 //! ```
+
+// ============================================================================
+// APDU Size Constants
+// ============================================================================
+
+/// Maximum APDU length for standard TP1 without Extended Frame Format.
+///
+/// This is the baseline APDU size supported by all TP1 devices.
+/// Standard frames can carry TPCI (1 byte) + up to 14 bytes of payload = 15 bytes.
+pub const MAX_APDU_LENGTH_TP1_STANDARD: u16 = 15;
+
+/// Maximum APDU length for TP1 with Extended Frame Format (EFF).
+///
+/// Modern TP1 devices supporting EFF can handle APDUs up to 255 bytes.
+/// This is also the maximum for KNX/IP devices.
+pub const MAX_APDU_LENGTH_EXTENDED: u16 = 255;
+
+/// Frame overhead in bytes.
+///
+/// This is the maximum overhead for any KNX frame format that may be stored
+/// in a buffer. We use the cEMI header size since that's the largest:
+///
+/// **Internal format (6 bytes):**
+/// - Control byte: 1
+/// - Source address: 2
+/// - Destination address: 2
+/// - NPDU (hop count): 1
+///
+/// **cEMI format (9 bytes, without additional info):**
+/// - Message code: 1
+/// - Additional info length: 1 (value 0)
+/// - Control field 1: 1
+/// - Control field 2: 1
+/// - Source address: 2
+/// - Destination address: 2
+/// - NPDU length: 1
+///
+/// **Extended TP1 format (7 bytes):**
+/// - Control byte: 1
+/// - Extended control: 1
+/// - Source address: 2
+/// - Destination address: 2
+/// - Length: 1
+///
+/// Since received cEMI frames are copied into the buffer before conversion
+/// to internal format (which happens in-place), the buffer capacity must
+/// be able to hold the full cEMI frame.
+pub const FRAME_OVERHEAD: usize = 9;
+
+/// Default headroom for protocol headers.
+///
+/// This headroom is used for zero-copy prepending of headers:
+/// - cEMI expansion: 3 bytes (msg_code + add_info_len + ctrl2)
+/// - KNXnet/IP header: 6 bytes
+/// - Extra margin: 7 bytes
+pub const DEFAULT_HEADROOM: usize = 16;
+
+/// Calculate the required buffer size for a given maximum APDU length.
+///
+/// The buffer must be large enough to hold:
+/// - Frame overhead (9 bytes for cEMI compatibility)
+/// - Maximum APDU
+/// - Headroom for protocol headers (16 bytes)
+///
+/// # Example
+///
+/// ```
+/// use zweidraehte::config::{buffer_size_for_apdu, MAX_APDU_LENGTH_EXTENDED};
+///
+/// // For a device supporting 255-byte APDUs
+/// const BUFFER_SIZE: usize = buffer_size_for_apdu(MAX_APDU_LENGTH_EXTENDED);
+/// assert_eq!(BUFFER_SIZE, 280); // 255 + 9 + 16
+/// ```
+pub const fn buffer_size_for_apdu(max_apdu_length: u16) -> usize {
+    max_apdu_length as usize + FRAME_OVERHEAD + DEFAULT_HEADROOM
+}
+
+/// Common maximum APDU length configurations.
+///
+/// Use this enum to select a standard APDU size configuration for your device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+pub enum MaxApduLength {
+    /// Standard TP1 without EFF: 15 bytes (TPCI + 14 bytes payload)
+    Tp1Standard = MAX_APDU_LENGTH_TP1_STANDARD,
+    /// TP1 with EFF or KNX/IP: 255 bytes
+    Extended = MAX_APDU_LENGTH_EXTENDED,
+}
+
+impl MaxApduLength {
+    /// Get the maximum APDU length as a u16.
+    pub const fn as_u16(self) -> u16 {
+        self as u16
+    }
+
+    /// Calculate the required buffer size for this APDU length.
+    pub const fn buffer_size(self) -> usize {
+        buffer_size_for_apdu(self as u16)
+    }
+}
+
+impl From<MaxApduLength> for u16 {
+    fn from(len: MaxApduLength) -> Self {
+        len as u16
+    }
+}
+
+// ============================================================================
+// Configuration Macros
+// ============================================================================
 
 // Re-export ComObjectFlags and Priority for use in macros
 pub use crate::messages::knx::Priority;

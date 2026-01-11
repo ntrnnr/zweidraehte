@@ -4,10 +4,10 @@
 //!
 //! ## Supported Chips
 //!
-//! - Siemens TPUART1 (legacy, 64 byte max frame)
-//! - Siemens TPUART2 (64 byte max frame)
-//! - ON Semiconductor NCN5120/5121/5130 (256 byte extended frames)
-//! - Elmos E981.03 (256 byte extended frames)
+//! - Siemens TPUART1 (legacy, 64 byte buffer, APDU max 56 bytes)
+//! - Siemens TPUART2 (64 byte buffer, APDU max 56 bytes)
+//! - ON Semiconductor NCN5120/5121/5130 (256 byte buffer, APDU max 248 bytes)
+//! - Elmos E981.03 (256 byte buffer, APDU max 248 bytes)
 //!
 //! ## Features
 //!
@@ -18,6 +18,17 @@
 //! - Invalidation state for error recovery (3ms timeout)
 //! - Individual address ACK via hardware (set during init)
 //! - Frame size validation per chip capabilities
+//!
+//! ## Max APDU Length Detection
+//!
+//! After initialization, the detected chip type determines the maximum APDU length
+//! based on the chip's TX buffer size. All chips support Extended Frame Format (EFF):
+//! - TPUART1/2: 56 bytes (64 byte buffer - 8 bytes overhead)
+//! - NCN5120/E981: 248 bytes (256 byte buffer - 8 bytes overhead)
+//!
+//! Use [`TpUartLinkLayer::max_apdu_length()`] after initialization to get this value,
+//! and update your stack state via [`StackState::set_max_apdu_length()`] so that
+//! PID 56 (MAX_APDU_LENGTH) reports the correct hardware capability.
 //!
 //! ## Architecture
 //!
@@ -251,6 +262,18 @@ where
     /// Get the detected chip type
     pub fn chip_type(&self) -> ChipType {
         self.main_ctx.chip_type
+    }
+
+    /// Get the maximum APDU length supported by the detected chip
+    ///
+    /// This value should be used to update the stack state after initialization
+    /// so that PID 56 (MAX_APDU_LENGTH) reports the correct hardware capability.
+    ///
+    /// Returns:
+    /// - 56 for TPUART1/2 (64 byte buffer - 8 bytes overhead)
+    /// - 248 for NCN5120/E981 (256 byte buffer - 8 bytes overhead)
+    pub fn max_apdu_length(&self) -> u16 {
+        self.main_ctx.chip_type.max_apdu_length()
     }
 
     /// Check if the chip supports register read operations (E981 only)

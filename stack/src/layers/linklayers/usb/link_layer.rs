@@ -104,7 +104,7 @@ impl Default for UsbLinkLayerBuilder {
 
 /// Default max APDU length if the interface doesn't report one
 /// (standard TP1 without extended frame format)
-const DEFAULT_MAX_APDU_LENGTH: u16 = 14;
+const DEFAULT_MAX_APDU_LENGTH: u16 = crate::config::MAX_APDU_LENGTH_TP1_STANDARD;
 
 impl UsbLinkLayerBuilder {
     /// Read the interface's individual address from the device
@@ -244,7 +244,7 @@ impl LinkLayerBuilder for UsbLinkLayerBuilder {
                 }
             }
 
-            // Read max APDU length from interface
+            // Read max APDU length from interface and update the stack state
             let max_apdu_length = match Self::read_max_apdu_length(&mut transport).await {
                 Ok(len) => {
                     info!("USB Link Layer: Interface max APDU length: {} bytes", len);
@@ -258,6 +258,11 @@ impl LinkLayerBuilder for UsbLinkLayerBuilder {
                     DEFAULT_MAX_APDU_LENGTH
                 }
             };
+
+            // Update the stack state with the detected max APDU length
+            // This ensures PID 56 (MAX_APDU_LENGTH) in the Device Object reports
+            // the actual hardware capability rather than the compile-time default
+            context.set_max_apdu_length(max_apdu_length);
 
             // Check bus connection
             match transport.get_bus_connection_status().await {

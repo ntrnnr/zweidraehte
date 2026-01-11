@@ -191,7 +191,7 @@ async fn main(spawner: Spawner) {
         println!("{i}: {:?}", stored_data.co_tab.get_object(i));
     }
 
-    static RESOURCES: StaticCell<StackResources<MyKnxStack>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<MyKnxStack, { zweidraehte::config::buffer_size_for_apdu(MyKnxStack::MAX_APDU_LENGTH) }>> = StaticCell::new();
 
     // Create a channel for the mock link layer to receive injected messages
     static INJECTION_CHANNEL: StaticCell<Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, 8>> =

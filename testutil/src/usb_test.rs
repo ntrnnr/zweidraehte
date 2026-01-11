@@ -123,6 +123,14 @@ impl BufferManagerContext for SimpleContext {
     fn buffer_manager(&self) -> &RefCell<zweidraehte::messages::buffers::DynBufferManager<'static>> {
         self.buffer_manager
     }
+
+    fn max_apdu_length(&self) -> u16 {
+        zweidraehte::config::MAX_APDU_LENGTH_EXTENDED
+    }
+
+    fn set_max_apdu_length(&self, _length: u16) {
+        // No-op for this simple test context
+    }
 }
 
 /// Build a GroupValueWrite request message for a 1-bit value

@@ -12,4 +12,20 @@ use crate::messages::buffers::DynBufferManager;
 pub trait BufferManagerContext {
     /// Get a reference to the buffer manager
     fn buffer_manager(&self) -> &RefCell<DynBufferManager<'static>>;
+
+    /// Get the maximum APDU length this device can handle.
+    ///
+    /// This is the runtime limit based on `StackState::max_apdu_length()`,
+    /// which may be lower than the compile-time `StackDefinition::MAX_APDU_LENGTH`.
+    /// Link layers should use this to filter/reject oversized incoming frames.
+    fn max_apdu_length(&self) -> u16;
+
+    /// Set the maximum APDU length this device can handle.
+    ///
+    /// This is called by link layers after detecting hardware capabilities.
+    /// For example, a USB link layer may read the interface's MAX_APDU_LENGTH
+    /// property and update the stack state accordingly.
+    ///
+    /// The value should not exceed the compile-time `StackDefinition::MAX_APDU_LENGTH`.
+    fn set_max_apdu_length(&self, length: u16);
 }

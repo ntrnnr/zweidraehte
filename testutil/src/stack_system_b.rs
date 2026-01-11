@@ -554,7 +554,7 @@ async fn main(spawner: Spawner) {
     println!();
 
     // Create stack resources and initialize the stack
-    static RESOURCES: StaticCell<StackResources<MySystemBStack>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<MySystemBStack, { zweidraehte::config::buffer_size_for_apdu(MySystemBStack::MAX_APDU_LENGTH) }>> = StaticCell::new();
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
         comm_objs::SystemBComObjects::new(),

@@ -37,10 +37,10 @@ use zweidraehte::{
     objects::comm::{ComObjectStatus, ComObjects},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
-        GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject,
-        PropertyDescriptionResponse, PropertyError, PropertyServiceHandler,
+        GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PropertyDescriptionResponse,
+        PropertyError, PropertyServiceHandler,
     },
-    objects::tables::{HasLoadStateMachine, HasRunStateMachine, app::Application},
+    objects::tables::{app::Application, HasLoadStateMachine, HasRunStateMachine},
     IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
 };
 
@@ -544,6 +544,8 @@ impl IpPlatform for MockIpPlatform {
 
 /// Device-specific constants for Interface Objects
 pub mod device_info {
+    use zweidraehte::config::{buffer_size_for_apdu, MAX_APDU_LENGTH_EXTENDED};
+
     /// Device serial number (6 bytes)
     /// Must match BDUT_SERIAL_NUMBER in test variables (management.rs)
     pub const SERIAL_NUMBER: [u8; 6] = [0x30, 0x30, 0x30, 0x30, 0x30, 0x30];
@@ -557,29 +559,20 @@ pub mod device_info {
     /// PEI type (0 = no PEI)
     pub const PEI_TYPE: u8 = 0x00;
 
-    /// Maximum APDU length for modern TP1 with Extended Frame Format (EFF)
+    /// Maximum APDU length for this device.
     ///
-    /// Modern TP1 devices with EFF support can handle APDUs up to 255 bytes.
-    /// This is the absolute maximum that the length field can represent.
-    /// Standard TP1 (without EFF) is limited to 14 bytes.
-    pub const MAX_APDU_LENGTH: u16 = 255;
+    /// Uses the extended format (255 bytes) which is supported by KNX/IP
+    /// and modern TP1 devices with Extended Frame Format.
+    pub const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
 
     /// Device descriptor (mask version)
     /// 0x57B0 = System B KNX/IP device
     pub const DEVICE_DESCRIPTOR: u16 = 0x57B0;
 
-    /// Buffer size for message buffers
+    /// Buffer size for message buffers.
     ///
-    /// Must be large enough to hold the maximum APDU plus frame overhead:
-    /// - Control byte: 1
-    /// - Source address: 2
-    /// - Destination address: 2
-    /// - NPDU (length/hop count): 1
-    /// - APDU: MAX_APDU_LENGTH
-    /// - Plus some margin for internal headers
-    ///
-    /// We round up to a nice power of 2 for memory alignment.
-    pub const BUFFER_SIZE: usize = MAX_APDU_LENGTH as usize + 16; // 271 bytes
+    /// Calculated from the maximum APDU length plus frame overhead and headroom.
+    pub const BUFFER_SIZE: usize = buffer_size_for_apdu(MAX_APDU_LENGTH);
 }
 
 // ============================================================================
@@ -610,13 +603,11 @@ pub struct KnxIpInterfaceObjects<'a> {
 impl<'a> KnxIpInterfaceObjects<'a> {
     /// Create new interface objects wrapping the provided state
     pub fn new(state: &'a ConformanceState) -> Self {
-        // Create Device Object with full device information including max APDU length
-        // Note: Serial number is read dynamically from StackState
+        // Create Device Object with device information
         let device = DeviceObject::with_info(state, &DeviceInfo {
             order_info: [0; 10],
             hardware_type: device_info::HARDWARE_TYPE,
             version: [0x00, 0x01], // Version 0.0.1
-            max_apdu_length: device_info::MAX_APDU_LENGTH,
             device_descriptor: device_info::DEVICE_DESCRIPTOR,
         });
 
@@ -635,7 +626,10 @@ impl<'a> KnxIpInterfaceObjects<'a> {
             addr_table: RefCell::new(AddressTableObject::new(&state.adt, ConformanceMemoryMap::ADT_BASE as u32)),
             asso_table: RefCell::new(AssociationTableObject::new(&state.ast, ConformanceMemoryMap::AST_BASE as u32)),
             app_program: RefCell::new(app_program),
-            group_object_table: RefCell::new(GroupObjectTableObject::new(&state.cot, ConformanceMemoryMap::COT_BASE as u32)),
+            group_object_table: RefCell::new(GroupObjectTableObject::new(
+                &state.cot,
+                ConformanceMemoryMap::COT_BASE as u32,
+            )),
             ip_parameter: RefCell::new(ip_parameter),
         }
     }
@@ -898,13 +892,7 @@ impl ConformanceState {
 impl Default for ConformanceState {
     fn default() -> Self {
         use zweidraehte::objects::tables::Table;
-        Self::new(
-            Table::new(),
-            Table::new(),
-            Table::new(),
-            Application::new(),
-            MockIpPlatform::new(),
-        )
+        Self::new(Table::new(), Table::new(), Table::new(), Application::new(), MockIpPlatform::new())
     }
 }
 
@@ -919,6 +907,10 @@ impl zweidraehte::StackState for ConformanceState {
 
     fn serial_number(&self) -> &[u8; 6] {
         &device_info::SERIAL_NUMBER
+    }
+
+    fn max_apdu_length(&self) -> u16 {
+        device_info::MAX_APDU_LENGTH
     }
 
     fn max_access_levels(&self) -> u8 {
@@ -1331,6 +1323,7 @@ impl StackDefinition for ConformanceTestStack {
     const MASK_VERSION: &'static [u8; 2] = &[0x57, 0xB0];
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
+    const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
     type P = TestParameters;
     type CO = ConformanceComObjects;
     type LLB = MockLinkLayerBuilder<16, 16>;
@@ -1357,7 +1350,7 @@ static INJECTION_CHANNEL: StaticCell<Channel<NoopRawMutex, KnxMessageBuffer<Buff
 // Capture channel for receiving messages from the stack
 static CAPTURE_CHANNEL: StaticCell<Channel<NoopRawMutex, CapturedLinkLayerMessage, 16>> = StaticCell::new();
 
-// Stack resources - use BUFFER_SIZE from device_info for max APDU support
+// Stack resources - buffer size calculated from MAX_APDU_LENGTH
 static STACK_RESOURCES: StaticCell<StackResources<ConformanceTestStack, { device_info::BUFFER_SIZE }, 4>> =
     StaticCell::new();
 
@@ -1422,13 +1415,7 @@ impl FullStackHarness {
         app_table.write_rsm(&[RunEvent::Restart.into()]);
 
         // Create unified conformance state (combines tables + runtime state)
-        let state = ConformanceState::new(
-            addr_tab,
-            asso_tab,
-            co_tab,
-            app_table,
-            MockIpPlatform::new(),
-        );
+        let state = ConformanceState::new(addr_tab, asso_tab, co_tab, app_table, MockIpPlatform::new());
 
         // Create stack resources
         let resources = STACK_RESOURCES.init(StackResources::new());

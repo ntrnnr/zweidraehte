@@ -26,12 +26,35 @@ impl ChipType {
     /// NCN5120/E981: 256+ bytes (extended frames supported)
     pub const fn max_frame_size(&self) -> usize {
         match self {
-            ChipType::Unknown => 64, // Conservative default
+            ChipType::Unknown => 23, // Conservative default - minimum APDU of 15 bytes + TP1 overhead
             ChipType::TpUart1 => 64,
             ChipType::TpUart2 => 64,
             ChipType::Ncn5120 => 256,
             ChipType::E981 => 256,
         }
+    }
+
+    /// Maximum APDU length supported by this chip
+    ///
+    /// This is the value that should be reported via PID 56 (MAX_APDU_LENGTH)
+    /// in the Device Object.
+    ///
+    /// For known chips that support Extended Frame Format (EFF), the max APDU
+    /// is calculated from the buffer size minus the TP1 frame overhead.
+    ///
+    /// TP1 Extended Frame Format (on wire):
+    /// - CTRL (1) + CTRL2 (1) + SRC (2) + DST (2) + LEN (1) + APDU (n) + CHK (1)
+    /// - Total overhead: 8 bytes (7 header + 1 checksum)
+    ///
+    /// Results:
+    /// - Unknown: 15 bytes (23 - 8, conservative fallback for standard TP1)
+    /// - TPUART1/2: 56 bytes (64 - 8)
+    /// - NCN5120/E981: 248 bytes (256 - 8)
+    pub const fn max_apdu_length(&self) -> u16 {
+        // TP1 EFF overhead: CTRL(1) + CTRL2(1) + SRC(2) + DST(2) + LEN(1) + CHK(1) = 8 bytes
+        let max = self.max_frame_size() - 8;
+        // Cap at 255 per KNX spec (APDU length field is 1 byte in EFF)
+        if max > 255 { 255 } else { max as u16 }
     }
 
     /// Whether this chip supports the U_Version.req command
@@ -50,9 +73,25 @@ impl ChipType {
         matches!(self, ChipType::E981)
     }
 
-    /// Whether this chip supports extended frames (>64 bytes)
+    /// Whether this chip supports Extended Frame Format (EFF)
     ///
-    /// NCN5120 and E981 support extended frames but use different protocols:
+    /// EFF uses a different frame structure with an explicit length byte,
+    /// allowing APDUs larger than the 14-byte limit of standard frames.
+    /// All known TPUART-compatible chips support EFF.
+    ///
+    /// For unknown chips, we conservatively assume no EFF support.
+    ///
+    /// Note: This is different from [`supports_long_frames`], which indicates
+    /// support for frames longer than 64 bytes.
+    pub const fn supports_extended_frame_format(&self) -> bool {
+        // Unknown chip: conservatively assume no EFF support
+        !matches!(self, ChipType::Unknown)
+    }
+
+    /// Whether this chip supports long frames (>64 bytes)
+    ///
+    /// Only NCN5120 and E981 have buffers large enough for frames >64 bytes.
+    /// They use different protocols for long frame transmission:
     ///
     /// **NCN5120**: Uses offset command when crossing 64-byte boundaries
     /// - At each 64-byte boundary: Send `U_L_DataOffset.req | (index >> 6)`
@@ -62,8 +101,15 @@ impl ChipType {
     /// - First byte: Normal `U_L_DATA_START` (0x80)
     /// - Bytes 1 to N-1: `E981_LONG_DATA_CONTINUE` (0xC0) + full byte index
     /// - Last byte: `E981_LONG_DATA_END` (0xD0) + full byte index
-    pub const fn supports_extended_frames(&self) -> bool {
+    pub const fn supports_long_frames(&self) -> bool {
         matches!(self, ChipType::Ncn5120 | ChipType::E981)
+    }
+
+    /// Whether this chip supports extended frames (>64 bytes)
+    ///
+    /// Alias for [`supports_long_frames`] for backwards compatibility.
+    pub const fn supports_extended_frames(&self) -> bool {
+        self.supports_long_frames()
     }
 
     /// Human-readable name for the chip
@@ -115,6 +161,30 @@ mod tests {
         assert_eq!(ChipType::TpUart2.max_frame_size(), 64);
         assert_eq!(ChipType::Ncn5120.max_frame_size(), 256);
         assert_eq!(ChipType::E981.max_frame_size(), 256);
+    }
+
+    #[test]
+    fn test_chip_max_apdu_length() {
+        // Unknown: 23 - 8 = 15 bytes (conservative fallback)
+        assert_eq!(ChipType::Unknown.max_apdu_length(), 15);
+        // TP1 EFF overhead: CTRL(1) + CTRL2(1) + SRC(2) + DST(2) + LEN(1) + CHK(1) = 8 bytes
+        // TPUART1/2: 64 - 8 = 56
+        assert_eq!(ChipType::TpUart1.max_apdu_length(), 56);
+        assert_eq!(ChipType::TpUart2.max_apdu_length(), 56);
+        // NCN5120/E981: 256 - 8 = 248
+        assert_eq!(ChipType::Ncn5120.max_apdu_length(), 248);
+        assert_eq!(ChipType::E981.max_apdu_length(), 248);
+    }
+
+    #[test]
+    fn test_chip_supports_eff() {
+        // Unknown chip: no EFF support (conservative)
+        assert!(!ChipType::Unknown.supports_extended_frame_format());
+        // All known chips support EFF
+        assert!(ChipType::TpUart1.supports_extended_frame_format());
+        assert!(ChipType::TpUart2.supports_extended_frame_format());
+        assert!(ChipType::Ncn5120.supports_extended_frame_format());
+        assert!(ChipType::E981.supports_extended_frame_format());
     }
 
     #[test]
