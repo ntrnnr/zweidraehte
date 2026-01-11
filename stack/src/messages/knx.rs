@@ -1,6 +1,8 @@
+use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 
 use crate::address::{GroupAddress, IndividualAddress};
+use crate::messages::buffers::MessageBuffer;
 
 /// Offsets to fields in the KNX message buffers
 pub mod offsets {
@@ -498,35 +500,115 @@ impl TpciField {
 /// Default access level for messages (minimum access = level 3)
 pub const DEFAULT_MESSAGE_ACCESS_LEVEL: u8 = 3;
 
-pub struct KnxMessageBuffer<B: Deref<Target = [u8]>> {
+// ============================================================================
+// Message Format Markers
+// ============================================================================
+
+/// Marker trait for message format types.
+///
+/// This trait is sealed and cannot be implemented outside this crate.
+pub trait MessageFormat: private::Sealed {}
+
+mod private {
+    pub trait Sealed {}
+    impl Sealed for super::InternalFormat {}
+    impl Sealed for super::CemiFormat {}
+    impl Sealed for super::Tp1Format {}
+}
+
+/// Internal KNX message format used within the stack.
+///
+/// This is the canonical format used after link layer processing.
+/// Messages in this format can be parsed and modified using `KnxMessageBuffer` methods.
+///
+/// Layout:
+/// ```text
+/// +--------+---------+---------+--------+---------+--------------------+
+/// | CTRL   | SRC     | DEST    | AT/HC/ | TPCI    | DATA               |
+/// | Field  | Address | Address | EFF    | /APCI   | (variable length)  |
+/// +--------+---------+---------+--------+---------+--------------------+
+/// | 1 byte | 2 bytes | 2 bytes | 1 byte | 1 byte  | 0..(buffer_size-7) |
+/// +--------+---------+---------+--------+---------+--------------------+
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InternalFormat;
+impl MessageFormat for InternalFormat {}
+
+/// cEMI (Common External Message Interface) format.
+///
+/// Used by KNX/IP and USB link layers. This format has additional header bytes
+/// compared to the internal format:
+/// - Message code (1 byte)
+/// - Additional info length (1 byte)
+/// - Additional info (variable, usually 0)
+/// - Control field 2 (1 byte) - contains AT/HC that's in NPDU for internal format
+///
+/// Converting from cEMI to Internal removes 3+ bytes from the front.
+/// Converting from Internal to cEMI requires 3 bytes of headroom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CemiFormat;
+impl MessageFormat for CemiFormat {}
+
+/// TP1 wire format as used on the twisted pair bus.
+///
+/// Similar to internal format but includes:
+/// - Length field embedded in NPDU (for standard frames)
+/// - Extended control field (for extended frames)
+/// - Checksum byte at the end
+///
+/// Used by TPUART link layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tp1Format;
+impl MessageFormat for Tp1Format {}
+
+// ============================================================================
+// KnxMessageBuffer
+// ============================================================================
+
+/// A KNX message buffer with compile-time format tracking.
+///
+/// The format parameter `F` indicates what wire format the message data is in:
+/// - [`InternalFormat`]: The canonical format used within the stack (default)
+/// - [`CemiFormat`]: cEMI format used by KNX/IP and USB
+/// - [`Tp1Format`]: TP1 wire format used on the bus
+///
+/// Format-specific methods are only available when the buffer is in the correct format.
+/// Use conversion methods like `into_internal()` or `into_cemi()` to change formats.
+///
+/// # Example
+///
+/// ```ignore
+/// // Receive cEMI from KNX/IP
+/// let cemi_msg = KnxMessageBuffer::<_, CemiFormat>::from_cemi(buffer);
+///
+/// // Convert to internal format for stack processing
+/// let internal_msg = cemi_msg.into_internal();
+///
+/// // Now we can use internal format methods
+/// let apci = internal_msg.get_apci_code();
+/// ```
+pub struct KnxMessageBuffer<B: Deref<Target = [u8]>, F: MessageFormat = InternalFormat> {
     service_type: ServiceType,
     buf: B,
     /// Access level for this message (0 = max access, 3 = min access)
     /// Set by transport layer for connection-oriented messages.
     /// Defaults to minimum access (3) for connectionless messages.
-    // FIXME: Not sure if I like this...
     access_level: u8,
+    /// Marker for the message format
+    _format: PhantomData<F>,
 }
 
-impl<B: Deref<Target = [u8]>> core::fmt::Debug for KnxMessageBuffer<B> {
+impl<B: Deref<Target = [u8]>, F: MessageFormat> core::fmt::Debug for KnxMessageBuffer<B, F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "KnxMessage {{ {:?}: {:x?} }}", self.service_type, self.buf.as_ref())
     }
 }
 
-impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
-    pub fn new(buf: B, service_type: ServiceType) -> Self {
-        KnxMessageBuffer { service_type, buf, access_level: DEFAULT_MESSAGE_ACCESS_LEVEL }
-    }
+// ============================================================================
+// Methods available for any format
+// ============================================================================
 
-    /// Create a KnxMessageBuffer from a buffer, using a default service type.
-    ///
-    /// This is useful when reconstructing a message from a raw buffer where
-    /// the service type will be set separately.
-    pub fn from_buffer(buf: B) -> Self {
-        KnxMessageBuffer { service_type: ServiceType::L_Data_Ind, buf, access_level: DEFAULT_MESSAGE_ACCESS_LEVEL }
-    }
-
+impl<B: Deref<Target = [u8]>, F: MessageFormat> KnxMessageBuffer<B, F> {
     /// Consume the message and return the inner buffer.
     pub fn into_inner(self) -> B {
         self.buf
@@ -564,6 +646,35 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
 
     pub fn len(&self) -> usize {
         self.buf.len()
+    }
+}
+
+// ============================================================================
+// Constructors and methods for InternalFormat (the default)
+// ============================================================================
+
+impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
+    /// Create a new KnxMessageBuffer in internal format.
+    pub fn new(buf: B, service_type: ServiceType) -> Self {
+        KnxMessageBuffer {
+            service_type,
+            buf,
+            access_level: DEFAULT_MESSAGE_ACCESS_LEVEL,
+            _format: PhantomData,
+        }
+    }
+
+    /// Create a KnxMessageBuffer from a buffer, using a default service type.
+    ///
+    /// This is useful when reconstructing a message from a raw buffer where
+    /// the service type will be set separately.
+    pub fn from_buffer(buf: B) -> Self {
+        KnxMessageBuffer {
+            service_type: ServiceType::L_Data_Ind,
+            buf,
+            access_level: DEFAULT_MESSAGE_ACCESS_LEVEL,
+            _format: PhantomData,
+        }
     }
 
     /// Helper function to get an integer from a byte array
@@ -723,16 +834,26 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B> {
     }
 }
 
-impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
+// ============================================================================
+// Mutable methods for any format
+// ============================================================================
+
+impl<B: DerefMut<Target = [u8]>, F: MessageFormat> KnxMessageBuffer<B, F> {
+    pub fn buf_mut(&mut self) -> &mut B {
+        &mut self.buf
+    }
+}
+
+// ============================================================================
+// Mutable methods for InternalFormat
+// ============================================================================
+
+impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
     /// Helper function to set an integer in a byte array
     fn write_u16_be(&mut self, pos: usize, value: u16) {
         let bytes = value.to_be_bytes();
         self.buf[pos] = bytes[0];
         self.buf[pos + 1] = bytes[1];
-    }
-
-    pub fn buf_mut(&mut self) -> &mut B {
-        &mut self.buf
     }
 
     /// Get a mutable reference to the CTRL1 field
@@ -919,6 +1040,219 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B> {
             self.set_hop_count(7);
         } else {
             self.set_hop_count(default_hop_count);
+        }
+    }
+}
+
+// ============================================================================
+// CemiFormat constructors and methods
+// ============================================================================
+
+impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, CemiFormat> {
+    /// Create a new cEMI format message buffer.
+    ///
+    /// The service type is derived from the cEMI message code (first byte).
+    pub fn from_cemi(buf: B) -> Self {
+        let message_code = buf[0];
+        let service_type = ServiceType::try_from(message_code).unwrap_or(ServiceType::L_Data_Ind);
+        KnxMessageBuffer {
+            service_type,
+            buf,
+            access_level: DEFAULT_MESSAGE_ACCESS_LEVEL,
+            _format: PhantomData,
+        }
+    }
+
+    /// Get the cEMI message code byte.
+    pub fn message_code(&self) -> u8 {
+        self.buf[0]
+    }
+
+    /// Get the additional info length.
+    pub fn additional_info_len(&self) -> usize {
+        self.buf[1] as usize
+    }
+
+    /// Get the additional info bytes.
+    pub fn additional_info(&self) -> &[u8] {
+        let len = self.additional_info_len();
+        &self.buf[2..2 + len]
+    }
+
+    /// Get the cEMI frame data (after message code + additional info).
+    pub fn frame_data(&self) -> &[u8] {
+        let start = 2 + self.additional_info_len();
+        &self.buf[start..]
+    }
+}
+
+/// cEMI expansion size: msg_code(1) + add_info_len(1) + ctrl2(1) = 3 bytes
+pub const CEMI_EXPANSION: usize = 3;
+
+// ============================================================================
+// Format conversions
+// ============================================================================
+
+impl<B: MessageBuffer> KnxMessageBuffer<B, CemiFormat> {
+    /// Convert from cEMI format to internal format.
+    ///
+    /// This removes the cEMI header bytes and adjusts the buffer in-place.
+    /// Uses `shrink_front()` to reclaim the header bytes as headroom.
+    pub fn into_internal(mut self) -> KnxMessageBuffer<B, InternalFormat> {
+        let add_info_len = self.buf[1] as usize;
+        let data_start = 2 + add_info_len;
+
+        if self.buf.len() < data_start + 7 {
+            // Not enough data - return as-is with zero length
+            // This shouldn't happen with valid cEMI data
+            return KnxMessageBuffer {
+                service_type: self.service_type,
+                buf: self.buf,
+                access_level: self.access_level,
+                _format: PhantomData,
+            };
+        }
+
+        let ctrl1 = self.buf[data_start];
+        let ctrl2 = self.buf[data_start + 1];
+
+        // Merge control fields:
+        // Keep FT(7), R(5), SB(4), PR(3-2), A(1), C(0) from ctrl1
+        let ctrl = ctrl1 & 0xBF; // Clear bit 6 (reserved in cEMI)
+
+        // NPDU field: AT from ctrl2(7), HC from ctrl2(6-4)
+        let npdu = ctrl2 & 0xF0;
+
+        // We need to shrink by: msg_code(1) + add_info_len(1) + add_info(N) + ctrl2(1) = data_start + 1
+        // But we also need to remove the npdu_len byte
+        // The conversion removes these bytes and shifts data left
+
+        // First, read the source, dest, tpci/apci data
+        let src_high = self.buf[data_start + 2];
+        let src_low = self.buf[data_start + 3];
+        let dst_high = self.buf[data_start + 4];
+        let dst_low = self.buf[data_start + 5];
+        // npdu_len is at data_start + 6
+        let _npdu_len = self.buf[data_start + 6];
+
+        // Data after npdu_len
+        let data_after_npdu = data_start + 7;
+        let remaining_len = self.buf.len() - data_after_npdu;
+
+        // Build internal format: ctrl(1) + src(2) + dst(2) + npdu(1) + tpci/apci/data
+        // Total internal length = 6 + remaining_len
+
+        // Shift data to internal format positions
+        self.buf[0] = ctrl;
+        self.buf[1] = src_high;
+        self.buf[2] = src_low;
+        self.buf[3] = dst_high;
+        self.buf[4] = dst_low;
+        self.buf[5] = npdu;
+
+        // Copy remaining data (TPCI/APCI + payload)
+        for i in 0..remaining_len {
+            self.buf[6 + i] = self.buf[data_after_npdu + i];
+        }
+
+        // Set the new length
+        let new_len = 6 + remaining_len;
+        self.buf.set_len(new_len);
+
+        KnxMessageBuffer {
+            service_type: self.service_type,
+            buf: self.buf,
+            access_level: self.access_level,
+            _format: PhantomData,
+        }
+    }
+}
+
+impl<B: MessageBuffer> KnxMessageBuffer<B, InternalFormat> {
+    /// Convert from internal format to cEMI format.
+    ///
+    /// The cEMI message code is derived from the service type.
+    /// This uses headroom to prepend the cEMI header bytes.
+    /// Requires at least [`CEMI_EXPANSION`] bytes of headroom.
+    ///
+    /// # Panics
+    /// Panics if insufficient headroom is available.
+    pub fn into_cemi(mut self) -> KnxMessageBuffer<B, CemiFormat> {
+        let knx_len = self.buf.len();
+
+        // Save the original NPDU value (needed for ctrl2)
+        let orig_npdu = self.buf[5];
+
+        // Grow the buffer by 3 bytes using headroom
+        self.buf.grow_front(3);
+
+        // After grow_front(3):
+        // buf[0..3] = garbage/headroom
+        // buf[3] = old ctrl1
+        // buf[4..6] = old src
+        // buf[6..8] = old dst
+        // buf[8] = old npdu
+        // buf[9..] = old tpci/apci/data
+
+        // We want:
+        // buf[0] = msg_code
+        // buf[1] = 0 (add_info_len)
+        // buf[2] = ctrl1 (need to copy from buf[3])
+        // buf[3] = ctrl2 (= orig_npdu)
+        // buf[4..6] = src (already in place!)
+        // buf[6..8] = dst (already in place!)
+        // buf[8] = npdu_len (overwrite old npdu position)
+        // buf[9..] = tpci/apci/data (already in place!)
+
+        let ctrl1 = self.buf[3];
+        self.buf[0] = self.service_type.into();
+        self.buf[1] = 0; // add_info_len
+        self.buf[2] = ctrl1;
+        self.buf[3] = orig_npdu; // ctrl2
+        // src and dst are already in the right place (positions 4-7)
+        self.buf[8] = (knx_len - 6) as u8; // npdu_len: length of TPCI/APCI + data
+        // tpci/apci/data is already in the right place (position 9+)
+
+        KnxMessageBuffer {
+            service_type: self.service_type,
+            buf: self.buf,
+            access_level: self.access_level,
+            _format: PhantomData,
+        }
+    }
+
+    /// Try to convert from internal format to cEMI format.
+    ///
+    /// Returns `Err` if insufficient headroom is available.
+    pub fn try_into_cemi(
+        self,
+    ) -> Result<KnxMessageBuffer<B, CemiFormat>, (Self, crate::messages::buffers::BufferError)> {
+        let headroom = self.buf.headroom();
+        if headroom < CEMI_EXPANSION {
+            return Err((
+                self,
+                crate::messages::buffers::BufferError::InsufficientHeadroom {
+                    requested: CEMI_EXPANSION,
+                    available: headroom,
+                },
+            ));
+        }
+        Ok(self.into_cemi())
+    }
+}
+
+// ============================================================================
+// Tp1Format constructors (basic, conversions can be added later)
+// ============================================================================
+
+impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, Tp1Format> {
+    /// Create a new KnxMessageBuffer wrapping a TP1-formatted buffer.
+    pub fn from_tp1(buf: B, service_type: ServiceType) -> Self {
+        KnxMessageBuffer {
+            service_type,
+            buf,
+            access_level: DEFAULT_MESSAGE_ACCESS_LEVEL,
+            _format: PhantomData,
         }
     }
 }

@@ -178,6 +178,7 @@ pub enum ServerError {
 pub struct PendingResponse {
     /// The buffer containing the response data
     pub buffer: Buffer<'static>,
+
     /// The destination address
     pub destination: SocketAddrV4,
 }
@@ -224,8 +225,10 @@ const MAX_MULTICAST_GROUPS: usize = 2;
 pub struct SocketDescriptor {
     /// The endpoint this socket is bound to (typically 0.0.0.0:port)
     bind_endpoint: EndpointType,
+
     /// Multicast groups joined on this socket
     multicast_groups: Vec<Ipv4Addr, MAX_MULTICAST_GROUPS>,
+
     /// Whether broadcast is enabled on this socket
     broadcast_enabled: bool,
 }
@@ -271,6 +274,7 @@ impl SocketDescriptor {
 pub struct KnxNetIpResources<const MAX_SOCKETS: usize> {
     /// Storage for UDP socket handles
     sockets: MaybeUninit<[Option<AsyncUdpMulticastSocket>; MAX_SOCKETS]>,
+
     /// Response channel for queuing outbound messages
     response_channel: MaybeUninit<Channel<NoopRawMutex, PendingResponse, 16>>,
 }

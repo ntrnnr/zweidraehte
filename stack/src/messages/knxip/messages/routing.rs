@@ -51,6 +51,31 @@ impl<B: SplitByteSlice> RoutingIndication<B> {
     }
 }
 
+impl RoutingIndication {
+    /// Wrap an existing cEMI buffer by prepending the KNXnet/IP header.
+    ///
+    /// This is a zero-copy operation that uses the buffer's headroom to prepend
+    /// the 6-byte KNXnet/IP header. The buffer must have at least [`KNXNETIP_HEADER_SIZE`]
+    /// bytes of headroom available.
+    ///
+    /// # Panics
+    /// Panics if the buffer has insufficient headroom.
+    pub fn wrap_cemi<B: crate::messages::buffers::MessageBuffer>(buffer: &mut B) {
+        let header = routing_indication_header(buffer.len());
+        buffer.prepend(header.as_bytes());
+    }
+
+    /// Try to wrap an existing cEMI buffer by prepending the KNXnet/IP header.
+    ///
+    /// Returns `Err` if there is insufficient headroom.
+    pub fn try_wrap_cemi<B: crate::messages::buffers::MessageBuffer>(
+        buffer: &mut B,
+    ) -> Result<(), crate::messages::buffers::BufferError> {
+        let header = routing_indication_header(buffer.len());
+        buffer.try_prepend(header.as_bytes())
+    }
+}
+
 impl<B: SplitByteSlice> ParsablePacket<B, ()> for RoutingIndication<B> {
     type Error = ParseError;
 

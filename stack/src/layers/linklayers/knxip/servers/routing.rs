@@ -17,14 +17,10 @@ use embassy_time::Instant;
 use heapless::Vec;
 
 use crate::{
-    encoding::cemi::{CemiLData, CemiMessageCode, cemi_to_knx_message},
     messages::{
         buffers::{Buffer, MessageBuffer},
-        knx::KnxMessageBuffer,
-        knxip::{
-            KNXnetIPServiceType, KNXNETIP_HEADER_SIZE, RoutingBusy, RoutingIndication,
-            RoutingIndicationFromKnx,
-        },
+        knx::{CemiFormat, InternalFormat, KnxMessageBuffer},
+        knxip::{KNXnetIPServiceType, RoutingBusy, RoutingIndication},
     },
     util::packets::ParseBuffer,
 };
@@ -352,29 +348,33 @@ impl RoutingServer {
 
     /// Create a RoutingIndication message from a KNX message.
     ///
-    /// Uses a single buffer allocation and in-place cEMI conversion.
+    /// Uses zero-copy in-place operations:
+    /// 1. Allocate buffer with headroom for KNXnet/IP header (6) + cEMI expansion (3)
+    /// 2. Copy KNX data and convert to cEMI format (uses 3 bytes of headroom)
+    /// 3. Wrap with KNXnet/IP header (uses remaining 6 bytes of headroom)
     async fn create_routing_indication<'a>(
         &self,
-        message: &KnxMessageBuffer<Buffer<'static>>,
+        message: &KnxMessageBuffer<Buffer<'static>, InternalFormat>,
         context: &ServerContext<'a>,
     ) -> Result<PendingResponse, ServerError> {
-        let knx_len = message.len();
-        let required_size = RoutingIndicationFromKnx::required_size(knx_len);
-
-        // Allocate a single buffer for the entire packet
+        // Allocate a buffer and copy the KNX message into it.
+        // Default headroom (16 bytes) is sufficient for:
+        // - cEMI expansion: 3 bytes (msg_code + add_info_len + ctrl2)
+        // - KNXnet/IP header: 6 bytes
         let mut buffer = context.alloc_buffer().await;
-        buffer.resize(required_size, 0);
+        buffer.push_slice(message.buf());
 
-        // Copy KNX data to correct position (after header space)
-        buffer[KNXNETIP_HEADER_SIZE..][..knx_len].copy_from_slice(message.buf());
+        // Convert to cEMI format (uses 3 bytes of headroom)
+        let internal_msg = KnxMessageBuffer::new(buffer, message.service_type());
+        let cemi_msg = internal_msg.into_cemi();
 
-        // Build the packet in-place using zero-copy builder
-        let message_code = CemiMessageCode::from_service_type(message.service_type());
-        let final_len = RoutingIndicationFromKnx::new(&mut buffer, knx_len, message_code).build();
-        buffer.set_len(final_len);
+        // Extract the buffer and wrap it with the KNXnet/IP header
+        // This uses 6 more bytes of headroom - no additional allocation needed
+        let mut output_buffer = cemi_msg.into_inner();
+        RoutingIndication::wrap_cemi(&mut output_buffer);
 
         let destination = SocketAddrV4::new(self.multicast_addr, self.port);
-        Ok(PendingResponse { buffer, destination })
+        Ok(PendingResponse { buffer: output_buffer, destination })
     }
 }
 
@@ -382,41 +382,28 @@ impl KnxNetIpServer for RoutingServer {
     async fn on_indication<'a>(
         &mut self,
         service_type: KNXnetIPServiceType,
-        data: &[u8],
+        mut data: &[u8],
         _source: SocketAddrV4,
         context: &ServerContext<'a>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         match service_type {
             KNXnetIPServiceType::RoutingIndication => {
                 // Parse the RoutingIndication message
-                let mut buffer = data;
-                let indication = buffer.parse::<RoutingIndication<_>>().map_err(|e| {
+                let indication = data.parse::<RoutingIndication<_>>().map_err(|e| {
                     debug!("Failed to parse RoutingIndication: {:?}", e);
                     ServerError::ParseError
                 })?;
 
-                // Get cEMI data and parse to determine service type
-                let cemi_data = indication.cemi_data();
-                let mut parse_buffer = cemi_data;
-                let cemi = parse_buffer.parse::<CemiLData<_>>().map_err(|e| {
-                    debug!("Failed to parse cEMI frame: {:?}", e);
-                    ServerError::ParseError
-                })?;
-
-                // Determine service type from cEMI message code
-                let service_type = cemi.message_code().to_service_type();
-
-                // Convert cEMI format to internal KNX format
                 // Allocate a buffer and copy the cEMI data into it
                 let mut knx_buffer = context.alloc_buffer().await;
-                knx_buffer.fill_from_slice(cemi_data);
-                let knx_buffer = cemi_to_knx_message(knx_buffer);
+                knx_buffer.push_slice(indication.cemi_data());
 
-                // Create KNX message
-                let knx_msg = KnxMessageBuffer::new(knx_buffer, service_type);
+                // Convert cEMI to internal format (service type derived from message code)
+                let cemi_msg: KnxMessageBuffer<Buffer<'static>, CemiFormat> = KnxMessageBuffer::from_cemi(knx_buffer);
+                let internal_msg = cemi_msg.into_internal();
 
                 // Forward to network layer
-                context.send_to_network_layer(knx_msg).await;
+                context.send_to_network_layer(internal_msg).await;
 
                 // No response needed
                 Ok(Vec::new())

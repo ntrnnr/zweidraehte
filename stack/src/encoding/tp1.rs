@@ -238,11 +238,42 @@ mod tests {
         }
 
         fn set_len(&mut self, len: usize) {
-            self.data.resize(len, 0);
+            // For Vec, we need to handle both growing and shrinking
+            if len > self.data.len() {
+                // When growing, we use reserve + set_len to avoid filling with zeros
+                // This matches the semantics of a fixed-size buffer where set_len
+                // doesn't initialize the new bytes
+                self.data.reserve(len - self.data.len());
+                unsafe { self.data.set_len(len); }
+            } else {
+                self.data.truncate(len);
+            }
         }
 
         fn capacity(&self) -> usize {
             self.data.capacity()
+        }
+
+        fn headroom(&self) -> usize {
+            0 // Vec-based buffer has no headroom
+        }
+
+        fn grow_front(&mut self, count: usize) {
+            // For Vec, we need to insert at the front
+            self.data.splice(0..0, core::iter::repeat(0).take(count));
+        }
+
+        fn shrink_front(&mut self, count: usize) {
+            self.data.drain(0..count);
+        }
+
+        fn spare_capacity_mut(&mut self) -> &mut [u8] {
+            // Vec grows dynamically, so we reserve some space
+            let len = self.data.len();
+            self.data.reserve(64);
+            let cap = self.data.capacity();
+            // This is unsafe but okay for tests - return slice of reserved capacity
+            unsafe { core::slice::from_raw_parts_mut(self.data.as_mut_ptr().add(len), cap - len) }
         }
 
         fn resize(&mut self, new_len: usize, fill_value: u8) {
