@@ -1,14 +1,17 @@
 //! Generate MTXML from Rust device definitions.
 //!
-//! This binary generates a complete ApplicationProgram MTXML file from
-//! the demo device definitions.
+//! This binary generates a complete set of MTXML files from
+//! the demo device definitions:
+//! - ApplicationProgram1.mtxml - Application program definition
+//! - Hardware1.mtxml - Hardware and product definition
+//! - Catalog1.mtxml - Catalog section and item
 
 use std::fs;
 
 use const_default::ConstDefault;
 
-use testutil::devices::{DEVICE_DESCRIPTOR, DemoParams, comm_objs};
-use testutil::mtxml_gen::{ApplicationProgramConfig, MtxmlGenerator};
+use testutil::devices::{DEVICE_DESCRIPTOR, DemoParams, SERIAL_NUMBER, comm_objs};
+use testutil::mtxml_gen::{ApplicationProgramConfig, MtxmlGenerator, HardwareGenerator, CatalogGenerator};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -23,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let config = ApplicationProgramConfig {
-        name: "Demo Device",
+        name: "DerGeraet",
         device: &DEVICE_DESCRIPTOR,
         params: DemoParams::ETS_PARAMS_EXT,
         param_defaults: param_bytes,
@@ -31,15 +34,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         union_fields: Some(DemoParams::ETS_UNIONS),
         channel_name: "General",
         absolute_segment_address: None, // System B uses relative segments
+
+        // Hardware/Catalog configuration
+        serial_number: SERIAL_NUMBER,
+        hardware_version: 1,
+        hardware_name: "System B IP device",
+        product_name: "My System B IP device",
+        order_number: "1234",
+        is_rail_mounted: false,
+        catalog_section: "KNX/IP Devices",
     };
 
-    let xml = MtxmlGenerator::generate(&config)?;
+    // Generate ApplicationProgram MTXML
+    let app_xml = MtxmlGenerator::generate(&config)?;
+    let app_path = "ApplicationProgram1.mtxml";
+    fs::write(app_path, &app_xml)?;
+    println!("Generated: {}", app_path);
 
-    // Write to file
-    let output_path = "generated_application.mtxml";
-    fs::write(output_path, &xml)?;
-    println!("Generated: {}", output_path);
-    println!("\nPreview (first 2000 chars):\n{}", &xml[..xml.len().min(2000)]);
+    // Generate Hardware MTXML
+    let hw_xml = HardwareGenerator::generate(&config)?;
+    let hw_path = "Hardware1.mtxml";
+    fs::write(hw_path, &hw_xml)?;
+    println!("Generated: {}", hw_path);
+
+    // Generate Catalog MTXML
+    let cat_xml = CatalogGenerator::generate(&config)?;
+    let cat_path = "Catalog1.mtxml";
+    fs::write(cat_path, &cat_xml)?;
+    println!("Generated: {}", cat_path);
+
+    println!("\nAll MTXML files generated successfully!");
+    println!("\nApplicationProgram preview (first 1500 chars):\n{}", &app_xml[..app_xml.len().min(1500)]);
 
     Ok(())
 }

@@ -678,9 +678,16 @@ pub struct LdCtrlLoadImageProp {
     pub prop_id: u8,
 }
 
-/// Empty options element
+/// Options element with device comparison/reconstruction flags.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Options {}
+pub struct Options {
+    /// Whether the application program is comparable (for device comparison).
+    #[serde(rename = "@Comparable", skip_serializing_if = "Option::is_none")]
+    pub comparable: Option<bool>,
+    /// Whether the application program is reconstructable (for device reconstruction).
+    #[serde(rename = "@Reconstructable", skip_serializing_if = "Option::is_none")]
+    pub reconstructable: Option<bool>,
+}
 
 // ============================================================================
 // Dynamic Section
@@ -861,5 +868,304 @@ pub fn priority_from_flags(flags: u8) -> ComObjectPriority {
         1 => ComObjectPriority::High,
         2 => ComObjectPriority::Alert,
         _ => ComObjectPriority::Low,
+    }
+}
+
+// ============================================================================
+// Hardware MTXML Schema Types
+// ============================================================================
+
+/// Root element for Hardware MTXML files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename = "KNX")]
+pub struct HardwareKnx {
+    #[serde(rename = "@xmlns:xsi")]
+    pub xmlns_xsi: String,
+    #[serde(rename = "@xmlns:xsd")]
+    pub xmlns_xsd: String,
+    #[serde(rename = "@CreatedBy")]
+    pub created_by: String,
+    #[serde(rename = "@ToolVersion")]
+    pub tool_version: String,
+    #[serde(rename = "@xmlns")]
+    pub xmlns: String,
+    #[serde(rename = "ManufacturerData")]
+    pub manufacturer_data: HardwareManufacturerData,
+}
+
+impl Default for HardwareKnx {
+    fn default() -> Self {
+        Self {
+            xmlns_xsi: "http://www.w3.org/2001/XMLSchema-instance".to_string(),
+            xmlns_xsd: "http://www.w3.org/2001/XMLSchema".to_string(),
+            created_by: "zweidraehte".to_string(),
+            tool_version: "0.1.0".to_string(),
+            xmlns: "http://knx.org/xml/project/20".to_string(),
+            manufacturer_data: HardwareManufacturerData::default(),
+        }
+    }
+}
+
+/// ManufacturerData wrapper for Hardware files.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HardwareManufacturerData {
+    #[serde(rename = "Manufacturer")]
+    pub manufacturer: HardwareManufacturer,
+}
+
+/// Manufacturer element containing Hardware definitions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HardwareManufacturer {
+    #[serde(rename = "@RefId")]
+    pub ref_id: String,
+    #[serde(rename = "Hardware")]
+    pub hardware: HardwareContainer,
+}
+
+/// Container for Hardware elements.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HardwareContainer {
+    #[serde(rename = "Hardware")]
+    pub hardware: Hardware,
+}
+
+/// Hardware definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Hardware {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Name")]
+    pub name: String,
+    #[serde(rename = "@SerialNumber")]
+    pub serial_number: String,
+    #[serde(rename = "@VersionNumber")]
+    pub version_number: u8,
+    #[serde(rename = "@HasIndividualAddress")]
+    pub has_individual_address: bool,
+    #[serde(rename = "@HasApplicationProgram")]
+    pub has_application_program: bool,
+    #[serde(rename = "Products")]
+    pub products: Products,
+    #[serde(rename = "Hardware2Programs")]
+    pub hardware2programs: Hardware2Programs,
+}
+
+impl Default for Hardware {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            serial_number: String::new(),
+            version_number: 1,
+            has_individual_address: true,
+            has_application_program: true,
+            products: Products::default(),
+            hardware2programs: Hardware2Programs::default(),
+        }
+    }
+}
+
+/// Container for Product elements.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Products {
+    #[serde(rename = "Product")]
+    pub product: Product,
+}
+
+/// Product definition within Hardware.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Product {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Text")]
+    pub text: String,
+    #[serde(rename = "@OrderNumber")]
+    pub order_number: String,
+    #[serde(rename = "@IsRailMounted")]
+    pub is_rail_mounted: bool,
+    #[serde(rename = "@DefaultLanguage")]
+    pub default_language: String,
+}
+
+impl Default for Product {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            text: String::new(),
+            order_number: String::new(),
+            is_rail_mounted: false,
+            default_language: "en-US".to_string(),
+        }
+    }
+}
+
+/// Container for Hardware2Program elements.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Hardware2Programs {
+    #[serde(rename = "Hardware2Program")]
+    pub hardware2program: Hardware2Program,
+}
+
+/// Links Hardware to ApplicationProgram.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Hardware2Program {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@MediumTypes")]
+    pub medium_types: String,
+    #[serde(rename = "ApplicationProgramRef")]
+    pub application_program_ref: ApplicationProgramRef,
+}
+
+impl Default for Hardware2Program {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            medium_types: "MT-0".to_string(),
+            application_program_ref: ApplicationProgramRef::default(),
+        }
+    }
+}
+
+/// Reference to an ApplicationProgram.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ApplicationProgramRef {
+    #[serde(rename = "@RefId")]
+    pub ref_id: String,
+}
+
+// ============================================================================
+// Catalog MTXML Schema Types
+// ============================================================================
+
+/// Root element for Catalog MTXML files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename = "KNX")]
+pub struct CatalogKnx {
+    #[serde(rename = "@xmlns:xsi")]
+    pub xmlns_xsi: String,
+    #[serde(rename = "@xmlns:xsd")]
+    pub xmlns_xsd: String,
+    #[serde(rename = "@CreatedBy")]
+    pub created_by: String,
+    #[serde(rename = "@ToolVersion")]
+    pub tool_version: String,
+    #[serde(rename = "@xmlns")]
+    pub xmlns: String,
+    #[serde(rename = "ManufacturerData")]
+    pub manufacturer_data: CatalogManufacturerData,
+}
+
+impl Default for CatalogKnx {
+    fn default() -> Self {
+        Self {
+            xmlns_xsi: "http://www.w3.org/2001/XMLSchema-instance".to_string(),
+            xmlns_xsd: "http://www.w3.org/2001/XMLSchema".to_string(),
+            created_by: "zweidraehte".to_string(),
+            tool_version: "0.1.0".to_string(),
+            xmlns: "http://knx.org/xml/project/20".to_string(),
+            manufacturer_data: CatalogManufacturerData::default(),
+        }
+    }
+}
+
+/// ManufacturerData wrapper for Catalog files.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CatalogManufacturerData {
+    #[serde(rename = "Manufacturer")]
+    pub manufacturer: CatalogManufacturer,
+}
+
+/// Manufacturer element containing Catalog definitions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CatalogManufacturer {
+    #[serde(rename = "@RefId")]
+    pub ref_id: String,
+    #[serde(rename = "Catalog")]
+    pub catalog: Catalog,
+}
+
+/// Catalog container.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Catalog {
+    #[serde(rename = "CatalogSection")]
+    pub catalog_section: CatalogSection,
+}
+
+/// Catalog section (category) containing items.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogSection {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Name")]
+    pub name: String,
+    #[serde(rename = "@Number")]
+    pub number: String,
+    #[serde(rename = "@DefaultLanguage")]
+    pub default_language: String,
+    #[serde(rename = "CatalogItem")]
+    pub catalog_item: CatalogItem,
+}
+
+impl Default for CatalogSection {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            number: "1".to_string(),
+            default_language: "en-US".to_string(),
+            catalog_item: CatalogItem::default(),
+        }
+    }
+}
+
+/// Catalog item linking product to hardware/application.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogItem {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Name")]
+    pub name: String,
+    #[serde(rename = "@Number")]
+    pub number: String,
+    #[serde(rename = "@ProductRefId")]
+    pub product_ref_id: String,
+    #[serde(rename = "@Hardware2ProgramRefId")]
+    pub hardware2program_ref_id: String,
+    #[serde(rename = "@DefaultLanguage")]
+    pub default_language: String,
+}
+
+impl Default for CatalogItem {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            number: "1".to_string(),
+            product_ref_id: String::new(),
+            hardware2program_ref_id: String::new(),
+            default_language: "en-US".to_string(),
+        }
+    }
+}
+
+// ============================================================================
+// Medium Type Helpers
+// ============================================================================
+
+/// Get the ETS medium type string from mask version.
+///
+/// Medium types:
+/// - MT-0: TP1 (Twisted Pair)
+/// - MT-1: PL110 (Powerline 110kHz)
+/// - MT-2: RF (Radio Frequency)
+/// - MT-5: IP (KNXnet/IP)
+pub fn medium_type_from_mask(mask_version: u16) -> &'static str {
+    match mask_version >> 12 {
+        0x0 => "MT-0", // TP1
+        0x1 => "MT-1", // PL110
+        0x2 => "MT-0", // TP1 with extended frames (still TP)
+        0x5 => "MT-5", // IP
+        _ => "MT-0",   // Default to TP1
     }
 }

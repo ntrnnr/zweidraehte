@@ -9,7 +9,7 @@ use zweidraehte::ets::{
 
 use super::schema::*;
 
-/// Configuration for generating an ApplicationProgram MTXML file.
+/// Configuration for generating MTXML files (ApplicationProgram, Hardware, Catalog).
 pub struct ApplicationProgramConfig<'a> {
     /// Human-readable application name
     pub name: &'a str,
@@ -28,6 +28,25 @@ pub struct ApplicationProgramConfig<'a> {
     /// Base address for absolute segments (System 7 only)
     /// For System 7, this is the memory address where parameters start
     pub absolute_segment_address: Option<u32>,
+
+    // ========================================================================
+    // Hardware/Catalog fields (for Hardware.mtxml and Catalog.mtxml generation)
+    // ========================================================================
+    /// Device serial number (6 bytes, unique per device).
+    /// First 2 bytes should match manufacturer_id.
+    pub serial_number: [u8; 6],
+    /// Hardware version number (displayed in ETS)
+    pub hardware_version: u8,
+    /// Hardware name (displayed in ETS hardware list)
+    pub hardware_name: &'a str,
+    /// Product display text (shown in ETS catalog)
+    pub product_name: &'a str,
+    /// Product order number (for ordering/identification)
+    pub order_number: &'a str,
+    /// Whether the device is rail-mounted (DIN rail)
+    pub is_rail_mounted: bool,
+    /// Catalog section name (category in ETS catalog)
+    pub catalog_section: &'a str,
 }
 
 impl<'a> ApplicationProgramConfig<'a> {
@@ -148,7 +167,10 @@ impl MtxmlGenerator {
             address_table,
             association_table,
             load_procedures: Some(Self::build_load_procedures(param_size, mask_family)),
-            options: Some(Options {}),
+            options: Some(Options {
+                comparable: Some(true),
+                reconstructable: Some(true),
+            }),
         })
     }
 
@@ -841,6 +863,168 @@ impl MtxmlGenerator {
     }
 }
 
+// ============================================================================
+// Hardware MTXML Generator
+// ============================================================================
+
+/// Generator for creating Hardware MTXML files.
+pub struct HardwareGenerator;
+
+impl HardwareGenerator {
+    /// Generate a complete Hardware MTXML document from the configuration.
+    pub fn generate(config: &ApplicationProgramConfig) -> Result<String, GeneratorError> {
+        let knx = Self::build_hardware_knx(config);
+        Self::serialize(&knx)
+    }
+
+    /// Build the complete Hardware KNX document structure.
+    fn build_hardware_knx(config: &ApplicationProgramConfig) -> HardwareKnx {
+        let manufacturer_id = format!("M-{:04X}", config.device.manufacturer_id);
+        let serial_hex = config
+            .serial_number
+            .iter()
+            .map(|b| format!("{:02X}", b))
+            .collect::<String>();
+
+        // Hardware ID: M-XXXX_H-<serial>-<version>
+        let hardware_id = format!("{}_H-{}-{}", manufacturer_id, serial_hex, config.hardware_version);
+
+        // Application ID for reference
+        let app_id = format!(
+            "{}_A-{:04X}-{:02X}-0000",
+            manufacturer_id, config.device.application_id, config.device.application_version
+        );
+
+        // Hardware2Program ID: <hardware_id>_HP-<app_number>-<app_version>-0000
+        let h2p_id = format!(
+            "{}_HP-{:04X}-{:02X}-0000",
+            hardware_id, config.device.application_id, config.device.application_version
+        );
+
+        // Product ID: <hardware_id>_P-<order_number>
+        let product_id = format!("{}_P-{}", hardware_id, config.order_number);
+
+        let mut knx = HardwareKnx::default();
+        knx.manufacturer_data.manufacturer.ref_id = manufacturer_id;
+        knx.manufacturer_data.manufacturer.hardware.hardware = Hardware {
+            id: hardware_id,
+            name: config.hardware_name.to_string(),
+            serial_number: serial_hex,
+            version_number: config.hardware_version,
+            has_individual_address: true,
+            has_application_program: true,
+            products: Products {
+                product: Product {
+                    id: product_id,
+                    text: config.product_name.to_string(),
+                    order_number: config.order_number.to_string(),
+                    is_rail_mounted: config.is_rail_mounted,
+                    default_language: "en-US".to_string(),
+                },
+            },
+            hardware2programs: Hardware2Programs {
+                hardware2program: Hardware2Program {
+                    id: h2p_id,
+                    medium_types: medium_type_from_mask(config.device.mask_version).to_string(),
+                    application_program_ref: ApplicationProgramRef { ref_id: app_id },
+                },
+            },
+        };
+
+        knx
+    }
+
+    /// Serialize the Hardware KNX document to XML string.
+    fn serialize(knx: &HardwareKnx) -> Result<String, GeneratorError> {
+        let mut buffer = String::new();
+        buffer.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+
+        let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
+        serializer.indent(' ', 2);
+
+        serde::Serialize::serialize(knx, serializer)
+            .map_err(|e| GeneratorError::Serialization(e.to_string()))?;
+
+        Ok(buffer)
+    }
+}
+
+// ============================================================================
+// Catalog MTXML Generator
+// ============================================================================
+
+/// Generator for creating Catalog MTXML files.
+pub struct CatalogGenerator;
+
+impl CatalogGenerator {
+    /// Generate a complete Catalog MTXML document from the configuration.
+    pub fn generate(config: &ApplicationProgramConfig) -> Result<String, GeneratorError> {
+        let knx = Self::build_catalog_knx(config);
+        Self::serialize(&knx)
+    }
+
+    /// Build the complete Catalog KNX document structure.
+    fn build_catalog_knx(config: &ApplicationProgramConfig) -> CatalogKnx {
+        let manufacturer_id = format!("M-{:04X}", config.device.manufacturer_id);
+        let serial_hex = config
+            .serial_number
+            .iter()
+            .map(|b| format!("{:02X}", b))
+            .collect::<String>();
+
+        // Hardware ID: M-XXXX_H-<serial>-<version>
+        let hardware_id = format!("{}_H-{}-{}", manufacturer_id, serial_hex, config.hardware_version);
+
+        // Hardware2Program ID
+        let h2p_id = format!(
+            "{}_HP-{:04X}-{:02X}-0000",
+            hardware_id, config.device.application_id, config.device.application_version
+        );
+
+        // Product ID
+        let product_id = format!("{}_P-{}", hardware_id, config.order_number);
+
+        // Catalog Section ID
+        let section_id = format!("{}_CS-1", manufacturer_id);
+
+        // Catalog Item ID: <h2p_id>_CI-<order_number>-1
+        let catalog_item_id = format!("{}_CI-{}-1", h2p_id, config.order_number);
+
+        let mut knx = CatalogKnx::default();
+        knx.manufacturer_data.manufacturer.ref_id = manufacturer_id;
+        knx.manufacturer_data.manufacturer.catalog.catalog_section = CatalogSection {
+            id: section_id,
+            name: config.catalog_section.to_string(),
+            number: "1".to_string(),
+            default_language: "en-US".to_string(),
+            catalog_item: CatalogItem {
+                id: catalog_item_id,
+                name: config.product_name.to_string(),
+                number: "1".to_string(),
+                product_ref_id: product_id,
+                hardware2program_ref_id: h2p_id,
+                default_language: "en-US".to_string(),
+            },
+        };
+
+        knx
+    }
+
+    /// Serialize the Catalog KNX document to XML string.
+    fn serialize(knx: &CatalogKnx) -> Result<String, GeneratorError> {
+        let mut buffer = String::new();
+        buffer.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+
+        let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
+        serializer.indent(' ', 2);
+
+        serde::Serialize::serialize(knx, serializer)
+            .map_err(|e| GeneratorError::Serialization(e.to_string()))?;
+
+        Ok(buffer)
+    }
+}
+
 /// Errors that can occur during MTXML generation.
 #[derive(Debug)]
 pub enum GeneratorError {
@@ -899,6 +1083,13 @@ mod tests {
             union_fields: None,
             channel_name: "General",
             absolute_segment_address: None,
+            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x01],
+            hardware_version: 1,
+            hardware_name: "Test Hardware",
+            product_name: "Test Product",
+            order_number: "TEST-001",
+            is_rail_mounted: false,
+            catalog_section: "Test Section",
         };
 
         let xml = MtxmlGenerator::generate(&config).unwrap();
@@ -930,6 +1121,13 @@ mod tests {
             union_fields: None,
             channel_name: "General",
             absolute_segment_address: Some(0x4000),
+            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x02],
+            hardware_version: 1,
+            hardware_name: "System 7 Hardware",
+            product_name: "System 7 Product",
+            order_number: "SYS7-001",
+            is_rail_mounted: true,
+            catalog_section: "Test Section",
         };
 
         let xml = MtxmlGenerator::generate(&config).unwrap();
