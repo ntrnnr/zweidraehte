@@ -166,12 +166,12 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         )),
     };
 
-    // Generate parameter definitions
+    // Generate parameter definitions using core::mem::offset_of! for accurate offsets.
+    // This handles all alignment and union sizing correctly at const-eval time.
     let mut param_defs = Vec::new();
     let mut param_ext_defs = Vec::new();
     let mut enum_variant_consts = Vec::new();
     let mut union_field_entries = Vec::new();
-    let mut current_offset: usize = 0;
 
     for field in fields.iter() {
         let field_name = field.ident.as_ref().unwrap();
@@ -182,10 +182,6 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         // Skip if marked with #[ets(skip)]
         if attrs.skip {
-            // Still advance offset for alignment
-            if let Ok(size) = get_type_size(field_type) {
-                current_offset += size;
-            }
             continue;
         }
 
@@ -206,10 +202,14 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         let name_str = field_name.to_string();
 
+        // Use offset_of! to get the actual field offset at const-eval time
+        // This correctly handles all alignment padding and works with any field type
+        let offset_expr = quote! {
+            core::mem::offset_of!(#struct_name, #field_name) as u16
+        };
+
         // Check if this is a union field (unknown type that might implement EtsUnionType)
         if attrs.union_field {
-            // This is a union field - generate selector parameter and track the union
-            let offset_u16 = current_offset as u16;
             let selector_name = format!("{}_selector", field_name);
             let selector_display = format!("{} Mode", display_name);
 
@@ -218,7 +218,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 zweidraehte::ets::EtsParamDef {
                     name: #selector_name,
                     display_name: #selector_display,
-                    offset: #offset_u16,
+                    offset: #offset_expr,
                     size_bits: 8,
                     bit_offset: 0,
                     param_type: zweidraehte::ets::EtsParamType::Enum,
@@ -241,7 +241,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     base: zweidraehte::ets::EtsParamDef {
                         name: #selector_name,
                         display_name: #selector_display,
-                        offset: #offset_u16,
+                        offset: #offset_expr,
                         size_bits: 8,
                         bit_offset: 0,
                         param_type: zweidraehte::ets::EtsParamType::Enum,
@@ -254,21 +254,11 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             union_field_entries.push(quote! {
                 zweidraehte::ets::EtsUnionFieldInfo {
                     field_name: #name_str,
-                    offset: #offset_u16,
+                    offset: #offset_expr,
                     union_info: &#field_type::ETS_UNION_INFO,
                     selector_variants: #field_type::ETS_SELECTOR_VARIANTS,
                 }
             });
-
-            // Advance offset by the union's total size
-            // We can't know the size at macro time, so we use a workaround:
-            // The user must ensure proper alignment, or we skip offset tracking for unions
-            // For now, we leave offset tracking to the user for union fields
-            // (they can use #[ets(skip)] on following fields and manage manually)
-
-            // Actually, since we require #[repr(C)], we need to know the size.
-            // The safest approach: require the user to specify the size or use std::mem::size_of at runtime.
-            // For compile-time, we'll just note that unions need special handling.
 
             continue; // Skip adding to regular params, we handled it specially
         }
@@ -285,14 +275,12 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             type_info.param_type.clone()
         };
 
-        let offset_u16 = current_offset as u16;
-
         // Generate basic ETS_PARAMS entry
         param_defs.push(quote! {
             zweidraehte::ets::EtsParamDef {
                 name: #name_str,
                 display_name: #display_name,
-                offset: #offset_u16,
+                offset: #offset_expr,
                 size_bits: #size_bits,
                 bit_offset: #bit_offset,
                 param_type: #param_type,
@@ -331,7 +319,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 base: zweidraehte::ets::EtsParamDef {
                     name: #name_str,
                     display_name: #display_name,
-                    offset: #offset_u16,
+                    offset: #offset_expr,
                     size_bits: #size_bits,
                     bit_offset: #bit_offset,
                     param_type: #param_type,
@@ -339,9 +327,6 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 enum_variants: #enum_variants_expr,
             }
         });
-
-        // Advance offset
-        current_offset += type_info.size_bytes;
     }
 
     let param_count = param_defs.len();
@@ -358,7 +343,23 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
     };
 
+    // Generate compile-time assertions to verify our hardcoded alignments match reality.
+    // This catches any exotic architectures where alignments might differ.
+    let alignment_assertions = quote! {
+        const _: () = {
+            assert!(core::mem::align_of::<u8>() == 1, "u8 alignment mismatch");
+            assert!(core::mem::align_of::<u16>() == 2, "u16 alignment mismatch");
+            assert!(core::mem::align_of::<u32>() == 4, "u32 alignment mismatch");
+            assert!(core::mem::align_of::<i8>() == 1, "i8 alignment mismatch");
+            assert!(core::mem::align_of::<i16>() == 2, "i16 alignment mismatch");
+            assert!(core::mem::align_of::<i32>() == 4, "i32 alignment mismatch");
+            assert!(core::mem::align_of::<bool>() == 1, "bool alignment mismatch");
+        };
+    };
+
     Ok(quote! {
+        #alignment_assertions
+
         impl #struct_name {
             // Enum variant constants
             #(#enum_variant_consts)*
@@ -455,6 +456,7 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
 struct TypeInfo {
     size_bytes: usize,
     size_bits: u8,
+    align: usize,
     param_type: TokenStream2,
 }
 
@@ -470,37 +472,71 @@ fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
                 "u8" => Ok(TypeInfo {
                     size_bytes: 1,
                     size_bits: 8,
+                    align: 1,
                     param_type: quote!(zweidraehte::ets::EtsParamType::UnsignedInt),
                 }),
                 "u16" => Ok(TypeInfo {
                     size_bytes: 2,
                     size_bits: 16,
+                    align: 2,
                     param_type: quote!(zweidraehte::ets::EtsParamType::UnsignedInt),
                 }),
                 "u32" => Ok(TypeInfo {
                     size_bytes: 4,
                     size_bits: 32,
+                    align: 4,
                     param_type: quote!(zweidraehte::ets::EtsParamType::UnsignedInt),
                 }),
                 "i8" => Ok(TypeInfo {
                     size_bytes: 1,
                     size_bits: 8,
+                    align: 1,
                     param_type: quote!(zweidraehte::ets::EtsParamType::SignedInt),
                 }),
                 "i16" => Ok(TypeInfo {
                     size_bytes: 2,
                     size_bits: 16,
+                    align: 2,
                     param_type: quote!(zweidraehte::ets::EtsParamType::SignedInt),
                 }),
                 "i32" => Ok(TypeInfo {
                     size_bytes: 4,
                     size_bits: 32,
+                    align: 4,
                     param_type: quote!(zweidraehte::ets::EtsParamType::SignedInt),
                 }),
                 "bool" => Ok(TypeInfo {
                     size_bytes: 1,
                     size_bits: 1,
+                    align: 1,
                     param_type: quote!(zweidraehte::ets::EtsParamType::UnsignedInt),
+                }),
+                // Big-endian types - KNX uses big-endian for parameter storage
+                // BeU16/BeU32/etc are custom wrappers with serde support
+                // BigU16/U16/etc are from zerocopy::big_endian
+                "BeU16" | "BigU16" | "U16" => Ok(TypeInfo {
+                    size_bytes: 2,
+                    size_bits: 16,
+                    align: 1, // [u8; 2] has alignment 1
+                    param_type: quote!(zweidraehte::ets::EtsParamType::UnsignedInt),
+                }),
+                "BeU32" | "BigU32" | "U32" => Ok(TypeInfo {
+                    size_bytes: 4,
+                    size_bits: 32,
+                    align: 1, // [u8; 4] has alignment 1
+                    param_type: quote!(zweidraehte::ets::EtsParamType::UnsignedInt),
+                }),
+                "BeI16" | "BigI16" | "I16" => Ok(TypeInfo {
+                    size_bytes: 2,
+                    size_bits: 16,
+                    align: 1,
+                    param_type: quote!(zweidraehte::ets::EtsParamType::SignedInt),
+                }),
+                "BeI32" | "BigI32" | "I32" => Ok(TypeInfo {
+                    size_bytes: 4,
+                    size_bits: 32,
+                    align: 1,
+                    param_type: quote!(zweidraehte::ets::EtsParamType::SignedInt),
                 }),
                 _ => {
                     // Unknown type - treat as raw bytes
@@ -523,6 +559,7 @@ fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
                             return Ok(TypeInfo {
                                 size_bytes: len,
                                 size_bits: (len * 8) as u8,
+                                align: 1, // [u8; N] has alignment of 1
                                 param_type: quote!(zweidraehte::ets::EtsParamType::None),
                             });
                         }
@@ -610,7 +647,25 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         ));
     }
 
-    // Calculate max variant size (excluding discriminant)
+    // First pass: calculate max alignment across all variants to determine data_offset.
+    // In #[repr(C, u8)], the variant data area starts at an offset aligned to the
+    // maximum alignment of any field in any variant.
+    let mut max_align: usize = 1;
+    for variant in variants.iter() {
+        if let syn::Fields::Named(fields) = &variant.fields {
+            for field in &fields.named {
+                if let Ok(type_info) = get_type_info(&field.ty) {
+                    if type_info.align > max_align {
+                        max_align = type_info.align;
+                    }
+                }
+            }
+        }
+    }
+    // Data offset is the discriminant (1 byte) aligned up to max_align
+    let data_offset: usize = (1 + max_align - 1) & !(max_align - 1);
+
+    // Second pass: calculate variant sizes and generate params
     let mut max_variant_size: usize = 0;
     let mut selector_variants = Vec::new();
     let mut union_params = Vec::new();
@@ -651,7 +706,7 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
             syn::Fields::Named(fields) => {
                 let mut size = 0usize;
-                let mut field_offset = 0u16;
+                let mut field_offset = 0usize;
 
                 for field in &fields.named {
                     let field_name = field.ident.as_ref().unwrap();
@@ -677,10 +732,17 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     let bit_offset = field_attrs.bit_offset.unwrap_or(0);
                     let param_type = type_info.param_type;
 
+                    // Apply alignment padding before this field
+                    // In #[repr(C)] layout, each field is aligned to its natural alignment
+                    let align = type_info.align;
+                    if align > 1 {
+                        field_offset = (field_offset + align - 1) & !(align - 1);
+                    }
+
                     let variant_name_str = variant_name.to_string();
                     let field_name_str = field_name.to_string();
                     // Use the field offset within the variant data area
-                    let param_offset = field_offset;
+                    let param_offset = field_offset as u16;
 
                     union_params.push(quote! {
                         zweidraehte::ets::EtsUnionVariantParam {
@@ -697,8 +759,8 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         }
                     });
 
-                    size += type_info.size_bytes;
-                    field_offset += type_info.size_bytes as u16;
+                    size = field_offset + type_info.size_bytes;
+                    field_offset += type_info.size_bytes;
                 }
 
                 variant_size = size;
@@ -720,6 +782,7 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let enum_name_str = enum_name.to_string();
     let variant_count = variants.len();
+    let data_offset_u16 = data_offset as u16;
     // NOTE: We use core::mem::size_of to get the actual Rust size including alignment
     // padding. The calculated max_variant_size is only used for data_size (the logical
     // size of variant data), but total_size must match the actual struct layout for
@@ -734,8 +797,10 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 name: #enum_name_str,
                 // Use actual Rust size including alignment padding
                 total_size: core::mem::size_of::<#enum_name>() as u16,
-                // data_size is the logical size without discriminant (may be less due to padding)
-                data_size: (core::mem::size_of::<#enum_name>() - 1) as u16,
+                // Offset where variant data begins (after discriminant + alignment padding)
+                data_offset: #data_offset_u16,
+                // data_size is total_size minus data_offset
+                data_size: (core::mem::size_of::<#enum_name>() as u16 - #data_offset_u16),
                 variant_count: #variant_count,
                 variant_params: &[
                     #(#union_params),*

@@ -8,6 +8,52 @@ use core::net::Ipv4Addr;
 
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
+/// Big-endian u16 for KNX parameter storage.
+///
+/// KNX stores multi-byte parameters in big-endian format (network byte order).
+/// This wrapper type stores the value in big-endian and provides serde support.
+#[derive(Debug, Clone, Copy)]
+#[repr(transparent)]
+pub struct BeU16([u8; 2]);
+
+impl BeU16 {
+    pub const fn new(value: u16) -> Self {
+        Self(value.to_be_bytes())
+    }
+
+    pub const fn get(&self) -> u16 {
+        u16::from_be_bytes(self.0)
+    }
+}
+
+impl const_default::ConstDefault for BeU16 {
+    const DEFAULT: Self = Self::new(0);
+}
+
+impl serde::Serialize for BeU16 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.get().serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BeU16 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u16::deserialize(deserializer)?;
+        Ok(Self::new(value))
+    }
+}
+
+impl core::fmt::Display for BeU16 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.get())
+    }
+}
 use zweidraehte::ets::{EtsParams, EtsUnion};
 use zweidraehte::{
     IpPlatform, StackDefinition,
@@ -106,7 +152,7 @@ pub enum OutputConfig {
     Pwm {
         /// PWM frequency in Hz
         #[ets(display = "Frequency")]
-        frequency: u16,
+        frequency: BeU16,
         /// PWM duty cycle (0-100%)
         #[ets(display = "Duty Cycle")]
         duty_cycle: u8,
@@ -132,7 +178,7 @@ pub enum InputSource {
     Binary {
         /// Debounce time in milliseconds
         #[ets(display = "Debounce Time")]
-        debounce_ms: u16,
+        debounce_ms: BeU16,
         /// Invert input logic
         #[ets(display = "Invert")]
         invert: u8,
@@ -146,10 +192,10 @@ pub enum InputSource {
         input_type: u8,
         /// Low threshold value
         #[ets(display = "Low Threshold")]
-        low_threshold: u16,
+        low_threshold: BeU16,
         /// High threshold value
         #[ets(display = "High Threshold")]
-        high_threshold: u16,
+        high_threshold: BeU16,
     },
 
     /// Temperature sensor input
@@ -248,24 +294,17 @@ pub struct DemoParams {
     #[ets(display = "Lock Behavior", enum_variants("No Action" => 0, "Lock Off" => 1, "Lock On" => 2, "Lock Toggle" => 3))]
     pub lock_behavior: u8,
 
-    /// Output configuration union - MUST be at the end of the struct!
+    /// Output configuration union
     #[ets(union, display = "Output Configuration")]
     pub output_config: OutputConfig,
 
-    // NOTE: The following union fields are commented out for now because
-    // the EtsParams macro cannot track offsets after the first union.
-    // To support multiple unions, we need to either:
-    // 1. Add explicit offset attributes: #[ets(union, offset = N)]
-    // 2. Use a build script to compute sizes
-    // 3. Place all unions in a separate nested struct
-    //
-    // /// Input source configuration union
-    // #[ets(union, display = "Input Source")]
-    // pub input_source: InputSource,
-    //
-    // /// Scene configuration union
-    // #[ets(union, display = "Scene Config")]
-    // pub scene_config: SceneConfig,
+    /// Input source configuration union
+    #[ets(union, display = "Input Source")]
+    pub input_source: InputSource,
+
+    /// Scene configuration union
+    #[ets(union, display = "Scene Config")]
+    pub scene_config: SceneConfig,
 }
 
 // ============================================================================

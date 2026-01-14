@@ -403,18 +403,24 @@ pub struct EtsUnionVariantParam {
 /// This captures the complete structure of a Rust `#[repr(C, u8)]` enum
 /// for ETS export. The memory layout is:
 /// - Byte 0: discriminant (selector)
-/// - Bytes 1..N: variant data (largest variant size)
+/// - Bytes 1..data_offset-1: padding (for alignment)
+/// - Bytes data_offset..N: variant data (largest variant size)
 #[derive(Debug, Clone, Copy)]
 pub struct EtsUnionInfo {
     /// Name of the enum type
     pub name: &'static str,
-    /// Total size in bytes (1 byte discriminant + max variant size)
+    /// Total size in bytes (1 byte discriminant + padding + max variant size)
     pub total_size: u16,
-    /// Size of the data area in bytes (excluding discriminant)
+    /// Offset where variant data begins (after discriminant + alignment padding).
+    /// In `#[repr(C, u8)]`, this is the alignment of the largest-aligned field
+    /// across all variants (since the discriminant is 1 byte).
+    pub data_offset: u16,
+    /// Size of the data area in bytes (excluding discriminant and padding)
     pub data_size: u16,
     /// Number of variants
     pub variant_count: usize,
-    /// Parameters for each variant's fields
+    /// Parameters for each variant's fields.
+    /// Offsets are relative to the start of the variant data area (i.e., relative to data_offset).
     pub variant_params: &'static [EtsUnionVariantParam],
 }
 

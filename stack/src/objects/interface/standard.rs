@@ -426,6 +426,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
                 if data.len() < 5 {
                     return Err(PropertyError::BufferTooSmall);
                 }
+                // FIXME: implement ::from_slice() or something like that?
                 self.program_version = PDT_Generic05::with_value([data[0], data[1], data[2], data[3], data[4]]);
                 // Echo back the written data
                 if response_buf.len() < 5 {

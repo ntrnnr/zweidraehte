@@ -470,7 +470,7 @@ impl MtxmlGenerator {
                 parameter_type: type_id,
                 text: param.param.display_name.to_string(),
                 value: "0".to_string(),
-                offset: 1 + param.param.offset, // +1 for discriminant byte
+                offset: union_info.data_offset + param.param.offset, // data_offset accounts for discriminant + alignment padding
                 bit_offset: param.param.bit_offset,
                 default_union_parameter: None,
                 internal_description: Some("generated".to_string()),

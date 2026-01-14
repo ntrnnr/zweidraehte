@@ -25,8 +25,8 @@ use zweidraehte::{
     IpPlatform, Runner, StackDefinition, StackResources, StackState,
     address::IndividualAddress,
     bcus::system_b::{
-        DeviceStorage, IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout,
-        PersistedState, SystemBDevice, SystemBMemoryMap, create_knxip_objects,
+        DeviceStorage, IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, PersistedState,
+        SystemBDevice, SystemBMemoryMap, create_knxip_objects,
     },
     layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, KnxNetIpResources, servers},
     messages::knxip::KNXnetIPServiceType,
@@ -272,10 +272,10 @@ async fn main(spawner: Spawner) {
         friendly_name: *b"System B Test\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
     };
 
-    let supported_services = &[
-        SupportedService { family: ServiceFamily::Core, version: 1 },
-        SupportedService { family: ServiceFamily::Routing, version: 1 },
-    ];
+    let supported_services = &[SupportedService { family: ServiceFamily::Core, version: 1 }, SupportedService {
+        family: ServiceFamily::Routing,
+        version: 1,
+    }];
 
     let discovery_server = servers::DiscoveryServer::new(control_endpoint, device_info, supported_services);
     let routing_server = servers::RoutingServer::new(Ipv4Addr::new(224, 0, 23, 12), 3671);
@@ -288,7 +288,11 @@ async fn main(spawner: Spawner) {
         )
         .add_server(
             routing_server,
-            &[KNXnetIPServiceType::RoutingIndication, KNXnetIPServiceType::RoutingBusy, KNXnetIPServiceType::RoutingLostMessage],
+            &[
+                KNXnetIPServiceType::RoutingIndication,
+                KNXnetIPServiceType::RoutingBusy,
+                KNXnetIPServiceType::RoutingLostMessage,
+            ],
             &[EndpointType::new_udp(Ipv4Addr::new(224, 0, 23, 12), 3671)],
         );
 
@@ -351,7 +355,10 @@ async fn main(spawner: Spawner) {
             let app = state.app().borrow();
 
             println!("\n--- Device Status ---");
-            println!("  Programming mode: {}", if interface_objects.is_programming_mode() { "ENABLED" } else { "DISABLED" });
+            println!(
+                "  Programming mode: {}",
+                if interface_objects.is_programming_mode() { "ENABLED" } else { "DISABLED" }
+            );
             println!("  Application state: Loaded={}, Running={}", app.is_loaded(), app.is_running());
 
             println!("  Communication Objects:");
@@ -362,6 +369,14 @@ async fn main(spawner: Spawner) {
             // Print application parameters if loaded
             if app.is_loaded() {
                 let params = app.params();
+                // Print raw bytes to debug layout issues
+                let raw_bytes: &[u8] = unsafe {
+                    core::slice::from_raw_parts(
+                        params as *const _ as *const u8,
+                        core::mem::size_of_val(params),
+                    )
+                };
+                println!("  Application Parameters (raw {} bytes): {:02X?}", raw_bytes.len(), raw_bytes);
                 println!("  Application Parameters:");
                 println!("    Operating Mode: {}", match params.mode {
                     0 => "Off",
@@ -374,6 +389,56 @@ async fn main(spawner: Spawner) {
                 println!("    Switch-Off Delay: {}s", params.switch_off_delay);
                 println!("    Dimmer Enabled: {}", params.dimmer_enabled);
                 println!("    Min Dim Value: {}", params.min_dim_value);
+
+                // Now that alignment is fixed in the ETS macro, we can safely match on the enums
+                match &params.output_config {
+                    testutil::devices::OutputConfig::Disabled => {
+                        println!("    Output Config: Disabled");
+                    }
+                    testutil::devices::OutputConfig::Switch { invert } => {
+                        println!("    Output Config: Switch (Invert: {})", invert);
+                    }
+                    testutil::devices::OutputConfig::Dimmer { min_level, max_level } => {
+                        println!("    Output Config: Dimmer (Min: {}, Max: {})", min_level, max_level);
+                    }
+                    testutil::devices::OutputConfig::Pwm { frequency, duty_cycle } => {
+                        println!("    Output Config: PWM (Freq: {}Hz, Duty: {}%)", frequency.get(), duty_cycle);
+                    }
+                }
+
+                match &params.input_source {
+                    testutil::devices::InputSource::None => {
+                        println!("    Input Source: None");
+                    }
+                    testutil::devices::InputSource::Binary { debounce_ms, invert } => {
+                        println!("    Input Source: Binary (Debounce: {}ms, Invert: {})", debounce_ms.get(), invert);
+                    }
+                    testutil::devices::InputSource::Analog { low_threshold, high_threshold, input_type } => {
+                        let type_str = if *input_type == 0 { "0-10V" } else { "4-20mA" };
+                        println!("    Input Source: Analog ({}, Low: {}, High: {})", type_str, low_threshold.get(), high_threshold.get());
+                    }
+                    testutil::devices::InputSource::Temperature { sensor_type, offset } => {
+                        let sensor_str = match sensor_type {
+                            0 => "PT100",
+                            1 => "PT1000",
+                            2 => "NTC10K",
+                            _ => "Unknown",
+                        };
+                        println!("    Input Source: Temperature ({}, Offset: {})", sensor_str, offset);
+                    }
+                }
+
+                match &params.scene_config {
+                    testutil::devices::SceneConfig::Disabled => {
+                        println!("    Scene Config: Disabled");
+                    }
+                    testutil::devices::SceneConfig::RecallOnly { scene_number } => {
+                        println!("    Scene Config: Recall Only (Scene: {})", scene_number);
+                    }
+                    testutil::devices::SceneConfig::StoreAndRecall { scene_number, store_time } => {
+                        println!("    Scene Config: Store & Recall (Scene: {}, Store Time: {}00ms)", scene_number, store_time);
+                    }
+                }
             } else {
                 println!("  Application Parameters: Not loaded");
             }
