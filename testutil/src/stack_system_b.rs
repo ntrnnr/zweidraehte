@@ -28,57 +28,33 @@ use zweidraehte::{
         DeviceStorage, IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout,
         PersistedState, SystemBDevice, SystemBMemoryMap, create_knxip_objects,
     },
-    define_com_objects,
     layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, KnxNetIpResources, servers},
     messages::knxip::KNXnetIPServiceType,
     messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium, ServiceFamily, SupportedService},
     objects::comm::ComObjects,
+    objects::interface::HasDeviceObject,
     objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadEvent, RunEvent},
 };
 
 // Import storage from the library module
 use testutil::storage::JsonStorage;
+use testutil::util::keyboard;
 
 // ============================================================================
-// Communication Objects Definition
+// Communication Objects Definition - use demo device comm objects
 // ============================================================================
 
-define_com_objects! {
-    pub mod comm_objs {
-        pub struct SystemBComObjects {
-            @ets(display = "Switch Input", function = "Switching input from bus")
-            1 => pub switch_in: DPT_Switch = DPT_Switch::from(false),
-
-            @ets(display = "Switch Output", function = "Switching output to bus", flags = 0x5F)
-            2 => pub switch_out: DPT_Switch = DPT_Switch::from(false),
-
-            @ets(display = "Dimmer Input", function = "Dimmer control input")
-            3 => pub dimmer_in: DPT_Switch = DPT_Switch::from(false),
-
-            @ets(display = "Dimmer Output", function = "Dimmer control output", flags = 0x5F)
-            4 => pub dimmer_out: DPT_Switch = DPT_Switch::from(false),
-        }
-    }
-}
+pub use testutil::devices::comm_objs;
 
 // ============================================================================
-// Device Constants
+// Device Constants - use demo device definitions
 // ============================================================================
 
-/// Device descriptor - single source of truth for device metadata.
-pub const MY_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
-    mask_version: 0x57B0, // KNX/IP System B
-    manufacturer_id: 0x00FA,
-    hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x02],
-    application_id: 0x0200,
-    application_version: 0x01,
-    max_address_table_entries: 16,
-    max_association_table_entries: 16,
-    max_com_objects: 8,
-};
+/// Device descriptor - use from demo device
+pub const MY_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = testutil::devices::DEVICE_DESCRIPTOR;
 
-/// Serial number for test device (runtime state, read from flash/OTP in real device).
-pub const MY_SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0xDE, 0xAD, 0xBE, 0xEF];
+/// Serial number - use from demo device
+pub const MY_SERIAL_NUMBER: [u8; 6] = testutil::devices::SERIAL_NUMBER;
 
 /// Network interface name for KNX/IP communication.
 pub const INTERFACE_NAME: &'static str = "knxdevbridgeif";
@@ -140,49 +116,12 @@ impl IpPlatform for MockIpPlatform {
 // Application Parameters with ETS Export
 // ============================================================================
 
-use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
-use zweidraehte::ets::EtsParams;
-
-
 // ============================================================================
 // Application Parameters
 // ============================================================================
 
-/// Application parameters for this device.
-///
-/// These parameters can be configured via ETS. The derive macro generates
-/// `MyAppParams::ETS_PARAMS` with metadata for each field.
-#[derive(Debug, Clone, Copy, EtsParams, ConstDefault, Serialize, Deserialize)]
-#[repr(C)]
-pub struct MyAppParams {
-    /// Operating mode (0=Off, 1=Normal, 2=Eco, 3=Night)
-    #[ets(display = "Operating Mode")]
-    pub mode: u8,
-
-    /// Switch-on delay in seconds (0-255)
-    #[ets(display = "Switch-On Delay")]
-    pub switch_on_delay: u8,
-
-    /// Switch-off delay in seconds (0-255)
-    #[ets(display = "Switch-Off Delay")]
-    pub switch_off_delay: u8,
-
-    /// Enable dimmer function
-    #[ets(display = "Dimmer Enabled")]
-    pub dimmer_enabled: bool,
-
-    /// Minimum dimmer value (0-255)
-    #[ets(display = "Min Dim Value")]
-    pub min_dim_value: u8,
-
-    /// Maximum dimmer value (0-255)
-    #[ets(display = "Max Dim Value")]
-    pub max_dim_value: u8,
-}
-
-/// Type alias for application parameters
-type AppParams = MyAppParams;
+/// Type alias for application parameters - use DemoParams which matches the generated XML
+type AppParams = testutil::devices::DemoParams;
 
 // ============================================================================
 // State type alias using IpSystemBDeviceState
@@ -243,7 +182,7 @@ impl StackDefinition for MySystemBStack {
     const DEVICE: &'static zweidraehte::ets::DeviceDescriptor = &MY_DEVICE_DESCRIPTOR;
 
     type P = AppParams;
-    type CO = comm_objs::SystemBComObjects;
+    type CO = comm_objs::DemoComObjects;
     type LLB = KnxNetIpBuilder<2, 2>;
     type State = MyState;
     type Mem = SystemBMemoryMap;
@@ -255,6 +194,7 @@ impl StackDefinition for MySystemBStack {
         <Self::State as zweidraehte::memory::HasAssociationTable>::AST,
         <Self::State as zweidraehte::memory::HasCommunicationObjectTable>::COT,
         <Self::State as zweidraehte::memory::HasApplication>::APP,
+        <Self::State as zweidraehte::memory::HasPeiApplication>::PEI,
     >;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
@@ -358,7 +298,7 @@ async fn main(spawner: Spawner) {
     > = StaticCell::new();
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
-        comm_objs::SystemBComObjects::new(),
+        comm_objs::DemoComObjects::new(),
         (),
         link_layer_builder,
         device_state,
@@ -369,21 +309,49 @@ async fn main(spawner: Spawner) {
     spawner.spawn(run_stack(runner, ll_resources)).unwrap();
 
     println!("=== Stack Running ===");
-    println!("Listening for KNX messages...\n");
+    println!("Listening for KNX messages...");
+    println!("Press 'p' to toggle programming mode, 'q' to quit\n");
 
     // Main application loop
     let mut events = stack.events();
     let mut last_print = embassy_time::Instant::now();
 
     loop {
+        // Check for keyboard input (non-blocking)
+        if let Some(key) = keyboard::poll_key() {
+            match key {
+                'p' | 'P' => {
+                    let interface_objects = stack.interface_objects();
+                    let current_mode = interface_objects.is_programming_mode();
+                    interface_objects.set_programming_mode_enabled(!current_mode);
+                    let new_mode = interface_objects.is_programming_mode();
+                    let current_addr = stack.state().individual_address();
+                    println!("\n********************************************");
+                    println!("*** Programming mode: {} ***", if new_mode { "ENABLED" } else { "DISABLED" });
+                    println!("*** Current address: {} ***", current_addr);
+                    println!("*** Device will respond to IndividualAddress_Read ***");
+                    println!("*** Device will accept IndividualAddress_Write ***");
+                    println!("********************************************\n");
+                }
+                'q' | 'Q' => {
+                    println!("\nShutting down...");
+                    break;
+                }
+                _ => {}
+            }
+        }
+
         if embassy_time::Instant::now().duration_since(last_print) > Duration::from_secs(10) {
             let objects = stack.objects();
             let co_borrow = objects.borrow();
-            println!("\n--- Communication Object Status ---");
+            let interface_objects = stack.interface_objects();
+            println!("\n--- Device Status ---");
+            println!("  Programming mode: {}", if interface_objects.is_programming_mode() { "ENABLED" } else { "DISABLED" });
+            println!("  Communication Objects:");
             for i in 1..=4u16 {
-                println!("  CO {}: {:02X?}", i, co_borrow.value(i));
+                println!("    CO {}: {:02X?}", i, co_borrow.value(i));
             }
-            println!("-----------------------------------\n");
+            println!("---------------------\n");
             last_print = embassy_time::Instant::now();
         }
 

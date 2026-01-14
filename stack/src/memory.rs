@@ -130,6 +130,18 @@ pub trait HasApplication {
     fn app(&self) -> &RefCell<Self::APP>;
 }
 
+/// Trait for types that contain a PEI (Platform Extension Interface) Program.
+///
+/// This is used by interface objects to access the PEI's load and run state machines.
+/// For System B devices (mask 57B0), the PEI Program Object is Interface Object 5.
+pub trait HasPeiApplication {
+    /// The concrete PEI application type.
+    type PEI: HasLoadStateMachine + HasRunStateMachine;
+
+    /// Get a reference to the PEI application.
+    fn pei(&self) -> &RefCell<Self::PEI>;
+}
+
 /// Trait for types that provide a routing count.
 ///
 /// The routing count (hop count) determines how many routers a message

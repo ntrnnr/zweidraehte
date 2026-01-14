@@ -17,9 +17,9 @@ use const_default::ConstDefault;
 use crate::{
     IpPlatform, IpStackState, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS, StackState,
     address::IndividualAddress,
-    memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRoutingCount},
+    memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication, HasRoutingCount},
     objects::tables::{
-        HasLoadStateMachine, HasRunStateMachine, Table, addr7::AddrTab7Impl, app::Application, asso6::AssoTab6Impl,
+        HasLoadStateMachine, HasRunStateMachine, Table, addr7::AddrTab7Impl, app::{Application, PeiApplication}, asso6::AssoTab6Impl,
         co7::CoTab7Impl,
     },
 };
@@ -97,6 +97,15 @@ pub struct SystemBDeviceState<
     /// Application program (data + Load/Run state machines).
     pub app: RefCell<Application<P>>,
 
+    /// PEI (Platform Extension Interface) program (Load/Run state machines).
+    pub pei: RefCell<PeiApplication>,
+
+    /// Application program version (written by ETS).
+    pub program_version: RefCell<[u8; 5]>,
+
+    /// PEI program version (written by ETS).
+    pub pei_program_version: RefCell<[u8; 5]>,
+
     // ========================================================================
     // Storage Management
     // ========================================================================
@@ -133,6 +142,9 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
             ast: RefCell::new(Table::new()),
             cot: RefCell::new(Table::new()),
             app: RefCell::new(Application::new()),
+            pei: RefCell::new(PeiApplication::new()),
+            program_version: RefCell::new([0; 5]),
+            pei_program_version: RefCell::new([0; 5]),
             storage: RefCell::new(storage),
             dirty: Cell::new(false),
             _phantom: PhantomData,
@@ -164,6 +176,9 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
             ast: RefCell::new(persisted.association_table),
             cot: RefCell::new(persisted.group_object_table),
             app: RefCell::new(persisted.application),
+            pei: RefCell::new(persisted.pei_program),
+            program_version: RefCell::new(persisted.program_version),
+            pei_program_version: RefCell::new(persisted.pei_program_version),
             storage: RefCell::new(storage),
             dirty: Cell::new(false),
             _phantom: PhantomData,
@@ -184,6 +199,9 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
             association_table: (*self.ast.borrow()).clone(),
             group_object_table: (*self.cot.borrow()).clone(),
             application: (*self.app.borrow()).clone(),
+            pei_program: (*self.pei.borrow()).clone(),
+            program_version: *self.program_version.borrow(),
+            pei_program_version: *self.pei_program_version.borrow(),
             ip_config,
         }
     }
@@ -338,6 +356,16 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 
     fn app(&self) -> &RefCell<Self::APP> {
         &self.app
+    }
+}
+
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: SystemBDevice>
+    HasPeiApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D>
+{
+    type PEI = PeiApplication;
+
+    fn pei(&self) -> &RefCell<Self::PEI> {
+        &self.pei
     }
 }
 
@@ -701,6 +729,16 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 
     fn app(&self) -> &RefCell<Self::APP> {
         self.base.app()
+    }
+}
+
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: KnxIpDevice>
+    HasPeiApplication for IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D>
+{
+    type PEI = PeiApplication;
+
+    fn pei(&self) -> &RefCell<Self::PEI> {
+        self.base.pei()
     }
 }
 

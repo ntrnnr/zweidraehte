@@ -240,7 +240,6 @@ crate::define_interface_object! {
         pid::PROJECT_INSTALLATION_ID => project_installation_id: PDT_UnsignedInt,
         pid::IP_ASSIGNMENT_METHOD => ip_assignment_method: PDT_UnsignedChar,
         pid::TTL => ttl: PDT_UnsignedChar,
-        // IP addresses use Ipv4Property wrapper for Ipv4Addr <-> u32 conversion
         pid::IP_ADDRESS => configured_ip_address: Ipv4Property,
         pid::SUBNET_MASK => configured_subnet_mask: Ipv4Property,
         pid::DEFAULT_GATEWAY => configured_default_gateway: Ipv4Property,
@@ -252,7 +251,6 @@ crate::define_interface_object! {
         pid::IP_CAPABILITIES => ip_capabilities: PDT_Bitset8,
         pid::MAC_ADDRESS => mac_address: PDT_Generic06,
         pid::KNXNETIP_DEVICE_CAPABILITIES => knxnetip_device_capabilities: PDT_Bitset16,
-        // Current IP config (read-only from platform)
         pid::CURRENT_IP_ADDRESS => current_ip_address: Ipv4Property,
         pid::CURRENT_SUBNET_MASK => current_subnet_mask: Ipv4Property,
         pid::CURRENT_DEFAULT_GATEWAY => current_default_gateway: Ipv4Property
@@ -362,15 +360,14 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
     }
 
     /// Get property descriptors for application program object.
-    fn property_descriptors() -> [PropertyDescriptor; 5] {
+    fn property_descriptors() -> [PropertyDescriptor; 6] {
         [
             PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 3),
-            // LOAD_STATE_CONTROL: read=3 (anyone), write=0 (requires authorization)
-            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 0),
-            // RUN_STATE_CONTROL: read=3 (anyone), write=0 (requires authorization)
-            PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 0),
-            PropertyDescriptor::new(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadOnly, 3, 3),
+            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 3),
+            PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 3),
+            PropertyDescriptor::new(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadWrite, 3, 3),
             PropertyDescriptor::new(pid::PEI_TYPE, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadOnly, 3, 3),
+            PropertyDescriptor::new(pid::MCB_TABLE, PDT_Generic08::ID, 1, PropertyAccess::ReadOnly, 3, 3),
         ]
     }
 }
@@ -381,7 +378,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
     }
 
     fn property_count(&self) -> u16 {
-        5
+        6
     }
 
     fn property_descriptor_by_index(&self, prop_idx: u16) -> Option<PropertyDescriptor> {
@@ -402,6 +399,11 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
             super::pid::RUN_STATE_CONTROL => self.app.borrow().read_rsm().read_property(start_idx, count, buf),
             super::pid::PROGRAM_VERSION => self.program_version.read_property(start_idx, count, buf),
             super::pid::PEI_TYPE => self.pei_type.read_property(start_idx, count, buf),
+            super::pid::MCB_TABLE => {
+                // Memory Control Block - 8 bytes (PDT_GENERIC_08)
+                let app = self.app.borrow();
+                app.mcb_bytes().read_property(start_idx, count, buf)
+            }
             _ => Err(PropertyError::InvalidPropertyId),
         }
     }
@@ -414,8 +416,21 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
         response_buf: &mut [u8],
     ) -> Result<usize, PropertyError> {
         match pid {
-            super::pid::OBJECT_TYPE | super::pid::PROGRAM_VERSION | super::pid::PEI_TYPE => {
+            super::pid::OBJECT_TYPE | super::pid::PEI_TYPE => {
                 Err(PropertyError::WriteNotAllowed)
+            }
+            super::pid::PROGRAM_VERSION => {
+                // ETS writes the program version during programming
+                if data.len() < 5 {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                self.program_version = PDT_Generic05::with_value([data[0], data[1], data[2], data[3], data[4]]);
+                // Echo back the written data
+                if response_buf.len() < 5 {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                response_buf[..5].copy_from_slice(data);
+                Ok(5)
             }
             super::pid::LOAD_STATE_CONTROL => {
                 // Write the load event to the state machine, providing the allocation address
@@ -447,7 +462,137 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
             | super::pid::LOAD_STATE_CONTROL
             | super::pid::RUN_STATE_CONTROL
             | super::pid::PROGRAM_VERSION
-            | super::pid::PEI_TYPE => Ok(1),
+            | super::pid::PEI_TYPE
+            | super::pid::MCB_TABLE => Ok(1),
+            _ => Err(PropertyError::InvalidPropertyId),
+        }
+    }
+}
+
+// ============================================================================
+// PEI Program Object (Object Type 5) - Interface Program
+// ============================================================================
+
+/// PEI (Platform Extension Interface) Program Object - Object Type 5.
+///
+/// This is Interface Object Type 5 (InterfaceProgram), positioned at index 5
+/// between the Application Program Object (4) and IP Parameter Object (6).
+///
+/// The PEI object has the same properties as Application Program Object but
+/// reports a different object type (0x0005 instead of 0x0004).
+///
+/// # Properties
+///
+/// Same as ApplicationProgramObject:
+/// - OBJECT_TYPE (PID 1): Reports InterfaceObjectType::InterfaceProgram (5)
+/// - LOAD_STATE_CONTROL (PID 5): Load state machine
+/// - RUN_STATE_CONTROL (PID 6): Run state machine
+/// - PROGRAM_VERSION (PID 13): Program version
+pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
+    pei: &'a RefCell<T>,
+    /// Virtual address to assign during RelativeData allocation (typically 0 for PEI)
+    alloc_address: u32,
+    program_version: PDT_Generic05,
+}
+
+impl<'a, T: HasLoadStateMachine + HasRunStateMachine> PeiProgramObject<'a, T> {
+    /// Create a new PEI program object.
+    ///
+    /// # Arguments
+    /// * `pei` - Reference to the PEI application table
+    /// * `alloc_address` - Virtual address to assign during RelativeData allocation (typically 0)
+    /// * `program_version` - PEI program version (typically [0, 0, 0, 0, 0])
+    pub fn new(pei: &'a RefCell<T>, alloc_address: u32, program_version: PDT_Generic05) -> Self {
+        Self { pei, alloc_address, program_version }
+    }
+
+    /// Get the program version.
+    pub fn program_version(&self) -> &PDT_Generic05 {
+        &self.program_version
+    }
+
+    /// Get property descriptors for PEI program object.
+    /// Note: PEI_TYPE (PID 14) is omitted since it's not used for the PEI object itself.
+    fn property_descriptors() -> [PropertyDescriptor; 4] {
+        [
+            PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 3),
+            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 0),
+            PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 0),
+            // PROGRAM_VERSION: ETS needs to write this during programming
+            PropertyDescriptor::new(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadWrite, 3, 0),
+        ]
+    }
+}
+
+impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for PeiProgramObject<'a, T> {
+    fn object_type(&self) -> InterfaceObjectType {
+        InterfaceObjectType::InterfaceProgram
+    }
+
+    fn property_count(&self) -> u16 {
+        4
+    }
+
+    fn property_descriptor_by_index(&self, prop_idx: u16) -> Option<PropertyDescriptor> {
+        Self::property_descriptors().get(prop_idx as usize).copied()
+    }
+
+    fn property_descriptor_by_id(&self, pid: u8) -> Option<(u16, PropertyDescriptor)> {
+        Self::property_descriptors().iter().enumerate().find(|(_, d)| d.pid == pid).map(|(i, d)| (i as u16, *d))
+    }
+
+    fn read_property(&self, pid: u8, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
+        match pid {
+            super::pid::OBJECT_TYPE => {
+                let obj_type: u16 = InterfaceObjectType::InterfaceProgram.into();
+                obj_type.to_be_bytes().read_property(start_idx, count, buf)
+            }
+            super::pid::LOAD_STATE_CONTROL => self.pei.borrow().read_lsm().read_property(start_idx, count, buf),
+            super::pid::RUN_STATE_CONTROL => self.pei.borrow().read_rsm().read_property(start_idx, count, buf),
+            super::pid::PROGRAM_VERSION => self.program_version.read_property(start_idx, count, buf),
+            _ => Err(PropertyError::InvalidPropertyId),
+        }
+    }
+
+    fn write_property(
+        &mut self,
+        pid: u8,
+        _start_idx: u16,
+        data: &[u8],
+        response_buf: &mut [u8],
+    ) -> Result<usize, PropertyError> {
+        match pid {
+            super::pid::OBJECT_TYPE | super::pid::PROGRAM_VERSION => Err(PropertyError::WriteNotAllowed),
+            super::pid::LOAD_STATE_CONTROL => {
+                // Write the load event to the state machine, providing the allocation address
+                self.pei.borrow_mut().write_lsm(data, Some(self.alloc_address));
+                // Response contains the resulting load state (1 byte)
+                if response_buf.is_empty() {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                response_buf[0] = self.pei.borrow().read_lsm()[0];
+                Ok(1)
+            }
+            super::pid::RUN_STATE_CONTROL => {
+                // Write the run event to the state machine
+                self.pei.borrow_mut().write_rsm(data);
+                // Response contains the resulting run state (1 byte)
+                if response_buf.is_empty() {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                response_buf[0] = self.pei.borrow().read_rsm()[0];
+                Ok(1)
+            }
+            _ => Err(PropertyError::InvalidPropertyId),
+        }
+    }
+
+    fn property_element_count(&self, pid: u8) -> Result<u16, PropertyError> {
+        match pid {
+            super::pid::OBJECT_TYPE
+            | super::pid::LOAD_STATE_CONTROL
+            | super::pid::RUN_STATE_CONTROL
+            | super::pid::PROGRAM_VERSION => Ok(1),
             _ => Err(PropertyError::InvalidPropertyId),
         }
     }

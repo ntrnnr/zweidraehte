@@ -172,10 +172,10 @@ impl StatePropertyValue for PDT_Generic06 {
 /// conversion to/from `u32` wire format.
 pub struct Ipv4Property;
 
-// Ipv4Property uses the same wire format as PDT_UnsignedLong (4 bytes, ID 7)
+// Ipv4Property uses the same wire format as PDT_UnsignedLong (4 bytes, ID 9)
 impl const crate::dpt::PropertyDataDefinition for Ipv4Property {
     const SIZE: usize = 4;
-    const ID: u8 = 7; // Same as PDT_UnsignedLong
+    const ID: u8 = 9; // PDT_UnsignedLong
 }
 
 impl StatePropertyValue for Ipv4Property {

@@ -33,20 +33,38 @@ pub struct ApplicationImpl<D: ConstDefault> {
 
 impl<D: ConstDefault> TableMemory for ApplicationImpl<D> {
     fn data_ref(&self) -> &[u8] {
-        &[]
+        // SAFETY: D is stored in memory as contiguous bytes, and we're creating
+        // a read-only byte slice from it. The lifetime is tied to &self.
+        unsafe { core::slice::from_raw_parts(&self._data as *const D as *const u8, core::mem::size_of::<D>()) }
     }
 
     fn data_ref_mut(&mut self) -> &mut [u8] {
-        &mut []
+        // SAFETY: D is stored in memory as contiguous bytes, and we're creating
+        // a mutable byte slice from it. The lifetime is tied to &mut self.
+        unsafe { core::slice::from_raw_parts_mut(&mut self._data as *mut D as *mut u8, core::mem::size_of::<D>()) }
     }
 
     fn max_size() -> usize {
         core::mem::size_of::<D>()
     }
 
-    fn read(&self, _offset: usize, _data: &mut [u8]) {}
+    fn read(&self, offset: usize, data: &mut [u8]) {
+        let src = self.data_ref();
+        let end = (offset + data.len()).min(src.len());
+        if offset < src.len() {
+            let copy_len = end - offset;
+            data[..copy_len].copy_from_slice(&src[offset..end]);
+        }
+    }
 
-    fn write(&mut self, _offset: usize, _data: &[u8]) {}
+    fn write(&mut self, offset: usize, data: &[u8]) {
+        let dst = self.data_ref_mut();
+        let end = (offset + data.len()).min(dst.len());
+        if offset < dst.len() {
+            let copy_len = end - offset;
+            dst[offset..end].copy_from_slice(&data[..copy_len]);
+        }
+    }
 }
 
 /// Application Program table with both Load and Run state machines.
@@ -75,10 +93,33 @@ impl<D: ConstDefault> TableMemory for ApplicationImpl<D> {
 /// ```
 pub type Application<D> = RunnableApplication<Table<ApplicationImpl<D>>>;
 
+/// PEI (Platform Extension Interface) Program Object with Load and Run state machines.
+///
+/// For System B devices (mask 57B0), the PEI Program Object is Interface Object 5,
+/// positioned between the Application Program Object (4) and IP Parameter Object (6).
+///
+/// This object provides proper state machine infrastructure for ETS compatibility,
+/// even for devices that don't use platform-specific extensions. It is instantiated
+/// with empty data `()` but still provides the required LOAD_STATE_CONTROL and
+/// RUN_STATE_CONTROL properties that ETS expects.
+///
+/// # KNX Object Structure
+///
+/// ```text
+/// Object 0: Device Object
+/// Object 1: Address Table Object
+/// Object 2: Association Table Object
+/// Object 3: Group Object Table Object
+/// Object 4: Application Program Object
+/// Object 5: PEI Program Object (this type)
+/// Object 6: IP Parameter Object
+/// ```
+pub type PeiApplication = RunnableApplication<Table<ApplicationImpl<()>>>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::objects::tables::{LoadEvent, LoadState, HasLoadStateMachine, RunEvent, RunState, HasRunStateMachine};
+    use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadEvent, LoadState, RunEvent, RunState};
 
     #[test]
     fn test_initial_state() {

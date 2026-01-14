@@ -1210,7 +1210,10 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, InternalFormat> {
         self.buf[2] = ctrl1;
         self.buf[3] = orig_npdu; // ctrl2
         // src and dst are already in the right place (positions 4-7)
-        self.buf[8] = (knx_len - 6) as u8; // npdu_len: length of TPCI/APCI + data
+        // NPDU length field = (TPCI + APCI + data length) - 1
+        // Internal format has 6 header bytes, so APDU starts at byte 6
+        // NPDU length = (total_length - 6) - 1 = total_length - 7
+        self.buf[8] = (knx_len - 7) as u8; // npdu_len: (TPCI/APCI + data length) - 1
         // tpci/apci/data is already in the right place (position 9+)
 
         KnxMessageBuffer {

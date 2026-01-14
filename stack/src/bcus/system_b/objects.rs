@@ -21,9 +21,10 @@
 //! - Index 2: Association Table Object
 //! - Index 3: Group Object Table Object
 //! - Index 4: Application Program Object
+//! - Index 5: PEI Program Object
 //!
 //! KNX/IP additional objects (57B0):
-//! - Index 5: IP Parameter Object
+//! - Index 6: IP Parameter Object
 
 use core::cell::RefCell;
 
@@ -32,7 +33,7 @@ use crate::{
     dpt::{DeviceControl, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
-        GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PropertyDescriptionResponse,
+        GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PeiProgramObject, PropertyDescriptionResponse,
         PropertyDescriptor, PropertyError, PropertyServiceHandler,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
@@ -41,26 +42,27 @@ use crate::{
 use super::SystemBDevice;
 use crate::StackDefinition;
 use crate::memory::{
-    HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRoutingCount,
+    HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication, HasRoutingCount,
 };
 
 // ============================================================================
 // SystemBObjects - Base 5 Interface Objects
 // ============================================================================
 
-/// Base interface objects for System B devices (indices 0-4).
+/// Base interface objects for System B devices (indices 0-5).
 ///
-/// Contains the 5 mandatory interface objects:
+/// Contains the 6 mandatory interface objects:
 /// - Device Object (index 0)
 /// - Address Table Object (index 1)
 /// - Association Table Object (index 2)
 /// - Group Object Table Object (index 3)
 /// - Application Program Object (index 4)
+/// - PEI Program Object (index 5)
 ///
 /// For KNX/IP devices, compose this with [`IpObjects`] using a tuple:
 /// ```rust,ignore
-/// type MyObjects<'a, S, ADT, AST, COT, APP> = (
-///     SystemBObjects<'a, S, ADT, AST, COT, APP>,
+/// type MyObjects<'a, S, ADT, AST, COT, APP, PEI> = (
+///     SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>,
 ///     IpObjects<'a, S>,
 /// );
 /// ```
@@ -72,31 +74,35 @@ use crate::memory::{
 /// - `AST`: Association table type
 /// - `COT`: Communication object table type
 /// - `APP`: Application type (implementing both HasLoadStateMachine and HasRunStateMachine)
-pub struct SystemBObjects<'a, S, ADT, AST, COT, APP>
+/// - `PEI`: PEI application type (implementing both HasLoadStateMachine and HasRunStateMachine)
+pub struct SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>
 where
     S: StackState,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
     APP: HasLoadStateMachine + HasRunStateMachine,
+    PEI: HasLoadStateMachine + HasRunStateMachine,
 {
     device: RefCell<DeviceObject<'a, S>>,
     address_table: RefCell<AddressTableObject<'a, ADT>>,
     association_table: RefCell<AssociationTableObject<'a, AST>>,
     group_object_table: RefCell<GroupObjectTableObject<'a, COT>>,
     application_program: RefCell<ApplicationProgramObject<'a, APP>>,
+    pei_program: RefCell<PeiProgramObject<'a, PEI>>,
 }
 
-impl<'a, S, ADT, AST, COT, APP> SystemBObjects<'a, S, ADT, AST, COT, APP>
+impl<'a, S, ADT, AST, COT, APP, PEI> SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>
 where
     S: StackState,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
     APP: HasLoadStateMachine + HasRunStateMachine,
+    PEI: HasLoadStateMachine + HasRunStateMachine,
 {
     /// Number of interface objects in this container.
-    pub const OBJECT_COUNT: u16 = 5;
+    pub const OBJECT_COUNT: u16 = 6;
 
     /// Create a new interface objects container.
     ///
@@ -109,7 +115,9 @@ where
     /// - `ast`: Reference to the association table
     /// - `cot`: Reference to the group object table
     /// - `app`: Reference to the application
+    /// - `pei`: Reference to the PEI application
     /// - `program_version`: Application program version (5 bytes)
+    /// - `pei_program_version`: PEI program version (5 bytes)
     /// - `pei_type`: PEI type (0 = no PEI)
     /// - `routing_count`: Routing count (hop count) for outgoing messages (0-7)
     pub fn new(
@@ -120,7 +128,9 @@ where
         ast: &'a RefCell<AST>,
         cot: &'a RefCell<COT>,
         app: &'a RefCell<APP>,
+        pei: &'a RefCell<PEI>,
         program_version: [u8; 5],
+        pei_program_version: [u8; 5],
         pei_type: u8,
         routing_count: u8,
     ) -> Self {
@@ -136,6 +146,11 @@ where
                 layout.app_address() as u32,
                 PDT_Generic05::with_value(program_version),
                 PDT_UnsignedChar::with_value(pei_type),
+            )),
+            pei_program: RefCell::new(PeiProgramObject::new(
+                pei,
+                0, // PEI has no memory-mapped address
+                PDT_Generic05::with_value(pei_program_version),
             )),
         }
     }
@@ -158,18 +173,20 @@ where
             2 => self.association_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             3 => self.group_object_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             4 => self.application_program.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
+            5 => self.pei_program.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             _ => None,
         }
     }
 }
 
-impl<'a, S, ADT, AST, COT, APP> PropertyServiceHandler for SystemBObjects<'a, S, ADT, AST, COT, APP>
+impl<'a, S, ADT, AST, COT, APP, PEI> PropertyServiceHandler for SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>
 where
     S: StackState,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
     APP: HasLoadStateMachine + HasRunStateMachine,
+    PEI: HasLoadStateMachine + HasRunStateMachine,
 {
     fn object_count(&self) -> u16 {
         Self::OBJECT_COUNT
@@ -187,6 +204,7 @@ where
             2 => self.association_table.borrow().property_description(object_idx, prop_id, prop_idx),
             3 => self.group_object_table.borrow().property_description(object_idx, prop_id, prop_idx),
             4 => self.application_program.borrow().property_description(object_idx, prop_id, prop_idx),
+            5 => self.pei_program.borrow().property_description(object_idx, prop_id, prop_idx),
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }
@@ -213,6 +231,7 @@ where
             2 => self.association_table.borrow().read_property(prop_id, start_idx, count, buf),
             3 => self.group_object_table.borrow().read_property(prop_id, start_idx, count, buf),
             4 => self.application_program.borrow().read_property(prop_id, start_idx, count, buf),
+            5 => self.pei_program.borrow().read_property(prop_id, start_idx, count, buf),
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }
@@ -239,18 +258,20 @@ where
             2 => self.association_table.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
             3 => self.group_object_table.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
             4 => self.application_program.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
+            5 => self.pei_program.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }
 }
 
-impl<'a, S, ADT, AST, COT, APP> HasDeviceObject for SystemBObjects<'a, S, ADT, AST, COT, APP>
+impl<'a, S, ADT, AST, COT, APP, PEI> HasDeviceObject for SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>
 where
     S: StackState,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
     APP: HasLoadStateMachine + HasRunStateMachine,
+    PEI: HasLoadStateMachine + HasRunStateMachine,
 {
     fn device_control(&self) -> DeviceControl {
         self.device.borrow().device_control
@@ -281,18 +302,18 @@ where
 // IpObjects - IP Parameter Object
 // ============================================================================
 
-/// IP interface objects for KNX/IP devices (index 5).
+/// IP interface objects for KNX/IP devices (index 6).
 ///
 /// Contains only the IP Parameter Object. Compose with [`SystemBObjects`]
 /// using a tuple to create a complete KNX/IP device:
 ///
 /// ```rust,ignore
 /// let objects: (SystemBObjects<...>, IpObjects<...>) = (base, ip);
-/// // objects.object_count() == 6
+/// // objects.object_count() == 7
 /// ```
 ///
 /// The tuple's `PropertyServiceHandler` implementation automatically handles
-/// index offsetting - IpObjects receives index 0 for what is logically index 5.
+/// index offsetting - IpObjects receives index 0 for what is logically index 6.
 pub struct IpObjects<'a, S: IpStackState> {
     ip_parameter: RefCell<IpParameterObject<'a, S>>,
 }
@@ -391,15 +412,16 @@ impl<'a, S: IpStackState> PropertyServiceHandler for IpObjects<'a, S> {
 /// The tuple's `PropertyServiceHandler` and `HasDeviceObject` implementations
 /// automatically handle dispatch to the appropriate component.
 ///
-/// Contains 6 interface objects:
+/// Contains 7 interface objects:
 /// - Device Object (index 0)
 /// - Address Table Object (index 1)
 /// - Association Table Object (index 2)
 /// - Group Object Table Object (index 3)
 /// - Application Program Object (index 4)
-/// - IP Parameter Object (index 5)
-pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP> =
-    (SystemBObjects<'a, S, ADT, AST, COT, APP>, IpObjects<'a, S>);
+/// - PEI Program Object (index 5)
+/// - IP Parameter Object (index 6)
+pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP, PEI> =
+    (SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>, IpObjects<'a, S>);
 
 // ============================================================================
 // Helper functions
@@ -439,7 +461,7 @@ pub fn device_info_from_descriptor(desc: &crate::ets::DeviceDescriptor) -> Devic
     }
 }
 
-/// Create base System B interface objects (5 objects: indices 0-4).
+/// Create base System B interface objects (6 objects: indices 0-5).
 ///
 /// Use this function in your `StackDefinition::create_interface_objects` implementation
 /// for non-IP System B devices.
@@ -451,14 +473,15 @@ pub fn device_info_from_descriptor(desc: &crate::ets::DeviceDescriptor) -> Devic
 pub fn create_system_b_objects<'a, D, S>(
     state: &'a S,
     layout: &super::memory_map::MemoryLayout,
-) -> SystemBObjects<'a, S, S::ADT, S::AST, S::COT, S::APP>
+) -> SystemBObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI>
 where
     D: StackDefinition + SystemBDevice,
-    S: StackState + HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
+    S: StackState + HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasPeiApplication + HasRoutingCount,
     S::ADT: HasLoadStateMachine,
     S::AST: HasLoadStateMachine,
     S::COT: HasLoadStateMachine,
     S::APP: HasLoadStateMachine + HasRunStateMachine,
+    S::PEI: HasLoadStateMachine + HasRunStateMachine,
 {
     let device_info = device_info_from::<D>();
     SystemBObjects::new(
@@ -469,13 +492,15 @@ where
         state.ast(),
         state.cot(),
         state.app(),
+        state.pei(),
         D::DEVICE.program_version(),
+        D::DEVICE.pei_program_version(),
         D::PEI_TYPE,
         state.routing_count(),
     )
 }
 
-/// Create KNX/IP interface objects (6 objects: indices 0-5).
+/// Create KNX/IP interface objects (7 objects: indices 0-6).
 ///
 /// Use this function in your `StackDefinition::create_interface_objects` implementation
 /// for KNX/IP System B devices (57B0).
@@ -487,14 +512,15 @@ where
 pub fn create_knxip_objects<'a, D, S>(
     state: &'a S,
     layout: &super::memory_map::MemoryLayout,
-) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP>
+) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI>
 where
     D: StackDefinition + SystemBDevice,
-    S: IpStackState + HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
+    S: IpStackState + HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasPeiApplication + HasRoutingCount,
     S::ADT: HasLoadStateMachine,
     S::AST: HasLoadStateMachine,
     S::COT: HasLoadStateMachine,
     S::APP: HasLoadStateMachine + HasRunStateMachine,
+    S::PEI: HasLoadStateMachine + HasRunStateMachine,
 {
     let base = create_system_b_objects::<D, S>(state, layout);
     let ip = IpObjects::new(state);

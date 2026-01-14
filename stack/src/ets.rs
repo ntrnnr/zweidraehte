@@ -201,6 +201,15 @@ impl DeviceDescriptor {
         ]
     }
 
+    /// Get the PEI program version bytes (5 bytes).
+    ///
+    /// For devices without a separate PEI application, this returns a default
+    /// version [0x00, 0x00, 0x00, 0x00, 0x00].
+    /// The PEI Program Object (Interface Object 5) reports this as PID_PROGRAM_VERSION.
+    pub const fn pei_program_version(&self) -> [u8; 5] {
+        [0x00, 0x00, 0x00, 0x00, 0x00]
+    }
+
     /// Get the mask version as bytes (big-endian).
     pub const fn mask_version_bytes(&self) -> [u8; 2] {
         [(self.mask_version >> 8) as u8, self.mask_version as u8]

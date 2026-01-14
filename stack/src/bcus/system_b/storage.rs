@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     address::IndividualAddress,
-    objects::tables::{Table, addr7::AddrTab7Impl, app::Application, asso6::AssoTab6Impl, co7::CoTab7Impl},
+    objects::tables::{Table, addr7::AddrTab7Impl, app::{Application, PeiApplication}, asso6::AssoTab6Impl, co7::CoTab7Impl},
 };
 
 /// Trait for persisting device state to storage.
@@ -140,6 +140,15 @@ pub struct PersistedState<const ADT_SIZE: usize, const AST_SIZE: usize, const CO
     /// Application program data.
     pub application: Application<P>,
 
+    /// PEI (Platform Extension Interface) program.
+    pub pei_program: PeiApplication,
+
+    /// Application program version (set by ETS during programming).
+    pub program_version: [u8; 5],
+
+    /// PEI program version (set by ETS during programming).
+    pub pei_program_version: [u8; 5],
+
     /// IP-specific configuration (only for 57B0 devices).
     ///
     /// Set to `None` for non-IP devices (07B0).
@@ -163,6 +172,9 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
             association_table: Table::new(),
             group_object_table: Table::new(),
             application: Application::new(),
+            pei_program: PeiApplication::new(),
+            program_version: [0; 5],
+            pei_program_version: [0; 5],
             ip_config: None,
         }
     }
