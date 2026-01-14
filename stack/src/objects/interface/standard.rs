@@ -360,11 +360,12 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
     }
 
     /// Get property descriptors for application program object.
-    fn property_descriptors() -> [PropertyDescriptor; 6] {
+    fn property_descriptors() -> [PropertyDescriptor; 7] {
         [
             PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 3),
             PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 3),
             PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 3),
+            PropertyDescriptor::new(pid::TABLE_REFERENCE, PDT_UnsignedLong::ID, 1, PropertyAccess::ReadOnly, 3, 3),
             PropertyDescriptor::new(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadWrite, 3, 3),
             PropertyDescriptor::new(pid::PEI_TYPE, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadOnly, 3, 3),
             PropertyDescriptor::new(pid::MCB_TABLE, PDT_Generic08::ID, 1, PropertyAccess::ReadOnly, 3, 3),
@@ -378,7 +379,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
     }
 
     fn property_count(&self) -> u16 {
-        6
+        7
     }
 
     fn property_descriptor_by_index(&self, prop_idx: u16) -> Option<PropertyDescriptor> {
@@ -397,6 +398,9 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
             }
             super::pid::LOAD_STATE_CONTROL => self.app.borrow().read_lsm().read_property(start_idx, count, buf),
             super::pid::RUN_STATE_CONTROL => self.app.borrow().read_rsm().read_property(start_idx, count, buf),
+            super::pid::TABLE_REFERENCE => {
+                self.app.borrow().table_reference().to_be_bytes().read_property(start_idx, count, buf)
+            }
             super::pid::PROGRAM_VERSION => self.program_version.read_property(start_idx, count, buf),
             super::pid::PEI_TYPE => self.pei_type.read_property(start_idx, count, buf),
             super::pid::MCB_TABLE => {
@@ -416,9 +420,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
         response_buf: &mut [u8],
     ) -> Result<usize, PropertyError> {
         match pid {
-            super::pid::OBJECT_TYPE | super::pid::PEI_TYPE => {
-                Err(PropertyError::WriteNotAllowed)
-            }
+            super::pid::OBJECT_TYPE | super::pid::PEI_TYPE => Err(PropertyError::WriteNotAllowed),
             super::pid::PROGRAM_VERSION => {
                 // ETS writes the program version during programming
                 if data.len() < 5 {
@@ -461,6 +463,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
             super::pid::OBJECT_TYPE
             | super::pid::LOAD_STATE_CONTROL
             | super::pid::RUN_STATE_CONTROL
+            | super::pid::TABLE_REFERENCE
             | super::pid::PROGRAM_VERSION
             | super::pid::PEI_TYPE
             | super::pid::MCB_TABLE => Ok(1),

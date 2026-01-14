@@ -31,6 +31,22 @@ pub struct ApplicationImpl<D: ConstDefault> {
     _data: D,
 }
 
+impl<D: ConstDefault> ApplicationImpl<D> {
+    /// Get a type-safe reference to the application parameters.
+    ///
+    /// This provides direct access to the stored data without going through byte slices.
+    pub fn params(&self) -> &D {
+        &self._data
+    }
+
+    /// Get a type-safe mutable reference to the application parameters.
+    ///
+    /// This provides direct mutable access to the stored data.
+    pub fn params_mut(&mut self) -> &mut D {
+        &mut self._data
+    }
+}
+
 impl<D: ConstDefault> TableMemory for ApplicationImpl<D> {
     fn data_ref(&self) -> &[u8] {
         // SAFETY: D is stored in memory as contiguous bytes, and we're creating
@@ -92,6 +108,38 @@ impl<D: ConstDefault> TableMemory for ApplicationImpl<D> {
 /// assert!(app.is_running());
 /// ```
 pub type Application<D> = RunnableApplication<Table<ApplicationImpl<D>>>;
+
+impl<D: ConstDefault> Application<D> {
+    /// Get a type-safe reference to the application parameters.
+    ///
+    /// This provides direct access to your application data struct without going through byte slices.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let app: Application<MyAppParams> = Application::new();
+    /// let params: &MyAppParams = app.params();
+    /// let value = params.some_field;
+    /// ```
+    pub fn params(&self) -> &D {
+        self.inner().table.params()
+    }
+
+    /// Get a type-safe mutable reference to the application parameters.
+    ///
+    /// This allows you to modify your application data directly.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut app: Application<MyAppParams> = Application::new();
+    /// let params: &mut MyAppParams = app.params_mut();
+    /// params.some_field = 42;
+    /// ```
+    pub fn params_mut(&mut self) -> &mut D {
+        self.inner_mut().table.params_mut()
+    }
+}
 
 /// PEI (Platform Extension Interface) Program Object with Load and Run state machines.
 ///

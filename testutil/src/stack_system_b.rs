@@ -342,15 +342,42 @@ async fn main(spawner: Spawner) {
         }
 
         if embassy_time::Instant::now().duration_since(last_print) > Duration::from_secs(10) {
+            use zweidraehte::memory::HasApplication;
+
             let objects = stack.objects();
             let co_borrow = objects.borrow();
             let interface_objects = stack.interface_objects();
+            let state = stack.state();
+            let app = state.app().borrow();
+
             println!("\n--- Device Status ---");
             println!("  Programming mode: {}", if interface_objects.is_programming_mode() { "ENABLED" } else { "DISABLED" });
+            println!("  Application state: Loaded={}, Running={}", app.is_loaded(), app.is_running());
+
             println!("  Communication Objects:");
             for i in 1..=4u16 {
                 println!("    CO {}: {:02X?}", i, co_borrow.value(i));
             }
+
+            // Print application parameters if loaded
+            if app.is_loaded() {
+                let params = app.params();
+                println!("  Application Parameters:");
+                println!("    Operating Mode: {}", match params.mode {
+                    0 => "Off",
+                    1 => "Normal",
+                    2 => "Eco",
+                    3 => "Night",
+                    _ => "Unknown",
+                });
+                println!("    Switch-On Delay: {}s", params.switch_on_delay);
+                println!("    Switch-Off Delay: {}s", params.switch_off_delay);
+                println!("    Dimmer Enabled: {}", params.dimmer_enabled);
+                println!("    Min Dim Value: {}", params.min_dim_value);
+            } else {
+                println!("  Application Parameters: Not loaded");
+            }
+
             println!("---------------------\n");
             last_print = embassy_time::Instant::now();
         }
