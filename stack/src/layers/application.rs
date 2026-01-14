@@ -985,11 +985,12 @@ where
                 .with_data(|data| {
                     // Set descriptor type to 0 in the response
                     data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0) | 0x00;
-                    // Copy mask version
-                    data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4].copy_from_slice(D::MASK_VERSION);
+                    // Copy mask version from device descriptor
+                    let mask_version = D::DEVICE.mask_version_bytes();
+                    data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4].copy_from_slice(&mask_version);
                 });
 
-            debug!("AL sending DeviceDescriptorResponse: mask_version={:02x?}", D::MASK_VERSION);
+            debug!("AL sending DeviceDescriptorResponse: mask_version={:04x}", D::DEVICE.mask_version);
 
             let confirmation = self.transport_layer.request(msg).await;
             trace!("AL DeviceDescriptorResponse confirmation: {:?}", confirmation.service_type());

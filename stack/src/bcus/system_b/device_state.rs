@@ -15,14 +15,13 @@ use core::net::Ipv4Addr;
 use const_default::ConstDefault;
 
 use crate::{
-    IpPlatform, IpStackState, StackState,
+    IpPlatform, IpStackState, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS, StackState,
     address::IndividualAddress,
     memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRoutingCount},
     objects::tables::{
         HasLoadStateMachine, HasRunStateMachine, Table, addr7::AddrTab7Impl, app::Application, asso6::AssoTab6Impl,
         co7::CoTab7Impl,
     },
-    NUM_AUTH_KEYS, MAX_ACCESS_LEVELS,
 };
 
 use super::{DeviceStorage, KnxIpDevice, PersistedIpConfig, PersistedState, SystemBDevice};
@@ -71,6 +70,12 @@ pub struct SystemBDeviceState<
     /// Individual address.
     individual_address: Cell<IndividualAddress>,
 
+    /// Device serial number (6 bytes).
+    ///
+    /// Factory-programmed, unique per physical device.
+    /// Format: 2 bytes manufacturer ID + 4 bytes device-specific.
+    serial_number: [u8; 6],
+
     /// Authorization keys for levels 0-2.
     auth_keys: RefCell<[[u8; 4]; NUM_AUTH_KEYS]>,
 
@@ -113,9 +118,15 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     /// - Auth keys: All set to `[0xFF, 0xFF, 0xFF, 0xFF]` (default key)
     /// - Routing count: 6 (default per KNX spec)
     /// - All tables: Unloaded
-    pub fn new(storage: D::Storage) -> Self {
+    ///
+    /// # Arguments
+    ///
+    /// - `storage`: Storage backend for persistence
+    /// - `serial_number`: Factory-programmed serial number (6 bytes)
+    pub fn new(storage: D::Storage, serial_number: [u8; 6]) -> Self {
         Self {
             individual_address: Cell::new(IndividualAddress::new(15, 15, 255)),
+            serial_number,
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
             routing_count: Cell::new(6),
             adt: RefCell::new(Table::new()),
@@ -133,9 +144,20 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     /// Restores all state and table data from storage.
     /// The application's run state is always set to `Halted` - it must
     /// be explicitly restarted after boot.
-    pub fn from_persisted(storage: D::Storage, persisted: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>) -> Self {
+    ///
+    /// # Arguments
+    ///
+    /// - `storage`: Storage backend for persistence
+    /// - `serial_number`: Factory-programmed serial number (6 bytes)
+    /// - `persisted`: Previously persisted state to restore
+    pub fn from_persisted(
+        storage: D::Storage,
+        serial_number: [u8; 6],
+        persisted: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>,
+    ) -> Self {
         Self {
             individual_address: Cell::new(persisted.individual_address),
+            serial_number,
             auth_keys: RefCell::new(persisted.auth_keys),
             routing_count: Cell::new(persisted.routing_count),
             adt: RefCell::new(persisted.address_table),
@@ -222,16 +244,6 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: SystemBDevice> Default
-    for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D>
-where
-    D::Storage: Default,
-{
-    fn default() -> Self {
-        Self::new(D::Storage::default())
-    }
-}
-
 // ============================================================================
 // StackState Implementation
 // ============================================================================
@@ -251,7 +263,7 @@ where
     }
 
     fn serial_number(&self) -> &[u8; 6] {
-        &D::SERIAL_NUMBER
+        &self.serial_number
     }
 
     fn max_access_levels(&self) -> u8 {
@@ -376,8 +388,14 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D>
 {
     /// Create new IP device state with factory defaults.
-    pub fn new(storage: D::Storage, platform: D::Platform) -> Self {
-        let base = SystemBDeviceState::new(storage);
+    ///
+    /// # Arguments
+    ///
+    /// - `storage`: Storage backend for persistence
+    /// - `platform`: Platform for querying network state
+    /// - `serial_number`: Factory-programmed serial number (6 bytes)
+    pub fn new(storage: D::Storage, platform: D::Platform, serial_number: [u8; 6]) -> Self {
+        let base = SystemBDeviceState::new(storage, serial_number);
         let ip_config = PersistedIpConfig::default();
 
         Self {
@@ -396,13 +414,21 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 
     /// Create IP device state from persisted values.
+    ///
+    /// # Arguments
+    ///
+    /// - `storage`: Storage backend for persistence
+    /// - `platform`: Platform for querying network state
+    /// - `serial_number`: Factory-programmed serial number (6 bytes)
+    /// - `persisted`: Previously persisted state to restore
     pub fn from_persisted(
         storage: D::Storage,
         platform: D::Platform,
+        serial_number: [u8; 6],
         persisted: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>,
     ) -> Self {
         let ip_config = persisted.ip_config.clone().unwrap_or_default();
-        let base = SystemBDeviceState::from_persisted(storage, persisted);
+        let base = SystemBDeviceState::from_persisted(storage, serial_number, persisted);
 
         Self {
             base,
@@ -480,17 +506,6 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     /// Check if the application is running.
     pub fn is_running(&self) -> bool {
         self.base.is_running()
-    }
-}
-
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: KnxIpDevice> Default
-    for IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D>
-where
-    D::Storage: Default,
-    D::Platform: Default,
-{
-    fn default() -> Self {
-        Self::new(D::Storage::default(), D::Platform::default())
     }
 }
 

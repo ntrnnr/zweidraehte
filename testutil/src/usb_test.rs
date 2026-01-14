@@ -4,7 +4,7 @@
 //! Press '1' to send GroupValueWrite(1) to 2/0/3
 //! Press '0' to send GroupValueWrite(0) to 2/0/3
 
-mod keyboard;
+use testutil::util::keyboard;
 
 use std::cell::RefCell;
 use std::io::Write as IoWrite;

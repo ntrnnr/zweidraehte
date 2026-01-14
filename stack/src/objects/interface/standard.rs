@@ -125,9 +125,6 @@ crate::define_interface_object! {
 }
 
 /// Device information for creating a DeviceObject
-///
-/// Note: Serial number and max APDU length are not included here because
-/// they are read dynamically from the `StackState`.
 pub struct DeviceInfo {
     /// Order information (10 bytes, manufacturer-specific)
     pub order_info: [u8; 10],
@@ -937,7 +934,7 @@ mod tests {
 
     #[test]
     fn test_table_reference_after_load() {
-        use crate::objects::tables::{LoadEvent, HasLoadStateMachine};
+        use crate::objects::tables::{HasLoadStateMachine, LoadEvent};
 
         let addr_table = RefCell::new(AddrTab7::<20>::new());
         let mut obj = AddressTableObject::new(&addr_table, 0x1234);
@@ -957,10 +954,14 @@ mod tests {
         let alloc_data = [
             LoadEvent::AdditionalLoadControls.into(),
             0x0B, // RelativeData segment
-            0x00, 0x00, 0x00, 0x08, // 8 bytes requested
+            0x00,
+            0x00,
+            0x00,
+            0x08, // 8 bytes requested
             0x01, // mode = fill enabled
             0xFF, // fill byte
-            0x00, 0x00, // CRC placeholder
+            0x00,
+            0x00, // CRC placeholder
         ];
         obj.write_property(pid::LOAD_STATE_CONTROL, 1, &alloc_data, &mut buf).unwrap();
 

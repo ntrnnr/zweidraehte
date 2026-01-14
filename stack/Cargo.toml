@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 platform = { path = "../platform", features = ["log", "linux"] }
+ets-macros = { path = "../ets-macros" }
 
 zerocopy = { workspace = true }
 #const-bitfield = { workspace = true }

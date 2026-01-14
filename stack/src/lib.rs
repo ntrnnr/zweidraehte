@@ -22,6 +22,7 @@ pub mod context;
 pub mod dpt;
 pub mod encoding;
 pub mod error;
+pub mod ets;
 pub mod layers;
 pub mod memory;
 pub mod messages;
@@ -104,7 +105,7 @@ pub enum ReadObjectError {
 ///     }
 /// }
 /// ```
-pub trait StackState: Default {
+pub trait StackState {
     /// Get the device's individual address.
     ///
     /// This is the unique address assigned to this device on the KNX bus.
@@ -794,8 +795,41 @@ impl<P: IpPlatform + Default> IpStackState for BasicIpStackState<P> {
 }
 
 pub trait StackDefinition: Copy {
-    /// Device descriptor type 0 / mask version (2 bytes, e.g., 0x07B0 for System B)
-    const MASK_VERSION: &'static [u8; 2];
+    /// Device descriptor containing all device identification and configuration.
+    ///
+    /// This is the **single source of truth** for device identity including:
+    /// - Hardware identification (mask version, manufacturer ID, serial number, hardware type)
+    /// - Application program info (app ID, version)
+    /// - Table capacities (max addresses, associations, communication objects)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use zweidraehte::ets::DeviceDescriptor;
+    ///
+    /// const MY_DEVICE: DeviceDescriptor = DeviceDescriptor {
+    ///     mask_version: 0x07B0,
+    ///     manufacturer_id: 0x00FA,
+    ///     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
+    ///     application_id: 0xF023,
+    ///     application_version: 0x01,
+    ///     max_address_table_entries: 64,
+    ///     max_association_table_entries: 64,
+    ///     max_com_objects: 32,
+    /// };
+    ///
+    /// impl StackDefinition for MyDevice {
+    ///     const DEVICE: &'static DeviceDescriptor = &MY_DEVICE;
+    ///     // ... other fields
+    /// }
+    /// ```
+    ///
+    /// # Note on Serial Number
+    ///
+    /// The serial number is NOT part of the device descriptor because it's unique
+    /// per physical device instance (factory-programmed). Serial number should be
+    /// stored in runtime state and read from persistent storage or hardware.
+    const DEVICE: &'static ets::DeviceDescriptor;
 
     /// Maximum APDU length for compile-time buffer allocation.
     ///

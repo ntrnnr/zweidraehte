@@ -94,4 +94,4 @@ pub use objects::{
     IpObjects, KnxIpInterfaceObjects, SystemBObjects, create_knxip_objects, create_system_b_objects, device_info_from,
 };
 pub use storage::{DeviceStorage, NoStorage, PersistedIpConfig, PersistedState, table_sizes};
-pub use traits::{KnxIpDevice, SystemBDevice, SystemBDeviceExt, TpDevice};
+pub use traits::{KnxIpDevice, SystemBDevice, TpDevice};

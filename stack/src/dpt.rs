@@ -390,6 +390,28 @@ where
     const SIZE: usize = PDT::SIZE;
 }
 
+impl<PDT: PropertyDataDefinition, const MAIN: u16, const SUB: u16> crate::ets::HasDptInfo
+    for DatapointType<PDT, MAIN, SUB>
+where
+    PDT: Default,
+{
+    const DPT_MAIN: u16 = MAIN;
+    const DPT_SUB: u16 = SUB;
+    /// Size in bits based on DPT main type.
+    ///
+    /// KNX DPT sizes:
+    /// - DPT 1.x = 1 bit (boolean)
+    /// - DPT 2.x = 2 bits (control)
+    /// - DPT 3.x = 4 bits (dimming/blinds)
+    /// - DPT 4.x and higher = bytes (use PDT::SIZE * 8)
+    const SIZE_BITS: usize = match MAIN {
+        1 => 1,       // DPT 1.x - 1 bit (Switch, Bool, etc.)
+        2 => 2,       // DPT 2.x - 2 bits (Bool Control)
+        3 => 4,       // DPT 3.x - 4 bits (Dimming, Blinds Control)
+        _ => PDT::SIZE * 8, // All other DPTs use full byte size
+    };
+}
+
 impl<PDT, const MAIN: u16, const SUB: u16> AsRef<[u8]> for DatapointType<PDT, MAIN, SUB>
 where
     PDT: AsRef<[u8]>,

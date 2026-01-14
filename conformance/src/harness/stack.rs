@@ -545,16 +545,32 @@ impl IpPlatform for MockIpPlatform {
 /// Device-specific constants for Interface Objects
 pub mod device_info {
     use zweidraehte::config::{buffer_size_for_apdu, MAX_APDU_LENGTH_EXTENDED};
+    use zweidraehte::ets::DeviceDescriptor;
+
+    /// The device descriptor for conformance testing.
+    ///
+    /// This is the single source of truth for all device/application metadata.
+    pub const DEVICE: DeviceDescriptor = DeviceDescriptor {
+        mask_version: 0x57B0, // System B KNX/IP device
+        manufacturer_id: 0x00FA,
+        hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
+        application_id: 0x0100,
+        application_version: 0x01,
+        max_address_table_entries: 254,
+        max_association_table_entries: 254,
+        max_com_objects: 254,
+    };
 
     /// Device serial number (6 bytes)
     /// Must match BDUT_SERIAL_NUMBER in test variables (management.rs)
+    /// NOTE: This is stored in runtime state, not the device descriptor
     pub const SERIAL_NUMBER: [u8; 6] = [0x30, 0x30, 0x30, 0x30, 0x30, 0x30];
 
     /// Hardware type identifier (6 bytes)
-    pub const HARDWARE_TYPE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+    pub const HARDWARE_TYPE: [u8; 6] = DEVICE.hardware_type;
 
     /// Application program version (5 bytes: manufacturer, app_id, version)
-    pub const PROGRAM_VERSION: [u8; 5] = [0x00, 0xFA, 0x01, 0x00, 0x01];
+    pub const PROGRAM_VERSION: [u8; 5] = DEVICE.program_version();
 
     /// PEI type (0 = no PEI)
     pub const PEI_TYPE: u8 = 0x00;
@@ -567,7 +583,7 @@ pub mod device_info {
 
     /// Device descriptor (mask version)
     /// 0x57B0 = System B KNX/IP device
-    pub const DEVICE_DESCRIPTOR: u16 = 0x57B0;
+    pub const DEVICE_DESCRIPTOR: u16 = DEVICE.mask_version;
 
     /// Buffer size for message buffers.
     ///
@@ -1320,7 +1336,7 @@ pub const CONFORMANCE_DD2: [u8; 14] =
 pub const CONFORMANCE_USER_MANUFACTURER_INFO: [u8; 3] = [0x00, 0x00, 0x00];
 
 impl StackDefinition for ConformanceTestStack {
-    const MASK_VERSION: &'static [u8; 2] = &[0x57, 0xB0];
+    const DEVICE: &'static zweidraehte::ets::DeviceDescriptor = &device_info::DEVICE;
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;

@@ -38,7 +38,8 @@ use crate::{
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
 
-use super::{SystemBDevice, SystemBDeviceExt};
+use super::SystemBDevice;
+use crate::StackDefinition;
 use crate::memory::{
     HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRoutingCount,
 };
@@ -404,16 +405,37 @@ pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP> =
 // Helper functions
 // ============================================================================
 
-/// Create a DeviceInfo struct from a SystemBDevice type.
+/// Create a DeviceInfo struct from a StackDefinition type.
 ///
 /// Note: `max_apdu_length` is not included here because it's read dynamically
 /// from `StackState::max_apdu_length()`.
-pub fn device_info_from<D: SystemBDevice>() -> DeviceInfo {
+pub fn device_info_from<D: StackDefinition>() -> DeviceInfo {
     DeviceInfo {
         order_info: [0; 10], // Manufacturer-specific, usually left empty
-        hardware_type: D::HARDWARE_TYPE,
+        hardware_type: D::DEVICE.hardware_type,
         version: [0x00, 0x01], // Default version 0.0.1
-        device_descriptor: u16::from_be_bytes(D::MASK_VERSION),
+        device_descriptor: D::DEVICE.mask_version,
+    }
+}
+
+/// Create a [`DeviceInfo`] from a [`DeviceDescriptor`].
+///
+/// This is the preferred way to create device info as `DeviceDescriptor` is the
+/// single source of truth for device identification.
+///
+/// # Arguments
+///
+/// * `desc` - The device descriptor containing hardware and application info
+///
+/// # Returns
+///
+/// A `DeviceInfo` struct suitable for the Device Object.
+pub fn device_info_from_descriptor(desc: &crate::ets::DeviceDescriptor) -> DeviceInfo {
+    DeviceInfo {
+        order_info: [0; 10], // Manufacturer-specific, usually left empty
+        hardware_type: desc.hardware_type,
+        version: [0x00, 0x01], // Default version 0.0.1
+        device_descriptor: desc.mask_version,
     }
 }
 
@@ -424,13 +446,14 @@ pub fn device_info_from<D: SystemBDevice>() -> DeviceInfo {
 ///
 /// # Type Parameters
 ///
-/// - `D`: Device type implementing [`SystemBDevice`]
+/// - `D`: Stack definition implementing [`StackDefinition`] + [`SystemBDevice`]
 /// - `S`: Unified state type implementing [`StackState`] and the required table traits
 pub fn create_system_b_objects<'a, D, S>(
     state: &'a S,
+    layout: &super::memory_map::MemoryLayout,
 ) -> SystemBObjects<'a, S, S::ADT, S::AST, S::COT, S::APP>
 where
-    D: SystemBDevice + SystemBDeviceExt,
+    D: StackDefinition + SystemBDevice,
     S: StackState + HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
     S::ADT: HasLoadStateMachine,
     S::AST: HasLoadStateMachine,
@@ -438,16 +461,15 @@ where
     S::APP: HasLoadStateMachine + HasRunStateMachine,
 {
     let device_info = device_info_from::<D>();
-    let layout = D::memory_layout();
     SystemBObjects::new(
         state,
         &device_info,
-        &layout,
+        layout,
         state.adt(),
         state.ast(),
         state.cot(),
         state.app(),
-        D::PROGRAM_VERSION,
+        D::DEVICE.program_version(),
         D::PEI_TYPE,
         state.routing_count(),
     )
@@ -460,20 +482,21 @@ where
 ///
 /// # Type Parameters
 ///
-/// - `D`: Device type implementing [`SystemBDevice`]
+/// - `D`: Stack definition implementing [`StackDefinition`] + [`SystemBDevice`]
 /// - `S`: Unified state type implementing [`IpStackState`] and the required table traits
 pub fn create_knxip_objects<'a, D, S>(
     state: &'a S,
+    layout: &super::memory_map::MemoryLayout,
 ) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP>
 where
-    D: SystemBDevice + SystemBDeviceExt,
+    D: StackDefinition + SystemBDevice,
     S: IpStackState + HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasRoutingCount,
     S::ADT: HasLoadStateMachine,
     S::AST: HasLoadStateMachine,
     S::COT: HasLoadStateMachine,
     S::APP: HasLoadStateMachine + HasRunStateMachine,
 {
-    let base = create_system_b_objects::<D, S>(state);
+    let base = create_system_b_objects::<D, S>(state, layout);
     let ip = IpObjects::new(state);
     (base, ip)
 }

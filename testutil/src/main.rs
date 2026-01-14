@@ -121,10 +121,22 @@ impl HasCommunicationObjectTable for MyState {
     }
 }
 
+/// Device descriptor for test utility
+const TEST_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
+    mask_version: 0x07B0,
+    manufacturer_id: 0x00FA,
+    hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
+    application_id: 0x0100,
+    application_version: 0x01,
+    max_address_table_entries: 30,
+    max_association_table_entries: 15,
+    max_com_objects: 30,
+};
+
 #[derive(Debug, Clone, Copy)]
 pub struct MyKnxStack;
 impl StackDefinition for MyKnxStack {
-    const MASK_VERSION: &'static [u8; 2] = &[0x07, 0xb0];
+    const DEVICE: &'static zweidraehte::ets::DeviceDescriptor = &TEST_DEVICE_DESCRIPTOR;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = MockLinkLayerBuilder<8>;

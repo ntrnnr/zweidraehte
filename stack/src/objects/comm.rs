@@ -231,6 +231,34 @@ pub enum ComObjectEvent {
 /// }
 /// ```
 ///
+/// # ETS Export Annotations
+///
+/// Add ETS metadata for export to ETS tools using the `@ets` annotation:
+///
+/// ```rust,ignore
+/// define_com_objects! {
+///     pub mod my_objects {
+///         pub struct MyComObjects {
+///             @ets(display = "Switch Input", function = "Switching input")
+///             1 => pub switch_in: DPT_Switch = DPT_Switch::from(false),
+///
+///             @ets(display = "Switch Output", function = "Switching output", flags = 0x5F)
+///             2 => pub switch_out: DPT_Switch = DPT_Switch::from(false),
+///         }
+///     }
+/// }
+/// ```
+///
+/// ETS annotation options:
+/// - `display = "..."` - Human-readable name shown in ETS
+/// - `function = "..."` - Function text describing the object's purpose
+/// - `flags = 0xNN` - Default communication flags (CE|WE|RE|TE|UE|ROI)
+///
+/// Without annotations, defaults are used:
+/// - `display_name`: CamelCase version of field name
+/// - `function_text`: empty string
+/// - `flags`: 0xDF (CE|WE|RE|TE|UE enabled)
+///
 /// # Custom Implementation with Hooks
 ///
 /// For objects that need custom behavior (e.g., computed values, validation,
@@ -353,12 +381,20 @@ macro_rules! define_com_objects {
     };
 
     // Standard variant - generates everything including ComObjects impl
+    // Supports optional @ets(...) annotations for ETS export metadata
     (
         $(#[$mod_meta:meta])*
         pub mod $mod_name:ident {
             $(#[$struct_meta:meta])*
             pub struct $struct_name:ident {
                 $(
+                    // Optional @ets annotation with display, function, and flags
+                    $(@ets(
+                        $(display = $ets_display:literal)?
+                        $(, function = $ets_function:literal)?
+                        $(, flags = $ets_flags:expr)?
+                        $(,)?
+                    ))?
                     $(#[$field_meta:meta])*
                     $idx:expr => pub $obj_name:ident: $type:ty = $default:expr
                 ),* $(,)?
@@ -451,9 +487,70 @@ macro_rules! define_com_objects {
                     }
 
                 }
+
+                /// ETS communication object definitions for this module.
+                ///
+                /// This array contains metadata for each communication object that can be
+                /// used for ETS export. The DPT information is extracted from the types.
+                #[allow(dead_code)]
+                pub const ETS_COMM_OBJECTS: &[$crate::ets::EtsCommObjectDef] = &[
+                    $(
+                        $crate::ets::EtsCommObjectDef {
+                            index: $idx,
+                            name: stringify!($obj_name),
+                            display_name: $crate::__ets_display_name!(
+                                [<$obj_name:camel>]
+                                $(, $($ets_display)?)?
+                            ),
+                            function_text: $crate::__ets_function_text!(
+                                $(, $($ets_function)?)?
+                            ),
+                            dpt_main: <$type as $crate::ets::HasDptInfo>::DPT_MAIN,
+                            dpt_sub: <$type as $crate::ets::HasDptInfo>::DPT_SUB,
+                            size_bits: <$type as $crate::ets::HasDptInfo>::SIZE_BITS as u8,
+                            default_flags: $crate::__ets_flags!(
+                                $(, $($ets_flags)?)?
+                            ),
+                        },
+                    )*
+                ];
+
+                /// Number of communication objects in this module.
+                #[allow(dead_code)]
+                pub const NUM_COMM_OBJECTS: usize = ETS_COMM_OBJECTS.len();
             }
         }
     };
+}
+
+/// Internal macro to extract display name from @ets annotation or use default
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __ets_display_name {
+    // With explicit display name
+    ($default:ident, $display:literal) => { $display };
+    // Without explicit display name - use default (camelCase field name)
+    ($default:ident $(,)?) => { stringify!($default) };
+}
+
+/// Internal macro to extract function text from @ets annotation or use default
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __ets_function_text {
+    // With explicit function text
+    (, $function:literal) => { $function };
+    // Without explicit function text - use empty string
+    ($(,)?) => { "" };
+}
+
+/// Internal macro to extract flags from @ets annotation or use default
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __ets_flags {
+    // With explicit flags
+    (, $flags:expr) => { $flags };
+    // Without explicit flags - use default (CE|WE|RE|TE|UE)
+    ($(,)?) => { 0xDF };
 }
 
 // mod tests {

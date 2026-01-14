@@ -27,6 +27,8 @@ paste = { workspace = true }
 env_logger = "0.11"
 log = "0.4"
 chrono = "0.4"
+quick-xml = { version = "0.37", features = ["serialize"] }
+base64 = "0.22"
 async-hid = { workspace = true }
 futures-lite = { workspace = true }
 libc = "0.2"
@@ -62,3 +64,7 @@ path = "src/seqno_test.rs"
 [[bin]]
 name = "stack_system_b"
 path = "src/stack_system_b.rs"
+
+[[bin]]
+name = "gen_mtxml"
+path = "src/gen_mtxml.rs"

@@ -11,7 +11,7 @@
 //! Communicates via USB link layer (1.0.250) with device at 1.0.100
 //! Uses memory address 0x4040 for testing.
 
-mod keyboard;
+use testutil::util::keyboard;
 
 use std::cell::RefCell;
 

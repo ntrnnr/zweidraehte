@@ -683,10 +683,22 @@ impl<P: IpPlatform> HasApplication for KnxIpState<P> {
 /// Unified state type for this test stack.
 pub type MyState = KnxIpState<MockIpPlatform>;
 
+/// Device descriptor for KNX/IP test stack
+const KNXIP_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
+    mask_version: 0x57B0, // KNX/IP
+    manufacturer_id: 0x00FA,
+    hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
+    application_id: 0x0100,
+    application_version: 0x01,
+    max_address_table_entries: 30,
+    max_association_table_entries: 30,
+    max_com_objects: 30,
+};
+
 #[derive(Debug, Clone, Copy)]
 pub struct MyKnxStackWithKnxIp;
 impl StackDefinition for MyKnxStackWithKnxIp {
-    const MASK_VERSION: &'static [u8; 2] = &[0x57, 0xb0];
+    const DEVICE: &'static zweidraehte::ets::DeviceDescriptor = &KNXIP_DEVICE_DESCRIPTOR;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = KnxNetIpBuilder<2, 2>; // 2 sockets, 2 servers

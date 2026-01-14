@@ -5,6 +5,7 @@ members = [
     "platform",
     "testutil",
     "conformance",
+    "ets-macros",
 ]
 
 [workspace.package]
