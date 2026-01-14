@@ -2,7 +2,8 @@
 //!
 //! This crate provides derive macros for generating ETS parameter definitions:
 //! - `#[derive(EtsParams)]` - For structs containing parameters
-//! - `#[derive(EtsUnion)]` - For enums representing union parameters
+//! - `#[derive(EtsUnion)]` - For enums representing union parameters (with data)
+//! - `#[derive(EtsEnum)]` - For simple enums (no data) used as dropdown parameters
 //!
 //! # EtsParams Usage
 //!
@@ -90,6 +91,16 @@
 //!
 //! On variant fields:
 //! - `#[ets(display = "...")]` - Human-readable name for the parameter
+//! - `#[ets(enum_variants("Name" => 0, "Other" => 1))]` - Define enum variants for ETS dropdown
+//! - `#[ets(ets_enum)]` - Mark field as an EtsEnum type (uses type's ETS_VARIANTS)
+//!
+//! # EtsEnum Attributes
+//!
+//! On the enum:
+//! - `#[repr(u8)]` - Required, ensures predictable memory layout
+//!
+//! On variants:
+//! - `#[ets(display = "...")]` - Human-readable name for ETS dropdown
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -395,6 +406,8 @@ struct FieldAttrs {
     enum_variants: Option<Vec<EnumVariantDef>>,
     /// Marks this field as a union type
     union_field: bool,
+    /// Marks this field as an EtsEnum type (simple enum with no data)
+    ets_enum_field: bool,
 }
 
 fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
@@ -405,6 +418,7 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
         bit_offset: None,
         enum_variants: None,
         union_field: false,
+        ets_enum_field: false,
     };
 
     for attr in attrs {
@@ -439,6 +453,8 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                     result.enum_variants = Some(list.variants);
                 } else if ident == "union" {
                     result.union_field = true;
+                } else if ident == "ets_enum" {
+                    result.ets_enum_field = true;
                 }
 
                 // Consume optional comma
@@ -727,10 +743,46 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                             .join(" ")
                     });
 
+                    // Handle ets_enum fields - use type's ETS_VARIANTS and size
+                    if field_attrs.ets_enum_field {
+                        let variant_name_str = variant_name.to_string();
+                        let field_name_str = field_name.to_string();
+                        let param_offset = field_offset as u16;
+                        let bit_offset = field_attrs.bit_offset.unwrap_or(0);
+
+                        union_params.push(quote! {
+                            zweidraehte::ets::EtsUnionVariantParam {
+                                variant_name: #variant_name_str,
+                                variant_value: #discriminant_value,
+                                param: zweidraehte::ets::EtsParamDef {
+                                    name: #field_name_str,
+                                    display_name: #field_display,
+                                    offset: #param_offset,
+                                    size_bits: #field_type::ETS_SIZE_BITS,
+                                    bit_offset: #bit_offset,
+                                    param_type: zweidraehte::ets::EtsParamType::Enum,
+                                },
+                                enum_variants: Some(#field_type::ETS_VARIANTS),
+                            }
+                        });
+
+                        // EtsEnum types are always 1 byte (repr(u8))
+                        // TODO: Could use core::mem::size_of::<#field_type>() but that's runtime
+                        size = field_offset + 1;
+                        field_offset += 1;
+                        continue;
+                    }
+
                     let type_info = get_type_info(field_type)?;
                     let size_bits = field_attrs.bits.unwrap_or(type_info.size_bits);
                     let bit_offset = field_attrs.bit_offset.unwrap_or(0);
-                    let param_type = type_info.param_type;
+
+                    // Determine param type - if has enum_variants, it's an Enum type
+                    let param_type = if field_attrs.enum_variants.is_some() {
+                        quote!(zweidraehte::ets::EtsParamType::Enum)
+                    } else {
+                        type_info.param_type.clone()
+                    };
 
                     // Apply alignment padding before this field
                     // In #[repr(C)] layout, each field is aligned to its natural alignment
@@ -744,6 +796,23 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     // Use the field offset within the variant data area
                     let param_offset = field_offset as u16;
 
+                    // Generate enum_variants expression
+                    let enum_variants_expr = if let Some(variants) = &field_attrs.enum_variants {
+                        let variant_defs: Vec<_> = variants.iter().map(|v| {
+                            let text = &v.text;
+                            let value = v.value;
+                            quote! {
+                                zweidraehte::ets::EtsEnumVariant {
+                                    text: #text,
+                                    value: #value,
+                                }
+                            }
+                        }).collect();
+                        quote!(Some(&[#(#variant_defs),*]))
+                    } else {
+                        quote!(None)
+                    };
+
                     union_params.push(quote! {
                         zweidraehte::ets::EtsUnionVariantParam {
                             variant_name: #variant_name_str,
@@ -756,6 +825,7 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                                 bit_offset: #bit_offset,
                                 param_type: #param_type,
                             },
+                            enum_variants: #enum_variants_expr,
                         }
                     });
 
@@ -863,4 +933,191 @@ fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
 /// Parsed variant attributes
 struct VariantAttrs {
     display: Option<String>,
+}
+
+// ============================================================================
+// EtsEnum Derive Macro
+// ============================================================================
+
+/// Derive macro for generating ETS enum definitions from simple Rust enums.
+///
+/// Use this for `#[repr(u8)]` enums without data fields. These become dropdown
+/// parameters in ETS and can be used as field types in `EtsParams` structs
+/// or `EtsUnion` variants.
+///
+/// # Requirements
+///
+/// - Enum must have `#[repr(u8)]` (or `#[repr(u16)]` for larger enums)
+/// - All variants must be unit variants (no data)
+/// - Explicit discriminant values are recommended for stability
+///
+/// # Generated Items
+///
+/// - `ETS_VARIANTS: &[EtsEnumVariant]` - Enum variants for ETS dropdown
+/// - `ETS_SIZE_BITS: u8` - Size in bits (8 for repr(u8), 16 for repr(u16))
+/// - `EtsEnumType` trait implementation
+/// - `Display` trait implementation (uses `#[ets(display = "...")]` values)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[derive(EtsEnum)]
+/// #[repr(u8)]
+/// pub enum SensorType {
+///     #[ets(display = "PT100")]
+///     Pt100 = 0,
+///     #[ets(display = "PT1000")]
+///     Pt1000 = 1,
+///     #[ets(display = "NTC 10K")]
+///     Ntc10K = 2,
+/// }
+///
+/// // Use in EtsUnion variants:
+/// #[derive(EtsUnion)]
+/// #[repr(C, u8)]
+/// pub enum InputSource {
+///     Temperature {
+///         sensor_type: SensorType,  // Gets dropdown in ETS
+///         offset: i8,
+///     },
+/// }
+/// ```
+#[proc_macro_derive(EtsEnum, attributes(ets))]
+pub fn derive_ets_enum(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match derive_ets_enum_impl(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let enum_name = &input.ident;
+
+    // Must be an enum
+    let variants = match &input.data {
+        Data::Enum(data) => &data.variants,
+        _ => return Err(syn::Error::new_spanned(
+            input,
+            "EtsEnum can only be derived for enums"
+        )),
+    };
+
+    // Check for #[repr(u8)] or #[repr(u16)]
+    let mut repr_size: usize = 0;
+    for attr in &input.attrs {
+        if attr.path().is_ident("repr") {
+            let tokens = attr.meta.require_list()?.tokens.to_string();
+            if tokens.contains("u8") {
+                repr_size = 1;
+            } else if tokens.contains("u16") {
+                repr_size = 2;
+            }
+        }
+    }
+
+    if repr_size == 0 {
+        return Err(syn::Error::new_spanned(
+            input,
+            "EtsEnum requires #[repr(u8)] or #[repr(u16)] for predictable memory layout"
+        ));
+    }
+
+    // Generate variant definitions and display match arms
+    let mut enum_variants = Vec::new();
+    let mut display_arms = Vec::new();
+    let mut current_discriminant: i64 = 0;
+
+    for variant in variants.iter() {
+        // Must be unit variant
+        if !matches!(&variant.fields, syn::Fields::Unit) {
+            return Err(syn::Error::new_spanned(
+                variant,
+                "EtsEnum only supports unit variants (no data fields). Use EtsUnion for variants with data."
+            ));
+        }
+
+        let variant_ident = &variant.ident;
+
+        // Get discriminant value
+        let discriminant = if let Some((_, expr)) = &variant.discriminant {
+            if let syn::Expr::Lit(lit) = expr {
+                if let syn::Lit::Int(int) = &lit.lit {
+                    let val: i64 = int.base10_parse()?;
+                    current_discriminant = val;
+                    val
+                } else {
+                    return Err(syn::Error::new_spanned(expr, "Expected integer discriminant"));
+                }
+            } else {
+                return Err(syn::Error::new_spanned(expr, "Expected literal discriminant"));
+            }
+        } else {
+            let val = current_discriminant;
+            current_discriminant += 1;
+            val
+        };
+
+        // Parse variant attributes for display name
+        let variant_attrs = parse_variant_attrs(&variant.attrs)?;
+        let display_name = variant_attrs.display.unwrap_or_else(|| {
+            // Convert CamelCase to Title Case with spaces
+            let name = variant.ident.to_string();
+            let mut result = String::new();
+            for (i, c) in name.chars().enumerate() {
+                if i > 0 && c.is_uppercase() {
+                    result.push(' ');
+                }
+                result.push(c);
+            }
+            result
+        });
+
+        enum_variants.push(quote! {
+            zweidraehte::ets::EtsEnumVariant {
+                text: #display_name,
+                value: #discriminant,
+            }
+        });
+
+        // Generate Display match arm
+        display_arms.push(quote! {
+            Self::#variant_ident => write!(f, #display_name)
+        });
+
+        current_discriminant = discriminant + 1;
+    }
+
+    let size_bits = (repr_size * 8) as u8;
+
+    Ok(quote! {
+        impl #enum_name {
+            /// ETS enum variants for dropdown display.
+            pub const ETS_VARIANTS: &'static [zweidraehte::ets::EtsEnumVariant] = &[
+                #(#enum_variants),*
+            ];
+
+            /// Size of this enum in bits (for ETS parameter definition).
+            pub const ETS_SIZE_BITS: u8 = #size_bits;
+        }
+
+        impl zweidraehte::ets::EtsEnumType for #enum_name {
+            fn ets_variants() -> &'static [zweidraehte::ets::EtsEnumVariant] {
+                Self::ETS_VARIANTS
+            }
+
+            fn ets_size_bytes() -> usize {
+                #repr_size
+            }
+        }
+
+        impl core::fmt::Display for #enum_name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self {
+                    #(#display_arms),*
+                }
+            }
+        }
+    })
 }

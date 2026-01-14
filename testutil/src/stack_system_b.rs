@@ -414,17 +414,10 @@ async fn main(spawner: Spawner) {
                         println!("    Input Source: Binary (Debounce: {}ms, Invert: {})", debounce_ms.get(), invert);
                     }
                     testutil::devices::InputSource::Analog { low_threshold, high_threshold, input_type } => {
-                        let type_str = if *input_type == 0 { "0-10V" } else { "4-20mA" };
-                        println!("    Input Source: Analog ({}, Low: {}, High: {})", type_str, low_threshold.get(), high_threshold.get());
+                        println!("    Input Source: Analog ({}, Low: {}, High: {})", input_type, low_threshold.get(), high_threshold.get());
                     }
                     testutil::devices::InputSource::Temperature { sensor_type, offset } => {
-                        let sensor_str = match sensor_type {
-                            0 => "PT100",
-                            1 => "PT1000",
-                            2 => "NTC10K",
-                            _ => "Unknown",
-                        };
-                        println!("    Input Source: Temperature ({}, Offset: {})", sensor_str, offset);
+                        println!("    Input Source: Temperature ({}, Offset: {})", sensor_type, offset);
                     }
                 }
 

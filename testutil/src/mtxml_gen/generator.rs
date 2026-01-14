@@ -266,7 +266,7 @@ impl MtxmlGenerator {
                     if !seen_types.contains(&type_name) {
                         seen_types.insert(type_name.clone());
                         let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
-                        let type_def = Self::build_type_def(&param.param, None, &type_id);
+                        let type_def = Self::build_type_def(&param.param, param.enum_variants, &type_id);
                         types.types.push(ParameterType {
                             id: type_id,
                             name: type_name,

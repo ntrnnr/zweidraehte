@@ -54,7 +54,7 @@ impl core::fmt::Display for BeU16 {
         write!(f, "{}", self.get())
     }
 }
-use zweidraehte::ets::{EtsParams, EtsUnion};
+use zweidraehte::ets::{EtsEnum, EtsParams, EtsUnion};
 use zweidraehte::{
     IpPlatform, StackDefinition,
     bcus::system_b::{
@@ -115,6 +115,70 @@ define_com_objects! {
 // Application Parameters
 // ============================================================================
 
+// ----------------------------------------------------------------------------
+// Simple enums for use in EtsUnion variants (type-safe, matchable in Rust)
+// ----------------------------------------------------------------------------
+
+/// Analog input type selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum AnalogInputType {
+    #[ets(display = "0-10V")]
+    Voltage0_10V = 0,
+    #[ets(display = "4-20mA")]
+    Current4_20mA = 1,
+}
+
+impl ConstDefault for AnalogInputType {
+    const DEFAULT: Self = Self::Voltage0_10V;
+}
+
+/// Temperature sensor type selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum SensorType {
+    #[ets(display = "PT100")]
+    Pt100 = 0,
+    #[ets(display = "PT1000")]
+    Pt1000 = 1,
+    #[ets(display = "NTC 10K")]
+    Ntc10K = 2,
+}
+
+impl ConstDefault for SensorType {
+    const DEFAULT: Self = Self::Pt100;
+}
+
+/// Yes/No boolean selector for invert options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum YesNo {
+    #[ets(display = "No")]
+    No = 0,
+    #[ets(display = "Yes")]
+    Yes = 1,
+}
+
+impl ConstDefault for YesNo {
+    const DEFAULT: Self = Self::No;
+}
+
+impl From<bool> for YesNo {
+    fn from(value: bool) -> Self {
+        if value { Self::Yes } else { Self::No }
+    }
+}
+
+impl From<YesNo> for bool {
+    fn from(value: YesNo) -> Self {
+        matches!(value, YesNo::Yes)
+    }
+}
+
+// ----------------------------------------------------------------------------
+// EtsUnion enums (with data fields)
+// ----------------------------------------------------------------------------
+
 /// Demo union for testing ETS union export.
 ///
 /// The `#[derive(EtsUnion)]` macro generates:
@@ -132,8 +196,8 @@ pub enum OutputConfig {
     #[ets(display = "Switch Mode")]
     Switch {
         /// Invert the switch output
-        #[ets(display = "Invert Output")]
-        invert: u8,
+        #[ets(display = "Invert Output", ets_enum)]
+        invert: YesNo,
     },
 
     /// Dimmer output mode
@@ -180,16 +244,16 @@ pub enum InputSource {
         #[ets(display = "Debounce Time")]
         debounce_ms: BeU16,
         /// Invert input logic
-        #[ets(display = "Invert")]
-        invert: u8,
+        #[ets(display = "Invert", ets_enum)]
+        invert: YesNo,
     },
 
     /// Analog input (0-10V or 4-20mA)
     #[ets(display = "Analog Input")]
     Analog {
-        /// Input type: 0 = 0-10V, 1 = 4-20mA
-        #[ets(display = "Input Type")]
-        input_type: u8,
+        /// Input type
+        #[ets(display = "Input Type", ets_enum)]
+        input_type: AnalogInputType,
         /// Low threshold value
         #[ets(display = "Low Threshold")]
         low_threshold: BeU16,
@@ -201,9 +265,9 @@ pub enum InputSource {
     /// Temperature sensor input
     #[ets(display = "Temperature Sensor")]
     Temperature {
-        /// Sensor type: 0 = PT100, 1 = PT1000, 2 = NTC10K
-        #[ets(display = "Sensor Type")]
-        sensor_type: u8,
+        /// Sensor type
+        #[ets(display = "Sensor Type", ets_enum)]
+        sensor_type: SensorType,
         /// Offset calibration in 0.1°C
         #[ets(display = "Offset")]
         offset: i8,
