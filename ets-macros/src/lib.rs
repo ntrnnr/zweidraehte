@@ -631,6 +631,10 @@ pub fn derive_ets_union(input: TokenStream) -> TokenStream {
 
 fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let enum_name = &input.ident;
+    let discriminant_enum_name = syn::Ident::new(
+        &format!("{}Discriminant", enum_name),
+        enum_name.span(),
+    );
 
     // Verify it's an enum
     let variants = match &input.data {
@@ -685,10 +689,15 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut max_variant_size: usize = 0;
     let mut selector_variants = Vec::new();
     let mut union_params = Vec::new();
+    // Collect variant names for discriminant enum generation
+    let mut discriminant_variants: Vec<(syn::Ident, i64)> = Vec::new();
 
     for (idx, variant) in variants.iter().enumerate() {
         let variant_name = &variant.ident;
         let discriminant_value = idx as i64;
+
+        // Store for discriminant enum generation
+        discriminant_variants.push((variant_name.clone(), discriminant_value));
 
         // Parse variant attributes for display name
         let variant_attrs = parse_variant_attrs(&variant.attrs)?;
@@ -858,7 +867,23 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // size of variant data), but total_size must match the actual struct layout for
     // correct memory mapping in ETS export.
 
+    // Generate discriminant enum variants
+    let discriminant_enum_variants: Vec<_> = discriminant_variants.iter().map(|(name, value)| {
+        quote! { #name = #value as isize }
+    }).collect();
+
     Ok(quote! {
+        /// Discriminant-only enum for use in ComObjectRef `when` clauses.
+        ///
+        /// This enum has the same variant names and discriminant values as the parent
+        /// union enum, but with unit variants that can be cast to integers.
+        /// Use this when you need to specify a discriminant value in an attribute.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[repr(isize)]
+        pub enum #discriminant_enum_name {
+            #(#discriminant_enum_variants),*
+        }
+
         impl #enum_name {
             /// ETS union information for this enum.
             ///
@@ -1120,4 +1145,857 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
     })
+}
+
+// ============================================================================
+// EtsComObjects Derive Macro
+// ============================================================================
+
+/// Derive macro for generating KNX communication objects with ETS metadata.
+///
+/// This macro replaces the `define_com_objects!` declarative macro with a more
+/// powerful proc macro that supports:
+/// - ComObjectRef definitions (same object with different DPT/size interpretations)
+/// - Selector-based typed access (match on selector to get correctly typed refs)
+/// - Auto-derived storage size for multi-ref objects
+/// - Zero-overhead type-safe accessors
+///
+/// # Basic Usage
+///
+/// ```rust,ignore
+/// use ets_macros::EtsComObjects;
+/// use zweidraehte::dpt::*;
+///
+/// #[derive(EtsComObjects)]
+/// pub struct MyComObjects {
+///     /// Simple switch input
+///     #[ets(index = 1, display = "Switch Input", function = "On/Off")]
+///     pub switch_in: DPT_Switch,
+///
+///     /// Temperature value
+///     #[ets(index = 2, display = "Temperature")]
+///     pub temperature: DPT_Value_Temp,
+/// }
+/// ```
+///
+/// # Multi-Ref Objects (ComObjectRefs)
+///
+/// For objects that can have different DPT interpretations based on ETS parameters:
+///
+/// ```rust,ignore
+/// #[derive(EtsComObjects)]
+/// #[ets(selector_enum = ButtonMode)]
+/// pub struct MyComObjects {
+///     /// Multi-type output controlled by button_mode parameter
+///     #[ets(index = 1, display = "Output", flags = 0x5F)]
+///     #[ets_ref(dpt = DPT_Switch, when = ButtonMode::Switch)]
+///     #[ets_ref(dpt = DPT_Scaling, when = ButtonMode::Dimmer)]
+///     pub output: (),  // Placeholder - replaced with ComObjectStorage<N>
+/// }
+///
+/// // Generated: ButtonModeObjs enum for typed access
+/// match params.button_mode.comm_objects(&mut objs) {
+///     ButtonModeObjs::Switch { output, .. } => {
+///         // output is TypedComObj<DPT_Switch, 1>
+///     }
+///     ButtonModeObjs::Dimmer { output, .. } => {
+///         // output is TypedComObj<DPT_Scaling, 1>
+///     }
+/// }
+/// ```
+///
+/// # Attributes
+///
+/// ## On struct:
+/// - `#[ets(manual_impl)]` - Don't generate `ComObjects` trait impl
+/// - `#[ets(selector_enum = EnumType)]` - Generate selector-based typed access
+///
+/// ## On fields (base object):
+/// - `#[ets(index = N)]` - **Required**. ASAP index for this comm object
+/// - `#[ets(display = "...")]` - Human-readable name for ETS
+/// - `#[ets(function = "...")]` - Function text (for simple objects)
+/// - `#[ets(flags = 0xNN)]` - Default flags byte (default: 0xDF)
+///
+/// ## On multi-ref fields:
+/// - `#[ets_ref(dpt = TYPE, when = Selector::Variant)]` - Define a ref for a variant
+/// - `#[ets_ref(..., function = "...")]` - Function text for this ref
+/// - `#[ets_ref(..., read = true/false)]` - Override read flag
+/// - `#[ets_ref(..., write = true/false)]` - Override write flag
+/// - etc. for other flags
+#[proc_macro_derive(EtsComObjects, attributes(ets, ets_ref))]
+pub fn derive_ets_com_objects(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match derive_ets_com_objects_impl(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Parsed struct-level attributes for EtsComObjects
+struct ComObjectsStructAttrs {
+    /// Don't generate ComObjects trait impl
+    manual_impl: bool,
+    /// Selector enum type for generating variant struct
+    selector_enum: Option<syn::Type>,
+}
+
+/// Parsed field-level attributes for a comm object
+struct ComObjectFieldAttrs {
+    /// ASAP index (required)
+    index: Option<u16>,
+    /// Display name for ETS
+    display: Option<String>,
+    /// Function text
+    function: Option<String>,
+    /// Default flags byte
+    flags: Option<u8>,
+    /// Name of the parameter that selects which ref is active (for multi-ref objects)
+    selector_param: Option<String>,
+}
+
+/// Selector value for when a ComObjectRef is active.
+/// Can be either an enum path (like `OutputConfig::Switch`) or a literal integer.
+enum SelectorValue {
+    /// Enum path - will be cast to i64
+    Path(syn::Path),
+    /// Direct integer value
+    Int(i64),
+}
+
+/// Parsed ets_ref attribute
+struct ComObjectRefAttrs {
+    /// DPT type for this ref
+    dpt: syn::Type,
+    /// Selector value this ref is active for (e.g., ButtonMode::Switch or 1)
+    when: Option<SelectorValue>,
+    /// Function text override
+    function: Option<String>,
+    /// Flag overrides
+    read: Option<bool>,
+    write: Option<bool>,
+    communication: Option<bool>,
+    transmit: Option<bool>,
+    update: Option<bool>,
+    read_on_init: Option<bool>,
+}
+
+fn parse_com_objects_struct_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectsStructAttrs> {
+    let mut result = ComObjectsStructAttrs {
+        manual_impl: false,
+        selector_enum: None,
+    };
+
+    for attr in attrs {
+        if !attr.path().is_ident("ets") {
+            continue;
+        }
+
+        let tokens = attr.meta.require_list()?.tokens.clone();
+        let parser = |input: ParseStream| {
+            while !input.is_empty() {
+                let ident: syn::Ident = input.parse()?;
+
+                if ident == "manual_impl" {
+                    result.manual_impl = true;
+                } else if ident == "selector_enum" {
+                    input.parse::<Token![=]>()?;
+                    result.selector_enum = Some(input.parse()?);
+                }
+
+                let _ = input.parse::<Option<Token![,]>>();
+            }
+            Ok(())
+        };
+
+        syn::parse::Parser::parse2(parser, tokens)?;
+    }
+
+    Ok(result)
+}
+
+fn parse_com_object_field_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectFieldAttrs> {
+    let mut result = ComObjectFieldAttrs {
+        index: None,
+        display: None,
+        function: None,
+        flags: None,
+        selector_param: None,
+    };
+
+    for attr in attrs {
+        if !attr.path().is_ident("ets") {
+            continue;
+        }
+
+        let tokens = attr.meta.require_list()?.tokens.clone();
+        let parser = |input: ParseStream| {
+            while !input.is_empty() {
+                let ident: syn::Ident = input.parse()?;
+
+                if ident == "index" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitInt = input.parse()?;
+                    result.index = Some(value.base10_parse()?);
+                } else if ident == "display" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitStr = input.parse()?;
+                    result.display = Some(value.value());
+                } else if ident == "function" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitStr = input.parse()?;
+                    result.function = Some(value.value());
+                } else if ident == "flags" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitInt = input.parse()?;
+                    result.flags = Some(value.base10_parse()?);
+                } else if ident == "selector_param" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitStr = input.parse()?;
+                    result.selector_param = Some(value.value());
+                }
+
+                let _ = input.parse::<Option<Token![,]>>();
+            }
+            Ok(())
+        };
+
+        syn::parse::Parser::parse2(parser, tokens)?;
+    }
+
+    Ok(result)
+}
+
+fn parse_ets_ref_attrs(attrs: &[Attribute]) -> syn::Result<Vec<ComObjectRefAttrs>> {
+    let mut refs = Vec::new();
+
+    for attr in attrs {
+        if !attr.path().is_ident("ets_ref") {
+            continue;
+        }
+
+        let tokens = attr.meta.require_list()?.tokens.clone();
+        let mut ref_attr = ComObjectRefAttrs {
+            dpt: syn::parse_quote!(()),
+            when: None,
+            function: None,
+            read: None,
+            write: None,
+            communication: None,
+            transmit: None,
+            update: None,
+            read_on_init: None,
+        };
+
+        let parser = |input: ParseStream| {
+            while !input.is_empty() {
+                let ident: syn::Ident = input.parse()?;
+
+                if ident == "dpt" {
+                    input.parse::<Token![=]>()?;
+                    ref_attr.dpt = input.parse()?;
+                } else if ident == "when" {
+                    input.parse::<Token![=]>()?;
+                    // Try to parse as integer literal first, then as path
+                    if input.peek(syn::LitInt) {
+                        let lit: syn::LitInt = input.parse()?;
+                        ref_attr.when = Some(SelectorValue::Int(lit.base10_parse()?));
+                    } else {
+                        let path: syn::Path = input.parse()?;
+                        ref_attr.when = Some(SelectorValue::Path(path));
+                    }
+                } else if ident == "function" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitStr = input.parse()?;
+                    ref_attr.function = Some(value.value());
+                } else if ident == "read" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitBool = input.parse()?;
+                    ref_attr.read = Some(value.value);
+                } else if ident == "write" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitBool = input.parse()?;
+                    ref_attr.write = Some(value.value);
+                } else if ident == "communication" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitBool = input.parse()?;
+                    ref_attr.communication = Some(value.value);
+                } else if ident == "transmit" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitBool = input.parse()?;
+                    ref_attr.transmit = Some(value.value);
+                } else if ident == "update" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitBool = input.parse()?;
+                    ref_attr.update = Some(value.value);
+                } else if ident == "read_on_init" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitBool = input.parse()?;
+                    ref_attr.read_on_init = Some(value.value);
+                }
+
+                let _ = input.parse::<Option<Token![,]>>();
+            }
+            Ok(())
+        };
+
+        syn::parse::Parser::parse2(parser, tokens)?;
+        refs.push(ref_attr);
+    }
+
+    Ok(refs)
+}
+
+/// Information about a field in the comm objects struct
+struct ComObjectField {
+    /// Field identifier
+    ident: syn::Ident,
+    /// Field type as declared (ComObject<T> or just T)
+    ty: syn::Type,
+    /// Inner type (the T in ComObject<T>, or the type itself if not wrapped)
+    inner_ty: syn::Type,
+    /// Parsed #[ets(...)] attributes
+    attrs: ComObjectFieldAttrs,
+    /// Parsed #[ets_ref(...)] attributes (empty for simple objects)
+    refs: Vec<ComObjectRefAttrs>,
+    /// Whether this is a multi-ref object (has ets_ref attributes)
+    is_multi_ref: bool,
+}
+
+/// Extract inner type from ComObject<T> or return the type as-is
+fn extract_inner_type(ty: &syn::Type) -> syn::Type {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            if segment.ident == "ComObject" {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
+                        return inner.clone();
+                    }
+                }
+            }
+        }
+    }
+    ty.clone()
+}
+
+fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let struct_name = &input.ident;
+
+    // Parse struct-level attributes
+    let struct_attrs = parse_com_objects_struct_attrs(&input.attrs)?;
+
+    // Extract fields from struct
+    let fields = match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(fields) => &fields.named,
+            _ => return Err(syn::Error::new_spanned(
+                input,
+                "EtsComObjects can only be derived for structs with named fields"
+            )),
+        },
+        _ => return Err(syn::Error::new_spanned(
+            input,
+            "EtsComObjects can only be derived for structs"
+        )),
+    };
+
+    // Parse all fields
+    let mut com_objects: Vec<ComObjectField> = Vec::new();
+
+    for field in fields.iter() {
+        let field_ident = field.ident.as_ref().unwrap().clone();
+        let field_ty = field.ty.clone();
+        let inner_ty = extract_inner_type(&field_ty);
+        let attrs = parse_com_object_field_attrs(&field.attrs)?;
+        let refs = parse_ets_ref_attrs(&field.attrs)?;
+
+        // Validate index is present
+        if attrs.index.is_none() {
+            return Err(syn::Error::new_spanned(
+                field,
+                "EtsComObjects fields must have #[ets(index = N)]"
+            ));
+        }
+
+        let is_multi_ref = !refs.is_empty();
+
+        com_objects.push(ComObjectField {
+            ident: field_ident,
+            ty: field_ty,
+            inner_ty,
+            attrs,
+            refs,
+            is_multi_ref,
+        });
+    }
+
+    // Generate the Index enum
+    let index_variants: Vec<_> = com_objects.iter().map(|obj| {
+        let name = to_camel_case(&obj.ident.to_string());
+        let variant_ident = syn::Ident::new(&name, obj.ident.span());
+        let index = obj.attrs.index.unwrap();
+        quote! { #variant_ident = #index }
+    }).collect();
+
+    let index_from_arms: Vec<_> = com_objects.iter().map(|obj| {
+        let name = to_camel_case(&obj.ident.to_string());
+        let variant_ident = syn::Ident::new(&name, obj.ident.span());
+        let index = obj.attrs.index.unwrap();
+        quote! { #index => Some(Self::#variant_ident) }
+    }).collect();
+
+    // Generate info() match arms
+    let info_arms: Vec<_> = com_objects.iter().map(|obj| {
+        let name = to_camel_case(&obj.ident.to_string());
+        let variant_ident = syn::Ident::new(&name, obj.ident.span());
+        let field_ident = &obj.ident;
+        quote! {
+            Index::#variant_ident => zweidraehte::objects::comm::ComObjectInfo {
+                status: &self.#field_ident.status,
+                value: self.#field_ident.value.as_ref(),
+            }
+        }
+    }).collect();
+
+    // Generate info_mut() match arms
+    let info_mut_arms: Vec<_> = com_objects.iter().map(|obj| {
+        let name = to_camel_case(&obj.ident.to_string());
+        let variant_ident = syn::Ident::new(&name, obj.ident.span());
+        let field_ident = &obj.ident;
+        quote! {
+            Index::#variant_ident => zweidraehte::objects::comm::ComObjectInfoMut {
+                status: &mut self.#field_ident.status,
+                value: self.#field_ident.value.as_mut(),
+            }
+        }
+    }).collect();
+
+    // Generate new() field initializers
+    let new_fields: Vec<_> = com_objects.iter().map(|obj| {
+        let ident = &obj.ident;
+        if obj.is_multi_ref {
+            quote! {
+                #ident: zweidraehte::objects::comm::ComObject::new(
+                    zweidraehte::objects::comm::ComObjectStorage::new()
+                )
+            }
+        } else {
+            let inner_ty = &obj.inner_ty;
+            quote! {
+                #ident: zweidraehte::objects::comm::ComObject::new(<#inner_ty>::default())
+            }
+        }
+    }).collect();
+
+    // Generate ETS_COMM_OBJECTS const array
+    let ets_comm_objects: Vec<_> = com_objects.iter().map(|obj| {
+        let index = obj.attrs.index.unwrap();
+        let name = obj.ident.to_string();
+        let display_name = obj.attrs.display.clone().unwrap_or_else(|| {
+            to_title_case(&obj.ident.to_string())
+        });
+        let function_text = obj.attrs.function.clone().unwrap_or_default();
+        let default_flags = obj.attrs.flags.unwrap_or(0xDF);
+
+        if obj.is_multi_ref {
+            // For multi-ref objects, use first ref's DPT info as base
+            let first_ref_dpt = &obj.refs[0].dpt;
+            quote! {
+                zweidraehte::ets::EtsCommObjectDef {
+                    index: #index,
+                    name: #name,
+                    display_name: #display_name,
+                    function_text: #function_text,
+                    dpt_main: <#first_ref_dpt as zweidraehte::ets::HasDptInfo>::DPT_MAIN,
+                    dpt_sub: <#first_ref_dpt as zweidraehte::ets::HasDptInfo>::DPT_SUB,
+                    size_bits: <#first_ref_dpt as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
+                    default_flags: #default_flags,
+                }
+            }
+        } else {
+            // Use inner_ty to extract DPT info (handles both ComObject<T> and bare T)
+            let inner_ty = &obj.inner_ty;
+            quote! {
+                zweidraehte::ets::EtsCommObjectDef {
+                    index: #index,
+                    name: #name,
+                    display_name: #display_name,
+                    function_text: #function_text,
+                    dpt_main: <#inner_ty as zweidraehte::ets::HasDptInfo>::DPT_MAIN,
+                    dpt_sub: <#inner_ty as zweidraehte::ets::HasDptInfo>::DPT_SUB,
+                    size_bits: <#inner_ty as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
+                    default_flags: #default_flags,
+                }
+            }
+        }
+    }).collect();
+
+    // Generate ETS_COMM_OBJECT_REFS const array
+    let mut ets_comm_object_refs: Vec<TokenStream2> = Vec::new();
+    for obj in &com_objects {
+        let index = obj.attrs.index.unwrap();
+        let base_function = obj.attrs.function.clone().unwrap_or_default();
+
+        if obj.is_multi_ref {
+            // Get the selector_param from the field attributes (if specified)
+            let selector_param_tokens = if let Some(ref param_name) = obj.attrs.selector_param {
+                quote!(Some(#param_name))
+            } else {
+                quote!(None)
+            };
+
+            for ref_attr in &obj.refs {
+                let ref_dpt = &ref_attr.dpt;
+                let ref_name = match &ref_attr.when {
+                    Some(SelectorValue::Path(path)) => {
+                        // Use the variant name as the ref name
+                        path.segments.last().map(|s| s.ident.to_string().to_lowercase())
+                            .unwrap_or_else(|| "default".to_string())
+                    }
+                    Some(SelectorValue::Int(val)) => {
+                        // Use the integer value as the ref name
+                        format!("ref_{}", val)
+                    }
+                    None => "default".to_string(),
+                };
+                let function_text = ref_attr.function.clone().unwrap_or(base_function.clone());
+                let selector_value = match &ref_attr.when {
+                    Some(SelectorValue::Path(path)) => {
+                        // Cast the enum variant to i64 to get the discriminant value
+                        quote!(Some(#path as i64))
+                    }
+                    Some(SelectorValue::Int(val)) => {
+                        quote!(Some(#val as i64))
+                    }
+                    None => quote!(None),
+                };
+
+                // Generate flag overrides
+                let flag_overrides = if ref_attr.read.is_some() || ref_attr.write.is_some() ||
+                    ref_attr.communication.is_some() || ref_attr.transmit.is_some() ||
+                    ref_attr.update.is_some() || ref_attr.read_on_init.is_some()
+                {
+                    let read = opt_bool_to_tokens(ref_attr.read);
+                    let write = opt_bool_to_tokens(ref_attr.write);
+                    let communication = opt_bool_to_tokens(ref_attr.communication);
+                    let transmit = opt_bool_to_tokens(ref_attr.transmit);
+                    let update = opt_bool_to_tokens(ref_attr.update);
+                    let read_on_init = opt_bool_to_tokens(ref_attr.read_on_init);
+                    quote! {
+                        Some(zweidraehte::ets::FlagOverrides {
+                            read: #read,
+                            write: #write,
+                            communication: #communication,
+                            transmit: #transmit,
+                            update: #update,
+                            read_on_init: #read_on_init,
+                        })
+                    }
+                } else {
+                    quote!(None)
+                };
+
+                ets_comm_object_refs.push(quote! {
+                    zweidraehte::ets::EtsCommObjectRefDef {
+                        object_index: #index,
+                        ref_name: #ref_name,
+                        text: None,
+                        function_text: #function_text,
+                        dpt_main: <#ref_dpt as zweidraehte::ets::HasDptInfo>::DPT_MAIN,
+                        dpt_sub: <#ref_dpt as zweidraehte::ets::HasDptInfo>::DPT_SUB,
+                        size_bits: <#ref_dpt as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
+                        flag_overrides: #flag_overrides,
+                        selector_value: #selector_value,
+                        selector_param: #selector_param_tokens,
+                    }
+                });
+            }
+        } else {
+            // Simple object - generate a single implicit ref
+            let inner_ty = &obj.inner_ty;
+            let ref_name = obj.ident.to_string();
+            let function_text = obj.attrs.function.clone().unwrap_or_default();
+            ets_comm_object_refs.push(quote! {
+                zweidraehte::ets::EtsCommObjectRefDef {
+                    object_index: #index,
+                    ref_name: #ref_name,
+                    text: None,
+                    function_text: #function_text,
+                    dpt_main: <#inner_ty as zweidraehte::ets::HasDptInfo>::DPT_MAIN,
+                    dpt_sub: <#inner_ty as zweidraehte::ets::HasDptInfo>::DPT_SUB,
+                    size_bits: <#inner_ty as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
+                    flag_overrides: None,
+                    selector_value: None,
+                    selector_param: None,
+                }
+            });
+        }
+    }
+
+    // Generate selector-based variant struct if selector_enum is specified
+    let selector_impl = if let Some(selector_enum) = &struct_attrs.selector_enum {
+        generate_selector_impl(struct_name, selector_enum, &com_objects)?
+    } else {
+        quote!()
+    };
+
+    // Generate ComObjects impl unless manual_impl is set
+    let com_objects_impl = if struct_attrs.manual_impl {
+        quote!()
+    } else {
+        quote! {
+            impl zweidraehte::objects::comm::ComObjects for #struct_name {
+                type Index = Index;
+                type HookContext = ();
+
+                fn new() -> Self {
+                    Self {
+                        #(#new_fields),*
+                    }
+                }
+
+                fn info<'a>(&'a self, idx: u16) -> zweidraehte::objects::comm::ComObjectInfo<'a> {
+                    match Index::from_index(idx).unwrap() {
+                        #(#info_arms),*
+                    }
+                }
+
+                fn info_mut<'a>(&'a mut self, idx: u16) -> zweidraehte::objects::comm::ComObjectInfoMut<'a> {
+                    match Index::from_index(idx).unwrap() {
+                        #(#info_mut_arms),*
+                    }
+                }
+            }
+        }
+    };
+
+    let num_objects = com_objects.len();
+
+    // Generate __max_size helper if we have multi-ref objects
+    let has_multi_ref = com_objects.iter().any(|obj| obj.is_multi_ref);
+    let max_size_helper = if has_multi_ref {
+        quote! {
+            impl #struct_name {
+                /// Helper const fn to compute max of sizes
+                #[doc(hidden)]
+                const fn __max_size(sizes: &[usize]) -> usize {
+                    let mut max = 0usize;
+                    let mut i = 0;
+                    while i < sizes.len() {
+                        if sizes[i] > max {
+                            max = sizes[i];
+                        }
+                        i += 1;
+                    }
+                    max
+                }
+            }
+        }
+    } else {
+        quote!()
+    };
+
+    Ok(quote! {
+        /// Enum with all communication object names and their indices
+        #[allow(dead_code)]
+        #[derive(core::marker::ConstParamTy, Debug, Clone, Copy, PartialEq, Eq)]
+        #[repr(u16)]
+        pub enum Index {
+            #(#index_variants),*
+        }
+
+        #[allow(dead_code)]
+        impl zweidraehte::objects::comm::ComObjectIndex for Index {
+            fn from_index(idx: u16) -> Option<Self> {
+                match idx {
+                    #(#index_from_arms,)*
+                    _ => None,
+                }
+            }
+
+            fn index(&self) -> u16 {
+                *self as u16
+            }
+        }
+
+        #max_size_helper
+
+        #com_objects_impl
+
+        /// ETS communication object definitions for this module.
+        #[allow(dead_code)]
+        pub const ETS_COMM_OBJECTS: &[zweidraehte::ets::EtsCommObjectDef] = &[
+            #(#ets_comm_objects),*
+        ];
+
+        /// ETS communication object reference definitions.
+        #[allow(dead_code)]
+        pub const ETS_COMM_OBJECT_REFS: &[zweidraehte::ets::EtsCommObjectRefDef] = &[
+            #(#ets_comm_object_refs),*
+        ];
+
+        /// Number of communication objects in this module.
+        #[allow(dead_code)]
+        pub const NUM_COMM_OBJECTS: usize = #num_objects;
+
+        #selector_impl
+    })
+}
+
+/// Generate the selector-based variant struct and accessor method
+fn generate_selector_impl(
+    struct_name: &syn::Ident,
+    selector_enum: &syn::Type,
+    com_objects: &[ComObjectField],
+) -> syn::Result<TokenStream2> {
+    // Extract the enum name from the type
+    let selector_name = match selector_enum {
+        syn::Type::Path(p) => p.path.segments.last()
+            .map(|s| s.ident.clone())
+            .ok_or_else(|| syn::Error::new_spanned(selector_enum, "Invalid selector enum type"))?,
+        _ => return Err(syn::Error::new_spanned(selector_enum, "Selector must be a path type")),
+    };
+
+    let objs_enum_name = syn::Ident::new(
+        &format!("{}Objs", selector_name),
+        selector_name.span(),
+    );
+
+    // Find all fields that have refs with `when` clauses matching this selector
+    let mut selector_fields: Vec<(&ComObjectField, Vec<&ComObjectRefAttrs>)> = Vec::new();
+
+    for obj in com_objects {
+        let matching_refs: Vec<_> = obj.refs.iter()
+            .filter(|r| {
+                match &r.when {
+                    Some(SelectorValue::Path(path)) => {
+                        // Check if the path starts with the selector enum name
+                        path.segments.first()
+                            .map(|s| s.ident == selector_name)
+                            .unwrap_or(false)
+                    }
+                    // Integer values don't match a specific selector enum
+                    _ => false,
+                }
+            })
+            .collect();
+
+        if !matching_refs.is_empty() {
+            selector_fields.push((obj, matching_refs));
+        }
+    }
+
+    if selector_fields.is_empty() {
+        return Ok(quote!());
+    }
+
+    // Collect unique variants from all refs
+    let mut variants_map: std::collections::HashMap<String, Vec<(&ComObjectField, &ComObjectRefAttrs)>> =
+        std::collections::HashMap::new();
+
+    for (obj, refs) in &selector_fields {
+        for ref_attr in refs {
+            if let Some(SelectorValue::Path(path)) = &ref_attr.when {
+                let variant_name = path.segments.last()
+                    .map(|s| s.ident.to_string())
+                    .unwrap_or_default();
+                variants_map.entry(variant_name).or_default().push((obj, ref_attr));
+            }
+        }
+    }
+
+    // Generate enum variants
+    let enum_variants: Vec<_> = variants_map.iter().map(|(variant_name, field_refs)| {
+        let variant_ident = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
+        let field_defs: Vec<_> = field_refs.iter().map(|(obj, ref_attr)| {
+            let field_ident = &obj.ident;
+            let dpt_type = &ref_attr.dpt;
+            let index = obj.attrs.index.unwrap();
+            quote! {
+                #field_ident: zweidraehte::objects::comm::TypedComObj<'a, #dpt_type, #index>
+            }
+        }).collect();
+
+        quote! {
+            #variant_ident {
+                #(#field_defs),*
+            }
+        }
+    }).collect();
+
+    // Generate match arms for the accessor method
+    let match_arms: Vec<_> = variants_map.iter().map(|(variant_name, field_refs)| {
+        let variant_ident = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
+        let selector_variant = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
+
+        let field_inits: Vec<_> = field_refs.iter().map(|(obj, _ref_attr)| {
+            let field_ident = &obj.ident;
+            quote! {
+                #field_ident: unsafe {
+                    zweidraehte::objects::comm::TypedComObj::new(
+                        objs.#field_ident.value.as_mut(),
+                        &mut objs.#field_ident.status,
+                    )
+                }
+            }
+        }).collect();
+
+        quote! {
+            #selector_enum::#selector_variant => #objs_enum_name::#variant_ident {
+                #(#field_inits),*
+            }
+        }
+    }).collect();
+
+    Ok(quote! {
+        /// Generated enum with typed comm object references for each selector variant
+        pub enum #objs_enum_name<'a> {
+            #(#enum_variants),*
+        }
+
+        impl #selector_enum {
+            /// Get typed comm object references based on this selector value
+            pub fn comm_objects<'a>(&self, objs: &'a mut #struct_name) -> #objs_enum_name<'a> {
+                match self {
+                    #(#match_arms),*
+                }
+            }
+        }
+    })
+}
+
+/// Convert Option<bool> to tokens for FlagOverrides field
+fn opt_bool_to_tokens(opt: Option<bool>) -> TokenStream2 {
+    match opt {
+        Some(true) => quote!(Some(true)),
+        Some(false) => quote!(Some(false)),
+        None => quote!(None),
+    }
+}
+
+/// Convert snake_case to CamelCase
+fn to_camel_case(s: &str) -> String {
+    s.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+/// Convert snake_case to Title Case (with spaces)
+fn to_title_case(s: &str) -> String {
+    s.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

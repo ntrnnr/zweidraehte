@@ -30,7 +30,6 @@ use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
 
 use zweidraehte::{
-    define_com_objects,
     memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
     messages::buffers::{Buffer, BufferManager, DynBufferManager, MessageBuffer},
     messages::knx::{KnxMessageBuffer, ServiceType},
@@ -62,69 +61,85 @@ use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerH
 // Writing to GO1/GO2/GO3 modifies the internal state of GO0.
 // This is achieved through the prepare_read and handle_write hooks.
 
-define_com_objects! {
-    pub mod comm_objs {
-        // Use #[manual_impl] to provide our own ComObjects implementation with hooks
-        #[manual_impl]
-        pub struct ConformanceComObjects {
-            // ================================================================
-            // GO0-GO3: 1-bit main object and shadow objects (ASAP 1-4)
-            // ================================================================
+pub mod comm_objs {
+    use zweidraehte::dpt::{DPT_Switch, DPT_Value_1_Ucount, DPT_Value_3_Ucount};
+    use zweidraehte::ets::EtsComObjects;
+    use zweidraehte::objects::comm::ComObject;
+    #[allow(unused_imports)]
+    use zweidraehte::objects::comm::{ComObjectIndex, ComObjects, ComObjectInfo, ComObjectInfoMut};
 
-            // GO0: Main 1-bit object (UINT1)
-            // This is the primary test object whose flags/value are accessed via GO1-GO3
-            1 => pub go_0: DPT_Switch = DPT_Switch::from(false),
+    // Use #[ets(manual_impl)] to provide our own ComObjects implementation with hooks
+    #[derive(EtsComObjects)]
+    #[ets(manual_impl)]
+    pub struct ConformanceComObjects {
+        // ================================================================
+        // GO0-GO3: 1-bit main object and shadow objects (ASAP 1-4)
+        // ================================================================
 
-            // GO1: Communication flags (4-bit / UINT4)
-            // Bit 0: Read request pending
-            // Bit 1: Write/Transmission request pending
-            // Bit 2: Error flag (0=OK, 1=Error)
-            // Bit 3: Update flag
-            2 => pub go_1_comm_flags: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+        /// GO0: Main 1-bit object (UINT1)
+        /// This is the primary test object whose flags/value are accessed via GO1-GO3
+        #[ets(index = 1)]
+        pub go_0: ComObject<DPT_Switch>,
 
-            // GO2: Configuration flags (8-bit / UINT8)
-            // Bits 0-1: Priority (0=System, 1=High, 2=Alarm, 3=Low)
-            // Bit 2: Communication Enable
-            // Bit 3: Read Enable
-            // Bit 4: Write Enable
-            // Bit 5: Read on Init
-            // Bit 6: Transmission Enable
-            // Bit 7: Update Enable (Read Response Update)
-            3 => pub go_2_config_flags: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0xDFu8),
+        /// GO1: Communication flags (4-bit / UINT4)
+        /// Bit 0: Read request pending
+        /// Bit 1: Write/Transmission request pending
+        /// Bit 2: Error flag (0=OK, 1=Error)
+        /// Bit 3: Update flag
+        #[ets(index = 2)]
+        pub go_1_comm_flags: ComObject<DPT_Value_1_Ucount>,
 
-            // GO3: Value of GO0 as 8-bit (for reading/writing without affecting flags)
-            4 => pub go_3_value: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+        /// GO2: Configuration flags (8-bit / UINT8)
+        /// Bits 0-1: Priority (0=System, 1=High, 2=Alarm, 3=Low)
+        /// Bit 2: Communication Enable
+        /// Bit 3: Read Enable
+        /// Bit 4: Write Enable
+        /// Bit 5: Read on Init
+        /// Bit 6: Transmission Enable
+        /// Bit 7: Update Enable (Read Response Update)
+        #[ets(index = 3)]
+        pub go_2_config_flags: ComObject<DPT_Value_1_Ucount>,
 
-            // ================================================================
-            // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects (ASAP 5-8)
-            // For invalid data length tests (1.4.1.4a)
-            // ================================================================
+        /// GO3: Value of GO0 as 8-bit (for reading/writing without affecting flags)
+        #[ets(index = 4)]
+        pub go_3_value: ComObject<DPT_Value_1_Ucount>,
 
-            // GO0_BYTE3: 3-byte version of GO0 for invalid data length tests
-            5 => pub go_0_byte3: DPT_Value_3_Ucount = DPT_Value_3_Ucount::default(),
+        // ================================================================
+        // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects (ASAP 5-8)
+        // For invalid data length tests (1.4.1.4a)
+        // ================================================================
 
-            // GO1_BYTE3: Communication flags for GO0_BYTE3
-            6 => pub go_1_byte3_comm_flags: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+        /// GO0_BYTE3: 3-byte version of GO0 for invalid data length tests
+        #[ets(index = 5)]
+        pub go_0_byte3: ComObject<DPT_Value_3_Ucount>,
 
-            // GO2_BYTE3: Configuration flags for GO0_BYTE3
-            7 => pub go_2_byte3_config_flags: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0xDFu8),
+        /// GO1_BYTE3: Communication flags for GO0_BYTE3
+        #[ets(index = 6)]
+        pub go_1_byte3_comm_flags: ComObject<DPT_Value_1_Ucount>,
 
-            // GO3_BYTE3: Value of GO0_BYTE3 as 3-byte (for reading/writing without affecting flags)
-            8 => pub go_3_byte3_value: DPT_Value_3_Ucount = DPT_Value_3_Ucount::default(),
+        /// GO2_BYTE3: Configuration flags for GO0_BYTE3
+        #[ets(index = 7)]
+        pub go_2_byte3_config_flags: ComObject<DPT_Value_1_Ucount>,
 
-            // ================================================================
-            // Additional test objects (ASAP 9-11)
-            // ================================================================
+        /// GO3_BYTE3: Value of GO0_BYTE3 as 3-byte (for reading/writing without affecting flags)
+        #[ets(index = 8)]
+        pub go_3_byte3_value: ComObject<DPT_Value_3_Ucount>,
 
-            // GO4: For Read on Init testing
-            9 => pub go_4: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+        // ================================================================
+        // Additional test objects (ASAP 9-11)
+        // ================================================================
 
-            // GO5: 8-bit object for network layer test 3.1 (long format response)
-            10 => pub go_5_network_test: DPT_Value_1_Ucount = DPT_Value_1_Ucount::from(0u8),
+        /// GO4: For Read on Init testing
+        #[ets(index = 9)]
+        pub go_4: ComObject<DPT_Value_1_Ucount>,
 
-            // GO6: 1-bit object for transport layer test 2.1
-            11 => pub go_6_transport_test: DPT_Switch = DPT_Switch::from(false),
-        }
+        /// GO5: 8-bit object for network layer test 3.1 (long format response)
+        #[ets(index = 10)]
+        pub go_5_network_test: ComObject<DPT_Value_1_Ucount>,
+
+        /// GO6: 1-bit object for transport layer test 2.1
+        #[ets(index = 11)]
+        pub go_6_transport_test: ComObject<DPT_Switch>,
     }
 }
 

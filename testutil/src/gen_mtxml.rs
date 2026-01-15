@@ -31,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         params: DemoParams::ETS_PARAMS_EXT,
         param_defaults: param_bytes,
         comm_objects: &comm_objs::ETS_COMM_OBJECTS,
+        comm_object_refs: &comm_objs::ETS_COMM_OBJECT_REFS,
         union_fields: Some(DemoParams::ETS_UNIONS),
         channel_name: "General",
         absolute_segment_address: None, // System B uses relative segments

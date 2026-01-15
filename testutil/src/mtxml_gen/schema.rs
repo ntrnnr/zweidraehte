@@ -71,12 +71,10 @@ impl MaskFamily {
         }
     }
 
-    /// Get the starting index for communication objects
+    /// Get the starting index for communication objects.
+    /// Always 0 - the index in the struct is the index in the XML.
     pub fn com_object_start_index(&self) -> u16 {
-        match self {
-            MaskFamily::SystemB => 1,
-            _ => 0,
-        }
+        0
     }
 
     /// Whether this mask family uses a ComObject table
@@ -553,12 +551,15 @@ impl From<bool> for EnableFlag {
 }
 
 /// Communication object priority
+///
+/// Note: KNX has 4 priority levels (System=0, High=1, Alert=2, Low=3),
+/// but the ETS/MTXML schema only supports Low, High, and Alert.
+/// System priority is mapped to Low when generating XML.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ComObjectPriority {
     Low,
     High,
     Alert,
-    System,
 }
 
 impl Default for ComObjectPriority {
@@ -574,8 +575,8 @@ pub struct ComObjectRefs {
     pub refs: Vec<ComObjectRef>,
 }
 
-/// Reference to a communication object
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Reference to a communication object with optional overrides
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ComObjectRef {
     #[serde(rename = "@Id")]
     pub id: String,
@@ -583,6 +584,28 @@ pub struct ComObjectRef {
     pub ref_id: String,
     #[serde(rename = "@Name", skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(rename = "@FunctionText", skip_serializing_if = "Option::is_none")]
+    pub function_text: Option<String>,
+    #[serde(rename = "@Priority", skip_serializing_if = "Option::is_none")]
+    pub priority: Option<ComObjectPriority>,
+    #[serde(rename = "@ObjectSize", skip_serializing_if = "Option::is_none")]
+    pub object_size: Option<String>,
+    #[serde(rename = "@ReadFlag", skip_serializing_if = "Option::is_none")]
+    pub read_flag: Option<EnableFlag>,
+    #[serde(rename = "@WriteFlag", skip_serializing_if = "Option::is_none")]
+    pub write_flag: Option<EnableFlag>,
+    #[serde(rename = "@CommunicationFlag", skip_serializing_if = "Option::is_none")]
+    pub communication_flag: Option<EnableFlag>,
+    #[serde(rename = "@TransmitFlag", skip_serializing_if = "Option::is_none")]
+    pub transmit_flag: Option<EnableFlag>,
+    #[serde(rename = "@UpdateFlag", skip_serializing_if = "Option::is_none")]
+    pub update_flag: Option<EnableFlag>,
+    #[serde(rename = "@ReadOnInitFlag", skip_serializing_if = "Option::is_none")]
+    pub read_on_init_flag: Option<EnableFlag>,
+    #[serde(rename = "@DatapointType", skip_serializing_if = "Option::is_none")]
+    pub datapoint_type: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
 }
@@ -862,9 +885,18 @@ pub fn dpt_to_string(dpt_main: u16, dpt_sub: u16) -> String {
 }
 
 /// Convert priority flags to ComObjectPriority
+///
+/// KNX priority values (from flags bits 0-1):
+/// - 0 = System (NOT supported in ETS - will panic!)
+/// - 1 = High (urgent)
+/// - 2 = Alert (alarm)
+/// - 3 = Low (normal)
+///
+/// # Panics
+/// Panics if System priority (0) is specified, as it cannot be set in ETS.
 pub fn priority_from_flags(flags: u8) -> ComObjectPriority {
     match flags & 0x03 {
-        0 => ComObjectPriority::System,
+        0 => panic!("System priority (0) cannot be used in ETS. Use Low (3), High (1), or Alert (2)."),
         1 => ComObjectPriority::High,
         2 => ComObjectPriority::Alert,
         _ => ComObjectPriority::Low,

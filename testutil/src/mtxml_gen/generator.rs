@@ -3,7 +3,7 @@
 use base64::Engine;
 
 use zweidraehte::ets::{
-    DeviceDescriptor, EtsCommObjectDef, EtsParamDefExt, EtsParamType,
+    DeviceDescriptor, EtsCommObjectDef, EtsCommObjectRefDef, EtsParamDefExt, EtsParamType,
     EtsUnionFieldInfo,
 };
 
@@ -21,6 +21,8 @@ pub struct ApplicationProgramConfig<'a> {
     pub param_defaults: &'a [u8],
     /// Communication object definitions
     pub comm_objects: &'a [EtsCommObjectDef],
+    /// Communication object reference definitions (for multi-ref objects)
+    pub comm_object_refs: &'a [EtsCommObjectRefDef],
     /// Union fields from derive macro (optional)
     pub union_fields: Option<&'a [EtsUnionFieldInfo]>,
     /// Channel name for the UI grouping
@@ -566,11 +568,31 @@ impl MtxmlGenerator {
         let mut table = ComObjectTable::default();
         let start_index = mask_family.com_object_start_index();
 
+        // Build a map of object_index -> (ref_count, max_size_bits)
+        let mut ref_info: std::collections::HashMap<u16, (usize, u8)> = std::collections::HashMap::new();
+        for ref_def in config.comm_object_refs {
+            let entry = ref_info.entry(ref_def.object_index).or_insert((0, 0));
+            entry.0 += 1; // increment ref count
+            entry.1 = entry.1.max(ref_def.size_bits); // track max size
+        }
+
         for co in config.comm_objects {
             // Adjust index based on mask family
             let adjusted_index = co.index + start_index;
             let obj_id = format!("{}_O-{}", app_id, adjusted_index);
             let flags = co.default_flags;
+
+            // Check if this object has multiple refs
+            let (ref_count, max_size) = ref_info.get(&co.index).copied().unwrap_or((1, co.size_bits));
+            let is_multi_ref = ref_count > 1;
+
+            // For multi-ref objects: no DPT on base object, use max size from refs
+            // For single-ref objects: include DPT and use object's size
+            let (datapoint_type, object_size) = if is_multi_ref {
+                (None, object_size_to_string(max_size).to_string())
+            } else {
+                (Some(dpt_to_string(co.dpt_main, co.dpt_sub)), object_size_to_string(co.size_bits).to_string())
+            };
 
             table.objects.push(ComObject {
                 id: obj_id,
@@ -578,8 +600,8 @@ impl MtxmlGenerator {
                 text: co.display_name.to_string(),
                 number: adjusted_index,
                 function_text: co.function_text.to_string(),
-                object_size: object_size_to_string(co.size_bits).to_string(),
-                datapoint_type: Some(dpt_to_string(co.dpt_main, co.dpt_sub)),
+                object_size,
+                datapoint_type,
                 read_flag: (flags & 0x08 != 0).into(),
                 write_flag: (flags & 0x10 != 0).into(),
                 communication_flag: (flags & 0x40 != 0).into(),
@@ -595,6 +617,9 @@ impl MtxmlGenerator {
     }
 
     /// Build communication object references.
+    ///
+    /// Uses the comm_object_refs array which contains one entry per ref.
+    /// For multi-ref objects, there will be multiple refs pointing to the same ComObject.
     fn build_com_object_refs(
         config: &ApplicationProgramConfig,
         app_id: &str,
@@ -603,17 +628,35 @@ impl MtxmlGenerator {
         let mut refs = ComObjectRefs::default();
         let start_index = mask_family.com_object_start_index();
 
-        for (i, co) in config.comm_objects.iter().enumerate() {
-            let adjusted_index = co.index + start_index;
+        for (i, ref_def) in config.comm_object_refs.iter().enumerate() {
+            let adjusted_index = ref_def.object_index + start_index;
             let co_id = format!("{}_O-{}", app_id, adjusted_index);
             let ref_id = format!("{}_R-{}", co_id, i + 1);
 
-            refs.refs.push(ComObjectRef {
+            // Build the ComObjectRef with potential overrides from the ref definition
+            let mut com_ref = ComObjectRef {
                 id: ref_id,
                 ref_id: co_id,
-                name: Some(co.name.to_string()),
+                name: Some(ref_def.ref_name.to_string()),
+                text: ref_def.text.map(|s| s.to_string()),
+                function_text: Some(ref_def.function_text.to_string()),
+                datapoint_type: Some(dpt_to_string(ref_def.dpt_main, ref_def.dpt_sub)),
+                object_size: Some(object_size_to_string(ref_def.size_bits).to_string()),
                 internal_description: Some("generated".to_string()),
-            });
+                ..Default::default()
+            };
+
+            // Apply flag overrides if present
+            if let Some(flags) = &ref_def.flag_overrides {
+                com_ref.read_flag = flags.read.map(|b| b.into());
+                com_ref.write_flag = flags.write.map(|b| b.into());
+                com_ref.communication_flag = flags.communication.map(|b| b.into());
+                com_ref.transmit_flag = flags.transmit.map(|b| b.into());
+                com_ref.update_flag = flags.update.map(|b| b.into());
+                com_ref.read_on_init_flag = flags.read_on_init.map(|b| b.into());
+            }
+
+            refs.refs.push(com_ref);
         }
 
         refs
@@ -820,15 +863,98 @@ impl MtxmlGenerator {
             }
         }
 
-        // Add ComObjectRefRefs
-        for (i, co) in config.comm_objects.iter().enumerate() {
-            let adjusted_index = co.index + co_start_index;
+        // Add ComObjectRefRefs - reference each ref from comm_object_refs
+        // The ref IDs must match those generated in build_com_object_refs
+        //
+        // For refs with selector_param, we need to group them and create choose/when structures.
+        // For refs without selector_param (simple objects), add them directly.
+
+        // First, build a map: selector_param -> (object_index -> [(ref_index, selector_value)])
+        let mut selector_groups: std::collections::HashMap<
+            &str, // selector_param name
+            std::collections::HashMap<u16, Vec<(usize, i64)>> // object_index -> [(ref_index, selector_value)]
+        > = std::collections::HashMap::new();
+
+        // Also track which refs need choose/when (have selector_param)
+        let mut refs_in_choose: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+        for (i, ref_def) in config.comm_object_refs.iter().enumerate() {
+            if let (Some(param), Some(value)) = (ref_def.selector_param, ref_def.selector_value) {
+                selector_groups
+                    .entry(param)
+                    .or_default()
+                    .entry(ref_def.object_index)
+                    .or_default()
+                    .push((i, value));
+                refs_in_choose.insert(i);
+            }
+        }
+
+        // Add simple refs (those without selector) directly
+        for (i, ref_def) in config.comm_object_refs.iter().enumerate() {
+            if refs_in_choose.contains(&i) {
+                continue; // Skip - will be added in choose/when
+            }
+
+            let adjusted_index = ref_def.object_index + co_start_index;
             let co_id = format!("{}_O-{}", app_id, adjusted_index);
             let ref_id = format!("{}_R-{}", co_id, i + 1);
 
             items.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
                 ref_id,
                 internal_description: Some("generated".to_string()),
+            }));
+        }
+
+        // Now build choose/when for each selector_param
+        // Need to find the parameter ref ID for each selector_param
+        for (selector_param, objects) in &selector_groups {
+            // Find the parameter ref ID for this selector
+            // The selector_param is the parameter name, we need to find its ref ID
+            let param_ref_id = Self::find_param_ref_id(config, app_id, selector_param);
+
+            // Build when clauses - group by selector_value across all objects
+            let mut value_to_refs: std::collections::HashMap<i64, Vec<String>> =
+                std::collections::HashMap::new();
+
+            for (object_index, ref_list) in objects {
+                for (ref_index, selector_value) in ref_list {
+                    let adjusted_index = object_index + co_start_index;
+                    let co_id = format!("{}_O-{}", app_id, adjusted_index);
+                    let ref_id = format!("{}_R-{}", co_id, ref_index + 1);
+                    value_to_refs.entry(*selector_value).or_default().push(ref_id);
+                }
+            }
+
+            // Sort by selector value for consistent output
+            let mut sorted_values: Vec<_> = value_to_refs.into_iter().collect();
+            sorted_values.sort_by_key(|(v, _)| *v);
+
+            let whens: Vec<When> = sorted_values
+                .into_iter()
+                .map(|(selector_value, ref_ids)| {
+                    let when_items: Vec<WhenItem> = ref_ids
+                        .into_iter()
+                        .map(|ref_id| {
+                            WhenItem::ComObjectRefRef(ComObjectRefRef {
+                                ref_id,
+                                internal_description: Some("generated".to_string()),
+                            })
+                        })
+                        .collect();
+
+                    When {
+                        test: Some(selector_value.to_string()),
+                        default: None,
+                        internal_description: Some("generated".to_string()),
+                        items: when_items,
+                    }
+                })
+                .collect();
+
+            items.push(ParameterBlockItem::Choose(Choose {
+                param_ref_id,
+                whens,
             }));
         }
 
@@ -846,6 +972,71 @@ impl MtxmlGenerator {
                 }],
             }],
         })
+    }
+
+    /// Find the parameter ref ID for a given parameter name.
+    ///
+    /// This looks through the params to find the parameter by name, then
+    /// constructs the corresponding ParameterRef ID.
+    fn find_param_ref_id(config: &ApplicationProgramConfig, app_id: &str, param_name: &str) -> String {
+        // Build a set of union selector names that are handled specially
+        let union_selector_names: std::collections::HashSet<String> = config
+            .union_fields
+            .map(|fields| {
+                fields
+                    .iter()
+                    .map(|f| format!("{}_selector", f.field_name))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Search through regular params first
+        let mut param_counter = 1usize;
+        for param_ext in config.params {
+            // Skip union selector params - they are numbered differently
+            if union_selector_names.contains(param_ext.base.name) {
+                continue;
+            }
+
+            if param_ext.base.name == param_name {
+                let param_id = format!("{}_P-{}", app_id, param_counter);
+                let ref_id = format!("{}_R-{}", param_id, param_counter);
+                return ref_id;
+            }
+            param_counter += 1;
+        }
+
+        // Search through union selectors
+        if let Some(union_fields) = config.union_fields {
+            // Count non-selector params for ref_counter
+            let non_selector_param_count = config
+                .params
+                .iter()
+                .filter(|p| !union_selector_names.contains(p.base.name))
+                .count();
+            let mut ref_counter = non_selector_param_count + 1;
+            let mut up_counter = 1u32;
+
+            for field in union_fields {
+                let selector_name = format!("{}_selector", field.field_name);
+                if selector_name == param_name {
+                    let selector_id = format!("{}_UP-{}", app_id, up_counter);
+                    let selector_ref_id = format!("{}_R-{}", selector_id, ref_counter);
+                    return selector_ref_id;
+                }
+                ref_counter += 1;
+                up_counter += 1;
+
+                // Skip variant params
+                for _param in field.union_info.variant_params {
+                    ref_counter += 1;
+                    up_counter += 1;
+                }
+            }
+        }
+
+        // Fallback: just construct a reasonable ref ID
+        format!("{}_P-{}_R-1", app_id, param_name)
     }
 
     /// Serialize the KNX document to XML string.
@@ -1080,6 +1271,7 @@ mod tests {
             params: &[],
             param_defaults: &[],
             comm_objects: &[],
+            comm_object_refs: &[],
             union_fields: None,
             channel_name: "General",
             absolute_segment_address: None,
@@ -1118,6 +1310,7 @@ mod tests {
             params: &[],
             param_defaults: &[],
             comm_objects: &[],
+            comm_object_refs: &[],
             union_fields: None,
             channel_name: "General",
             absolute_segment_address: Some(0x4000),

@@ -45,6 +45,7 @@ use testutil::util::keyboard;
 // ============================================================================
 
 pub use testutil::devices::comm_objs;
+pub use testutil::devices::OutputConfig;
 
 // ============================================================================
 // Device Constants - use demo device definitions
@@ -378,48 +379,34 @@ async fn main(spawner: Spawner) {
                 };
                 println!("  Application Parameters (raw {} bytes): {:02X?}", raw_bytes.len(), raw_bytes);
                 println!("  Application Parameters:");
-                println!("    Operating Mode: {}", match params.mode {
-                    0 => "Off",
-                    1 => "Normal",
-                    2 => "Eco",
-                    3 => "Night",
+
+                // Channel A settings
+                print!("    Channel A Config: ");
+                match &params.channel_a_config {
+                    OutputConfig::Disabled => println!("Disabled"),
+                    OutputConfig::Switch { invert } => println!("Switch (invert: {:?})", invert),
+                    OutputConfig::Dimmer { min_level, max_level } => println!("Dimmer (range: {}-{})", min_level, max_level),
+                    OutputConfig::Pwm { frequency, duty_cycle } => println!("PWM (freq: {} Hz, duty: {}%)", frequency, duty_cycle),
+                }
+
+                // Channel B settings
+                print!("    Channel B Config: ");
+                match &params.channel_b_config {
+                    OutputConfig::Disabled => println!("Disabled"),
+                    OutputConfig::Switch { invert } => println!("Switch (invert: {:?})", invert),
+                    OutputConfig::Dimmer { min_level, max_level } => println!("Dimmer (range: {}-{})", min_level, max_level),
+                    OutputConfig::Pwm { frequency, duty_cycle } => println!("PWM (freq: {} Hz, duty: {}%)", frequency, duty_cycle),
+                }
+
+                // General settings
+                println!("    Send Cycle Time: {}s", params.send_cycle_time);
+                println!("    Lock Behavior: {}", match params.lock_behavior {
+                    0 => "No Action",
+                    1 => "Lock Off",
+                    2 => "Lock On",
+                    3 => "Lock Toggle",
                     _ => "Unknown",
                 });
-                println!("    Switch-On Delay: {}s", params.switch_on_delay);
-                println!("    Switch-Off Delay: {}s", params.switch_off_delay);
-                println!("    Dimmer Enabled: {}", params.dimmer_enabled);
-                println!("    Min Dim Value: {}", params.min_dim_value);
-
-                // Now that alignment is fixed in the ETS macro, we can safely match on the enums
-                match &params.output_config {
-                    testutil::devices::OutputConfig::Disabled => {
-                        println!("    Output Config: Disabled");
-                    }
-                    testutil::devices::OutputConfig::Switch { invert } => {
-                        println!("    Output Config: Switch (Invert: {})", invert);
-                    }
-                    testutil::devices::OutputConfig::Dimmer { min_level, max_level } => {
-                        println!("    Output Config: Dimmer (Min: {}, Max: {})", min_level, max_level);
-                    }
-                    testutil::devices::OutputConfig::Pwm { frequency, duty_cycle } => {
-                        println!("    Output Config: PWM (Freq: {}Hz, Duty: {}%)", frequency.get(), duty_cycle);
-                    }
-                }
-
-                match &params.input_source {
-                    testutil::devices::InputSource::None => {
-                        println!("    Input Source: None");
-                    }
-                    testutil::devices::InputSource::Binary { debounce_ms, invert } => {
-                        println!("    Input Source: Binary (Debounce: {}ms, Invert: {})", debounce_ms.get(), invert);
-                    }
-                    testutil::devices::InputSource::Analog { low_threshold, high_threshold, input_type } => {
-                        println!("    Input Source: Analog ({}, Low: {}, High: {})", input_type, low_threshold.get(), high_threshold.get());
-                    }
-                    testutil::devices::InputSource::Temperature { sensor_type, offset } => {
-                        println!("    Input Source: Temperature ({}, Offset: {})", sensor_type, offset);
-                    }
-                }
 
                 match &params.scene_config {
                     testutil::devices::SceneConfig::Disabled => {

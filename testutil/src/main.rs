@@ -13,14 +13,14 @@ use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
 use core::cell::RefCell;
 use zweidraehte::{
-    Runner, StackDefinition, StackResources, StackState, define_com_objects,
+    Runner, StackDefinition, StackResources, StackState,
     address::IndividualAddress,
     dpt::DPT_Switch,
+    ets::EtsComObjects,
     memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
-        comm::ComObjects,
-        interface::PropertyServiceHandler,
+        comm::{ComObject, ComObjects},
         tables::{
             AddressTable, AssociationTable, CommunicationObjectTable, addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7,
         },
@@ -32,18 +32,29 @@ pub struct AppParameters {
     _delay_time: u16,
 }
 
-define_com_objects! {
-    pub mod comm_objs {
-        pub struct AppComObjects {
-            1 => pub co_in0: DPT_Switch = DPT_Switch::from(false),
-            2 => pub co_in1: DPT_Switch = DPT_Switch::from(false),
-            3 => pub co_in2: DPT_Switch = DPT_Switch::from(false),
-            4 => pub co_in3: DPT_Switch = DPT_Switch::from(false),
-            5 => pub co_out0: DPT_Switch = DPT_Switch::from(false),
-            6 => pub co_out1: DPT_Switch = DPT_Switch::from(false),
-            7 => pub co_out2: DPT_Switch = DPT_Switch::from(false),
-            8 => pub co_out3: DPT_Switch = DPT_Switch::from(false),
-        }
+pub mod comm_objs {
+    use super::*;
+    #[allow(unused_imports)]
+    use zweidraehte::objects::comm::{ComObjectIndex, ComObjects, ComObjectInfo, ComObjectInfoMut};
+
+    #[derive(EtsComObjects)]
+    pub struct AppComObjects {
+        #[ets(index = 1)]
+        pub co_in0: ComObject<DPT_Switch>,
+        #[ets(index = 2)]
+        pub co_in1: ComObject<DPT_Switch>,
+        #[ets(index = 3)]
+        pub co_in2: ComObject<DPT_Switch>,
+        #[ets(index = 4)]
+        pub co_in3: ComObject<DPT_Switch>,
+        #[ets(index = 5)]
+        pub co_out0: ComObject<DPT_Switch>,
+        #[ets(index = 6)]
+        pub co_out1: ComObject<DPT_Switch>,
+        #[ets(index = 7)]
+        pub co_out2: ComObject<DPT_Switch>,
+        #[ets(index = 8)]
+        pub co_out3: ComObject<DPT_Switch>,
     }
 }
 

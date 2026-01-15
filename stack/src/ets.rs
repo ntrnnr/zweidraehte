@@ -72,6 +72,7 @@
 pub use ets_macros::EtsParams;
 pub use ets_macros::EtsUnion;
 pub use ets_macros::EtsEnum;
+pub use ets_macros::EtsComObjects;
 
 /// Device descriptor containing firmware/application-level metadata.
 ///
@@ -546,6 +547,101 @@ pub struct EtsCommObjectDef {
 
     /// Default flags (CE, WE, RE, TE, UE, ROI)
     pub default_flags: u8,
+}
+
+// ============================================================================
+// ETS Communication Object Reference Definition
+// ============================================================================
+
+/// Definition of a communication object reference for ETS export.
+///
+/// A ComObjectRef references a base ComObject and can override certain properties
+/// like display text, function text, datapoint type, size, and flags. This allows
+/// a single physical group object to be presented in ETS with different
+/// configurations depending on parameter settings.
+///
+/// In the ETS XML, ComObjectRefs only include attributes that differ from the
+/// base ComObject - unchanged attributes are inherited.
+#[derive(Debug, Clone, Copy)]
+pub struct EtsCommObjectRefDef {
+    /// Reference to the base ComObject index
+    pub object_index: u16,
+
+    /// Unique ref name (for code generation and XML ID)
+    pub ref_name: &'static str,
+
+    /// Display text override for ETS (can use `{{param:default}}` syntax).
+    /// `None` = inherit from base ComObject
+    pub text: Option<&'static str>,
+
+    /// Function text for this ref
+    pub function_text: &'static str,
+
+    /// DPT main type number for this ref
+    pub dpt_main: u16,
+
+    /// DPT subtype number for this ref
+    pub dpt_sub: u16,
+
+    /// Size in bits for this ref
+    pub size_bits: u8,
+
+    /// Flag overrides - only flags that differ from base object.
+    /// `None` = use all base flags
+    pub flag_overrides: Option<FlagOverrides>,
+
+    /// Selector value that activates this ref (for choose/when XML generation).
+    /// `None` = no selector (always visible), `Some(value)` = show when selector equals value
+    pub selector_value: Option<i64>,
+
+    /// Name of the parameter that selects which ref is active.
+    /// This is used to generate the ParamRefId in the choose/when XML structure.
+    /// `None` = no selector parameter (unconditional visibility)
+    pub selector_param: Option<&'static str>,
+}
+
+/// Individual flag overrides for a ComObjectRef.
+///
+/// Only flags that differ from the base ComObject need to be set.
+/// `None` = inherit from base, `Some(value)` = override.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FlagOverrides {
+    /// Read flag (RE) override
+    pub read: Option<bool>,
+    /// Write flag (WE) override
+    pub write: Option<bool>,
+    /// Communication flag (CE) override
+    pub communication: Option<bool>,
+    /// Transmit flag (TE) override
+    pub transmit: Option<bool>,
+    /// Update flag (UE) override
+    pub update: Option<bool>,
+    /// Read-on-init flag (ROI) override
+    pub read_on_init: Option<bool>,
+}
+
+impl FlagOverrides {
+    /// Create a new FlagOverrides with all fields set to None (inherit all).
+    pub const fn new() -> Self {
+        Self {
+            read: None,
+            write: None,
+            communication: None,
+            transmit: None,
+            update: None,
+            read_on_init: None,
+        }
+    }
+
+    /// Check if any flags are overridden.
+    pub const fn has_overrides(&self) -> bool {
+        self.read.is_some()
+            || self.write.is_some()
+            || self.communication.is_some()
+            || self.transmit.is_some()
+            || self.update.is_some()
+            || self.read_on_init.is_some()
+    }
 }
 
 // ============================================================================

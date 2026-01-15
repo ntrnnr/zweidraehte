@@ -42,18 +42,23 @@
 //!
 //! ```rust,ignore
 //! use zweidraehte::{
-//!     define_com_objects,
 //!     bcus::system_b::{SystemBDevice, KnxIpDevice, KnxIpDeviceBuilder},
 //!     dpt::DPT_Switch,
+//!     ets::EtsComObjects,
+//!     objects::comm::ComObject,
 //! };
 //!
 //! // Define communication objects
-//! define_com_objects! {
-//!     pub mod co {
-//!         pub struct SwitchObjects {
-//!             1 => pub input: DPT_Switch = DPT_Switch::from(false),
-//!             2 => pub output: DPT_Switch = DPT_Switch::from(false),
-//!         }
+//! pub mod co {
+//!     use super::*;
+//!     use zweidraehte::objects::comm::{ComObjectIndex, ComObjects, ComObjectInfo, ComObjectInfoMut};
+//!
+//!     #[derive(EtsComObjects)]
+//!     pub struct SwitchObjects {
+//!         #[ets(index = 1, display = "Input", function = "Switch input")]
+//!         pub input: ComObject<DPT_Switch>,
+//!         #[ets(index = 2, display = "Output", function = "Switch output")]
+//!         pub output: ComObject<DPT_Switch>,
 //!     }
 //! }
 //!
