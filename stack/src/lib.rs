@@ -1061,6 +1061,15 @@ pub(crate) struct Inner<D: StackDefinition> {
     pub(crate) memory_map: D::Mem,
 }
 
+impl<D: StackDefinition> Inner<D> {
+    /// Execute a closure with mutable access to communication objects.
+    /// Ensures the borrow is properly scoped and released.
+    fn with_comm_objs<R>(&self, f: impl FnOnce(&mut D::CO) -> R) -> R {
+        let mut comm_objs = self.comm_objs.borrow_mut();
+        f(&mut comm_objs)
+    }
+}
+
 // Implement context traits for Inner
 impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
     fn buffer_manager(&self) -> &RefCell<DynBufferManager<'static>> {
@@ -1283,13 +1292,10 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         // FIXME: check if app is running, if not, don't do anything?
         // FIXME: check if transmission state is not transmitting yet
 
-        // Make sure the mutable borrow is dropped before sending the request
-        // FIXME: Introduce a with()-closure to avoid this?
-        {
-            let mut comm_objs = self.inner.comm_objs.borrow_mut();
-            comm_objs.set_status(asap.index(), ComObjectStatus::WriteRequest);
-            comm_objs.info_mut(asap.index()).value.copy_from_slice(value.as_ref());
-        }
+        self.inner.with_comm_objs(|co| {
+            co.set_status(asap.index(), ComObjectStatus::WriteRequest);
+            co.info_mut(asap.index()).value.copy_from_slice(value.as_ref());
+        });
 
         self.inner.event_channel.publish_immediate((asap.clone(), ComObjectEvent::LocallyUpdated));
 
@@ -1320,11 +1326,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// This is a lower-level version of `write_object` that takes a raw ASAP number
     /// instead of the type-safe Index type.
     pub async fn write_object_by_asap(&self, asap: u16) {
-        {
-            let mut comm_objs = self.inner.comm_objs.borrow_mut();
-            comm_objs.set_status(asap, ComObjectStatus::WriteRequest);
-        }
-
+        self.inner.with_comm_objs(|co| co.set_status(asap, ComObjectStatus::WriteRequest));
         self.app_request_sender.request(ApplicationLayerService::GroupValueWriteRequest(asap)).await;
     }
 
@@ -1341,11 +1343,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// This is a lower-level version of `read_object` that takes a raw ASAP number
     /// instead of the type-safe Index type.
     pub async fn read_object_by_asap(&self, asap: u16) {
-        {
-            let mut comm_objs = self.inner.comm_objs.borrow_mut();
-            comm_objs.set_status(asap, ComObjectStatus::ReadRequest);
-        }
-
+        self.inner.with_comm_objs(|co| co.set_status(asap, ComObjectStatus::ReadRequest));
         self.app_request_sender.request(ApplicationLayerService::GroupValueReadRequest(asap)).await;
     }
 
@@ -1383,12 +1381,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         // FIXME: check if app is running, if not, don't do anything?
         // FIXME: check if transmission state is not transmitting yet
 
-        // Make sure the mutable borrow is dropped before sending the request
-        // FIXME: Introduce a with()-closure to avoid this?
-        {
-            let mut comm_objs = self.inner.comm_objs.borrow_mut();
-            comm_objs.set_status(asap.index(), ComObjectStatus::ReadRequest);
-        }
+        self.inner.with_comm_objs(|co| co.set_status(asap.index(), ComObjectStatus::ReadRequest));
 
         // If no timeout is specified, just send the request and return immediately
         let Some(timeout_duration) = timeout else {
