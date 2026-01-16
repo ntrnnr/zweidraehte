@@ -36,24 +36,22 @@ pub enum Protocol {
     Tcp, // To be implemented later
 }
 
-/// Endpoint that KNX/IP servers can listen on
-// FIXME: instead of Ipv4Addr and port, use SocketAddrV4?
+/// Endpoint that KNX/IP servers can listen on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndpointType {
     protocol: Protocol,
-    address: Ipv4Addr,
-    port: u16,
+    socket_addr: SocketAddrV4,
 }
 
 impl EndpointType {
     /// Create a new UDP endpoint
     pub const fn new_udp(address: Ipv4Addr, port: u16) -> Self {
-        Self { protocol: Protocol::Udp, address, port }
+        Self { protocol: Protocol::Udp, socket_addr: SocketAddrV4::new(address, port) }
     }
 
     /// Create a new TCP endpoint (to be implemented)
     pub const fn new_tcp(address: Ipv4Addr, port: u16) -> Self {
-        Self { protocol: Protocol::Tcp, address, port }
+        Self { protocol: Protocol::Tcp, socket_addr: SocketAddrV4::new(address, port) }
     }
 
     /// Create a UDP endpoint listening on all interfaces (0.0.0.0)
@@ -76,32 +74,37 @@ impl EndpointType {
         self.protocol
     }
 
+    /// Get the socket address
+    pub const fn socket_addr(&self) -> SocketAddrV4 {
+        self.socket_addr
+    }
+
     /// Get the IP address
     pub const fn address(&self) -> Ipv4Addr {
-        self.address
+        *self.socket_addr.ip()
     }
 
     /// Get the port
     pub const fn port(&self) -> u16 {
-        self.port
+        self.socket_addr.port()
     }
 
     /// Check if this is a broadcast address (255.255.255.255)
     pub const fn is_broadcast(&self) -> bool {
-        let octets = self.address.octets();
+        let octets = self.socket_addr.ip().octets();
         octets[0] == 255 && octets[1] == 255 && octets[2] == 255 && octets[3] == 255
     }
 
     /// Check if this is a multicast address (224.0.0.0 to 239.255.255.255)
     /// Multicast addresses have the uppermost 4 bits set to 1110 (0xE0-0xEF)
     pub const fn is_multicast(&self) -> bool {
-        let octets = self.address.octets();
+        let octets = self.socket_addr.ip().octets();
         (octets[0] & 0xF0) == 0xE0
     }
 
     /// Check if this is listening on all interfaces (0.0.0.0)
     pub const fn is_any(&self) -> bool {
-        let octets = self.address.octets();
+        let octets = self.socket_addr.ip().octets();
         octets[0] == 0 && octets[1] == 0 && octets[2] == 0 && octets[3] == 0
     }
 
@@ -132,7 +135,7 @@ impl EndpointType {
             _ => false,
         };
 
-        if !protocol_matches || self.port != other.port {
+        if !protocol_matches || self.socket_addr.port() != other.socket_addr.port() {
             return false;
         }
 
@@ -142,10 +145,12 @@ impl EndpointType {
         }
 
         // Exact address match
-        if self.address.octets()[0] == other.address.octets()[0]
-            && self.address.octets()[1] == other.address.octets()[1]
-            && self.address.octets()[2] == other.address.octets()[2]
-            && self.address.octets()[3] == other.address.octets()[3]
+        let self_octets = self.socket_addr.ip().octets();
+        let other_octets = other.socket_addr.ip().octets();
+        if self_octets[0] == other_octets[0]
+            && self_octets[1] == other_octets[1]
+            && self_octets[2] == other_octets[2]
+            && self_octets[3] == other_octets[3]
         {
             return true;
         }
