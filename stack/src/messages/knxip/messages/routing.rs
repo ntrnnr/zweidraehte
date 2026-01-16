@@ -5,8 +5,6 @@
 //! - RoutingBusy: Congestion control message indicating the device is busy
 //! - RoutingLostMessage: Notification that messages were lost due to congestion
 
-// FIXME: compare these with knx spec
-
 use core::mem;
 
 use zerocopy::{IntoBytes, SplitByteSlice, SplitByteSliceMut, big_endian::U16};
