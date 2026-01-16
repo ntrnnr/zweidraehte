@@ -39,7 +39,7 @@ use crate::{
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
         interface::{HasDeviceObject, PropertyServiceHandler},
-        tables::{AssociationTable, CommunicationObjectTable},
+        tables::{AssociationTable, CommunicationObjectTable, HasLoadStateMachine},
     },
 };
 
@@ -280,6 +280,12 @@ where
         debug!("AL received {:?}", apci);
         // FIXME: check if application is running (also check if tables are loaded?)
 
+        // Check if association table is loaded before processing
+        if !self.state.ast().borrow().is_loaded() {
+            debug!("AL {:?} ignored: AST not loaded", apci);
+            return;
+        }
+
         trace!("AL incoming TSAP: {:?}", ind.get_connection_nr());
 
         for asap in self.state.ast().borrow().asaps_for_tsap(ind.get_connection_nr()) {
@@ -374,6 +380,12 @@ where
 
         debug!("AL received GroupValueRead");
 
+        // Check if association table is loaded before processing
+        if !self.state.ast().borrow().is_loaded() {
+            debug!("AL GroupValueRead ignored: AST not loaded");
+            return;
+        }
+
         // Get the priority from the incoming request - response should mirror it
         // This is BCU1/BCU2 compatible behavior as per EITT tests
         let request_priority = ind.ctrl_field().priority();
@@ -437,8 +449,12 @@ where
     ///
     /// Called when the local application wants to send a group value to the bus.
     async fn send_group_value_request(&self, asap: u16, read: bool) {
-        // FIXME: check if device is configured at all:
-        //        following needs to be loaded: Addr, Assoc, Cotab and App
+        // Check if association table is loaded before sending
+        if !self.state.ast().borrow().is_loaded() {
+            debug!("AL GroupValue request ignored: AST not loaded");
+            // FIXME: should we set error status on the comm object?
+            return;
+        }
 
         let Some(cot_info) = self.state.cot().borrow().get_object(asap) else {
             error!("Invalid ASAP: {}", asap);
