@@ -19,7 +19,7 @@ use heapless::Vec;
 use crate::{
     messages::{
         buffers::{Buffer, MessageBuffer},
-        knx::{CemiFormat, InternalFormat, KnxMessageBuffer},
+        knx::{CemiFormat, InternalFormat, KnxMessageBuffer, ServiceType},
         knxip::{KNXnetIPServiceType, RoutingBusy, RoutingIndication},
     },
     util::packets::ParseBuffer,
@@ -352,6 +352,10 @@ impl RoutingServer {
     /// 1. Allocate buffer with headroom for KNXnet/IP header (6) + cEMI expansion (3)
     /// 2. Copy KNX data and convert to cEMI format (uses 3 bytes of headroom)
     /// 3. Wrap with KNXnet/IP header (uses remaining 6 bytes of headroom)
+    ///
+    /// Note: The cEMI message code is always set to L_Data.ind regardless of
+    /// the incoming service type (which is typically L_Data_Req). This is per
+    /// the KNX/IP routing protocol specification.
     async fn create_routing_indication<'a>(
         &self,
         message: &KnxMessageBuffer<Buffer<'static>, InternalFormat>,
@@ -365,7 +369,9 @@ impl RoutingServer {
         buffer.push_slice(message.buf());
 
         // Convert to cEMI format (uses 3 bytes of headroom)
-        let internal_msg = KnxMessageBuffer::new(buffer, message.service_type());
+        // Always use L_Data_Ind for routing - outgoing messages from this device
+        // are sent as indications on the KNX/IP routing multicast group
+        let internal_msg = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
         let cemi_msg = internal_msg.into_cemi();
 
         // Extract the buffer and wrap it with the KNXnet/IP header

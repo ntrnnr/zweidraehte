@@ -638,20 +638,15 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
                         // This is actually OK - the message will be dropped
                     }
                 } else if send_success {
-                    // Restore L_Data_Req service type before building confirmation
-                    // (we changed it to L_Data_Ind for the routing protocol)
-                    // FIXME: I don't like this approach of modifying the message like this
-                    let mut inner = pending.message.into_inner();
-                    inner.set_service_type(ServiceType::L_Data_Req);
+                    // Send confirmation
+                    let inner = pending.message.into_inner();
                     pending.response_tx.send(inner.confirm().build()).await;
                 } else if send_error {
-                    let mut inner = pending.message.into_inner();
-                    inner.set_service_type(ServiceType::L_Data_Req);
+                    let inner = pending.message.into_inner();
                     pending.response_tx.send(inner.error().build()).await;
                 } else {
                     // No server could handle it - send error
-                    let mut inner = pending.message.into_inner();
-                    inner.set_service_type(ServiceType::L_Data_Req);
+                    let inner = pending.message.into_inner();
                     pending.response_tx.send(inner.error().build()).await;
                 }
             } else {
@@ -864,15 +859,9 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                                 ServiceType::L_Data_Req => {
                                     debug!("KnxNetIp Link Layer sending L_Data_Req: {:x?}", msg);
 
-                                    // Convert L_Data_Req to L_Data_Ind for KNX/IP routing
-                                    // Messages originating from this device should be sent as indications
-                                    // Extract inner KnxMessageBuffer to modify service type
-                                    let mut inner_msg = msg.into_inner();
-                                    inner_msg.set_service_type(ServiceType::L_Data_Ind);
-                                    // Re-wrap as RequestMessage for the servers
-                                    let msg = RequestMessage::request(inner_msg);
-
                                     // Find a server that supports outgoing requests
+                                    // Note: The server is responsible for protocol-specific transformations
+                                    // (e.g., routing server converts to L_Data_Ind for cEMI encoding)
                                     let mut msg_opt = Some(msg);
                                     let mut handled = false;
                                     for server in &mut self.server_instances {
@@ -889,11 +878,8 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                                                     for response in responses {
                                                         response_channel.send(response).await;
                                                     }
-                                                    // Send confirmation - restore L_Data_Req service type
-                                                    // (we changed it to L_Data_Ind for the routing protocol)
-                                                    // FIXME: I don't like this approach of modifying the message like this
-                                                    let mut inner = msg_opt.take().unwrap().into_inner();
-                                                    inner.set_service_type(ServiceType::L_Data_Req);
+                                                    // Send confirmation
+                                                    let inner = msg_opt.take().unwrap().into_inner();
                                                     response_tx.send(inner.confirm().build()).await;
                                                     handled = true;
                                                     break;
@@ -935,10 +921,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
 
                                     if !handled {
                                         // No server could handle it - send error
-                                        // Restore L_Data_Req service type before building confirmation
-                                        // FIXME: I don't like this approach of modifying the message like this
-                                        let mut inner = msg_opt.take().unwrap().into_inner();
-                                        inner.set_service_type(ServiceType::L_Data_Req);
+                                        let inner = msg_opt.take().unwrap().into_inner();
                                         response_tx.send(inner.error().build()).await;
                                     }
                                 }
