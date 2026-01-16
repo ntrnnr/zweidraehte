@@ -668,7 +668,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
         let sockets = unsafe { self.resources.sockets.assume_init_ref() };
 
         if let Some(Some(socket)) = sockets.get(socket_idx) {
-            match socket.send_to(data, *destination.ip(), destination.port()).await {
+            match socket.send_to(data, destination).await {
                 Ok(_) => Ok(()),
                 Err(e) => {
                     error!("Failed to send on socket {}: {:?}", socket_idx, e);
@@ -692,17 +692,16 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
 
             // Receive data
             match socket.recv_from(&mut buffer[..]).await {
-                Ok((len, addr, port)) => {
+                Ok((len, source)) => {
                     trace!(
-                        "KNX/IP RX {} bytes on socket {} from {}:{}: {:x?}",
+                        "KNX/IP RX {} bytes on socket {} from {}: {:x?}",
                         len,
                         socket_idx,
-                        addr,
-                        port,
+                        source,
                         &buffer[..len]
                     );
                     buffer.set_len(len);
-                    Ok((buffer, SocketAddrV4::new(addr, port)))
+                    Ok((buffer, source))
                 }
                 Err(e) => {
                     error!("Failed to receive on socket {}: {:?}", socket_idx, e);

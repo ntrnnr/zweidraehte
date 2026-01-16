@@ -118,32 +118,29 @@ impl UdpMulticastSocket {
         Ok(buf)
     }
 
-    // FIXME: use Endpoint
-    pub fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, Ipv4Addr, u16)> {
+    pub fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddrV4)> {
         let r = self.s.recv_from(buf)?;
         match r {
-            (length, SocketAddr::V4(addr)) => Ok((length, *addr.ip(), addr.port())),
+            (length, SocketAddr::V4(addr)) => Ok((length, addr)),
             _ => panic!("UDP multicast socket doesn't support IPv6"),
         }
     }
 
-    // FIXME: use Endpoint
-    pub fn recv_from_alloc(&self) -> Result<(Vec<u8>, Ipv4Addr, u16)> {
+    pub fn recv_from_alloc(&self) -> Result<(Vec<u8>, SocketAddrV4)> {
         let mut buf = vec![0u8; self.get_next_packet_len()?];
-        let (r, i, p) = self.recv_from(buf.as_mut())?;
+        let (r, addr) = self.recv_from(buf.as_mut())?;
 
         assert!(buf.len() == r);
 
-        Ok((buf, i, p))
+        Ok((buf, addr))
     }
 
     pub fn send(&self, buf: &[u8]) -> Result<usize> {
         Ok(self.s.send(buf)?)
     }
 
-    // FIXME: use Endpoint
-    pub fn send_to(&self, buf: &[u8], addr: Ipv4Addr, port: u16) -> Result<usize> {
-        Ok(self.s.send_to(buf, SocketAddrV4::new(addr, port))?)
+    pub fn send_to(&self, buf: &[u8], addr: SocketAddrV4) -> Result<usize> {
+        Ok(self.s.send_to(buf, addr)?)
     }
 }
 
@@ -218,8 +215,7 @@ impl AsyncUdpMulticastSocket {
         .map_err(|e| e.into())
     }
 
-    // FIXME: use Endpoint
-    pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, Ipv4Addr, u16)> {
+    pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddrV4)> {
         let reader = self.watcher.read_with(|io| io.s.recv_from(buf));
 
         if let Some(read_timeout) = self.read_timeout {
@@ -228,7 +224,7 @@ impl AsyncUdpMulticastSocket {
             reader.await
         }
         .map(|x| match x {
-            (length, SocketAddr::V4(addr)) => (length, (*addr.ip()).into(), addr.port()),
+            (length, SocketAddr::V4(addr)) => (length, addr),
             _ => panic!("UDP multicast socket doesn't support IPv6"),
         })
         .map_err(|e| e.into())
@@ -245,9 +241,8 @@ impl AsyncUdpMulticastSocket {
         .map_err(|e| e.into())
     }
 
-    // FIXME: use Endpoint
-    pub async fn send_to(&self, buf: &[u8], addr: Ipv4Addr, port: u16) -> Result<usize> {
-        let writer = self.watcher.write_with(|io| io.s.send_to(buf, SocketAddrV4::new(addr, port)));
+    pub async fn send_to(&self, buf: &[u8], addr: SocketAddrV4) -> Result<usize> {
+        let writer = self.watcher.write_with(|io| io.s.send_to(buf, addr));
 
         if let Some(write_timeout) = self.write_timeout {
             with_timeout(write_timeout.into(), writer).await?
