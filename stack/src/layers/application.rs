@@ -172,7 +172,6 @@ where
                                 }
 
                                 // --- Property Services ---
-                                // FIXME: Not validated to work yet
                                 ApciCode::PropertyDescriptionRead => {
                                     self.handle_property_description_read(&ind).await;
                                 }

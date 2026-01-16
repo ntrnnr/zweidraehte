@@ -341,8 +341,6 @@ impl<B: MessageBuffer + Clone> Clone for CemiBuffer<B> {
 // CONVERSION FUNCTIONS
 // ============================================================================
 
-// FIXME: check this conversion and the cEMI format against the spec!
-
 /// Convert cEMI L_Data frame to internal KNX message format
 ///
 /// cEMI format:
