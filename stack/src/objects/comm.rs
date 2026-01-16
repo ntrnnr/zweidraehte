@@ -1,9 +1,5 @@
 use crate::dpt::DatapointType;
 
-// FIXME: These need to follow the defined standard - rename a few?
-//        Make sure the numeric values match the standard?
-//        Conformance tests will access them to check for certain flags set in different circumstances
-// FIXME: Do we clear Updated? When do we clear it? When do we set it?
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 /// Status of a communication object
@@ -72,16 +68,16 @@ impl ComObjectStatus {
     /// - 0x48: Updated
     pub fn to_flags_byte(&self) -> u8 {
         match self {
-            ComObjectStatus::IdleOk => 0x40,             // Idle, OK
-            ComObjectStatus::IdleError => 0x41,          // Idle, Error
-            ComObjectStatus::Busy => 0x02,               // Transmitting (not idle)
-            ComObjectStatus::WriteRequest => 0x02,       // Transmitting (not idle)
-            ComObjectStatus::WriteRequestError => 0x41,  // Idle, Error (write failed)
-            ComObjectStatus::ReadRequest => 0x44,        // Idle + Read request pending
-            ComObjectStatus::ReadRequestOk => 0x44,      // Idle + Read request pending (sent OK)
-            ComObjectStatus::ReadRequestError => 0x45,   // Idle + Read request pending + Error
-            ComObjectStatus::Updated => 0x48,            // Idle + Updated
-            ComObjectStatus::Uninitialized => 0x40,      // Treat as IdleOk
+            ComObjectStatus::IdleOk => 0x40,            // Idle, OK
+            ComObjectStatus::IdleError => 0x41,         // Idle, Error
+            ComObjectStatus::Busy => 0x02,              // Transmitting (not idle)
+            ComObjectStatus::WriteRequest => 0x02,      // Transmitting (not idle)
+            ComObjectStatus::WriteRequestError => 0x41, // Idle, Error (write failed)
+            ComObjectStatus::ReadRequest => 0x44,       // Idle + Read request pending
+            ComObjectStatus::ReadRequestOk => 0x44,     // Idle + Read request pending (sent OK)
+            ComObjectStatus::ReadRequestError => 0x45,  // Idle + Read request pending + Error
+            ComObjectStatus::Updated => 0x48,           // Idle + Updated
+            ComObjectStatus::Uninitialized => 0x40,     // Treat as IdleOk
         }
     }
 
@@ -279,11 +275,7 @@ impl<'a, T: ComObjectValueType, const INDEX: u16> TypedComObj<'a, T, INDEX> {
     #[inline]
     pub unsafe fn new(storage: &'a mut [u8], status: &'a mut ComObjectStatus) -> Self {
         debug_assert!(storage.len() >= core::mem::size_of::<T>());
-        Self {
-            storage,
-            status,
-            _phantom: core::marker::PhantomData,
-        }
+        Self { storage, status, _phantom: core::marker::PhantomData }
     }
 
     /// Get a typed reference to the value.
@@ -377,6 +369,20 @@ pub trait ComObjects {
     #[inline]
     fn handle_write(&mut self, _idx: u16, _ctx: &Self::HookContext) {
         // Default: no-op
+    }
+
+    /// Acknowledge that an update has been processed by the application.
+    ///
+    /// This clears the `Updated` status flag, transitioning the object to `IdleOk`.
+    /// Call this after your application has handled a `ComObjectEvent::Updated` event
+    /// to indicate that the new value has been processed.
+    ///
+    /// Only affects objects in `Updated` status; other statuses are left unchanged.
+    #[inline]
+    fn acknowledge_update(&mut self, idx: u16) {
+        if self.status(idx) == ComObjectStatus::Updated {
+            self.set_status(idx, ComObjectStatus::IdleOk);
+        }
     }
 }
 

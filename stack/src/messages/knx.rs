@@ -111,8 +111,6 @@ create_protocol_enum!(
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum Tpci {
-    // FIXME: Individual, Group, Broadcast, SystemBroadcast are network layer things to be precise
-    //        Change this to unnumbered/numbered control/data packets??
     DataBroadcast,
     DataSystemBroadcast,
     DataGroup,
@@ -458,9 +456,6 @@ impl TpciField {
     }
 }
 
-// FIXME: Introduce a struct for the NPDU field like for Ctrl
-// FIXME: document the usage of bit fields of the NPDU field below
-
 /// A KNX message buffer
 ///
 /// This represents a KNX message in a format that resembles the TP1 standard
@@ -656,12 +651,7 @@ impl<B: Deref<Target = [u8]>, F: MessageFormat> KnxMessageBuffer<B, F> {
 impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
     /// Create a new KnxMessageBuffer in internal format.
     pub fn new(buf: B, service_type: ServiceType) -> Self {
-        KnxMessageBuffer {
-            service_type,
-            buf,
-            access_level: DEFAULT_MESSAGE_ACCESS_LEVEL,
-            _format: PhantomData,
-        }
+        KnxMessageBuffer { service_type, buf, access_level: DEFAULT_MESSAGE_ACCESS_LEVEL, _format: PhantomData }
     }
 
     /// Create a KnxMessageBuffer from a buffer, using a default service type.
@@ -1055,12 +1045,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, CemiFormat> {
     pub fn from_cemi(buf: B) -> Self {
         let message_code = buf[0];
         let service_type = ServiceType::try_from(message_code).unwrap_or(ServiceType::L_Data_Ind);
-        KnxMessageBuffer {
-            service_type,
-            buf,
-            access_level: DEFAULT_MESSAGE_ACCESS_LEVEL,
-            _format: PhantomData,
-        }
+        KnxMessageBuffer { service_type, buf, access_level: DEFAULT_MESSAGE_ACCESS_LEVEL, _format: PhantomData }
     }
 
     /// Get the cEMI message code byte.
@@ -1232,13 +1217,10 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, InternalFormat> {
     ) -> Result<KnxMessageBuffer<B, CemiFormat>, (Self, crate::messages::buffers::BufferError)> {
         let headroom = self.buf.headroom();
         if headroom < CEMI_EXPANSION {
-            return Err((
-                self,
-                crate::messages::buffers::BufferError::InsufficientHeadroom {
-                    requested: CEMI_EXPANSION,
-                    available: headroom,
-                },
-            ));
+            return Err((self, crate::messages::buffers::BufferError::InsufficientHeadroom {
+                requested: CEMI_EXPANSION,
+                available: headroom,
+            }));
         }
         Ok(self.into_cemi())
     }
@@ -1251,12 +1233,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, InternalFormat> {
 impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, Tp1Format> {
     /// Create a new KnxMessageBuffer wrapping a TP1-formatted buffer.
     pub fn from_tp1(buf: B, service_type: ServiceType) -> Self {
-        KnxMessageBuffer {
-            service_type,
-            buf,
-            access_level: DEFAULT_MESSAGE_ACCESS_LEVEL,
-            _format: PhantomData,
-        }
+        KnxMessageBuffer { service_type, buf, access_level: DEFAULT_MESSAGE_ACCESS_LEVEL, _format: PhantomData }
     }
 }
 
