@@ -40,7 +40,8 @@ pub struct PropertyData<T, const ID: u8, const N: usize> {
     _p: PhantomData<T>,
 }
 
-// FIXME: remove this and implement specific Debug outputs for each PDT
+/// Generic Debug implementation that shows raw bytes.
+/// For type-specific formatting, use the typed accessors (e.g., `value()`) instead.
 impl<T, const ID: u8, const N: usize> core::fmt::Debug for PropertyData<T, ID, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.data)
@@ -412,9 +413,9 @@ where
     /// - DPT 3.x = 4 bits (dimming/blinds)
     /// - DPT 4.x and higher = bytes (use PDT::SIZE * 8)
     const SIZE_BITS: usize = match MAIN {
-        1 => 1,       // DPT 1.x - 1 bit (Switch, Bool, etc.)
-        2 => 2,       // DPT 2.x - 2 bits (Bool Control)
-        3 => 4,       // DPT 3.x - 4 bits (Dimming, Blinds Control)
+        1 => 1,             // DPT 1.x - 1 bit (Switch, Bool, etc.)
+        2 => 2,             // DPT 2.x - 2 bits (Bool Control)
+        3 => 4,             // DPT 3.x - 4 bits (Dimming, Blinds Control)
         _ => PDT::SIZE * 8, // All other DPTs use full byte size
     };
 }
@@ -989,9 +990,7 @@ impl ProgrammingMode {
 
 impl fmt::Debug for ProgrammingMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProgrammingMode")
-            .field("enabled", &self.enabled())
-            .finish()
+        f.debug_struct("ProgrammingMode").field("enabled", &self.enabled()).finish()
     }
 }
 
@@ -1166,15 +1165,12 @@ mod test {
 
     #[test]
     fn test_interface_object() {
-        //let mut i = DPT_PropDataType::default();
         let i: DPT_PropDataType = InterfaceObjectType::Device.into();
 
         let id = i.id();
         assert_eq!(id.main(), 7);
         assert_eq!(id.sub(), 010);
 
-        // FIXME: we need a setter
-        //i.set_value(InterfaceObjectType::Device);
         assert_eq!(InterfaceObjectType::from(i), InterfaceObjectType::Device);
     }
 

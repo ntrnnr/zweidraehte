@@ -330,16 +330,20 @@ impl Ctrl1Field {
         self.0 = (v & !Self::P_MASK) | (priority) << Self::P_SHIFT;
     }
 
-    // FIXME: A should only be valid for L_Data.req
+    /// Get the acknowledge request flag.
+    /// Note: This field is only meaningful for L_Data.req messages.
     pub fn a(&self) -> AckType {
         self.get_flag(Self::A_FLAG_MASK).try_into().unwrap()
     }
 
+    /// Set the acknowledge request flag.
+    /// Note: This field is only meaningful for L_Data.req messages.
     pub fn set_a<A: Into<bool>>(&mut self, a: A) {
         self.set_flag(Self::A_FLAG_MASK, a.into());
     }
 
-    // FIXME: C should only be valid for L_Data.con
+    /// Get the confirmation flag.
+    /// Note: This field is only meaningful for L_Data.con messages.
     pub fn c(&self) -> Confirm {
         self.get_flag(Self::C_FLAG_MASK).try_into().unwrap()
     }
@@ -776,10 +780,12 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
         }
     }
 
-    /// Get the TPCI from the message as an enum
+    /// Get the TPCI from the message as an enum.
+    ///
+    /// Note: This method uses the address type to determine the TPCI variant,
+    /// even though address type is conceptually part of the network layer.
+    /// This is a practical trade-off for message parsing convenience.
     pub fn get_tpci(&self) -> Option<Tpci> {
-        // FIXME: Strictly speaking, the address type is part of the network layer
-
         let addr_type = self.get_address_type();
         let control = self.tpci_field().dc();
         let numbered = self.tpci_field().n();
@@ -966,10 +972,12 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
         }
     }
 
-    /// Set the TPCI value in the message from an enum
+    /// Set the TPCI value in the message from an enum.
+    ///
+    /// Note: This method also sets the address type based on the TPCI variant,
+    /// even though address type is conceptually part of the network layer.
+    /// This is a practical trade-off for message construction convenience.
     pub fn set_tpci(&mut self, tpci: Tpci) {
-        // FIXME: Strictly speaking, the address type is part of the network layer
-
         let (addr_type, control, numbered, seqno, ctrl_type) = match tpci {
             Tpci::DataBroadcast => (AddressType::Broadcast, DataControl::Data, Numbered::Unnumbered, 0, None),
             Tpci::DataSystemBroadcast => {
