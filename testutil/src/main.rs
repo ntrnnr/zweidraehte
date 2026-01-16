@@ -312,12 +312,5 @@ async fn main(spawner: Spawner) {
                 println!("Event channel lagged by {} messages", x);
             }
         }
-
-        // FIXME: stack needs to subscribe on objects and return events on subscribed object:
-        //  - Update (GroupValueResponse)
-        //  - Write (GroupValueWrite)
-
-        //let a = stack.comm_obj_write_request(1).await;
-        //println!("{:?}", a);
     }
 }
