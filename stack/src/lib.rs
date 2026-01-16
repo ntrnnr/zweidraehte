@@ -55,9 +55,7 @@ use crate::{
         network::NetworkLayer,
         transport::TransportLayer,
     },
-    memory::{
-        HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRoutingCount, MemoryMap,
-    },
+    memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, MemoryMap},
     messages::buffers::{Buffer, BufferManager, DynBufferManager},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
@@ -1000,6 +998,7 @@ pub struct Runner<'d, D: StackDefinition> {
     interface_objects: &'d D::InterfaceObjects<'static>,
     app_request_receiver: DynamicReceiver<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     link_layer_builder: D::LLB,
+    link_layer_resources: &'d mut <D::LLB as LinkLayerBuilder>::Resources,
 }
 
 /// KNX stack handle for interacting with the KNX protocol stack.
@@ -1180,9 +1179,17 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     let (app_request_sender, app_request_receiver) =
         create_request_response_pair::<NoopRawMutex, _, 1>(unsafe { core::mem::transmute(&inner.app_service_channel) });
 
+    // Initialize link layer resources using the builder
+    let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());
+
     let stack = Stack { inner, interface_objects, app_request_sender: app_request_sender.into() };
-    let runner =
-        Runner { stack, interface_objects, app_request_receiver: app_request_receiver.into(), link_layer_builder };
+    let runner = Runner {
+        stack,
+        interface_objects,
+        app_request_receiver: app_request_receiver.into(),
+        link_layer_builder,
+        link_layer_resources,
+    };
 
     (stack, runner)
 }
@@ -1191,12 +1198,9 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
     /// Run the KNX stack.
     ///
     /// You must call this in a background task, to process KNX messages.
-    ///
-    /// # Arguments
-    /// * `link_layer_resources` - Mutable reference to the link layer resources
     // FIXME: Figure out how to get rid of the trait bounds here on all the tables
     //        Problem is all the process() methods in the layers require these traits
-    pub async fn run(self, link_layer_resources: &'d mut <D::LLB as LinkLayerBuilder>::Resources) -> !
+    pub async fn run(self) -> !
     where
         D::State: HasAddressTable + HasApplication + HasAssociationTable + HasCommunicationObjectTable,
         D::InterfaceObjects<'static>: HasDeviceObject,
@@ -1248,7 +1252,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 
         // Build and run the link layer using the provided builder
         let ll_task = self.link_layer_builder.build_and_run(
-            link_layer_resources,
+            self.link_layer_resources,
             &self.stack.inner,
             nl_channel.sender().into(),
             ll_channel.receiver(),
@@ -1340,7 +1344,10 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # Returns
     /// * `Ok(())` - The write request was accepted
     /// * `Err(UpdateObjectError::Busy)` - The object is already transmitting
-    pub async fn write_object(&self, asap: <<D as StackDefinition>::CO as ComObjects>::Index) -> Result<(), UpdateObjectError> {
+    pub async fn write_object(
+        &self,
+        asap: <<D as StackDefinition>::CO as ComObjects>::Index,
+    ) -> Result<(), UpdateObjectError> {
         self.write_object_by_asap(asap.index()).await
     }
 
@@ -1377,7 +1384,10 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # Returns
     /// * `Ok(())` - The read request was accepted
     /// * `Err(ReadObjectError::Busy)` - The object is already transmitting
-    pub async fn read_object(&self, asap: <<D as StackDefinition>::CO as ComObjects>::Index) -> Result<(), ReadObjectError> {
+    pub async fn read_object(
+        &self,
+        asap: <<D as StackDefinition>::CO as ComObjects>::Index,
+    ) -> Result<(), ReadObjectError> {
         self.read_object_by_asap(asap.index()).await
     }
 

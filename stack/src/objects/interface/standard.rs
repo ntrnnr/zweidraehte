@@ -412,12 +412,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
         }
     }
 
-    fn write_property(
-        &mut self,
-        pid: u8,
-        _start_idx: u16,
-        data: &[u8],
-    ) -> Result<WriteResponse, PropertyError> {
+    fn write_property(&mut self, pid: u8, _start_idx: u16, data: &[u8]) -> Result<WriteResponse, PropertyError> {
         match pid {
             super::pid::OBJECT_TYPE | super::pid::PEI_TYPE => Err(PropertyError::WriteNotAllowed),
             super::pid::PROGRAM_VERSION => {
@@ -543,12 +538,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for PeiPro
         }
     }
 
-    fn write_property(
-        &mut self,
-        pid: u8,
-        _start_idx: u16,
-        data: &[u8],
-    ) -> Result<WriteResponse, PropertyError> {
+    fn write_property(&mut self, pid: u8, _start_idx: u16, data: &[u8]) -> Result<WriteResponse, PropertyError> {
         match pid {
             super::pid::OBJECT_TYPE | super::pid::PROGRAM_VERSION => Err(PropertyError::WriteNotAllowed),
             super::pid::LOAD_STATE_CONTROL => {
@@ -746,12 +736,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableIn
         }
     }
 
-    fn write_property(
-        &mut self,
-        pid: u8,
-        start_idx: u16,
-        data: &[u8],
-    ) -> Result<WriteResponse, PropertyError> {
+    fn write_property(&mut self, pid: u8, start_idx: u16, data: &[u8]) -> Result<WriteResponse, PropertyError> {
         match pid {
             super::pid::OBJECT_TYPE | super::pid::TABLE_REFERENCE | super::pid::MCB_TABLE => {
                 Err(PropertyError::WriteNotAllowed)

@@ -8,30 +8,6 @@ use zerocopy::SplitByteSlice;
 
 use super::buffer::BufferView;
 
-/// A packet that can be created from a raw form.
-///
-/// `FromRaw` provides a common interface for packets that can be created from
-/// an "unchecked" form - that is, that are parsed raw without any higher-order
-/// validation.
-///
-/// The type parameter `R` is the raw type that the `FromRaw` type can be
-/// converted from, given some arguments of type `A`.
-pub trait FromRaw<R, A>: Sized {
-    /// The type of error that may happen during validation.
-    type Error;
-
-    /// Attempts to create `Self` from the raw form in `raw` with `args`.
-    fn try_from_raw_with(raw: R, args: A) -> Result<Self, Self::Error>;
-
-    /// Attempts to create `Self` from the raw form in `raw`.
-    fn try_from_raw(raw: R) -> Result<Self, <Self as FromRaw<R, A>>::Error>
-    where
-        Self: FromRaw<R, (), Error = <Self as FromRaw<R, A>>::Error>,
-    {
-        Self::try_from_raw_with(raw, ())
-    }
-}
-
 /// A type that encapsulates the result of a complete or incomplete parsing
 /// operation.
 ///

@@ -45,12 +45,10 @@ pub fn create_test_variables() -> BTreeMap<String, TestVariable> {
 /// Create test preparation suite for run state machine tests
 pub fn create_preparation_suite() -> TestSuite {
     let vars = create_test_variables();
-    let cases = vec![
-        TestCase::new("R-2.1 Test preparation").with_steps(vec![
-            comment("Assumed Memory Model: Address 0x4000 to 0xBFFF"),
-            comment("================================================================================"),
-        ]),
-    ];
+    let cases = vec![TestCase::new("R-2.1 Test preparation").with_steps(vec![
+        comment("Assumed Memory Model: Address 0x4000 to 0xBFFF"),
+        comment("================================================================================"),
+    ])];
 
     TestSuite::new("R-2.1 Test preparation", vars).with_cases(cases)
 }

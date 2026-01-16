@@ -16,7 +16,6 @@ use heapless::Vec;
 use platform::{AsyncUdpMulticastSocket, UdpMulticastSocketOptions, get_interface_address};
 
 use crate::{
-    context::BufferManagerContext,
     layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
     messages::{
         buffers::*,
@@ -27,7 +26,6 @@ use crate::{
 };
 
 pub mod servers;
-use servers::KnxNetIpServer;
 
 /// Protocol type for KNX/IP endpoints
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,7 +372,7 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<MAX_SOC
         max_apdu_length: u16,
     ) -> KnxNetIp<'res, MAX_SOCKETS, MAX_SERVERS> {
         // Initialize response channel
-        let response_channel = resources.response_channel.write(Channel::new());
+        let _response_channel = resources.response_channel.write(Channel::new());
 
         // Deduplicate endpoints by port
         let mut socket_descriptors = Vec::<SocketDescriptor, MAX_SOCKETS>::new();
@@ -513,6 +511,10 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> LinkLayerBuilder
 {
     type Resources = KnxNetIpResources<MAX_SOCKETS>;
 
+    fn create_resources(&self) -> Self::Resources {
+        KnxNetIpResources::new()
+    }
+
     fn build_and_run<'a, CTX>(
         self,
         resources: &'a mut Self::Resources,
@@ -524,8 +526,7 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> LinkLayerBuilder
         CTX: crate::context::BufferManagerContext,
     {
         // Build the link layer instance
-        let mut link_layer =
-            self.build(resources, context.buffer_manager(), network_layer, context.max_apdu_length());
+        let mut link_layer = self.build(resources, context.buffer_manager(), network_layer, context.max_apdu_length());
 
         // Run the link layer's process loop
         async move { link_layer.process(inbox).await }
@@ -592,7 +593,8 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
 
                 for server in &mut self.server_instances {
                     if server.handler.supports_requests() {
-                        let context = ServerContext::new(self.buffer_manager, self.network_layer_tx, self.max_apdu_length);
+                        let context =
+                            ServerContext::new(self.buffer_manager, self.network_layer_tx, self.max_apdu_length);
                         match server.handler.on_request(&*pending.message, &context).await {
                             Ok(responses) => {
                                 // Success! Send responses and confirmation
@@ -693,13 +695,7 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
             // Receive data
             match socket.recv_from(&mut buffer[..]).await {
                 Ok((len, source)) => {
-                    trace!(
-                        "KNX/IP RX {} bytes on socket {} from {}: {:x?}",
-                        len,
-                        socket_idx,
-                        source,
-                        &buffer[..len]
-                    );
+                    trace!("KNX/IP RX {} bytes on socket {} from {}: {:x?}", len, socket_idx, source, &buffer[..len]);
                     buffer.set_len(len);
                     Ok((buffer, source))
                 }
@@ -809,7 +805,11 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                             for server in &mut self.server_instances {
                                 if server.handles(service_type, socket_idx) {
                                     // Create server context with buffer manager and network layer channel
-                                    let context = ServerContext::new(self.buffer_manager, self.network_layer_tx, self.max_apdu_length);
+                                    let context = ServerContext::new(
+                                        self.buffer_manager,
+                                        self.network_layer_tx,
+                                        self.max_apdu_length,
+                                    );
 
                                     match server
                                         .handler
@@ -866,8 +866,11 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
                                     for server in &mut self.server_instances {
                                         if server.handler.supports_requests() {
                                             // Create server context with buffer manager and network layer channel
-                                            let context =
-                                                ServerContext::new(self.buffer_manager, self.network_layer_tx, self.max_apdu_length);
+                                            let context = ServerContext::new(
+                                                self.buffer_manager,
+                                                self.network_layer_tx,
+                                                self.max_apdu_length,
+                                            );
                                             match server
                                                 .handler
                                                 .on_request(&**msg_opt.as_ref().unwrap(), &context)

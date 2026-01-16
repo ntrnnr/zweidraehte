@@ -28,7 +28,7 @@ use zweidraehte::{
         DeviceStorage, IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, PersistedState,
         SystemBDevice, SystemBMemoryMap, create_knxip_objects,
     },
-    layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, KnxNetIpResources, servers},
+    layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, servers},
     messages::knxip::KNXnetIPServiceType,
     messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium, ServiceFamily, SupportedService},
     objects::comm::ComObjects,
@@ -44,8 +44,8 @@ use testutil::util::keyboard;
 // Communication Objects Definition - use demo device comm objects
 // ============================================================================
 
-pub use testutil::devices::comm_objs;
 pub use testutil::devices::OutputConfig;
+pub use testutil::devices::comm_objs;
 
 // ============================================================================
 // Device Constants - use demo device definitions
@@ -211,9 +211,9 @@ impl StackDefinition for MySystemBStack {
 // ============================================================================
 
 #[embassy_executor::task]
-async fn run_stack(runner: Runner<'static, MySystemBStack>, link_layer_resources: &'static mut KnxNetIpResources<2>) {
+async fn run_stack(runner: Runner<'static, MySystemBStack>) {
     println!("Running System B KNX/IP stack...");
-    runner.run(link_layer_resources).await;
+    runner.run().await;
 }
 
 #[embassy_executor::main]
@@ -310,8 +310,7 @@ async fn main(spawner: Spawner) {
         MY_MEMORY_MAP,
     );
 
-    let ll_resources = Box::leak(Box::new(KnxNetIpResources::<2>::new()));
-    spawner.spawn(run_stack(runner, ll_resources)).unwrap();
+    spawner.spawn(run_stack(runner)).unwrap();
 
     println!("=== Stack Running ===");
     println!("Listening for KNX messages...");
@@ -372,10 +371,7 @@ async fn main(spawner: Spawner) {
                 let params = app.params();
                 // Print raw bytes to debug layout issues
                 let raw_bytes: &[u8] = unsafe {
-                    core::slice::from_raw_parts(
-                        params as *const _ as *const u8,
-                        core::mem::size_of_val(params),
-                    )
+                    core::slice::from_raw_parts(params as *const _ as *const u8, core::mem::size_of_val(params))
                 };
                 println!("  Application Parameters (raw {} bytes): {:02X?}", raw_bytes.len(), raw_bytes);
                 println!("  Application Parameters:");
@@ -385,8 +381,12 @@ async fn main(spawner: Spawner) {
                 match &params.channel_a_config {
                     OutputConfig::Disabled => println!("Disabled"),
                     OutputConfig::Switch { invert } => println!("Switch (invert: {:?})", invert),
-                    OutputConfig::Dimmer { min_level, max_level } => println!("Dimmer (range: {}-{})", min_level, max_level),
-                    OutputConfig::Pwm { frequency, duty_cycle } => println!("PWM (freq: {} Hz, duty: {}%)", frequency, duty_cycle),
+                    OutputConfig::Dimmer { min_level, max_level } => {
+                        println!("Dimmer (range: {}-{})", min_level, max_level)
+                    }
+                    OutputConfig::Pwm { frequency, duty_cycle } => {
+                        println!("PWM (freq: {} Hz, duty: {}%)", frequency, duty_cycle)
+                    }
                 }
 
                 // Channel B settings
@@ -394,8 +394,12 @@ async fn main(spawner: Spawner) {
                 match &params.channel_b_config {
                     OutputConfig::Disabled => println!("Disabled"),
                     OutputConfig::Switch { invert } => println!("Switch (invert: {:?})", invert),
-                    OutputConfig::Dimmer { min_level, max_level } => println!("Dimmer (range: {}-{})", min_level, max_level),
-                    OutputConfig::Pwm { frequency, duty_cycle } => println!("PWM (freq: {} Hz, duty: {}%)", frequency, duty_cycle),
+                    OutputConfig::Dimmer { min_level, max_level } => {
+                        println!("Dimmer (range: {}-{})", min_level, max_level)
+                    }
+                    OutputConfig::Pwm { frequency, duty_cycle } => {
+                        println!("PWM (freq: {} Hz, duty: {}%)", frequency, duty_cycle)
+                    }
                 }
 
                 // General settings
@@ -416,7 +420,10 @@ async fn main(spawner: Spawner) {
                         println!("    Scene Config: Recall Only (Scene: {})", scene_number);
                     }
                     testutil::devices::SceneConfig::StoreAndRecall { scene_number, store_time } => {
-                        println!("    Scene Config: Store & Recall (Scene: {}, Store Time: {}00ms)", scene_number, store_time);
+                        println!(
+                            "    Scene Config: Store & Recall (Scene: {}, Store Time: {}00ms)",
+                            scene_number, store_time
+                        );
                     }
                 }
             } else {

@@ -44,9 +44,8 @@
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 
-use crate::address::IndividualAddress;
 use crate::messages::buffers::Buffer;
-use crate::messages::knx::{offsets, ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci};
+use crate::messages::knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci};
 
 // ============================================================================
 // Direction Type States

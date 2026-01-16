@@ -171,6 +171,10 @@ impl UsbLinkLayerBuilder {
 impl LinkLayerBuilder for UsbLinkLayerBuilder {
     type Resources = UsbLinkLayerResources;
 
+    fn create_resources(&self) -> Self::Resources {
+        UsbLinkLayerResources::new()
+    }
+
     fn build_and_run<'a, CTX>(
         self,
         resources: &'a mut Self::Resources,

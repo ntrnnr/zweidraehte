@@ -19,7 +19,7 @@ use core::ops::Deref;
 
 use zerocopy::{ByteSlice, IntoByteSlice, SplitByteSlice, SplitByteSliceMut};
 
-use super::util::{FromRaw, MaybeParsed};
+use super::util::MaybeParsed;
 use crate::util::packets::{BufferView, BufferViewMut, SerializablePacket};
 
 /// A type that encapsuates the result of a record parsing operation.
@@ -588,18 +588,6 @@ where
     /// [`parse_with_context`]: Records::parse_with_context
     pub fn parse(bytes: B) -> Result<Records<B, R>, R::Error> {
         Self::parse_with_context(bytes, ())
-    }
-}
-
-impl<B, R> FromRaw<RecordsRaw<B, R>, ()> for Records<B, R>
-where
-    R: RecordsImpl,
-    B: SplitByteSlice,
-{
-    type Error = R::Error;
-
-    fn try_from_raw_with(raw: RecordsRaw<B, R>, _args: ()) -> Result<Self, R::Error> {
-        Records::<B, R>::parse_with_context(raw.bytes, raw._context)
     }
 }
 

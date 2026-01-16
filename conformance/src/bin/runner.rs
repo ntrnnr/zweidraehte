@@ -30,7 +30,6 @@ use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Timer};
 use log::LevelFilter;
 
-use knx_conformance::harness::mock::MockLinkLayerResources;
 use knx_conformance::harness::stack::{ConformanceTestStack, FullStackHarness};
 use knx_conformance::logger;
 use knx_conformance::*;
@@ -39,8 +38,8 @@ use zweidraehte::Runner;
 
 /// Run the stack in the background
 #[embassy_executor::task]
-async fn run_stack(runner: Runner<'static, ConformanceTestStack>, ll_resources: &'static mut MockLinkLayerResources) {
-    runner.run(ll_resources).await;
+async fn run_stack(runner: Runner<'static, ConformanceTestStack>) {
+    runner.run().await;
 }
 
 #[embassy_executor::main]
@@ -200,8 +199,8 @@ async fn main(spawner: Spawner) {
     }
 
     // Create the full stack harness
-    let (harness, runner, ll_resources) = FullStackHarness::new();
-    spawner.spawn(run_stack(runner, ll_resources)).unwrap();
+    let (harness, runner) = FullStackHarness::new();
+    spawner.spawn(run_stack(runner)).unwrap();
     Timer::after(Duration::from_millis(50)).await;
 
     let mut passed = 0;

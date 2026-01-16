@@ -81,6 +81,9 @@ pub trait LinkLayerBuilder: Sized {
     /// The resource type required by this link layer implementation
     type Resources: Sized + 'static;
 
+    /// Create the resources needed by this link layer
+    fn create_resources(&self) -> Self::Resources;
+
     /// Build and return the configured link layer instance
     ///
     /// # Arguments

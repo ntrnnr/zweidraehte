@@ -10,7 +10,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     address::IndividualAddress,
-    objects::tables::{Table, addr7::AddrTab7Impl, app::{Application, PeiApplication}, asso6::AssoTab6Impl, co7::CoTab7Impl},
+    objects::tables::{
+        Table,
+        addr7::AddrTab7Impl,
+        app::{Application, PeiApplication},
+        asso6::AssoTab6Impl,
+        co7::CoTab7Impl,
+    },
 };
 
 /// Trait for persisting device state to storage.

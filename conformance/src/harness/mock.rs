@@ -294,6 +294,10 @@ impl<const N: usize, const C: usize> MockLinkLayerBuilder<N, C> {
 impl<const N: usize, const C: usize> LinkLayerBuilder for MockLinkLayerBuilder<N, C> {
     type Resources = MockLinkLayerResources;
 
+    fn create_resources(&self) -> Self::Resources {
+        MockLinkLayerResources::new()
+    }
+
     fn build_and_run<'a, CTX>(
         self,
         _resources: &'a mut Self::Resources,

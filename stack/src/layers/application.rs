@@ -908,13 +908,7 @@ where
         );
 
         // Perform the write - the response may differ from written data (e.g., LOAD_STATE_CONTROL)
-        let result = self.interface_objects.property_value_write(
-            object_idx,
-            prop_id,
-            start_idx,
-            data,
-            access_level,
-        );
+        let result = self.interface_objects.property_value_write(object_idx, prop_id, start_idx, data, access_level);
 
         // Sync DeviceControl.user_stopped after writes to RUN_STATE_CONTROL.
         // This needs to be updated whenever the run state machine transitions.

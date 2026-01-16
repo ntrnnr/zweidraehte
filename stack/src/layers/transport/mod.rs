@@ -50,7 +50,7 @@ use crate::{
     messages::{
         buffers::Buffer,
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
-        knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci, DEFAULT_MESSAGE_ACCESS_LEVEL},
+        knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci, DEFAULT_MESSAGE_ACCESS_LEVEL},
     },
     objects::tables::{AddressTable, HasLoadStateMachine},
 };

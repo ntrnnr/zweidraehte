@@ -8,7 +8,7 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, pubsub::WaitResult};
 use embassy_time::{Duration, Timer};
 use env_logger::Env;
-use knx_conformance::harness::mock::{MockLinkLayerBuilder, MockLinkLayerResources};
+use knx_conformance::harness::mock::MockLinkLayerBuilder;
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
 use core::cell::RefCell;
@@ -178,9 +178,9 @@ impl StackDefinition for MyKnxStack {
 }
 
 #[embassy_executor::task]
-async fn run_stack(runner: Runner<'static, MyKnxStack>, link_layer_resources: &'static mut MockLinkLayerResources) {
+async fn run_stack(runner: Runner<'static, MyKnxStack>) {
     println!("Running stack...");
-    runner.run(link_layer_resources).await;
+    runner.run().await;
 }
 
 #[embassy_executor::main]
@@ -253,10 +253,7 @@ async fn main(spawner: Spawner) {
         zweidraehte::memory::NoMemoryMap,
     );
 
-    // Create link layer resources
-    let ll_resources = Box::leak(Box::new(MockLinkLayerResources::new()));
-
-    spawner.spawn(run_stack(runner, ll_resources)).unwrap();
+    spawner.spawn(run_stack(runner)).unwrap();
 
     // Inject messages using the mock link layer handle
     // GroupValueReadResponse for 1/0/4

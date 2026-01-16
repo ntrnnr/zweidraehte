@@ -121,7 +121,7 @@ use zweidraehte::{
     address::IndividualAddress,
     dpt::DPT_Switch,
     ets::EtsComObjects,
-    layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, KnxNetIpResources, servers},
+    layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, servers},
     memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
     messages::knxip::KNXnetIPServiceType,
     messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium, ServiceFamily, SupportedService},
@@ -726,12 +726,9 @@ impl StackDefinition for MyKnxStackWithKnxIp {
 }
 
 #[embassy_executor::task]
-async fn run_stack(
-    runner: Runner<'static, MyKnxStackWithKnxIp>,
-    link_layer_resources: &'static mut KnxNetIpResources<2>,
-) {
+async fn run_stack(runner: Runner<'static, MyKnxStackWithKnxIp>) {
     println!("Running KNX stack with KNX/IP link layer...");
-    runner.run(link_layer_resources).await;
+    runner.run().await;
 }
 
 #[embassy_executor::main]
@@ -869,11 +866,8 @@ async fn main(spawner: Spawner) {
     //     interface_objects.ip_parameter.borrow().project_installation_id.value()
     // );
 
-    // Create link layer resources
-    let ll_resources = Box::leak(Box::new(KnxNetIpResources::<2>::new()));
-
     // Spawn the stack runner
-    spawner.spawn(run_stack(runner, ll_resources)).unwrap();
+    spawner.spawn(run_stack(runner)).unwrap();
 
     println!("\n=== Stack Running ===");
     println!("Communication Objects:");

@@ -521,16 +521,16 @@ create_protocol_enum!(
 // Run State Machine Types
 // ============================================================================
 
-/// Run state machine states for the Application Program Object.
-///
-/// The run state machine controls the execution state of the application program.
-/// It interacts with the load state machine - the application can only run when loaded.
-///
-/// States:
-/// - `Halted` (0x00): Application is halted (not running). Default state when unloaded.
-/// - `Running` (0x01): Application is running normally.
-/// - `Ready` (0x02): Intermediate state - conditions being checked before running.
-/// - `Terminated` (0x03): Application explicitly stopped via RUNCONTROL_STOP.
+// Run state machine states for the Application Program Object.
+//
+// The run state machine controls the execution state of the application program.
+// It interacts with the load state machine - the application can only run when loaded.
+//
+// States:
+// - `Halted` (0x00): Application is halted (not running). Default state when unloaded.
+// - `Running` (0x01): Application is running normally.
+// - `Ready` (0x02): Intermediate state - conditions being checked before running.
+// - `Terminated` (0x03): Application explicitly stopped via RUNCONTROL_STOP.
 create_protocol_enum!(
     #[derive(Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
     pub enum RunState: u8 {
@@ -541,15 +541,15 @@ create_protocol_enum!(
     }
 );
 
-/// Run control events for PID_RUN_STATE_CONTROL (0x06).
-///
-/// These events control the run state machine transitions:
-/// - `Ready` (0x00): No operation - state remains unchanged.
-/// - `Restart` (0x01): Restart the application.
-/// - `Stop` (0x02): Stop the application. Transitions to Terminated state.
-/// - `Loaded` (0x03): Internal event - signaled when load state machine completes loading.
-/// - `Unloaded` (0x04): Internal event - signaled when load state machine unloads.
-/// - `ReadyToRun` (0x05): Internal event - startup delay complete, can transition to Running.
+// Run control events for PID_RUN_STATE_CONTROL (0x06).
+//
+// These events control the run state machine transitions:
+// - `Ready` (0x00): No operation - state remains unchanged.
+// - `Restart` (0x01): Restart the application.
+// - `Stop` (0x02): Stop the application. Transitions to Terminated state.
+// - `Loaded` (0x03): Internal event - signaled when load state machine completes loading.
+// - `Unloaded` (0x04): Internal event - signaled when load state machine unloads.
+// - `ReadyToRun` (0x05): Internal event - startup delay complete, can transition to Running.
 create_protocol_enum!(
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum RunEvent: u8 {

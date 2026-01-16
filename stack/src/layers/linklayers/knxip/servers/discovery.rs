@@ -1,24 +1,17 @@
-use core::net::{Ipv4Addr, SocketAddrV4};
+use core::net::SocketAddrV4;
 use heapless::Vec;
 
 use crate::{
-    address::IndividualAddress,
     messages::{
         buffers::{Buffer, MessageBuffer},
         knx::KnxMessageBuffer,
-        knxip::substructs::*,
         knxip::KNXnetIPServiceType,
+        knxip::substructs::*,
     },
     util::packets::ParseBuffer,
 };
 
 use super::{KnxNetIpServer, PendingResponse, ServerContext, ServerError};
-
-use platform::address::EthernetAddress;
-
-// KNX/IP standard multicast address
-const KNX_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
-const KNX_PORT: u16 = 3671;
 
 // FIXME: Strictly speaking, we should only have one server that does discovery on 224.0.23.12:3671 and
 //        then multiple servers that handle the control endpoints of other service containers

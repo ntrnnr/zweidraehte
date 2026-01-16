@@ -43,7 +43,7 @@ use zweidraehte::{
     IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
 };
 
-use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle, MockLinkLayerResources};
+use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle};
 
 // ============================================================================
 // Communication Objects (BCU1-style with shadow objects)
@@ -66,7 +66,7 @@ pub mod comm_objs {
     use zweidraehte::ets::EtsComObjects;
     use zweidraehte::objects::comm::ComObject;
     #[allow(unused_imports)]
-    use zweidraehte::objects::comm::{ComObjectIndex, ComObjects, ComObjectInfo, ComObjectInfoMut};
+    use zweidraehte::objects::comm::{ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects};
 
     // Use #[ets(manual_impl)] to provide our own ComObjects implementation with hooks
     #[derive(EtsComObjects)]
@@ -75,7 +75,6 @@ pub mod comm_objs {
         // ================================================================
         // GO0-GO3: 1-bit main object and shadow objects (ASAP 1-4)
         // ================================================================
-
         /// GO0: Main 1-bit object (UINT1)
         /// This is the primary test object whose flags/value are accessed via GO1-GO3
         #[ets(index = 1)]
@@ -108,7 +107,6 @@ pub mod comm_objs {
         // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects (ASAP 5-8)
         // For invalid data length tests (1.4.1.4a)
         // ================================================================
-
         /// GO0_BYTE3: 3-byte version of GO0 for invalid data length tests
         #[ets(index = 5)]
         pub go_0_byte3: ComObject<DPT_Value_3_Ucount>,
@@ -128,7 +126,6 @@ pub mod comm_objs {
         // ================================================================
         // Additional test objects (ASAP 9-11)
         // ================================================================
-
         /// GO4: For Read on Init testing
         #[ets(index = 9)]
         pub go_4: ComObject<DPT_Value_1_Ucount>,
@@ -1391,9 +1388,6 @@ static CAPTURE_CHANNEL: StaticCell<Channel<NoopRawMutex, CapturedLinkLayerMessag
 static STACK_RESOURCES: StaticCell<StackResources<ConformanceTestStack, { device_info::BUFFER_SIZE }, 4>> =
     StaticCell::new();
 
-// Link layer resources
-static LL_RESOURCES: StaticCell<MockLinkLayerResources> = StaticCell::new();
-
 // Buffer manager for test injections - use BUFFER_SIZE from device_info
 static INJECTION_BUFFERS: StaticCell<[[u8; device_info::BUFFER_SIZE]; 16]> = StaticCell::new();
 static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<16>> = StaticCell::new();
@@ -1418,7 +1412,7 @@ impl FullStackHarness {
     /// Create a new full stack harness
     ///
     /// Returns the harness and a runner that must be spawned as a task.
-    pub fn new() -> (Self, Runner<'static, ConformanceTestStack>, &'static mut MockLinkLayerResources) {
+    pub fn new() -> (Self, Runner<'static, ConformanceTestStack>) {
         // Initialize static channels
         let injection_channel = INJECTION_CHANNEL.init(Channel::new());
         let capture_channel = CAPTURE_CHANNEL.init(Channel::new());
@@ -1477,10 +1471,8 @@ impl FullStackHarness {
             stack.hook_context().set_cot(stack.communication_object_table());
         }
 
-        let ll_resources = LL_RESOURCES.init(MockLinkLayerResources::new());
-
         let harness = Self { handle, buffer_manager: dyn_buffer_manager, stack };
-        (harness, runner, ll_resources)
+        (harness, runner)
     }
 
     /// Allocate a buffer and create a KnxMessageBuffer from raw bytes
