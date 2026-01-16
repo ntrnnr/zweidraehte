@@ -496,7 +496,7 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<MAX_SOC
             socket_descriptors,
             server_instances,
             buffer_manager,
-            interface_name: self.interface_name,
+            _interface_name: self.interface_name,
             local_addr: interface_addr,
             network_layer_tx,
             retry_queue: Vec::new(),
@@ -561,7 +561,7 @@ pub struct KnxNetIp<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
     /// Buffer manager reference
     buffer_manager: &'res RefCell<DynBufferManager<'static>>,
     /// Interface name for logging
-    interface_name: &'static str,
+    _interface_name: &'static str,
     /// Local interface IP address (used to filter out our own multicast echoes)
     local_addr: Ipv4Addr,
     /// Channel to send messages to the network layer

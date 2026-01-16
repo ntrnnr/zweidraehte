@@ -84,7 +84,7 @@ async fn main(spawner: Spawner) {
     // Create channel for sending requests to the link layer
     let link_channel =
         Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<Buffer<'static>>, 32>::new()));
-    let link_sender: DynamicSender<'_, LayerOp<Buffer<'static>>> = link_channel.sender().into();
+    let _link_sender: DynamicSender<'_, LayerOp<Buffer<'static>>> = link_channel.sender().into();
     let link_receiver = link_channel.receiver();
 
     // Create the KNXnet/IP link layer builder and use the LinkLayerBuilder trait

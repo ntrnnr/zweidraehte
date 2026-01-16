@@ -23,7 +23,7 @@ use env_logger::Env;
 use zweidraehte::{
     address::IndividualAddress,
     context::BufferManagerContext,
-    encoding::tp1::{tp1_to_knx_message, tp1_to_knx_message_no_checksum},
+    encoding::tp1::tp1_to_knx_message_no_checksum,
     layers::{
         ActorRequest, LayerOp, LinkLayerBuilder,
         linklayers::usb::{UsbLinkLayerBuilder, UsbLinkLayerResources},
@@ -89,7 +89,7 @@ fn print_frame(prefix: &str, buf: &[u8]) {
             // CC = control type: 00=T_Connect/Disconnect, 01=T_ACK/NAK, 10/11=reserved
             // SSSS = sequence number (for ACK/NAK)
             // XX = subtype bits
-            let ctrl_type = (tpci >> 5) & 0x03; // Bits 6-5
+            let _ctrl_type = (tpci >> 5) & 0x03; // Bits 6-5
             let seqno = (tpci >> 2) & 0x0F;
             let ctrl_str = match tpci {
                 0x80 => "T_Connect",

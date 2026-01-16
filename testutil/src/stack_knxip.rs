@@ -128,7 +128,7 @@ use zweidraehte::{
     objects::comm::{ComObject, ComObjectIndex, ComObjects},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
-        HasDeviceObject, InterfaceObject, IpParameterObject, PropertyDescriptionResponse, PropertyError,
+        InterfaceObject, IpParameterObject, PropertyDescriptionResponse, PropertyError,
         PropertyServiceHandler, WriteResponse,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadEvent, RunEvent, app::Application},

@@ -291,13 +291,13 @@ async fn main(spawner: Spawner) {
                     }
                     TestStep::TriggerRead { asap } => {
                         println!("  [{}] 📤 TriggerRead(ASAP {})", i, asap);
-                        harness.stack().read_object_by_asap(*asap).await;
+                        let _ = harness.stack().read_object_by_asap(*asap).await;
                         // Give stack time to process
                         Timer::after(Duration::from_millis(10)).await;
                     }
                     TestStep::TriggerWrite { asap } => {
                         println!("  [{}] 📤 TriggerWrite(ASAP {})", i, asap);
-                        harness.stack().write_object_by_asap(*asap).await;
+                        let _ = harness.stack().write_object_by_asap(*asap).await;
                         // Give stack time to process
                         Timer::after(Duration::from_millis(10)).await;
                     }
@@ -426,13 +426,13 @@ async fn main(spawner: Spawner) {
                     }
                     TestStep::TriggerRead { asap } => {
                         println!("  [{}] 📤 TriggerRead(ASAP {})", i, asap);
-                        harness.stack().read_object_by_asap(*asap).await;
+                        let _ = harness.stack().read_object_by_asap(*asap).await;
                         // Give stack time to process
                         Timer::after(Duration::from_millis(10)).await;
                     }
                     TestStep::TriggerWrite { asap } => {
                         println!("  [{}] 📤 TriggerWrite(ASAP {})", i, asap);
-                        harness.stack().write_object_by_asap(*asap).await;
+                        let _ = harness.stack().write_object_by_asap(*asap).await;
                         // Give stack time to process
                         Timer::after(Duration::from_millis(10)).await;
                     }
@@ -545,12 +545,12 @@ async fn main(spawner: Spawner) {
                     }
                     TestStep::TriggerRead { asap } => {
                         println!("  [{}] 📤 TriggerRead(ASAP {})", i, asap);
-                        harness.stack().read_object_by_asap(*asap).await;
+                        let _ = harness.stack().read_object_by_asap(*asap).await;
                         Timer::after(Duration::from_millis(10)).await;
                     }
                     TestStep::TriggerWrite { asap } => {
                         println!("  [{}] 📤 TriggerWrite(ASAP {})", i, asap);
-                        harness.stack().write_object_by_asap(*asap).await;
+                        let _ = harness.stack().write_object_by_asap(*asap).await;
                         Timer::after(Duration::from_millis(10)).await;
                     }
                     TestStep::ExpectNone { timeout_ms } => {

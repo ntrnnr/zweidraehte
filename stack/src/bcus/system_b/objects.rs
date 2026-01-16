@@ -33,8 +33,8 @@ use crate::{
     dpt::{DeviceControl, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
-        GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PeiProgramObject, PropertyDescriptionResponse,
-        PropertyDescriptor, PropertyError, PropertyServiceHandler, WriteResponse,
+        GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PeiProgramObject,
+        PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyServiceHandler, WriteResponse,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -42,7 +42,8 @@ use crate::{
 use super::SystemBDevice;
 use crate::StackDefinition;
 use crate::memory::{
-    HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication, HasRoutingCount,
+    HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication,
+    HasRoutingCount,
 };
 
 // ============================================================================
@@ -474,7 +475,13 @@ pub fn create_system_b_objects<'a, D, S>(
 ) -> SystemBObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI>
 where
     D: StackDefinition + SystemBDevice,
-    S: StackState + HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasPeiApplication + HasRoutingCount,
+    S: StackState
+        + HasAddressTable
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasApplication
+        + HasPeiApplication
+        + HasRoutingCount,
     S::ADT: HasLoadStateMachine,
     S::AST: HasLoadStateMachine,
     S::COT: HasLoadStateMachine,
@@ -513,7 +520,13 @@ pub fn create_knxip_objects<'a, D, S>(
 ) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI>
 where
     D: StackDefinition + SystemBDevice,
-    S: IpStackState + HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasPeiApplication + HasRoutingCount,
+    S: IpStackState
+        + HasAddressTable
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasApplication
+        + HasPeiApplication
+        + HasRoutingCount,
     S::ADT: HasLoadStateMachine,
     S::AST: HasLoadStateMachine,
     S::COT: HasLoadStateMachine,

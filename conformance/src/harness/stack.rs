@@ -36,7 +36,7 @@ use zweidraehte::{
     objects::comm::{ComObjectStatus, ComObjects},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
-        GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PropertyDescriptionResponse,
+        GroupObjectTableObject, InterfaceObject, IpParameterObject, PropertyDescriptionResponse,
         PropertyError, PropertyServiceHandler, WriteResponse,
     },
     objects::tables::{app::Application, HasLoadStateMachine},
