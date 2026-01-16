@@ -642,18 +642,16 @@ create_protocol_enum!(
     }
 );
 
-// FIXME: this doesn't even need to be a protocol_enum
-create_protocol_enum!(
-    #[derive(Eq, PartialEq, Copy, Clone)]
-    enum LoadAction: u8 {
-        None                    , 0x00, "None";
-        LoadStart               , 0x01, "LoadStart";
-        LoadEnd                 , 0x02, "LoadEnd";
-        Unload                  , 0x03, "Unload";
-        Alloc                   , 0x40, "Alloc";
-        _,                              "Unknown Load Event 0x{:x}";
-    }
-);
+/// Internal action to perform during load state machine transitions.
+/// This is purely internal and never serialized/deserialized from the wire.
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+enum LoadAction {
+    None,
+    LoadStart,
+    LoadEnd,
+    Unload,
+    Alloc,
+}
 
 #[repr(C)]
 #[derive(Debug, FromBytes, IntoBytes, Unaligned, KnownLayout, Immutable)]
@@ -833,7 +831,6 @@ impl<T: TableMemory> HasLoadStateMachine for Table<T> {
                 self.table_reference = 0;
             }
             LoadAction::None => {}
-            _ => new_state = LoadState::Err,
         }
 
         self.state = new_state;
