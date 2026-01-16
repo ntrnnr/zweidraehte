@@ -719,8 +719,26 @@ pub struct Options {
 /// The Dynamic section for UI organization
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DynamicSection {
-    #[serde(rename = "Channel", default)]
+    #[serde(rename = "ChannelIndependentBlock", skip_serializing_if = "Option::is_none")]
+    pub channel_independent_block: Option<ChannelIndependentBlock>,
+    #[serde(rename = "Channel", default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<Channel>,
+}
+
+/// ChannelIndependentBlock - contains device-wide settings that appear outside of any channel tab
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChannelIndependentBlock {
+    #[serde(rename = "$value", default)]
+    pub items: Vec<ChannelIndependentItem>,
+}
+
+/// Items that can appear in a ChannelIndependentBlock
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ChannelIndependentItem {
+    #[serde(rename = "ParameterBlock")]
+    ParameterBlock(ParameterBlock),
+    #[serde(rename = "choose")]
+    Choose(Choose),
 }
 
 /// A channel in the Dynamic section
@@ -730,13 +748,24 @@ pub struct Channel {
     pub id: String,
     #[serde(rename = "@Name")]
     pub name: String,
+    #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     #[serde(rename = "@Number", skip_serializing_if = "Option::is_none")]
     pub number: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
 
-    #[serde(rename = "ParameterBlock", default, skip_serializing_if = "Vec::is_empty")]
-    pub parameter_blocks: Vec<ParameterBlock>,
+    #[serde(rename = "$value", default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ChannelItem>,
+}
+
+/// Items that can appear in a Channel
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ChannelItem {
+    #[serde(rename = "ParameterBlock")]
+    ParameterBlock(ParameterBlock),
+    #[serde(rename = "choose")]
+    Choose(Choose),
 }
 
 /// A parameter block in a channel
@@ -746,6 +775,8 @@ pub struct ParameterBlock {
     pub id: String,
     #[serde(rename = "@Name")]
     pub name: String,
+    #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
 
@@ -761,8 +792,19 @@ pub enum ParameterBlockItem {
     ParameterRefRef(ParameterRefRef),
     #[serde(rename = "ComObjectRefRef")]
     ComObjectRefRef(ComObjectRefRef),
+    #[serde(rename = "ParameterSeparator")]
+    ParameterSeparator(ParameterSeparator),
     #[serde(rename = "choose")]
     Choose(Choose),
+}
+
+/// A visual separator element in a parameter block
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParameterSeparator {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// A choose element for conditional parameter visibility based on a selector value
@@ -805,6 +847,8 @@ pub enum WhenItem {
     ParameterRefRef(ParameterRefRef),
     #[serde(rename = "ComObjectRefRef")]
     ComObjectRefRef(ComObjectRefRef),
+    #[serde(rename = "ParameterSeparator")]
+    ParameterSeparator(ParameterSeparator),
     #[serde(rename = "ParameterBlock")]
     ParameterBlock(ParameterBlock),
     #[serde(rename = "choose")]

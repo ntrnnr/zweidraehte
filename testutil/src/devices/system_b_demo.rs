@@ -8,6 +8,9 @@ use core::net::Ipv4Addr;
 
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
+
+use crate::ets_pages;
+use crate::mtxml_gen::page_layout::{EtsPageLayout, PageStructure};
 /// Big-endian u16 for KNX parameter storage.
 ///
 /// KNX stores multi-byte parameters in big-endian format (network byte order).
@@ -589,5 +592,144 @@ impl StackDefinition for DemoStack {
         Self::State: 'a,
     {
         create_knxip_objects::<DemoStack, _>(state, &MEMORY_LAYOUT)
+    }
+}
+
+// ============================================================================
+// ETS Page Layout
+// ============================================================================
+
+impl EtsPageLayout for DemoStack {
+    fn page_layout() -> PageStructure {
+        use InputSourceDiscriminant::*;
+        use OutputConfigDiscriminant::*;
+        use SceneConfigDiscriminant::*;
+
+        ets_pages! {
+            // Device-wide settings shown at the top level (not in any channel tab)
+            device {
+                // General device behavior settings
+                block "general" => "General" {
+                    param send_cycle_time
+                    sep "Scene Control"
+                    selector scene_config
+                    obj scene_control
+                    sep "Lock"
+                    param lock_behavior
+                    obj lock_in
+                }
+
+                // Scene-specific settings appear conditionally
+                // Using new path syntax: union_field::Variant.field
+                when scene_config {
+                    [RecallOnly] => {
+                        block "scene_recall" => "    Scene Settings" {
+                            param scene_config::RecallOnly.scene_number
+                        }
+                    }
+                    [StoreAndRecall] => {
+                        block "scene_store" => "    Scene Settings" {
+                            param scene_config::StoreAndRecall.scene_number
+                            param scene_config::StoreAndRecall.store_time
+                        }
+                    }
+                }
+
+                // Input source configuration
+                block "input" => "Input" {
+                    selector input_source
+                }
+
+                when input_source {
+                    [Binary] => {
+                        block "input_binary" => "    Binary Input Settings" {
+                            param input_source::Binary.debounce_ms
+                            param input_source::Binary.invert
+                        }
+                    }
+                    [Analog] => {
+                        block "input_analog" => "    Analog Input Settings" {
+                            param input_source::Analog.input_type
+                            sep "Thresholds"
+                            param input_source::Analog.low_threshold
+                            param input_source::Analog.high_threshold
+                        }
+                    }
+                    [Temperature] => {
+                        block "input_temp" => "    Temperature Sensor Settings" {
+                            param input_source::Temperature.sensor_type
+                            param input_source::Temperature.offset
+                        }
+                    }
+                }
+
+                // Status outputs (fixed, always visible)
+                block "status" => "Status" {
+                    obj in_operation
+                    obj error_status
+                }
+
+                // Output channel configuration - mode selectors
+                block "outputs" => "Outputs" {
+                    selector channel_a_config
+                    selector channel_b_config
+                }
+
+                // Channel A config blocks appear below based on selection
+                // The comm objects are conditional and will auto-wrap in choose/when
+                when channel_a_config {
+                    [Switch] => {
+                        block "channel_a_switch" => "    Channel A: Switch" {
+                            param channel_a_config::Switch.invert
+                            obj channel_a_in
+                            obj channel_a_out
+                        }
+                    }
+                    [Dimmer] => {
+                        block "channel_a_dimmer" => "    Channel A: Dimmer" {
+                            param channel_a_config::Dimmer.min_level
+                            param channel_a_config::Dimmer.max_level
+                            obj channel_a_in
+                            obj channel_a_out
+                        }
+                    }
+                    [Pwm] => {
+                        block "channel_a_pwm" => "    Channel A: PWM" {
+                            param channel_a_config::Pwm.frequency
+                            param channel_a_config::Pwm.duty_cycle
+                            obj channel_a_in
+                            obj channel_a_out
+                        }
+                    }
+                }
+
+                // Channel B config blocks appear below based on selection
+                when channel_b_config {
+                    [Switch] => {
+                        block "channel_b_switch" => "    Channel B: Switch" {
+                            param channel_b_config::Switch.invert
+                            obj channel_b_in
+                            obj channel_b_out
+                        }
+                    }
+                    [Dimmer] => {
+                        block "channel_b_dimmer" => "    Channel B: Dimmer" {
+                            param channel_b_config::Dimmer.min_level
+                            param channel_b_config::Dimmer.max_level
+                            obj channel_b_in
+                            obj channel_b_out
+                        }
+                    }
+                    [Pwm] => {
+                        block "channel_b_pwm" => "    Channel B: PWM" {
+                            param channel_b_config::Pwm.frequency
+                            param channel_b_config::Pwm.duty_cycle
+                            obj channel_b_in
+                            obj channel_b_out
+                        }
+                    }
+                }
+            }
+        }
     }
 }

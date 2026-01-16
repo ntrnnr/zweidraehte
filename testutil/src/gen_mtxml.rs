@@ -10,8 +10,9 @@ use std::fs;
 
 use const_default::ConstDefault;
 
-use testutil::devices::{DEVICE_DESCRIPTOR, DemoParams, SERIAL_NUMBER, comm_objs};
+use testutil::devices::{DEVICE_DESCRIPTOR, DemoParams, SERIAL_NUMBER, comm_objs, DemoStack};
 use testutil::mtxml_gen::{ApplicationProgramConfig, MtxmlGenerator, HardwareGenerator, CatalogGenerator};
+use testutil::mtxml_gen::page_layout::EtsPageLayout;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -44,6 +45,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         order_number: "1234",
         is_rail_mounted: false,
         catalog_section: "KNX/IP Devices",
+
+        // Use the page layout from DemoStack
+        page_layout: Some(DemoStack::page_layout()),
     };
 
     // Generate ApplicationProgram MTXML

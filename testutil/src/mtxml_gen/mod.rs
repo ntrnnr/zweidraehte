@@ -26,6 +26,11 @@
 
 mod schema;
 mod generator;
+pub mod page_layout;
 
 pub use schema::*;
 pub use generator::*;
+pub use page_layout::{
+    EtsPageLayout, PageStructure, ChannelDef, PageElement, PageBlock, PageItem,
+    ConditionalElement, ElementCase, ConditionalItem, ItemCase, Condition,
+};

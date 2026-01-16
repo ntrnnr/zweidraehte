@@ -1,5 +1,7 @@
 //! MTXML Generator - Builds ApplicationProgram XML from device definitions.
 
+use std::collections::HashMap;
+
 use base64::Engine;
 
 use zweidraehte::ets::{
@@ -7,7 +9,44 @@ use zweidraehte::ets::{
     EtsUnionFieldInfo,
 };
 
+use super::page_layout::{
+    ConditionalElement, ConditionalItem, PageBlock, PageElement, PageItem, PageStructure,
+};
 use super::schema::*;
+
+/// Tracks active conditions when generating nested XML structures.
+/// This allows us to avoid redundant choose/when nesting when an object's
+/// selector_param matches an already-active condition.
+#[derive(Clone, Debug, Default)]
+struct ActiveConditions {
+    /// Active conditions as (selector_param_name, values) pairs.
+    /// When processing items inside a `when` block, this tracks which selector
+    /// is active and what values are being tested.
+    conditions: Vec<(String, Vec<i64>)>,
+}
+
+impl ActiveConditions {
+    /// Create an empty set of active conditions.
+    fn new() -> Self {
+        Self { conditions: Vec::new() }
+    }
+
+    /// Add a condition to the active set.
+    fn with_condition(&self, selector: &str, values: Vec<i64>) -> Self {
+        let mut new = self.clone();
+        new.conditions.push((selector.to_string(), values));
+        new
+    }
+
+    /// Check if the given selector matches any active condition.
+    /// Returns Some(values) if the selector matches an active condition.
+    fn get_active_values(&self, selector: &str) -> Option<&Vec<i64>> {
+        self.conditions
+            .iter()
+            .find(|(sel, _)| sel == selector)
+            .map(|(_, vals)| vals)
+    }
+}
 
 /// Configuration for generating MTXML files (ApplicationProgram, Hardware, Catalog).
 pub struct ApplicationProgramConfig<'a> {
@@ -49,6 +88,9 @@ pub struct ApplicationProgramConfig<'a> {
     pub is_rail_mounted: bool,
     /// Catalog section name (category in ETS catalog)
     pub catalog_section: &'a str,
+    /// Optional page layout definition. If provided, the Dynamic section will be
+    /// generated according to this layout. If None, auto-generation is used.
+    pub page_layout: Option<PageStructure>,
 }
 
 impl<'a> ApplicationProgramConfig<'a> {
@@ -118,8 +160,13 @@ impl MtxmlGenerator {
         // Build Static section
         app.static_section = Self::build_static_section(config, app_id, &code_segment_id, mask_family)?;
 
-        // Build Dynamic section
-        app.dynamic = Some(Self::build_dynamic_section(config, app_id, mask_family)?);
+        // Build Dynamic section - use page layout if provided, otherwise auto-generate
+        let dynamic = if let Some(ref layout) = config.page_layout {
+            Self::build_dynamic_section_from_layout(config, app_id, mask_family, layout)?
+        } else {
+            Self::build_dynamic_section(config, app_id, mask_family)?
+        };
+        app.dynamic = Some(dynamic);
 
         Ok(app)
     }
@@ -959,17 +1006,20 @@ impl MtxmlGenerator {
         }
 
         Ok(DynamicSection {
+            channel_independent_block: None,
             channels: vec![Channel {
                 id: format!("{}_CH-1", app_id),
                 name: config.channel_name.to_string(),
+                text: None,
                 number: Some("1".to_string()),
                 internal_description: Some("generated".to_string()),
-                parameter_blocks: vec![ParameterBlock {
+                items: vec![ChannelItem::ParameterBlock(ParameterBlock {
                     id: format!("{}_PB-1", app_id),
                     name: config.name.to_string(),
+                    text: None,
                     internal_description: Some("generated".to_string()),
                     items,
-                }],
+                })],
             }],
         })
     }
@@ -1037,6 +1087,594 @@ impl MtxmlGenerator {
 
         // Fallback: just construct a reasonable ref ID
         format!("{}_P-{}_R-1", app_id, param_name)
+    }
+
+    /// Build the Dynamic section from a page layout definition.
+    ///
+    /// This generates the Dynamic section based on user-defined page structure,
+    /// allowing precise control over how parameters are organized in the ETS UI.
+    fn build_dynamic_section_from_layout(
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        mask_family: MaskFamily,
+        layout: &PageStructure,
+    ) -> Result<DynamicSection, GeneratorError> {
+        // Build name-to-RefId mapping for all parameters
+        let param_ref_map = Self::build_param_ref_map(config, app_id);
+        // Build name-to-RefId mapping for all comm objects
+        let comm_obj_ref_map = Self::build_comm_object_ref_map(config, app_id, mask_family);
+
+        // Generate block and separator counters
+        let mut block_counter = 1u32;
+        let mut sep_counter = 1u32;
+
+        // Build ChannelIndependentBlock if device_settings is non-empty
+        let channel_independent_block = if layout.device_settings.is_empty() {
+            None
+        } else {
+            let items = Self::build_channel_independent_items(
+                &layout.device_settings,
+                config,
+                app_id,
+                mask_family,
+                &param_ref_map,
+                &comm_obj_ref_map,
+                &mut block_counter,
+                &mut sep_counter,
+            )?;
+            Some(ChannelIndependentBlock { items })
+        };
+
+        // Build Channel elements
+        let channels: Vec<Channel> = layout
+            .channels
+            .iter()
+            .enumerate()
+            .map(|(i, ch_def)| {
+                let items = Self::build_channel_items(
+                    &ch_def.elements,
+                    config,
+                    app_id,
+                    mask_family,
+                    &param_ref_map,
+                    &comm_obj_ref_map,
+                    &mut block_counter,
+                    &mut sep_counter,
+                )?;
+                Ok(Channel {
+                    id: format!("{}_CH-{}", app_id, i + 1),
+                    name: ch_def.name.to_string(),
+                    text: Some(ch_def.text.to_string()),
+                    number: ch_def.number.map(|n| n.to_string()),
+                    internal_description: Some("layout-generated".to_string()),
+                    items,
+                })
+            })
+            .collect::<Result<Vec<_>, GeneratorError>>()?;
+
+        Ok(DynamicSection {
+            channel_independent_block,
+            channels,
+        })
+    }
+
+    /// Build a mapping from parameter names to their ParameterRef IDs.
+    fn build_param_ref_map(config: &ApplicationProgramConfig, app_id: &str) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+
+        // Build a set of union selector names
+        let union_selector_names: std::collections::HashSet<String> = config
+            .union_fields
+            .map(|fields| {
+                fields
+                    .iter()
+                    .map(|f| format!("{}_selector", f.field_name))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Map regular params (non-selector)
+        let mut param_counter = 1usize;
+        for param_ext in config.params {
+            if union_selector_names.contains(param_ext.base.name) {
+                continue;
+            }
+            let param_id = format!("{}_P-{}", app_id, param_counter);
+            let ref_id = format!("{}_R-{}", param_id, param_counter);
+            map.insert(param_ext.base.name.to_string(), ref_id);
+            param_counter += 1;
+        }
+
+        // Map union fields (selector and variant params)
+        if let Some(union_fields) = config.union_fields {
+            let non_selector_param_count = config
+                .params
+                .iter()
+                .filter(|p| !union_selector_names.contains(p.base.name))
+                .count();
+            let mut ref_counter = non_selector_param_count + 1;
+            let mut up_counter = 1u32;
+
+            for field in union_fields {
+                // Selector param
+                let selector_name = format!("{}_selector", field.field_name);
+                let selector_id = format!("{}_UP-{}", app_id, up_counter);
+                let selector_ref_id = format!("{}_R-{}", selector_id, ref_counter);
+                map.insert(selector_name, selector_ref_id);
+                ref_counter += 1;
+                up_counter += 1;
+
+                // Variant params - key is "{field_name}_{variant_name}_{param_name}"
+                // e.g., "channel_a_config_Switch_invert" for channel_a_config union's Switch.invert field
+                for variant_param in field.union_info.variant_params {
+                    let param_id = format!("{}_UP-{}", app_id, up_counter);
+                    let param_ref_id = format!("{}_R-{}", param_id, ref_counter);
+                    // Use full field-qualified name to distinguish params with same names in different unions
+                    let full_param_name = format!("{}_{}_{}", field.field_name, variant_param.variant_name, variant_param.param.name);
+                    map.insert(full_param_name, param_ref_id);
+                    ref_counter += 1;
+                    up_counter += 1;
+                }
+            }
+        }
+
+        map
+    }
+
+    /// Build a mapping from comm object field names to their ComObjectRefRef info.
+    ///
+    /// Returns a map where the key is the field name (e.g., "channel_a_in") and the
+    /// value is a tuple of (ref_id, selector_param, selector_value).
+    ///
+    /// For objects without selectors, selector_param and selector_value are None.
+    /// For objects with selectors, multiple refs exist with different selector_values.
+    fn build_comm_object_ref_map(
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        mask_family: MaskFamily,
+    ) -> HashMap<String, Vec<(String, Option<String>, Option<i64>)>> {
+        let mut map: HashMap<String, Vec<(String, Option<String>, Option<i64>)>> = HashMap::new();
+        let co_start_index = mask_family.com_object_start_index();
+
+        // Build ref info map
+        for (i, ref_def) in config.comm_object_refs.iter().enumerate() {
+            let adjusted_index = ref_def.object_index + co_start_index;
+            let co_id = format!("{}_O-{}", app_id, adjusted_index);
+            let ref_id = format!("{}_R-{}", co_id, i + 1);
+
+            // Use the ref_name as the key (this is the field name from the struct)
+            map.entry(ref_def.ref_name.to_string())
+                .or_default()
+                .push((
+                    ref_id,
+                    ref_def.selector_param.map(|s| s.to_string()),
+                    ref_def.selector_value,
+                ));
+        }
+
+        map
+    }
+
+    /// Build items for a ChannelIndependentBlock.
+    fn build_channel_independent_items(
+        elements: &[PageElement],
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        mask_family: MaskFamily,
+        param_ref_map: &HashMap<String, String>,
+        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        block_counter: &mut u32,
+        sep_counter: &mut u32,
+    ) -> Result<Vec<ChannelIndependentItem>, GeneratorError> {
+        let mut items = Vec::new();
+
+        // Start with empty active conditions at the top level
+        let active_conditions = ActiveConditions::new();
+
+        for element in elements {
+            match element {
+                PageElement::Block(block) => {
+                    let pb = Self::build_parameter_block(
+                        block,
+                        config,
+                        app_id,
+                        mask_family,
+                        param_ref_map,
+                        comm_obj_ref_map,
+                        block_counter,
+                        sep_counter,
+                        &active_conditions,
+                    )?;
+                    items.push(ChannelIndependentItem::ParameterBlock(pb));
+                }
+                PageElement::When(cond) => {
+                    let choose = Self::build_element_choose(
+                        cond,
+                        config,
+                        app_id,
+                        mask_family,
+                        param_ref_map,
+                        comm_obj_ref_map,
+                        block_counter,
+                        sep_counter,
+                        &active_conditions,
+                    )?;
+                    items.push(ChannelIndependentItem::Choose(choose));
+                }
+            }
+        }
+
+        Ok(items)
+    }
+
+    /// Build items for a Channel.
+    fn build_channel_items(
+        elements: &[PageElement],
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        mask_family: MaskFamily,
+        param_ref_map: &HashMap<String, String>,
+        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        block_counter: &mut u32,
+        sep_counter: &mut u32,
+    ) -> Result<Vec<ChannelItem>, GeneratorError> {
+        let mut items = Vec::new();
+
+        // Start with empty active conditions at the top level
+        let active_conditions = ActiveConditions::new();
+
+        for element in elements {
+            match element {
+                PageElement::Block(block) => {
+                    let pb = Self::build_parameter_block(
+                        block,
+                        config,
+                        app_id,
+                        mask_family,
+                        param_ref_map,
+                        comm_obj_ref_map,
+                        block_counter,
+                        sep_counter,
+                        &active_conditions,
+                    )?;
+                    items.push(ChannelItem::ParameterBlock(pb));
+                }
+                PageElement::When(cond) => {
+                    let choose = Self::build_element_choose(
+                        cond,
+                        config,
+                        app_id,
+                        mask_family,
+                        param_ref_map,
+                        comm_obj_ref_map,
+                        block_counter,
+                        sep_counter,
+                        &active_conditions,
+                    )?;
+                    items.push(ChannelItem::Choose(choose));
+                }
+            }
+        }
+
+        Ok(items)
+    }
+
+    /// Build a ParameterBlock from a PageBlock definition.
+    fn build_parameter_block(
+        block: &PageBlock,
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        mask_family: MaskFamily,
+        param_ref_map: &HashMap<String, String>,
+        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        block_counter: &mut u32,
+        sep_counter: &mut u32,
+        active_conditions: &ActiveConditions,
+    ) -> Result<ParameterBlock, GeneratorError> {
+        let block_id = *block_counter;
+        *block_counter += 1;
+
+        let items = Self::build_block_items(
+            &block.items,
+            config,
+            app_id,
+            mask_family,
+            param_ref_map,
+            comm_obj_ref_map,
+            sep_counter,
+            active_conditions,
+        )?;
+
+        Ok(ParameterBlock {
+            id: format!("{}_PB-{}", app_id, block_id),
+            name: block.name.to_string(),
+            text: Some(block.text.to_string()),
+            internal_description: Some("layout-generated".to_string()),
+            items,
+        })
+    }
+
+    /// Build items for a ParameterBlock.
+    fn build_block_items(
+        page_items: &[PageItem],
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        mask_family: MaskFamily,
+        param_ref_map: &HashMap<String, String>,
+        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        sep_counter: &mut u32,
+        active_conditions: &ActiveConditions,
+    ) -> Result<Vec<ParameterBlockItem>, GeneratorError> {
+        let mut items = Vec::new();
+
+        for page_item in page_items {
+            match page_item {
+                PageItem::Param(name) => {
+                    if let Some(ref_id) = param_ref_map.get(*name) {
+                        items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
+                            ref_id: ref_id.clone(),
+                            internal_description: Some("layout-generated".to_string()),
+                        }));
+                    } else {
+                        // Try to find it using the existing method as fallback
+                        let ref_id = Self::find_param_ref_id(config, app_id, name);
+                        items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
+                            ref_id,
+                            internal_description: Some("layout-generated (fallback)".to_string()),
+                        }));
+                    }
+                }
+                PageItem::Obj(name) => {
+                    // Look up comm object refs by field name
+                    if let Some(refs) = comm_obj_ref_map.get(*name) {
+                        // Group refs by selector_param
+                        let refs_with_selector: Vec<&(String, Option<String>, Option<i64>)> = refs.iter()
+                            .filter(|(_, sel_param, sel_val)| sel_param.is_some() && sel_val.is_some())
+                            .collect();
+                        let refs_without_selector: Vec<&(String, Option<String>, Option<i64>)> = refs.iter()
+                            .filter(|(_, sel_param, _)| sel_param.is_none())
+                            .collect();
+
+                        // Add unconditional refs directly
+                        for (ref_id, _, _) in refs_without_selector {
+                            items.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
+                                ref_id: ref_id.clone(),
+                                internal_description: Some("layout-generated".to_string()),
+                            }));
+                        }
+
+                        // For refs with selectors, check if we're already inside a matching condition
+                        if !refs_with_selector.is_empty() {
+                            // Group by selector_param
+                            let mut by_selector: HashMap<String, Vec<(String, i64)>> = HashMap::new();
+                            for (ref_id, sel_param, sel_val) in refs_with_selector {
+                                let param = sel_param.as_ref().unwrap().clone();
+                                let val = sel_val.unwrap();
+                                by_selector.entry(param).or_default().push((ref_id.clone(), val));
+                            }
+
+                            // Process each selector group
+                            for (selector_param, ref_vals) in by_selector {
+                                // Check if we're already inside a condition for this selector
+                                if let Some(active_vals) = active_conditions.get_active_values(&selector_param) {
+                                    // We're inside a when block for this selector!
+                                    // Only emit the ComObjectRefRefs that match the active values,
+                                    // and emit them directly without a choose/when wrapper.
+                                    for (ref_id, val) in &ref_vals {
+                                        if active_vals.contains(val) {
+                                            items.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
+                                                ref_id: ref_id.clone(),
+                                                internal_description: Some("layout-generated".to_string()),
+                                            }));
+                                        }
+                                    }
+                                } else {
+                                    // Not inside an active condition for this selector,
+                                    // create the choose/when wrapper as before
+                                    let selector_ref_id = param_ref_map
+                                        .get(&selector_param)
+                                        .cloned()
+                                        .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, &selector_param));
+
+                                    // Group by selector_value
+                                    let mut by_value: HashMap<i64, Vec<String>> = HashMap::new();
+                                    for (ref_id, val) in ref_vals {
+                                        by_value.entry(val).or_default().push(ref_id);
+                                    }
+
+                                    let mut sorted_values: Vec<_> = by_value.into_iter().collect();
+                                    sorted_values.sort_by_key(|(v, _)| *v);
+
+                                    let whens: Vec<When> = sorted_values
+                                        .into_iter()
+                                        .map(|(val, ref_ids)| {
+                                            let when_items: Vec<WhenItem> = ref_ids
+                                                .into_iter()
+                                                .map(|ref_id| WhenItem::ComObjectRefRef(ComObjectRefRef {
+                                                    ref_id,
+                                                    internal_description: Some("layout-generated".to_string()),
+                                                }))
+                                                .collect();
+                                            When {
+                                                test: Some(val.to_string()),
+                                                default: None,
+                                                internal_description: Some("layout-generated".to_string()),
+                                                items: when_items,
+                                            }
+                                        })
+                                        .collect();
+
+                                    items.push(ParameterBlockItem::Choose(Choose {
+                                        param_ref_id: selector_ref_id,
+                                        whens,
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+                PageItem::Separator(text) => {
+                    let sep_id = *sep_counter;
+                    *sep_counter += 1;
+                    items.push(ParameterBlockItem::ParameterSeparator(ParameterSeparator {
+                        id: format!("{}_PS-{}", app_id, sep_id),
+                        text: text.map(|t| t.to_string()),
+                    }));
+                }
+                PageItem::When(cond_item) => {
+                    let choose = Self::build_item_choose(
+                        cond_item,
+                        config,
+                        app_id,
+                        mask_family,
+                        param_ref_map,
+                        comm_obj_ref_map,
+                        sep_counter,
+                        active_conditions,
+                    )?;
+                    items.push(ParameterBlockItem::Choose(choose));
+                }
+            }
+        }
+
+        Ok(items)
+    }
+
+    /// Build a Choose element for block-level conditionals (wrapping ParameterBlocks).
+    fn build_element_choose(
+        cond: &ConditionalElement,
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        mask_family: MaskFamily,
+        param_ref_map: &HashMap<String, String>,
+        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        block_counter: &mut u32,
+        sep_counter: &mut u32,
+        active_conditions: &ActiveConditions,
+    ) -> Result<Choose, GeneratorError> {
+        let selector_ref_id = param_ref_map
+            .get(cond.selector)
+            .cloned()
+            .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, cond.selector));
+
+        let whens: Vec<When> = cond
+            .cases
+            .iter()
+            .map(|case| {
+                // Create new active conditions with this case's selector and values
+                let case_active_conditions = active_conditions
+                    .with_condition(cond.selector, case.condition.to_values());
+
+                let when_items: Vec<WhenItem> = case
+                    .elements
+                    .iter()
+                    .filter_map(|elem| {
+                        match elem {
+                            PageElement::Block(block) => {
+                                let pb = Self::build_parameter_block(
+                                    block,
+                                    config,
+                                    app_id,
+                                    mask_family,
+                                    param_ref_map,
+                                    comm_obj_ref_map,
+                                    block_counter,
+                                    sep_counter,
+                                    &case_active_conditions,
+                                ).ok()?;
+                                Some(WhenItem::ParameterBlock(pb))
+                            }
+                            PageElement::When(nested_cond) => {
+                                let choose = Self::build_element_choose(
+                                    nested_cond,
+                                    config,
+                                    app_id,
+                                    mask_family,
+                                    param_ref_map,
+                                    comm_obj_ref_map,
+                                    block_counter,
+                                    sep_counter,
+                                    &case_active_conditions,
+                                ).ok()?;
+                                Some(WhenItem::Choose(choose))
+                            }
+                        }
+                    })
+                    .collect();
+
+                Ok(When {
+                    test: case.condition.to_test_string(),
+                    default: if case.condition.is_default() { Some(true) } else { None },
+                    internal_description: Some("layout-generated".to_string()),
+                    items: when_items,
+                })
+            })
+            .collect::<Result<Vec<_>, GeneratorError>>()?;
+
+        Ok(Choose {
+            param_ref_id: selector_ref_id,
+            whens,
+        })
+    }
+
+    /// Build a Choose element for item-level conditionals (within a ParameterBlock).
+    fn build_item_choose(
+        cond: &ConditionalItem,
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        mask_family: MaskFamily,
+        param_ref_map: &HashMap<String, String>,
+        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        sep_counter: &mut u32,
+        active_conditions: &ActiveConditions,
+    ) -> Result<Choose, GeneratorError> {
+        let selector_ref_id = param_ref_map
+            .get(cond.selector)
+            .cloned()
+            .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, cond.selector));
+
+        let whens: Vec<When> = cond
+            .cases
+            .iter()
+            .map(|case| {
+                // Create new active conditions with this case's selector and values
+                let case_active_conditions = active_conditions
+                    .with_condition(cond.selector, case.condition.to_values());
+                let items = Self::build_block_items(
+                    &case.items,
+                    config,
+                    app_id,
+                    mask_family,
+                    param_ref_map,
+                    comm_obj_ref_map,
+                    sep_counter,
+                    &case_active_conditions,
+                )?;
+
+                // Convert ParameterBlockItem to WhenItem
+                let when_items: Vec<WhenItem> = items
+                    .into_iter()
+                    .map(|item| match item {
+                        ParameterBlockItem::ParameterRefRef(prr) => WhenItem::ParameterRefRef(prr),
+                        ParameterBlockItem::ComObjectRefRef(corr) => WhenItem::ComObjectRefRef(corr),
+                        ParameterBlockItem::ParameterSeparator(ps) => WhenItem::ParameterSeparator(ps),
+                        ParameterBlockItem::Choose(c) => WhenItem::Choose(c),
+                    })
+                    .collect();
+
+                Ok(When {
+                    test: case.condition.to_test_string(),
+                    default: if case.condition.is_default() { Some(true) } else { None },
+                    internal_description: Some("layout-generated".to_string()),
+                    items: when_items,
+                })
+            })
+            .collect::<Result<Vec<_>, GeneratorError>>()?;
+
+        Ok(Choose {
+            param_ref_id: selector_ref_id,
+            whens,
+        })
     }
 
     /// Serialize the KNX document to XML string.
@@ -1282,6 +1920,7 @@ mod tests {
             order_number: "TEST-001",
             is_rail_mounted: false,
             catalog_section: "Test Section",
+            page_layout: None,
         };
 
         let xml = MtxmlGenerator::generate(&config).unwrap();
@@ -1321,6 +1960,7 @@ mod tests {
             order_number: "SYS7-001",
             is_rail_mounted: true,
             catalog_section: "Test Section",
+            page_layout: None,
         };
 
         let xml = MtxmlGenerator::generate(&config).unwrap();

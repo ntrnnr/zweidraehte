@@ -1644,20 +1644,12 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                 quote!(None)
             };
 
+            let field_name = obj.ident.to_string();
             for ref_attr in &obj.refs {
                 let ref_dpt = &ref_attr.dpt;
-                let ref_name = match &ref_attr.when {
-                    Some(SelectorValue::Path(path)) => {
-                        // Use the variant name as the ref name
-                        path.segments.last().map(|s| s.ident.to_string().to_lowercase())
-                            .unwrap_or_else(|| "default".to_string())
-                    }
-                    Some(SelectorValue::Int(val)) => {
-                        // Use the integer value as the ref name
-                        format!("ref_{}", val)
-                    }
-                    None => "default".to_string(),
-                };
+                // Use "{field_name}" as the ref_name - this matches the page layout `obj field_name` syntax
+                // The generator will create choose/when based on selector_param and selector_value
+                let ref_name = field_name.clone();
                 let function_text = ref_attr.function.clone().unwrap_or(base_function.clone());
                 let selector_value = match &ref_attr.when {
                     Some(SelectorValue::Path(path)) => {
