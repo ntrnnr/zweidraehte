@@ -13,7 +13,8 @@ pub struct AssoTab6Impl<const N: usize> {
 }
 
 impl<const N: usize> Table<AssoTab6Impl<N>> {
-    // FIXME: remove pub, just for debugging
+    /// Get the TSAP (Transport Service Access Point) at the given index.
+    /// Index is 1-based.
     pub fn tsap(&self, idx: u16) -> u16 {
         // NOTE: idx is 1-indexed!
         // Format: [count_h, count_l, tsap1_h, tsap1_l, asap1_h, asap1_l, tsap2_h, tsap2_l, asap2_h, asap2_l, ...]
@@ -22,7 +23,8 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
         U16::from_bytes(self.table.data[start..start + 2].try_into().unwrap()).get()
     }
 
-    // FIXME: remove pub, just for debugging
+    /// Get the ASAP (Application Service Access Point) at the given index.
+    /// Index is 1-based.
     pub fn asap(&self, idx: u16) -> u16 {
         // NOTE: idx is 1-indexed!
         // Format: [count_h, count_l, tsap1_h, tsap1_l, asap1_h, asap1_l, tsap2_h, tsap2_l, asap2_h, asap2_l, ...]

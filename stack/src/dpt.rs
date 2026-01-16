@@ -165,6 +165,13 @@ macro_rules! impl_array_pdt {
                 Self { data: *(&value).as_array().unwrap(), _p: PhantomData }
             }
 
+            /// Create from a slice. Panics if slice length doesn't match N.
+            pub fn from_slice(slice: &[u8]) -> Self {
+                let mut data = [0u8; N];
+                data.copy_from_slice(&slice[..N]);
+                Self { data, _p: PhantomData }
+            }
+
             pub const fn as_const_ref(&self) -> &[u8] {
                 &self.data
             }
