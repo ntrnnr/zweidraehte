@@ -832,21 +832,49 @@ impl DeviceControl {
         }
     }
 
-    /// Check if safe state is active (bit 0)
+    /// Check if user application program is stopped (bit 0)
     ///
-    /// When set, the device is in a fail-safe state.
+    /// When set, the user application program is not running.
+    /// This bit is set by the run state machine when the application stops
+    /// (via Stop command, Restart command, or Unload event).
     #[inline]
-    pub const fn safe_state(&self) -> bool {
+    pub const fn user_stopped(&self) -> bool {
         self.0 & 0x01 != 0
     }
 
-    /// Set safe state flag (bit 0)
+    /// Set user application stopped flag (bit 0)
+    ///
+    /// This should be called when the run state machine transitions away from RUNNING
+    /// (i.e., when RunAction::LoadStart is returned).
     #[inline]
-    pub fn set_safe_state(&mut self, enabled: bool) {
-        if enabled {
+    pub fn set_user_stopped(&mut self, stopped: bool) {
+        if stopped {
             self.0 |= 0x01;
         } else {
             self.0 &= !0x01;
+        }
+    }
+
+    /// Check if individual address duplication was detected (bit 1)
+    ///
+    /// When set, the device has received a message from another device
+    /// using the same individual address. This indicates an address
+    /// configuration error on the bus.
+    #[inline]
+    pub const fn address_duplication(&self) -> bool {
+        self.0 & 0x02 != 0
+    }
+
+    /// Set individual address duplication flag (bit 1)
+    ///
+    /// This is set by the link layer when it receives a message where
+    /// the source address matches our own individual address.
+    #[inline]
+    pub fn set_address_duplication(&mut self, detected: bool) {
+        if detected {
+            self.0 |= 0x02;
+        } else {
+            self.0 &= !0x02;
         }
     }
 }
@@ -854,7 +882,8 @@ impl DeviceControl {
 impl fmt::Debug for DeviceControl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DeviceControl")
-            .field("safe_state", &self.safe_state())
+            .field("user_stopped", &self.user_stopped())
+            .field("address_duplication", &self.address_duplication())
             .field("verify_mode", &self.verify_mode())
             .field("raw", &format_args!("0x{:02X}", self.0))
             .finish()

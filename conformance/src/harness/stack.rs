@@ -30,7 +30,7 @@ use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
 
 use zweidraehte::{
-    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
+    memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
     messages::buffers::{Buffer, BufferManager, DynBufferManager, MessageBuffer},
     messages::knx::{KnxMessageBuffer, ServiceType},
     objects::comm::{ComObjectStatus, ComObjects},
@@ -39,7 +39,7 @@ use zweidraehte::{
         GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PropertyDescriptionResponse,
         PropertyError, PropertyServiceHandler,
     },
-    objects::tables::{app::Application, HasLoadStateMachine, HasRunStateMachine},
+    objects::tables::{app::Application, HasLoadStateMachine},
     IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
 };
 
@@ -1104,6 +1104,13 @@ impl HasCommunicationObjectTable for ConformanceState {
     }
 }
 
+impl HasApplication for ConformanceState {
+    type APP = Application<()>;
+    fn app(&self) -> &RefCell<Self::APP> {
+        &self.app
+    }
+}
+
 /// Memory map for conformance tests.
 ///
 /// Memory layout:
@@ -1437,13 +1444,13 @@ impl FullStackHarness {
         );
 
         // Create application table - starts loaded and running for conformance tests
-        use zweidraehte::objects::tables::{LoadEvent, RunEvent};
+        use zweidraehte::objects::tables::LoadEvent;
         let mut app_table = Application::<()>::new();
-        // Load and start the application (using None for alloc_address since these are
+        // Load the application (using None for alloc_address since these are
         // simple state transitions without RelativeData allocation)
+        // The app automatically transitions HALTED -> READY -> RUNNING when loading completes
         app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        app_table.write_rsm(&[RunEvent::Restart.into()]);
 
         // Create unified conformance state (combines tables + runtime state)
         let state = ConformanceState::new(addr_tab, asso_tab, co_tab, app_table, MockIpPlatform::new());

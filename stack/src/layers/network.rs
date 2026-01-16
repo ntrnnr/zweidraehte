@@ -72,6 +72,17 @@ impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
             ServiceType::L_Data_Ind => {
                 trace!("NL L_Data_Ind addr_typ: {:?}", msg.get_address_type());
 
+                // Check for individual address duplication.
+                // If we receive a message with our own individual address as source,
+                // another device on the bus has the same address - set the duplication flag.
+                // This is a "sticky" flag that stays set until device reset.
+                if msg.get_source_addr() == self.state.individual_address() {
+                    if !self.interface_objects.device_control().address_duplication() {
+                        warn!("NL: Individual address duplication detected!");
+                        self.interface_objects.set_address_duplication(true);
+                    }
+                }
+
                 match msg.get_address_type() {
                     AddressType::Group => msg.set_service_type(ServiceType::N_GroupData_Ind),
                     AddressType::Broadcast => msg.set_service_type(ServiceType::N_Broadcast_Ind),
@@ -92,10 +103,7 @@ impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
         }
     }
 
-    async fn handle_request(
-        &mut self,
-        msg: RequestMessage<Buffer<'static>>,
-    ) -> ConfirmationMessage<Buffer<'static>> {
+    async fn handle_request(&mut self, msg: RequestMessage<Buffer<'static>>) -> ConfirmationMessage<Buffer<'static>> {
         debug!("NL request: {:?}", msg);
 
         // Extract inner message - we need to work with the KnxMessageBuffer directly

@@ -30,7 +30,7 @@ use super::{ActorRequest, Inbox, Layer, LayerOp, Request};
 use crate::{
     StackDefinition, StackState,
     address::GroupAddress,
-    memory::{HasAssociationTable, HasCommunicationObjectTable},
+    memory::{HasApplication, HasAssociationTable, HasCommunicationObjectTable},
     messages::{
         buffers::{Buffer, DynBufferManager},
         builder::{IndicationMessage, RequestMessage},
@@ -38,8 +38,8 @@ use crate::{
     },
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
-        interface::{HasDeviceObject, PropertyServiceHandler},
-        tables::{AssociationTable, CommunicationObjectTable, HasLoadStateMachine},
+        interface::{HasDeviceObject, PropertyServiceHandler, pid},
+        tables::{AssociationTable, CommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine},
     },
 };
 
@@ -63,6 +63,8 @@ pub enum ApplicationLayerServiceResponse {
     GroupValueWriteResponse,
     /// `A_GroupValue_Read.req` completed
     GroupValueReadResponse,
+    /// Request rejected because the application is not running
+    ApplicationNotRunning,
 }
 
 // ============================================================================
@@ -143,7 +145,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
 impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D>
 where
-    D::State: HasAssociationTable + HasCommunicationObjectTable,
+    D::State: HasApplication + HasAssociationTable + HasCommunicationObjectTable,
     D::InterfaceObjects<'static>: HasDeviceObject,
 {
     type Buffer = Buffer<'static>;
@@ -239,14 +241,22 @@ where
                     r @ ApplicationLayerService::GroupValueWriteRequest(asap) => {
                         debug!("AL GroupValueWrite.req: {:?}", r);
 
-                        self.send_group_value_request(*asap, false).await;
-                        request.reply(ApplicationLayerServiceResponse::GroupValueWriteResponse).await;
+                        let response = if self.send_group_value_request(*asap, false).await {
+                            ApplicationLayerServiceResponse::GroupValueWriteResponse
+                        } else {
+                            ApplicationLayerServiceResponse::ApplicationNotRunning
+                        };
+                        request.reply(response).await;
                     }
                     r @ ApplicationLayerService::GroupValueReadRequest(asap) => {
                         debug!("AL GroupValueRead.req: {:?}", r);
 
-                        self.send_group_value_request(*asap, true).await;
-                        request.reply(ApplicationLayerServiceResponse::GroupValueWriteResponse).await;
+                        let response = if self.send_group_value_request(*asap, true).await {
+                            ApplicationLayerServiceResponse::GroupValueReadResponse
+                        } else {
+                            ApplicationLayerServiceResponse::ApplicationNotRunning
+                        };
+                        request.reply(response).await;
                     }
                 },
             }
@@ -260,7 +270,7 @@ where
 
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
 where
-    D::State: HasAssociationTable + HasCommunicationObjectTable,
+    D::State: HasApplication + HasAssociationTable + HasCommunicationObjectTable,
 {
     /// Handle `A_GroupValue_Write.ind` or `A_GroupValue_Response.ind`
     ///
@@ -278,7 +288,12 @@ where
         }
 
         debug!("AL received {:?}", apci);
-        // FIXME: check if application is running (also check if tables are loaded?)
+
+        // Check if application is running before processing group data
+        if !self.state.app().borrow().is_running() {
+            debug!("AL {:?} ignored: application not running", apci);
+            return;
+        }
 
         // Check if association table is loaded before processing
         if !self.state.ast().borrow().is_loaded() {
@@ -380,6 +395,12 @@ where
 
         debug!("AL received GroupValueRead");
 
+        // Check if application is running before processing group data
+        if !self.state.app().borrow().is_running() {
+            debug!("AL GroupValueRead ignored: application not running");
+            return;
+        }
+
         // Check if association table is loaded before processing
         if !self.state.ast().borrow().is_loaded() {
             debug!("AL GroupValueRead ignored: AST not loaded");
@@ -448,28 +469,34 @@ where
     /// Send `A_GroupValue_Write.req` or `A_GroupValue_Read.req`
     ///
     /// Called when the local application wants to send a group value to the bus.
-    async fn send_group_value_request(&self, asap: u16, read: bool) {
+    /// Returns `true` if the request was processed, `false` if rejected because
+    /// the application is not running.
+    async fn send_group_value_request(&self, asap: u16, read: bool) -> bool {
+        // Check if application is running before sending group data
+        if !self.state.app().borrow().is_running() {
+            debug!("AL GroupValue request ignored: application not running");
+            return false;
+        }
+
         // Check if association table is loaded before sending
         if !self.state.ast().borrow().is_loaded() {
             debug!("AL GroupValue request ignored: AST not loaded");
-            // FIXME: should we set error status on the comm object?
-            return;
+            return true; // Not an "app not running" error, just a config issue
         }
 
         let Some(cot_info) = self.state.cot().borrow().get_object(asap) else {
             error!("Invalid ASAP: {}", asap);
-            // FIXME: return error to caller?
-            return;
+            return true; // Not an "app not running" error
         };
 
         let status = *self.comm_objects.borrow().info(asap).status;
 
         if !read && status != ComObjectStatus::WriteRequest {
-            return;
+            return true;
         }
 
         if read && status != ComObjectStatus::ReadRequest {
-            return;
+            return true;
         }
 
         if !cot_info.flags.communication_enable() {
@@ -479,7 +506,7 @@ where
             self.comm_objects.borrow_mut().set_status(asap, new_status);
 
             debug!("AL comm object {} not enabled for communication", asap);
-            return;
+            return true;
         }
 
         if !cot_info.flags.transmission_enable() {
@@ -488,7 +515,7 @@ where
             self.comm_objects.borrow_mut().set_status(asap, new_status);
 
             debug!("AL comm object {} transmission not enabled", asap);
-            return;
+            return true;
         }
 
         self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::Busy);
@@ -571,6 +598,8 @@ where
 
             error!("AL no sending TSAP or transmission flag not set for ASAP {} - Flags: {:?}", asap, cot_info.flags);
         }
+
+        true
     }
 }
 
@@ -578,7 +607,11 @@ where
 // Property Services (A_PropertyDescription_*, A_PropertyValue_*)
 // ============================================================================
 
-impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
+impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
+where
+    D::State: HasApplication,
+    D::InterfaceObjects<'static>: HasDeviceObject,
+{
     /// Handle `A_PropertyDescription_Read.ind`
     ///
     /// Returns property metadata (type, max elements, access rights) for an interface object.
@@ -887,6 +920,13 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             &mut response_data,
             access_level,
         );
+
+        // Sync DeviceControl.user_stopped after writes to RUN_STATE_CONTROL.
+        // This needs to be updated whenever the run state machine transitions.
+        if prop_id == pid::RUN_STATE_CONTROL && result.is_ok() {
+            let is_running = self.state.app().borrow().is_running();
+            self.interface_objects.set_user_stopped(!is_running);
+        }
 
         match result {
             Ok(response_data_len) => {

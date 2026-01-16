@@ -32,7 +32,10 @@ pub mod util;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
 
-use core::{cell::{Cell, RefCell}, mem::MaybeUninit};
+use core::{
+    cell::{Cell, RefCell},
+    mem::MaybeUninit,
+};
 
 use const_default::ConstDefault;
 use embassy_sync::{
@@ -52,11 +55,14 @@ use crate::{
         network::NetworkLayer,
         transport::TransportLayer,
     },
-    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable, HasRoutingCount, MemoryMap},
+    memory::{
+        HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRoutingCount, MemoryMap,
+    },
     messages::buffers::{Buffer, BufferManager, DynBufferManager},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
         interface::{HasDeviceObject, PropertyServiceHandler},
+        tables::HasRunStateMachine,
     },
 };
 
@@ -622,11 +628,7 @@ impl<P: IpPlatform> BasicIpStackState<P> {
     where
         P: Default,
     {
-        Self {
-            base: BasicStackState::with_individual_address(addr),
-            platform,
-            ..Default::default()
-        }
+        Self { base: BasicStackState::with_individual_address(addr), platform, ..Default::default() }
     }
 
     /// Create a new `BasicIpStackState` with individual address, serial number, and platform.
@@ -634,11 +636,7 @@ impl<P: IpPlatform> BasicIpStackState<P> {
     where
         P: Default,
     {
-        Self {
-            base: BasicStackState::with_address_and_serial(addr, serial_number),
-            platform,
-            ..Default::default()
-        }
+        Self { base: BasicStackState::with_address_and_serial(addr, serial_number), platform, ..Default::default() }
     }
 
     /// Set the authorization key for a specific level.
@@ -1182,9 +1180,18 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
     //        Problem is all the process() methods in the layers require these traits
     pub async fn run(self, link_layer_resources: &'d mut <D::LLB as LinkLayerBuilder>::Resources) -> !
     where
-        D::State: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable,
+        D::State: HasAddressTable + HasApplication + HasAssociationTable + HasCommunicationObjectTable,
         D::InterfaceObjects<'static>: HasDeviceObject,
     {
+        // Initialize the run state machine at startup.
+        // If the application is already loaded (from persistent storage), this will
+        // transition it to RUNNING.
+        self.stack.inner.state.app().borrow_mut().init_run_state();
+
+        // Sync the DeviceControl user_stopped bit based on run state.
+        let is_running = self.stack.inner.state.app().borrow().is_running();
+        self.interface_objects.set_user_stopped(!is_running);
+
         // Create all the channels for layer to layer communication
         let ll_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
         let nl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
@@ -1193,8 +1200,12 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 
         // Create a network layer with reference to stack state and interface objects.
         // The routing count (hop count) for outgoing messages is read from the device object.
-        let mut network_layer =
-            NetworkLayer::new(&self.stack.inner.state, self.interface_objects, ll_channel.sender().into(), tl_channel.sender().into());
+        let mut network_layer = NetworkLayer::new(
+            &self.stack.inner.state,
+            self.interface_objects,
+            ll_channel.sender().into(),
+            tl_channel.sender().into(),
+        );
 
         // Create a transport layer
         let mut transport_layer = TransportLayer::<'_, D>::new(
@@ -1237,10 +1248,6 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 }
 
 impl<'d, D: StackDefinition> Stack<'d, D> {
-    // FIMXE: We cannot use D::CO::Index here for the asap, because the compiler
-    //        doesn't support projections through associated types yet
-    //        Keep an eye on https://github.com/rust-lang/rust/pull/126651
-
     /// Update a communication object with a new value and send it to the KNX bus.
     ///
     /// This method updates the local communication object value and sends a GroupValueWrite

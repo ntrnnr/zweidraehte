@@ -705,6 +705,34 @@ pub trait HasDeviceObject {
         self.programming_mode().enabled()
     }
 
+    /// Set the user application stopped flag in DeviceControl.
+    ///
+    /// This should be called when the run state machine transitions:
+    /// - Set to `true` when application stops (RUNNING → any other state)
+    /// - Set to `false` when application starts (any state → RUNNING)
+    ///
+    /// This corresponds to bit 0 of PID_DEVICE_CONTROL.
+    #[inline]
+    fn set_user_stopped(&self, stopped: bool) {
+        let mut dc = self.device_control();
+        dc.set_user_stopped(stopped);
+        self.set_device_control(dc);
+    }
+
+    /// Set the individual address duplication flag in DeviceControl.
+    ///
+    /// This should be called by the link layer when it receives a message
+    /// where the source address matches our own individual address.
+    /// This indicates another device on the bus has the same address.
+    ///
+    /// This corresponds to bit 1 of PID_DEVICE_CONTROL.
+    #[inline]
+    fn set_address_duplication(&self, detected: bool) {
+        let mut dc = self.device_control();
+        dc.set_address_duplication(detected);
+        self.set_device_control(dc);
+    }
+
     /// Set programming mode enabled/disabled.
     #[inline]
     fn set_programming_mode_enabled(&self, enabled: bool) {

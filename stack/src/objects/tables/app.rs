@@ -195,32 +195,42 @@ mod tests {
     }
 
     #[test]
-    fn test_restart_after_load() {
+    fn test_load_completes_to_running() {
         let mut app: Application<()> = Application::new();
 
         // Start loading
         app.write_lsm(&[LoadEvent::StartLoading.into()], None);
         assert_eq!(app.read_lsm()[0], LoadState::Loading.into());
+        assert_eq!(app.run_state(), RunState::Halted);
 
-        // Complete loading
+        // Complete loading - should automatically transition to RUNNING
+        // (HALTED + Loaded → READY, then READY + ReadyToRun → RUNNING)
         app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
         assert_eq!(app.read_lsm()[0], LoadState::Loaded.into());
-
-        // RESTART when loaded should transition to RUNNING
-        app.write_rsm(&[RunEvent::Restart.into()]);
         assert_eq!(app.run_state(), RunState::Running);
+    }
+
+    #[test]
+    fn test_restart_from_running_goes_to_ready() {
+        let mut app: Application<()> = Application::new();
+
+        // Load and automatically start running
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+        assert_eq!(app.run_state(), RunState::Running);
+
+        // RESTART from RUNNING should go to READY (not stay RUNNING)
+        app.write_rsm(&[RunEvent::Restart.into()]);
+        assert_eq!(app.run_state(), RunState::Ready);
     }
 
     #[test]
     fn test_unload_resets_run_state() {
         let mut app: Application<()> = Application::new();
 
-        // Load the application
+        // Load the application (automatically starts running)
         app.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-
-        // Start running
-        app.write_rsm(&[RunEvent::Restart.into()]);
         assert_eq!(app.run_state(), RunState::Running);
 
         // Unload should reset run state to HALTED
@@ -230,21 +240,20 @@ mod tests {
     }
 
     #[test]
-    fn test_no_op_preserves_state() {
+    fn test_ready_preserves_state() {
         let mut app: Application<()> = Application::new();
 
-        // NO_OP should preserve HALTED
-        app.write_rsm(&[RunEvent::NoOp.into()]);
+        // Ready event should preserve HALTED
+        app.write_rsm(&[RunEvent::Ready.into()]);
         assert_eq!(app.run_state(), RunState::Halted);
 
-        // Load and start running
+        // Load and automatically start running
         app.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        app.write_rsm(&[RunEvent::Restart.into()]);
         assert_eq!(app.run_state(), RunState::Running);
 
-        // NO_OP should preserve RUNNING
-        app.write_rsm(&[RunEvent::NoOp.into()]);
+        // Ready event should preserve RUNNING
+        app.write_rsm(&[RunEvent::Ready.into()]);
         assert_eq!(app.run_state(), RunState::Running);
     }
 

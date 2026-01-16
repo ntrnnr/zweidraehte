@@ -71,8 +71,8 @@ pub mod busmon;
 mod chip;
 mod state_machine;
 
-use chip::{ChipType, RetryConfig};
 use crate::encoding::tp1::{knx_to_tp1_message, tp1_to_knx_message};
+use chip::{ChipType, RetryConfig};
 use state_machine::*;
 
 use crate::address::GroupAddress;
@@ -369,18 +369,12 @@ where
             return false;
         }
 
-        let actions = process_main_event(
-            &mut self.main_ctx,
-            MainEvent::WriteRegister { address, value },
-        );
+        let actions = process_main_event(&mut self.main_ctx, MainEvent::WriteRegister { address, value });
 
         // Check if the action includes a write command (not RegisterOperationFailed)
-        let has_write_action = actions.iter().any(|a| {
-            matches!(
-                a,
-                MainAction::SendE981RegWrite { .. } | MainAction::SendNcn5120RegWrite { .. }
-            )
-        });
+        let has_write_action = actions
+            .iter()
+            .any(|a| matches!(a, MainAction::SendE981RegWrite { .. } | MainAction::SendNcn5120RegWrite { .. }));
 
         self.execute_main_actions(actions).await;
         has_write_action
@@ -405,12 +399,7 @@ where
         }
 
         // Send E981 register write directly
-        let buf = [
-            E981_REG_WRITE_REQ,
-            (address >> 8) as u8,
-            (address & 0xFF) as u8,
-            value,
-        ];
+        let buf = [E981_REG_WRITE_REQ, (address >> 8) as u8, (address & 0xFF) as u8, value];
         let _ = self.uart.write_all(&buf).await;
 
         // Reset keepalive timer
@@ -517,7 +506,6 @@ where
                 }
                 MainAction::MarkFrameInvalid => {
                     // Mark frame as invalid (control = 0xFF) so it won't be processed
-                    // On error, the RX frame control field is set to 0xFF
                     self.main_ctx.receive_state.control_byte = 0xFF;
                 }
                 MainAction::SendSmFrameStart => {
@@ -526,7 +514,9 @@ where
                         if let Some(ref buf) = self.receive_buffer {
                             if buf.len() >= 4 && self.is_echo(&tx.tp1_buffer, buf) {
                                 self.main_ctx.receive_state.is_echo = true;
-                                let actions = process_send_event(&mut self.send_ctx, SendEvent::FrameStartReceived { is_echo: true });
+                                let actions = process_send_event(&mut self.send_ctx, SendEvent::FrameStartReceived {
+                                    is_echo: true,
+                                });
                                 self.execute_send_actions(actions).await;
                             }
                         }
@@ -542,7 +532,6 @@ where
                 }
                 MainAction::ResetSendStateMachine => {
                     // Reset send state machine due to error (e.g., U_State.ind with error flags)
-                    // The send sequence state is reset to 0
                     self.send_ctx.reset();
                     // Also clear any pending transmission
                     if self.current_tx.is_some() {
@@ -576,21 +565,12 @@ where
                 }
                 MainAction::SendE981RegRead { address } => {
                     // E981 register read: 3 bytes (cmd, addr_hi, addr_lo)
-                    let buf = [
-                        E981_REG_READ_REQ,
-                        (address >> 8) as u8,
-                        (address & 0xFF) as u8,
-                    ];
+                    let buf = [E981_REG_READ_REQ, (address >> 8) as u8, (address & 0xFF) as u8];
                     let _ = self.uart.write_all(&buf).await;
                 }
                 MainAction::SendE981RegWrite { address, value } => {
                     // E981 register write: 4 bytes (cmd, addr_hi, addr_lo, value)
-                    let buf = [
-                        E981_REG_WRITE_REQ,
-                        (address >> 8) as u8,
-                        (address & 0xFF) as u8,
-                        value,
-                    ];
+                    let buf = [E981_REG_WRITE_REQ, (address >> 8) as u8, (address & 0xFF) as u8, value];
                     let _ = self.uart.write_all(&buf).await;
                 }
                 MainAction::SendNcn5120RegWrite { address, value } => {
@@ -632,7 +612,8 @@ where
                                         let _ = self.uart.write_all(&[E981_LONG_DATA_END, index as u8, byte]).await;
                                     } else {
                                         // Middle bytes: E981_LONG_DATA_CONTINUE + full index
-                                        let _ = self.uart.write_all(&[E981_LONG_DATA_CONTINUE, index as u8, byte]).await;
+                                        let _ =
+                                            self.uart.write_all(&[E981_LONG_DATA_CONTINUE, index as u8, byte]).await;
                                     }
                                 }
 
@@ -738,7 +719,6 @@ where
         if is_echo {
             self.main_ctx.receive_state.is_echo = true;
         }
-
     }
 
     /// Parse the frame header (after 6 bytes received) and decide on ACK
@@ -805,7 +785,11 @@ where
     }
 
     /// Start a new transmission
-    async fn start_transmission(&mut self, msg: Buffer<'static>, response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>) {
+    async fn start_transmission(
+        &mut self,
+        msg: Buffer<'static>,
+        response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
+    ) {
         // Check frame size
         let tp1_size = self.calculate_tp1_frame_size(&msg);
         if tp1_size > self.main_ctx.chip_type.max_frame_size() {
@@ -850,7 +834,11 @@ where
     }
 
     /// Queue a frame for transmission
-    async fn queue_transmission(&mut self, msg: Buffer<'static>, response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>) {
+    async fn queue_transmission(
+        &mut self,
+        msg: Buffer<'static>,
+        response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
+    ) {
         // If idle and nothing pending, start immediately
         if self.main_ctx.main_state == MainState::Idle && self.pending_tx.is_none() && self.current_tx.is_none() {
             self.start_transmission(msg, response_tx).await;

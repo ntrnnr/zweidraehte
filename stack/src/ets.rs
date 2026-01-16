@@ -69,10 +69,10 @@
 //! ```
 
 // Re-export the derive macros
+pub use ets_macros::EtsComObjects;
+pub use ets_macros::EtsEnum;
 pub use ets_macros::EtsParams;
 pub use ets_macros::EtsUnion;
-pub use ets_macros::EtsEnum;
-pub use ets_macros::EtsComObjects;
 
 /// Device descriptor containing firmware/application-level metadata.
 ///
@@ -255,7 +255,6 @@ impl DeviceDescriptor {
 
 /// Parameter type for ETS export.
 ///
-/// These correspond to the parameter type codes used in the ETS export:
 /// - `UI` = Unsigned Integer
 /// - `SI` = Signed Integer
 /// - `EN` = Enumeration
@@ -623,14 +622,7 @@ pub struct FlagOverrides {
 impl FlagOverrides {
     /// Create a new FlagOverrides with all fields set to None (inherit all).
     pub const fn new() -> Self {
-        Self {
-            read: None,
-            write: None,
-            communication: None,
-            transmit: None,
-            update: None,
-            read_on_init: None,
-        }
+        Self { read: None, write: None, communication: None, transmit: None, update: None, read_on_init: None }
     }
 
     /// Check if any flags are overridden.

@@ -544,18 +544,49 @@ create_protocol_enum!(
 /// Run control events for PID_RUN_STATE_CONTROL (0x06).
 ///
 /// These events control the run state machine transitions:
-/// - `NoOp` (0x00): No operation - state remains unchanged.
-/// - `Restart` (0x01): Restart the application. Transitions to Running if loaded.
+/// - `Ready` (0x00): No operation - state remains unchanged.
+/// - `Restart` (0x01): Restart the application.
 /// - `Stop` (0x02): Stop the application. Transitions to Terminated state.
+/// - `Loaded` (0x03): Internal event - signaled when load state machine completes loading.
+/// - `Unloaded` (0x04): Internal event - signaled when load state machine unloads.
+/// - `ReadyToRun` (0x05): Internal event - startup delay complete, can transition to Running.
 create_protocol_enum!(
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum RunEvent: u8 {
-        NoOp            , 0x00, "NoOp";
+        Ready           , 0x00, "Ready";
         Restart         , 0x01, "Restart";
         Stop            , 0x02, "Stop";
+        Loaded          , 0x03, "Loaded";
+        Unloaded        , 0x04, "Unloaded";
+        ReadyToRun      , 0x05, "ReadyToRun";
         _,                      "Unknown Run Event 0x{:x}";
     }
 );
+
+/// Actions that can be triggered by run state machine transitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunAction {
+    /// No action needed.
+    None,
+    /// App is stopping - set device control bit 0, trigger cycle.
+    /// Triggered by: RUNNING + Restart → READY, RUNNING + Stop → TERMINATED
+    LoadStart,
+    /// App is ready to run - trigger app initialization.
+    /// Triggered by: READY + ReadyToRun → RUNNING
+    LoadEnd,
+    /// App is unloading - trigger cycle.
+    /// Triggered by: various unload transitions
+    Unload,
+}
+
+/// Result of a run state machine transition.
+#[derive(Debug, Clone, Copy)]
+pub struct RunStateResult {
+    /// The new run state.
+    pub state: RunState,
+    /// The action to perform.
+    pub action: RunAction,
+}
 
 /// Trait for objects that have a run state machine.
 ///
@@ -584,6 +615,16 @@ pub trait HasRunStateMachine {
     fn is_running(&self) -> bool {
         self.run_state() == RunState::Running
     }
+
+    /// Initialize the run state machine at startup.
+    ///
+    /// This should be called when the stack starts up. If the application
+    /// is already loaded (from persistent storage), this will transition
+    /// the run state machine to RUNNING.
+    ///
+    /// 1. If app is loaded: HALTED → READY (via Loaded event)
+    /// 2. Then immediately: READY → RUNNING (via ReadyToRun event)
+    fn init_run_state(&mut self);
 }
 
 create_protocol_enum!(
@@ -892,47 +933,98 @@ impl<T: HasLoadStateMachine> RunnableApplication<T> {
         &mut self.table
     }
 
-    /// Compute the next run state based on event and load state.
+    /// Compute the next run state and action based on event.
     ///
-    /// State transition table based on KNX conformance tests:
-    ///
-    /// | Current State | Event   | Load State | Next State  |
-    /// |---------------|---------|------------|-------------|
-    /// | HALTED        | NO_OP   | any        | HALTED      |
-    /// | HALTED        | RESTART | Loaded     | RUNNING     |
-    /// | HALTED        | RESTART | !Loaded    | HALTED      |
-    /// | HALTED        | STOP    | any        | TERMINATED  |
-    /// | RUNNING       | NO_OP   | any        | RUNNING     |
-    /// | RUNNING       | RESTART | any        | RUNNING     |
-    /// | RUNNING       | STOP    | any        | TERMINATED  |
-    /// | READY         | NO_OP   | any        | READY       |
-    /// | READY         | RESTART | Loaded     | RUNNING     |
-    /// | READY         | STOP    | any        | TERMINATED  |
-    /// | TERMINATED    | NO_OP   | any        | TERMINATED  |
-    /// | TERMINATED    | RESTART | Loaded     | RUNNING     |
-    /// | TERMINATED    | RESTART | !Loaded    | HALTED      |
-    /// | TERMINATED    | STOP    | any        | TERMINATED  |
-    fn next_run_state(&self, event: RunEvent) -> RunState {
-        let is_loaded = self.table.is_loaded();
+    /// |                 | HALTED          | RUNNING         | READY           | TERMINATED      |
+    /// |-----------------|-----------------|-----------------|-----------------|-----------------|
+    /// | Ready (0)       | halted, none    | running, none   | ready, none     | terminated, none|
+    /// | Restart (1)     | halted, unload  | ready, loadStart| ready, unload   | halted, unload  |
+    /// | Stop (2)        | term, none      | term, loadStart | term, none      | term, none      |
+    /// | Loaded (3)      | ready, none     | running, none   | ready, none     | term, none      |
+    /// | Unloaded (4)    | halted, none    | halted, loadStart| halted, none   | halted, none    |
+    /// | ReadyToRun (5)  | halted, none    | running, none   | running, loadEnd| term, none      |
+    fn next_run_state_with_action(&self, event: RunEvent) -> RunStateResult {
+        match (self.run_state, event) {
+            // Ready event - no-op, stay in current state
+            (state, RunEvent::Ready) => RunStateResult { state, action: RunAction::None },
 
-        match event {
-            RunEvent::NoOp => self.run_state,
-            RunEvent::Restart => {
-                if is_loaded {
-                    // If loaded, restart transitions to RUNNING
-                    RunState::Running
-                } else {
-                    // If not loaded, stay in current state (or HALTED if terminated)
-                    match self.run_state {
-                        RunState::Terminated => RunState::Halted,
-                        other => other,
-                    }
-                }
+            // Restart command
+            (RunState::Halted, RunEvent::Restart) => {
+                RunStateResult { state: RunState::Halted, action: RunAction::Unload }
             }
-            RunEvent::Stop => RunState::Terminated,
-            // Unknown events are ignored - state remains unchanged
-            RunEvent::Other(_) => self.run_state,
+            (RunState::Running, RunEvent::Restart) => {
+                RunStateResult { state: RunState::Ready, action: RunAction::LoadStart }
+            }
+            (RunState::Ready, RunEvent::Restart) => {
+                RunStateResult { state: RunState::Ready, action: RunAction::Unload }
+            }
+            (RunState::Terminated, RunEvent::Restart) => {
+                RunStateResult { state: RunState::Halted, action: RunAction::Unload }
+            }
+
+            // Stop command
+            (RunState::Halted, RunEvent::Stop) => {
+                RunStateResult { state: RunState::Terminated, action: RunAction::None }
+            }
+            (RunState::Running, RunEvent::Stop) => {
+                RunStateResult { state: RunState::Terminated, action: RunAction::LoadStart }
+            }
+            (RunState::Ready, RunEvent::Stop) => {
+                RunStateResult { state: RunState::Terminated, action: RunAction::None }
+            }
+            (RunState::Terminated, RunEvent::Stop) => {
+                RunStateResult { state: RunState::Terminated, action: RunAction::None }
+            }
+
+            // Loaded event (from LSM)
+            (RunState::Halted, RunEvent::Loaded) => RunStateResult { state: RunState::Ready, action: RunAction::None },
+            (RunState::Running, RunEvent::Loaded) => {
+                RunStateResult { state: RunState::Running, action: RunAction::None }
+            }
+            (RunState::Ready, RunEvent::Loaded) => RunStateResult { state: RunState::Ready, action: RunAction::None },
+            (RunState::Terminated, RunEvent::Loaded) => {
+                RunStateResult { state: RunState::Terminated, action: RunAction::None }
+            }
+
+            // Unloaded event (from LSM)
+            (RunState::Halted, RunEvent::Unloaded) => {
+                RunStateResult { state: RunState::Halted, action: RunAction::None }
+            }
+            (RunState::Running, RunEvent::Unloaded) => {
+                RunStateResult { state: RunState::Halted, action: RunAction::LoadStart }
+            }
+            (RunState::Ready, RunEvent::Unloaded) => {
+                RunStateResult { state: RunState::Halted, action: RunAction::None }
+            }
+            (RunState::Terminated, RunEvent::Unloaded) => {
+                RunStateResult { state: RunState::Halted, action: RunAction::None }
+            }
+
+            // ReadyToRun event (startup delay complete)
+            (RunState::Halted, RunEvent::ReadyToRun) => {
+                RunStateResult { state: RunState::Halted, action: RunAction::None }
+            }
+            (RunState::Running, RunEvent::ReadyToRun) => {
+                RunStateResult { state: RunState::Running, action: RunAction::None }
+            }
+            (RunState::Ready, RunEvent::ReadyToRun) => {
+                RunStateResult { state: RunState::Running, action: RunAction::LoadEnd }
+            }
+            (RunState::Terminated, RunEvent::ReadyToRun) => {
+                RunStateResult { state: RunState::Terminated, action: RunAction::None }
+            }
+
+            // Unknown events - no change
+            (state, RunEvent::Other(_)) => RunStateResult { state, action: RunAction::None },
         }
+    }
+
+    /// Signal that the application is ready to run (startup delay complete).
+    /// Returns the action to perform (typically LoadEnd when transitioning to RUNNING).
+    pub fn signal_ready_to_run(&mut self) -> RunAction {
+        let result = self.next_run_state_with_action(RunEvent::ReadyToRun);
+        self.run_state = result.state;
+        result.action
     }
 }
 
@@ -959,21 +1051,32 @@ impl<T: HasLoadStateMachine + TableMemory> TableMemory for RunnableApplication<T
     }
 }
 
-// Delegate HasLoadStateMachine to inner table, but also update run state on unload
+// Delegate HasLoadStateMachine to inner table, but also signal internal RSM events
 impl<T: HasLoadStateMachine> HasLoadStateMachine for RunnableApplication<T> {
     fn write_lsm(&mut self, buf: &[u8], alloc_address: Option<u32>) {
-        // Check if this is an unload event
-        let is_unload = !buf.is_empty() && buf[0] == LoadEvent::Unload.into();
+        let was_loaded = self.table.is_loaded();
 
-        // Process the load event
+        // Process the load event on the inner table
         self.table.write_lsm(buf, alloc_address);
 
-        // If unloaded, force run state to HALTED
-        if is_unload || !self.table.is_loaded() {
-            // Only reset to HALTED if we were running or ready
-            if matches!(self.run_state, RunState::Running | RunState::Ready) {
-                self.run_state = RunState::Halted;
+        let is_loaded = self.table.is_loaded();
+
+        // Signal internal events to run state machine based on load state change
+        if !was_loaded && is_loaded {
+            // Just became loaded - signal Loaded event, then immediately ReadyToRun
+            let result = self.next_run_state_with_action(RunEvent::Loaded);
+            self.run_state = result.state;
+
+            // If now in READY, immediately signal ReadyToRun to start the app
+            if self.run_state == RunState::Ready {
+                let result = self.next_run_state_with_action(RunEvent::ReadyToRun);
+                self.run_state = result.state;
+                // Note: result.action would be LoadEnd if app started - caller can check is_running()
             }
+        } else if was_loaded && !is_loaded {
+            // Just became unloaded - signal Unloaded event
+            let result = self.next_run_state_with_action(RunEvent::Unloaded);
+            self.run_state = result.state;
         }
     }
 
@@ -1006,8 +1109,48 @@ impl<T: HasLoadStateMachine> HasRunStateMachine for RunnableApplication<T> {
         }
 
         let event = RunEvent::from(data[0]);
-        self.run_state = self.next_run_state(event);
+        let result = self.next_run_state_with_action(event);
+        self.run_state = result.state;
+        // Note: result.action contains the side effect to perform (LoadStart, LoadEnd, Unload)
+        // The caller can use write_rsm_with_action() if they need the action
         self.run_state
+    }
+
+    fn init_run_state(&mut self) {
+        // 1. Start with current state (could be HALTED or preserved from storage)
+        // 2. If app is loaded: signal Loaded event (HALTED → READY)
+        // 3. Immediately signal ReadyToRun (READY → RUNNING)
+        if self.table.is_loaded() {
+            // Signal Loaded event - transitions HALTED → READY
+            let result = self.next_run_state_with_action(RunEvent::Loaded);
+            self.run_state = result.state;
+
+            // If now in READY, immediately signal ReadyToRun to start the app
+            if self.run_state == RunState::Ready {
+                let result = self.next_run_state_with_action(RunEvent::ReadyToRun);
+                self.run_state = result.state;
+            }
+        }
+    }
+}
+
+impl<T: HasLoadStateMachine> RunnableApplication<T> {
+    /// Process a run state control command and return both the new state and action.
+    ///
+    /// This is like `write_rsm()` but also returns the action that should be performed.
+    /// Actions include:
+    /// - `LoadStart`: Set device control bit 0 (app stopped)
+    /// - `LoadEnd`: Trigger application initialization
+    /// - `Unload`: Trigger cycle to re-evaluate load state
+    pub fn write_rsm_with_action(&mut self, data: &[u8]) -> RunStateResult {
+        if data.is_empty() {
+            return RunStateResult { state: self.run_state, action: RunAction::None };
+        }
+
+        let event = RunEvent::from(data[0]);
+        let result = self.next_run_state_with_action(event);
+        self.run_state = result.state;
+        result
     }
 }
 
