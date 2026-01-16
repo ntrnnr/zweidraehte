@@ -17,12 +17,13 @@ use zweidraehte::{
     address::IndividualAddress,
     dpt::DPT_Switch,
     ets::EtsComObjects,
-    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
+    memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
         comm::{ComObject, ComObjects},
         tables::{
-            AddressTable, AssociationTable, CommunicationObjectTable, addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7,
+            AddressTable, AssociationTable, CommunicationObjectTable,
+            addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7, app::Application,
         },
     },
 };
@@ -73,6 +74,8 @@ pub struct MyState {
     pub adt: RefCell<AddrTab7<30>>,
     pub ast: RefCell<AssoTab6<15>>,
     pub cot: RefCell<CoTab7<30>>,
+    /// Application program (load and run state machines)
+    pub app: RefCell<Application<()>>,
 }
 
 impl MyState {
@@ -82,6 +85,7 @@ impl MyState {
             adt: RefCell::new(adt),
             ast: RefCell::new(ast),
             cot: RefCell::new(cot),
+            app: RefCell::new(Application::new()),
         }
     }
 }
@@ -93,6 +97,7 @@ impl Default for MyState {
             adt: RefCell::new(AddrTab7::<30>::new()),
             ast: RefCell::new(AssoTab6::<15>::new()),
             cot: RefCell::new(CoTab7::<30>::new()),
+            app: RefCell::new(Application::new()),
         }
     }
 }
@@ -129,6 +134,13 @@ impl HasCommunicationObjectTable for MyState {
     type COT = CoTab7<30>;
     fn cot(&self) -> &RefCell<Self::COT> {
         &self.cot
+    }
+}
+
+impl HasApplication for MyState {
+    type APP = Application<()>;
+    fn app(&self) -> &RefCell<Self::APP> {
+        &self.app
     }
 }
 
