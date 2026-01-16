@@ -318,8 +318,7 @@ macro_rules! define_interface_object {
                 pid: u8,
                 start_idx: u16,
                 data: &[u8],
-                response_buf: &mut [u8],
-            ) -> Result<usize, $crate::objects::interface::PropertyError> {
+            ) -> Result<$crate::objects::interface::WriteResponse, $crate::objects::interface::PropertyError> {
                 // For single-element properties, only start_idx=1 is valid for writes
                 if start_idx != 1 {
                     return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
@@ -332,10 +331,7 @@ macro_rules! define_interface_object {
                     $(
                         $pid_path => {
                             $crate::define_interface_object!(@write_static $access, self.$field_name, data)?;
-                            // Echo back written data
-                            let len = data.len().min(response_buf.len());
-                            response_buf[..len].copy_from_slice(&data[..len]);
-                            Ok(len)
+                            Ok($crate::objects::interface::WriteResponse::Echo)
                         }
                     )*
                     _ => Err($crate::objects::interface::PropertyError::InvalidPropertyId),
@@ -586,8 +582,7 @@ macro_rules! define_interface_object {
                 pid: u8,
                 start_idx: u16,
                 data: &[u8],
-                response_buf: &mut [u8],
-            ) -> Result<usize, $crate::objects::interface::PropertyError> {
+            ) -> Result<$crate::objects::interface::WriteResponse, $crate::objects::interface::PropertyError> {
                 // For single-element properties, only start_idx=1 is valid for writes
                 if start_idx != 1 {
                     return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
@@ -601,30 +596,21 @@ macro_rules! define_interface_object {
                     $(
                         $pid_path => {
                             $crate::define_interface_object!(@write_static $access, self.$field_name, data)?;
-                            // Echo back written data
-                            let len = data.len().min(response_buf.len());
-                            response_buf[..len].copy_from_slice(&data[..len]);
-                            Ok(len)
+                            Ok($crate::objects::interface::WriteResponse::Echo)
                         }
                     )*
                     // State-backed properties (closure-based)
                     $($(
                         $state_pid_path => {
                             $crate::define_interface_object!(@write_state_property $state_access, self.state, data, $write_state, $write_data, $write_expr)?;
-                            // Echo back written data
-                            let len = data.len().min(response_buf.len());
-                            response_buf[..len].copy_from_slice(&data[..len]);
-                            Ok(len)
+                            Ok($crate::objects::interface::WriteResponse::Echo)
                         }
                     )*)?
                     // Shorthand ReadWrite properties
                     $($(
                         $rw_pid_path => {
                             $crate::define_interface_object!(@write_shorthand self.state, $rw_getter, $rw_pdt, data)?;
-                            // Echo back written data
-                            let len = data.len().min(response_buf.len());
-                            response_buf[..len].copy_from_slice(&data[..len]);
-                            Ok(len)
+                            Ok($crate::objects::interface::WriteResponse::Echo)
                         }
                     )*)?
                     // Shorthand ReadOnly properties
@@ -799,10 +785,9 @@ mod tests {
     #[test]
     fn test_read_write_property() {
         let mut obj = TestDeviceObject::new();
-        let mut resp_buf = [0u8; 8];
 
         // Write serial number
-        obj.write_property(pid::SERIAL_NUMBER, 1, &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06], &mut resp_buf)
+        obj.write_property(pid::SERIAL_NUMBER, 1, &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
             .unwrap();
 
         // Read it back
@@ -817,14 +802,13 @@ mod tests {
     #[test]
     fn test_read_only_write_fails() {
         let mut obj = TestDeviceObject::new();
-        let mut resp_buf = [0u8; 8];
 
         // Try to write read-only property
-        let result = obj.write_property(pid::MANUFACTURER_ID, 1, &[0x12, 0x34], &mut resp_buf);
+        let result = obj.write_property(pid::MANUFACTURER_ID, 1, &[0x12, 0x34]);
         assert_eq!(result, Err(PropertyError::WriteNotAllowed));
 
         // Object type should also be read-only
-        let result = obj.write_property(pid::OBJECT_TYPE, 1, &[0x00, 0x01], &mut resp_buf);
+        let result = obj.write_property(pid::OBJECT_TYPE, 1, &[0x00, 0x01]);
         assert_eq!(result, Err(PropertyError::WriteNotAllowed));
     }
 

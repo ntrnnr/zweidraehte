@@ -34,7 +34,7 @@ use crate::{
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
         GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PeiProgramObject, PropertyDescriptionResponse,
-        PropertyDescriptor, PropertyError, PropertyServiceHandler,
+        PropertyDescriptor, PropertyError, PropertyServiceHandler, WriteResponse,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -242,9 +242,8 @@ where
         prop_id: u8,
         start_idx: u16,
         data: &[u8],
-        response_buf: &mut [u8],
         access_level: u8,
-    ) -> Result<usize, PropertyError> {
+    ) -> Result<WriteResponse, PropertyError> {
         // Check access level
         let desc = self.get_descriptor(object_idx, prop_id).ok_or(PropertyError::InvalidPropertyId)?;
         if !desc.can_write(access_level) {
@@ -253,12 +252,12 @@ where
 
         // Dispatch to the appropriate object using borrow_mut for interior mutability
         match object_idx {
-            0 => self.device.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
-            1 => self.address_table.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
-            2 => self.association_table.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
-            3 => self.group_object_table.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
-            4 => self.application_program.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
-            5 => self.pei_program.borrow_mut().write_property(prop_id, start_idx, data, response_buf),
+            0 => self.device.borrow_mut().write_property(prop_id, start_idx, data),
+            1 => self.address_table.borrow_mut().write_property(prop_id, start_idx, data),
+            2 => self.association_table.borrow_mut().write_property(prop_id, start_idx, data),
+            3 => self.group_object_table.borrow_mut().write_property(prop_id, start_idx, data),
+            4 => self.application_program.borrow_mut().write_property(prop_id, start_idx, data),
+            5 => self.pei_program.borrow_mut().write_property(prop_id, start_idx, data),
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }
@@ -383,9 +382,8 @@ impl<'a, S: IpStackState> PropertyServiceHandler for IpObjects<'a, S> {
         prop_id: u8,
         start_idx: u16,
         data: &[u8],
-        response_buf: &mut [u8],
         access_level: u8,
-    ) -> Result<usize, PropertyError> {
+    ) -> Result<WriteResponse, PropertyError> {
         if object_idx == 0 {
             // Check access level
             if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(prop_id) {
@@ -395,7 +393,7 @@ impl<'a, S: IpStackState> PropertyServiceHandler for IpObjects<'a, S> {
             } else {
                 return Err(PropertyError::InvalidPropertyId);
             }
-            self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data, response_buf)
+            self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data)
         } else {
             Err(PropertyError::InvalidObjectIndex)
         }

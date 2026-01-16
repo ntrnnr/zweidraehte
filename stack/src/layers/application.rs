@@ -909,15 +909,11 @@ where
         );
 
         // Perform the write - the response may differ from written data (e.g., LOAD_STATE_CONTROL)
-        // Use a stack buffer for the response data
-        // FIXME: stack usage - consider a better approach for large properties
-        let mut response_data = [0u8; 64]; // Should be enough for any property response
         let result = self.interface_objects.property_value_write(
             object_idx,
             prop_id,
             start_idx,
             data,
-            &mut response_data,
             access_level,
         );
 
@@ -929,8 +925,12 @@ where
         }
 
         match result {
-            Ok(response_data_len) => {
+            Ok(write_response) => {
                 // Success: send response with the data returned by the write operation
+                // WriteResponse::Echo means echo back the original data
+                // WriteResponse::Data contains transformed data (e.g., LOAD_STATE_CONTROL)
+                let response_data: &[u8] = write_response.as_slice().unwrap_or(data);
+                let response_data_len = response_data.len();
                 let response_len = offsets::MSG_APCI + 6 + response_data_len;
                 let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
 
@@ -943,9 +943,9 @@ where
                         response_buf[offsets::MSG_APCI + 4] = (count_start >> 8) as u8;
                         response_buf[offsets::MSG_APCI + 5] = count_start as u8;
 
-                        // Copy response data (may be echoed write data or transformed data like load state)
+                        // Copy response data (echoed write data or transformed data like load state)
                         response_buf[offsets::MSG_APCI + 6..offsets::MSG_APCI + 6 + response_data_len]
-                            .copy_from_slice(&response_data[..response_data_len]);
+                            .copy_from_slice(response_data);
                     });
 
                 debug!("AL sending PropertyValueResponse (write success): {} bytes", response_data_len);

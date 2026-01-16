@@ -11,6 +11,67 @@ use crate::dpt::{
 };
 
 // ============================================================================
+// Write Response
+// ============================================================================
+
+/// Maximum size for transformed write response data.
+///
+/// This is sized for the largest transformed response (LOAD_STATE_CONTROL returns 1 byte).
+/// If larger responses are needed in the future, increase this value.
+pub const MAX_WRITE_RESPONSE_DATA: usize = 4;
+
+/// Response from a property write operation.
+///
+/// Most property writes simply echo the written data back. However, some special
+/// properties (like `LOAD_STATE_CONTROL` and `RUN_STATE_CONTROL`) transform the
+/// input and return different data (e.g., the resulting state machine state).
+///
+/// This enum avoids the need for a separate response buffer by allowing the
+/// response to either echo the input or provide inline transformed data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteResponse {
+    /// Echo the input data back (the common case for most properties).
+    /// The caller should use the original write data as the response.
+    Echo,
+
+    /// Return transformed data inline.
+    /// Used by properties like `LOAD_STATE_CONTROL` that transform the input
+    /// and return the resulting state.
+    Data(heapless::Vec<u8, MAX_WRITE_RESPONSE_DATA>),
+}
+
+impl WriteResponse {
+    /// Create a new `WriteResponse::Data` from a slice.
+    ///
+    /// # Panics
+    /// Panics if the slice is longer than `MAX_WRITE_RESPONSE_DATA`.
+    #[inline]
+    pub fn data(slice: &[u8]) -> Self {
+        WriteResponse::Data(heapless::Vec::from_slice(slice).expect("Write response data too large"))
+    }
+
+    /// Create a `WriteResponse::Data` containing a single byte.
+    #[inline]
+    pub fn byte(b: u8) -> Self {
+        let mut v = heapless::Vec::new();
+        v.push(b).unwrap();
+        WriteResponse::Data(v)
+    }
+
+    /// Get the response data as a slice.
+    ///
+    /// For `Echo`, this returns `None` - the caller should use the original input data.
+    /// For `Data`, this returns `Some(&[u8])` with the transformed data.
+    #[inline]
+    pub fn as_slice(&self) -> Option<&[u8]> {
+        match self {
+            WriteResponse::Echo => None,
+            WriteResponse::Data(v) => Some(v.as_slice()),
+        }
+    }
+}
+
+// ============================================================================
 // State Property Value Conversion
 // ============================================================================
 
@@ -284,13 +345,11 @@ pub trait PropertyServiceHandler {
     /// * `prop_id` - Property ID to write
     /// * `start_idx` - 1-based start index for array properties
     /// * `data` - Data to write
-    /// * `response_buf` - Buffer for response data (may differ from written data, e.g., for LOAD_STATE_CONTROL)
     /// * `access_level` - Caller's access level (0 = full access, 3 = minimal)
     ///
     /// # Returns
-    /// `Ok(response_len)` - Number of bytes written to response_buf on success
-    /// For most properties, this echoes the written data.
-    /// For LOAD_STATE_CONTROL, this returns the resulting load state (1 byte).
+    /// * `Ok(WriteResponse::Echo)` - The write succeeded; response should echo the input data
+    /// * `Ok(WriteResponse::Data(&[u8]))` - The write succeeded; response is transformed data
     /// Returns `AccessDenied` if insufficient access level.
     fn property_value_write(
         &self,
@@ -298,9 +357,8 @@ pub trait PropertyServiceHandler {
         prop_id: u8,
         start_idx: u16,
         data: &[u8],
-        response_buf: &mut [u8],
         access_level: u8,
-    ) -> Result<usize, PropertyError>;
+    ) -> Result<WriteResponse, PropertyError>;
 }
 
 // ============================================================================
@@ -381,20 +439,13 @@ pub trait InterfaceObject {
     /// * `pid` - Property ID to write
     /// * `start_idx` - 1-based start index for array properties (use 1 for single values)
     /// * `data` - Data to write
-    /// * `response_buf` - Buffer for response data (may differ from written data)
     ///
     /// # Returns
-    /// * `Ok(response_len)` - Number of bytes written to response_buf
-    ///   For most properties, this echoes the written data.
-    ///   For LOAD_STATE_CONTROL, this returns the resulting load state (1 byte).
+    /// * `Ok(WriteResponse::Echo)` - The write succeeded; response should echo the input data
+    /// * `Ok(WriteResponse::Data(&[u8]))` - The write succeeded; response is transformed data
+    ///   (e.g., LOAD_STATE_CONTROL returns the resulting state, not the command)
     /// * `Err(PropertyError)` - If the write fails
-    fn write_property(
-        &mut self,
-        pid: u8,
-        start_idx: u16,
-        data: &[u8],
-        response_buf: &mut [u8],
-    ) -> Result<usize, PropertyError>;
+    fn write_property(&mut self, pid: u8, start_idx: u16, data: &[u8]) -> Result<WriteResponse, PropertyError>;
 
     /// Get current element count for an array property
     ///
@@ -485,9 +536,8 @@ impl PropertyServiceHandler for () {
         _prop_id: u8,
         _start_idx: u16,
         _data: &[u8],
-        _response_buf: &mut [u8],
         _access_level: u8,
-    ) -> Result<usize, PropertyError> {
+    ) -> Result<WriteResponse, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
     }
 }
@@ -580,14 +630,13 @@ where
         prop_id: u8,
         start_idx: u16,
         data: &[u8],
-        response_buf: &mut [u8],
         access_level: u8,
-    ) -> Result<usize, PropertyError> {
+    ) -> Result<WriteResponse, PropertyError> {
         let base_count = self.0.object_count();
         if object_idx < base_count {
-            self.0.property_value_write(object_idx, prop_id, start_idx, data, response_buf, access_level)
+            self.0.property_value_write(object_idx, prop_id, start_idx, data, access_level)
         } else {
-            self.1.property_value_write(object_idx - base_count, prop_id, start_idx, data, response_buf, access_level)
+            self.1.property_value_write(object_idx - base_count, prop_id, start_idx, data, access_level)
         }
     }
 }
