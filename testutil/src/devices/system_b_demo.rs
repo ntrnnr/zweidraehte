@@ -668,9 +668,12 @@ impl EtsPageLayout for DemoStack {
                     obj in_operation
                     obj error_status
                 }
+            }
 
+            // Outputs channel - groups output comm objects in Group Objects view
+            channel "outputs" => "Outputs" (1) {
                 // Output channel configuration - mode selectors
-                block "outputs" => "Outputs" {
+                block "output_config" => "Configuration" {
                     selector channel_a_config
                     selector channel_b_config
                 }
@@ -679,14 +682,14 @@ impl EtsPageLayout for DemoStack {
                 // The comm objects are conditional and will auto-wrap in choose/when
                 when channel_a_config {
                     [Switch] => {
-                        block "channel_a_switch" => "    Channel A: Switch" {
+                        block "channel_a_switch" => "Channel A: Switch" {
                             param channel_a_config::Switch.invert
                             obj channel_a_in
                             obj channel_a_out
                         }
                     }
                     [Dimmer] => {
-                        block "channel_a_dimmer" => "    Channel A: Dimmer" {
+                        block "channel_a_dimmer" => "Channel A: Dimmer" {
                             param channel_a_config::Dimmer.min_level
                             param channel_a_config::Dimmer.max_level
                             obj channel_a_in
@@ -694,7 +697,7 @@ impl EtsPageLayout for DemoStack {
                         }
                     }
                     [Pwm] => {
-                        block "channel_a_pwm" => "    Channel A: PWM" {
+                        block "channel_a_pwm" => "Channel A: PWM" {
                             param channel_a_config::Pwm.frequency
                             param channel_a_config::Pwm.duty_cycle
                             obj channel_a_in
@@ -706,14 +709,14 @@ impl EtsPageLayout for DemoStack {
                 // Channel B config blocks appear below based on selection
                 when channel_b_config {
                     [Switch] => {
-                        block "channel_b_switch" => "    Channel B: Switch" {
+                        block "channel_b_switch" => "Channel B: Switch" {
                             param channel_b_config::Switch.invert
                             obj channel_b_in
                             obj channel_b_out
                         }
                     }
                     [Dimmer] => {
-                        block "channel_b_dimmer" => "    Channel B: Dimmer" {
+                        block "channel_b_dimmer" => "Channel B: Dimmer" {
                             param channel_b_config::Dimmer.min_level
                             param channel_b_config::Dimmer.max_level
                             obj channel_b_in
@@ -721,7 +724,7 @@ impl EtsPageLayout for DemoStack {
                         }
                     }
                     [Pwm] => {
-                        block "channel_b_pwm" => "    Channel B: PWM" {
+                        block "channel_b_pwm" => "Channel B: PWM" {
                             param channel_b_config::Pwm.frequency
                             param channel_b_config::Pwm.duty_cycle
                             obj channel_b_in
