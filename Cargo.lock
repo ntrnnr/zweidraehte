@@ -1515,7 +1515,6 @@ dependencies = [
  "knx-conformance",
  "libc",
  "log",
- "paste",
  "platform",
  "quick-xml",
  "serde",

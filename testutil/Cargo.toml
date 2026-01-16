@@ -21,8 +21,6 @@ serde_json = { workspace = true }
 
 embedded-io-async = { workspace = true }
 
-# FIXME: reexport from stack?
-paste = { workspace = true }
 
 env_logger = "0.11"
 log = "0.4"
