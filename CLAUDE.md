@@ -1,4 +1,4 @@
-We are building a KNX device stack. We can run a bunch of conformance tests by running `cargo run --bin conformance-runner`. You can pass test names or subset of names as a parameter to only run specific tests. Make sure to not truncate the output of a test run as it is possibly long.
+We are building a KNX device stack. We can run a bunch of conformance tests by running `cargo run --bin conformance-runner`. You can pass test names or subset of names as a parameter to only run specific tests. Make sure to not truncate the output of a test run as it is possibly long. The conformance tests take a long while to run. If you need different output, pipe it into a file and then grep through it for what you need without running them over and over again. You can also give it a test suite name or part of it as the first argument to only run specific tests or test suites.
 
 The goal is to write a KNX device stack (and possibly more later) in Rust targeting both embedded devices in a no_std and no alloc environment and embedded Linux userspace systems.
 
