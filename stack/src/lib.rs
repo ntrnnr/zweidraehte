@@ -71,6 +71,15 @@ use crate::{
 pub enum ReadObjectError {
     /// The read request timed out without receiving a response
     Timeout,
+    /// The object is busy (already transmitting)
+    Busy,
+}
+
+/// Error type for update/write object operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateObjectError {
+    /// The object is busy (already transmitting)
+    Busy,
 }
 
 /// Trait for stack state types.
@@ -1272,34 +1281,44 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// 3. Publishes a `LocallyUpdated` event to notify subscribers
     /// 4. Sends a GroupValueWrite request to the KNX bus
     ///
+    /// # Returns
+    /// * `Ok(())` - The update was accepted and will be transmitted
+    /// * `Err(UpdateObjectError::Busy)` - The object is already transmitting
+    ///
     /// # Example
     /// ```rust,ignore
     /// # async fn example(stack: zweidraehte::Stack<'_, MyStackDef>, switch_index: MyComObjectIndex) {
     /// use zweidraehte::dpt::DPT_Switch;
     ///
     /// // Update a boolean switch object
-    /// stack.update_object(switch_index, DPT_Switch::from(true)).await;
-    ///
-    /// // Update with raw bytes
-    /// stack.update_object(switch_index, &[0x01]).await;
+    /// if stack.update_object(switch_index, DPT_Switch::from(true)).await.is_ok() {
+    ///     println!("Update accepted");
+    /// }
     /// # }
     /// ```
     pub async fn update_object<T: AsRef<[u8]>>(
         &self,
         asap: <<D as StackDefinition>::CO as ComObjects>::Index,
         value: T,
-    ) {
-        // FIXME: check if app is running, if not, don't do anything?
-        // FIXME: check if transmission state is not transmitting yet
-
-        self.inner.with_comm_objs(|co| {
+    ) -> Result<(), UpdateObjectError> {
+        // Check if object is idle and set status atomically
+        let accepted = self.inner.with_comm_objs(|co| {
+            if !co.status(asap.index()).is_idle() {
+                return false;
+            }
             co.set_status(asap.index(), ComObjectStatus::WriteRequest);
             co.info_mut(asap.index()).value.copy_from_slice(value.as_ref());
+            true
         });
+
+        if !accepted {
+            return Err(UpdateObjectError::Busy);
+        }
 
         self.inner.event_channel.publish_immediate((asap.clone(), ComObjectEvent::LocallyUpdated));
 
         self.app_request_sender.request(ApplicationLayerService::GroupValueWriteRequest(asap.index())).await;
+        Ok(())
     }
 
     /// Send a write request for a communication object using its current value.
@@ -1317,7 +1336,11 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     ///
     /// Note: This does NOT publish a `LocallyUpdated` event since the value is not being
     /// changed, only transmitted.
-    pub async fn write_object(&self, asap: <<D as StackDefinition>::CO as ComObjects>::Index) {
+    ///
+    /// # Returns
+    /// * `Ok(())` - The write request was accepted
+    /// * `Err(UpdateObjectError::Busy)` - The object is already transmitting
+    pub async fn write_object(&self, asap: <<D as StackDefinition>::CO as ComObjects>::Index) -> Result<(), UpdateObjectError> {
         self.write_object_by_asap(asap.index()).await
     }
 
@@ -1325,26 +1348,62 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     ///
     /// This is a lower-level version of `write_object` that takes a raw ASAP number
     /// instead of the type-safe Index type.
-    pub async fn write_object_by_asap(&self, asap: u16) {
-        self.inner.with_comm_objs(|co| co.set_status(asap, ComObjectStatus::WriteRequest));
+    ///
+    /// # Returns
+    /// * `Ok(())` - The write request was accepted
+    /// * `Err(UpdateObjectError::Busy)` - The object is already transmitting
+    pub async fn write_object_by_asap(&self, asap: u16) -> Result<(), UpdateObjectError> {
+        let accepted = self.inner.with_comm_objs(|co| {
+            if !co.status(asap).is_idle() {
+                return false;
+            }
+            co.set_status(asap, ComObjectStatus::WriteRequest);
+            true
+        });
+
+        if !accepted {
+            return Err(UpdateObjectError::Busy);
+        }
+
         self.app_request_sender.request(ApplicationLayerService::GroupValueWriteRequest(asap)).await;
+        Ok(())
     }
 
     /// Send a read request for a communication object.
     ///
     /// This method sends the read request and returns immediately without waiting for a response.
     /// Use `read_object_with_timeout` if you need to wait for the response.
-    pub async fn read_object(&self, asap: <<D as StackDefinition>::CO as ComObjects>::Index) {
-        self.read_object_by_asap(asap.index()).await;
+    ///
+    /// # Returns
+    /// * `Ok(())` - The read request was accepted
+    /// * `Err(ReadObjectError::Busy)` - The object is already transmitting
+    pub async fn read_object(&self, asap: <<D as StackDefinition>::CO as ComObjects>::Index) -> Result<(), ReadObjectError> {
+        self.read_object_by_asap(asap.index()).await
     }
 
     /// Send a read request for a communication object by ASAP number.
     ///
     /// This is a lower-level version of `read_object` that takes a raw ASAP number
     /// instead of the type-safe Index type.
-    pub async fn read_object_by_asap(&self, asap: u16) {
-        self.inner.with_comm_objs(|co| co.set_status(asap, ComObjectStatus::ReadRequest));
+    ///
+    /// # Returns
+    /// * `Ok(())` - The read request was accepted
+    /// * `Err(ReadObjectError::Busy)` - The object is already transmitting
+    pub async fn read_object_by_asap(&self, asap: u16) -> Result<(), ReadObjectError> {
+        let accepted = self.inner.with_comm_objs(|co| {
+            if !co.status(asap).is_idle() {
+                return false;
+            }
+            co.set_status(asap, ComObjectStatus::ReadRequest);
+            true
+        });
+
+        if !accepted {
+            return Err(ReadObjectError::Busy);
+        }
+
         self.app_request_sender.request(ApplicationLayerService::GroupValueReadRequest(asap)).await;
+        Ok(())
     }
 
     /// Send a read request for a communication object and optionally wait for the response.
@@ -1358,18 +1417,20 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # Returns
     /// * `Ok(())` - The read request was sent successfully and (if timeout was specified) a response was received
     /// * `Err(ReadObjectError::Timeout)` - A timeout was specified but no response was received within the timeout period
+    /// * `Err(ReadObjectError::Busy)` - The object is already transmitting
     ///
     /// # Example
     /// ```rust,ignore
     /// # use embassy_time::Duration;
     /// # async fn example(stack: zweidraehte::Stack<'_, MyStackDef>, asap: MyComObjectIndex) {
     /// // Fire-and-forget read request
-    /// stack.read_object(asap).await;
+    /// let _ = stack.read_object(asap).await;
     ///
     /// // Read request with 1 second timeout
     /// match stack.read_object_with_timeout(asap, Some(Duration::from_secs(1))).await {
     ///     Ok(()) => println!("Response received!"),
     ///     Err(zweidraehte::ReadObjectError::Timeout) => println!("No response within timeout"),
+    ///     Err(zweidraehte::ReadObjectError::Busy) => println!("Object is busy"),
     /// }
     /// # }
     /// ```
@@ -1378,10 +1439,18 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         asap: <<D as StackDefinition>::CO as ComObjects>::Index,
         timeout: Option<Duration>,
     ) -> Result<(), ReadObjectError> {
-        // FIXME: check if app is running, if not, don't do anything?
-        // FIXME: check if transmission state is not transmitting yet
+        // Check if object is idle and set status atomically
+        let accepted = self.inner.with_comm_objs(|co| {
+            if !co.status(asap.index()).is_idle() {
+                return false;
+            }
+            co.set_status(asap.index(), ComObjectStatus::ReadRequest);
+            true
+        });
 
-        self.inner.with_comm_objs(|co| co.set_status(asap.index(), ComObjectStatus::ReadRequest));
+        if !accepted {
+            return Err(ReadObjectError::Busy);
+        }
 
         // If no timeout is specified, just send the request and return immediately
         let Some(timeout_duration) = timeout else {

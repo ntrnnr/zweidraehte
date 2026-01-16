@@ -929,7 +929,7 @@ async fn main(spawner: Spawner) {
                             // DPT_Switch is stored as a single byte, bit 0 is the value
                             value_bytes.len() > 0 && (value_bytes[0] & 0x01) != 0
                         };
-                        stack.update_object(output_idx, DPT_Switch::from(!current)).await;
+                        let _ = stack.update_object(output_idx, DPT_Switch::from(!current)).await;
                         println!("Toggled output CO {} in response to input CO {}", idx + 4, idx);
                     }
                 }

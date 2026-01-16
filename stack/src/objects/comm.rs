@@ -107,6 +107,15 @@ impl ComObjectStatus {
             ComObjectStatus::IdleOk
         }
     }
+
+    /// Check if the object is idle (not transmitting).
+    ///
+    /// Returns true if the object can accept a new write/read request.
+    /// Returns false if a transmission is in progress.
+    pub fn is_idle(&self) -> bool {
+        // Bit 6 of the flags byte is the idle indicator (1 = idle, 0 = transmitting)
+        self.to_flags_byte() & 0x40 != 0
+    }
 }
 
 /// A trait for communication object values to abstract over different DatapointTypes

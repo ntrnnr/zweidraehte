@@ -273,7 +273,7 @@ async fn main(spawner: Spawner) {
     loop {
         match select(Timer::after_millis(1000), events.next_message()).await {
             Either::First(_) => {
-                stack.update_object(comm_objs::Index::CoIn0, DPT_Switch::from(true)).await;
+                let _ = stack.update_object(comm_objs::Index::CoIn0, DPT_Switch::from(true)).await;
 
                 // Test the new read_object_with_timeout functionality
                 println!("Testing read_object_with_timeout...");
@@ -298,10 +298,13 @@ async fn main(spawner: Spawner) {
                     Err(zweidraehte::ReadObjectError::Timeout) => {
                         println!("Read object timed out - no response received")
                     }
+                    Err(zweidraehte::ReadObjectError::Busy) => {
+                        println!("Read object busy - already transmitting")
+                    }
                 }
 
                 // Also test the regular read_object (fire-and-forget)
-                stack.read_object(comm_objs::Index::CoIn0).await;
+                let _ = stack.read_object(comm_objs::Index::CoIn0).await;
 
                 println!("CoIn0: {:?}", objects.borrow().co_in0.value);
             }
