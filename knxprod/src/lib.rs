@@ -49,6 +49,8 @@
 mod schema;
 mod generator;
 pub mod page_layout;
+pub mod parser;
+pub mod model;
 
 pub use schema::*;
 pub use generator::*;

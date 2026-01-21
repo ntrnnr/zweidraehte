@@ -7,6 +7,7 @@ members = [
     "conformance",
     "ets-macros",
     "knxprod",
+    "knxprod-tui",
 ]
 
 [workspace.package]
@@ -49,3 +50,7 @@ futures-lite = "2.5"
 
 # Testing
 test-case = "3.3"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"

@@ -9,6 +9,7 @@
 //! - [`storage`] - Device state persistence backends
 //! - [`util`] - Shared utilities (keyboard input, etc.)
 //! - [`mtxml_gen`] - MTXML generation from Rust device definitions
+//! - [`equivalence`] - Application program equivalence testing
 //!
 //! # Binaries
 //!
@@ -17,6 +18,7 @@
 //! - `stack_system_b` - Run a System B device demo
 //! - `stack_knxip` - Run a full KNX/IP stack
 //! - `gen_mtxml` - Generate MTXML files from device definitions
+//! - `compare_programs` - Compare two application programs for equivalence
 //! - `busmon` - TPUART bus monitor
 //! - And more...
 //!
@@ -29,6 +31,7 @@ pub mod devices;
 pub mod storage;
 pub mod util;
 pub mod mtxml_gen;
+pub mod equivalence;
 
 // Re-export commonly used items for convenience
 pub use devices::{DEVICE_DESCRIPTOR, DemoParams, comm_objs};

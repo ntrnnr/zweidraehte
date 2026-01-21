@@ -59,6 +59,8 @@ struct MultiParamRefMap {
     /// Text-based ref map: (param_name, text_override) -> ref_id
     /// For union variant params that have different text overrides in different contexts
     by_text: HashMap<(String, Option<String>), String>,
+    /// Map from param name to primary ref number (for text interpolation)
+    param_ref_nums: HashMap<String, u32>,
 }
 
 impl MultiParamRefMap {
@@ -1144,6 +1146,8 @@ impl MtxmlGenerator {
                     ref_id: param_id.clone(),
                     text: None,
                     internal_description: None,
+                    access: None,
+                    value: None,
                 });
                 next_ref_num += 1;
             }
@@ -1173,6 +1177,8 @@ impl MtxmlGenerator {
                         ref_id: selector_id.clone(),
                         text: None,
                         internal_description: None,
+                        access: None,
+                        value: None,
                     });
                     next_ref_num += 1;
                 }
@@ -1197,6 +1203,8 @@ impl MtxmlGenerator {
                             ref_id: param_id.clone(),
                             text,
                             internal_description: None,
+                            access: None,
+                            value: None,
                         });
                         next_ref_num += 1;
                     }
@@ -1228,7 +1236,12 @@ impl MtxmlGenerator {
             let default_text = cap.get(2).unwrap().as_str();
 
             if let Some(&ref_num) = param_ref_nums.get(param_name) {
-                let replacement = format!("{{{{{}:{}}}}}", ref_num, default_text);
+                // Use {{N}} format when default is empty, {{N:default}} otherwise (matches MDT)
+                let replacement = if default_text.is_empty() {
+                    format!("{{{{{}}}}}", ref_num)
+                } else {
+                    format!("{{{{{}:{}}}}}", ref_num, default_text)
+                };
                 result = result.replace(full_match, &replacement);
             }
             // If param not found, leave the original text (will show as static text)
@@ -1995,6 +2008,7 @@ impl MtxmlGenerator {
         let mut primary = HashMap::new();
         let mut multi: HashMap<String, Vec<String>> = HashMap::new();
         let mut by_text: HashMap<(String, Option<String>), String> = HashMap::new();
+        let mut param_ref_nums: HashMap<String, u32> = HashMap::new();
 
         // Build a set of union selector names
         let union_selector_names: std::collections::HashSet<String> = config
@@ -2025,6 +2039,7 @@ impl MtxmlGenerator {
 
             // Create refs
             let mut refs = Vec::with_capacity(num_refs);
+            let first_ref_num = next_ref_num; // Track for param_ref_nums
             for i in 0..num_refs {
                 let ref_id = format!("{}_R-{}", param_id, next_ref_num);
                 if i == 0 {
@@ -2033,6 +2048,9 @@ impl MtxmlGenerator {
                 refs.push(ref_id);
                 next_ref_num += 1;
             }
+
+            // Store the primary ref number for text interpolation
+            param_ref_nums.insert(param_name.clone(), first_ref_num);
 
             if num_refs > 1 {
                 multi.insert(param_name, refs);
@@ -2054,6 +2072,7 @@ impl MtxmlGenerator {
                 let num_refs = selector_usage_counts.get(&selector_name).copied().unwrap_or(0).max(1);
 
                 let mut refs = Vec::with_capacity(num_refs);
+                let first_ref_num = next_ref_num; // Track for param_ref_nums
                 for i in 0..num_refs {
                     let ref_id = format!("{}_R-{}", selector_id, next_ref_num);
                     if i == 0 {
@@ -2062,6 +2081,9 @@ impl MtxmlGenerator {
                     refs.push(ref_id);
                     next_ref_num += 1;
                 }
+
+                // Store the primary ref number for text interpolation
+                param_ref_nums.insert(selector_name.clone(), first_ref_num);
 
                 if num_refs > 1 {
                     multi.insert(selector_name, refs);
@@ -2096,7 +2118,7 @@ impl MtxmlGenerator {
             }
         }
 
-        MultiParamRefMap { primary, multi, by_text }
+        MultiParamRefMap { primary, multi, by_text, param_ref_nums }
     }
 
     /// Build a mapping from comm object field names to their ComObjectRefRef info.
@@ -2271,10 +2293,13 @@ impl MtxmlGenerator {
             active_conditions,
         )?;
 
+        // Resolve text parameter references in block text
+        let resolved_text = Self::resolve_text_param_refs(block.text, &param_ref_map.param_ref_nums);
+
         Ok(ParameterBlock {
             id: format!("{}_PB-{}", app_id, block_id),
             name: block.name.to_string(),
-            text: Some(block.text.to_string()),
+            text: Some(resolved_text),
             internal_description: None,
             items,
         })
@@ -3533,6 +3558,9 @@ impl MtxmlGenerator {
                     Self::validate_parameter_block_items(&pb.items, param_ref_ids, com_obj_ref_ids)?;
                 }
                 WhenItem::ParameterSeparator(_) => {}
+                WhenItem::Assign(_) => {
+                    // Assign elements copy parameter values; validation would check refs exist
+                }
             }
         }
         Ok(())

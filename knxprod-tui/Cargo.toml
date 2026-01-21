@@ -1,0 +1,15 @@
+[package]
+name = "knxprod-tui"
+version = "0.1.0"
+edition = "2024"
+authors = ["Andreas Galauner <andreas@galauner.de>"]
+license = "Proprietary"
+description = "TUI viewer for KNX ApplicationProgram MTXML files"
+
+[dependencies]
+knxprod = { path = "../knxprod" }
+
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+
+clap = { version = "4", features = ["derive"] }

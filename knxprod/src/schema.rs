@@ -328,6 +328,7 @@ pub struct ParameterType {
 #[serde(rename_all = "PascalCase")]
 pub enum ParameterTypeDef {
     TypeNumber(TypeNumber),
+    TypeFloat(TypeFloat),
     TypeRestriction(TypeRestriction),
     TypeText(TypeText),
     TypeNone(TypeNone),
@@ -344,6 +345,17 @@ pub struct TypeNumber {
     pub min_inclusive: i64,
     #[serde(rename = "@maxInclusive")]
     pub max_inclusive: i64,
+}
+
+/// Float parameter type (for DPT 9, DPT 14, etc.)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeFloat {
+    #[serde(rename = "@Encoding")]
+    pub encoding: String, // e.g., "DPT 9", "DPT 14"
+    #[serde(rename = "@minInclusive")]
+    pub min_inclusive: f64,
+    #[serde(rename = "@maxInclusive")]
+    pub max_inclusive: f64,
 }
 
 /// Enumeration/restriction parameter type
@@ -511,6 +523,12 @@ pub struct ParameterRef {
     pub text: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
+    /// Access mode: "None" means hidden from user (overrides the base Parameter's access)
+    #[serde(rename = "@Access", skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+    /// Optional value override for the parameter
+    #[serde(rename = "@Value", skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
 }
 
 // ============================================================================
@@ -971,6 +989,17 @@ pub enum WhenItem {
     ParameterBlock(ParameterBlock),
     #[serde(rename = "choose")]
     Choose(Choose),
+    #[serde(rename = "Assign")]
+    Assign(Assign),
+}
+
+/// Assignment element that copies one parameter value to another
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Assign {
+    #[serde(rename = "@TargetParamRefRef")]
+    pub target_param_ref_ref: String,
+    #[serde(rename = "@SourceParamRefRef")]
+    pub source_param_ref_ref: String,
 }
 
 /// Reference to a parameter reference

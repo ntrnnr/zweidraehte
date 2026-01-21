@@ -4347,7 +4347,7 @@ impl EtsPageLayout for MdtStack {
                 when_param eingang_type {
                     // Single-button modes (2, 3) - PB1 block comes first in MDT
                     [2, 3] => {
-                        block "pButton_0" => "    PB1: Push button 1" {
+                        block "pButton_0" => "    PB1: {{button1_description:Push button 1}}" {
                             param button1_description
                             param button1_function
                             // Mode 0 = switch: nested choose on switch_type (subfunction)
@@ -5195,7 +5195,7 @@ impl EtsPageLayout for MdtStack {
                     }
                     // Single-button mode with 2 functions (eingang_type = 2) - PB2 block comes second in MDT
                     [2] => {
-                        block "pButton_1" => "    PB2: Push button 2" {
+                        block "pButton_1" => "    PB2: {{button2_description:Push button 2}}" {
                             param button2_description
                             param button2_function
                             // Mode 0 = switch: nested choose on switch_type (subfunction)
@@ -6035,7 +6035,7 @@ impl EtsPageLayout for MdtStack {
                     }
                     // Two-button mode (eingang_type = 1) - PB1/2 block comes third in MDT
                     [1] => {
-                        block "pButtonGroupt_0" => "    PB1/2: Push buttons 1/2" {
+                        block "pButtonGroupt_0" => "    PB1/2: {{button1_description:Push buttons 1/2}}" {
                             param button1_description
                             param two_button_function
                             when_param two_button_function {
@@ -6502,7 +6502,7 @@ impl EtsPageLayout for MdtStack {
                 // Logic 1 input configuration block (for And/Or modes)
                 when_param logic1_type {
                     [0, 1] => {
-                        block "Logic_1" => "    Logic 1" {
+                        block "Logic_1" => "    Logic 1 {{logic1_description:}}" {
                             param logic1_ext_input_a
                             when_param logic1_ext_input_a {
                                 [1, 2, 129, 130] => { obj logic1_input_a }
@@ -6524,7 +6524,7 @@ impl EtsPageLayout for MdtStack {
                         }
                     }
                     [2] => {
-                        block "Logic_1" => "    Logic 1" {
+                        block "Logic_1" => "    Logic 1 {{logic1_description:}}" {
                             param logic1_button_choose_0
                             when_param logic1_button_choose_0 {
                                 [1] => { param logic1_int_button1 }
@@ -6537,7 +6537,7 @@ impl EtsPageLayout for MdtStack {
                 // Logic 2 input configuration block
                 when_param logic2_type {
                     [0, 1] => {
-                        block "Logic_2" => "    Logic 2" {
+                        block "Logic_2" => "    Logic 2 {{logic2_description:}}" {
                             param logic2_ext_input_a
                             when_param logic2_ext_input_a {
                                 [1, 2, 129, 130] => { obj logic2_input_a }
@@ -6559,7 +6559,7 @@ impl EtsPageLayout for MdtStack {
                         }
                     }
                     [2] => {
-                        block "Logic_2" => "    Logic 2" {
+                        block "Logic_2" => "    Logic 2 {{logic2_description:}}" {
                             param logic2_button_choose_0
                             when_param logic2_button_choose_0 {
                                 [1] => { param logic2_int_button1 }
@@ -6572,7 +6572,7 @@ impl EtsPageLayout for MdtStack {
                 // Logic 3 input configuration block
                 when_param logic3_type {
                     [0, 1] => {
-                        block "Logic_3" => "    Logic 3" {
+                        block "Logic_3" => "    Logic 3 {{logic3_description:}}" {
                             param logic3_ext_input_a
                             when_param logic3_ext_input_a {
                                 [1, 2, 129, 130] => { obj logic3_input_a }
@@ -6594,7 +6594,7 @@ impl EtsPageLayout for MdtStack {
                         }
                     }
                     [2] => {
-                        block "Logic_3" => "    Logic 3" {
+                        block "Logic_3" => "    Logic 3 {{logic3_description:}}" {
                             param logic3_button_choose_0
                             when_param logic3_button_choose_0 {
                                 [1] => { param logic3_int_button1 }
@@ -6607,7 +6607,7 @@ impl EtsPageLayout for MdtStack {
                 // Logic 4 input configuration block
                 when_param logic4_type {
                     [0, 1] => {
-                        block "Logic_4" => "    Logic 4" {
+                        block "Logic_4" => "    Logic 4 {{logic4_description:}}" {
                             param logic4_ext_input_a
                             when_param logic4_ext_input_a {
                                 [1, 2, 129, 130] => { obj logic4_input_a }
@@ -6629,7 +6629,7 @@ impl EtsPageLayout for MdtStack {
                         }
                     }
                     [2] => {
-                        block "Logic_4" => "    Logic 4" {
+                        block "Logic_4" => "    Logic 4 {{logic4_description:}}" {
                             param logic4_button_choose_0
                             when_param logic4_button_choose_0 {
                                 [1] => { param logic4_int_button1 }
