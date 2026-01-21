@@ -21,6 +21,8 @@
 //! - **GO2 (ASAP 3)**: Configuration flags - reading/writing modifies GO0's COT flags
 //! - **GO3 (ASAP 4)**: Value access - direct read/write of GO0's value without flag changes
 
+// FIXME: We should replace DPT_Colour_RGB with PDT_Generic03
+
 use core::cell::RefCell;
 use std::net::Ipv4Addr;
 
@@ -36,8 +38,8 @@ use zweidraehte::{
     objects::comm::{ComObjectStatus, ComObjects},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
-        GroupObjectTableObject, InterfaceObject, IpParameterObject, PropertyDescriptionResponse,
-        PropertyError, PropertyServiceHandler, WriteResponse,
+        GroupObjectTableObject, InterfaceObject, IpParameterObject, PropertyDescriptionResponse, PropertyError,
+        PropertyServiceHandler, WriteResponse,
     },
     objects::tables::{app::Application, HasLoadStateMachine},
     IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
@@ -62,7 +64,7 @@ use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerH
 // This is achieved through the prepare_read and handle_write hooks.
 
 pub mod comm_objs {
-    use zweidraehte::dpt::{DPT_Switch, DPT_Value_1_Ucount, DPT_Value_3_Ucount};
+    use zweidraehte::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
     use zweidraehte::ets::EtsComObjects;
     use zweidraehte::objects::comm::ComObject;
     #[allow(unused_imports)]
@@ -109,7 +111,7 @@ pub mod comm_objs {
         // ================================================================
         /// GO0_BYTE3: 3-byte version of GO0 for invalid data length tests
         #[ets(index = 5)]
-        pub go_0_byte3: ComObject<DPT_Value_3_Ucount>,
+        pub go_0_byte3: ComObject<DPT_Colour_RGB>,
 
         /// GO1_BYTE3: Communication flags for GO0_BYTE3
         #[ets(index = 6)]
@@ -121,7 +123,7 @@ pub mod comm_objs {
 
         /// GO3_BYTE3: Value of GO0_BYTE3 as 3-byte (for reading/writing without affecting flags)
         #[ets(index = 8)]
-        pub go_3_byte3_value: ComObject<DPT_Value_3_Ucount>,
+        pub go_3_byte3_value: ComObject<DPT_Colour_RGB>,
 
         // ================================================================
         // Additional test objects (ASAP 9-11)
@@ -143,7 +145,7 @@ pub mod comm_objs {
 // Manual ComObjects implementation with custom hooks for shadow objects
 use comm_objs::{ConformanceComObjects, Index as CoIndex};
 use core::cell::UnsafeCell;
-use zweidraehte::dpt::{DPT_Switch, DPT_Value_1_Ucount, DPT_Value_3_Ucount};
+use zweidraehte::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
 use zweidraehte::objects::comm::{ComObject, ComObjectIndex, ComObjectInfo, ComObjectInfoMut};
 use zweidraehte::objects::tables::{ComObjectFlags, CommunicationObjectTable};
 
@@ -210,10 +212,10 @@ impl ComObjects for ConformanceComObjects {
             go_2_config_flags: ComObject::new(DPT_Value_1_Ucount::from(0xDFu8)),
             go_3_value: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
             // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects
-            go_0_byte3: ComObject::new(DPT_Value_3_Ucount::default()),
+            go_0_byte3: ComObject::new(DPT_Colour_RGB::default()),
             go_1_byte3_comm_flags: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
             go_2_byte3_config_flags: ComObject::new(DPT_Value_1_Ucount::from(0xDFu8)),
-            go_3_byte3_value: ComObject::new(DPT_Value_3_Ucount::default()),
+            go_3_byte3_value: ComObject::new(DPT_Colour_RGB::default()),
             // Additional test objects
             go_4: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
             go_5_network_test: ComObject::new(DPT_Value_1_Ucount::from(0u8)),

@@ -101,6 +101,124 @@ pub enum PageItem {
     Separator(Option<&'static str>),
     /// Nested conditional within a block
     When(ConditionalItem),
+    /// Union selector - shows selector param + choose/when for each variant's parameters
+    /// The string is the union field name (e.g., "button1_value_00")
+    /// This will emit both the selector param and a choose/when block for variant params
+    UnionSelector(&'static str),
+    /// Object with selector - combines object ref and value param in same when blocks
+    /// Format: (object_name, selector_param_name, value_union_name)
+    /// This generates a choose/when where each when contains both ComObjectRefRef and ParameterRefRef
+    ObjWithValue {
+        obj_name: &'static str,
+        selector_param: &'static str,
+        value_union: &'static str,
+    },
+    /// Object with selector and hidden params - includes hidden param refs in each when block
+    /// Format: (object_name, selector_param_name, value_union_name, hidden_params)
+    /// The hidden_params are parameter names that get included in each when block
+    ///
+    /// For variants that need a sub-selector (like RGB needing colour_control to choose between
+    /// RGB and HSV), use `sub_selectors` to specify which variants need nested choose blocks.
+    ObjWithValueAndHidden {
+        obj_name: &'static str,
+        selector_param: &'static str,
+        value_union: &'static str,
+        hidden_params: &'static [&'static str],
+        /// Optional sub-selectors for specific variants that need nested choose blocks.
+        /// Each entry is (variant_value, sub_selector_param, sub_variants) where:
+        /// - variant_value: The selector value that triggers nested handling (e.g., 9 for RGB)
+        /// - sub_selector_param: The param that controls the nested choose (e.g., "button1_colour_control")
+        /// - sub_variants: Array of (sub_value, ref_name, variant_name) tuples for the nested when blocks
+        ///   e.g., [(1, "button1_main_rgb", "Rgb"), (2, "button1_main_hsv", "Hsv")]
+        sub_selectors: &'static [(i64, &'static str, &'static [(i64, &'static str, &'static str)])],
+    },
+    /// Grouped object type choose - puts multiple objects under one choose block
+    /// This matches MDT's structure where one choose contains all objects for each type variant
+    /// Format: selector_param, hidden_params, list of (obj_name, value_union) pairs
+    GroupedObjChoose {
+        selector_param: &'static str,
+        hidden_params: &'static [&'static str],
+        objects: &'static [(&'static str, &'static str)], // (obj_name, value_union)
+    },
+    /// Direct object output with params - no choose block, just the object and params directly
+    /// Used in switch mode where object type is fixed (always 1Bit Switch)
+    /// Format: object_name, followed by param names to include
+    /// This outputs: ComObjectRefRef, then ParameterRefRefs for each param
+    ObjDirect {
+        obj_name: &'static str,
+        params: &'static [&'static str],
+    },
+    /// Multiple objects output directly with params - no choose block
+    /// Used in toggle mode where both O-0 and O-1 appear together
+    ObjsDirectWithParams {
+        obj_names: &'static [&'static str],
+        params: &'static [&'static str],
+    },
+    /// Multiple objects output directly selecting refs by their ref_name
+    /// Used when objects have named refs for different modes (e.g., "dimming", "blinds")
+    /// The ref_names array must have the same length as obj_names
+    ObjsByRefName {
+        /// Ref names to look up (one per object, same order)
+        ref_names: &'static [&'static str],
+        params: &'static [&'static str],
+    },
+    /// Object with fixed union variant - outputs object + hidden params + specific union variant
+    /// Used in switch mode where object type is fixed (always Switch/1Bit)
+    /// This matches MDT's pattern: ComObjectRefRef + hidden param refs + specific UP-xxx
+    /// Format: object_name, hidden_params, union_field_name, variant_name, selector_value
+    /// The selector_value specifies which object ref to use (matching the selector_param's value)
+    ObjWithFixedVariant {
+        obj_name: &'static str,
+        hidden_params: &'static [&'static str],
+        union_field: &'static str,
+        variant_name: &'static str, // e.g., "Switch" to get button1_value_00_Switch_value
+        selector_value: i64, // e.g., 10 for ObjectType::Switch
+        text_override: Option<&'static str>, // Optional Text attribute override for ParameterRefRef
+    },
+    /// Union variant params direct output - outputs specific variant's params without a choose block
+    /// Used when the variant is already determined by outer context (e.g., inside switch mode)
+    /// This matches MDT's pattern where UP-xxx params appear directly without choose
+    /// Format: union_field_name, variant_name, optional text_override
+    UnionVariantDirect {
+        union_field: &'static str,
+        variant_name: &'static str, // e.g., "Switch" to get button1_value_01_Switch_value
+        text_override: Option<&'static str>, // Optional Text attribute override for ParameterRef
+    },
+    /// Union variant with conditional content - outputs the union variant param FIRST,
+    /// then creates a choose block referencing that same param for conditional content.
+    /// This matches MDT's pattern where UP-xxx is output, then choose ParamRefId references it.
+    /// Example in MDT XML:
+    ///   <ParameterRefRef RefId="...UP-143_R-172" />
+    ///   <choose ParamRefId="...UP-143_R-172">
+    ///     <when test="2">...</when>
+    ///   </choose>
+    UnionVariantWithChoose {
+        union_field: &'static str,
+        variant_name: &'static str,
+        text_override: Option<&'static str>,
+        cases: Vec<ItemCase>,
+    },
+    /// Choose block referencing an already-output union variant parameter.
+    /// This is the companion to UnionVariantDirect - use UnionVariantDirect first to output
+    /// the param, then use this to create choose blocks that reference it.
+    /// This matches MDT's pattern where UP-xxx is output once at top, then multiple
+    /// choose ParamRefId blocks reference it in nested contexts.
+    ///
+    /// Example in MDT XML:
+    ///   <ParameterRefRef RefId="...UP-156_R-306" />  <!-- UnionVariantDirect outputs this -->
+    ///   <choose ParamRefId="...UP-41_R-305">
+    ///     <when test="1">
+    ///       ...
+    ///       <choose ParamRefId="...UP-156_R-306">  <!-- ChooseOnUnionVariant creates this -->
+    ///         <when test="2 3">...</when>
+    ///       </choose>
+    ///     </when>
+    ///   </choose>
+    ChooseOnUnionVariant {
+        union_field: &'static str,
+        variant_name: &'static str,
+        cases: Vec<ItemCase>,
+    },
 }
 
 /// Conditional visibility at the block level (can wrap entire ParameterBlocks).
@@ -345,13 +463,27 @@ macro_rules! ets_pages {
         elems
     }};
 
-    // Parse a when element (conditional blocks)
+    // Parse a when element (conditional blocks) - for union selectors
     // The selector is the union field name - we append _selector automatically
     // Example: when channel_a_config { ... } → selector = "channel_a_config_selector"
     (@elements when $selector:ident { $($cases:tt)* } $($rest:tt)*) => {{
         let mut elems = vec![$crate::mtxml_gen::page_layout::PageElement::When(
             $crate::mtxml_gen::page_layout::ConditionalElement {
                 selector: concat!(stringify!($selector), "_selector"),
+                cases: $crate::ets_pages!(@element_cases $($cases)*),
+            }
+        )];
+        elems.extend($crate::ets_pages!(@elements $($rest)*));
+        elems
+    }};
+
+    // Parse a when_param element (conditional blocks) - for regular parameters
+    // Uses the parameter name directly without appending _selector
+    // Example: when_param eingang_type { ... } → selector = "eingang_type"
+    (@elements when_param $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
+        let mut elems = vec![$crate::mtxml_gen::page_layout::PageElement::When(
+            $crate::mtxml_gen::page_layout::ConditionalElement {
+                selector: stringify!($param),
                 cases: $crate::ets_pages!(@element_cases $($cases)*),
             }
         )];
@@ -420,10 +552,13 @@ macro_rules! ets_pages {
     }};
 
     // Parse selector keyword (for union selector parameters)
-    // Example: selector channel_a_config → "channel_a_config_selector"
+    // Example: selector channel_a_config → "channel_a_config"
+    // This generates a UnionSelector which will emit:
+    // 1. The selector parameter itself
+    // 2. A choose/when block for each variant's parameters
     (@items selector $field:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::Param(
-            concat!(stringify!($field), "_selector")
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::UnionSelector(
+            stringify!($field)
         )];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
@@ -432,6 +567,159 @@ macro_rules! ets_pages {
     // Parse obj item (communication object reference)
     (@items obj $name:ident $($rest:tt)*) => {{
         let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::Obj(stringify!($name))];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse obj_with_value - combines object ref with value param in same when blocks
+    // Syntax: obj_with_value obj_name by selector_param => value_union
+    (@items obj_with_value $obj:ident by $selector:ident => $value:ident $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjWithValue {
+            obj_name: stringify!($obj),
+            selector_param: stringify!($selector),
+            value_union: stringify!($value),
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse obj_with_value_hidden with sub_selectors - for variants that need nested choose
+    // Syntax: obj_with_value_hidden obj_name by selector_param => value_union with [hidden1, hidden2]
+    //         sub_select { variant_value => sub_param [ (sub_value, ref_name, variant_name), ... ], ... }
+    (@items obj_with_value_hidden $obj:ident by $selector:ident => $value:ident with [$($hidden:ident),* $(,)?] sub_select { $($variant_val:literal => $sub_param:ident [ $(($sub_val:literal, $ref_name:ident, $var_name:ident)),+ $(,)? ]),+ $(,)? } $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjWithValueAndHidden {
+            obj_name: stringify!($obj),
+            selector_param: stringify!($selector),
+            value_union: stringify!($value),
+            hidden_params: &[$(stringify!($hidden)),*],
+            sub_selectors: &[
+                $(
+                    ($variant_val, stringify!($sub_param), &[$(($sub_val, stringify!($ref_name), stringify!($var_name))),+])
+                ),+
+            ],
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse obj_with_value_hidden - combines object ref with value param and hidden params (simple version)
+    // Syntax: obj_with_value_hidden obj_name by selector_param => value_union with [hidden1, hidden2]
+    (@items obj_with_value_hidden $obj:ident by $selector:ident => $value:ident with [$($hidden:ident),* $(,)?] $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjWithValueAndHidden {
+            obj_name: stringify!($obj),
+            selector_param: stringify!($selector),
+            value_union: stringify!($value),
+            hidden_params: &[$(stringify!($hidden)),*],
+            sub_selectors: &[],
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse grouped_obj_choose - combines multiple objects under ONE choose block
+    // Syntax: grouped_obj_choose selector_param with [hidden1, hidden2] => [(obj1, union1), (obj2, union2)]
+    // This creates a single choose block containing all objects, reducing the number of choose elements
+    (@items grouped_obj_choose $selector:ident with [$($hidden:ident),* $(,)?] => [$(($obj:ident, $union:ident)),+ $(,)?] $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::GroupedObjChoose {
+            selector_param: stringify!($selector),
+            hidden_params: &[$(stringify!($hidden)),*],
+            objects: &[$((stringify!($obj), stringify!($union))),+],
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse obj_direct - outputs object directly with params (no choose block)
+    // Syntax: obj_direct obj_name with [param1, param2]
+    // Used in switch mode where object type is fixed
+    (@items obj_direct $obj:ident with [$($param:ident),* $(,)?] $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjDirect {
+            obj_name: stringify!($obj),
+            params: &[$(stringify!($param)),*],
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse objs_direct - outputs multiple objects directly with params (no choose block)
+    // Syntax: objs_direct [obj1, obj2] with [param1, param2]
+    // Used in toggle mode where O-0 and O-1 appear together
+    (@items objs_direct [$($obj:ident),+ $(,)?] with [$($param:ident),* $(,)?] $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjsDirectWithParams {
+            obj_names: &[$(stringify!($obj)),+],
+            params: &[$(stringify!($param)),*],
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse objs_by_ref_name - outputs objects by looking up specific ref_names
+    // Syntax: objs_by_ref_name ["ref1", "ref2", "ref3"] with [param1, param2]
+    // Used when objects have named refs for different modes (e.g., dimming, blinds)
+    (@items objs_by_ref_name [$($ref_name:literal),+ $(,)?] with [$($param:ident),* $(,)?] $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjsByRefName {
+            ref_names: &[$($ref_name),+],
+            params: &[$(stringify!($param)),*],
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse obj_fixed_variant with text override - outputs object + hidden params + specific union variant (no choose)
+    // Syntax: obj_fixed_variant obj_name with [hidden1, hidden2] => union_field::VariantName @ selector_value text "Custom text"
+    // Used in switch mode where object type is fixed (always Switch/1Bit) with custom label
+    (@items obj_fixed_variant $obj:ident with [$($hidden:ident),* $(,)?] => $union:ident :: $variant:ident @ $selector_val:literal text $text:literal $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjWithFixedVariant {
+            obj_name: stringify!($obj),
+            hidden_params: &[$(stringify!($hidden)),*],
+            union_field: stringify!($union),
+            variant_name: stringify!($variant),
+            selector_value: $selector_val,
+            text_override: Some($text),
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse obj_fixed_variant without text override - outputs object + hidden params + specific union variant (no choose)
+    // Syntax: obj_fixed_variant obj_name with [hidden1, hidden2] => union_field::VariantName @ selector_value
+    // Used in switch mode where object type is fixed (always Switch/1Bit)
+    // The selector_value (e.g., 10) specifies which object ref to use
+    (@items obj_fixed_variant $obj:ident with [$($hidden:ident),* $(,)?] => $union:ident :: $variant:ident @ $selector_val:literal $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjWithFixedVariant {
+            obj_name: stringify!($obj),
+            hidden_params: &[$(stringify!($hidden)),*],
+            union_field: stringify!($union),
+            variant_name: stringify!($variant),
+            selector_value: $selector_val,
+            text_override: None,
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse union_variant with text override - outputs specific variant's params directly (no choose block)
+    // Syntax: union_variant union_field::VariantName text "Custom text"
+    // Used when variant is already determined by outer context with custom label
+    (@items union_variant $union:ident :: $variant:ident text $text:literal $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::UnionVariantDirect {
+            union_field: stringify!($union),
+            variant_name: stringify!($variant),
+            text_override: Some($text),
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse union_variant without text override - outputs specific variant's params directly (no choose block)
+    // Syntax: union_variant union_field::VariantName
+    // Used when variant is already determined by outer context (e.g., inside switch mode)
+    (@items union_variant $union:ident :: $variant:ident $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::UnionVariantDirect {
+            union_field: stringify!($union),
+            variant_name: stringify!($variant),
+            text_override: None,
+        }];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
@@ -450,7 +738,7 @@ macro_rules! ets_pages {
         items
     }};
 
-    // Parse when item (conditional within a block)
+    // Parse when item (conditional within a block) - for union selectors
     // The selector is the union field name - we append _selector automatically
     // Example: when channel_a_config { ... } → selector = "channel_a_config_selector"
     (@items when $selector:ident { $($cases:tt)* } $($rest:tt)*) => {{
@@ -460,6 +748,60 @@ macro_rules! ets_pages {
                 cases: $crate::ets_pages!(@item_cases $($cases)*),
             }
         )];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse when_param item (conditional within a block) - for regular parameters
+    // Uses the parameter name directly without appending _selector
+    // Example: when_param button1_function { ... } → selector = "button1_function"
+    (@items when_param $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::When(
+            $crate::mtxml_gen::page_layout::ConditionalItem {
+                selector: stringify!($param),
+                cases: $crate::ets_pages!(@item_cases $($cases)*),
+            }
+        )];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse when_union_variant with text override - outputs union variant param FIRST, then choose block
+    // Syntax: when_union_variant union_field::VariantName text "Label" { [values] => { ... } }
+    // This matches MDT's pattern: output ParameterRefRef, then choose ParamRefId referencing it
+    (@items when_union_variant $union:ident :: $variant:ident text $text:literal { $($cases:tt)* } $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::UnionVariantWithChoose {
+            union_field: stringify!($union),
+            variant_name: stringify!($variant),
+            text_override: Some($text),
+            cases: $crate::ets_pages!(@item_cases $($cases)*),
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse when_union_variant without text override - outputs union variant param FIRST, then choose block
+    // Syntax: when_union_variant union_field::VariantName { [values] => { ... } }
+    (@items when_union_variant $union:ident :: $variant:ident { $($cases:tt)* } $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::UnionVariantWithChoose {
+            union_field: stringify!($union),
+            variant_name: stringify!($variant),
+            text_override: None,
+            cases: $crate::ets_pages!(@item_cases $($cases)*),
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse choose_on_union_variant - creates a choose block referencing an already-output union variant param
+    // Use union_variant first to output the param, then this to create choose blocks
+    // Syntax: choose_on_union_variant union_field::VariantName { [values] => { ... } }
+    (@items choose_on_union_variant $union:ident :: $variant:ident { $($cases:tt)* } $($rest:tt)*) => {{
+        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ChooseOnUnionVariant {
+            union_field: stringify!($union),
+            variant_name: stringify!($variant),
+            cases: $crate::ets_pages!(@item_cases $($cases)*),
+        }];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};

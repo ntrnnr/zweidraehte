@@ -229,10 +229,14 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 zweidraehte::ets::EtsParamDef {
                     name: #selector_name,
                     display_name: #selector_display,
+                    suffix: None,
                     offset: #offset_expr,
                     size_bits: 8,
                     bit_offset: 0,
                     param_type: zweidraehte::ets::EtsParamType::Enum,
+                    hidden: false,
+                    type_name: None,
+                    text_pattern: None,
                 }
             });
 
@@ -252,10 +256,14 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     base: zweidraehte::ets::EtsParamDef {
                         name: #selector_name,
                         display_name: #selector_display,
+                        suffix: None,
                         offset: #offset_expr,
                         size_bits: 8,
                         bit_offset: 0,
                         param_type: zweidraehte::ets::EtsParamType::Enum,
+                        hidden: false,
+                        type_name: None,
+                        text_pattern: None,
                     },
                     enum_variants: Some(Self::#selector_const_name),
                 }
@@ -280,21 +288,41 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let bit_offset = attrs.bit_offset.unwrap_or(0);
 
         // Determine param type - if has enum_variants, it's an Enum type
+        // If marked as string, it's a String type
         let param_type = if attrs.enum_variants.is_some() {
             quote!(zweidraehte::ets::EtsParamType::Enum)
+        } else if attrs.string_field {
+            quote!(zweidraehte::ets::EtsParamType::String)
         } else {
             type_info.param_type.clone()
         };
 
+        // Generate suffix expression
+        let suffix_expr = if let Some(s) = &attrs.suffix {
+            quote!(Some(#s))
+        } else {
+            quote!(None)
+        };
+
         // Generate basic ETS_PARAMS entry
+        let hidden = attrs.hidden;
+        let type_name_expr = if let Some(ref tn) = attrs.type_name {
+            quote!(Some(#tn))
+        } else {
+            quote!(None)
+        };
         param_defs.push(quote! {
             zweidraehte::ets::EtsParamDef {
                 name: #name_str,
                 display_name: #display_name,
+                suffix: #suffix_expr,
                 offset: #offset_expr,
                 size_bits: #size_bits,
                 bit_offset: #bit_offset,
                 param_type: #param_type,
+                hidden: #hidden,
+                type_name: #type_name_expr,
+                text_pattern: None,
             }
         });
 
@@ -330,10 +358,14 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 base: zweidraehte::ets::EtsParamDef {
                     name: #name_str,
                     display_name: #display_name,
+                    suffix: #suffix_expr,
                     offset: #offset_expr,
                     size_bits: #size_bits,
                     bit_offset: #bit_offset,
                     param_type: #param_type,
+                    hidden: #hidden,
+                    type_name: #type_name_expr,
+                    text_pattern: None,
                 },
                 enum_variants: #enum_variants_expr,
             }
@@ -400,6 +432,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 /// Parsed field attributes
 struct FieldAttrs {
     display: Option<String>,
+    suffix: Option<String>,
     skip: bool,
     bits: Option<u8>,
     bit_offset: Option<u8>,
@@ -408,17 +441,33 @@ struct FieldAttrs {
     union_field: bool,
     /// Marks this field as an EtsEnum type (simple enum with no data)
     ets_enum_field: bool,
+    /// Marks this field as a string/text type (for [u8; N] arrays)
+    string_field: bool,
+    /// Marks this field as hidden (Access="None" in ETS)
+    hidden: bool,
+    /// Override for the ParameterType name in ETS export
+    type_name: Option<String>,
+    /// Default value for this field
+    default_value: Option<i64>,
+    /// Pattern for TypeText parameters (regex with optional comment)
+    text_pattern: Option<String>,
 }
 
 fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
     let mut result = FieldAttrs {
         display: None,
+        suffix: None,
         skip: false,
         bits: None,
         bit_offset: None,
         enum_variants: None,
         union_field: false,
         ets_enum_field: false,
+        string_field: false,
+        hidden: false,
+        type_name: None,
+        default_value: None,
+        text_pattern: None,
     };
 
     for attr in attrs {
@@ -436,6 +485,10 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                     input.parse::<Token![=]>()?;
                     let value: syn::LitStr = input.parse()?;
                     result.display = Some(value.value());
+                } else if ident == "suffix" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitStr = input.parse()?;
+                    result.suffix = Some(value.value());
                 } else if ident == "skip" {
                     result.skip = true;
                 } else if ident == "bits" {
@@ -455,6 +508,22 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                     result.union_field = true;
                 } else if ident == "ets_enum" {
                     result.ets_enum_field = true;
+                } else if ident == "string" {
+                    result.string_field = true;
+                } else if ident == "hidden" {
+                    result.hidden = true;
+                } else if ident == "type_name" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitStr = input.parse()?;
+                    result.type_name = Some(value.value());
+                } else if ident == "default" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitInt = input.parse()?;
+                    result.default_value = Some(value.base10_parse()?);
+                } else if ident == "text_pattern" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitStr = input.parse()?;
+                    result.text_pattern = Some(value.value());
                 }
 
                 // Consume optional comma
@@ -692,9 +761,23 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // Collect variant names for discriminant enum generation
     let mut discriminant_variants: Vec<(syn::Ident, i64)> = Vec::new();
 
-    for (idx, variant) in variants.iter().enumerate() {
+    let mut current_discriminant: i64 = 0;
+    for variant in variants.iter() {
         let variant_name = &variant.ident;
-        let discriminant_value = idx as i64;
+        // Get explicit discriminant if present, otherwise use auto-incrementing value
+        let discriminant_value = if let Some((_, expr)) = &variant.discriminant {
+            if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }) = expr {
+                let val = lit.base10_parse::<i64>().unwrap_or(current_discriminant);
+                current_discriminant = val;
+                val
+            } else {
+                let val = current_discriminant;
+                val
+            }
+        } else {
+            current_discriminant
+        };
+        current_discriminant = discriminant_value + 1;
 
         // Store for discriminant enum generation
         discriminant_variants.push((variant_name.clone(), discriminant_value));
@@ -738,6 +821,92 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     let field_type = &field.ty;
 
                     let field_attrs = parse_field_attrs(&field.attrs)?;
+
+                    // Handle ets_enum fields first - they don't use get_type_info
+                    // EtsEnum types are always 1 byte (repr(u8)) with 1-byte alignment
+                    if field_attrs.ets_enum_field {
+                        // Skip if marked with #[ets(skip)] but still count size for layout
+                        if field_attrs.skip {
+                            size = field_offset + 1;
+                            field_offset += 1;
+                            continue;
+                        }
+
+                        let field_display = field_attrs.display.unwrap_or_else(|| {
+                            field_name.to_string()
+                                .split('_')
+                                .map(|word| {
+                                    let mut chars = word.chars();
+                                    match chars.next() {
+                                        Some(first) => first.to_uppercase().chain(chars).collect(),
+                                        None => String::new(),
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        });
+
+                        let variant_name_str = variant_name.to_string();
+                        let field_name_str = field_name.to_string();
+                        let param_offset = field_offset as u16;
+                        let bit_offset = field_attrs.bit_offset.unwrap_or(0);
+
+                        // For ets_enum fields, use default_value if specified
+                        let default_value_expr = if let Some(val) = field_attrs.default_value {
+                            quote!(Some(#val))
+                        } else {
+                            quote!(None)
+                        };
+
+                        // Generate suffix expression for ets_enum fields
+                        let suffix_expr = if let Some(ref suffix) = field_attrs.suffix {
+                            quote!(Some(#suffix))
+                        } else {
+                            quote!(None)
+                        };
+
+                        union_params.push(quote! {
+                            zweidraehte::ets::EtsUnionVariantParam {
+                                variant_name: #variant_name_str,
+                                variant_value: #discriminant_value,
+                                param: zweidraehte::ets::EtsParamDef {
+                                    name: #field_name_str,
+                                    display_name: #field_display,
+                                    suffix: #suffix_expr,
+                                    offset: #param_offset,
+                                    size_bits: #field_type::ETS_SIZE_BITS,
+                                    bit_offset: #bit_offset,
+                                    param_type: zweidraehte::ets::EtsParamType::Enum,
+                                    hidden: false,
+                                    type_name: None,
+                                    text_pattern: None,
+                                },
+                                enum_variants: Some(#field_type::ETS_VARIANTS),
+                                default_value: #default_value_expr,
+                            }
+                        });
+
+                        size = field_offset + 1;
+                        field_offset += 1;
+                        continue;
+                    }
+
+                    // Get type info for non-ets_enum fields
+                    let type_info = get_type_info(field_type)?;
+
+                    // Apply alignment padding before this field
+                    let align = type_info.align;
+                    if align > 1 {
+                        field_offset = (field_offset + align - 1) & !(align - 1);
+                    }
+
+                    // Skip if marked with #[ets(skip)] but still count size for layout
+                    if field_attrs.skip {
+                        size = field_offset + type_info.size_bytes;
+                        field_offset += type_info.size_bytes;
+                        continue;
+                    }
+
                     let field_display = field_attrs.display.unwrap_or_else(|| {
                         field_name.to_string()
                             .split('_')
@@ -752,53 +921,18 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                             .join(" ")
                     });
 
-                    // Handle ets_enum fields - use type's ETS_VARIANTS and size
-                    if field_attrs.ets_enum_field {
-                        let variant_name_str = variant_name.to_string();
-                        let field_name_str = field_name.to_string();
-                        let param_offset = field_offset as u16;
-                        let bit_offset = field_attrs.bit_offset.unwrap_or(0);
-
-                        union_params.push(quote! {
-                            zweidraehte::ets::EtsUnionVariantParam {
-                                variant_name: #variant_name_str,
-                                variant_value: #discriminant_value,
-                                param: zweidraehte::ets::EtsParamDef {
-                                    name: #field_name_str,
-                                    display_name: #field_display,
-                                    offset: #param_offset,
-                                    size_bits: #field_type::ETS_SIZE_BITS,
-                                    bit_offset: #bit_offset,
-                                    param_type: zweidraehte::ets::EtsParamType::Enum,
-                                },
-                                enum_variants: Some(#field_type::ETS_VARIANTS),
-                            }
-                        });
-
-                        // EtsEnum types are always 1 byte (repr(u8))
-                        // TODO: Could use core::mem::size_of::<#field_type>() but that's runtime
-                        size = field_offset + 1;
-                        field_offset += 1;
-                        continue;
-                    }
-
-                    let type_info = get_type_info(field_type)?;
                     let size_bits = field_attrs.bits.unwrap_or(type_info.size_bits);
                     let bit_offset = field_attrs.bit_offset.unwrap_or(0);
 
                     // Determine param type - if has enum_variants, it's an Enum type
+                    // If marked as string or has text_pattern, it's a String type
                     let param_type = if field_attrs.enum_variants.is_some() {
                         quote!(zweidraehte::ets::EtsParamType::Enum)
+                    } else if field_attrs.string_field || field_attrs.text_pattern.is_some() {
+                        quote!(zweidraehte::ets::EtsParamType::String)
                     } else {
                         type_info.param_type.clone()
                     };
-
-                    // Apply alignment padding before this field
-                    // In #[repr(C)] layout, each field is aligned to its natural alignment
-                    let align = type_info.align;
-                    if align > 1 {
-                        field_offset = (field_offset + align - 1) & !(align - 1);
-                    }
 
                     let variant_name_str = variant_name.to_string();
                     let field_name_str = field_name.to_string();
@@ -822,6 +956,26 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         quote!(None)
                     };
 
+                    let default_value_expr = if let Some(val) = field_attrs.default_value {
+                        quote!(Some(#val))
+                    } else {
+                        quote!(None)
+                    };
+
+                    // Generate text_pattern expression
+                    let text_pattern_expr = if let Some(ref pattern) = field_attrs.text_pattern {
+                        quote!(Some(#pattern))
+                    } else {
+                        quote!(None)
+                    };
+
+                    // Generate suffix expression for non-ets_enum fields
+                    let suffix_expr = if let Some(ref suffix) = field_attrs.suffix {
+                        quote!(Some(#suffix))
+                    } else {
+                        quote!(None)
+                    };
+
                     union_params.push(quote! {
                         zweidraehte::ets::EtsUnionVariantParam {
                             variant_name: #variant_name_str,
@@ -829,12 +983,17 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                             param: zweidraehte::ets::EtsParamDef {
                                 name: #field_name_str,
                                 display_name: #field_display,
+                                suffix: #suffix_expr,
                                 offset: #param_offset,
                                 size_bits: #size_bits,
                                 bit_offset: #bit_offset,
                                 param_type: #param_type,
+                                hidden: false,
+                                type_name: None,
+                                text_pattern: #text_pattern_expr,
                             },
                             enum_variants: #enum_variants_expr,
+                            default_value: #default_value_expr,
                         }
                     });
 
@@ -1244,7 +1403,9 @@ struct ComObjectsStructAttrs {
 struct ComObjectFieldAttrs {
     /// ASAP index (required)
     index: Option<u16>,
-    /// Display name for ETS
+    /// Name override for ETS (defaults to field name)
+    name: Option<String>,
+    /// Display name for ETS (Text attribute in XML)
     display: Option<String>,
     /// Function text
     function: Option<String>,
@@ -1252,6 +1413,8 @@ struct ComObjectFieldAttrs {
     flags: Option<u8>,
     /// Name of the parameter that selects which ref is active (for multi-ref objects)
     selector_param: Option<String>,
+    /// Object size override (e.g., "4 Bytes", "1 Bit")
+    object_size: Option<String>,
 }
 
 /// Selector value for when a ComObjectRef is active.
@@ -1269,6 +1432,10 @@ struct ComObjectRefAttrs {
     dpt: syn::Type,
     /// Selector value this ref is active for (e.g., ButtonMode::Switch or 1)
     when: Option<SelectorValue>,
+    /// Unique name for this ref (for direct referencing in page layout)
+    ref_name: Option<String>,
+    /// Text override (display name for this ref, used for different UI contexts)
+    text: Option<String>,
     /// Function text override
     function: Option<String>,
     /// Flag overrides
@@ -1317,10 +1484,12 @@ fn parse_com_objects_struct_attrs(attrs: &[Attribute]) -> syn::Result<ComObjects
 fn parse_com_object_field_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectFieldAttrs> {
     let mut result = ComObjectFieldAttrs {
         index: None,
+        name: None,
         display: None,
         function: None,
         flags: None,
         selector_param: None,
+        object_size: None,
     };
 
     for attr in attrs {
@@ -1353,6 +1522,14 @@ fn parse_com_object_field_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectFie
                     input.parse::<Token![=]>()?;
                     let value: syn::LitStr = input.parse()?;
                     result.selector_param = Some(value.value());
+                } else if ident == "name" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitStr = input.parse()?;
+                    result.name = Some(value.value());
+                } else if ident == "object_size" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitStr = input.parse()?;
+                    result.object_size = Some(value.value());
                 }
 
                 let _ = input.parse::<Option<Token![,]>>();
@@ -1378,6 +1555,8 @@ fn parse_ets_ref_attrs(attrs: &[Attribute]) -> syn::Result<Vec<ComObjectRefAttrs
         let mut ref_attr = ComObjectRefAttrs {
             dpt: syn::parse_quote!(()),
             when: None,
+            ref_name: None,
+            text: None,
             function: None,
             read: None,
             write: None,
@@ -1404,6 +1583,14 @@ fn parse_ets_ref_attrs(attrs: &[Attribute]) -> syn::Result<Vec<ComObjectRefAttrs
                         let path: syn::Path = input.parse()?;
                         ref_attr.when = Some(SelectorValue::Path(path));
                     }
+                } else if ident == "ref_name" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitStr = input.parse()?;
+                    ref_attr.ref_name = Some(value.value());
+                } else if ident == "text" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitStr = input.parse()?;
+                    ref_attr.text = Some(value.value());
                 } else if ident == "function" {
                     input.parse::<Token![=]>()?;
                     let value: syn::LitStr = input.parse()?;
@@ -1458,8 +1645,10 @@ struct ComObjectField {
     attrs: ComObjectFieldAttrs,
     /// Parsed #[ets_ref(...)] attributes (empty for simple objects)
     refs: Vec<ComObjectRefAttrs>,
-    /// Whether this is a multi-ref object (has ets_ref attributes)
-    is_multi_ref: bool,
+    /// Whether this object has ets_ref attributes
+    has_refs: bool,
+    /// Whether this is a multi-DPT object (has selector_param, uses ComObjectStorage)
+    is_multi_dpt: bool,
 }
 
 /// Extract inner type from ComObject<T> or return the type as-is
@@ -1517,7 +1706,9 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
             ));
         }
 
-        let is_multi_ref = !refs.is_empty();
+        let has_refs = !refs.is_empty();
+        // Multi-DPT objects have selector_param and use ComObjectStorage for runtime type selection
+        let is_multi_dpt = attrs.selector_param.is_some();
 
         com_objects.push(ComObjectField {
             ident: field_ident,
@@ -1525,7 +1716,8 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
             inner_ty,
             attrs,
             refs,
-            is_multi_ref,
+            has_refs,
+            is_multi_dpt,
         });
     }
 
@@ -1573,13 +1765,15 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
     // Generate new() field initializers
     let new_fields: Vec<_> = com_objects.iter().map(|obj| {
         let ident = &obj.ident;
-        if obj.is_multi_ref {
+        if obj.is_multi_dpt {
+            // Multi-DPT objects use ComObjectStorage for runtime type selection
             quote! {
                 #ident: zweidraehte::objects::comm::ComObject::new(
                     zweidraehte::objects::comm::ComObjectStorage::new()
                 )
             }
         } else {
+            // Single-DPT objects (including same-DPT multi-ref) use the declared inner type
             let inner_ty = &obj.inner_ty;
             quote! {
                 #ident: zweidraehte::objects::comm::ComObject::new(<#inner_ty>::default())
@@ -1590,15 +1784,23 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
     // Generate ETS_COMM_OBJECTS const array
     let ets_comm_objects: Vec<_> = com_objects.iter().map(|obj| {
         let index = obj.attrs.index.unwrap();
-        let name = obj.ident.to_string();
+        // Use name override if provided, otherwise use field ident
+        let name = obj.attrs.name.clone().unwrap_or_else(|| obj.ident.to_string());
         let display_name = obj.attrs.display.clone().unwrap_or_else(|| {
             to_title_case(&obj.ident.to_string())
         });
         let function_text = obj.attrs.function.clone().unwrap_or_default();
         let default_flags = obj.attrs.flags.unwrap_or(0xDF);
 
-        if obj.is_multi_ref {
-            // For multi-ref objects, use first ref's DPT info as base
+        // Generate object_size_override expression
+        let object_size_override_expr = if let Some(ref size) = obj.attrs.object_size {
+            quote!(Some(#size))
+        } else {
+            quote!(None)
+        };
+
+        if obj.has_refs {
+            // For objects with refs, use first ref's DPT info as base
             let first_ref_dpt = &obj.refs[0].dpt;
             quote! {
                 zweidraehte::ets::EtsCommObjectDef {
@@ -1610,6 +1812,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                     dpt_sub: <#first_ref_dpt as zweidraehte::ets::HasDptInfo>::DPT_SUB,
                     size_bits: <#first_ref_dpt as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
                     default_flags: #default_flags,
+                    object_size_override: #object_size_override_expr,
                 }
             }
         } else {
@@ -1625,6 +1828,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                     dpt_sub: <#inner_ty as zweidraehte::ets::HasDptInfo>::DPT_SUB,
                     size_bits: <#inner_ty as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
                     default_flags: #default_flags,
+                    object_size_override: #object_size_override_expr,
                 }
             }
         }
@@ -1636,7 +1840,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
         let index = obj.attrs.index.unwrap();
         let base_function = obj.attrs.function.clone().unwrap_or_default();
 
-        if obj.is_multi_ref {
+        if obj.has_refs {
             // Get the selector_param from the field attributes (if specified)
             let selector_param_tokens = if let Some(ref param_name) = obj.attrs.selector_param {
                 quote!(Some(#param_name))
@@ -1647,19 +1851,29 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
             let field_name = obj.ident.to_string();
             for ref_attr in &obj.refs {
                 let ref_dpt = &ref_attr.dpt;
-                // Use "{field_name}" as the ref_name - this matches the page layout `obj field_name` syntax
-                // The generator will create choose/when based on selector_param and selector_value
-                let ref_name = field_name.clone();
+                // Use ref_name from attribute if specified, otherwise use field_name
+                // This allows direct referencing of specific refs by name in page layout
+                let ref_name = ref_attr.ref_name.clone().unwrap_or_else(|| field_name.clone());
                 let function_text = ref_attr.function.clone().unwrap_or(base_function.clone());
-                let selector_value = match &ref_attr.when {
+                let text_tokens = if let Some(ref text) = ref_attr.text {
+                    quote!(Some(#text))
+                } else {
+                    quote!(None)
+                };
+                // Only include selector info if the ref has a `when` attribute
+                // Refs without `when` are unconditional and should NOT have selector_param
+                let (selector_value, this_ref_selector_param) = match &ref_attr.when {
                     Some(SelectorValue::Path(path)) => {
                         // Cast the enum variant to i64 to get the discriminant value
-                        quote!(Some(#path as i64))
+                        (quote!(Some(#path as i64)), selector_param_tokens.clone())
                     }
                     Some(SelectorValue::Int(val)) => {
-                        quote!(Some(#val as i64))
+                        (quote!(Some(#val as i64)), selector_param_tokens.clone())
                     }
-                    None => quote!(None),
+                    None => {
+                        // No `when` = unconditional ref, clear selector_param
+                        (quote!(None), quote!(None))
+                    }
                 };
 
                 // Generate flag overrides
@@ -1691,14 +1905,14 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                     zweidraehte::ets::EtsCommObjectRefDef {
                         object_index: #index,
                         ref_name: #ref_name,
-                        text: None,
+                        text: #text_tokens,
                         function_text: #function_text,
                         dpt_main: <#ref_dpt as zweidraehte::ets::HasDptInfo>::DPT_MAIN,
                         dpt_sub: <#ref_dpt as zweidraehte::ets::HasDptInfo>::DPT_SUB,
                         size_bits: <#ref_dpt as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
                         flag_overrides: #flag_overrides,
                         selector_value: #selector_value,
-                        selector_param: #selector_param_tokens,
+                        selector_param: #this_ref_selector_param,
                     }
                 });
             }
@@ -1763,9 +1977,9 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
 
     let num_objects = com_objects.len();
 
-    // Generate __max_size helper if we have multi-ref objects
-    let has_multi_ref = com_objects.iter().any(|obj| obj.is_multi_ref);
-    let max_size_helper = if has_multi_ref {
+    // Generate __max_size helper if we have multi-dpt objects (using ComObjectStorage)
+    let has_multi_dpt = com_objects.iter().any(|obj| obj.is_multi_dpt);
+    let max_size_helper = if has_multi_dpt {
         quote! {
             impl #struct_name {
                 /// Helper const fn to compute max of sizes

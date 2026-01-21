@@ -6,6 +6,7 @@
 //! - `mtxml_modifier` (updating ETS XML files)
 //! - Future `knxprod` generator tools
 
+pub mod mdt_push_button_lite;
 pub mod system_b_demo;
 
 // Re-export the demo device for convenience

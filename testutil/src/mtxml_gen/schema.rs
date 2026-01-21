@@ -87,7 +87,7 @@ impl MaskFamily {
 
     /// Whether this mask family generates address/association tables
     pub fn generates_address_tables(&self) -> bool {
-        matches!(self, MaskFamily::SystemB)
+        matches!(self, MaskFamily::SystemB | MaskFamily::System7)
     }
 }
 
@@ -183,6 +183,12 @@ pub struct ApplicationProgram {
     pub linkable: bool,
     #[serde(rename = "@MinEtsVersion", skip_serializing_if = "Option::is_none")]
     pub min_ets_version: Option<String>,
+    #[serde(rename = "@NonRegRelevantDataVersion", skip_serializing_if = "Option::is_none")]
+    pub non_reg_relevant_data_version: Option<u32>,
+    #[serde(rename = "@ReplacesVersions", skip_serializing_if = "Option::is_none")]
+    pub replaces_versions: Option<String>,
+    #[serde(rename = "@Hash", skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
 
     #[serde(rename = "Static")]
     pub static_section: StaticSection,
@@ -204,7 +210,10 @@ impl Default for ApplicationProgram {
             default_language: "en-US".to_string(),
             dynamic_table_management: false,
             linkable: false,
-            min_ets_version: Some("5.0".to_string()),
+            min_ets_version: Some("4.0".to_string()),
+            non_reg_relevant_data_version: None,
+            replaces_versions: None,
+            hash: None,
             static_section: StaticSection::default(),
             dynamic: None,
         }
@@ -236,9 +245,15 @@ pub struct StaticSection {
     pub association_table: Option<AssociationTable>,
     #[serde(rename = "LoadProcedures", skip_serializing_if = "Option::is_none")]
     pub load_procedures: Option<LoadProcedures>,
+    #[serde(rename = "Extension", skip_serializing_if = "Option::is_none")]
+    pub extension: Option<Extension>,
     #[serde(rename = "Options", skip_serializing_if = "Option::is_none")]
     pub options: Option<Options>,
 }
+
+/// Extension element - typically empty but required for some device programs
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Extension {}
 
 /// Code section containing memory segments
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -254,15 +269,17 @@ pub struct Code {
 pub struct AbsoluteSegment {
     #[serde(rename = "@Id")]
     pub id: String,
-    #[serde(rename = "@Size")]
-    pub size: u32,
     #[serde(rename = "@Address")]
     pub address: u32,
+    #[serde(rename = "@Size")]
+    pub size: u32,
     #[serde(rename = "@MemoryType", skip_serializing_if = "Option::is_none")]
     pub memory_type: Option<String>,
 
     #[serde(rename = "Data", skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+    #[serde(rename = "Mask", skip_serializing_if = "Option::is_none")]
+    pub mask: Option<String>,
 }
 
 /// Relative memory segment (System B)
@@ -396,6 +413,11 @@ pub struct Parameter {
     pub parameter_type: String,
     #[serde(rename = "@Text")]
     pub text: String,
+    #[serde(rename = "@SuffixText", skip_serializing_if = "Option::is_none")]
+    pub suffix_text: Option<String>,
+    /// Access mode: "None" means hidden from user
+    #[serde(rename = "@Access", skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
     #[serde(rename = "@Value")]
     pub value: String,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
@@ -452,6 +474,8 @@ pub struct UnionParameter {
     pub parameter_type: String,
     #[serde(rename = "@Text")]
     pub text: String,
+    #[serde(rename = "@SuffixText", skip_serializing_if = "Option::is_none")]
+    pub suffix_text: Option<String>,
     #[serde(rename = "@Value")]
     pub value: String,
     #[serde(rename = "@Offset")]
@@ -482,6 +506,9 @@ pub struct ParameterRef {
     pub id: String,
     #[serde(rename = "@RefId")]
     pub ref_id: String,
+    /// Optional text override for the parameter display (MDT uses this to show context-specific labels)
+    #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
 }
@@ -493,6 +520,8 @@ pub struct ParameterRef {
 /// Container for communication objects
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ComObjectTable {
+    #[serde(rename = "@CodeSegment", skip_serializing_if = "Option::is_none")]
+    pub code_segment: Option<String>,
     #[serde(rename = "@Offset", skip_serializing_if = "Option::is_none")]
     pub offset: Option<u32>,
     #[serde(rename = "@MaxEntries", skip_serializing_if = "Option::is_none")]
@@ -617,6 +646,8 @@ pub struct ComObjectRef {
 /// Address table configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddressTable {
+    #[serde(rename = "@CodeSegment", skip_serializing_if = "Option::is_none")]
+    pub code_segment: Option<String>,
     #[serde(rename = "@Offset")]
     pub offset: u32,
     #[serde(rename = "@MaxEntries")]
@@ -626,6 +657,8 @@ pub struct AddressTable {
 /// Association table configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssociationTable {
+    #[serde(rename = "@CodeSegment", skip_serializing_if = "Option::is_none")]
+    pub code_segment: Option<String>,
     #[serde(rename = "@Offset")]
     pub offset: u32,
     #[serde(rename = "@MaxEntries")]
@@ -643,11 +676,13 @@ pub struct LoadProcedures {
     pub procedures: Vec<LoadProcedure>,
 }
 
-/// A load procedure containing load control elements
+/// A load procedure containing load control elements.
+/// For MergedProcedure style, merge_id is required.
+/// For ProductProcedure style, merge_id is None (not serialized).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoadProcedure {
-    #[serde(rename = "@MergeId")]
-    pub merge_id: u8,
+    #[serde(rename = "@MergeId", skip_serializing_if = "Option::is_none")]
+    pub merge_id: Option<u8>,
 
     #[serde(rename = "$value", default)]
     pub controls: Vec<LoadControl>,
@@ -657,12 +692,23 @@ pub struct LoadProcedure {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum LoadControl {
+    // System B (MergedProcedure) controls
     LdCtrlRelSegment(LdCtrlRelSegment),
     LdCtrlWriteRelMem(LdCtrlWriteRelMem),
     LdCtrlLoadImageProp(LdCtrlLoadImageProp),
+    // System 7 (ProductProcedure) controls
+    LdCtrlConnect(LdCtrlConnect),
+    LdCtrlDisconnect(LdCtrlDisconnect),
+    LdCtrlCompareProp(LdCtrlCompareProp),
+    LdCtrlUnload(LdCtrlUnload),
+    LdCtrlLoad(LdCtrlLoad),
+    LdCtrlAbsSegment(LdCtrlAbsSegment),
+    LdCtrlTaskSegment(LdCtrlTaskSegment),
+    LdCtrlLoadCompleted(LdCtrlLoadCompleted),
+    LdCtrlRestart(LdCtrlRestart),
 }
 
-/// Relative segment load control
+/// Relative segment load control (System B)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LdCtrlRelSegment {
     #[serde(rename = "@AppliesTo")]
@@ -677,7 +723,7 @@ pub struct LdCtrlRelSegment {
     pub fill: u8,
 }
 
-/// Write relative memory load control
+/// Write relative memory load control (System B)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LdCtrlWriteRelMem {
     #[serde(rename = "@AppliesTo")]
@@ -700,6 +746,78 @@ pub struct LdCtrlLoadImageProp {
     #[serde(rename = "@PropId")]
     pub prop_id: u8,
 }
+
+/// Connect control (System 7) - establishes connection to device
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LdCtrlConnect {}
+
+/// Disconnect control (System 7) - closes connection to device
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LdCtrlDisconnect {}
+
+/// Compare property control (System 7) - verifies device property matches expected value
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LdCtrlCompareProp {
+    #[serde(rename = "@ObjIdx")]
+    pub obj_idx: u8,
+    #[serde(rename = "@PropId")]
+    pub prop_id: u8,
+    #[serde(rename = "@InlineData")]
+    pub inline_data: String,
+}
+
+/// Unload control (System 7) - unloads a load state machine
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LdCtrlUnload {
+    #[serde(rename = "@LsmIdx")]
+    pub lsm_idx: u8,
+}
+
+/// Load control (System 7) - loads a load state machine
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LdCtrlLoad {
+    #[serde(rename = "@LsmIdx")]
+    pub lsm_idx: u8,
+}
+
+/// Absolute segment load control (System 7) - defines memory segment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LdCtrlAbsSegment {
+    #[serde(rename = "@LsmIdx")]
+    pub lsm_idx: u8,
+    #[serde(rename = "@SegType")]
+    pub seg_type: u8,
+    #[serde(rename = "@Address")]
+    pub address: u16,
+    #[serde(rename = "@Size")]
+    pub size: u16,
+    #[serde(rename = "@Access")]
+    pub access: u8,
+    #[serde(rename = "@MemType")]
+    pub mem_type: u8,
+    #[serde(rename = "@SegFlags")]
+    pub seg_flags: u8,
+}
+
+/// Task segment control (System 7) - sets task segment address
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LdCtrlTaskSegment {
+    #[serde(rename = "@LsmIdx")]
+    pub lsm_idx: u8,
+    #[serde(rename = "@Address")]
+    pub address: u16,
+}
+
+/// Load completed control (System 7) - marks load state machine as loaded
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LdCtrlLoadCompleted {
+    #[serde(rename = "@LsmIdx")]
+    pub lsm_idx: u8,
+}
+
+/// Restart control (System 7) - restarts the device
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LdCtrlRestart {}
 
 /// Options element with device comparison/reconstruction flags.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -860,6 +978,9 @@ pub enum WhenItem {
 pub struct ParameterRefRef {
     #[serde(rename = "@RefId")]
     pub ref_id: String,
+    /// Optional text override for the parameter display (MDT uses this to show context-specific labels)
+    #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
 }

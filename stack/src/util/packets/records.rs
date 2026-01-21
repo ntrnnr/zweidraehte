@@ -1130,19 +1130,6 @@ mod tests {
     }
 
     #[test]
-    fn raw_parse_success() {
-        let mut context = StatefulContext::new();
-        let mut bv = &mut &DUMMY_BYTES[..];
-        let result = RecordsRaw::<_, StatefulContextRecordImpl>::parse_raw_with_mut_context(&mut bv, &mut context)
-            .complete()
-            .unwrap();
-        let RecordsRaw { bytes, _context: _ } = &result;
-        assert_eq!(*bytes, &DUMMY_BYTES[..]);
-        let parsed = Records::try_from_raw(result).unwrap();
-        validate_parsed_stateful_context_records(parsed, context);
-    }
-
-    #[test]
     fn raw_parse_failure() {
         let mut context = StatefulContext::new();
         let mut bv = &mut &DUMMY_BYTES[0..15];

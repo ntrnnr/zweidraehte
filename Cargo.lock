@@ -1517,6 +1517,7 @@ dependencies = [
  "log",
  "platform",
  "quick-xml",
+ "regex",
  "serde",
  "serde_json",
  "static_cell",

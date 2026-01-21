@@ -8,6 +8,114 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned, big_endian};
 
+// ###########################################################################
+// KNX 2-byte float type (must be defined before PDT_KNXFloat)
+// ###########################################################################
+
+/// KNX 2-byte float value
+///
+/// KNX 2-byte float format: MEEE EMMM MMMM MMMM
+/// - M: 12-bit mantissa (two's complement, bits 0-10 and sign at bit 15)
+/// - E: 4-bit exponent (bits 11-14)
+/// - Value = 0.01 * M * 2^E
+///
+/// Byte layout (big-endian):
+/// Byte 0: SEEE EMMM (S=sign, E=exponent, M=mantissa high bits)
+/// Byte 1: MMMM MMMM (mantissa low bits)
+///
+/// Note: This is NOT IEEE 754 half-precision. It's a KNX-specific format.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct KnxFloat16(u16);
+
+impl KnxFloat16 {
+    /// Create from raw 16-bit value (big-endian encoded)
+    pub const fn from_raw(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    /// Get raw 16-bit value
+    pub const fn as_raw(&self) -> u16 {
+        self.0
+    }
+
+    /// Create from byte array (big-endian)
+    pub const fn from_bytes(bytes: [u8; 2]) -> Self {
+        Self(((bytes[0] as u16) << 8) | (bytes[1] as u16))
+    }
+
+    /// Get as byte array (big-endian)
+    pub const fn to_bytes(&self) -> [u8; 2] {
+        [(self.0 >> 8) as u8, self.0 as u8]
+    }
+
+    /// Convert to f32
+    pub fn to_f32(&self) -> f32 {
+        let raw = self.0;
+        // Extract sign (bit 15)
+        let sign = if raw & 0x8000 != 0 { -1.0f32 } else { 1.0f32 };
+        // Extract exponent (bits 11-14)
+        let exp = ((raw >> 11) & 0x0F) as i32;
+        // Extract mantissa (bits 0-10), with sign extension if negative
+        let mantissa = if raw & 0x8000 != 0 {
+            // Negative: mantissa is bits 0-10 as signed 11-bit value
+            let m = (raw & 0x07FF) as i16;
+            // Sign-extend from 11 bits
+            if m & 0x400 != 0 {
+                (m | (!0x07FF_u16 as i16)) as i32
+            } else {
+                -((!m & 0x07FF) + 1) as i32
+            }
+        } else {
+            (raw & 0x07FF) as i32
+        };
+
+        // Value = 0.01 * M * 2^E
+        sign * 0.01 * (mantissa as f32) * (1 << exp) as f32
+    }
+
+    /// Create from f32
+    pub fn from_f32(value: f32) -> Self {
+        if value == 0.0 {
+            return Self(0);
+        }
+
+        let sign = value < 0.0;
+        let abs_value = value.abs();
+
+        // Find exponent: value = 0.01 * M * 2^E, so M = value * 100 / 2^E
+        // M must fit in 11 bits (-2048 to 2047)
+        let mut exp = 0u8;
+        let mut mantissa = (abs_value * 100.0) as i32;
+
+        while mantissa > 2047 && exp < 15 {
+            mantissa >>= 1;
+            exp += 1;
+        }
+
+        // Clamp mantissa
+        if mantissa > 2047 {
+            mantissa = 2047;
+        }
+
+        if sign {
+            mantissa = -mantissa;
+        }
+
+        // Encode: SEEE EMMM MMMM MMMM
+        let sign_bit = if sign { 0x8000u16 } else { 0 };
+        let exp_bits = ((exp as u16) & 0x0F) << 11;
+        let mantissa_bits = (mantissa as u16) & 0x07FF;
+
+        Self(sign_bit | exp_bits | mantissa_bits)
+    }
+}
+
+impl core::fmt::Debug for KnxFloat16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:.2}", self.to_f32())
+    }
+}
+
 // Datapoint types: 3.7.2
 // Identifiers: 3.7.3
 
@@ -282,7 +390,7 @@ pub type PDT_Char = PropertyData<i8, 1, 1>;
 pub type PDT_UnsignedChar = PropertyData<u8, 2, 1>;
 pub type PDT_Int = PropertyData<i16, 3, 2>;
 pub type PDT_UnsignedInt = PropertyData<u16, 4, 2>;
-//pub type PDT_KNXFloat       = PropertyData<half, 5, 2>;
+pub type PDT_KNXFloat = PropertyData<KnxFloat16, 5, 2>;
 //pub type PDT_Date           = PropertyData<KNXDate, 6, 3>;
 //pub type PDT_Time           = PropertyData<KNXTime, 7, 3>;
 pub type PDT_Long = PropertyData<i32, 8, 4>;
@@ -577,6 +685,439 @@ impl From<DPT_Switch> for bool {
     }
 }
 
+pub type DPT_Bool = DatapointType<PDT_UnsignedChar, 1, 002>;
+
+impl core::fmt::Debug for DPT_Bool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.backing)
+    }
+}
+
+impl From<bool> for DPT_Bool {
+    fn from(value: bool) -> Self {
+        DPT_Bool::new((value as u8).into())
+    }
+}
+
+impl From<DPT_Bool> for bool {
+    fn from(value: DPT_Bool) -> Self {
+        let value: u8 = value.backing.into();
+        value & 1 == 1
+    }
+}
+
+/// DPT 1.008 - Up/Down
+///
+/// 1-bit value for blind/shutter movement direction
+/// 0 = Up, 1 = Down
+pub type DPT_UpDown = DatapointType<PDT_UnsignedChar, 1, 008>;
+
+impl core::fmt::Debug for DPT_UpDown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value: u8 = self.backing.into();
+        write!(f, "{}", if value & 1 == 0 { "Up" } else { "Down" })
+    }
+}
+
+/// DPT 1.009 - Open/Close
+///
+/// 1-bit value for blind/shutter slats or stop
+/// 0 = Open, 1 = Close
+pub type DPT_OpenClose = DatapointType<PDT_UnsignedChar, 1, 009>;
+
+impl core::fmt::Debug for DPT_OpenClose {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value: u8 = self.backing.into();
+        write!(f, "{}", if value & 1 == 0 { "Open" } else { "Close" })
+    }
+}
+
+pub type DPT_Enable = DatapointType<PDT_UnsignedChar, 1, 003>;
+
+impl core::fmt::Debug for DPT_Enable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.backing)
+    }
+}
+
+impl From<bool> for DPT_Enable {
+    fn from(value: bool) -> Self {
+        DPT_Enable::new((value as u8).into())
+    }
+}
+
+impl From<DPT_Enable> for bool {
+    fn from(value: DPT_Enable) -> Self {
+        let value: u8 = value.backing.into();
+        value & 1 == 1
+    }
+}
+
+pub type DPT_State = DatapointType<PDT_UnsignedChar, 1, 011>;
+
+impl core::fmt::Debug for DPT_State {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.backing)
+    }
+}
+
+impl From<bool> for DPT_State {
+    fn from(value: bool) -> Self {
+        DPT_State::new((value as u8).into())
+    }
+}
+
+impl From<DPT_State> for bool {
+    fn from(value: DPT_State) -> Self {
+        let value: u8 = value.backing.into();
+        value & 1 == 1
+    }
+}
+
+/// DPT 1.007 - Step (Decrease/Increase)
+///
+/// 1-bit datapoint type for step control:
+/// - 0 = Decrease
+/// - 1 = Increase
+pub type DPT_Step = DatapointType<PDT_UnsignedChar, 1, 007>;
+
+impl core::fmt::Debug for DPT_Step {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.backing)
+    }
+}
+
+impl From<bool> for DPT_Step {
+    fn from(value: bool) -> Self {
+        DPT_Step::new((value as u8).into())
+    }
+}
+
+impl From<DPT_Step> for bool {
+    fn from(value: DPT_Step) -> Self {
+        let value: u8 = value.backing.into();
+        value & 1 == 1
+    }
+}
+
+// ###########################################################################
+// DPT 2.x - 2-bit control types
+// ###########################################################################
+
+/// DPT 2.001 - Switch Control (Forcible Control)
+///
+/// 2-bit datapoint type with control (c) and value (v) bits:
+/// - c=0, v=0: No control
+/// - c=0, v=1: No control
+/// - c=1, v=0: Control, Value 0 (force OFF)
+/// - c=1, v=1: Control, Value 1 (force ON)
+///
+/// Bit layout in byte: xxxxxx cv
+/// - Bit 1: c (control)
+/// - Bit 0: v (value)
+pub type DPT_Switch_Control = DatapointType<PDT_UnsignedChar, 2, 001>;
+
+impl core::fmt::Debug for DPT_Switch_Control {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ctrl: SwitchControl = (*self).into();
+        write!(f, "{:?}", ctrl)
+    }
+}
+
+impl From<SwitchControl> for DPT_Switch_Control {
+    fn from(value: SwitchControl) -> Self {
+        DPT_Switch_Control::new(value.as_byte().into())
+    }
+}
+
+impl From<DPT_Switch_Control> for SwitchControl {
+    fn from(value: DPT_Switch_Control) -> Self {
+        let byte: u8 = value.backing.into();
+        SwitchControl::from_byte(byte)
+    }
+}
+
+/// Switch Control value for DPT 2.001
+///
+/// Represents a 2-bit control value with:
+/// - `control`: Whether control is active (c bit)
+/// - `value`: The controlled value when control is active (v bit)
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct SwitchControl(u8);
+
+impl SwitchControl {
+    /// Create with no control (c=0, v=0)
+    #[inline]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Create from raw byte value (only bits 0-1 are used)
+    #[inline]
+    pub const fn from_byte(value: u8) -> Self {
+        Self(value & 0x03)
+    }
+
+    /// Create a control command
+    ///
+    /// - `control`: true = control active, false = no control
+    /// - `value`: the value to force when control is active
+    #[inline]
+    pub const fn with_control(control: bool, value: bool) -> Self {
+        Self(((control as u8) << 1) | (value as u8))
+    }
+
+    /// Create "force OFF" (c=1, v=0)
+    #[inline]
+    pub const fn force_off() -> Self {
+        Self(0b10)
+    }
+
+    /// Create "force ON" (c=1, v=1)
+    #[inline]
+    pub const fn force_on() -> Self {
+        Self(0b11)
+    }
+
+    /// Create "no control" (c=0, v=0)
+    #[inline]
+    pub const fn no_control() -> Self {
+        Self(0b00)
+    }
+
+    /// Get the raw byte value
+    #[inline]
+    pub const fn as_byte(&self) -> u8 {
+        self.0
+    }
+
+    /// Check if control is active (c bit)
+    #[inline]
+    pub const fn control(&self) -> bool {
+        self.0 & 0x02 != 0
+    }
+
+    /// Get the value bit (v bit)
+    #[inline]
+    pub const fn value(&self) -> bool {
+        self.0 & 0x01 != 0
+    }
+
+    /// Set control bit
+    #[inline]
+    pub fn set_control(&mut self, control: bool) {
+        if control {
+            self.0 |= 0x02;
+        } else {
+            self.0 &= !0x02;
+        }
+    }
+
+    /// Set value bit
+    #[inline]
+    pub fn set_value(&mut self, value: bool) {
+        if value {
+            self.0 |= 0x01;
+        } else {
+            self.0 &= !0x01;
+        }
+    }
+}
+
+impl fmt::Debug for SwitchControl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.control() {
+            write!(f, "SwitchControl(force {})", if self.value() { "ON" } else { "OFF" })
+        } else {
+            write!(f, "SwitchControl(no control)")
+        }
+    }
+}
+
+impl AsRef<[u8]> for SwitchControl {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        core::slice::from_ref(&self.0)
+    }
+}
+
+impl AsMut<[u8]> for SwitchControl {
+    #[inline]
+    fn as_mut(&mut self) -> &mut [u8] {
+        core::slice::from_mut(&mut self.0)
+    }
+}
+
+impl From<u8> for SwitchControl {
+    #[inline]
+    fn from(value: u8) -> Self {
+        Self::from_byte(value)
+    }
+}
+
+impl From<SwitchControl> for u8 {
+    #[inline]
+    fn from(value: SwitchControl) -> Self {
+        value.0
+    }
+}
+
+// ###########################################################################
+
+/// DPT 3.007 - Dimming Control
+///
+/// 4-bit value for dimming control (stored in 1 byte)
+/// Bit layout: xxxx csss
+/// - Bit 3: c (control: 0=stop, 1=dim)
+/// - Bits 0-2: sss (step code)
+///
+/// Step code values:
+/// - 0: break (stop dimming)
+/// - 1: 100% (full step)
+/// - 2: 50%
+/// - 3: 25%
+/// - 4: 12.5%
+/// - 5: 6.25%
+/// - 6: 3.125%
+/// - 7: 1.5625%
+pub type DPT_Control_Dimming = DatapointType<PDT_UnsignedChar, 3, 007>;
+
+/// DPT 5.001 - Scaling (Percent)
+///
+/// 1-byte value representing percentage (0-100%)
+/// Encoded as 0-255, where:
+/// - 0 = 0%
+/// - 255 = 100%
+///
+/// Uses PDT_Scaling (or PDT_UnsignedChar as alternative)
+pub type DPT_Scaling = DatapointType<PDT_UnsignedChar, 5, 001>;
+
+/// Scaling value for DPT 5.001
+///
+/// Represents percentage 0-100%, stored as 0-255 internally.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct Scaling(u8);
+
+impl Scaling {
+    /// Create a new Scaling value with 0%
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Create from raw byte value (0-255)
+    pub const fn from_byte(value: u8) -> Self {
+        Self(value)
+    }
+
+    /// Create from percentage (0-100)
+    ///
+    /// Values > 100 are clamped to 100.
+    pub const fn from_percent(percent: u8) -> Self {
+        let clamped = if percent > 100 { 100 } else { percent };
+        // Map 0-100 to 0-255: value = percent * 255 / 100
+        Self(((clamped as u16 * 255 + 50) / 100) as u8)
+    }
+
+    /// Get the raw byte value (0-255)
+    pub const fn as_byte(&self) -> u8 {
+        self.0
+    }
+
+    /// Get the percentage value (0-100)
+    ///
+    /// Rounds to nearest integer percentage.
+    pub const fn as_percent(&self) -> u8 {
+        // Map 0-255 to 0-100: percent = value * 100 / 255
+        ((self.0 as u16 * 100 + 127) / 255) as u8
+    }
+
+    /// Check if value is 0%
+    pub const fn is_zero(&self) -> bool {
+        self.0 == 0
+    }
+
+    /// Check if value is 100%
+    pub const fn is_full(&self) -> bool {
+        self.0 == 255
+    }
+}
+
+impl core::fmt::Debug for Scaling {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}% (0x{:02X})", self.as_percent(), self.0)
+    }
+}
+
+impl From<u8> for Scaling {
+    fn from(value: u8) -> Self {
+        Self::from_byte(value)
+    }
+}
+
+impl From<Scaling> for u8 {
+    fn from(value: Scaling) -> Self {
+        value.0
+    }
+}
+
+impl From<DPT_Scaling> for Scaling {
+    fn from(value: DPT_Scaling) -> Self {
+        let byte: u8 = value.backing.into();
+        Self::from_byte(byte)
+    }
+}
+
+impl From<Scaling> for DPT_Scaling {
+    fn from(value: Scaling) -> Self {
+        DPT_Scaling::new(value.0.into())
+    }
+}
+
+impl core::fmt::Debug for DPT_Scaling {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s: Scaling = self.clone().into();
+        write!(f, "{:?}", s)
+    }
+}
+
+impl From<u8> for DPT_Scaling {
+    fn from(value: u8) -> Self {
+        DPT_Scaling::new(value.into())
+    }
+}
+
+impl From<DPT_Scaling> for u8 {
+    fn from(value: DPT_Scaling) -> Self {
+        value.backing.into()
+    }
+}
+
+// ###########################################################################
+
+/// DPT 5.005 - Decimal Factor (0-255)
+///
+/// 1-byte unsigned value representing a decimal factor.
+/// Range: 0 to 255
+pub type DPT_DecimalFactor = DatapointType<PDT_UnsignedChar, 5, 005>;
+
+impl core::fmt::Debug for DPT_DecimalFactor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.backing)
+    }
+}
+
+impl From<u8> for DPT_DecimalFactor {
+    fn from(value: u8) -> Self {
+        DPT_DecimalFactor::new(value.into())
+    }
+}
+
+impl From<DPT_DecimalFactor> for u8 {
+    fn from(value: DPT_DecimalFactor) -> Self {
+        value.backing.into()
+    }
+}
+
 // ###########################################################################
 
 /// DPT 5.010 - 1-byte unsigned counter (0..255)
@@ -603,8 +1144,250 @@ impl From<DPT_Value_1_Ucount> for u8 {
 
 // ###########################################################################
 
-/// DPT for 3-byte value (used in conformance tests for invalid data length)
-pub type DPT_Value_3_Ucount = DatapointType<PDT_Generic03, 232, 600>;
+/// DPT 7.600 - Colour Temperature (Kelvin)
+///
+/// 2-byte unsigned value representing colour temperature.
+/// Range: 0 to 65535 Kelvin
+pub type DPT_Colour_Temperature = DatapointType<PDT_UnsignedInt, 7, 600>;
+
+impl core::fmt::Debug for DPT_Colour_Temperature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let k: u16 = self.backing.into();
+        write!(f, "{}K", k)
+    }
+}
+
+impl From<u16> for DPT_Colour_Temperature {
+    fn from(value: u16) -> Self {
+        DPT_Colour_Temperature::new(value.into())
+    }
+}
+
+impl From<DPT_Colour_Temperature> for u16 {
+    fn from(value: DPT_Colour_Temperature) -> Self {
+        value.backing.into()
+    }
+}
+
+// ###########################################################################
+
+/// DPT 9.001 - Temperature (°C)
+///
+/// 2-byte floating point value representing temperature.
+/// Range: -273°C to +670760°C (encoded as KNX 2-byte float)
+pub type DPT_Value_Temp = DatapointType<PDT_KNXFloat, 9, 001>;
+
+impl core::fmt::Debug for DPT_Value_Temp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let knx_float = KnxFloat16::from_bytes(self.backing.as_ref().try_into().unwrap());
+        write!(f, "{:.2}°C", knx_float.to_f32())
+    }
+}
+
+impl From<f32> for DPT_Value_Temp {
+    fn from(value: f32) -> Self {
+        let knx_float = KnxFloat16::from_f32(value);
+        let mut pdt = PDT_KNXFloat::default();
+        pdt.as_mut().copy_from_slice(&knx_float.to_bytes());
+        DPT_Value_Temp::new(pdt)
+    }
+}
+
+impl From<DPT_Value_Temp> for f32 {
+    fn from(value: DPT_Value_Temp) -> Self {
+        let bytes: [u8; 2] = value.backing.as_ref().try_into().unwrap();
+        KnxFloat16::from_bytes(bytes).to_f32()
+    }
+}
+
+impl From<KnxFloat16> for DPT_Value_Temp {
+    fn from(value: KnxFloat16) -> Self {
+        let mut pdt = PDT_KNXFloat::default();
+        pdt.as_mut().copy_from_slice(&value.to_bytes());
+        DPT_Value_Temp::new(pdt)
+    }
+}
+
+impl From<DPT_Value_Temp> for KnxFloat16 {
+    fn from(value: DPT_Value_Temp) -> Self {
+        let bytes: [u8; 2] = value.backing.as_ref().try_into().unwrap();
+        KnxFloat16::from_bytes(bytes)
+    }
+}
+
+// ###########################################################################
+
+/// DPT 9.004 - Light intensity (Lux)
+///
+/// 2-byte floating point value representing brightness/luminance.
+/// Range: 0 to 670760 Lux (encoded as KNX 2-byte float)
+pub type DPT_Value_Lux = DatapointType<PDT_KNXFloat, 9, 004>;
+
+impl core::fmt::Debug for DPT_Value_Lux {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let knx_float = KnxFloat16::from_bytes(self.backing.as_ref().try_into().unwrap());
+        write!(f, "{:.2} lux", knx_float.to_f32())
+    }
+}
+
+impl From<f32> for DPT_Value_Lux {
+    fn from(value: f32) -> Self {
+        let knx_float = KnxFloat16::from_f32(value);
+        let mut pdt = PDT_KNXFloat::default();
+        pdt.as_mut().copy_from_slice(&knx_float.to_bytes());
+        DPT_Value_Lux::new(pdt)
+    }
+}
+
+impl From<DPT_Value_Lux> for f32 {
+    fn from(value: DPT_Value_Lux) -> Self {
+        let bytes: [u8; 2] = value.backing.as_ref().try_into().unwrap();
+        KnxFloat16::from_bytes(bytes).to_f32()
+    }
+}
+
+impl From<KnxFloat16> for DPT_Value_Lux {
+    fn from(value: KnxFloat16) -> Self {
+        let mut pdt = PDT_KNXFloat::default();
+        pdt.as_mut().copy_from_slice(&value.to_bytes());
+        DPT_Value_Lux::new(pdt)
+    }
+}
+
+impl From<DPT_Value_Lux> for KnxFloat16 {
+    fn from(value: DPT_Value_Lux) -> Self {
+        let bytes: [u8; 2] = value.backing.as_ref().try_into().unwrap();
+        KnxFloat16::from_bytes(bytes)
+    }
+}
+
+// ###########################################################################
+
+/// DPT 17.001 - Scene Number
+///
+/// 1-byte value representing scene number (1-64).
+/// The actual encoding is 0-63, so scene 1 = value 0.
+pub type DPT_SceneNumber = DatapointType<PDT_UnsignedChar, 17, 001>;
+
+/// Scene number value for DPT 17.001
+///
+/// Represents scene 1-64, stored as 0-63 internally.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct SceneNumber(u8);
+
+impl SceneNumber {
+    /// Create a new SceneNumber with scene 1
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Create from raw byte value (0-63)
+    pub const fn from_byte(value: u8) -> Self {
+        Self(value & 0x3F) // Mask to 6 bits
+    }
+
+    /// Create from scene number (1-64)
+    ///
+    /// Values outside 1-64 are clamped.
+    pub const fn from_scene(scene: u8) -> Self {
+        let clamped = if scene == 0 {
+            0
+        } else if scene > 64 {
+            63
+        } else {
+            scene - 1
+        };
+        Self(clamped)
+    }
+
+    /// Get the raw byte value (0-63)
+    pub const fn as_byte(&self) -> u8 {
+        self.0
+    }
+
+    /// Get the scene number (1-64)
+    pub const fn as_scene(&self) -> u8 {
+        self.0 + 1
+    }
+}
+
+impl core::fmt::Debug for SceneNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Scene {} (0x{:02X})", self.as_scene(), self.0)
+    }
+}
+
+impl From<u8> for SceneNumber {
+    fn from(value: u8) -> Self {
+        Self::from_byte(value)
+    }
+}
+
+impl From<SceneNumber> for u8 {
+    fn from(value: SceneNumber) -> Self {
+        value.0
+    }
+}
+
+impl From<DPT_SceneNumber> for SceneNumber {
+    fn from(value: DPT_SceneNumber) -> Self {
+        let byte: u8 = value.backing.into();
+        Self::from_byte(byte)
+    }
+}
+
+impl From<SceneNumber> for DPT_SceneNumber {
+    fn from(value: SceneNumber) -> Self {
+        DPT_SceneNumber::new(value.0.into())
+    }
+}
+
+impl core::fmt::Debug for DPT_SceneNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s: SceneNumber = self.clone().into();
+        write!(f, "{:?}", s)
+    }
+}
+
+impl From<u8> for DPT_SceneNumber {
+    fn from(value: u8) -> Self {
+        DPT_SceneNumber::new(value.into())
+    }
+}
+
+impl From<DPT_SceneNumber> for u8 {
+    fn from(value: DPT_SceneNumber) -> Self {
+        value.backing.into()
+    }
+}
+
+/// DPT 18.001 - Scene Control
+///
+/// 1-byte value for scene control with learn bit.
+/// Bit 7: 0 = activate scene, 1 = learn scene
+/// Bits 0-5: scene number (0-63, representing scenes 1-64)
+pub type DPT_SceneControl = DatapointType<PDT_UnsignedChar, 18, 001>;
+
+impl core::fmt::Debug for DPT_SceneControl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value: u8 = self.backing.into();
+        let scene = (value & 0x3F) + 1;
+        let learn = (value & 0x80) != 0;
+        if learn {
+            write!(f, "Learn scene {}", scene)
+        } else {
+            write!(f, "Activate scene {}", scene)
+        }
+    }
+}
+
+// ###########################################################################
+
+/// DPT for 3-byte RGB value
+pub type DPT_Colour_RGB = DatapointType<PDT_Generic03, 232, 600>;
+
+/// DPT for 4-byte value
+pub type DPT_Value_4_Ucount = DatapointType<PDT_Generic04, 12, 001>;
 
 // ###########################################################################
 
@@ -1233,6 +2016,52 @@ mod test {
             let b = s.backing();
             assert_eq!(b.as_ref(), &[0x12, 0x34, 0x56, 0x78, 0x90, 0xAA]);
         }
+    }
+
+    #[test]
+    fn test_dpt_switch_control() {
+        // Test DPT ID
+        let s = DPT_Switch_Control::default();
+        let id = s.id();
+        assert_eq!(id.main(), 2);
+        assert_eq!(id.sub(), 1);
+
+        // Test no control (c=0, v=0)
+        let ctrl = SwitchControl::no_control();
+        assert!(!ctrl.control());
+        assert!(!ctrl.value());
+        assert_eq!(ctrl.as_byte(), 0b00);
+
+        // Test no control with value bit set (c=0, v=1) - still no control
+        let ctrl = SwitchControl::from_byte(0b01);
+        assert!(!ctrl.control());
+        assert!(ctrl.value());
+        assert_eq!(ctrl.as_byte(), 0b01);
+
+        // Test force OFF (c=1, v=0)
+        let ctrl = SwitchControl::force_off();
+        assert!(ctrl.control());
+        assert!(!ctrl.value());
+        assert_eq!(ctrl.as_byte(), 0b10);
+
+        // Test force ON (c=1, v=1)
+        let ctrl = SwitchControl::force_on();
+        assert!(ctrl.control());
+        assert!(ctrl.value());
+        assert_eq!(ctrl.as_byte(), 0b11);
+
+        // Test with_control constructor
+        let ctrl = SwitchControl::with_control(true, false);
+        assert_eq!(ctrl, SwitchControl::force_off());
+
+        let ctrl = SwitchControl::with_control(true, true);
+        assert_eq!(ctrl, SwitchControl::force_on());
+
+        // Test round-trip through DPT
+        let dpt: DPT_Switch_Control = SwitchControl::force_on().into();
+        let ctrl: SwitchControl = dpt.into();
+        assert!(ctrl.control());
+        assert!(ctrl.value());
     }
 
     // #[test]
