@@ -11,13 +11,12 @@
 
 use core::net::Ipv4Addr;
 
-use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 
 use crate::mtxml_gen::ets_pages;
 use crate::mtxml_gen::page_layout::{EtsPageLayout, PageStructure};
 use zweidraehte::dpt::*;
-use zweidraehte::ets::{EtsComObjects, EtsEnum, EtsParams, EtsUnion};
+use zweidraehte::ets::{EtsComObjects, EtsEnum, EtsParams, EtsUnion, ets_range_enum};
 use zweidraehte::objects::comm::ComObject;
 use zweidraehte::{
     IpPlatform, StackDefinition,
@@ -72,10 +71,6 @@ pub enum GEboolEnableDisable {
     Active = 1,
 }
 
-impl ConstDefault for GEboolEnableDisable {
-    const DEFAULT: Self = Self::NotActive;
-}
-
 /// ModeCyclic1min4h - Cyclic send interval
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
 #[repr(u8)]
@@ -103,10 +98,6 @@ pub enum ModeCyclic1min4h {
     Hour4 = 240,
 }
 
-impl ConstDefault for ModeCyclic1min4h {
-    const DEFAULT: Self = Self::NotActive;
-}
-
 /// ValueRead - Status request on bus power return
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
 #[repr(u8)]
@@ -116,10 +107,6 @@ pub enum ValueRead {
     NoRequest = 0,
     #[ets(display = "request")]
     Request = 1,
-}
-
-impl ConstDefault for ValueRead {
-    const DEFAULT: Self = Self::NoRequest;
 }
 
 /// EingangType - Button mode selector
@@ -137,9 +124,6 @@ pub enum EingangType {
     SingleButton1Func = 3,
 }
 
-impl ConstDefault for EingangType {
-    const DEFAULT: Self = Self::SingleButton2Func;
-}
 
 /// DebounceTime - Reaction time on keypress
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -154,9 +138,6 @@ pub enum DebounceTime {
     Slow = 150,
 }
 
-impl ConstDefault for DebounceTime {
-    const DEFAULT: Self = Self::Fast;
-}
 
 /// ButtonSwitchType - Switch subfunction type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -171,9 +152,6 @@ pub enum ButtonSwitchType {
     SendStatus = 2,
 }
 
-impl ConstDefault for ButtonSwitchType {
-    const DEFAULT: Self = Self::Toggle;
-}
 
 /// TwoButtonFunction - Function selector for two-button mode (P-91)
 /// Maps to MDT's EingangFunctionGroup parameter type
@@ -194,9 +172,6 @@ pub enum TwoButtonFunction {
     SwitchSendValues = 5,
 }
 
-impl ConstDefault for TwoButtonFunction {
-    const DEFAULT: Self = Self::Switch;
-}
 
 /// SwitchType - Button assignment for two-button switch mode (P-92)
 /// Maps to MDT's SwitchType parameter type
@@ -211,9 +186,6 @@ pub enum SwitchType {
     OffOn = 1,
 }
 
-impl ConstDefault for SwitchType {
-    const DEFAULT: Self = Self::OnOff;
-}
 
 /// GroupLongSendCondition - Group long sends option for two-button mode (P-93, P-94)
 /// Maps to MDT's GroupLongSendCondition parameter type
@@ -230,9 +202,6 @@ pub enum GroupLongSendCondition {
     SendToggle = 2,
 }
 
-impl ConstDefault for GroupLongSendCondition {
-    const DEFAULT: Self = Self::SendOnOff;
-}
 
 /// ButtonGroupValueType - Subfunction for two-button send values mode (P-95)
 /// Maps to MDT's ButtonGrouptValueType parameter type
@@ -249,9 +218,6 @@ pub enum ButtonGroupValueType {
     ShiftValue = 3,
 }
 
-impl ConstDefault for ButtonGroupValueType {
-    const DEFAULT: Self = Self::SendValues;
-}
 
 /// GroupSend - Group long sends options for two-button mode (P-96)
 /// Maps to MDT's GroupSend parameter type
@@ -268,9 +234,6 @@ pub enum GroupSend {
     ValueLowerButton = 2,
 }
 
-impl ConstDefault for GroupSend {
-    const DEFAULT: Self = Self::ValueBothButtons;
-}
 
 /// ObjectType enum for send values mode - matches MDT's DPTType1Bit values
 /// Used as selector_param values for ComObjectRefs in send values mode
@@ -309,25 +272,6 @@ pub enum ObjectType {
     Switch = 10,
 }
 
-impl ConstDefault for ObjectType {
-    const DEFAULT: Self = Self::Switch;
-}
-
-/// GEDPTSwitch - Simple ON/OFF selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum GEDPTSwitch {
-    #[default]
-    #[ets(display = "OFF")]
-    Off = 0,
-    #[ets(display = "ON")]
-    On = 1,
-}
-
-impl ConstDefault for GEDPTSwitch {
-    const DEFAULT: Self = Self::Off;
-}
-
 /// EnableDisable1Byte - 8-bit enable/disable
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
 #[repr(u8)]
@@ -339,9 +283,6 @@ pub enum EnableDisable1Byte {
     Active = 1,
 }
 
-impl ConstDefault for EnableDisable1Byte {
-    const DEFAULT: Self = Self::NotActive;
-}
 
 /// ButtonValueType - Send value mode selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -358,9 +299,6 @@ pub enum ButtonValueType {
     MultiTip = 3,
 }
 
-impl ConstDefault for ButtonValueType {
-    const DEFAULT: Self = Self::SendValues;
-}
 
 /// DPTType1Bit - DPT type selection for 1-bit compatible outputs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -387,9 +325,6 @@ pub enum DPTType1Bit {
     Switch = 10,
 }
 
-impl ConstDefault for DPTType1Bit {
-    const DEFAULT: Self = Self::Percent;
-}
 
 /// Zwangsfuehrung - Priority/Forcible control
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -406,9 +341,6 @@ pub enum Zwangsfuehrung {
     PriorityOn = 3,
 }
 
-impl ConstDefault for Zwangsfuehrung {
-    const DEFAULT: Self = Self::NoPriorityOff;
-}
 
 /// ButtonFunction - Main button function selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -431,9 +363,6 @@ pub enum ButtonFunction {
     NotActive = 255,
 }
 
-impl ConstDefault for ButtonFunction {
-    const DEFAULT: Self = Self::Switch;
-}
 
 /// SpecialFunction - Innovative group control options
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -446,9 +375,6 @@ pub enum SpecialFunction {
     AdditionalObject = 1,
 }
 
-impl ConstDefault for SpecialFunction {
-    const DEFAULT: Self = Self::InnovativeGroupControl;
-}
 
 /// ModeRGBHSV - RGB vs HSV color mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -461,9 +387,6 @@ pub enum ModeRGBHSV {
     Hsv = 2,
 }
 
-impl ConstDefault for ModeRGBHSV {
-    const DEFAULT: Self = Self::Rgb;
-}
 
 /// LogicType - Logic function type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -480,9 +403,6 @@ pub enum LogicType {
     NotActive = 255,
 }
 
-impl ConstDefault for LogicType {
-    const DEFAULT: Self = Self::NotActive;
-}
 
 /// LogicObjectType - Logic output object type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -499,9 +419,6 @@ pub enum LogicObjectType {
     ForcibleControl = 4,
 }
 
-impl ConstDefault for LogicObjectType {
-    const DEFAULT: Self = Self::Switch;
-}
 
 /// SendCondition - Logic send condition
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -520,9 +437,6 @@ pub enum SendCondition {
     AtChangeOutputSendOnly1 = 6,
 }
 
-impl ConstDefault for SendCondition {
-    const DEFAULT: Self = Self::NotAutomatic;
-}
 
 /// ExtInputLogicType - External logic input configuration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -541,9 +455,6 @@ pub enum ExtInputLogicType {
     InvertedActivePrealloc1 = 130,
 }
 
-impl ConstDefault for ExtInputLogicType {
-    const DEFAULT: Self = Self::NotActive;
-}
 
 /// IntInputLogicType - Internal logic input from buttons
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -556,9 +467,6 @@ pub enum IntInputLogicType {
     PressedOff = 2,
 }
 
-impl ConstDefault for IntInputLogicType {
-    const DEFAULT: Self = Self::PressedOn;
-}
 
 /// LogicButton - Button selection for logic inputs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -573,9 +481,6 @@ pub enum LogicButton {
     Button2 = 2,
 }
 
-impl ConstDefault for LogicButton {
-    const DEFAULT: Self = Self::NotActive;
-}
 
 /// JaNein - Yes/No selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -588,9 +493,6 @@ pub enum JaNein {
     Yes = 1,
 }
 
-impl ConstDefault for JaNein {
-    const DEFAULT: Self = Self::No;
-}
 
 /// Cleaning - Slap/Cleaning function mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -605,9 +507,6 @@ pub enum Cleaning {
     CleaningShortSlapLong = 2,
 }
 
-impl ConstDefault for Cleaning {
-    const DEFAULT: Self = Self::SlapOnly;
-}
 
 /// LEDRGBColorPatch - LED color for slap indication
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -634,9 +533,6 @@ pub enum LEDRGBColorPatch {
     NoSignal = 31,
 }
 
-impl ConstDefault for LEDRGBColorPatch {
-    const DEFAULT: Self = Self::White;
-}
 
 /// DimmType - Dimmer direction configuration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -649,9 +545,6 @@ pub enum DimmType {
     DarkerBrighter = 1,
 }
 
-impl ConstDefault for DimmType {
-    const DEFAULT: Self = Self::BrighterDarker;
-}
 
 /// ConfigChan - Blind channel direction
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -664,9 +557,6 @@ pub enum ConfigChan {
     DownUp = 1,
 }
 
-impl ConstDefault for ConfigChan {
-    const DEFAULT: Self = Self::UpDown;
-}
 
 /// ShortLongInverse - Blind operation function (1-bit)
 /// MDT: PT-Short.2FLong.5FInverse, SizeInBit="1"
@@ -681,365 +571,30 @@ pub enum ShortLongInverse {
     ShortMoveLongStop = 1,
 }
 
-impl ConstDefault for ShortLongInverse {
-    const DEFAULT: Self = Self::LongMoveShortStop;
+
+// SceneValue - Scene number selection (1-64)
+// Display shows 1-64, stored as 0-63 (DPT 17.001 format)
+ets_range_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[ets(type_name = "SceneValue")]
+    pub enum SceneValue {
+        range 0..64 => "Scene{}";
+        default = 0;
+    }
 }
 
-/// SceneValue - Scene number selection (1-64)
-/// Display shows 1-64, stored as 0-63 (DPT 17.001 format)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[ets(type_name = "SceneValue")]
-#[repr(u8)]
-pub enum SceneValue {
-    #[default]
-    #[ets(display = "1")]
-    Scene1 = 0,
-    #[ets(display = "2")]
-    Scene2 = 1,
-    #[ets(display = "3")]
-    Scene3 = 2,
-    #[ets(display = "4")]
-    Scene4 = 3,
-    #[ets(display = "5")]
-    Scene5 = 4,
-    #[ets(display = "6")]
-    Scene6 = 5,
-    #[ets(display = "7")]
-    Scene7 = 6,
-    #[ets(display = "8")]
-    Scene8 = 7,
-    #[ets(display = "9")]
-    Scene9 = 8,
-    #[ets(display = "10")]
-    Scene10 = 9,
-    #[ets(display = "11")]
-    Scene11 = 10,
-    #[ets(display = "12")]
-    Scene12 = 11,
-    #[ets(display = "13")]
-    Scene13 = 12,
-    #[ets(display = "14")]
-    Scene14 = 13,
-    #[ets(display = "15")]
-    Scene15 = 14,
-    #[ets(display = "16")]
-    Scene16 = 15,
-    #[ets(display = "17")]
-    Scene17 = 16,
-    #[ets(display = "18")]
-    Scene18 = 17,
-    #[ets(display = "19")]
-    Scene19 = 18,
-    #[ets(display = "20")]
-    Scene20 = 19,
-    #[ets(display = "21")]
-    Scene21 = 20,
-    #[ets(display = "22")]
-    Scene22 = 21,
-    #[ets(display = "23")]
-    Scene23 = 22,
-    #[ets(display = "24")]
-    Scene24 = 23,
-    #[ets(display = "25")]
-    Scene25 = 24,
-    #[ets(display = "26")]
-    Scene26 = 25,
-    #[ets(display = "27")]
-    Scene27 = 26,
-    #[ets(display = "28")]
-    Scene28 = 27,
-    #[ets(display = "29")]
-    Scene29 = 28,
-    #[ets(display = "30")]
-    Scene30 = 29,
-    #[ets(display = "31")]
-    Scene31 = 30,
-    #[ets(display = "32")]
-    Scene32 = 31,
-    #[ets(display = "33")]
-    Scene33 = 32,
-    #[ets(display = "34")]
-    Scene34 = 33,
-    #[ets(display = "35")]
-    Scene35 = 34,
-    #[ets(display = "36")]
-    Scene36 = 35,
-    #[ets(display = "37")]
-    Scene37 = 36,
-    #[ets(display = "38")]
-    Scene38 = 37,
-    #[ets(display = "39")]
-    Scene39 = 38,
-    #[ets(display = "40")]
-    Scene40 = 39,
-    #[ets(display = "41")]
-    Scene41 = 40,
-    #[ets(display = "42")]
-    Scene42 = 41,
-    #[ets(display = "43")]
-    Scene43 = 42,
-    #[ets(display = "44")]
-    Scene44 = 43,
-    #[ets(display = "45")]
-    Scene45 = 44,
-    #[ets(display = "46")]
-    Scene46 = 45,
-    #[ets(display = "47")]
-    Scene47 = 46,
-    #[ets(display = "48")]
-    Scene48 = 47,
-    #[ets(display = "49")]
-    Scene49 = 48,
-    #[ets(display = "50")]
-    Scene50 = 49,
-    #[ets(display = "51")]
-    Scene51 = 50,
-    #[ets(display = "52")]
-    Scene52 = 51,
-    #[ets(display = "53")]
-    Scene53 = 52,
-    #[ets(display = "54")]
-    Scene54 = 53,
-    #[ets(display = "55")]
-    Scene55 = 54,
-    #[ets(display = "56")]
-    Scene56 = 55,
-    #[ets(display = "57")]
-    Scene57 = 56,
-    #[ets(display = "58")]
-    Scene58 = 57,
-    #[ets(display = "59")]
-    Scene59 = 58,
-    #[ets(display = "60")]
-    Scene60 = 59,
-    #[ets(display = "61")]
-    Scene61 = 60,
-    #[ets(display = "62")]
-    Scene62 = 61,
-    #[ets(display = "63")]
-    Scene63 = 62,
-    #[ets(display = "64")]
-    Scene64 = 63,
+
+// Select0to100Percent - Percentage selection (0-100%)
+// Maps percentage display to byte values using formula: round(percent * 2.55)
+ets_range_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[ets(type_name = "select0to100percent")]
+    pub enum Select0to100Percent {
+        range 0..=100 => percent_to_byte "P{}%";
+        default = 0;
+    }
 }
 
-impl ConstDefault for SceneValue {
-    const DEFAULT: Self = Self::Scene1;
-}
-
-/// Select0to100Percent - Percentage selection (0-100%)
-/// Maps percentage display to byte values using formula: round(percent * 2.55)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[ets(type_name = "select0to100percent")]
-#[repr(u8)]
-pub enum Select0to100Percent {
-    #[default]
-    #[ets(display = "0%")]
-    P0 = 0,
-    #[ets(display = "1%")]
-    P1 = 2,
-    #[ets(display = "2%")]
-    P2 = 5,
-    #[ets(display = "3%")]
-    P3 = 7,
-    #[ets(display = "4%")]
-    P4 = 10,
-    #[ets(display = "5%")]
-    P5 = 12,
-    #[ets(display = "6%")]
-    P6 = 15,
-    #[ets(display = "7%")]
-    P7 = 17,
-    #[ets(display = "8%")]
-    P8 = 20,
-    #[ets(display = "9%")]
-    P9 = 22,
-    #[ets(display = "10%")]
-    P10 = 25,
-    #[ets(display = "11%")]
-    P11 = 28,
-    #[ets(display = "12%")]
-    P12 = 30,
-    #[ets(display = "13%")]
-    P13 = 33,
-    #[ets(display = "14%")]
-    P14 = 35,
-    #[ets(display = "15%")]
-    P15 = 38,
-    #[ets(display = "16%")]
-    P16 = 40,
-    #[ets(display = "17%")]
-    P17 = 43,
-    #[ets(display = "18%")]
-    P18 = 45,
-    #[ets(display = "19%")]
-    P19 = 48,
-    #[ets(display = "20%")]
-    P20 = 51,
-    #[ets(display = "21%")]
-    P21 = 53,
-    #[ets(display = "22%")]
-    P22 = 56,
-    #[ets(display = "23%")]
-    P23 = 58,
-    #[ets(display = "24%")]
-    P24 = 61,
-    #[ets(display = "25%")]
-    P25 = 63,
-    #[ets(display = "26%")]
-    P26 = 66,
-    #[ets(display = "27%")]
-    P27 = 68,
-    #[ets(display = "28%")]
-    P28 = 71,
-    #[ets(display = "29%")]
-    P29 = 73,
-    #[ets(display = "30%")]
-    P30 = 76,
-    #[ets(display = "31%")]
-    P31 = 79,
-    #[ets(display = "32%")]
-    P32 = 81,
-    #[ets(display = "33%")]
-    P33 = 84,
-    #[ets(display = "34%")]
-    P34 = 86,
-    #[ets(display = "35%")]
-    P35 = 89,
-    #[ets(display = "36%")]
-    P36 = 91,
-    #[ets(display = "37%")]
-    P37 = 94,
-    #[ets(display = "38%")]
-    P38 = 96,
-    #[ets(display = "39%")]
-    P39 = 99,
-    #[ets(display = "40%")]
-    P40 = 102,
-    #[ets(display = "41%")]
-    P41 = 104,
-    #[ets(display = "42%")]
-    P42 = 107,
-    #[ets(display = "43%")]
-    P43 = 109,
-    #[ets(display = "44%")]
-    P44 = 112,
-    #[ets(display = "45%")]
-    P45 = 114,
-    #[ets(display = "46%")]
-    P46 = 117,
-    #[ets(display = "47%")]
-    P47 = 119,
-    #[ets(display = "48%")]
-    P48 = 122,
-    #[ets(display = "49%")]
-    P49 = 124,
-    #[ets(display = "50%")]
-    P50 = 127,
-    #[ets(display = "51%")]
-    P51 = 130,
-    #[ets(display = "52%")]
-    P52 = 132,
-    #[ets(display = "53%")]
-    P53 = 135,
-    #[ets(display = "54%")]
-    P54 = 138,
-    #[ets(display = "55%")]
-    P55 = 140,
-    #[ets(display = "56%")]
-    P56 = 142,
-    #[ets(display = "57%")]
-    P57 = 145,
-    #[ets(display = "58%")]
-    P58 = 147,
-    #[ets(display = "59%")]
-    P59 = 150,
-    #[ets(display = "60%")]
-    P60 = 153,
-    #[ets(display = "61%")]
-    P61 = 155,
-    #[ets(display = "62%")]
-    P62 = 158,
-    #[ets(display = "63%")]
-    P63 = 160,
-    #[ets(display = "64%")]
-    P64 = 163,
-    #[ets(display = "65%")]
-    P65 = 165,
-    #[ets(display = "66%")]
-    P66 = 168,
-    #[ets(display = "67%")]
-    P67 = 170,
-    #[ets(display = "68%")]
-    P68 = 173,
-    #[ets(display = "69%")]
-    P69 = 175,
-    #[ets(display = "70%")]
-    P70 = 178,
-    #[ets(display = "71%")]
-    P71 = 181,
-    #[ets(display = "72%")]
-    P72 = 183,
-    #[ets(display = "73%")]
-    P73 = 186,
-    #[ets(display = "74%")]
-    P74 = 188,
-    #[ets(display = "75%")]
-    P75 = 191,
-    #[ets(display = "76%")]
-    P76 = 193,
-    #[ets(display = "77%")]
-    P77 = 196,
-    #[ets(display = "78%")]
-    P78 = 198,
-    #[ets(display = "79%")]
-    P79 = 201,
-    #[ets(display = "80%")]
-    P80 = 204,
-    #[ets(display = "81%")]
-    P81 = 206,
-    #[ets(display = "82%")]
-    P82 = 209,
-    #[ets(display = "83%")]
-    P83 = 211,
-    #[ets(display = "84%")]
-    P84 = 214,
-    #[ets(display = "85%")]
-    P85 = 216,
-    #[ets(display = "86%")]
-    P86 = 219,
-    #[ets(display = "87%")]
-    P87 = 221,
-    #[ets(display = "88%")]
-    P88 = 224,
-    #[ets(display = "89%")]
-    P89 = 226,
-    #[ets(display = "90%")]
-    P90 = 229,
-    #[ets(display = "91%")]
-    P91 = 232,
-    #[ets(display = "92%")]
-    P92 = 234,
-    #[ets(display = "93%")]
-    P93 = 237,
-    #[ets(display = "94%")]
-    P94 = 239,
-    #[ets(display = "95%")]
-    P95 = 242,
-    #[ets(display = "96%")]
-    P96 = 244,
-    #[ets(display = "97%")]
-    P97 = 247,
-    #[ets(display = "98%")]
-    P98 = 249,
-    #[ets(display = "99%")]
-    P99 = 252,
-    #[ets(display = "100%")]
-    P100 = 255,
-}
-
-impl ConstDefault for Select0to100Percent {
-    const DEFAULT: Self = Self::P0;
-}
 
 /// GEDPT_Switch - Basic ON/OFF switch value
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -1053,8 +608,64 @@ pub enum GedptSwitch {
     On = 1,
 }
 
-impl ConstDefault for GedptSwitch {
-    const DEFAULT: Self = Self::Off;
+/// ColourControl - RGB/HSV colour mode selector
+/// Used for colour control parameters (12 occurrences)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum ColourControl {
+    #[default]
+    #[ets(display = "RGB")]
+    Rgb = 1,
+    #[ets(display = "HSV")]
+    Hsv = 2,
+}
+
+/// PressedOnOff - Which value is sent when pressed
+/// Used for switch function configuration (8 occurrences)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum PressedOnOff {
+    #[default]
+    #[ets(display = "pressed = ON")]
+    PressedOn = 1,
+    #[ets(display = "pressed = OFF")]
+    PressedOff = 2,
+}
+
+/// OnOff - Simple ON/OFF toggle
+/// Used for various boolean-like parameters (5 occurrences)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum OnOff {
+    #[default]
+    #[ets(display = "OFF")]
+    Off = 0,
+    #[ets(display = "ON")]
+    On = 1,
+}
+
+/// AndOr - Logic gate type selector
+/// Used for logic channel configuration (4 occurrences)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum AndOr {
+    #[default]
+    #[ets(display = "Or")]
+    Or = 0,
+    #[ets(display = "And")]
+    And = 1,
+}
+
+/// YesNo - Simple yes/no toggle
+/// Used for various confirmation parameters (4 occurrences)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum YesNo {
+    #[default]
+    #[ets(display = "no")]
+    No = 0,
+    #[ets(display = "yes")]
+    Yes = 1,
 }
 
 // ============================================================================
@@ -1068,7 +679,7 @@ impl ConstDefault for GedptSwitch {
 pub enum SubTypeHUnion {
     /// Number of tip-operations for Multi-tip mode (2 or 3 operations)
     /// MDT: TipValueCount enum - Value=1 means "2 operations", Value=2 means "3 operations"
-    #[ets(display = "Tip operations")]
+    #[ets(default_variant, display = "Tip operations")]
     TipOperations {
         #[ets(display = "Number of tip-operations", enum_variants("2" => 1, "3" => 2), default = 1)]
         count: u8,
@@ -1083,16 +694,6 @@ pub enum SubTypeHUnion {
     } = 1,
 }
 
-impl Default for SubTypeHUnion {
-    fn default() -> Self {
-        Self::TipOperations { count: 1 }
-    }
-}
-
-impl ConstDefault for SubTypeHUnion {
-    const DEFAULT: Self = Self::TipOperations { count: 1 };
-}
-
 /// Button Value Union (32-bit) - Various value types for button output
 /// This union allows the same memory to be interpreted as different value types
 /// Discriminant values MUST match ObjectType enum for choose/when to work correctly!
@@ -1100,7 +701,7 @@ impl ConstDefault for SubTypeHUnion {
 #[repr(C, u8)]
 pub enum ButtonValueUnion {
     /// Switch value (ON/OFF) - matches ObjectType::Switch = 0 (button_object_type "1Bit")
-    #[ets(display = "Switch")]
+    #[ets(default_variant, display = "Switch")]
     Switch {
         #[ets(display = "Value", ets_enum)]
         value: GedptSwitch,
@@ -1207,22 +808,12 @@ pub enum ButtonValueUnion {
     } = 11,
 }
 
-impl Default for ButtonValueUnion {
-    fn default() -> Self {
-        Self::Switch { value: GedptSwitch::Off, _pad: [0; 3] }
-    }
-}
-
-impl ConstDefault for ButtonValueUnion {
-    const DEFAULT: Self = Self::Switch { value: GedptSwitch::Off, _pad: [0; 3] };
-}
-
 /// Long Button Action Union (8-bit) - Action type for long keypress
 #[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
 #[repr(C, u8)]
 pub enum LongButtonActionUnion {
     /// No long action (dummy/hidden)
-    #[ets(display = "None")]
+    #[ets(default_variant, display = "None")]
     None {
         #[ets(skip)]
         _dummy: u8,
@@ -1271,22 +862,12 @@ pub enum LongButtonActionUnion {
     } = 6,
 }
 
-impl Default for LongButtonActionUnion {
-    fn default() -> Self {
-        Self::None { _dummy: 0 }
-    }
-}
-
-impl ConstDefault for LongButtonActionUnion {
-    const DEFAULT: Self = Self::None { _dummy: 0 };
-}
-
 /// Time Duration Union (16-bit) - Various time values
 #[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
 #[repr(C, u8)]
 pub enum TimeDurationUnion {
     /// Time for long keypress (with "basic setting" option) - TimeforLongSwitchGroup0-30s
-    #[ets(display = "Long keypress time")]
+    #[ets(default_variant, display = "Long keypress time")]
     LongKeypressTime {
         #[ets(display = "Time for long keypress", enum_variants(
             "basic setting" => 0,
@@ -1430,22 +1011,12 @@ pub enum TimeDurationUnion {
     } = 5,
 }
 
-impl Default for TimeDurationUnion {
-    fn default() -> Self {
-        Self::LongKeypressTime { value: 0 }
-    }
-}
-
-impl ConstDefault for TimeDurationUnion {
-    const DEFAULT: Self = Self::LongKeypressTime { value: 0 };
-}
-
 /// Extra Long Values Union (16-bit) - Values for extra long keypress
 #[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
 #[repr(C, u8)]
 pub enum ExtraLongValueUnion {
     /// Switch value
-    #[ets(display = "Switch")]
+    #[ets(default_variant, display = "Switch")]
     Switch {
         #[ets(display = "Value", enum_variants("OFF" => 0, "ON" => 1))]
         value: u8,
@@ -1488,23 +1059,13 @@ pub enum ExtraLongValueUnion {
     } = 4,
 }
 
-impl Default for ExtraLongValueUnion {
-    fn default() -> Self {
-        Self::Switch { value: 0, _pad: 0 }
-    }
-}
-
-impl ConstDefault for ExtraLongValueUnion {
-    const DEFAULT: Self = Self::Switch { value: 0, _pad: 0 };
-}
-
 /// Send Condition Union (8-bit) - Condition for sending logic output
 /// Used for logic channel configuration - determines when output is sent
 #[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
 #[repr(C, u8)]
 pub enum SendConditionUnion {
     /// Standard send condition with enum selection
-    #[ets(display = "Send condition")]
+    #[ets(default_variant, display = "Send condition")]
     Condition {
         #[ets(display = "    Sending condition", enum_variants(
             "not automatic" => 0,
@@ -1522,16 +1083,6 @@ pub enum SendConditionUnion {
         #[ets(skip)]
         value: u8,
     } = 1,
-}
-
-impl Default for SendConditionUnion {
-    fn default() -> Self {
-        Self::Condition { value: 2 }
-    }
-}
-
-impl ConstDefault for SendConditionUnion {
-    const DEFAULT: Self = Self::Condition { value: 2 };
 }
 
 /// Logic Value To Send Union (8-bit) - Value type for logic output
@@ -1554,7 +1105,7 @@ pub enum LogicValueUnion {
     } = 1,
 
     /// Raw 1-byte value (0-255)
-    #[ets(display = "    1Byte Value")]
+    #[ets(default_variant, display = "    1Byte Value")]
     ByteValue {
         #[ets(display = "    1Byte Value", unsigned)]
         value: u8,
@@ -1571,16 +1122,6 @@ pub enum LogicValueUnion {
         ))]
         value: u8,
     } = 3,
-}
-
-impl Default for LogicValueUnion {
-    fn default() -> Self {
-        Self::ByteValue { value: 0 }
-    }
-}
-
-impl ConstDefault for LogicValueUnion {
-    const DEFAULT: Self = Self::ByteValue { value: 0 };
 }
 
 // ============================================================================
@@ -2829,6 +2370,7 @@ pub mod comm_objs {
 
 /// Application parameters for the MDT Push Button Lite device.
 #[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize)]
+#[ets(derive_defaults)]
 #[repr(C)]
 pub struct MdtParams {
     /// Startup time in seconds (2-240), default 2s
@@ -2856,8 +2398,8 @@ pub struct MdtParams {
     pub eingang_type: u8,
 
     /// Slap/Cleaning function enable (hidden in 1-fold Basic - hardware doesn't support it)
-    #[ets(display = "Slap / Cleaning function", hidden, enum_variants("not active" => 0, "active" => 1))]
-    pub eingang_type_patsch: u8,
+    #[ets(display = "Slap / Cleaning function", hidden, ets_enum)]
+    pub eingang_type_patsch: GEboolEnableDisable,
 
     /// Button 1 main function (matching MDT ButtonFunction type values)
     #[ets(display = "Single-button function", enum_variants("not active" => 255, "switch" => 0, "dimming" => 1, "blinds/shutter" => 2, "scene" => 3, "send values" => 4, "switch/send values short/long (with 2 objects)" => 7))]
@@ -2868,8 +2410,8 @@ pub struct MdtParams {
     pub button1_switch_type: u16,
 
     /// Button 1 blocking object enable
-    #[ets(display = "Blocking Object", enum_variants("not active" => 0, "active" => 1))]
-    pub button1_blocking_enable: u8,
+    #[ets(display = "Blocking Object", ets_enum)]
+    pub button1_blocking_enable: GEboolEnableDisable,
 
     /// Button 1 object type selector (for ComObjectRef DPT selection)
     /// Values match MDT's DPTType1Bit: 10=Switch, 1=Bit2, 2=Percent, 3=Decimal, 4=Scene, 6=ColourTemp, 7=Temperature, 8=Brightness, 9=RGB
@@ -2886,8 +2428,8 @@ pub struct MdtParams {
     pub button2_switch_type: u16,
 
     /// Button 2 blocking object enable
-    #[ets(display = "Blocking Object", enum_variants("not active" => 0, "active" => 1))]
-    pub button2_blocking_enable: u8,
+    #[ets(display = "Blocking Object", ets_enum)]
+    pub button2_blocking_enable: GEboolEnableDisable,
 
     /// Button 2 object type selector (for ComObjectRef DPT selection)
     /// Values match MDT's DPTType1Bit: 10=Switch, 1=Bit2, 2=Percent, 3=Decimal, 4=Scene, 6=ColourTemp, 7=Temperature, 8=Brightness, 9=RGB
@@ -2951,12 +2493,12 @@ pub struct MdtParams {
     pub button1_dpt_type: u8,
 
     /// Button 1 value for released button (switch mode)
-    #[ets(display = "Value released button", enum_variants("OFF" => 0, "ON" => 1))]
-    pub button1_value_released: u8,
+    #[ets(display = "Value released button", ets_enum)]
+    pub button1_value_released: OnOff,
 
     /// Button 1 value for pushed button (switch mode)
-    #[ets(display = "Value pushed button", enum_variants("OFF" => 0, "ON" => 1))]
-    pub button1_value_pushed: u8,
+    #[ets(display = "Value pushed button", ets_enum)]
+    pub button1_value_pushed: OnOff,
 
     /// Button 1 percent value
     #[ets(display = "Percent value")]
@@ -2971,8 +2513,8 @@ pub struct MdtParams {
     pub button1_colour_temp: u16,
 
     /// Button 1 group long keypress enable
-    #[ets(display = "Group long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub button1_group_long_enable: u8,
+    #[ets(display = "Group long keypress", ets_enum)]
+    pub button1_group_long_enable: GEboolEnableDisable,
 
     /// Button 1 time for long keypress
     #[ets(display = "Time for long keypress")]
@@ -3007,12 +2549,12 @@ pub struct MdtParams {
     pub button2_dpt_type: u8,
 
     /// Button 2 value for released button (switch mode)
-    #[ets(display = "Value released button", enum_variants("OFF" => 0, "ON" => 1))]
-    pub button2_value_released: u8,
+    #[ets(display = "Value released button", ets_enum)]
+    pub button2_value_released: OnOff,
 
     /// Button 2 value for pushed button (switch mode)
-    #[ets(display = "Value pushed button", enum_variants("OFF" => 0, "ON" => 1))]
-    pub button2_value_pushed: u8,
+    #[ets(display = "Value pushed button", ets_enum)]
+    pub button2_value_pushed: OnOff,
 
     /// Button 2 percent value
     #[ets(display = "Percent value")]
@@ -3027,8 +2569,8 @@ pub struct MdtParams {
     pub button2_colour_temp: u16,
 
     /// Button 2 group long keypress enable
-    #[ets(display = "Group long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub button2_group_long_enable: u8,
+    #[ets(display = "Group long keypress", ets_enum)]
+    pub button2_group_long_enable: GEboolEnableDisable,
 
     /// Button 2 time for long keypress
     #[ets(display = "Time for long keypress")]
@@ -3071,8 +2613,8 @@ pub struct MdtParams {
     pub slap_long_dpt_type: u8,
 
     /// Slap blocking enable
-    #[ets(display = "Blocking Object", enum_variants("not active" => 0, "active" => 1))]
-    pub slap_blocking_enable: u8,
+    #[ets(display = "Blocking Object", ets_enum)]
+    pub slap_blocking_enable: GEboolEnableDisable,
 
     // ========================================================================
     // Logic Channel Parameters
@@ -3082,16 +2624,16 @@ pub struct MdtParams {
     pub logic1_send_condition: u8,
 
     /// Logic 1 external input A type
-    #[ets(display = "Logic object 1 A (external)", enum_variants("not active" => 0, "normally active, with preallocation 0" => 1, "inverted active, with preallocation 0" => 2, "normally active, with preallocation 1" => 129, "inverted active, with preallocation 1" => 130))]
-    pub logic1_ext_input_a: u8,
+    #[ets(display = "Logic object 1 A (external)", ets_enum)]
+    pub logic1_ext_input_a: ExtInputLogicType,
 
     /// Logic 1 external input B type
-    #[ets(display = "Logic object 1 B (external)", enum_variants("not active" => 0, "normally active, with preallocation 0" => 1, "inverted active, with preallocation 0" => 2, "normally active, with preallocation 1" => 129, "inverted active, with preallocation 1" => 130))]
-    pub logic1_ext_input_b: u8,
+    #[ets(display = "Logic object 1 B (external)", ets_enum)]
+    pub logic1_ext_input_b: ExtInputLogicType,
 
     /// Logic 1 internal input button
-    #[ets(display = "Internal input (button)", enum_variants("not active" => 0, "button 1" => 1, "button 2" => 2))]
-    pub logic1_int_button: u8,
+    #[ets(display = "Internal input (button)", ets_enum)]
+    pub logic1_int_button: LogicButton,
 
     /// Logic 1 output value ON
     #[ets(display = "Output value ON")]
@@ -3106,16 +2648,16 @@ pub struct MdtParams {
     pub logic2_send_condition: u8,
 
     /// Logic 2 external input A type
-    #[ets(display = "Logic object 2 A (external)", enum_variants("not active" => 0, "normally active, with preallocation 0" => 1, "inverted active, with preallocation 0" => 2, "normally active, with preallocation 1" => 129, "inverted active, with preallocation 1" => 130))]
-    pub logic2_ext_input_a: u8,
+    #[ets(display = "Logic object 2 A (external)", ets_enum)]
+    pub logic2_ext_input_a: ExtInputLogicType,
 
     /// Logic 2 external input B type
-    #[ets(display = "Logic object 2 B (external)", enum_variants("not active" => 0, "normally active, with preallocation 0" => 1, "inverted active, with preallocation 0" => 2, "normally active, with preallocation 1" => 129, "inverted active, with preallocation 1" => 130))]
-    pub logic2_ext_input_b: u8,
+    #[ets(display = "Logic object 2 B (external)", ets_enum)]
+    pub logic2_ext_input_b: ExtInputLogicType,
 
     /// Logic 2 internal input button
-    #[ets(display = "Internal input (button)", enum_variants("not active" => 0, "button 1" => 1, "button 2" => 2))]
-    pub logic2_int_button: u8,
+    #[ets(display = "Internal input (button)", ets_enum)]
+    pub logic2_int_button: LogicButton,
 
     /// Logic 2 output value ON
     #[ets(display = "Output value ON")]
@@ -3130,16 +2672,16 @@ pub struct MdtParams {
     pub logic3_send_condition: u8,
 
     /// Logic 3 external input A type
-    #[ets(display = "Logic object 3 A (external)", enum_variants("not active" => 0, "normally active, with preallocation 0" => 1, "inverted active, with preallocation 0" => 2, "normally active, with preallocation 1" => 129, "inverted active, with preallocation 1" => 130))]
-    pub logic3_ext_input_a: u8,
+    #[ets(display = "Logic object 3 A (external)", ets_enum)]
+    pub logic3_ext_input_a: ExtInputLogicType,
 
     /// Logic 3 external input B type
-    #[ets(display = "Logic object 3 B (external)", enum_variants("not active" => 0, "normally active, with preallocation 0" => 1, "inverted active, with preallocation 0" => 2, "normally active, with preallocation 1" => 129, "inverted active, with preallocation 1" => 130))]
-    pub logic3_ext_input_b: u8,
+    #[ets(display = "Logic object 3 B (external)", ets_enum)]
+    pub logic3_ext_input_b: ExtInputLogicType,
 
     /// Logic 3 internal input button
-    #[ets(display = "Internal input (button)", enum_variants("not active" => 0, "button 1" => 1, "button 2" => 2))]
-    pub logic3_int_button: u8,
+    #[ets(display = "Internal input (button)", ets_enum)]
+    pub logic3_int_button: LogicButton,
 
     /// Logic 3 output value ON
     #[ets(display = "Output value ON")]
@@ -3154,16 +2696,16 @@ pub struct MdtParams {
     pub logic4_send_condition: u8,
 
     /// Logic 4 external input A type
-    #[ets(display = "Logic object 4 A (external)", enum_variants("not active" => 0, "normally active, with preallocation 0" => 1, "inverted active, with preallocation 0" => 2, "normally active, with preallocation 1" => 129, "inverted active, with preallocation 1" => 130))]
-    pub logic4_ext_input_a: u8,
+    #[ets(display = "Logic object 4 A (external)", ets_enum)]
+    pub logic4_ext_input_a: ExtInputLogicType,
 
     /// Logic 4 external input B type
-    #[ets(display = "Logic object 4 B (external)", enum_variants("not active" => 0, "normally active, with preallocation 0" => 1, "inverted active, with preallocation 0" => 2, "normally active, with preallocation 1" => 129, "inverted active, with preallocation 1" => 130))]
-    pub logic4_ext_input_b: u8,
+    #[ets(display = "Logic object 4 B (external)", ets_enum)]
+    pub logic4_ext_input_b: ExtInputLogicType,
 
     /// Logic 4 internal input button
-    #[ets(display = "Internal input (button)", enum_variants("not active" => 0, "button 1" => 1, "button 2" => 2))]
-    pub logic4_int_button: u8,
+    #[ets(display = "Internal input (button)", ets_enum)]
+    pub logic4_int_button: LogicButton,
 
     /// Logic 4 output value ON
     #[ets(display = "Output value ON")]
@@ -3208,28 +2750,28 @@ pub struct MdtParams {
     pub button1_long_telegram_count: u8,
 
     /// Button 1 tip long active (3rd function)
-    #[ets(display = "3. function (long keypress)", enum_variants("not active" => 0, "active" => 1))]
-    pub button1_tip_long_active: u8,
+    #[ets(display = "3. function (long keypress)", ets_enum)]
+    pub button1_tip_long_active: GEboolEnableDisable,
 
     /// Button 1 long keypress enable
-    #[ets(display = "Long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub button1_long_enable: u8,
+    #[ets(display = "Long keypress", ets_enum)]
+    pub button1_long_enable: GEboolEnableDisable,
 
     /// Button 1 switching type
     #[ets(display = "Switching type", enum_variants("send when pressed" => 0, "send when released" => 1, "send when pressed and released" => 2))]
     pub button1_switch_mode: u8,
 
     /// Button 1 repeat switch
-    #[ets(display = "Repeat switch on long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub button1_repeat_switch: u8,
+    #[ets(display = "Repeat switch on long keypress", ets_enum)]
+    pub button1_repeat_switch: GEboolEnableDisable,
 
     /// Button 1 delay for released button
-    #[ets(display = "Delay for released button", enum_variants("not active" => 0, "active" => 1))]
-    pub button1_delay_state: u8,
+    #[ets(display = "Delay for released button", ets_enum)]
+    pub button1_delay_state: GEboolEnableDisable,
 
     /// Button 1 group extra long keypress enable
-    #[ets(display = "Group extra long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub button1_group_extra_long_enable: u8,
+    #[ets(display = "Group extra long keypress", ets_enum)]
+    pub button1_group_extra_long_enable: GEboolEnableDisable,
 
     /// Button 1 LED color
     #[ets(display = "LED colour", enum_variants("off" => 0, "green" => 1, "red" => 2, "orange" => 3, "blue" => 4, "white" => 5, "pink" => 6))]
@@ -3240,12 +2782,12 @@ pub struct MdtParams {
     pub button1_led_brightness: u8,
 
     /// Button 1 group function (Group long keypress in MDT)
-    #[ets(display = "Group long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub button1_group_function: u8,
+    #[ets(display = "Group long keypress", ets_enum)]
+    pub button1_group_function: GEboolEnableDisable,
 
     /// Button 1 group send condition (Group extra long keypress in MDT)
-    #[ets(display = "Group extra long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub button1_group_send_condition: u8,
+    #[ets(display = "Group extra long keypress", ets_enum)]
+    pub button1_group_send_condition: GEboolEnableDisable,
 
     /// Button 1 special function (P-37 equivalent)
     /// MDT: GroupSpecialFunction_0 - switches between "Innovative group control" and "Additional object"
@@ -3260,8 +2802,8 @@ pub struct MdtParams {
 
     /// Button 1 additional object RGB/HSV colour control (P-40 equivalent)
     /// MDT: ModeRGB_HSV_Long_0
-    #[ets(display = "    Colour control", default = 1, enum_variants("RGB" => 1, "HSV" => 2))]
-    pub button1_additional_colour_control: u8,
+    #[ets(display = "    Colour control", ets_enum)]
+    pub button1_additional_colour_control: ColourControl,
 
     /// Button 1 dimmer style
     #[ets(display = "Dimmer style", enum_variants("short/long" => 0, "long/short" => 1))]
@@ -3274,13 +2816,13 @@ pub struct MdtParams {
 
     /// Button 1 blinds group control extra long (P-55 equivalent)
     /// MDT: ShutterLongGroup_0
-    #[ets(display = "Group control extra long", enum_variants("not active" => 0, "active" => 1))]
-    pub button1_group_extra_long: u8,
+    #[ets(display = "Group control extra long", ets_enum)]
+    pub button1_group_extra_long: GEboolEnableDisable,
 
     /// Button 1 RGB/HSV colour control mode (P-36 equivalent)
     /// MDT: ModeRGB_HSV_Short_0, ModeRGB/HSV type - RGB=1, HSV=2
-    #[ets(display = "    Colour control", default = 1, enum_variants("RGB" => 1, "HSV" => 2))]
-    pub button1_colour_control: u8,
+    #[ets(display = "    Colour control", ets_enum)]
+    pub button1_colour_control: ColourControl,
 
     /// Button 1 value function (P-34 equivalent)
     /// MDT: Button_Value_Function_0, ButtonValueType
@@ -3303,8 +2845,8 @@ pub struct MdtParams {
     pub button1_tip2_object_type: u8,
 
     /// Button 1 colour control for tip 2
-    #[ets(display = "    Colour control", default = 1, enum_variants("RGB" => 1, "HSV" => 2))]
-    pub button1_tip2_colour_control: u8,
+    #[ets(display = "    Colour control", ets_enum)]
+    pub button1_tip2_colour_control: ColourControl,
 
     /// Button 1 DPT type for tip 3 in "different objects" mode
     /// Separate selector for the third tip object
@@ -3312,8 +2854,8 @@ pub struct MdtParams {
     pub button1_tip3_object_type: u8,
 
     /// Button 1 colour control for tip 3
-    #[ets(display = "    Colour control", default = 1, enum_variants("RGB" => 1, "HSV" => 2))]
-    pub button1_tip3_colour_control: u8,
+    #[ets(display = "    Colour control", ets_enum)]
+    pub button1_tip3_colour_control: ColourControl,
 
     /// Button 1 main type H (P-47 equivalent) - hidden dummy param for Mode 7
     /// MDT: OM_inputUsage_mainTypeH_0, dummy8u, Access="None"
@@ -3332,8 +2874,8 @@ pub struct MdtParams {
 
     /// Button 1 long colour control (P-40 equivalent) for Mode 7 long RGB/HSV
     /// MDT: ModeRGB_HSV_Long_0
-    #[ets(display = "    Colour control", default = 1, enum_variants("RGB" => 1, "HSV" => 2))]
-    pub button1_long_colour_control: u8,
+    #[ets(display = "    Colour control", ets_enum)]
+    pub button1_long_colour_control: ColourControl,
 
     /// Button 1 long time special
     #[ets(display = "Time for long keypress")]
@@ -3374,24 +2916,24 @@ pub struct MdtParams {
     pub button2_long_telegram_count: u8,
 
     /// Button 2 tip long active (3rd function)
-    #[ets(display = "3. function (long keypress)", enum_variants("not active" => 0, "active" => 1))]
-    pub button2_tip_long_active: u8,
+    #[ets(display = "3. function (long keypress)", ets_enum)]
+    pub button2_tip_long_active: GEboolEnableDisable,
 
     /// Button 2 long keypress enable
-    #[ets(display = "Long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub button2_long_enable: u8,
+    #[ets(display = "Long keypress", ets_enum)]
+    pub button2_long_enable: GEboolEnableDisable,
 
     /// Button 2 switching type
     #[ets(display = "Switching type", enum_variants("send when pressed" => 0, "send when released" => 1, "send when pressed and released" => 2))]
     pub button2_switch_mode: u8,
 
     /// Button 2 delay for released button
-    #[ets(display = "Delay for released button", enum_variants("not active" => 0, "active" => 1))]
-    pub button2_delay_state: u8,
+    #[ets(display = "Delay for released button", ets_enum)]
+    pub button2_delay_state: GEboolEnableDisable,
 
     /// Button 2 group extra long keypress enable
-    #[ets(display = "Group extra long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub button2_group_extra_long_enable: u8,
+    #[ets(display = "Group extra long keypress", ets_enum)]
+    pub button2_group_extra_long_enable: GEboolEnableDisable,
 
     /// Button 2 LED color
     #[ets(display = "LED colour", enum_variants("off" => 0, "green" => 1, "red" => 2, "orange" => 3, "blue" => 4, "white" => 5, "pink" => 6))]
@@ -3402,12 +2944,12 @@ pub struct MdtParams {
     pub button2_led_brightness: u8,
 
     /// Button 2 group function (Group long keypress in MDT)
-    #[ets(display = "Group long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub button2_group_function: u8,
+    #[ets(display = "Group long keypress", ets_enum)]
+    pub button2_group_function: GEboolEnableDisable,
 
     /// Button 2 group send condition (Group extra long keypress in MDT)
-    #[ets(display = "Group extra long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub button2_group_send_condition: u8,
+    #[ets(display = "Group extra long keypress", ets_enum)]
+    pub button2_group_send_condition: GEboolEnableDisable,
 
     /// Button 2 special function (P-81 equivalent)
     /// MDT: GroupSpecialFunction_1 - switches between "Innovative group control" and "Additional object"
@@ -3422,8 +2964,8 @@ pub struct MdtParams {
 
     /// Button 2 additional object RGB/HSV colour control (P-74 equivalent)
     /// MDT: ModeRGB_HSV_Long_1
-    #[ets(display = "    Colour control", default = 1, enum_variants("RGB" => 1, "HSV" => 2))]
-    pub button2_additional_colour_control: u8,
+    #[ets(display = "    Colour control", ets_enum)]
+    pub button2_additional_colour_control: ColourControl,
 
     /// Button 2 dimmer style
     #[ets(display = "Dimmer style", enum_variants("short/long" => 0, "long/short" => 1))]
@@ -3436,13 +2978,13 @@ pub struct MdtParams {
 
     /// Button 2 blinds group control extra long (P-89 equivalent)
     /// MDT: ShutterLongGroup_1
-    #[ets(display = "Group control extra long", enum_variants("not active" => 0, "active" => 1))]
-    pub button2_group_extra_long: u8,
+    #[ets(display = "Group control extra long", ets_enum)]
+    pub button2_group_extra_long: GEboolEnableDisable,
 
     /// Button 2 RGB/HSV colour control mode (P-70 equivalent)
     /// MDT: ModeRGB_HSV_Short_1, ModeRGB/HSV type - RGB=1, HSV=2
-    #[ets(display = "    Colour control", default = 1, enum_variants("RGB" => 1, "HSV" => 2))]
-    pub button2_colour_control: u8,
+    #[ets(display = "    Colour control", ets_enum)]
+    pub button2_colour_control: ColourControl,
 
     /// Button 2 value function (P-68 equivalent)
     /// MDT: Button_Value_Function_1, ButtonValueType
@@ -3465,8 +3007,8 @@ pub struct MdtParams {
     pub button2_tip2_object_type: u8,
 
     /// Button 2 colour control for tip 2
-    #[ets(display = "    Colour control", default = 1, enum_variants("RGB" => 1, "HSV" => 2))]
-    pub button2_tip2_colour_control: u8,
+    #[ets(display = "    Colour control", ets_enum)]
+    pub button2_tip2_colour_control: ColourControl,
 
     /// Button 2 DPT type for tip 3 in "different objects" mode
     /// Separate selector for the third tip object
@@ -3474,8 +3016,8 @@ pub struct MdtParams {
     pub button2_tip3_object_type: u8,
 
     /// Button 2 colour control for tip 3
-    #[ets(display = "    Colour control", default = 1, enum_variants("RGB" => 1, "HSV" => 2))]
-    pub button2_tip3_colour_control: u8,
+    #[ets(display = "    Colour control", ets_enum)]
+    pub button2_tip3_colour_control: ColourControl,
 
     /// Button 2 main type H (P-81 equivalent) - hidden dummy param for Mode 7
     /// MDT: OM_inputUsage_mainTypeH_1, dummy8u, Access="None"
@@ -3494,8 +3036,8 @@ pub struct MdtParams {
 
     /// Button 2 long colour control (P-74 equivalent) for Mode 7 long RGB/HSV
     /// MDT: ModeRGB_HSV_Long_1
-    #[ets(display = "    Colour control", default = 1, enum_variants("RGB" => 1, "HSV" => 2))]
-    pub button2_long_colour_control: u8,
+    #[ets(display = "    Colour control", ets_enum)]
+    pub button2_long_colour_control: ColourControl,
 
     // ========================================================================
     // Two-Button Mode Parameters
@@ -3574,16 +3116,16 @@ pub struct MdtParams {
     // Group Functions Parameters
     // ========================================================================
     /// Group main enable
-    #[ets(display = "Enable group function", enum_variants("not active" => 0, "active" => 1))]
-    pub group_main_enable: u8,
+    #[ets(display = "Enable group function", ets_enum)]
+    pub group_main_enable: GEboolEnableDisable,
 
     /// Group switch long
-    #[ets(display = "Group switch on long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub group_switch_long: u8,
+    #[ets(display = "Group switch on long keypress", ets_enum)]
+    pub group_switch_long: GEboolEnableDisable,
 
     /// Group switch extra long
-    #[ets(display = "Group switch on extra long keypress", enum_variants("not active" => 0, "active" => 1))]
-    pub group_switch_extra_long: u8,
+    #[ets(display = "Group switch on extra long keypress", ets_enum)]
+    pub group_switch_extra_long: GEboolEnableDisable,
 
     /// Button short group action
     #[ets(display = "Short group action")]
@@ -3622,15 +3164,15 @@ pub struct MdtParams {
     pub group_special_func_1: u8,
 
     /// Blocking object for group
-    #[ets(display = "Blocking object", enum_variants("not active" => 0, "active" => 1))]
-    pub block_object_groupt: u8,
+    #[ets(display = "Blocking object", ets_enum)]
+    pub block_object_groupt: GEboolEnableDisable,
 
     // ========================================================================
     // Panic/Slap Extended Parameters
     // ========================================================================
     /// Panic block switch
-    #[ets(display = "Block switch during panic", enum_variants("not active" => 0, "active" => 1))]
-    pub block_switch_panic: u8,
+    #[ets(display = "Block switch during panic", ets_enum)]
+    pub block_switch_panic: GEboolEnableDisable,
 
     /// Panic value/control mode
     #[ets(display = "Panic value/control", enum_variants("value" => 0, "control" => 1))]
@@ -3645,12 +3187,12 @@ pub struct MdtParams {
     pub button_func_long_panic: u8,
 
     /// Panic RGB/HSV mode
-    #[ets(display = "Colour control", enum_variants("RGB" => 1, "HSV" => 2))]
-    pub mode_rgb_hsv_panic: u8,
+    #[ets(display = "Colour control", ets_enum)]
+    pub mode_rgb_hsv_panic: ColourControl,
 
     /// Panic long RGB/HSV mode
-    #[ets(display = "Colour control (long)", enum_variants("RGB" => 1, "HSV" => 2))]
-    pub mode_rgb_hsv_lang_panic: u8,
+    #[ets(display = "Colour control (long)", ets_enum)]
+    pub mode_rgb_hsv_lang_panic: ColourControl,
 
     /// Panic time duration
     #[ets(display = "Panic time duration")]
@@ -3668,36 +3210,36 @@ pub struct MdtParams {
     pub logic_delay_time: u16,
 
     /// Logic 1 operation type
-    #[ets(display = "Logic operation", enum_variants("Or" => 0, "And" => 1))]
-    pub logic1_operation: u8,
+    #[ets(display = "Logic operation", ets_enum)]
+    pub logic1_operation: AndOr,
 
     /// Logic 2 operation type
-    #[ets(display = "Logic operation", enum_variants("Or" => 0, "And" => 1))]
-    pub logic2_operation: u8,
+    #[ets(display = "Logic operation", ets_enum)]
+    pub logic2_operation: AndOr,
 
     /// Logic 3 operation type
-    #[ets(display = "Logic operation", enum_variants("Or" => 0, "And" => 1))]
-    pub logic3_operation: u8,
+    #[ets(display = "Logic operation", ets_enum)]
+    pub logic3_operation: AndOr,
 
     /// Logic 4 operation type
-    #[ets(display = "Logic operation", enum_variants("Or" => 0, "And" => 1))]
-    pub logic4_operation: u8,
+    #[ets(display = "Logic operation", ets_enum)]
+    pub logic4_operation: AndOr,
 
     /// Logic 1 output inversion
-    #[ets(display = "    Invert output", enum_variants("no" => 0, "yes" => 1))]
-    pub logic1_invert_output: u8,
+    #[ets(display = "    Invert output", ets_enum)]
+    pub logic1_invert_output: YesNo,
 
     /// Logic 2 output inversion
-    #[ets(display = "    Invert output", enum_variants("no" => 0, "yes" => 1))]
-    pub logic2_invert_output: u8,
+    #[ets(display = "    Invert output", ets_enum)]
+    pub logic2_invert_output: YesNo,
 
     /// Logic 3 output inversion
-    #[ets(display = "    Invert output", enum_variants("no" => 0, "yes" => 1))]
-    pub logic3_invert_output: u8,
+    #[ets(display = "    Invert output", ets_enum)]
+    pub logic3_invert_output: YesNo,
 
     /// Logic 4 output inversion
-    #[ets(display = "    Invert output", enum_variants("no" => 0, "yes" => 1))]
-    pub logic4_invert_output: u8,
+    #[ets(display = "    Invert output", ets_enum)]
+    pub logic4_invert_output: YesNo,
 
     /// Logic 1 description
     #[ets(display = "Description", string)]
@@ -3732,68 +3274,68 @@ pub struct MdtParams {
     pub logic4_add_description: [u8; 30],
 
     /// Logic 1 button choice (internal input 0)
-    #[ets(display = "Internal Input 1", enum_variants("not active" => 0, "button 1" => 1, "button 2" => 2))]
-    pub logic1_button_choose_0: u8,
+    #[ets(display = "Internal Input 1", ets_enum)]
+    pub logic1_button_choose_0: LogicButton,
 
     /// Logic 1 button choice (internal input 1)
-    #[ets(display = "Internal Input 1", enum_variants("not active" => 0, "button 1" => 1, "button 2" => 2))]
-    pub logic1_button_choose_1: u8,
+    #[ets(display = "Internal Input 1", ets_enum)]
+    pub logic1_button_choose_1: LogicButton,
 
     /// Logic 2 button choice (internal input 0)
-    #[ets(display = "Internal Input 1", enum_variants("not active" => 0, "button 1" => 1, "button 2" => 2))]
-    pub logic2_button_choose_0: u8,
+    #[ets(display = "Internal Input 1", ets_enum)]
+    pub logic2_button_choose_0: LogicButton,
 
     /// Logic 2 button choice (internal input 1)
-    #[ets(display = "Internal Input 1", enum_variants("not active" => 0, "button 1" => 1, "button 2" => 2))]
-    pub logic2_button_choose_1: u8,
+    #[ets(display = "Internal Input 1", ets_enum)]
+    pub logic2_button_choose_1: LogicButton,
 
     /// Logic 3 button choice (internal input 0)
-    #[ets(display = "Internal Input 1", enum_variants("not active" => 0, "button 1" => 1, "button 2" => 2))]
-    pub logic3_button_choose_0: u8,
+    #[ets(display = "Internal Input 1", ets_enum)]
+    pub logic3_button_choose_0: LogicButton,
 
     /// Logic 3 button choice (internal input 1)
-    #[ets(display = "Internal Input 1", enum_variants("not active" => 0, "button 1" => 1, "button 2" => 2))]
-    pub logic3_button_choose_1: u8,
+    #[ets(display = "Internal Input 1", ets_enum)]
+    pub logic3_button_choose_1: LogicButton,
 
     /// Logic 4 button choice (internal input 0)
-    #[ets(display = "Internal Input 1", enum_variants("not active" => 0, "button 1" => 1, "button 2" => 2))]
-    pub logic4_button_choose_0: u8,
+    #[ets(display = "Internal Input 1", ets_enum)]
+    pub logic4_button_choose_0: LogicButton,
 
     /// Logic 4 button choice (internal input 1)
-    #[ets(display = "Internal Input 1", enum_variants("not active" => 0, "button 1" => 1, "button 2" => 2))]
-    pub logic4_button_choose_1: u8,
+    #[ets(display = "Internal Input 1", ets_enum)]
+    pub logic4_button_choose_1: LogicButton,
 
     /// Logic 1 internal button 1 mode
-    #[ets(display = "    Push button 1", enum_variants("pressed = ON" => 1, "pressed = OFF" => 2), default = 1)]
-    pub logic1_int_button1: u8,
+    #[ets(display = "    Push button 1", ets_enum)]
+    pub logic1_int_button1: PressedOnOff,
 
     /// Logic 1 internal button 2 mode
-    #[ets(display = "    Push button 2", enum_variants("pressed = ON" => 1, "pressed = OFF" => 2), default = 1)]
-    pub logic1_int_button2: u8,
+    #[ets(display = "    Push button 2", ets_enum)]
+    pub logic1_int_button2: PressedOnOff,
 
     /// Logic 2 internal button 1 mode
-    #[ets(display = "    Push button 1", enum_variants("pressed = ON" => 1, "pressed = OFF" => 2), default = 1)]
-    pub logic2_int_button1: u8,
+    #[ets(display = "    Push button 1", ets_enum)]
+    pub logic2_int_button1: PressedOnOff,
 
     /// Logic 2 internal button 2 mode
-    #[ets(display = "    Push button 2", enum_variants("pressed = ON" => 1, "pressed = OFF" => 2), default = 1)]
-    pub logic2_int_button2: u8,
+    #[ets(display = "    Push button 2", ets_enum)]
+    pub logic2_int_button2: PressedOnOff,
 
     /// Logic 3 internal button 1 mode
-    #[ets(display = "    Push button 1", enum_variants("pressed = ON" => 1, "pressed = OFF" => 2), default = 1)]
-    pub logic3_int_button1: u8,
+    #[ets(display = "    Push button 1", ets_enum)]
+    pub logic3_int_button1: PressedOnOff,
 
     /// Logic 3 internal button 2 mode
-    #[ets(display = "    Push button 2", enum_variants("pressed = ON" => 1, "pressed = OFF" => 2), default = 1)]
-    pub logic3_int_button2: u8,
+    #[ets(display = "    Push button 2", ets_enum)]
+    pub logic3_int_button2: PressedOnOff,
 
     /// Logic 4 internal button 1 mode
-    #[ets(display = "    Push button 1", enum_variants("pressed = ON" => 1, "pressed = OFF" => 2), default = 1)]
-    pub logic4_int_button1: u8,
+    #[ets(display = "    Push button 1", ets_enum)]
+    pub logic4_int_button1: PressedOnOff,
 
     /// Logic 4 internal button 2 mode
-    #[ets(display = "    Push button 2", enum_variants("pressed = ON" => 1, "pressed = OFF" => 2), default = 1)]
-    pub logic4_int_button2: u8,
+    #[ets(display = "    Push button 2", ets_enum)]
+    pub logic4_int_button2: PressedOnOff,
 
     /// Behaviour on bus power return for logic
     #[ets(display = "Behaviour on bus power return", enum_variants("no request ext. logic objects" => 0, "request ext. logic objects" => 1))]
@@ -3819,12 +3361,12 @@ pub struct MdtParams {
     // Blocking Object Parameters
     // ========================================================================
     /// Block object enable (button 0)
-    #[ets(display = "Blocking Object", enum_variants("not active" => 0, "active" => 1))]
-    pub block_object_0: u8,
+    #[ets(display = "Blocking Object", ets_enum)]
+    pub block_object_0: GEboolEnableDisable,
 
     /// Block object enable (button 1)
-    #[ets(display = "Blocking Object", enum_variants("not active" => 0, "active" => 1))]
-    pub block_object_1: u8,
+    #[ets(display = "Blocking Object", ets_enum)]
+    pub block_object_1: GEboolEnableDisable,
 
     // ========================================================================
     // Union Parameters - Button 1 Values (share same memory locations)
@@ -4001,125 +3543,13 @@ pub struct MdtParams {
     // ========================================================================
     /// Dummy enable parameter (hidden - MDT internal feature for showing all placeholder objects)
     /// When set to 1, all dummy/placeholder ComObjects become visible in ETS.
-    #[ets(display = "", hidden, enum_variants("not active" => 0, "active" => 1))]
-    pub dummy_enable: u8,
+    #[ets(display = "", hidden, ets_enum)]
+    pub dummy_enable: GEboolEnableDisable,
 }
 
-impl Default for MdtParams {
-    fn default() -> Self {
-        // Start with zeros
-        let mut params: Self = unsafe { core::mem::zeroed() };
-
-        // Set correct defaults matching MDT reference and #[ets(default = X)] attributes
-        params.startup_timeout = 2;           // default = 2 seconds
-        params.debounce_time = 80;            // default = 80 (fast)
-        params.long_action_time = 33168;      // default = 33168 (0.4s)
-        params.value_read_on_init = 1;        // default = 1 (request)
-        params.eingang_type = 2;              // default = 2 (single-button function 2 functions)
-        params.button1_switch_type = 1;       // default = 1 (toggle)
-        params.button2_switch_type = 1;       // default = 1 (toggle)
-        params.button1_object_type = 2;       // default = 2 (Percent)
-        params.button2_object_type = 2;       // default = 2 (Percent)
-        params.button1_object_type_no_switch = 2; // default = 2 (Percent)
-        params.button2_object_type_no_switch = 2; // default = 2 (Percent)
-        params.button1_additional_object_type = 2; // default = 2 (Percent)
-        params.button2_additional_object_type = 2; // default = 2 (Percent)
-        params.button1_tip2_object_type = 2;  // default = 2 (Percent)
-        params.button1_tip3_object_type = 2;  // default = 2 (Percent)
-        params.button2_tip2_object_type = 2;  // default = 2 (Percent)
-        params.button2_tip3_object_type = 2;  // default = 2 (Percent)
-        params.button1_colour_control = 1;    // default = 1 (RGB)
-        params.button2_colour_control = 1;    // default = 1 (RGB)
-        params.button1_additional_colour_control = 1; // default = 1 (RGB)
-        params.button2_additional_colour_control = 1; // default = 1 (RGB)
-        params.button1_tip2_colour_control = 1; // default = 1 (RGB)
-        params.button1_tip3_colour_control = 1; // default = 1 (RGB)
-        params.button2_tip2_colour_control = 1; // default = 1 (RGB)
-        params.button2_tip3_colour_control = 1; // default = 1 (RGB)
-        params.button1_long_colour_control = 1; // default = 1 (RGB)
-        params.button2_long_colour_control = 1; // default = 1 (RGB)
-        params.button1_short_dpt_type = 2;    // default = 2 (Percent)
-        params.button2_short_dpt_type = 2;    // default = 2 (Percent)
-        params.button1_long_dpt_type = 2;     // default = 2 (Percent)
-        params.button2_long_dpt_type = 2;     // default = 2 (Percent)
-        params.logic1_type = 255;             // not active
-        params.logic2_type = 255;             // not active
-        params.logic3_type = 255;             // not active
-        params.logic4_type = 255;             // not active
-        params.logic1_output_type = 1;        // default = 1 (switch)
-        params.logic2_output_type = 1;        // default = 1 (switch)
-        params.logic3_output_type = 1;        // default = 1 (switch)
-        params.logic4_output_type = 1;        // default = 1 (switch)
-        // Internal button defaults - "pressed = ON" = 1
-        params.logic1_int_button1 = 1;
-        params.logic1_int_button2 = 1;
-        params.logic2_int_button1 = 1;
-        params.logic2_int_button2 = 1;
-        params.logic3_int_button1 = 1;
-        params.logic3_int_button2 = 1;
-        params.logic4_int_button1 = 1;
-        params.logic4_int_button2 = 1;
-
-        params
-    }
-}
-
-impl ConstDefault for MdtParams {
-    const DEFAULT: Self = {
-        // For const context, we need unsafe zeroed memory
-        // The actual defaults should match the Default impl and #[ets(default = X)] attributes
-        let mut params: Self = unsafe { core::mem::zeroed() };
-        params.startup_timeout = 2;           // default = 2 seconds
-        params.debounce_time = 80;            // default = 80 (fast)
-        params.long_action_time = 33168;      // default = 33168 (0.4s)
-        params.value_read_on_init = 1;        // default = 1 (request)
-        params.eingang_type = 2;              // default = 2 (single-button function 2 functions)
-        params.button1_switch_type = 1;       // default = 1 (toggle)
-        params.button2_switch_type = 1;       // default = 1 (toggle)
-        params.button1_object_type = 2;       // default = 2 (Percent)
-        params.button2_object_type = 2;       // default = 2 (Percent)
-        params.button1_object_type_no_switch = 2; // default = 2 (Percent)
-        params.button2_object_type_no_switch = 2; // default = 2 (Percent)
-        params.button1_additional_object_type = 2; // default = 2 (Percent)
-        params.button2_additional_object_type = 2; // default = 2 (Percent)
-        params.button1_tip2_object_type = 2;  // default = 2 (Percent)
-        params.button1_tip3_object_type = 2;  // default = 2 (Percent)
-        params.button2_tip2_object_type = 2;  // default = 2 (Percent)
-        params.button2_tip3_object_type = 2;  // default = 2 (Percent)
-        params.button1_colour_control = 1;    // default = 1 (RGB)
-        params.button2_colour_control = 1;    // default = 1 (RGB)
-        params.button1_additional_colour_control = 1; // default = 1 (RGB)
-        params.button2_additional_colour_control = 1; // default = 1 (RGB)
-        params.button1_tip2_colour_control = 1; // default = 1 (RGB)
-        params.button1_tip3_colour_control = 1; // default = 1 (RGB)
-        params.button2_tip2_colour_control = 1; // default = 1 (RGB)
-        params.button2_tip3_colour_control = 1; // default = 1 (RGB)
-        params.button1_long_colour_control = 1; // default = 1 (RGB)
-        params.button2_long_colour_control = 1; // default = 1 (RGB)
-        params.button1_short_dpt_type = 2;    // default = 2 (Percent)
-        params.button2_short_dpt_type = 2;    // default = 2 (Percent)
-        params.button1_long_dpt_type = 2;     // default = 2 (Percent)
-        params.button2_long_dpt_type = 2;     // default = 2 (Percent)
-        params.logic1_type = 255;             // not active
-        params.logic2_type = 255;             // not active
-        params.logic3_type = 255;             // not active
-        params.logic4_type = 255;             // not active
-        params.logic1_output_type = 1;        // default = 1 (switch)
-        params.logic2_output_type = 1;        // default = 1 (switch)
-        params.logic3_output_type = 1;        // default = 1 (switch)
-        params.logic4_output_type = 1;        // default = 1 (switch)
-        // Internal button defaults - "pressed = ON" = 1
-        params.logic1_int_button1 = 1;
-        params.logic1_int_button2 = 1;
-        params.logic2_int_button1 = 1;
-        params.logic2_int_button2 = 1;
-        params.logic3_int_button1 = 1;
-        params.logic3_int_button2 = 1;
-        params.logic4_int_button1 = 1;
-        params.logic4_int_button2 = 1;
-        params
-    };
-}
+// Default and ConstDefault are auto-generated by #[ets(derive_defaults)]
+// based on #[ets(default = X)] attributes on fields and ConstDefault impls
+// for ets_enum and union fields.
 
 // ============================================================================
 // Mock IP Platform
@@ -4246,7 +3676,7 @@ impl EtsPageLayout for MdtStack {
                     // Hidden dummy enable parameter (MDT internal feature)
                     param dummy_enable
                     // When dummy_enable = 1, show all dummy objects (MDT has 57 ComObjectRefRefs here)
-                    when_param dummy_enable {
+                    when @dummy_enable {
                         [1] => {
                             // Dummy objects at various indices
                             obj dummy_5
@@ -4311,7 +3741,7 @@ impl EtsPageLayout for MdtStack {
                     param startup_timeout
                     param mode_cyclic
                     // Mode object is shown when cyclic mode is enabled (default=true), hidden when 0
-                    when_param mode_cyclic {
+                    when @mode_cyclic {
                         _ => { obj mode }
                         [0] => { }
                     }
@@ -4327,7 +3757,7 @@ impl EtsPageLayout for MdtStack {
                     param long_action_time
                     // MDT has additional hidden params inside this block based on eingang_type
                     // These are dummy/hidden params for internal use, not visible "Time for long keypress"
-                    when_param eingang_type {
+                    when @eingang_type {
                         // Two-button mode: show LED params, subtype, etc.
                         [1] => {
                             param button1_led_color
@@ -4344,17 +3774,17 @@ impl EtsPageLayout for MdtStack {
 
                 // Button blocks based on eingang_type - MDT order: PB1 (2,3), PB2 (2), PB1/2 (1)
                 // All three blocks in a single choose to match MDT's structure
-                when_param eingang_type {
+                when @eingang_type {
                     // Single-button modes (2, 3) - PB1 block comes first in MDT
                     [2, 3] => {
                         block "pButton_0" => "    PB1: {{button1_description:Push button 1}}" {
                             param button1_description
                             param button1_function
                             // Mode 0 = switch: nested choose on switch_type (subfunction)
-                            when_param button1_function {
+                            when @button1_function {
                                 [0] => {
                                     param button1_switch_type
-                                    when_param button1_switch_type {
+                                    when @button1_switch_type {
                                         // switch_type 0 = switch (simple) - MDT pattern: direct object output
                                         // In MDT, switch/switch has only "Value pushed button" visible
                                         // The "Value released button" (UP-109) has Access="None" and is hidden
@@ -4362,7 +3792,7 @@ impl EtsPageLayout for MdtStack {
                                             obj_fixed_variant button1_main with [button1_value_type, button1_subtype] => button1_value_00::Switch @ 0 text "Value pushed button"
                                             sep "Innovative group control"
                                             param button1_group_function
-                                            when_param button1_group_function {
+                                            when @button1_group_function {
                                                 // When P-28=0 (no group): UP-109 is hidden (sets internal value)
                                                 [0] => { }
                                                 [1] => {
@@ -4371,7 +3801,7 @@ impl EtsPageLayout for MdtStack {
                                                     // UP-109 hidden here too (Access="None")
                                                     param button1_group_send_condition
                                                     union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
-                                                    when_param button1_group_send_condition {
+                                                    when @button1_group_send_condition {
                                                         [1] => {
                                                             obj_direct button1_extra_long with []
                                                             union_variant button1_extra_long_time::ExtraLongKeypressTime
@@ -4388,13 +3818,13 @@ impl EtsPageLayout for MdtStack {
                                             // MDT shows hidden params P-26, P-15, P-27 here - we skip visible value params
                                             sep "Innovative group control"
                                             param button1_group_function
-                                            when_param button1_group_function {
+                                            when @button1_group_function {
                                                 [0] => { }
                                                 [1] => {
                                                     objs_by_ref_name ["button1_status_toggle_switch"] with []
                                                     param button1_group_send_condition
                                                     union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
-                                                    when_param button1_group_send_condition {
+                                                    when @button1_group_send_condition {
                                                         [1] => {
                                                             obj_direct button1_extra_long with []
                                                             union_variant button1_extra_long_time::ExtraLongKeypressTime
@@ -4410,7 +3840,7 @@ impl EtsPageLayout for MdtStack {
                                             param button1_value_pushed
                                             param button1_value_released
                                             param button1_delay_state
-                                            when_param button1_delay_state {
+                                            when @button1_delay_state {
                                                 [1] => {
                                                     union_variant button1_time_duration::DelayTime
                                                 }
@@ -4421,7 +3851,7 @@ impl EtsPageLayout for MdtStack {
                                 // Mode 4 = send values
                                 [4] => {
                                     param button1_value_function
-                                    when_param button1_value_function {
+                                    when @button1_value_function {
                                         // value_function 0 = send values
                                         // MDT structure: P-15 (hidden), P-35 (visible), choose P-35 with obj+P-27+UP-xxx
                                         // P-15 is OM_InputUsage_subType_0 (hidden/Access=None)
@@ -4433,34 +3863,34 @@ impl EtsPageLayout for MdtStack {
                                             param button1_subtype
                                             param button1_object_type
                                             // Choose on object_type (DPT): each when has obj + hidden value_type + value param
-                                            obj_with_value_hidden button1_main by button1_object_type => button1_value_00 with [button1_value_type] sub_select {
+                                            obj_with_value button1_main by button1_object_type => button1_value_00 with [button1_value_type] sub_select {
                                                 9 => button1_colour_control [(1, button1_main_rgb, Rgb), (2, button1_main_hsv, Hsv)]
                                             }
                                             // P-37 (Special function): switches between "Innovative group control" and "Additional object"
                                             param button1_special_function
-                                            when_param button1_special_function {
+                                            when @button1_special_function {
                                                 // Special function 0 = Innovative group control
                                                 [0] => {
                                                     sep "Innovative group control"
                                                     param button1_group_function
-                                                    when_param button1_group_function {
+                                                    when @button1_group_function {
                                                         // group_function 0 = not active: just hidden value param
                                                         [0] => { }
                                                         // group_function 1 = active: show status toggle object and timing
                                                         [1] => {
                                                             // O-2 (status toggle) depends on object_type for DPT - uses same DPT as main
-                                                            obj_with_value_hidden button1_status_toggle by button1_object_type => button1_value_01 with [button1_value_type] sub_select {
+                                                            obj_with_value button1_status_toggle by button1_object_type => button1_value_01 with [button1_value_type] sub_select {
                                                                 9 => button1_colour_control [(1, button1_status_toggle_rgb, Rgb), (2, button1_status_toggle_hsv, Hsv)]
                                                             }
                                                             param button1_group_send_condition
                                                             union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
-                                                            when_param button1_group_send_condition {
+                                                            when @button1_group_send_condition {
                                                                 // 0 = not active: hidden extra long value
                                                                 [0] => { }
                                                                 // 1 = active: show extra long object and timing
                                                                 [1] => {
                                                                     // O-4 (extra long) also depends on object_type
-                                                                    obj_with_value_hidden button1_extra_long by button1_object_type => button1_extra_long_value with [button1_value_type] sub_select {
+                                                                    obj_with_value button1_extra_long by button1_object_type => button1_extra_long_value with [button1_value_type] sub_select {
                                                                         9 => button1_colour_control [(1, button1_main_rgb, Rgb), (2, button1_main_hsv, Hsv)]
                                                                     }
                                                                     union_variant button1_extra_long_time::ExtraLongKeypressTime
@@ -4475,7 +3905,7 @@ impl EtsPageLayout for MdtStack {
                                                     param button1_additional_object_type
                                                     // O-2 (status toggle) with DPT based on additional_object_type
                                                     // Each DPT value selects a different named ref
-                                                    when_param button1_additional_object_type {
+                                                    when @button1_additional_object_type {
                                                         [10] => {
                                                             objs_by_ref_name ["button1_additional_obj_switch"] with []
                                                             union_variant button1_value_01::Switch text "    Value"
@@ -4510,7 +3940,7 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                         [9] => {
                                                             param button1_additional_colour_control
-                                                            when_param button1_additional_colour_control {
+                                                            when @button1_additional_colour_control {
                                                                 [1] => {
                                                                     objs_by_ref_name ["button1_additional_obj_rgb"] with []
                                                                     union_variant button1_value_01::Rgb text "    Value"
@@ -4533,7 +3963,7 @@ impl EtsPageLayout for MdtStack {
                                             param button1_subtype
                                             param button1_object_type_no_switch
                                             // Choose on object_type_no_switch (DPT): each when has obj + pushed value + released value + delay
-                                            when_param button1_object_type_no_switch {
+                                            when @button1_object_type_no_switch {
                                                 // DPT 1 = 2Bit Forcible control
                                                 [1] => {
                                                     objs_by_ref_name ["button1_main_bit2"] with []
@@ -4587,7 +4017,7 @@ impl EtsPageLayout for MdtStack {
                                                 [9] => {
                                                     param button1_delay_state
                                                     param button1_colour_control
-                                                    when_param button1_colour_control {
+                                                    when @button1_colour_control {
                                                         // RGB mode
                                                         [1] => {
                                                             objs_by_ref_name ["button1_main_rgb"] with []
@@ -4610,7 +4040,7 @@ impl EtsPageLayout for MdtStack {
                                         [2] => {
                                             param button1_object_type_no_switch
                                             union_variant button1_sub_type_h::ValueCount text "Number of values"
-                                            when_param button1_object_type_no_switch {
+                                            when @button1_object_type_no_switch {
                                                 // Forcible control (1)
                                                 [1] => {
                                                     objs_by_ref_name ["button1_main_bit2"] with []
@@ -4734,7 +4164,7 @@ impl EtsPageLayout for MdtStack {
                                                 [9] => {
                                                     param button1_delay_state
                                                     param button1_colour_control
-                                                    when_param button1_colour_control {
+                                                    when @button1_colour_control {
                                                         [1] => {
                                                             objs_by_ref_name ["button1_main_rgb"] with []
                                                             union_variant button1_value_00::Rgb text "    1. Toggle value"
@@ -4776,12 +4206,12 @@ impl EtsPageLayout for MdtStack {
                                         [3] => {
                                             param button1_tip_output_objects
                                             union_variant button1_sub_type_h::TipOperations text "Number of tip-operations"
-                                            when_param button1_tip_output_objects {
+                                            when @button1_tip_output_objects {
                                                 // Common object/DPT
                                                 [0] => {
                                                     param button1_subtype
                                                     param button1_object_type
-                                                    when_param button1_object_type {
+                                                    when @button1_object_type {
                                                         // Switch (10)
                                                         [10] => {
                                                             objs_by_ref_name ["button1_main_switch"] with []
@@ -4873,7 +4303,7 @@ impl EtsPageLayout for MdtStack {
                                                         // RGB/HSV (9)
                                                         [9] => {
                                                             param button1_colour_control
-                                                            when_param button1_colour_control {
+                                                            when @button1_colour_control {
                                                                 [1] => {
                                                                     objs_by_ref_name ["button1_main_rgb"] with []
                                                                     union_variant button1_value_00::Rgb text "    RGB-Value tip once"
@@ -4904,7 +4334,7 @@ impl EtsPageLayout for MdtStack {
                                                     // Tip 1 - uses button1_object_type
                                                     param button1_subtype
                                                     param button1_object_type
-                                                    when_param button1_object_type {
+                                                    when @button1_object_type {
                                                         [10] => { objs_by_ref_name ["button1_tip_switch"] with [] union_variant button1_value_00::Switch text "    Value tip once" }
                                                         [1] => { objs_by_ref_name ["button1_tip_bit2"] with [] union_variant button1_value_00::ForcibleControl text "    Value tip once" }
                                                         [2] => { objs_by_ref_name ["button1_tip_percent"] with [] union_variant button1_value_00::Percent text "    Value tip once" }
@@ -4915,7 +4345,7 @@ impl EtsPageLayout for MdtStack {
                                                         [8] => { objs_by_ref_name ["button1_tip_lux"] with [] union_variant button1_value_00::Brightness text "    Value tip once" }
                                                         [9] => {
                                                             param button1_colour_control
-                                                            when_param button1_colour_control {
+                                                            when @button1_colour_control {
                                                                 [1] => { objs_by_ref_name ["button1_tip_rgb"] with [] union_variant button1_value_00::Rgb text "    RGB-Value tip once" }
                                                                 [2] => { objs_by_ref_name ["button1_tip_hsv"] with [] union_variant button1_value_00::Hsv text "    HSV-Value tip once" }
                                                             }
@@ -4923,7 +4353,7 @@ impl EtsPageLayout for MdtStack {
                                                     }
                                                     // Tip 2 - uses button1_tip2_object_type (separate DPT selector)
                                                     param button1_tip2_object_type
-                                                    when_param button1_tip2_object_type {
+                                                    when @button1_tip2_object_type {
                                                         [10] => { objs_by_ref_name ["button1_2x_tip_switch"] with [] union_variant button1_value_01::Switch text "    Value tip twice" }
                                                         [1] => { objs_by_ref_name ["button1_2x_tip_bit2"] with [] union_variant button1_value_01::ForcibleControl text "    Value tip twice" }
                                                         [2] => { objs_by_ref_name ["button1_2x_tip_percent"] with [] union_variant button1_value_01::Percent text "    Value tip twice" }
@@ -4934,7 +4364,7 @@ impl EtsPageLayout for MdtStack {
                                                         [8] => { objs_by_ref_name ["button1_2x_tip_lux"] with [] union_variant button1_value_01::Brightness text "    Value tip twice" }
                                                         [9] => {
                                                             param button1_tip2_colour_control
-                                                            when_param button1_tip2_colour_control {
+                                                            when @button1_tip2_colour_control {
                                                                 [1] => { objs_by_ref_name ["button1_2x_tip_rgb"] with [] union_variant button1_value_01::Rgb text "    RGB-Value tip twice" }
                                                                 [2] => { objs_by_ref_name ["button1_2x_tip_hsv"] with [] union_variant button1_value_01::Hsv text "    HSV-Value tip twice" }
                                                             }
@@ -4944,7 +4374,7 @@ impl EtsPageLayout for MdtStack {
                                                     choose_on_union_variant button1_sub_type_h::TipOperations {
                                                         [2] => {
                                                             param button1_tip3_object_type
-                                                            when_param button1_tip3_object_type {
+                                                            when @button1_tip3_object_type {
                                                                 [10] => { objs_by_ref_name ["button1_3x_tip_switch"] with [] union_variant button1_value_02::Switch text "    Value tip triple" }
                                                                 [1] => { objs_by_ref_name ["button1_3x_tip_bit2"] with [] union_variant button1_value_02::ForcibleControl text "    Value tip triple" }
                                                                 [2] => { objs_by_ref_name ["button1_3x_tip_percent"] with [] union_variant button1_value_02::Percent text "    Value tip triple" }
@@ -4955,7 +4385,7 @@ impl EtsPageLayout for MdtStack {
                                                                 [8] => { objs_by_ref_name ["button1_3x_tip_lux"] with [] union_variant button1_value_02::Brightness text "    Value tip triple" }
                                                                 [9] => {
                                                                     param button1_tip3_colour_control
-                                                                    when_param button1_tip3_colour_control {
+                                                                    when @button1_tip3_colour_control {
                                                                         [1] => { objs_by_ref_name ["button1_3x_tip_rgb"] with [] union_variant button1_value_02::Rgb text "    RGB-Value tip triple" }
                                                                         [2] => { objs_by_ref_name ["button1_3x_tip_hsv"] with [] union_variant button1_value_02::Hsv text "    HSV-Value tip triple" }
                                                                     }
@@ -4978,7 +4408,7 @@ impl EtsPageLayout for MdtStack {
                                     param button1_main_type_h
                                     // P-13 (LED color) is hidden in MDT - we output it but it should be Access="None"
                                     param button1_short_action
-                                    when_param button1_short_action {
+                                    when @button1_short_action {
                                         // short_action 0 = switch OFF: O-0, P-27 (hidden), UP-116 hidden with Value=0
                                         [0] => {
                                             objs_by_ref_name ["button1_main_switch_off"] with []
@@ -4997,7 +4427,7 @@ impl EtsPageLayout for MdtStack {
                                         // short_action 3 = send values: P-49 (DPT type, default=2=Percent), then choose on DPT with obj+value
                                         [3] => {
                                             param button1_short_dpt_type
-                                            when_param button1_short_dpt_type {
+                                            when @button1_short_dpt_type {
                                                 [1] => {
                                                     objs_by_ref_name ["button1_main_bit2"] with []
                                                     union_variant button1_value_00::ForcibleControl text "    Value"
@@ -5028,7 +4458,7 @@ impl EtsPageLayout for MdtStack {
                                                 }
                                                 [9] => {
                                                     param button1_colour_control
-                                                    when_param button1_colour_control {
+                                                    when @button1_colour_control {
                                                         [1] => {
                                                             objs_by_ref_name ["button1_main_rgb"] with []
                                                             union_variant button1_value_00::Rgb text "    RGB-Value"
@@ -5048,7 +4478,7 @@ impl EtsPageLayout for MdtStack {
                                     }
                                     sep " "
                                     param button1_long_behavior
-                                    when_param button1_long_behavior {
+                                    when @button1_long_behavior {
                                         // 0 = do not send short button: show time (P-15)
                                         [0] => {
                                             union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
@@ -5059,7 +4489,7 @@ impl EtsPageLayout for MdtStack {
                                         }
                                     }
                                     param button1_long_action
-                                    when_param button1_long_action {
+                                    when @button1_long_action {
                                         // long_action 0 = switch OFF: O-2, UP-109 (hidden), UP-127 hidden with Value=0
                                         [0] => {
                                             objs_by_ref_name ["button1_long_switch_off"] with []
@@ -5078,7 +4508,7 @@ impl EtsPageLayout for MdtStack {
                                         // long_action 3 = send values: P-52 (DPT type, default=2=Percent), then choose on DPT with obj+value
                                         [3] => {
                                             param button1_long_dpt_type
-                                            when_param button1_long_dpt_type {
+                                            when @button1_long_dpt_type {
                                                 [1] => {
                                                     objs_by_ref_name ["button1_long_bit2"] with []
                                                     union_variant button1_value_03::ForcibleControl text "    Value"
@@ -5109,7 +4539,7 @@ impl EtsPageLayout for MdtStack {
                                                 }
                                                 [9] => {
                                                     param button1_long_colour_control
-                                                    when_param button1_long_colour_control {
+                                                    when @button1_long_colour_control {
                                                         [1] => {
                                                             objs_by_ref_name ["button1_long_rgb"] with []
                                                             union_variant button1_value_03::Rgb text "    RGB-Value"
@@ -5128,7 +4558,7 @@ impl EtsPageLayout for MdtStack {
                                         }
                                     }
                                     // Time shown after long_action choose when long_action in [0,1,2,3]
-                                    when_param button1_long_action {
+                                    when @button1_long_action {
                                         [0, 1, 2, 3] => {
                                             union_variant button1_extra_long_time::ExtraLongKeypressTime text "Time for keypress"
                                         }
@@ -5139,7 +4569,7 @@ impl EtsPageLayout for MdtStack {
                                 [2] => {
                                     objs_by_ref_name ["button1_main_blinds", "button1_secondary_blinds", "button1_status_toggle_blinds"] with []
                                     param button1_operation_function
-                                    when_param button1_operation_function {
+                                    when @button1_operation_function {
                                         [0] => {
                                             // long=move / short=stop mode
                                             sep "Innovative group control"
@@ -5152,7 +4582,7 @@ impl EtsPageLayout for MdtStack {
                                     // Time for long keypress - shown for both operation function modes
                                     union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
                                     // Extra long objects only when group control is enabled
-                                    when_param button1_group_extra_long {
+                                    when @button1_group_extra_long {
                                         [1] => {
                                             objs_direct [button1_status_display, button1_extra_long] with []
                                             union_variant button1_extra_long_time::ExtraLongKeypressTime text "Time for extra long keypress"
@@ -5169,7 +4599,7 @@ impl EtsPageLayout for MdtStack {
                                 // Simple scene mode with save/no-save option
                                 [3] => {
                                     param button1_scene_save_enable
-                                    when_param button1_scene_save_enable {
+                                    when @button1_scene_save_enable {
                                         // No save - use DPT 17.001 (Scene Number)
                                         [0] => {
                                             objs_by_ref_name ["button1_status_toggle_scene_no_save"] with []
@@ -5184,11 +4614,11 @@ impl EtsPageLayout for MdtStack {
                                 }
                             }
                             // Blocking object section - shown when default true (all modes except 255)
-                            when_param button1_function {
+                            when @button1_function {
                                 [0, 1, 2, 3, 4, 7] => {
                                     sep " "
                                     param button1_blocking_enable
-                                    when_param button1_blocking_enable { [1] => { obj button1_blocking } }
+                                    when @button1_blocking_enable { [1] => { obj button1_blocking } }
                                 }
                             }
                         }
@@ -5199,10 +4629,10 @@ impl EtsPageLayout for MdtStack {
                             param button2_description
                             param button2_function
                             // Mode 0 = switch: nested choose on switch_type (subfunction)
-                            when_param button2_function {
+                            when @button2_function {
                                 [0] => {
                                     param button2_switch_type
-                                    when_param button2_switch_type {
+                                    when @button2_switch_type {
                                         // switch_type 0 = switch (simple) - MDT pattern: direct object output
                                         // In MDT, switch/switch has only "Value pushed button" visible
                                         // The "Value released button" (UP-109) has Access="None" and is hidden
@@ -5210,7 +4640,7 @@ impl EtsPageLayout for MdtStack {
                                             obj_fixed_variant button2_main with [button2_value_type, button2_subtype] => button2_value_00::Switch @ 0 text "Value pushed button"
                                             sep "Innovative group control"
                                             param button2_group_function
-                                            when_param button2_group_function {
+                                            when @button2_group_function {
                                                 // When P-28=0 (no group): UP-109 is hidden (sets internal value)
                                                 [0] => { }
                                                 [1] => {
@@ -5219,7 +4649,7 @@ impl EtsPageLayout for MdtStack {
                                                     // UP-109 hidden here too (Access="None")
                                                     param button2_group_send_condition
                                                     union_variant button2_time_duration::LongKeypressTime text "Time for long keypress"
-                                                    when_param button2_group_send_condition {
+                                                    when @button2_group_send_condition {
                                                         [1] => {
                                                             obj_direct button2_extra_long with []
                                                             union_variant button2_extra_long_time::ExtraLongKeypressTime
@@ -5236,13 +4666,13 @@ impl EtsPageLayout for MdtStack {
                                             // MDT shows hidden params P-60, P-15, P-61 here - we skip visible value params
                                             sep "Innovative group control"
                                             param button2_group_function
-                                            when_param button2_group_function {
+                                            when @button2_group_function {
                                                 [0] => { }
                                                 [1] => {
                                                     objs_by_ref_name ["button2_status_toggle_switch"] with []
                                                     param button2_group_send_condition
                                                     union_variant button2_time_duration::LongKeypressTime text "Time for long keypress"
-                                                    when_param button2_group_send_condition {
+                                                    when @button2_group_send_condition {
                                                         [1] => {
                                                             obj_direct button2_extra_long with []
                                                             union_variant button2_extra_long_time::ExtraLongKeypressTime
@@ -5258,7 +4688,7 @@ impl EtsPageLayout for MdtStack {
                                             param button2_value_pushed
                                             param button2_value_released
                                             param button2_delay_state
-                                            when_param button2_delay_state {
+                                            when @button2_delay_state {
                                                 [1] => {
                                                     union_variant button2_time_duration::DelayTime
                                                 }
@@ -5269,41 +4699,41 @@ impl EtsPageLayout for MdtStack {
                                 // Mode 4 = send values
                                 [4] => {
                                     param button2_value_function
-                                    when_param button2_value_function {
+                                    when @button2_value_function {
                                         // value_function 0 = send values
                                         // MDT structure: P-55 (hidden subtype), P-79 (Datapoint type), choose P-79, P-81 (special function)
                                         [0] => {
                                             param button2_subtype
                                             param button2_object_type
                                             // Choose on object_type (DPT): each when has obj + hidden value_type + value param
-                                            obj_with_value_hidden button2_main by button2_object_type => button2_value_00 with [button2_value_type] sub_select {
+                                            obj_with_value button2_main by button2_object_type => button2_value_00 with [button2_value_type] sub_select {
                                                 9 => button2_colour_control [(1, button2_main_rgb, Rgb), (2, button2_main_hsv, Hsv)]
                                             }
                                             // P-81 (Special function): switches between "Innovative group control" and "Additional object"
                                             param button2_special_function
-                                            when_param button2_special_function {
+                                            when @button2_special_function {
                                                 // Special function 0 = Innovative group control
                                                 [0] => {
                                                     sep "Innovative group control"
                                                     param button2_group_function
-                                                    when_param button2_group_function {
+                                                    when @button2_group_function {
                                                         // group_function 0 = not active: just hidden value param
                                                         [0] => { }
                                                         // group_function 1 = active: show status toggle object and timing
                                                         [1] => {
                                                             // O-12 (status toggle) depends on object_type for DPT - uses same DPT as main
-                                                            obj_with_value_hidden button2_status_toggle by button2_object_type => button2_value_01 with [button2_value_type] sub_select {
+                                                            obj_with_value button2_status_toggle by button2_object_type => button2_value_01 with [button2_value_type] sub_select {
                                                                 9 => button2_colour_control [(1, button2_status_toggle_rgb, Rgb), (2, button2_status_toggle_hsv, Hsv)]
                                                             }
                                                             param button2_group_send_condition
                                                             union_variant button2_time_duration::LongKeypressTime text "Time for long keypress"
-                                                            when_param button2_group_send_condition {
+                                                            when @button2_group_send_condition {
                                                                 // 0 = not active: hidden extra long value
                                                                 [0] => { }
                                                                 // 1 = active: show extra long object and timing
                                                                 [1] => {
                                                                     // O-14 (extra long) also depends on object_type
-                                                                    obj_with_value_hidden button2_extra_long by button2_object_type => button2_extra_long_value with [button2_value_type] sub_select {
+                                                                    obj_with_value button2_extra_long by button2_object_type => button2_extra_long_value with [button2_value_type] sub_select {
                                                                         9 => button2_colour_control [(1, button2_main_rgb, Rgb), (2, button2_main_hsv, Hsv)]
                                                                     }
                                                                     union_variant button2_extra_long_time::ExtraLongKeypressTime
@@ -5317,7 +4747,7 @@ impl EtsPageLayout for MdtStack {
                                                 [1] => {
                                                     param button2_additional_object_type
                                                     // O-12 (status toggle) with DPT based on additional_object_type
-                                                    when_param button2_additional_object_type {
+                                                    when @button2_additional_object_type {
                                                         [10] => {
                                                             objs_by_ref_name ["button2_additional_obj_switch"] with []
                                                             union_variant button2_value_01::Switch text "    Value"
@@ -5352,7 +4782,7 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                         [9] => {
                                                             param button2_additional_colour_control
-                                                            when_param button2_additional_colour_control {
+                                                            when @button2_additional_colour_control {
                                                                 [1] => {
                                                                     objs_by_ref_name ["button2_additional_obj_rgb"] with []
                                                                     union_variant button2_value_01::Rgb text "    Value"
@@ -5375,7 +4805,7 @@ impl EtsPageLayout for MdtStack {
                                             param button2_subtype
                                             param button2_object_type_no_switch
                                             // Choose on object_type_no_switch (DPT): each when has obj + pushed value + released value + delay
-                                            when_param button2_object_type_no_switch {
+                                            when @button2_object_type_no_switch {
                                                 // DPT 1 = 2Bit Forcible control
                                                 [1] => {
                                                     objs_by_ref_name ["button2_main_bit2"] with []
@@ -5429,7 +4859,7 @@ impl EtsPageLayout for MdtStack {
                                                 [9] => {
                                                     param button2_delay_state
                                                     param button2_colour_control
-                                                    when_param button2_colour_control {
+                                                    when @button2_colour_control {
                                                         // RGB mode
                                                         [1] => {
                                                             objs_by_ref_name ["button2_main_rgb"] with []
@@ -5452,7 +4882,7 @@ impl EtsPageLayout for MdtStack {
                                         [2] => {
                                             param button2_object_type_no_switch
                                             union_variant button2_sub_type_h::ValueCount text "Number of values"
-                                            when_param button2_object_type_no_switch {
+                                            when @button2_object_type_no_switch {
                                                 // Forcible control (1)
                                                 [1] => {
                                                     objs_by_ref_name ["button2_main_bit2"] with []
@@ -5576,7 +5006,7 @@ impl EtsPageLayout for MdtStack {
                                                 [9] => {
                                                     param button2_delay_state
                                                     param button2_colour_control
-                                                    when_param button2_colour_control {
+                                                    when @button2_colour_control {
                                                         [1] => {
                                                             objs_by_ref_name ["button2_main_rgb"] with []
                                                             union_variant button2_value_00::Rgb text "    1. Toggle value"
@@ -5618,12 +5048,12 @@ impl EtsPageLayout for MdtStack {
                                         [3] => {
                                             param button2_tip_output_objects
                                             union_variant button2_sub_type_h::TipOperations text "Number of tip-operations"
-                                            when_param button2_tip_output_objects {
+                                            when @button2_tip_output_objects {
                                                 // Common object/DPT
                                                 [0] => {
                                                     param button2_subtype
                                                     param button2_object_type
-                                                    when_param button2_object_type {
+                                                    when @button2_object_type {
                                                         // Switch (10)
                                                         [10] => {
                                                             objs_by_ref_name ["button2_main_switch"] with []
@@ -5715,7 +5145,7 @@ impl EtsPageLayout for MdtStack {
                                                         // RGB/HSV (9)
                                                         [9] => {
                                                             param button2_colour_control
-                                                            when_param button2_colour_control {
+                                                            when @button2_colour_control {
                                                                 [1] => {
                                                                     objs_by_ref_name ["button2_main_rgb"] with []
                                                                     union_variant button2_value_00::Rgb text "    RGB-Value tip once"
@@ -5746,7 +5176,7 @@ impl EtsPageLayout for MdtStack {
                                                     // Tip 1 - uses button2_object_type
                                                     param button2_subtype
                                                     param button2_object_type
-                                                    when_param button2_object_type {
+                                                    when @button2_object_type {
                                                         [10] => { objs_by_ref_name ["button2_tip_switch"] with [] union_variant button2_value_00::Switch text "    Value tip once" }
                                                         [1] => { objs_by_ref_name ["button2_tip_bit2"] with [] union_variant button2_value_00::ForcibleControl text "    Value tip once" }
                                                         [2] => { objs_by_ref_name ["button2_tip_percent"] with [] union_variant button2_value_00::Percent text "    Value tip once" }
@@ -5757,7 +5187,7 @@ impl EtsPageLayout for MdtStack {
                                                         [8] => { objs_by_ref_name ["button2_tip_lux"] with [] union_variant button2_value_00::Brightness text "    Value tip once" }
                                                         [9] => {
                                                             param button2_colour_control
-                                                            when_param button2_colour_control {
+                                                            when @button2_colour_control {
                                                                 [1] => { objs_by_ref_name ["button2_tip_rgb"] with [] union_variant button2_value_00::Rgb text "    RGB-Value tip once" }
                                                                 [2] => { objs_by_ref_name ["button2_tip_hsv"] with [] union_variant button2_value_00::Hsv text "    HSV-Value tip once" }
                                                             }
@@ -5765,7 +5195,7 @@ impl EtsPageLayout for MdtStack {
                                                     }
                                                     // Tip 2 - uses button2_tip2_object_type (separate DPT selector)
                                                     param button2_tip2_object_type
-                                                    when_param button2_tip2_object_type {
+                                                    when @button2_tip2_object_type {
                                                         [10] => { objs_by_ref_name ["button2_2x_tip_switch"] with [] union_variant button2_value_01::Switch text "    Value tip twice" }
                                                         [1] => { objs_by_ref_name ["button2_2x_tip_bit2"] with [] union_variant button2_value_01::ForcibleControl text "    Value tip twice" }
                                                         [2] => { objs_by_ref_name ["button2_2x_tip_percent"] with [] union_variant button2_value_01::Percent text "    Value tip twice" }
@@ -5776,7 +5206,7 @@ impl EtsPageLayout for MdtStack {
                                                         [8] => { objs_by_ref_name ["button2_2x_tip_lux"] with [] union_variant button2_value_01::Brightness text "    Value tip twice" }
                                                         [9] => {
                                                             param button2_tip2_colour_control
-                                                            when_param button2_tip2_colour_control {
+                                                            when @button2_tip2_colour_control {
                                                                 [1] => { objs_by_ref_name ["button2_2x_tip_rgb"] with [] union_variant button2_value_01::Rgb text "    RGB-Value tip twice" }
                                                                 [2] => { objs_by_ref_name ["button2_2x_tip_hsv"] with [] union_variant button2_value_01::Hsv text "    HSV-Value tip twice" }
                                                             }
@@ -5786,7 +5216,7 @@ impl EtsPageLayout for MdtStack {
                                                     choose_on_union_variant button2_sub_type_h::TipOperations {
                                                         [2] => {
                                                             param button2_tip3_object_type
-                                                            when_param button2_tip3_object_type {
+                                                            when @button2_tip3_object_type {
                                                                 [10] => { objs_by_ref_name ["button2_3x_tip_switch"] with [] union_variant button2_value_02::Switch text "    Value tip triple" }
                                                                 [1] => { objs_by_ref_name ["button2_3x_tip_bit2"] with [] union_variant button2_value_02::ForcibleControl text "    Value tip triple" }
                                                                 [2] => { objs_by_ref_name ["button2_3x_tip_percent"] with [] union_variant button2_value_02::Percent text "    Value tip triple" }
@@ -5797,7 +5227,7 @@ impl EtsPageLayout for MdtStack {
                                                                 [8] => { objs_by_ref_name ["button2_3x_tip_lux"] with [] union_variant button2_value_02::Brightness text "    Value tip triple" }
                                                                 [9] => {
                                                                     param button2_tip3_colour_control
-                                                                    when_param button2_tip3_colour_control {
+                                                                    when @button2_tip3_colour_control {
                                                                         [1] => { objs_by_ref_name ["button2_3x_tip_rgb"] with [] union_variant button2_value_02::Rgb text "    RGB-Value tip triple" }
                                                                         [2] => { objs_by_ref_name ["button2_3x_tip_hsv"] with [] union_variant button2_value_02::Hsv text "    HSV-Value tip triple" }
                                                                     }
@@ -5818,7 +5248,7 @@ impl EtsPageLayout for MdtStack {
                                     param button2_main_type_h
                                     // P-57 (LED color) is hidden in MDT - Access="None"
                                     param button2_short_action
-                                    when_param button2_short_action {
+                                    when @button2_short_action {
                                         // short_action 0 = switch OFF: O-10, hidden value preset to 0
                                         [0] => {
                                             objs_by_ref_name ["button2_main_switch_off"] with []
@@ -5837,7 +5267,7 @@ impl EtsPageLayout for MdtStack {
                                         // short_action 3 = send values: P-83 (DPT type), then choose on DPT with obj+value
                                         [3] => {
                                             param button2_short_dpt_type
-                                            when_param button2_short_dpt_type {
+                                            when @button2_short_dpt_type {
                                                 [1] => {
                                                     objs_by_ref_name ["button2_main_bit2"] with []
                                                     union_variant button2_value_00::ForcibleControl text "    Value"
@@ -5868,7 +5298,7 @@ impl EtsPageLayout for MdtStack {
                                                 }
                                                 [9] => {
                                                     param button2_colour_control
-                                                    when_param button2_colour_control {
+                                                    when @button2_colour_control {
                                                         [1] => {
                                                             objs_by_ref_name ["button2_main_rgb"] with []
                                                             union_variant button2_value_00::Rgb text "    RGB-Value"
@@ -5888,7 +5318,7 @@ impl EtsPageLayout for MdtStack {
                                     }
                                     sep " "
                                     param button2_long_behavior
-                                    when_param button2_long_behavior {
+                                    when @button2_long_behavior {
                                         // 0 = do not send short button: show time (P-55)
                                         [0] => {
                                             union_variant button2_time_duration::LongKeypressTime text "Time for long keypress"
@@ -5899,7 +5329,7 @@ impl EtsPageLayout for MdtStack {
                                         }
                                     }
                                     param button2_long_action
-                                    when_param button2_long_action {
+                                    when @button2_long_action {
                                         // long_action 0 = switch OFF: O-12, hidden value preset to 0
                                         [0] => {
                                             objs_by_ref_name ["button2_long_switch_off"] with []
@@ -5918,7 +5348,7 @@ impl EtsPageLayout for MdtStack {
                                         // long_action 3 = send values: P-86 (DPT type), then choose on DPT with obj+value
                                         [3] => {
                                             param button2_long_dpt_type
-                                            when_param button2_long_dpt_type {
+                                            when @button2_long_dpt_type {
                                                 [1] => {
                                                     objs_by_ref_name ["button2_long_bit2"] with []
                                                     union_variant button2_value_03::ForcibleControl text "    Value"
@@ -5949,7 +5379,7 @@ impl EtsPageLayout for MdtStack {
                                                 }
                                                 [9] => {
                                                     param button2_long_colour_control
-                                                    when_param button2_long_colour_control {
+                                                    when @button2_long_colour_control {
                                                         [1] => {
                                                             objs_by_ref_name ["button2_long_rgb"] with []
                                                             union_variant button2_value_03::Rgb text "    RGB-Value"
@@ -5968,7 +5398,7 @@ impl EtsPageLayout for MdtStack {
                                         }
                                     }
                                     // Time shown after long_action choose when long_action in [0,1,2,3]
-                                    when_param button2_long_action {
+                                    when @button2_long_action {
                                         [0, 1, 2, 3] => {
                                             union_variant button2_extra_long_time::ExtraLongKeypressTime text "Time for keypress"
                                         }
@@ -5978,7 +5408,7 @@ impl EtsPageLayout for MdtStack {
                                 // Simple scene mode with save/no-save option
                                 [3] => {
                                     param button2_scene_save_enable
-                                    when_param button2_scene_save_enable {
+                                    when @button2_scene_save_enable {
                                         // No save - use DPT 17.001 (Scene Number)
                                         [0] => {
                                             objs_by_ref_name ["button2_status_toggle_scene_no_save"] with []
@@ -5996,7 +5426,7 @@ impl EtsPageLayout for MdtStack {
                                 [2] => {
                                     objs_by_ref_name ["button2_main_blinds", "button2_secondary_blinds", "button2_status_toggle_blinds"] with []
                                     param button2_operation_function
-                                    when_param button2_operation_function {
+                                    when @button2_operation_function {
                                         [0] => {
                                             // long=move / short=stop mode
                                             sep "Innovative group control"
@@ -6009,7 +5439,7 @@ impl EtsPageLayout for MdtStack {
                                     // Time for long keypress - shown for both operation function modes
                                     union_variant button2_time_duration::LongKeypressTime text "Time for long keypress"
                                     // Extra long objects only when group control is enabled
-                                    when_param button2_group_extra_long {
+                                    when @button2_group_extra_long {
                                         [1] => {
                                             objs_direct [button2_status_display, button2_extra_long] with []
                                             union_variant button2_extra_long_time::ExtraLongKeypressTime text "Time for extra long keypress"
@@ -6024,11 +5454,11 @@ impl EtsPageLayout for MdtStack {
                                 }
                             }
                             // Blocking object section - shown when default true (all modes except 255)
-                            when_param button2_function {
+                            when @button2_function {
                                 [0, 1, 2, 3, 4, 7] => {
                                     sep " "
                                     param button2_blocking_enable
-                                    when_param button2_blocking_enable { [1] => { obj button2_blocking } }
+                                    when @button2_blocking_enable { [1] => { obj button2_blocking } }
                                 }
                             }
                         }
@@ -6038,7 +5468,7 @@ impl EtsPageLayout for MdtStack {
                         block "pButtonGroupt_0" => "    PB1/2: {{button1_description:Push buttons 1/2}}" {
                             param button1_description
                             param two_button_function
-                            when_param two_button_function {
+                            when @two_button_function {
                                 // Mode 0 = switch: MDT pattern - O-0, hidden params, P-92, group control
                                 [0] => {
                                     obj_direct button1_main with []
@@ -6048,7 +5478,7 @@ impl EtsPageLayout for MdtStack {
                                     // P-27/P-43 values based on button_assignment - hidden
                                     sep "Innovative group control"
                                     param button1_group_function
-                                    when_param button1_group_function {
+                                    when @button1_group_function {
                                         [1] => {
                                             obj_direct button1_status_toggle with []
                                             // P-93 Group long sends
@@ -6056,7 +5486,7 @@ impl EtsPageLayout for MdtStack {
                                             // Time params based on P-92 and P-93 - hidden
                                             // P-29 Group send condition for extra long
                                             param button1_group_send_condition
-                                            when_param button1_group_send_condition {
+                                            when @button1_group_send_condition {
                                                 [1] => {
                                                     obj_direct button1_extra_long with []
                                                     // P-94 Group extra long sends
@@ -6065,7 +5495,7 @@ impl EtsPageLayout for MdtStack {
                                             }
                                             // UP-110 Time for long keypress
                                             union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
-                                            when_param button1_group_send_condition {
+                                            when @button1_group_send_condition {
                                                 [1] => {
                                                     // UP-155 Time for extra long keypress
                                                     union_variant button1_extra_long_time::ExtraLongKeypressTime
@@ -6077,32 +5507,32 @@ impl EtsPageLayout for MdtStack {
                                 // Mode 3 = send values: MDT pattern - P-95 subfunction, then DPT-based objects
                                 [3] => {
                                     param two_button_value_function
-                                    when_param two_button_value_function {
+                                    when @two_button_value_function {
                                         // send values mode (P-95=1)
                                         [1] => {
                                             // Hidden params, P-39 (DPT type), choose P-39 for objects
                                             param button1_object_type
-                                            obj_with_value_hidden button1_main by button1_object_type => button1_value_00 with [button1_value_type] sub_select {
+                                            obj_with_value button1_main by button1_object_type => button1_value_00 with [button1_value_type] sub_select {
                                                 9 => button1_colour_control [(1, button1_main_rgb, Rgb), (2, button1_main_hsv, Hsv)]
                                             }
                                             // P-37 Special function
                                             param button1_special_function
-                                            when_param button1_special_function {
+                                            when @button1_special_function {
                                                 // Innovative group control
                                                 [0] => {
                                                     sep "Innovative group control"
                                                     param button1_group_function
-                                                    when_param button1_group_function {
+                                                    when @button1_group_function {
                                                         [1] => {
                                                             // Object based on DPT
-                                                            obj_with_value_hidden button1_status_toggle by button1_object_type => button1_value_01 with [button1_value_type] sub_select {
+                                                            obj_with_value button1_status_toggle by button1_object_type => button1_value_01 with [button1_value_type] sub_select {
                                                                 9 => button1_colour_control [(1, button1_status_toggle_rgb, Rgb), (2, button1_status_toggle_hsv, Hsv)]
                                                             }
                                                             param group_send_option
                                                             param button1_group_send_condition
-                                                            when_param button1_group_send_condition {
+                                                            when @button1_group_send_condition {
                                                                 [1] => {
-                                                                    obj_with_value_hidden button1_extra_long by button1_object_type => button1_extra_long_value with [button1_value_type] sub_select {
+                                                                    obj_with_value button1_extra_long by button1_object_type => button1_extra_long_value with [button1_value_type] sub_select {
                                                                         9 => button1_colour_control [(1, button1_main_rgb, Rgb), (2, button1_main_hsv, Hsv)]
                                                                     }
                                                                     // group_send_option shown again with "Group extra long sends" text
@@ -6111,7 +5541,7 @@ impl EtsPageLayout for MdtStack {
                                                                 }
                                                             }
                                                             union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
-                                                            when_param button1_group_send_condition {
+                                                            when @button1_group_send_condition {
                                                                 [1] => {
                                                                     union_variant button1_extra_long_time::ExtraLongKeypressTime
                                                                 }
@@ -6122,7 +5552,7 @@ impl EtsPageLayout for MdtStack {
                                                 // Additional object
                                                 [1] => {
                                                     param button1_additional_object_type
-                                                    when_param button1_additional_object_type {
+                                                    when @button1_additional_object_type {
                                                         [10] => {
                                                             objs_by_ref_name ["button1_additional_obj_switch"] with []
                                                             union_variant button1_value_01::Switch text "    Value"
@@ -6157,7 +5587,7 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                         [9] => {
                                                             param button1_colour_control
-                                                            when_param button1_colour_control {
+                                                            when @button1_colour_control {
                                                                 [1] => {
                                                                     objs_by_ref_name ["button1_additional_obj_rgb"] with []
                                                                     union_variant button1_value_01::Rgb text "    Value"
@@ -6177,7 +5607,7 @@ impl EtsPageLayout for MdtStack {
                                             param config_toggle_value
                                             param button1_object_type
                                             // Multi-value toggle objects
-                                            obj_with_value_hidden button1_main by button1_object_type => button1_value_00 with [button1_value_type] sub_select {
+                                            obj_with_value button1_main by button1_object_type => button1_value_00 with [button1_value_type] sub_select {
                                                 9 => button1_colour_control [(1, button1_main_rgb, Rgb), (2, button1_main_hsv, Hsv)]
                                             }
                                         }
@@ -6185,7 +5615,7 @@ impl EtsPageLayout for MdtStack {
                                         [3] => {
                                             param config_shift_value
                                             param button1_object_type
-                                            obj_with_value_hidden button1_main by button1_object_type => button1_value_00 with [button1_value_type] sub_select {
+                                            obj_with_value button1_main by button1_object_type => button1_value_00 with [button1_value_type] sub_select {
                                                 9 => button1_colour_control [(1, button1_main_rgb, Rgb), (2, button1_main_hsv, Hsv)]
                                             }
                                         }
@@ -6196,12 +5626,12 @@ impl EtsPageLayout for MdtStack {
                                     param config_shutter
                                     objs_by_ref_name ["button1_main_blinds", "button1_secondary_blinds"] with []
                                     param button1_operation_function
-                                    when_param button1_operation_function {
+                                    when @button1_operation_function {
                                         [0] => {
                                             // short=step / long=move mode - with group control
                                             sep "Innovative group control"
                                             param button1_group_function
-                                            when_param button1_group_function {
+                                            when @button1_group_function {
                                                 [1] => {
                                                     objs_by_ref_name ["button1_status_display_blinds", "button1_extra_long_blinds"] with []
                                                     union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
@@ -6229,7 +5659,7 @@ impl EtsPageLayout for MdtStack {
                                     // Long: send values
                                     // button1_object_type shown as "Datapoint type" for long
                                     param button1_object_type
-                                    obj_with_value_hidden button1_secondary by button1_object_type => button1_value_01 with [button1_value_type] sub_select {
+                                    obj_with_value button1_secondary by button1_object_type => button1_value_01 with [button1_value_type] sub_select {
                                         9 => button1_colour_control [(1, button1_secondary_rgb, Rgb), (2, button1_secondary_hsv, Hsv)]
                                     }
                                     union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
@@ -6237,17 +5667,17 @@ impl EtsPageLayout for MdtStack {
                             }
                             sep " "
                             param button1_blocking_enable
-                            when_param button1_blocking_enable { [1] => { obj_direct button1_blocking with [] } }
+                            when @button1_blocking_enable { [1] => { obj_direct button1_blocking with [] } }
                         }
                     }
                 }
 
                 // Slap button - only shown when slap function is enabled
-                when_param eingang_type_patsch {
+                when @eingang_type_patsch {
                     [1] => {
                         block "PatchButtton" => "    Slap / Cleaning function" {
                             param slap_cleaning_mode
-                            when_param slap_cleaning_mode {
+                            when @slap_cleaning_mode {
                                 [0] => { param slap_led_colour }
                                 [1] => { param slap_led_colour sep "Cleaning time config" }
                                 [2] => { param slap_led_colour sep "Extended cleaning" }
@@ -6257,16 +5687,16 @@ impl EtsPageLayout for MdtStack {
                             param slap_short_object_type
                             obj slap_short_main
                             selector panic_value_00
-                            when_param slap_short_object_type { [1, 2, 3] => { obj slap_short_status } }
+                            when @slap_short_object_type { [1, 2, 3] => { obj slap_short_status } }
                             sep "Long keypress"
                             param slap_long_dpt_type
                             param slap_long_object_type
                             obj slap_long_main
                             selector panic_value_03
-                            when_param slap_long_object_type { [1, 2, 3] => { obj slap_long_status selector panic_time_duration_union } }
+                            when @slap_long_object_type { [1, 2, 3] => { obj slap_long_status selector panic_time_duration_union } }
                             sep " "
                             param slap_blocking_enable
-                            when_param slap_blocking_enable { [1] => { obj slap_blocking } }
+                            when @slap_blocking_enable { [1] => { obj slap_blocking } }
                         }
                     }
                 }
@@ -6278,7 +5708,7 @@ impl EtsPageLayout for MdtStack {
                 block "GlobalLogic" => "Logic basic setting" {
                     // Logic 1 settings
                     param logic1_type
-                    when_param logic1_type {
+                    when @logic1_type {
                         // Active modes (And/Or/SendValue) - show description params
                         [0, 1, 2] => {
                             param logic1_description
@@ -6287,7 +5717,7 @@ impl EtsPageLayout for MdtStack {
                         // And/Or modes - show object type and output config
                         [0, 1] => {
                             param logic1_output_type
-                            when_param logic1_output_type {
+                            when @logic1_output_type {
                                 // Switch (1)
                                 [1] => {
                                     obj logic1_output
@@ -6314,7 +5744,7 @@ impl EtsPageLayout for MdtStack {
                         // Send value mode - different structure
                         [2] => {
                             param logic1_output_type
-                            when_param logic1_output_type {
+                            when @logic1_output_type {
                                 [1] => {
                                     obj logic1_output
                                     union_variant logic1_send_condition_union::Condition
@@ -6338,14 +5768,14 @@ impl EtsPageLayout for MdtStack {
 
                     // Logic 2 settings
                     param logic2_type
-                    when_param logic2_type {
+                    when @logic2_type {
                         [0, 1, 2] => {
                             param logic2_description
                             param logic2_add_description
                         }
                         [0, 1] => {
                             param logic2_output_type
-                            when_param logic2_output_type {
+                            when @logic2_output_type {
                                 [1] => {
                                     obj logic2_output
                                     union_variant logic2_send_condition_union::Condition
@@ -6367,7 +5797,7 @@ impl EtsPageLayout for MdtStack {
                         }
                         [2] => {
                             param logic2_output_type
-                            when_param logic2_output_type {
+                            when @logic2_output_type {
                                 [1] => {
                                     obj logic2_output
                                     union_variant logic2_send_condition_union::Condition
@@ -6391,14 +5821,14 @@ impl EtsPageLayout for MdtStack {
 
                     // Logic 3 settings
                     param logic3_type
-                    when_param logic3_type {
+                    when @logic3_type {
                         [0, 1, 2] => {
                             param logic3_description
                             param logic3_add_description
                         }
                         [0, 1] => {
                             param logic3_output_type
-                            when_param logic3_output_type {
+                            when @logic3_output_type {
                                 [1] => {
                                     obj logic3_output
                                     union_variant logic3_send_condition_union::Condition
@@ -6420,7 +5850,7 @@ impl EtsPageLayout for MdtStack {
                         }
                         [2] => {
                             param logic3_output_type
-                            when_param logic3_output_type {
+                            when @logic3_output_type {
                                 [1] => {
                                     obj logic3_output
                                     union_variant logic3_send_condition_union::Condition
@@ -6444,14 +5874,14 @@ impl EtsPageLayout for MdtStack {
 
                     // Logic 4 settings
                     param logic4_type
-                    when_param logic4_type {
+                    when @logic4_type {
                         [0, 1, 2] => {
                             param logic4_description
                             param logic4_add_description
                         }
                         [0, 1] => {
                             param logic4_output_type
-                            when_param logic4_output_type {
+                            when @logic4_output_type {
                                 [1] => {
                                     obj logic4_output
                                     union_variant logic4_send_condition_union::Condition
@@ -6473,7 +5903,7 @@ impl EtsPageLayout for MdtStack {
                         }
                         [2] => {
                             param logic4_output_type
-                            when_param logic4_output_type {
+                            when @logic4_output_type {
                                 [1] => {
                                     obj logic4_output
                                     union_variant logic4_send_condition_union::Condition
@@ -6500,24 +5930,24 @@ impl EtsPageLayout for MdtStack {
                 }
 
                 // Logic 1 input configuration block (for And/Or modes)
-                when_param logic1_type {
+                when @logic1_type {
                     [0, 1] => {
                         block "Logic_1" => "    Logic 1 {{logic1_description:}}" {
                             param logic1_ext_input_a
-                            when_param logic1_ext_input_a {
+                            when @logic1_ext_input_a {
                                 [1, 2, 129, 130] => { obj logic1_input_a }
                             }
                             param logic1_ext_input_b
-                            when_param logic1_ext_input_b {
+                            when @logic1_ext_input_b {
                                 [1, 2, 129, 130] => { obj logic1_input_b }
                             }
                             param logic1_button_choose_0
-                            when_param logic1_button_choose_0 {
+                            when @logic1_button_choose_0 {
                                 [1] => { param logic1_int_button1 }
                                 [2] => { param logic1_int_button2 }
                             }
                             param logic1_button_choose_1
-                            when_param logic1_button_choose_1 {
+                            when @logic1_button_choose_1 {
                                 [1] => { param logic1_int_button1 }
                                 [2] => { param logic1_int_button2 }
                             }
@@ -6526,7 +5956,7 @@ impl EtsPageLayout for MdtStack {
                     [2] => {
                         block "Logic_1" => "    Logic 1 {{logic1_description:}}" {
                             param logic1_button_choose_0
-                            when_param logic1_button_choose_0 {
+                            when @logic1_button_choose_0 {
                                 [1] => { param logic1_int_button1 }
                                 [2] => { param logic1_int_button2 }
                             }
@@ -6535,24 +5965,24 @@ impl EtsPageLayout for MdtStack {
                 }
 
                 // Logic 2 input configuration block
-                when_param logic2_type {
+                when @logic2_type {
                     [0, 1] => {
                         block "Logic_2" => "    Logic 2 {{logic2_description:}}" {
                             param logic2_ext_input_a
-                            when_param logic2_ext_input_a {
+                            when @logic2_ext_input_a {
                                 [1, 2, 129, 130] => { obj logic2_input_a }
                             }
                             param logic2_ext_input_b
-                            when_param logic2_ext_input_b {
+                            when @logic2_ext_input_b {
                                 [1, 2, 129, 130] => { obj logic2_input_b }
                             }
                             param logic2_button_choose_0
-                            when_param logic2_button_choose_0 {
+                            when @logic2_button_choose_0 {
                                 [1] => { param logic2_int_button1 }
                                 [2] => { param logic2_int_button2 }
                             }
                             param logic2_button_choose_1
-                            when_param logic2_button_choose_1 {
+                            when @logic2_button_choose_1 {
                                 [1] => { param logic2_int_button1 }
                                 [2] => { param logic2_int_button2 }
                             }
@@ -6561,7 +5991,7 @@ impl EtsPageLayout for MdtStack {
                     [2] => {
                         block "Logic_2" => "    Logic 2 {{logic2_description:}}" {
                             param logic2_button_choose_0
-                            when_param logic2_button_choose_0 {
+                            when @logic2_button_choose_0 {
                                 [1] => { param logic2_int_button1 }
                                 [2] => { param logic2_int_button2 }
                             }
@@ -6570,24 +6000,24 @@ impl EtsPageLayout for MdtStack {
                 }
 
                 // Logic 3 input configuration block
-                when_param logic3_type {
+                when @logic3_type {
                     [0, 1] => {
                         block "Logic_3" => "    Logic 3 {{logic3_description:}}" {
                             param logic3_ext_input_a
-                            when_param logic3_ext_input_a {
+                            when @logic3_ext_input_a {
                                 [1, 2, 129, 130] => { obj logic3_input_a }
                             }
                             param logic3_ext_input_b
-                            when_param logic3_ext_input_b {
+                            when @logic3_ext_input_b {
                                 [1, 2, 129, 130] => { obj logic3_input_b }
                             }
                             param logic3_button_choose_0
-                            when_param logic3_button_choose_0 {
+                            when @logic3_button_choose_0 {
                                 [1] => { param logic3_int_button1 }
                                 [2] => { param logic3_int_button2 }
                             }
                             param logic3_button_choose_1
-                            when_param logic3_button_choose_1 {
+                            when @logic3_button_choose_1 {
                                 [1] => { param logic3_int_button1 }
                                 [2] => { param logic3_int_button2 }
                             }
@@ -6596,7 +6026,7 @@ impl EtsPageLayout for MdtStack {
                     [2] => {
                         block "Logic_3" => "    Logic 3 {{logic3_description:}}" {
                             param logic3_button_choose_0
-                            when_param logic3_button_choose_0 {
+                            when @logic3_button_choose_0 {
                                 [1] => { param logic3_int_button1 }
                                 [2] => { param logic3_int_button2 }
                             }
@@ -6605,24 +6035,24 @@ impl EtsPageLayout for MdtStack {
                 }
 
                 // Logic 4 input configuration block
-                when_param logic4_type {
+                when @logic4_type {
                     [0, 1] => {
                         block "Logic_4" => "    Logic 4 {{logic4_description:}}" {
                             param logic4_ext_input_a
-                            when_param logic4_ext_input_a {
+                            when @logic4_ext_input_a {
                                 [1, 2, 129, 130] => { obj logic4_input_a }
                             }
                             param logic4_ext_input_b
-                            when_param logic4_ext_input_b {
+                            when @logic4_ext_input_b {
                                 [1, 2, 129, 130] => { obj logic4_input_b }
                             }
                             param logic4_button_choose_0
-                            when_param logic4_button_choose_0 {
+                            when @logic4_button_choose_0 {
                                 [1] => { param logic4_int_button1 }
                                 [2] => { param logic4_int_button2 }
                             }
                             param logic4_button_choose_1
-                            when_param logic4_button_choose_1 {
+                            when @logic4_button_choose_1 {
                                 [1] => { param logic4_int_button1 }
                                 [2] => { param logic4_int_button2 }
                             }
@@ -6631,7 +6061,7 @@ impl EtsPageLayout for MdtStack {
                     [2] => {
                         block "Logic_4" => "    Logic 4 {{logic4_description:}}" {
                             param logic4_button_choose_0
-                            when_param logic4_button_choose_0 {
+                            when @logic4_button_choose_0 {
                                 [1] => { param logic4_int_button1 }
                                 [2] => { param logic4_int_button2 }
                             }

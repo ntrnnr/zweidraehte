@@ -162,6 +162,9 @@ pub fn derive_ets_params(input: TokenStream) -> TokenStream {
 fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let struct_name = &input.ident;
 
+    // Parse struct-level attributes for derive_defaults
+    let derive_defaults = parse_ets_params_struct_attrs(&input.attrs)?;
+
     // Extract fields from struct
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
@@ -183,6 +186,8 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut param_ext_defs = Vec::new();
     let mut enum_variant_consts = Vec::new();
     let mut union_field_entries = Vec::new();
+    // For derive_defaults: track field names, types, and default expressions
+    let mut field_defaults: Vec<(syn::Ident, syn::Type, TokenStream2)> = Vec::new();
 
     for field in fields.iter() {
         let field_name = field.ident.as_ref().unwrap();
@@ -190,6 +195,28 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         // Parse field attributes
         let attrs = parse_field_attrs(&field.attrs)?;
+
+        // For derive_defaults: determine the default value expression for this field
+        if derive_defaults {
+            let default_expr = if attrs.skip {
+                // Skip fields use const-compatible zeroing
+                get_const_zero_expr(field_type)
+            } else if attrs.union_field {
+                // Union fields use their type's ConstDefault
+                quote!(<#field_type as const_default::ConstDefault>::DEFAULT)
+            } else if attrs.ets_enum_field {
+                // EtsEnum fields use their type's ConstDefault
+                quote!(<#field_type as const_default::ConstDefault>::DEFAULT)
+            } else if let Some(default_val) = attrs.default_value {
+                // Explicit #[ets(default = X)] value
+                let lit = syn::LitInt::new(&default_val.to_string(), proc_macro2::Span::call_site());
+                quote!(#lit as _)
+            } else {
+                // No explicit default, use const-compatible zeroing
+                get_const_zero_expr(field_type)
+            };
+            field_defaults.push((field_name.clone(), field_type.clone(), default_expr));
+        }
 
         // Skip if marked with #[ets(skip)]
         if attrs.skip {
@@ -280,6 +307,71 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             });
 
             continue; // Skip adding to regular params, we handled it specially
+        }
+
+        // Handle ets_enum fields - they use the enum type's ETS_SIZE_BITS and ETS_VARIANTS
+        if attrs.ets_enum_field {
+            let size_bits_expr = quote!(#field_type::ETS_SIZE_BITS);
+            let bit_offset = attrs.bit_offset.unwrap_or(0);
+
+            // Generate suffix expression
+            let suffix_expr = if let Some(s) = &attrs.suffix {
+                quote!(Some(#s))
+            } else {
+                quote!(None)
+            };
+
+            let hidden = attrs.hidden;
+            let type_name_expr = if let Some(ref tn) = attrs.type_name {
+                quote!(Some(#tn))
+            } else {
+                quote!(None)
+            };
+
+            param_defs.push(quote! {
+                zweidraehte::ets::EtsParamDef {
+                    name: #name_str,
+                    display_name: #display_name,
+                    suffix: #suffix_expr,
+                    offset: #offset_expr,
+                    size_bits: #size_bits_expr,
+                    bit_offset: #bit_offset,
+                    param_type: zweidraehte::ets::EtsParamType::Enum,
+                    hidden: #hidden,
+                    type_name: #type_name_expr,
+                    text_pattern: None,
+                }
+            });
+
+            // Generate a const for the enum variants that references the type's ETS_VARIANTS
+            let const_name = syn::Ident::new(
+                &format!("{}_VARIANTS", field_name.to_string().to_uppercase()),
+                field_name.span(),
+            );
+
+            enum_variant_consts.push(quote! {
+                const #const_name: &[zweidraehte::ets::EtsEnumVariant] = #field_type::ETS_VARIANTS;
+            });
+
+            param_ext_defs.push(quote! {
+                zweidraehte::ets::EtsParamDefExt {
+                    base: zweidraehte::ets::EtsParamDef {
+                        name: #name_str,
+                        display_name: #display_name,
+                        suffix: #suffix_expr,
+                        offset: #offset_expr,
+                        size_bits: #size_bits_expr,
+                        bit_offset: #bit_offset,
+                        param_type: zweidraehte::ets::EtsParamType::Enum,
+                        hidden: #hidden,
+                        type_name: #type_name_expr,
+                        text_pattern: None,
+                    },
+                    enum_variants: Some(Self::#const_name),
+                }
+            });
+
+            continue;
         }
 
         let type_info = get_type_info(field_type)?;
@@ -400,6 +492,30 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         };
     };
 
+    // Generate Default and ConstDefault impls if derive_defaults is enabled
+    let defaults_impls = if derive_defaults {
+        let field_names: Vec<_> = field_defaults.iter().map(|(name, _, _)| name).collect();
+        let field_exprs: Vec<_> = field_defaults.iter().map(|(_, _, expr)| expr).collect();
+
+        quote! {
+            impl core::default::Default for #struct_name {
+                fn default() -> Self {
+                    Self {
+                        #(#field_names: #field_exprs),*
+                    }
+                }
+            }
+
+            impl const_default::ConstDefault for #struct_name {
+                const DEFAULT: Self = Self {
+                    #(#field_names: #field_exprs),*
+                };
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     Ok(quote! {
         #alignment_assertions
 
@@ -426,7 +542,39 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
             #union_info_output
         }
+
+        #defaults_impls
     })
+}
+
+/// Parse struct-level #[ets(...)] attributes for EtsParams
+fn parse_ets_params_struct_attrs(attrs: &[Attribute]) -> syn::Result<bool> {
+    let mut derive_defaults = false;
+
+    for attr in attrs {
+        if !attr.path().is_ident("ets") {
+            continue;
+        }
+
+        let tokens = attr.meta.require_list()?.tokens.clone();
+        let parser = |input: ParseStream| {
+            while !input.is_empty() {
+                let ident: syn::Ident = input.parse()?;
+
+                if ident == "derive_defaults" {
+                    derive_defaults = true;
+                }
+
+                // Consume optional comma
+                let _ = input.parse::<Option<Token![,]>>();
+            }
+            Ok(())
+        };
+
+        syn::parse::Parser::parse2(parser, tokens)?;
+    }
+
+    Ok(derive_defaults)
 }
 
 /// Parsed field attributes
@@ -657,6 +805,43 @@ fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
     }
 }
 
+/// Generate a const-compatible zero expression for a given type.
+/// This is used by derive_defaults to generate zero values in const contexts.
+fn get_const_zero_expr(ty: &Type) -> TokenStream2 {
+    match ty {
+        Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                let ident_str = segment.ident.to_string();
+                match ident_str.as_str() {
+                    "u8" | "u16" | "u32" | "u64" | "usize" |
+                    "i8" | "i16" | "i32" | "i64" | "isize" => quote!(0),
+                    "bool" => quote!(false),
+                    // For unknown types (custom structs/enums), try ConstDefault
+                    _ => quote!(<#ty as const_default::ConstDefault>::DEFAULT),
+                }
+            } else {
+                // Fallback to ConstDefault
+                quote!(<#ty as const_default::ConstDefault>::DEFAULT)
+            }
+        }
+        Type::Array(array) => {
+            // For [u8; N], generate [0u8; N]
+            let elem = &array.elem;
+            let len = &array.len;
+            if matches!(elem.as_ref(), Type::Path(p) if p.path.is_ident("u8")) {
+                quote!([0u8; #len])
+            } else {
+                // For other array types, use ConstDefault
+                quote!(<#ty as const_default::ConstDefault>::DEFAULT)
+            }
+        }
+        _ => {
+            // Fallback to ConstDefault
+            quote!(<#ty as const_default::ConstDefault>::DEFAULT)
+        }
+    }
+}
+
 fn get_type_size(ty: &Type) -> syn::Result<usize> {
     Ok(get_type_info(ty)?.size_bytes)
 }
@@ -760,6 +945,8 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut union_params = Vec::new();
     // Collect variant names for discriminant enum generation
     let mut discriminant_variants: Vec<(syn::Ident, i64)> = Vec::new();
+    // Track the default variant for Default/ConstDefault generation
+    let mut default_variant_info: Option<(syn::Ident, Vec<(syn::Ident, Type)>)> = None;
 
     let mut current_discriminant: i64 = 0;
     for variant in variants.iter() {
@@ -784,6 +971,21 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         // Parse variant attributes for display name
         let variant_attrs = parse_variant_attrs(&variant.attrs)?;
+
+        // Check if this is the default variant
+        if variant_attrs.is_default {
+            let fields: Vec<(syn::Ident, Type)> = match &variant.fields {
+                syn::Fields::Named(fields) => {
+                    fields.named.iter()
+                        .filter_map(|f| f.ident.clone().map(|name| (name, f.ty.clone())))
+                        .collect()
+                }
+                syn::Fields::Unit => Vec::new(),
+                syn::Fields::Unnamed(_) => Vec::new(),
+            };
+            default_variant_info = Some((variant_name.clone(), fields));
+        }
+
         let display_name = variant_attrs.display.unwrap_or_else(|| {
             // Convert CamelCase to Title Case with spaces
             let name = variant_name.to_string();
@@ -1031,7 +1233,7 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         quote! { #name = #value as isize }
     }).collect();
 
-    Ok(quote! {
+    let base_impl = quote! {
         /// Discriminant-only enum for use in ComObjectRef `when` clauses.
         ///
         /// This enum has the same variant names and discriminant values as the parent
@@ -1079,12 +1281,55 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 Self::ETS_SELECTOR_VARIANTS
             }
         }
+    };
+
+    // Generate Default and ConstDefault implementations if a default variant was specified
+    let default_impls = if let Some((default_variant_name, fields)) = default_variant_info {
+        // For EtsUnion fields, we use ConstDefault::DEFAULT which properly handles
+        // EtsEnum types and nested unions. Fields starting with _ are assumed to be
+        // padding and use get_const_zero_expr.
+        let field_defaults: Vec<TokenStream2> = fields.iter().map(|(name, ty)| {
+            let name_str = name.to_string();
+            if name_str.starts_with('_') {
+                // Padding fields - use zero
+                let zero_expr = get_const_zero_expr(ty);
+                quote! { #name: #zero_expr }
+            } else {
+                // Regular fields - use ConstDefault::DEFAULT
+                quote! { #name: <#ty as const_default::ConstDefault>::DEFAULT }
+            }
+        }).collect();
+
+        let default_expr = if field_defaults.is_empty() {
+            quote! { #enum_name::#default_variant_name }
+        } else {
+            quote! { #enum_name::#default_variant_name { #(#field_defaults),* } }
+        };
+
+        quote! {
+            impl core::default::Default for #enum_name {
+                fn default() -> Self {
+                    #default_expr
+                }
+            }
+
+            impl const_default::ConstDefault for #enum_name {
+                const DEFAULT: Self = #default_expr;
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    Ok(quote! {
+        #base_impl
+        #default_impls
     })
 }
 
 /// Parse variant-level attributes
 fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
-    let mut result = VariantAttrs { display: None };
+    let mut result = VariantAttrs { display: None, is_default: false };
 
     for attr in attrs {
         if !attr.path().is_ident("ets") {
@@ -1100,6 +1345,9 @@ fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
                     input.parse::<Token![=]>()?;
                     let value: syn::LitStr = input.parse()?;
                     result.display = Some(value.value());
+                } else if ident == "default_variant" {
+                    // Mark this variant as the default for Default/ConstDefault generation
+                    result.is_default = true;
                 }
 
                 // Consume optional comma
@@ -1117,6 +1365,7 @@ fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
 /// Parsed variant attributes
 struct VariantAttrs {
     display: Option<String>,
+    is_default: bool,
 }
 
 // ============================================================================
@@ -1212,6 +1461,7 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut enum_variants = Vec::new();
     let mut display_arms = Vec::new();
     let mut current_discriminant: i64 = 0;
+    let mut default_variant_ident: Option<&syn::Ident> = None;
 
     for variant in variants.iter() {
         // Must be unit variant
@@ -1223,6 +1473,13 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
 
         let variant_ident = &variant.ident;
+
+        // Check for #[default] attribute
+        for attr in &variant.attrs {
+            if attr.path().is_ident("default") {
+                default_variant_ident = Some(variant_ident);
+            }
+        }
 
         // Get discriminant value
         let discriminant = if let Some((_, expr)) = &variant.discriminant {
@@ -1275,6 +1532,17 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let size_bits = (repr_size * 8) as u8;
 
+    // Generate ConstDefault impl if a #[default] variant was found
+    let const_default_impl = if let Some(default_ident) = default_variant_ident {
+        quote! {
+            impl ::const_default::ConstDefault for #enum_name {
+                const DEFAULT: Self = Self::#default_ident;
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     Ok(quote! {
         impl #enum_name {
             /// ETS enum variants for dropdown display.
@@ -1303,6 +1571,8 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 }
             }
         }
+
+        #const_default_impl
     })
 }
 
@@ -2204,4 +2474,297 @@ fn to_title_case(s: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+// ============================================================================
+// EtsRangeEnum - Generate enums with sequential numeric values
+// ============================================================================
+
+/// Generate an enum with sequential or formula-based numeric variants.
+///
+/// This macro generates enums for numeric ranges like scene numbers (1-64)
+/// or percentages (0-100%), complete with all required ETS traits.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// // Simple sequential: values 0..64, display = value + 1
+/// ets_range_enum! {
+///     /// Scene number selection
+///     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///     #[ets(type_name = "SceneValue")]
+///     pub enum SceneValue {
+///         // Generates Scene1 = 0 with display "1", through Scene64 = 63 with display "64"
+///         range 0..64 => |i| (format!("Scene{}", i + 1), format!("{}", i + 1));
+///         default = 0;
+///     }
+/// }
+///
+/// // Percentage with formula: percent * 2.55 rounded
+/// ets_range_enum! {
+///     /// Percentage selection 0-100%
+///     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///     #[ets(type_name = "select0to100percent")]
+///     pub enum Select0to100Percent {
+///         range 0..=100 => percent_to_byte |i| (format!("P{}", i), format!("{}%", i));
+///         default = 0;
+///     }
+/// }
+/// ```
+///
+/// # Generated Code
+///
+/// For each enum, generates:
+/// - The enum definition with variants
+/// - `ETS_VARIANTS: &'static [EtsEnumVariant]`
+/// - `ETS_SIZE_BITS: u8`
+/// - `impl Default`
+/// - `impl ConstDefault`
+#[proc_macro]
+pub fn ets_range_enum(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as EtsRangeEnumInput);
+
+    match generate_range_enum(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Input for ets_range_enum! macro
+struct EtsRangeEnumInput {
+    attrs: Vec<syn::Attribute>,
+    vis: syn::Visibility,
+    name: syn::Ident,
+    type_name: Option<String>,
+    range_start: i64,
+    range_end: i64, // exclusive
+    value_formula: ValueFormula,
+    variant_prefix: String,
+    display_suffix: String,
+    default_index: i64,
+}
+
+#[derive(Clone)]
+enum ValueFormula {
+    /// Direct: value = index
+    Direct,
+    /// Percent to byte: value = round(index * 2.55)
+    PercentToByte,
+}
+
+impl syn::parse::Parse for EtsRangeEnumInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        // Parse attributes
+        let attrs = input.call(syn::Attribute::parse_outer)?;
+
+        // Parse visibility
+        let vis: syn::Visibility = input.parse()?;
+
+        // Parse "enum"
+        input.parse::<syn::Token![enum]>()?;
+
+        // Parse name
+        let name: syn::Ident = input.parse()?;
+
+        // Parse braces content
+        let content;
+        syn::braced!(content in input);
+
+        // Look for type_name in attrs
+        let mut type_name = None;
+        for attr in &attrs {
+            if attr.path().is_ident("ets") {
+                attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("type_name") {
+                        let _eq: syn::Token![=] = meta.input.parse()?;
+                        let lit: syn::LitStr = meta.input.parse()?;
+                        type_name = Some(lit.value());
+                    }
+                    Ok(())
+                })?;
+            }
+        }
+
+        // Parse "range"
+        let range_kw: syn::Ident = content.parse()?;
+        if range_kw != "range" {
+            return Err(syn::Error::new(range_kw.span(), "expected 'range'"));
+        }
+
+        // Parse range start
+        let range_start: syn::LitInt = content.parse()?;
+        let range_start = range_start.base10_parse::<i64>()?;
+
+        // Parse ".." or "..="
+        let inclusive = if content.peek(syn::Token![..=]) {
+            content.parse::<syn::Token![..=]>()?;
+            true
+        } else {
+            content.parse::<syn::Token![..]>()?;
+            false
+        };
+
+        // Parse range end
+        let range_end: syn::LitInt = content.parse()?;
+        let range_end = range_end.base10_parse::<i64>()?;
+        let range_end = if inclusive { range_end + 1 } else { range_end };
+
+        // Parse "=>"
+        content.parse::<syn::Token![=>]>()?;
+
+        // Check for formula identifier or direct
+        let value_formula = if content.peek(syn::Ident) {
+            let formula_name: syn::Ident = content.parse()?;
+            match formula_name.to_string().as_str() {
+                "percent_to_byte" => ValueFormula::PercentToByte,
+                "direct" => ValueFormula::Direct,
+                _ => return Err(syn::Error::new(formula_name.span(), "unknown formula, expected 'direct' or 'percent_to_byte'")),
+            }
+        } else {
+            ValueFormula::Direct
+        };
+
+        // Parse variant prefix and display suffix as a string pattern
+        // Format: "Prefix{}" or "{}%" etc
+        let pattern: syn::LitStr = content.parse()?;
+        let pattern_str = pattern.value();
+
+        // Parse the pattern - expect "{}" placeholder
+        let (variant_prefix, display_suffix) = if let Some(idx) = pattern_str.find("{}") {
+            (pattern_str[..idx].to_string(), pattern_str[idx + 2..].to_string())
+        } else {
+            return Err(syn::Error::new(pattern.span(), "pattern must contain '{}' placeholder"));
+        };
+
+        content.parse::<syn::Token![;]>()?;
+
+        // Parse "default = N;"
+        let default_kw: syn::Ident = content.parse()?;
+        if default_kw != "default" {
+            return Err(syn::Error::new(default_kw.span(), "expected 'default'"));
+        }
+        content.parse::<syn::Token![=]>()?;
+        let default_val: syn::LitInt = content.parse()?;
+        let default_index = default_val.base10_parse::<i64>()?;
+        content.parse::<syn::Token![;]>()?;
+
+        Ok(EtsRangeEnumInput {
+            attrs,
+            vis,
+            name,
+            type_name,
+            range_start,
+            range_end,
+            value_formula,
+            variant_prefix,
+            display_suffix,
+            default_index,
+        })
+    }
+}
+
+fn generate_range_enum(input: EtsRangeEnumInput) -> syn::Result<proc_macro2::TokenStream> {
+    let EtsRangeEnumInput {
+        attrs,
+        vis,
+        name,
+        type_name,
+        range_start,
+        range_end,
+        value_formula,
+        variant_prefix,
+        display_suffix,
+        default_index,
+    } = input;
+
+    // Filter out #[ets(...)] attributes - they're for us, not the enum
+    let filtered_attrs: Vec<_> = attrs.iter()
+        .filter(|a| !a.path().is_ident("ets"))
+        .collect();
+
+    let type_name_str = type_name.unwrap_or_else(|| name.to_string());
+
+    // Generate variants
+    let mut variant_defs = Vec::new();
+    let mut variant_entries = Vec::new();
+    let mut default_variant = None;
+
+    for i in range_start..range_end {
+        // For percentage: variant is P0, P1, ..., P100 and display is "0%", "1%", etc.
+        // For scenes: variant is Scene1, Scene2, ..., Scene64 and display is "1", "2", etc.
+        let variant_num = if display_suffix == "%" {
+            i // P0, P1, P2...
+        } else {
+            i - range_start + 1 // Scene1, Scene2, ...
+        };
+
+        let display_text = if display_suffix == "%" {
+            format!("{}{}", i, display_suffix) // "0%", "1%", "2%"...
+        } else {
+            format!("{}", i - range_start + 1) // "1", "2", "3"...
+        };
+
+        let value: i64 = match &value_formula {
+            ValueFormula::Direct => i,
+            ValueFormula::PercentToByte => ((i as f64) * 2.55).round() as i64,
+        };
+
+        let variant_name_str = format!("{}{}", variant_prefix, variant_num);
+        let variant_name = syn::Ident::new(&variant_name_str, proc_macro2::Span::call_site());
+        let value_lit = value as u8;
+
+        let is_default = i == default_index;
+        if is_default {
+            default_variant = Some(variant_name.clone());
+            variant_defs.push(quote! {
+                #[default]
+                #variant_name = #value_lit
+            });
+        } else {
+            variant_defs.push(quote! {
+                #variant_name = #value_lit
+            });
+        }
+
+        variant_entries.push(quote! {
+            zweidraehte::ets::EtsEnumVariant { text: #display_text, value: #value }
+        });
+    }
+
+    let default_variant = default_variant.ok_or_else(|| {
+        syn::Error::new(proc_macro2::Span::call_site(), "default index not within range")
+    })?;
+
+    let num_variants = (range_end - range_start) as usize;
+    let size_bits: u8 = if num_variants <= 2 { 1 }
+        else if num_variants <= 4 { 2 }
+        else if num_variants <= 16 { 4 }
+        else if num_variants <= 256 { 8 }
+        else { 16 };
+
+    Ok(quote! {
+        #(#filtered_attrs)*
+        #[repr(u8)]
+        #[derive(Default)]
+        #vis enum #name {
+            #(#variant_defs),*
+        }
+
+        impl #name {
+            /// ETS type name for this enum
+            pub const ETS_TYPE_NAME: &'static str = #type_name_str;
+
+            /// Number of bits needed to represent this enum
+            pub const ETS_SIZE_BITS: u8 = #size_bits;
+
+            /// ETS variant definitions for parameter generation
+            pub const ETS_VARIANTS: &'static [zweidraehte::ets::EtsEnumVariant] = &[
+                #(#variant_entries),*
+            ];
+        }
+
+        impl const_default::ConstDefault for #name {
+            const DEFAULT: Self = Self::#default_variant;
+        }
+    })
 }

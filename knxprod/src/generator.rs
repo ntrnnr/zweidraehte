@@ -27,7 +27,7 @@ struct ActiveConditions {
 
 /// Tracks usage of selector params for creating separate ParameterRefs.
 /// MDT creates separate ParameterRefs for the same parameter when used in
-/// different ObjWithValueAndHidden/ObjWithValue/GroupedObjChoose contexts.
+/// different ObjWithValue/GroupedObjChoose contexts.
 /// This allows for more choose blocks with fewer when clauses each.
 #[derive(Default)]
 struct SelectorRefCounters {
@@ -206,8 +206,8 @@ fn collect_texts_in_item(
             }
             // Don't add - this is just a choose block, not a param output
         }
-        PageItem::ObjWithValueAndHidden { value_union, sub_selectors, .. } => {
-            // ObjWithValueAndHidden outputs union variant params without text override
+        PageItem::ObjWithValue { value_union, sub_selectors, .. } => {
+            // ObjWithValue outputs union variant params without text override
             // We need to track all variants that could be used
             // The variants are determined by the selector_param values, but we don't know those here
             // For now, just add a None text for all variants we might use
@@ -228,19 +228,12 @@ fn collect_texts_in_item(
                 }
             }
         }
-        PageItem::ObjWithValue { value_union, .. } => {
-            let key = (value_union.to_string(), "".to_string());
-            let entry = texts.entry(key).or_insert_with(Vec::new);
-            if !entry.contains(&None) {
-                entry.push(None);
-            }
-        }
         _ => {}
     }
 }
 
-/// Counts how many times each parameter is used as a selector in ObjWithValueAndHidden,
-/// ObjWithValue, GroupedObjChoose, or Obj items. Used to generate multiple ParameterRefs
+/// Counts how many times each parameter is used as a selector in ObjWithValue,
+/// GroupedObjChoose, or Obj items. Used to generate multiple ParameterRefs
 /// for the same parameter (matching MDT's fine-grained structure).
 ///
 /// Takes comm_obj_ref_map to look up which objects have selector_params for PageItem::Obj counting.
@@ -308,9 +301,6 @@ fn count_selector_in_item_with_objects(
             }
         }
         // These items create choose blocks on their selector_param
-        PageItem::ObjWithValueAndHidden { selector_param, .. } => {
-            *counts.entry(selector_param.to_string()).or_insert(0) += 1;
-        }
         PageItem::ObjWithValue { selector_param, .. } => {
             *counts.entry(selector_param.to_string()).or_insert(0) += 1;
         }
@@ -1091,7 +1081,7 @@ impl MtxmlGenerator {
 
     /// Build parameter references.
     /// If `selector_usage_counts` is provided, creates multiple refs for parameters that are
-    /// used multiple times as selectors in ObjWithValueAndHidden/ObjWithValue/GroupedObjChoose.
+    /// used multiple times as selectors in ObjWithValue/GroupedObjChoose.
     /// If `union_variant_texts` is provided, creates multiple refs for union variant params with
     /// different text overrides (matching MDT's approach where each use context has its own ref).
     /// This must use the same numbering scheme as `build_multi_param_ref_map` so the refs match.
@@ -1997,7 +1987,7 @@ impl MtxmlGenerator {
         })
     }
     /// Build a multi-ref parameter map that supports multiple refs per parameter.
-    /// Parameters that are used as selectors in ObjWithValueAndHidden/ObjWithValue/GroupedObjChoose
+    /// Parameters that are used as selectors in ObjWithValue/GroupedObjChoose
     /// get multiple refs (matching MDT's fine-grained structure).
     fn build_multi_param_ref_map(
         config: &ApplicationProgramConfig,
@@ -2531,99 +2521,15 @@ impl MtxmlGenerator {
                         }
                     }
                 }
-                PageItem::ObjWithValue { obj_name, selector_param, value_union } => {
-                    // ObjWithValue combines object ref and value param in same when blocks
-                    // This matches MDT's structure where each when contains both ComObjectRefRef and ParameterRefRef
-
-                    // Get unique selector ref ID for this choose block
-                    let ref_index = selector_counters.next_index(selector_param);
-                    let selector_ref_id = param_ref_map
-                        .get(*selector_param, Some(ref_index))
-                        .cloned()
-                        .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, selector_param));
-
-                    // Get object refs grouped by selector value
-                    let obj_refs = comm_obj_ref_map.get(*obj_name);
-
-                    // Get union field info for value params
-                    let union_info = config.union_fields.and_then(|fields| {
-                        fields.iter().find(|u| u.field_name == *value_union)
-                    });
-
-                    if let (Some(refs), Some(union_info)) = (obj_refs, union_info) {
-                        // Group object refs by selector value
-                        let mut obj_by_value: std::collections::HashMap<i64, &String> =
-                            std::collections::HashMap::new();
-                        for (ref_id, sel_param, sel_val) in refs {
-                            if sel_param.as_ref().map(|s| s.as_str()) == Some(*selector_param) {
-                                if let Some(val) = sel_val {
-                                    obj_by_value.entry(*val).or_insert(ref_id);
-                                }
-                            }
-                        }
-
-                        // Build when clauses combining object ref and value params
-                        let mut whens: Vec<When> = Vec::new();
-
-                        for variant in union_info.selector_variants {
-                            let selector_value = variant.value;
-                            let mut when_items: Vec<WhenItem> = Vec::new();
-
-                            // Add object ref for this selector value
-                            if let Some(obj_ref_id) = obj_by_value.get(&selector_value) {
-                                when_items.push(WhenItem::ComObjectRefRef(ComObjectRefRef {
-                                    ref_id: (*obj_ref_id).clone(),
-                                    internal_description: None,
-                                }));
-                            }
-
-                            // Add value param refs for this variant
-                            let variant_prefix = format!("{}_{}_", value_union, variant.text);
-                            for (param_name, ref_id) in param_ref_map.primary.iter() {
-                                if param_name.starts_with(&variant_prefix) {
-                                    when_items.push(WhenItem::ParameterRefRef(ParameterRefRef {
-                                        ref_id: ref_id.clone(),
-                                        text: None,
-                                        internal_description: None,
-                                    }));
-                                }
-                            }
-
-                            // Only add when clause if there's content
-                            if !when_items.is_empty() {
-                                whens.push(When {
-                                    default: None,
-                                    test: Some(selector_value.to_string()),
-                                    internal_description: None,
-                                    items: when_items,
-                                });
-                            }
-                        }
-
-                        // Sort by selector value
-                        whens.sort_by(|a, b| {
-                            let a_val: i64 = a.test.as_ref().and_then(|s| s.parse().ok()).unwrap_or(0);
-                            let b_val: i64 = b.test.as_ref().and_then(|s| s.parse().ok()).unwrap_or(0);
-                            a_val.cmp(&b_val)
-                        });
-
-                        if !whens.is_empty() {
-                            items.push(ParameterBlockItem::Choose(Choose {
-                                param_ref_id: selector_ref_id,
-                                whens,
-                            }));
-                        }
-                    }
-                }
-                PageItem::ObjWithValueAndHidden { obj_name, selector_param, value_union, hidden_params, sub_selectors } => {
-                    // ObjWithValueAndHidden combines object ref, hidden params, and value param in same when blocks
+                PageItem::ObjWithValue { obj_name, selector_param, value_union, extra_params, sub_selectors } => {
+                    // ObjWithValue combines object ref, optional extra params, and value param in same when blocks
                     // This matches MDT's structure where each when contains:
                     // - ComObjectRefRef
-                    // - Hidden param refs (P-27, P-15, etc.)
+                    // - Extra param refs (optional, e.g., P-27, P-15, etc.)
                     // - Value param ref (UP-xxx)
                     //
                     // For variants with sub_selectors, the structure is different:
-                    // - Hidden param refs
+                    // - Extra param refs
                     // - Sub-selector param ref
                     // - Nested choose on sub-selector with:
                     //   - ComObjectRefRef (from ref_name)
@@ -2661,7 +2567,7 @@ impl MtxmlGenerator {
                             }
                         }
 
-                        // Build when clauses combining object ref, hidden params, and value params
+                        // Build when clauses combining object ref, extra params, and value params
                         let mut whens: Vec<When> = Vec::new();
 
                         for variant in union_info.selector_variants {
@@ -2670,11 +2576,11 @@ impl MtxmlGenerator {
 
                             // Check if this variant has a sub-selector
                             if let Some((sub_selector_param, sub_variants)) = sub_selector_map.get(&selector_value) {
-                                // Variant with sub-selector: hidden params + sub-selector + nested choose
+                                // Variant with sub-selector: extra params + sub-selector + nested choose
 
-                                // Add hidden param refs first
-                                for hidden_param in *hidden_params {
-                                    if let Some(ref_id) = param_ref_map.get_primary(*hidden_param) {
+                                // Add extra param refs first
+                                for extra_param in *extra_params {
+                                    if let Some(ref_id) = param_ref_map.get_primary(*extra_param) {
                                         when_items.push(WhenItem::ParameterRefRef(ParameterRefRef {
                                             ref_id: ref_id.clone(),
                                             text: None,
@@ -2742,7 +2648,7 @@ impl MtxmlGenerator {
                                     }));
                                 }
                             } else {
-                                // Standard variant: object ref + hidden params + value param
+                                // Standard variant: object ref + extra params + value param
 
                                 // Add object ref for this selector value
                                 if let Some(obj_ref_id) = obj_by_value.get(&selector_value) {
@@ -2752,9 +2658,9 @@ impl MtxmlGenerator {
                                     }));
                                 }
 
-                                // Add hidden param refs
-                                for hidden_param in *hidden_params {
-                                    if let Some(ref_id) = param_ref_map.get_primary(*hidden_param) {
+                                // Add extra param refs
+                                for extra_param in *extra_params {
+                                    if let Some(ref_id) = param_ref_map.get_primary(*extra_param) {
                                         when_items.push(WhenItem::ParameterRefRef(ParameterRefRef {
                                             ref_id: ref_id.clone(),
                                             text: None,

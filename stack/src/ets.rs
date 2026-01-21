@@ -73,6 +73,7 @@ pub use ets_macros::EtsComObjects;
 pub use ets_macros::EtsEnum;
 pub use ets_macros::EtsParams;
 pub use ets_macros::EtsUnion;
+pub use ets_macros::ets_range_enum;
 
 /// Device descriptor containing firmware/application-level metadata.
 ///

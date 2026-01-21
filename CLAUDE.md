@@ -245,3 +245,99 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 - `knxprod/src/model.rs` - Device model and condition evaluation
 - `knxprod-tui/src/` - TUI application
 - `knxprod-html/src/` - HTML server (future)
+
+## Commands Reference
+
+### Testing & Validation
+
+**Run KNX Conformance Tests**
+```bash
+cargo run --bin conformance-runner [test_filter]
+```
+Runs KNX protocol conformance tests. Takes a long while to run. Pass an optional filter to run specific tests or test suites (e.g., `transport` to run only transport layer tests). Pipe output to a file if you need to grep through results.
+
+**Compare MTXML Programs**
+```bash
+cargo run --bin compare_programs -- --reference <ref.xml> --generated <gen.xml> [OPTIONS]
+```
+Compares two KNX ApplicationProgram XML files for semantic equivalence. Used to verify DSL-generated XML against manufacturer reference XML.
+
+Options:
+- `--strict` - Enable strict mode (compare ordering and ID structure)
+- `--compare-ordering` - Compare element ordering
+- `--compare-ids` - Compare ID correspondence structure
+- `--no-text` - Skip text comparison
+- `--warn-missing` - Treat missing entities as warnings instead of errors
+
+Example:
+```bash
+cargo run --bin compare_programs -- \
+  --reference manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml \
+  --generated MdtApplicationProgram1.mtxml
+```
+
+### XML Generation
+
+**Generate Demo Device MTXML**
+```bash
+cargo run --bin gen_mtxml
+```
+Generates MTXML files (ApplicationProgram1.mtxml, Hardware1.mtxml, Catalog1.mtxml) from the demo System B device definition.
+
+**Generate MDT Push Button Lite MTXML**
+```bash
+cargo run --bin gen_mdt_mtxml
+```
+Generates MTXML files from the MDT Push Button Lite device definition (`testutil/src/devices/mdt_push_button_lite.rs`). Used for comparing against the real MDT reference XML.
+
+### Device Demos & Testing
+
+**Run System B Demo Device**
+```bash
+cargo run --bin stack_system_b
+```
+Runs a demo System B device stack.
+
+**Run KNX/IP Stack Demo**
+```bash
+cargo run --bin stack_knxip
+```
+Runs a full KNX/IP stack demo with routing and tunneling support.
+
+**Run TPUART Interface Test**
+```bash
+cargo run --bin tpuart
+```
+Tests the TP-UART serial interface.
+
+**Run KNX/IP Protocol Test**
+```bash
+cargo run --bin knxip
+```
+Tests KNX/IP protocol functionality.
+
+**Run Bus Monitor**
+```bash
+cargo run --bin busmon
+```
+Monitors KNX bus traffic.
+
+**Run USB Interface Test**
+```bash
+cargo run --bin usb_test
+```
+Tests USB HID interface support.
+
+**Run Sequence Number Test**
+```bash
+cargo run --bin seqno_test
+```
+Tests sequence number handling.
+
+### TUI Viewer
+
+**Run KNXPROD TUI Viewer**
+```bash
+cargo run -p knxprod-tui -- <mtxml-file>
+```
+Interactive TUI for viewing and exploring KNX ApplicationProgram MTXML files. Navigate parameters, view communication objects, and explore device configurations.

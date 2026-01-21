@@ -105,25 +105,25 @@ pub enum PageItem {
     /// The string is the union field name (e.g., "button1_value_00")
     /// This will emit both the selector param and a choose/when block for variant params
     UnionSelector(&'static str),
-    /// Object with selector - combines object ref and value param in same when blocks
-    /// Format: (object_name, selector_param_name, value_union_name)
-    /// This generates a choose/when where each when contains both ComObjectRefRef and ParameterRefRef
+    /// Object with selector - combines object ref and value param in same when blocks.
+    /// Optionally includes extra unconditional params via `with [...]` and sub-selectors.
+    ///
+    /// DSL syntax:
+    /// - `obj_with_value obj by selector => union` - basic form
+    /// - `obj_with_value obj by selector => union with [param1, param2]` - with extra params
+    /// - `obj_with_value obj by selector => union with [...] sub_select { ... }` - with sub-selectors
+    ///
+    /// The `with [...]` params are included unconditionally in each when block.
+    /// Their visibility (hidden or visible) is controlled by `#[ets(hidden)]` in the struct definition.
+    ///
+    /// For variants that need a sub-selector (like RGB needing colour_control to choose between
+    /// RGB and HSV), use `sub_select { ... }` to specify which variants need nested choose blocks.
     ObjWithValue {
         obj_name: &'static str,
         selector_param: &'static str,
         value_union: &'static str,
-    },
-    /// Object with selector and hidden params - includes hidden param refs in each when block
-    /// Format: (object_name, selector_param_name, value_union_name, hidden_params)
-    /// The hidden_params are parameter names that get included in each when block
-    ///
-    /// For variants that need a sub-selector (like RGB needing colour_control to choose between
-    /// RGB and HSV), use `sub_selectors` to specify which variants need nested choose blocks.
-    ObjWithValueAndHidden {
-        obj_name: &'static str,
-        selector_param: &'static str,
-        value_union: &'static str,
-        hidden_params: &'static [&'static str],
+        /// Extra params to include unconditionally in each when block (can be empty)
+        extra_params: &'static [&'static str],
         /// Optional sub-selectors for specific variants that need nested choose blocks.
         /// Each entry is (variant_value, sub_selector_param, sub_variants) where:
         /// - variant_value: The selector value that triggers nested handling (e.g., 9 for RGB)
@@ -463,13 +463,13 @@ macro_rules! ets_pages {
         elems
     }};
 
-    // Parse a when element (conditional blocks) - for union selectors
-    // The selector is the union field name - we append _selector automatically
-    // Example: when channel_a_config { ... } → selector = "channel_a_config_selector"
-    (@elements when $selector:ident { $($cases:tt)* } $($rest:tt)*) => {{
+    // Parse a when element with @ prefix (conditional blocks) - for regular parameters
+    // The @ prefix means use the parameter name directly without appending _selector
+    // Example: when @eingang_type { ... } → selector = "eingang_type"
+    (@elements when @ $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
         let mut elems = vec![$crate::page_layout::PageElement::When(
             $crate::page_layout::ConditionalElement {
-                selector: concat!(stringify!($selector), "_selector"),
+                selector: stringify!($param),
                 cases: $crate::ets_pages!(@element_cases $($cases)*),
             }
         )];
@@ -477,13 +477,13 @@ macro_rules! ets_pages {
         elems
     }};
 
-    // Parse a when_param element (conditional blocks) - for regular parameters
-    // Uses the parameter name directly without appending _selector
-    // Example: when_param eingang_type { ... } → selector = "eingang_type"
-    (@elements when_param $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
+    // Parse a when element (conditional blocks) - for union selectors
+    // The selector is the union field name - we append _selector automatically
+    // Example: when channel_a_config { ... } → selector = "channel_a_config_selector"
+    (@elements when $selector:ident { $($cases:tt)* } $($rest:tt)*) => {{
         let mut elems = vec![$crate::page_layout::PageElement::When(
             $crate::page_layout::ConditionalElement {
-                selector: stringify!($param),
+                selector: concat!(stringify!($selector), "_selector"),
                 cases: $crate::ets_pages!(@element_cases $($cases)*),
             }
         )];
@@ -551,6 +551,16 @@ macro_rules! ets_pages {
         items
     }};
 
+    // Parse params shorthand for multiple parameters
+    // Example: params [field1, field2, field3] → three Param items
+    (@items params [ $($name:ident),* $(,)? ] $($rest:tt)*) => {{
+        let mut items = vec![
+            $($crate::page_layout::PageItem::Param(stringify!($name))),*
+        ];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
     // Parse selector keyword (for union selector parameters)
     // Example: selector channel_a_config → "channel_a_config"
     // This generates a UnionSelector which will emit:
@@ -571,27 +581,26 @@ macro_rules! ets_pages {
         items
     }};
 
-    // Parse obj_with_value - combines object ref with value param in same when blocks
-    // Syntax: obj_with_value obj_name by selector_param => value_union
-    (@items obj_with_value $obj:ident by $selector:ident => $value:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::ObjWithValue {
-            obj_name: stringify!($obj),
-            selector_param: stringify!($selector),
-            value_union: stringify!($value),
-        }];
+    // Parse objs shorthand for multiple communication objects
+    // Example: objs [obj1, obj2, obj3] → three Obj items
+    (@items objs [ $($name:ident),* $(,)? ] $($rest:tt)*) => {{
+        let mut items = vec![
+            $($crate::page_layout::PageItem::Obj(stringify!($name))),*
+        ];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
 
-    // Parse obj_with_value_hidden with sub_selectors - for variants that need nested choose
-    // Syntax: obj_with_value_hidden obj_name by selector_param => value_union with [hidden1, hidden2]
+    // Parse obj_with_value with sub_selectors - for variants that need nested choose
+    // Syntax: obj_with_value obj_name by selector_param => value_union with [param1, param2]
     //         sub_select { variant_value => sub_param [ (sub_value, ref_name, variant_name), ... ], ... }
-    (@items obj_with_value_hidden $obj:ident by $selector:ident => $value:ident with [$($hidden:ident),* $(,)?] sub_select { $($variant_val:literal => $sub_param:ident [ $(($sub_val:literal, $ref_name:ident, $var_name:ident)),+ $(,)? ]),+ $(,)? } $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::ObjWithValueAndHidden {
+    // The with [...] params are included unconditionally; their visibility is controlled by #[ets(hidden)]
+    (@items obj_with_value $obj:ident by $selector:ident => $value:ident with [$($extra:ident),* $(,)?] sub_select { $($variant_val:literal => $sub_param:ident [ $(($sub_val:literal, $ref_name:ident, $var_name:ident)),+ $(,)? ]),+ $(,)? } $($rest:tt)*) => {{
+        let mut items = vec![$crate::page_layout::PageItem::ObjWithValue {
             obj_name: stringify!($obj),
             selector_param: stringify!($selector),
             value_union: stringify!($value),
-            hidden_params: &[$(stringify!($hidden)),*],
+            extra_params: &[$(stringify!($extra)),*],
             sub_selectors: &[
                 $(
                     ($variant_val, stringify!($sub_param), &[$(($sub_val, stringify!($ref_name), stringify!($var_name))),+])
@@ -602,14 +611,29 @@ macro_rules! ets_pages {
         items
     }};
 
-    // Parse obj_with_value_hidden - combines object ref with value param and hidden params (simple version)
-    // Syntax: obj_with_value_hidden obj_name by selector_param => value_union with [hidden1, hidden2]
-    (@items obj_with_value_hidden $obj:ident by $selector:ident => $value:ident with [$($hidden:ident),* $(,)?] $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::ObjWithValueAndHidden {
+    // Parse obj_with_value with extra params (no sub_selectors)
+    // Syntax: obj_with_value obj_name by selector_param => value_union with [param1, param2]
+    // The with [...] params are included unconditionally; their visibility is controlled by #[ets(hidden)]
+    (@items obj_with_value $obj:ident by $selector:ident => $value:ident with [$($extra:ident),* $(,)?] $($rest:tt)*) => {{
+        let mut items = vec![$crate::page_layout::PageItem::ObjWithValue {
             obj_name: stringify!($obj),
             selector_param: stringify!($selector),
             value_union: stringify!($value),
-            hidden_params: &[$(stringify!($hidden)),*],
+            extra_params: &[$(stringify!($extra)),*],
+            sub_selectors: &[],
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse obj_with_value - basic form without extra params
+    // Syntax: obj_with_value obj_name by selector_param => value_union
+    (@items obj_with_value $obj:ident by $selector:ident => $value:ident $($rest:tt)*) => {{
+        let mut items = vec![$crate::page_layout::PageItem::ObjWithValue {
+            obj_name: stringify!($obj),
+            selector_param: stringify!($selector),
+            value_union: stringify!($value),
+            extra_params: &[],
             sub_selectors: &[],
         }];
         items.extend($crate::ets_pages!(@items $($rest)*));
@@ -738,13 +762,13 @@ macro_rules! ets_pages {
         items
     }};
 
-    // Parse when item (conditional within a block) - for union selectors
-    // The selector is the union field name - we append _selector automatically
-    // Example: when channel_a_config { ... } → selector = "channel_a_config_selector"
-    (@items when $selector:ident { $($cases:tt)* } $($rest:tt)*) => {{
+    // Parse when item with @ prefix (conditional within a block) - for regular parameters
+    // The @ prefix means use the parameter name directly without appending _selector
+    // Example: when @button1_function { ... } → selector = "button1_function"
+    (@items when @ $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
         let mut items = vec![$crate::page_layout::PageItem::When(
             $crate::page_layout::ConditionalItem {
-                selector: concat!(stringify!($selector), "_selector"),
+                selector: stringify!($param),
                 cases: $crate::ets_pages!(@item_cases $($cases)*),
             }
         )];
@@ -752,13 +776,13 @@ macro_rules! ets_pages {
         items
     }};
 
-    // Parse when_param item (conditional within a block) - for regular parameters
-    // Uses the parameter name directly without appending _selector
-    // Example: when_param button1_function { ... } → selector = "button1_function"
-    (@items when_param $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
+    // Parse when item (conditional within a block) - for union selectors
+    // The selector is the union field name - we append _selector automatically
+    // Example: when channel_a_config { ... } → selector = "channel_a_config_selector"
+    (@items when $selector:ident { $($cases:tt)* } $($rest:tt)*) => {{
         let mut items = vec![$crate::page_layout::PageItem::When(
             $crate::page_layout::ConditionalItem {
-                selector: stringify!($param),
+                selector: concat!(stringify!($selector), "_selector"),
                 cases: $crate::ets_pages!(@item_cases $($cases)*),
             }
         )];
