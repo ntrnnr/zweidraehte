@@ -14,7 +14,7 @@ use core::net::Ipv4Addr;
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 
-use crate::ets_pages;
+use crate::mtxml_gen::ets_pages;
 use crate::mtxml_gen::page_layout::{EtsPageLayout, PageStructure};
 use zweidraehte::dpt::*;
 use zweidraehte::ets::{EtsComObjects, EtsEnum, EtsParams, EtsUnion};

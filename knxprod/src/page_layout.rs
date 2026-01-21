@@ -382,7 +382,7 @@ impl Condition {
 macro_rules! ets_pages {
     // Entry point: device block only
     (device { $($device_content:tt)* }) => {
-        $crate::mtxml_gen::page_layout::PageStructure {
+        $crate::page_layout::PageStructure {
             device_settings: $crate::ets_pages!(@elements $($device_content)*),
             channels: vec![],
         }
@@ -393,7 +393,7 @@ macro_rules! ets_pages {
         device { $($device_content:tt)* }
         $($rest:tt)+
     ) => {
-        $crate::mtxml_gen::page_layout::PageStructure {
+        $crate::page_layout::PageStructure {
             device_settings: $crate::ets_pages!(@elements $($device_content)*),
             channels: $crate::ets_pages!(@channels $($rest)+),
         }
@@ -404,7 +404,7 @@ macro_rules! ets_pages {
         channel $ch_name:literal => $ch_text:literal $(( $ch_num:expr ))? { $($ch_content:tt)* }
         $($rest:tt)*
     ) => {
-        $crate::mtxml_gen::page_layout::PageStructure {
+        $crate::page_layout::PageStructure {
             device_settings: vec![],
             channels: $crate::ets_pages!(@channels channel $ch_name => $ch_text $(( $ch_num ))? { $($ch_content)* } $($rest)*),
         }
@@ -412,7 +412,7 @@ macro_rules! ets_pages {
 
     // Entry point: empty
     () => {
-        $crate::mtxml_gen::page_layout::PageStructure {
+        $crate::page_layout::PageStructure {
             device_settings: vec![],
             channels: vec![],
         }
@@ -424,7 +424,7 @@ macro_rules! ets_pages {
     };
 
     (@channels channel $ch_name:literal => $ch_text:literal ( $ch_num:expr ) { $($ch_content:tt)* } $($rest:tt)*) => {{
-        let mut chans = vec![$crate::mtxml_gen::page_layout::ChannelDef {
+        let mut chans = vec![$crate::page_layout::ChannelDef {
             name: $ch_name,
             text: $ch_text,
             number: Some($ch_num),
@@ -435,7 +435,7 @@ macro_rules! ets_pages {
     }};
 
     (@channels channel $ch_name:literal => $ch_text:literal { $($ch_content:tt)* } $($rest:tt)*) => {{
-        let mut chans = vec![$crate::mtxml_gen::page_layout::ChannelDef {
+        let mut chans = vec![$crate::page_layout::ChannelDef {
             name: $ch_name,
             text: $ch_text,
             number: None,
@@ -452,8 +452,8 @@ macro_rules! ets_pages {
 
     // Parse a block element
     (@elements block $name:literal => $text:literal { $($items:tt)* } $($rest:tt)*) => {{
-        let mut elems = vec![$crate::mtxml_gen::page_layout::PageElement::Block(
-            $crate::mtxml_gen::page_layout::PageBlock {
+        let mut elems = vec![$crate::page_layout::PageElement::Block(
+            $crate::page_layout::PageBlock {
                 name: $name,
                 text: $text,
                 items: $crate::ets_pages!(@items $($items)*),
@@ -467,8 +467,8 @@ macro_rules! ets_pages {
     // The selector is the union field name - we append _selector automatically
     // Example: when channel_a_config { ... } → selector = "channel_a_config_selector"
     (@elements when $selector:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut elems = vec![$crate::mtxml_gen::page_layout::PageElement::When(
-            $crate::mtxml_gen::page_layout::ConditionalElement {
+        let mut elems = vec![$crate::page_layout::PageElement::When(
+            $crate::page_layout::ConditionalElement {
                 selector: concat!(stringify!($selector), "_selector"),
                 cases: $crate::ets_pages!(@element_cases $($cases)*),
             }
@@ -481,8 +481,8 @@ macro_rules! ets_pages {
     // Uses the parameter name directly without appending _selector
     // Example: when_param eingang_type { ... } → selector = "eingang_type"
     (@elements when_param $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut elems = vec![$crate::mtxml_gen::page_layout::PageElement::When(
-            $crate::mtxml_gen::page_layout::ConditionalElement {
+        let mut elems = vec![$crate::page_layout::PageElement::When(
+            $crate::page_layout::ConditionalElement {
                 selector: stringify!($param),
                 cases: $crate::ets_pages!(@element_cases $($cases)*),
             }
@@ -498,8 +498,8 @@ macro_rules! ets_pages {
 
     // Parse element case with enum variants (cast directly to i64 since they're repr(isize))
     (@element_cases [$($variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::mtxml_gen::page_layout::ElementCase {
-            condition: $crate::mtxml_gen::page_layout::Condition::values(&[
+        let mut cases = vec![$crate::page_layout::ElementCase {
+            condition: $crate::page_layout::Condition::values(&[
                 $($variant as i64),+
             ]),
             elements: $crate::ets_pages!(@elements $($content)*),
@@ -510,8 +510,8 @@ macro_rules! ets_pages {
 
     // Parse element case with integer literals
     (@element_cases [$($val:literal),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::mtxml_gen::page_layout::ElementCase {
-            condition: $crate::mtxml_gen::page_layout::Condition::values(&[$($val as i64),+]),
+        let mut cases = vec![$crate::page_layout::ElementCase {
+            condition: $crate::page_layout::Condition::values(&[$($val as i64),+]),
             elements: $crate::ets_pages!(@elements $($content)*),
         }];
         cases.extend($crate::ets_pages!(@element_cases $($rest)*));
@@ -520,8 +520,8 @@ macro_rules! ets_pages {
 
     // Parse element case with default (_)
     (@element_cases _ => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::mtxml_gen::page_layout::ElementCase {
-            condition: $crate::mtxml_gen::page_layout::Condition::Default,
+        let mut cases = vec![$crate::page_layout::ElementCase {
+            condition: $crate::page_layout::Condition::Default,
             elements: $crate::ets_pages!(@elements $($content)*),
         }];
         cases.extend($crate::ets_pages!(@element_cases $($rest)*));
@@ -536,7 +536,7 @@ macro_rules! ets_pages {
     // Parse param with ::Variant.field path syntax (must come before simple param)
     // Example: param channel_a_config::Dimmer.min_level → "channel_a_config_Dimmer_min_level"
     (@items param $union:ident :: $variant:ident . $field:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::Param(
+        let mut items = vec![$crate::page_layout::PageItem::Param(
             concat!(stringify!($union), "_", stringify!($variant), "_", stringify!($field))
         )];
         items.extend($crate::ets_pages!(@items $($rest)*));
@@ -546,7 +546,7 @@ macro_rules! ets_pages {
     // Parse simple param item (single identifier)
     // Example: param send_cycle_time → "send_cycle_time"
     (@items param $name:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::Param(stringify!($name))];
+        let mut items = vec![$crate::page_layout::PageItem::Param(stringify!($name))];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
@@ -557,7 +557,7 @@ macro_rules! ets_pages {
     // 1. The selector parameter itself
     // 2. A choose/when block for each variant's parameters
     (@items selector $field:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::UnionSelector(
+        let mut items = vec![$crate::page_layout::PageItem::UnionSelector(
             stringify!($field)
         )];
         items.extend($crate::ets_pages!(@items $($rest)*));
@@ -566,7 +566,7 @@ macro_rules! ets_pages {
 
     // Parse obj item (communication object reference)
     (@items obj $name:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::Obj(stringify!($name))];
+        let mut items = vec![$crate::page_layout::PageItem::Obj(stringify!($name))];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
@@ -574,7 +574,7 @@ macro_rules! ets_pages {
     // Parse obj_with_value - combines object ref with value param in same when blocks
     // Syntax: obj_with_value obj_name by selector_param => value_union
     (@items obj_with_value $obj:ident by $selector:ident => $value:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjWithValue {
+        let mut items = vec![$crate::page_layout::PageItem::ObjWithValue {
             obj_name: stringify!($obj),
             selector_param: stringify!($selector),
             value_union: stringify!($value),
@@ -587,7 +587,7 @@ macro_rules! ets_pages {
     // Syntax: obj_with_value_hidden obj_name by selector_param => value_union with [hidden1, hidden2]
     //         sub_select { variant_value => sub_param [ (sub_value, ref_name, variant_name), ... ], ... }
     (@items obj_with_value_hidden $obj:ident by $selector:ident => $value:ident with [$($hidden:ident),* $(,)?] sub_select { $($variant_val:literal => $sub_param:ident [ $(($sub_val:literal, $ref_name:ident, $var_name:ident)),+ $(,)? ]),+ $(,)? } $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjWithValueAndHidden {
+        let mut items = vec![$crate::page_layout::PageItem::ObjWithValueAndHidden {
             obj_name: stringify!($obj),
             selector_param: stringify!($selector),
             value_union: stringify!($value),
@@ -605,7 +605,7 @@ macro_rules! ets_pages {
     // Parse obj_with_value_hidden - combines object ref with value param and hidden params (simple version)
     // Syntax: obj_with_value_hidden obj_name by selector_param => value_union with [hidden1, hidden2]
     (@items obj_with_value_hidden $obj:ident by $selector:ident => $value:ident with [$($hidden:ident),* $(,)?] $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjWithValueAndHidden {
+        let mut items = vec![$crate::page_layout::PageItem::ObjWithValueAndHidden {
             obj_name: stringify!($obj),
             selector_param: stringify!($selector),
             value_union: stringify!($value),
@@ -620,7 +620,7 @@ macro_rules! ets_pages {
     // Syntax: grouped_obj_choose selector_param with [hidden1, hidden2] => [(obj1, union1), (obj2, union2)]
     // This creates a single choose block containing all objects, reducing the number of choose elements
     (@items grouped_obj_choose $selector:ident with [$($hidden:ident),* $(,)?] => [$(($obj:ident, $union:ident)),+ $(,)?] $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::GroupedObjChoose {
+        let mut items = vec![$crate::page_layout::PageItem::GroupedObjChoose {
             selector_param: stringify!($selector),
             hidden_params: &[$(stringify!($hidden)),*],
             objects: &[$((stringify!($obj), stringify!($union))),+],
@@ -633,7 +633,7 @@ macro_rules! ets_pages {
     // Syntax: obj_direct obj_name with [param1, param2]
     // Used in switch mode where object type is fixed
     (@items obj_direct $obj:ident with [$($param:ident),* $(,)?] $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjDirect {
+        let mut items = vec![$crate::page_layout::PageItem::ObjDirect {
             obj_name: stringify!($obj),
             params: &[$(stringify!($param)),*],
         }];
@@ -645,7 +645,7 @@ macro_rules! ets_pages {
     // Syntax: objs_direct [obj1, obj2] with [param1, param2]
     // Used in toggle mode where O-0 and O-1 appear together
     (@items objs_direct [$($obj:ident),+ $(,)?] with [$($param:ident),* $(,)?] $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjsDirectWithParams {
+        let mut items = vec![$crate::page_layout::PageItem::ObjsDirectWithParams {
             obj_names: &[$(stringify!($obj)),+],
             params: &[$(stringify!($param)),*],
         }];
@@ -657,7 +657,7 @@ macro_rules! ets_pages {
     // Syntax: objs_by_ref_name ["ref1", "ref2", "ref3"] with [param1, param2]
     // Used when objects have named refs for different modes (e.g., dimming, blinds)
     (@items objs_by_ref_name [$($ref_name:literal),+ $(,)?] with [$($param:ident),* $(,)?] $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjsByRefName {
+        let mut items = vec![$crate::page_layout::PageItem::ObjsByRefName {
             ref_names: &[$($ref_name),+],
             params: &[$(stringify!($param)),*],
         }];
@@ -669,7 +669,7 @@ macro_rules! ets_pages {
     // Syntax: obj_fixed_variant obj_name with [hidden1, hidden2] => union_field::VariantName @ selector_value text "Custom text"
     // Used in switch mode where object type is fixed (always Switch/1Bit) with custom label
     (@items obj_fixed_variant $obj:ident with [$($hidden:ident),* $(,)?] => $union:ident :: $variant:ident @ $selector_val:literal text $text:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjWithFixedVariant {
+        let mut items = vec![$crate::page_layout::PageItem::ObjWithFixedVariant {
             obj_name: stringify!($obj),
             hidden_params: &[$(stringify!($hidden)),*],
             union_field: stringify!($union),
@@ -686,7 +686,7 @@ macro_rules! ets_pages {
     // Used in switch mode where object type is fixed (always Switch/1Bit)
     // The selector_value (e.g., 10) specifies which object ref to use
     (@items obj_fixed_variant $obj:ident with [$($hidden:ident),* $(,)?] => $union:ident :: $variant:ident @ $selector_val:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ObjWithFixedVariant {
+        let mut items = vec![$crate::page_layout::PageItem::ObjWithFixedVariant {
             obj_name: stringify!($obj),
             hidden_params: &[$(stringify!($hidden)),*],
             union_field: stringify!($union),
@@ -702,7 +702,7 @@ macro_rules! ets_pages {
     // Syntax: union_variant union_field::VariantName text "Custom text"
     // Used when variant is already determined by outer context with custom label
     (@items union_variant $union:ident :: $variant:ident text $text:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::UnionVariantDirect {
+        let mut items = vec![$crate::page_layout::PageItem::UnionVariantDirect {
             union_field: stringify!($union),
             variant_name: stringify!($variant),
             text_override: Some($text),
@@ -715,7 +715,7 @@ macro_rules! ets_pages {
     // Syntax: union_variant union_field::VariantName
     // Used when variant is already determined by outer context (e.g., inside switch mode)
     (@items union_variant $union:ident :: $variant:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::UnionVariantDirect {
+        let mut items = vec![$crate::page_layout::PageItem::UnionVariantDirect {
             union_field: stringify!($union),
             variant_name: stringify!($variant),
             text_override: None,
@@ -726,14 +726,14 @@ macro_rules! ets_pages {
 
     // Parse separator with text (must come before the version without text)
     (@items sep $text:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::Separator(Some($text))];
+        let mut items = vec![$crate::page_layout::PageItem::Separator(Some($text))];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
 
     // Parse separator without text
     (@items sep $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::Separator(None)];
+        let mut items = vec![$crate::page_layout::PageItem::Separator(None)];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
@@ -742,8 +742,8 @@ macro_rules! ets_pages {
     // The selector is the union field name - we append _selector automatically
     // Example: when channel_a_config { ... } → selector = "channel_a_config_selector"
     (@items when $selector:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::When(
-            $crate::mtxml_gen::page_layout::ConditionalItem {
+        let mut items = vec![$crate::page_layout::PageItem::When(
+            $crate::page_layout::ConditionalItem {
                 selector: concat!(stringify!($selector), "_selector"),
                 cases: $crate::ets_pages!(@item_cases $($cases)*),
             }
@@ -756,8 +756,8 @@ macro_rules! ets_pages {
     // Uses the parameter name directly without appending _selector
     // Example: when_param button1_function { ... } → selector = "button1_function"
     (@items when_param $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::When(
-            $crate::mtxml_gen::page_layout::ConditionalItem {
+        let mut items = vec![$crate::page_layout::PageItem::When(
+            $crate::page_layout::ConditionalItem {
                 selector: stringify!($param),
                 cases: $crate::ets_pages!(@item_cases $($cases)*),
             }
@@ -770,7 +770,7 @@ macro_rules! ets_pages {
     // Syntax: when_union_variant union_field::VariantName text "Label" { [values] => { ... } }
     // This matches MDT's pattern: output ParameterRefRef, then choose ParamRefId referencing it
     (@items when_union_variant $union:ident :: $variant:ident text $text:literal { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::UnionVariantWithChoose {
+        let mut items = vec![$crate::page_layout::PageItem::UnionVariantWithChoose {
             union_field: stringify!($union),
             variant_name: stringify!($variant),
             text_override: Some($text),
@@ -783,7 +783,7 @@ macro_rules! ets_pages {
     // Parse when_union_variant without text override - outputs union variant param FIRST, then choose block
     // Syntax: when_union_variant union_field::VariantName { [values] => { ... } }
     (@items when_union_variant $union:ident :: $variant:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::UnionVariantWithChoose {
+        let mut items = vec![$crate::page_layout::PageItem::UnionVariantWithChoose {
             union_field: stringify!($union),
             variant_name: stringify!($variant),
             text_override: None,
@@ -797,7 +797,7 @@ macro_rules! ets_pages {
     // Use union_variant first to output the param, then this to create choose blocks
     // Syntax: choose_on_union_variant union_field::VariantName { [values] => { ... } }
     (@items choose_on_union_variant $union:ident :: $variant:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut items = vec![$crate::mtxml_gen::page_layout::PageItem::ChooseOnUnionVariant {
+        let mut items = vec![$crate::page_layout::PageItem::ChooseOnUnionVariant {
             union_field: stringify!($union),
             variant_name: stringify!($variant),
             cases: $crate::ets_pages!(@item_cases $($cases)*),
@@ -813,8 +813,8 @@ macro_rules! ets_pages {
 
     // Parse item case with enum variants (cast directly to i64 since they're repr(isize))
     (@item_cases [$($variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::mtxml_gen::page_layout::ItemCase {
-            condition: $crate::mtxml_gen::page_layout::Condition::values(&[
+        let mut cases = vec![$crate::page_layout::ItemCase {
+            condition: $crate::page_layout::Condition::values(&[
                 $($variant as i64),+
             ]),
             items: $crate::ets_pages!(@items $($content)*),
@@ -825,8 +825,8 @@ macro_rules! ets_pages {
 
     // Parse item case with integer literals
     (@item_cases [$($val:literal),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::mtxml_gen::page_layout::ItemCase {
-            condition: $crate::mtxml_gen::page_layout::Condition::values(&[$($val as i64),+]),
+        let mut cases = vec![$crate::page_layout::ItemCase {
+            condition: $crate::page_layout::Condition::values(&[$($val as i64),+]),
             items: $crate::ets_pages!(@items $($content)*),
         }];
         cases.extend($crate::ets_pages!(@item_cases $($rest)*));
@@ -835,8 +835,8 @@ macro_rules! ets_pages {
 
     // Parse item case with default (_)
     (@item_cases _ => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::mtxml_gen::page_layout::ItemCase {
-            condition: $crate::mtxml_gen::page_layout::Condition::Default,
+        let mut cases = vec![$crate::page_layout::ItemCase {
+            condition: $crate::page_layout::Condition::Default,
             items: $crate::ets_pages!(@items $($content)*),
         }];
         cases.extend($crate::ets_pages!(@item_cases $($rest)*));

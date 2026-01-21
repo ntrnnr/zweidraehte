@@ -1,10 +1,7 @@
 //! MTXML Generator - Generate KNX Manufacturing Tool XML files from Rust device definitions.
 //!
-//! This module generates complete ApplicationProgram MTXML files from scratch,
-//! using typed Rust structs derived from the KNX Project XSD schema.
-//!
-//! Unlike the `mtxml` modifier which patches existing files, this generator
-//! creates valid MTXML from device definitions alone.
+//! This module re-exports the `knxprod` crate which provides the core MTXML generation
+//! functionality. For documentation and usage, see the `knxprod` crate.
 //!
 //! # Usage
 //!
@@ -24,13 +21,9 @@
 //! std::fs::write("ApplicationProgram1.mtxml", xml)?;
 //! ```
 
-mod schema;
-mod generator;
-pub mod page_layout;
+// Re-export everything from knxprod
+pub use knxprod::*;
+pub use knxprod::page_layout;
 
-pub use schema::*;
-pub use generator::*;
-pub use page_layout::{
-    EtsPageLayout, PageStructure, ChannelDef, PageElement, PageBlock, PageItem,
-    ConditionalElement, ElementCase, ConditionalItem, ItemCase, Condition,
-};
+// Re-export the ets_pages macro
+pub use knxprod::ets_pages;

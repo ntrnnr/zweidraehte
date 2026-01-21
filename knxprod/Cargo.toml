@@ -1,0 +1,15 @@
+[package]
+name = "knxprod"
+version = "0.1.0"
+edition = "2024"
+authors = ["Andreas Galauner <andreas@galauner.de>"]
+license = "Proprietary"
+description = "KNX product definition generator - schema, generator, and page layout DSL"
+
+[dependencies]
+zweidraehte = { path = "../stack" }
+
+serde = { workspace = true }
+quick-xml = { version = "0.37", features = ["serialize"] }
+base64 = "0.22"
+regex = "1"

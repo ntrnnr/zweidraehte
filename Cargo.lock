@@ -859,6 +859,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "knxprod"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "quick-xml",
+ "regex",
+ "serde",
+ "zweidraehte",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.179"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1513,6 +1524,7 @@ dependencies = [
  "env_logger",
  "futures-lite",
  "knx-conformance",
+ "knxprod",
  "libc",
  "log",
  "platform",

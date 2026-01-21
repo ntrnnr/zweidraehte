@@ -6,6 +6,7 @@ members = [
     "testutil",
     "conformance",
     "ets-macros",
+    "knxprod",
 ]
 
 [workspace.package]

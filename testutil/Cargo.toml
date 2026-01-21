@@ -7,6 +7,7 @@ edition = "2024"
 zweidraehte = { path = "../stack", features = ["log", "test-util", "usb"] }
 knx-conformance = { path = "../conformance" }
 platform = { path = "../platform", features = ["log", "linux"] }
+knxprod = { path = "../knxprod" }
 
 embassy-sync = { workspace = true, features = ["std"] }
 embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"] }
