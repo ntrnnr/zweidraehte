@@ -454,13 +454,43 @@ pub struct MyComObjects {
 }
 ```
 
-### Object Attributes
+### Object Attributes (`#[ets(...)]`)
 
-| Attribute | Description |
-|-----------|-------------|
-| `#[ets_ref(...)]` | Define a communication object reference |
-| `#[ets(selector_enum = "...")]` | Enum for multi-DPT selection |
-| `#[ets(index = N)]` | Override object index |
+| Attribute | Description | Example |
+|-----------|-------------|---------|
+| `index = N` | Object ASAP index | `index = 0` |
+| `display = "..."` | Display name in ETS | `display = "Switch Output"` |
+| `function = "..."` | Function text | `function = "Switching"` |
+| `name = "..."` | Override internal name | `name = "Eingang 0"` |
+| `flags = EXPR` | Default flags (see below) | `flags = C \| T \| LOW` |
+| `object_size = "..."` | Override object size | `object_size = "4 Bytes"` |
+| `selector_param = "..."` | Parameter controlling DPT selection | `selector_param = "object_type"` |
+
+#### Flags Expression
+
+Flags can be specified as named constants joined with `|`:
+
+| Flag | Meaning |
+|------|---------|
+| `C` / `CE` | Communication Enable |
+| `R` / `RE` | Read Enable |
+| `W` / `WE` | Write Enable |
+| `T` / `TE` | Transmission Enable |
+| `U` / `UE` | Update Enable |
+| `ROI` | Read on Init |
+| `LOW` | Priority Low |
+| `HIGH` | Priority High |
+| `ALARM` | Priority Alarm |
+| `SYSTEM` | Priority System |
+
+Examples:
+- `flags = C | T | LOW` — transmit-only, low priority
+- `flags = C | R | W | T | U | LOW` — full bidirectional
+- `flags = LOW` — no communication flags (disabled object)
+
+Hex literals are also accepted: `flags = 0x47`
+
+Default (if omitted): `C | R | W | T | U | LOW` (0xDF)
 
 ### `#[ets_ref]` Parameters
 
@@ -470,7 +500,11 @@ pub struct MyComObjects {
 | `text = "..."` | Display text (supports `{{param}}` interpolation) | `text = "{{button_name}}: Switch"` |
 | `function = "..."` | Function text | `function = "Switching"` |
 | `when = EnumVariant` | Condition for multi-DPT objects | `when = ObjectType::Switch` |
-| `flags = "..."` | Object flags (C/R/W/T/U) | `flags = "CRT"` |
+| `read = bool` | Override Read Enable flag | `read = true` |
+| `write = bool` | Override Write Enable flag | `write = false` |
+| `transmit = bool` | Override Transmit Enable flag | `transmit = true` |
+| `update = bool` | Override Update Enable flag | `update = false` |
+| `communication = bool` | Override Communication Enable flag | `communication = true` |
 
 ### Text Interpolation
 

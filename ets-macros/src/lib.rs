@@ -1800,8 +1800,7 @@ fn parse_com_object_field_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectFie
                     result.function = Some(value.value());
                 } else if ident == "flags" {
                     input.parse::<Token![=]>()?;
-                    let value: syn::LitInt = input.parse()?;
-                    result.flags = Some(value.base10_parse()?);
+                    result.flags = Some(parse_flags_expr(input)?);
                 } else if ident == "selector_param" {
                     input.parse::<Token![=]>()?;
                     let value: syn::LitStr = input.parse()?;
@@ -1825,6 +1824,52 @@ fn parse_com_object_field_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectFie
     }
 
     Ok(result)
+}
+
+/// Resolve a comm object flag identifier to its u8 value.
+fn resolve_flag_ident(ident: &str) -> Option<u8> {
+    match ident {
+        "C" | "CE" => Some(0x04),       // Communication Enable
+        "R" | "RE" => Some(0x08),       // Read Enable
+        "W" | "WE" => Some(0x10),       // Write Enable
+        "ROI" => Some(0x20),            // Read on Init
+        "T" | "TE" => Some(0x40),       // Transmission Enable
+        "U" | "UE" => Some(0x80),       // Update Enable
+        "LOW" => Some(0x03),            // Priority Low
+        "HIGH" => Some(0x01),           // Priority High
+        "ALARM" => Some(0x02),          // Priority Alarm
+        "SYSTEM" => Some(0x00),         // Priority System
+        _ => None,
+    }
+}
+
+/// Parse a flags expression: either a literal integer (e.g. `0x47`) or a bitwise OR
+/// of named flag constants (e.g. `CE | T | LOW`).
+fn parse_flags_expr(input: ParseStream) -> syn::Result<u8> {
+    if input.peek(syn::LitInt) {
+        let value: syn::LitInt = input.parse()?;
+        return value.base10_parse();
+    }
+
+    let mut flags: u8 = 0;
+    loop {
+        let ident: syn::Ident = input.parse()?;
+        let ident_str = ident.to_string();
+        match resolve_flag_ident(&ident_str) {
+            Some(val) => flags |= val,
+            None => return Err(syn::Error::new_spanned(
+                &ident,
+                format!("unknown flag `{}`. Expected: C/CE, R/RE, W/WE, T/TE, U/UE, ROI, LOW, HIGH, ALARM, SYSTEM", ident_str),
+            )),
+        }
+        // If next token is `|`, consume it and continue; otherwise stop
+        if input.peek(Token![|]) {
+            input.parse::<Token![|]>()?;
+        } else {
+            break;
+        }
+    }
+    Ok(flags)
 }
 
 fn parse_ets_ref_attrs(attrs: &[Attribute]) -> syn::Result<Vec<ComObjectRefAttrs>> {

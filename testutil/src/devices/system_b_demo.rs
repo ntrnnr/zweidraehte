@@ -179,7 +179,7 @@ pub mod comm_objs {
             index = 2,
             display = "Channel A Output",
             function = "Status output",
-            flags = 0x5F,
+            flags = C | R | W | T | LOW,
             selector_param = "channel_a_config_selector"
         )]
         #[ets_ref(dpt = DPT_Switch, when = OutputConfigDiscriminant::Switch, function = "Switch state")]
@@ -207,7 +207,7 @@ pub mod comm_objs {
             index = 4,
             display = "Channel B Output",
             function = "Status output",
-            flags = 0x5F,
+            flags = C | R | W | T | LOW,
             selector_param = "channel_b_config_selector"
         )]
         #[ets_ref(dpt = DPT_Switch, when = OutputConfigDiscriminant::Switch, function = "Switch state")]
@@ -227,13 +227,11 @@ pub mod comm_objs {
         pub lock_in: ComObject<DPT_Switch>,
 
         /// General status output - always a switch type
-        /// flags = 0x57: C=1, R=0, W=1, T=1, U=0, I=1, Priority=Low(3)
-        #[ets(index = 7, display = "In Operation", function = "Device in operation status", flags = 0x57)]
+        #[ets(index = 7, display = "In Operation", function = "Device in operation status", flags = C | W | T | LOW)]
         pub in_operation: ComObject<DPT_Switch>,
 
         /// Error status output
-        /// flags = 0x57: C=1, R=0, W=1, T=1, U=0, I=1, Priority=Low(3)
-        #[ets(index = 8, display = "Error", function = "Error status output", flags = 0x57)]
+        #[ets(index = 8, display = "Error", function = "Error status output", flags = C | W | T | LOW)]
         pub error_status: ComObject<DPT_Switch>,
     }
 }
