@@ -162,9 +162,6 @@ pub fn derive_ets_params(input: TokenStream) -> TokenStream {
 fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let struct_name = &input.ident;
 
-    // Parse struct-level attributes for derive_defaults
-    let derive_defaults = parse_ets_params_struct_attrs(&input.attrs)?;
-
     // Extract fields from struct
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
@@ -186,7 +183,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut param_ext_defs = Vec::new();
     let mut enum_variant_consts = Vec::new();
     let mut union_field_entries = Vec::new();
-    // For derive_defaults: track field names, types, and default expressions
+    // Track field names, types, and default expressions for generating Default/ConstDefault impls
     let mut field_defaults: Vec<(syn::Ident, syn::Type, TokenStream2)> = Vec::new();
 
     for field in fields.iter() {
@@ -196,8 +193,8 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         // Parse field attributes
         let attrs = parse_field_attrs(&field.attrs)?;
 
-        // For derive_defaults: determine the default value expression for this field
-        if derive_defaults {
+        // Determine the default value expression for this field
+        {
             let default_expr = if attrs.skip {
                 // Skip fields use const-compatible zeroing
                 get_const_zero_expr(field_type)
@@ -514,28 +511,23 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         };
     };
 
-    // Generate Default and ConstDefault impls if derive_defaults is enabled
-    let defaults_impls = if derive_defaults {
-        let field_names: Vec<_> = field_defaults.iter().map(|(name, _, _)| name).collect();
-        let field_exprs: Vec<_> = field_defaults.iter().map(|(_, _, expr)| expr).collect();
-
-        quote! {
-            impl core::default::Default for #struct_name {
-                fn default() -> Self {
-                    Self {
-                        #(#field_names: #field_exprs),*
-                    }
+    // Generate Default and ConstDefault impls from field defaults
+    let field_names: Vec<_> = field_defaults.iter().map(|(name, _, _)| name).collect();
+    let field_exprs: Vec<_> = field_defaults.iter().map(|(_, _, expr)| expr).collect();
+    let defaults_impls = quote! {
+        impl core::default::Default for #struct_name {
+            fn default() -> Self {
+                Self {
+                    #(#field_names: #field_exprs),*
                 }
             }
-
-            impl const_default::ConstDefault for #struct_name {
-                const DEFAULT: Self = Self {
-                    #(#field_names: #field_exprs),*
-                };
-            }
         }
-    } else {
-        quote! {}
+
+        impl const_default::ConstDefault for #struct_name {
+            const DEFAULT: Self = Self {
+                #(#field_names: #field_exprs),*
+            };
+        }
     };
 
     Ok(quote! {
@@ -567,36 +559,6 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         #defaults_impls
     })
-}
-
-/// Parse struct-level #[ets(...)] attributes for EtsParams
-fn parse_ets_params_struct_attrs(attrs: &[Attribute]) -> syn::Result<bool> {
-    let mut derive_defaults = false;
-
-    for attr in attrs {
-        if !attr.path().is_ident("ets") {
-            continue;
-        }
-
-        let tokens = attr.meta.require_list()?.tokens.clone();
-        let parser = |input: ParseStream| {
-            while !input.is_empty() {
-                let ident: syn::Ident = input.parse()?;
-
-                if ident == "derive_defaults" {
-                    derive_defaults = true;
-                }
-
-                // Consume optional comma
-                let _ = input.parse::<Option<Token![,]>>();
-            }
-            Ok(())
-        };
-
-        syn::parse::Parser::parse2(parser, tokens)?;
-    }
-
-    Ok(derive_defaults)
 }
 
 /// Parsed field attributes
@@ -988,11 +950,37 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         };
         current_discriminant = discriminant_value + 1;
 
-        // Store for discriminant enum generation
-        discriminant_variants.push((variant_name.clone(), discriminant_value));
-
         // Parse variant attributes for display name
         let variant_attrs = parse_variant_attrs(&variant.attrs)?;
+
+        // Skip variants marked with #[ets(skip)] — they are size anchors, not ETS-visible
+        if variant_attrs.skip {
+            // Still need to calculate the variant size for max_variant_size tracking
+            let variant_size = match &variant.fields {
+                syn::Fields::Unit => 0,
+                syn::Fields::Named(fields) => {
+                    let mut size = 0usize;
+                    for field in &fields.named {
+                        size += get_type_size(&field.ty)?;
+                    }
+                    size
+                }
+                syn::Fields::Unnamed(fields) => {
+                    let mut size = 0usize;
+                    for field in &fields.unnamed {
+                        size += get_type_size(&field.ty)?;
+                    }
+                    size
+                }
+            };
+            if variant_size > max_variant_size {
+                max_variant_size = variant_size;
+            }
+            continue;
+        }
+
+        // Store for discriminant enum generation
+        discriminant_variants.push((variant_name.clone(), discriminant_value));
 
         // Check if this is the default variant
         if variant_attrs.is_default {
@@ -1243,7 +1231,7 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     }
 
     let enum_name_str = enum_name.to_string();
-    let variant_count = variants.len();
+    let variant_count = discriminant_variants.len();
     let data_offset_u16 = data_offset as u16;
     // NOTE: We use core::mem::size_of to get the actual Rust size including alignment
     // padding. The calculated max_variant_size is only used for data_size (the logical
@@ -1351,7 +1339,7 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
 /// Parse variant-level attributes
 fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
-    let mut result = VariantAttrs { display: None, is_default: false };
+    let mut result = VariantAttrs { display: None, is_default: false, skip: false };
 
     for attr in attrs {
         if !attr.path().is_ident("ets") {
@@ -1370,6 +1358,9 @@ fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
                 } else if ident == "default_variant" {
                     // Mark this variant as the default for Default/ConstDefault generation
                     result.is_default = true;
+                } else if ident == "skip" {
+                    // Skip this variant from ETS metadata generation
+                    result.skip = true;
                 }
 
                 // Consume optional comma
@@ -1388,6 +1379,7 @@ fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAttrs> {
 struct VariantAttrs {
     display: Option<String>,
     is_default: bool,
+    skip: bool,
 }
 
 // ============================================================================

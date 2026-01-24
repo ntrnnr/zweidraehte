@@ -456,7 +456,7 @@ impl ConstDefault for SceneConfig {
 ///
 /// Union fields can be placed anywhere in the struct. The macro uses `core::mem::offset_of!`
 /// to correctly calculate field offsets regardless of union placement.
-#[derive(Debug, Clone, Copy, EtsParams, ConstDefault, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize)]
 #[repr(C)]
 pub struct DemoParams {
     /// Channel A output configuration - controls comm object DPT and mode-specific params

@@ -101,19 +101,12 @@ pub struct MyDeviceParams {
 }
 ```
 
-### Struct Attributes
-
-| Attribute | Description |
-|-----------|-------------|
-| `derive_defaults` | Auto-generate `Default` and `ConstDefault` impls from `#[ets(default = X)]` |
-
 #### Auto-generated Defaults
 
-Use `#[ets(derive_defaults)]` to automatically generate `Default` and `ConstDefault` implementations from your field defaults:
+`#[derive(EtsParams)]` automatically generates `Default` and `ConstDefault` implementations from your field defaults:
 
 ```rust
 #[derive(EtsParams)]
-#[ets(derive_defaults)]  // Auto-generate Default + ConstDefault
 #[repr(C)]
 pub struct MyParams {
     #[ets(display = "Timeout", default = 100)]
@@ -122,7 +115,7 @@ pub struct MyParams {
     #[ets(display = "Mode", ets_enum)]  // Uses enum's ConstDefault
     pub mode: MyMode,
 }
-// No manual impl Default or impl ConstDefault needed!
+// Default and ConstDefault are generated automatically!
 ```
 
 The macro generates defaults as follows:
@@ -1358,7 +1351,7 @@ fn load_params(bytes: &[u8]) -> Option<&DeviceParams> {
 
 // Using the generated defaults
 fn reset_to_defaults() -> DeviceParams {
-    DeviceParams::default()  // Uses #[ets(derive_defaults)] if present
+    DeviceParams::default()  // Uses EtsParams-generated Default impl
 }
 
 // Or in const context

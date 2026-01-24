@@ -905,8 +905,6 @@ pub enum ButtonValueUnion {
     Switch {
         #[ets(display = "Value", ets_enum)]
         value: GedptSwitch,
-        #[ets(skip)]
-        _pad: [u8; 3],
     } = 0,
 
     /// Forcible control (2-bit priority) - matches ObjectType::Bit2 = 1 (button_object_type "2Bit")
@@ -914,8 +912,6 @@ pub enum ButtonValueUnion {
     ForcibleControl {
         #[ets(display = "Value", ets_enum)]
         value: Zwangsfuehrung,
-        #[ets(skip)]
-        _pad: [u8; 3],
     } = 1,
 
     /// Percent value (0-100%) - matches ObjectType::Percent = 2 (button_object_type "1Byte Char")
@@ -924,8 +920,6 @@ pub enum ButtonValueUnion {
     Percent {
         #[ets(display = "Value", ets_enum, default = 64)]
         value: Select0to100Percent,
-        #[ets(skip)]
-        _pad: [u8; 3],
     } = 2,
 
     /// Decimal factor (0-255) - matches ObjectType::Decimal = 3 (button_object_type "1Byte SignedChar")
@@ -934,8 +928,6 @@ pub enum ButtonValueUnion {
     Decimal {
         #[ets(display = "Value", default = 60)]
         value: u8,
-        #[ets(skip)]
-        _pad: [u8; 3],
     } = 3,
 
     /// Scene number (1-64) - matches ObjectType::Scene = 4 (button_object_type "2Byte KNX_Float")
@@ -943,8 +935,6 @@ pub enum ButtonValueUnion {
     Scene {
         #[ets(display = "Scene number", ets_enum)]
         value: SceneValue,
-        #[ets(skip)]
-        _pad: [u8; 3],
     } = 4,
 
     /// Colour Temperature (2Byte) - matches ObjectType = 6 (DPT 7.600)
@@ -952,8 +942,6 @@ pub enum ButtonValueUnion {
     ColourTemp {
         #[ets(display = "Value", suffix = "Kelvin", default = 2700)]
         value: u16,
-        #[ets(skip)]
-        _pad: [u8; 2],
     } = 6,
 
     /// Temperature °C (2Byte Float) - matches ObjectType = 7 (DPT 9.001)
@@ -962,8 +950,6 @@ pub enum ButtonValueUnion {
     Temperature {
         #[ets(display = "Value", suffix = "°C", default = 0)]
         value: u16,
-        #[ets(skip)]
-        _pad: [u8; 2],
     } = 7,
 
     /// Brightness Lux (2Byte Float) - matches ObjectType = 8 (DPT 9.004)
@@ -972,8 +958,6 @@ pub enum ButtonValueUnion {
     Brightness {
         #[ets(display = "Value", suffix = "Lux", default = 0)]
         value: u16,
-        #[ets(skip)]
-        _pad: [u8; 2],
     } = 8,
 
     /// RGB colour value (3 bytes) - matches ObjectType = 9 (DPT 232.600)
@@ -982,8 +966,6 @@ pub enum ButtonValueUnion {
     Rgb {
         #[ets(display = "    RGB-Value", text_pattern = "^#[0-9a-fA-F]{6}$(?# TypeColor:RGB)")]
         value: [u8; 3],
-        #[ets(skip)]
-        _pad: u8,
     } = 9,
 
     /// Switch (1Bit) - matches ObjectType = 10 (DPT 1.001) - only in DPTType1Bit
@@ -992,8 +974,6 @@ pub enum ButtonValueUnion {
     Switch1Bit {
         #[ets(display = "Value", ets_enum)]
         value: GedptSwitch,
-        #[ets(skip)]
-        _pad: [u8; 3],
     } = 10,
 
     /// HSV colour value (3 bytes) - ObjectType sub-selection via ModeRGB/HSV param
@@ -1003,9 +983,12 @@ pub enum ButtonValueUnion {
     Hsv {
         #[ets(display = "    HSV value", text_pattern = "^#[0-9a-fA-F]{6}$(?# TypeColor:HSV)")]
         value: [u8; 3],
-        #[ets(skip)]
-        _pad: u8,
     } = 11,
+
+    /// Size anchor variant - ensures the data area is 4 bytes (largest real data is [u8; 3]).
+    /// Never constructed in normal use.
+    #[ets(skip)]
+    _Reserved([u8; 4]),
 }
 
 /// Time Duration Union (16-bit) - Various time values
@@ -1064,8 +1047,6 @@ pub enum ExtraLongValueUnion {
     Switch {
         #[ets(display = "Value", ets_enum)]
         value: GedptSwitch,
-        #[ets(skip)]
-        _pad: u8,
     } = 0,
 
     /// Forcible control value
@@ -1073,8 +1054,6 @@ pub enum ExtraLongValueUnion {
     ForcibleControl {
         #[ets(display = "Value", ets_enum)]
         value: ForcibleControlValue,
-        #[ets(skip)]
-        _pad: u8,
     } = 1,
 
     /// Percent value
@@ -1082,8 +1061,6 @@ pub enum ExtraLongValueUnion {
     Percent {
         #[ets(display = "Value")]
         value: u8,
-        #[ets(skip)]
-        _pad: u8,
     } = 2,
 
     /// Scene number
@@ -1091,8 +1068,6 @@ pub enum ExtraLongValueUnion {
     Scene {
         #[ets(display = "Scene number")]
         value: u8,
-        #[ets(skip)]
-        _pad: u8,
     } = 3,
 
     /// Colour temperature
@@ -1101,6 +1076,11 @@ pub enum ExtraLongValueUnion {
         #[ets(display = "Value")]
         value: u16,
     } = 4,
+
+    /// Size anchor variant - ensures the data area is 2 bytes (largest real data is u16).
+    /// Never constructed in normal use.
+    #[ets(skip)]
+    _Reserved([u8; 2]),
 }
 
 /// Send Condition Union (8-bit) - Condition for sending logic output
@@ -2410,7 +2390,6 @@ pub mod comm_objs {
 
 /// Application parameters for the MDT Push Button Lite device.
 #[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize)]
-#[ets(derive_defaults)]
 #[repr(C)]
 pub struct MdtParams {
     /// Startup time in seconds (2-240), default 2s
@@ -3170,7 +3149,7 @@ pub struct MdtParams {
     pub dummy_enable: GEboolEnableDisable,
 }
 
-// Default and ConstDefault are auto-generated by #[ets(derive_defaults)]
+// Default and ConstDefault are auto-generated by #[derive(EtsParams)]
 // based on #[ets(default = X)] attributes on fields and ConstDefault impls
 // for ets_enum and union fields.
 
@@ -5692,6 +5671,281 @@ impl EtsPageLayout for MdtStack {
                     }
                 }
             }
+        }
+    }
+}
+
+// ============================================================================
+// Tests: Device-side union parameter access patterns
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that union sizes remain correct after removing _pad fields.
+    /// The _Reserved variant anchors the data area to the expected size.
+    #[test]
+    fn test_union_sizes() {
+        // ButtonValueUnion: 1 byte discriminant + 1 byte alignment + 4 bytes data = 6
+        // (u16 fields require 2-byte alignment, padding the discriminant)
+        assert_eq!(core::mem::size_of::<ButtonValueUnion>(), 6);
+        // ExtraLongValueUnion: 1 byte discriminant + 1 byte alignment + 2 bytes data = 4
+        assert_eq!(core::mem::size_of::<ExtraLongValueUnion>(), 4);
+        // TimeDurationUnion: 1 byte discriminant + 1 byte alignment + 2 bytes data = 4
+        assert_eq!(core::mem::size_of::<TimeDurationUnion>(), 4);
+    }
+
+    /// Demonstrates the basic pattern: match directly on a ButtonValueUnion
+    /// field using `{ value, .. }` to skip padding fields.
+    #[test]
+    fn test_button_value_union_pattern_matching() {
+        let mut params = MdtParams::default();
+
+        // Default variant is Switch (discriminant 0)
+        match params.button1_value_00 {
+            ButtonValueUnion::Switch { value, .. } => {
+                assert_eq!(value, GedptSwitch::Off);
+            }
+            _ => panic!("Expected Switch variant as default"),
+        }
+
+        // Set to Percent variant with 25%
+        params.button1_value_00 = ButtonValueUnion::Percent {
+            value: Select0to100Percent::P25,
+        };
+        match params.button1_value_00 {
+            ButtonValueUnion::Percent { value, .. } => {
+                assert_eq!(value as u8, 64); // 25% maps to byte value 64
+            }
+            _ => panic!("Expected Percent variant"),
+        }
+
+        // Set to ColourTemp variant
+        params.button1_value_00 = ButtonValueUnion::ColourTemp {
+            value: 2700,
+        };
+        match params.button1_value_00 {
+            ButtonValueUnion::ColourTemp { value, .. } => {
+                assert_eq!(value, 2700);
+            }
+            _ => panic!("Expected ColourTemp variant"),
+        }
+
+        // Set to RGB variant
+        params.button1_value_00 = ButtonValueUnion::Rgb {
+            value: [255, 128, 0],
+        };
+        match params.button1_value_00 {
+            ButtonValueUnion::Rgb { value, .. } => {
+                assert_eq!(value, [255, 128, 0]);
+            }
+            _ => panic!("Expected Rgb variant"),
+        }
+    }
+
+    /// Demonstrates handling a button press: read the configured value from
+    /// the union and write the appropriate DPT to a comm object storage buffer.
+    #[test]
+    fn test_button_press_writes_to_comm_object() {
+        let mut params = MdtParams::default();
+
+        // Configure button 1 for Percent mode with value 50%
+        params.button1_object_type = ObjectType::Percent;
+        params.button1_value_00 = ButtonValueUnion::Percent {
+            value: Select0to100Percent::P50,
+        };
+
+        // Simulate a comm object storage buffer (4 bytes for multi-DPT)
+        let mut co_buffer = [0u8; 4];
+
+        // Device code: match on the union to determine what to send
+        match params.button1_value_00 {
+            ButtonValueUnion::Switch { value, .. } => {
+                co_buffer[0] = value as u8;
+            }
+            ButtonValueUnion::ForcibleControl { value, .. } => {
+                co_buffer[0] = value as u8;
+            }
+            ButtonValueUnion::Percent { value, .. } => {
+                co_buffer[0] = value as u8;
+            }
+            ButtonValueUnion::Decimal { value, .. } => {
+                co_buffer[0] = value;
+            }
+            ButtonValueUnion::Scene { value, .. } => {
+                co_buffer[0] = value as u8;
+            }
+            ButtonValueUnion::ColourTemp { value, .. } => {
+                co_buffer[..2].copy_from_slice(&value.to_be_bytes());
+            }
+            ButtonValueUnion::Temperature { value, .. } => {
+                co_buffer[..2].copy_from_slice(&value.to_be_bytes());
+            }
+            ButtonValueUnion::Brightness { value, .. } => {
+                co_buffer[..2].copy_from_slice(&value.to_be_bytes());
+            }
+            ButtonValueUnion::Rgb { value, .. } => {
+                co_buffer[..3].copy_from_slice(&value);
+            }
+            ButtonValueUnion::Switch1Bit { value, .. } => {
+                co_buffer[0] = value as u8;
+            }
+            ButtonValueUnion::Hsv { value, .. } => {
+                co_buffer[..3].copy_from_slice(&value);
+            }
+            ButtonValueUnion::_Reserved(_) => unreachable!(),
+        }
+
+        // 50% maps to byte value 127 (round(50 * 2.55))
+        assert_eq!(co_buffer[0], 127);
+    }
+
+    /// Demonstrates using the selector enum for control flow decisions
+    /// independent of the union value.
+    #[test]
+    fn test_selector_enum_for_mode_dispatch() {
+        let mut params = MdtParams::default();
+        params.button1_object_type = ObjectType::ColourTemp;
+
+        // Use the selector to determine comm object size/encoding
+        let dpt_size = match params.button1_object_type {
+            ObjectType::Switch => 1,
+            ObjectType::Bit2 => 1,
+            ObjectType::Percent => 1,
+            ObjectType::Decimal => 1,
+            ObjectType::Scene => 1,
+            ObjectType::ColourTemp => 2,
+            ObjectType::Temperature => 2,
+            ObjectType::Brightness => 2,
+            ObjectType::Rgb => 3,
+        };
+
+        assert_eq!(dpt_size, 2);
+    }
+
+    /// Demonstrates toggle mode: cycling through multiple union values
+    /// that all share the same active variant type.
+    #[test]
+    fn test_toggle_mode_with_multiple_values() {
+        let mut params = MdtParams::default();
+        params.button1_object_type = ObjectType::Percent;
+
+        // Configure 3 toggle values (all Percent variant)
+        params.button1_value_00 = ButtonValueUnion::Percent {
+            value: Select0to100Percent::P0,
+        };
+        params.button1_value_01 = ButtonValueUnion::Percent {
+            value: Select0to100Percent::P50,
+        };
+        params.button1_value_02 = ButtonValueUnion::Percent {
+            value: Select0to100Percent::P100,
+        };
+
+        // Simulate toggle cycling
+        let values = [
+            &params.button1_value_00,
+            &params.button1_value_01,
+            &params.button1_value_02,
+        ];
+
+        let mut collected = Vec::new();
+        for val in &values {
+            match val {
+                ButtonValueUnion::Percent { value, .. } => {
+                    collected.push(*value as u8);
+                }
+                _ => panic!("All values should be Percent variant"),
+            }
+        }
+
+        // 0% -> 0, 50% -> 127, 100% -> 255
+        assert_eq!(collected, vec![0, 127, 255]);
+    }
+
+    /// Demonstrates time duration union access for keypress timing.
+    #[test]
+    fn test_time_duration_union_access() {
+        let mut params = MdtParams::default();
+
+        // Default is LongKeypressTime with Ms400 (the #[default] variant)
+        match params.button1_time_duration {
+            TimeDurationUnion::LongKeypressTime { value, .. } => {
+                assert_eq!(value, TimeForLongKeypress::Ms400);
+            }
+            _ => panic!("Expected LongKeypressTime default variant"),
+        }
+
+        // Reconfigure to 1.0s long keypress time
+        params.button1_time_duration = TimeDurationUnion::LongKeypressTime {
+            value: TimeForLongKeypress::S1,
+        };
+        match params.button1_time_duration {
+            TimeDurationUnion::LongKeypressTime { value, .. } => {
+                assert_eq!(value, TimeForLongKeypress::S1);
+                assert_eq!(value as u16, 33768);
+            }
+            _ => panic!("Expected LongKeypressTime variant"),
+        }
+    }
+
+    /// Demonstrates exhaustive matching — the compiler ensures all variants
+    /// are handled, providing compile-time safety.
+    #[test]
+    fn test_exhaustive_matching_all_button_value_variants() {
+        let variants = [
+            ButtonValueUnion::Switch { value: GedptSwitch::On },
+            ButtonValueUnion::ForcibleControl { value: Zwangsfuehrung::PriorityOn },
+            ButtonValueUnion::Percent { value: Select0to100Percent::P50 },
+            ButtonValueUnion::Decimal { value: 42 },
+            ButtonValueUnion::Scene { value: SceneValue::Scene1 },
+            ButtonValueUnion::ColourTemp { value: 4000 },
+            ButtonValueUnion::Temperature { value: 0x0C1A },
+            ButtonValueUnion::Brightness { value: 0x1F00 },
+            ButtonValueUnion::Rgb { value: [255, 0, 128] },
+            ButtonValueUnion::Switch1Bit { value: GedptSwitch::Off },
+            ButtonValueUnion::Hsv { value: [180, 255, 200] },
+        ];
+
+        for variant in &variants {
+            // Exhaustive match — compiler error if a variant is missing
+            let description = match variant {
+                ButtonValueUnion::Switch { value, .. } => {
+                    format!("Switch: {:?}", value)
+                }
+                ButtonValueUnion::ForcibleControl { value, .. } => {
+                    format!("ForcibleControl: {:?}", value)
+                }
+                ButtonValueUnion::Percent { value, .. } => {
+                    format!("Percent: {}", *value as u8)
+                }
+                ButtonValueUnion::Decimal { value, .. } => {
+                    format!("Decimal: {}", value)
+                }
+                ButtonValueUnion::Scene { value, .. } => {
+                    format!("Scene: {:?}", value)
+                }
+                ButtonValueUnion::ColourTemp { value, .. } => {
+                    format!("ColourTemp: {}K", value)
+                }
+                ButtonValueUnion::Temperature { value, .. } => {
+                    format!("Temperature: raw={:#06X}", value)
+                }
+                ButtonValueUnion::Brightness { value, .. } => {
+                    format!("Brightness: raw={:#06X}", value)
+                }
+                ButtonValueUnion::Rgb { value, .. } => {
+                    format!("RGB: #{:02X}{:02X}{:02X}", value[0], value[1], value[2])
+                }
+                ButtonValueUnion::Switch1Bit { value, .. } => {
+                    format!("Switch1Bit: {:?}", value)
+                }
+                ButtonValueUnion::Hsv { value, .. } => {
+                    format!("HSV: H={} S={} V={}", value[0], value[1], value[2])
+                }
+                ButtonValueUnion::_Reserved(_) => unreachable!(),
+            };
+            assert!(!description.is_empty());
         }
     }
 }
