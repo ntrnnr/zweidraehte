@@ -934,11 +934,12 @@ impl MtxmlGenerator {
             // Use encoded type ID
             let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
 
-            // Get default value from param_defaults based on size
-            // String parameters should have empty string as default, not "0"
+            // Get default value: prefer explicit default_value, then fall back to param_defaults byte slice
             let offset = param.offset as usize;
             let size_bytes = (param.size_bits as usize + 7) / 8;
-            let default_value = if param.param_type == EtsParamType::String {
+            let default_value = if let Some(val) = param_ext.default_value {
+                val.to_string()
+            } else if param.param_type == EtsParamType::String {
                 // String parameters default to empty string
                 String::new()
             } else if offset + size_bytes <= config.param_defaults.len() {
@@ -989,11 +990,18 @@ impl MtxmlGenerator {
         if let Some(union_fields) = config.union_fields {
             let mut up_counter = 1u32;
             for field in union_fields {
+                // Look up the selector's explicit default from EtsParamDefExt
+                let selector_name = format!("{}_selector", field.field_name);
+                let selector_default = config.params.iter()
+                    .find(|p| p.base.name == selector_name)
+                    .and_then(|p| p.default_value);
+
                 let (union_elem, next_counter) = Self::build_union(
                     field,
                     app_id,
                     code_segment_id,
                     up_counter,
+                    selector_default,
                 );
                 params.items.push(ParameterItem::Union(union_elem));
                 up_counter = next_counter;
@@ -1010,6 +1018,7 @@ impl MtxmlGenerator {
         app_id: &str,
         code_segment_id: &str,
         up_counter: u32,
+        selector_default: Option<i64>,
     ) -> (Union, u32) {
         let union_info = field.union_info;
         let total_size_bits = union_info.total_size as u32 * 8;
@@ -1020,13 +1029,14 @@ impl MtxmlGenerator {
         // Selector parameter (discriminant) - uses sequential UP- numbering
         let selector_type_name = format!("tENUM_{}_selector_8", field.field_name);
         let selector_type = format!("{}_PT-{}", app_id, Self::encode_id(&selector_type_name));
+        let selector_value = selector_default.unwrap_or(0).to_string();
         parameters.push(UnionParameter {
             id: format!("{}_UP-{}", app_id, counter),
             name: format!("{}_selector", field.field_name),
             parameter_type: selector_type,
             text: format!("{} Mode", field.field_name),
             suffix_text: None,
-            value: "0".to_string(),
+            value: selector_value,
             offset: 0,
             bit_offset: 0,
             default_union_parameter: Some(true),

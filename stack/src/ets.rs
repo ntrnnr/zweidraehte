@@ -360,6 +360,8 @@ pub struct EtsParamDefExt {
     pub base: EtsParamDef,
     /// Enum variants (if this is an enum parameter)
     pub enum_variants: Option<&'static [EtsEnumVariant]>,
+    /// Explicit default value (overrides byte-slice defaults when present)
+    pub default_value: Option<i64>,
 }
 
 // ============================================================================

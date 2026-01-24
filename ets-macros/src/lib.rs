@@ -278,6 +278,13 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     #field_type::ETS_SELECTOR_VARIANTS;
             });
 
+            // For union selector, use the default_value if specified (overrides the union's default variant)
+            let selector_default_expr = if let Some(val) = attrs.default_value {
+                quote!(Some(#val))
+            } else {
+                quote!(None)
+            };
+
             param_ext_defs.push(quote! {
                 zweidraehte::ets::EtsParamDefExt {
                     base: zweidraehte::ets::EtsParamDef {
@@ -293,6 +300,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         text_pattern: None,
                     },
                     enum_variants: Some(Self::#selector_const_name),
+                    default_value: #selector_default_expr,
                 }
             });
 
@@ -353,6 +361,12 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 const #const_name: &[zweidraehte::ets::EtsEnumVariant] = #field_type::ETS_VARIANTS;
             });
 
+            let default_value_expr = if let Some(val) = attrs.default_value {
+                quote!(Some(#val))
+            } else {
+                quote!(None)
+            };
+
             param_ext_defs.push(quote! {
                 zweidraehte::ets::EtsParamDefExt {
                     base: zweidraehte::ets::EtsParamDef {
@@ -368,6 +382,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         text_pattern: None,
                     },
                     enum_variants: Some(Self::#const_name),
+                    default_value: #default_value_expr,
                 }
             });
 
@@ -445,6 +460,12 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             quote!(None)
         };
 
+        let default_value_expr = if let Some(val) = attrs.default_value {
+            quote!(Some(#val))
+        } else {
+            quote!(None)
+        };
+
         param_ext_defs.push(quote! {
             zweidraehte::ets::EtsParamDefExt {
                 base: zweidraehte::ets::EtsParamDef {
@@ -460,6 +481,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     text_pattern: None,
                 },
                 enum_variants: #enum_variants_expr,
+                default_value: #default_value_expr,
             }
         });
     }
@@ -2380,17 +2402,23 @@ fn generate_selector_impl(
         }
     }
 
-    // Generate enum variants
+    // Generate enum variants - deduplicate fields by name within each variant
+    // (same field may have multiple refs with same `when` but different functions)
     let enum_variants: Vec<_> = variants_map.iter().map(|(variant_name, field_refs)| {
         let variant_ident = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
-        let field_defs: Vec<_> = field_refs.iter().map(|(obj, ref_attr)| {
-            let field_ident = &obj.ident;
-            let dpt_type = &ref_attr.dpt;
-            let index = obj.attrs.index.unwrap();
-            quote! {
-                #field_ident: zweidraehte::objects::comm::TypedComObj<'a, #dpt_type, #index>
-            }
-        }).collect();
+
+        // Deduplicate by field name, keeping the first ref for each field
+        let mut seen_fields = std::collections::HashSet::new();
+        let field_defs: Vec<_> = field_refs.iter()
+            .filter(|(obj, _)| seen_fields.insert(obj.ident.to_string()))
+            .map(|(obj, ref_attr)| {
+                let field_ident = &obj.ident;
+                let dpt_type = &ref_attr.dpt;
+                let index = obj.attrs.index.unwrap();
+                quote! {
+                    #field_ident: zweidraehte::objects::comm::TypedComObj<'a, #dpt_type, #index>
+                }
+            }).collect();
 
         quote! {
             #variant_ident {
@@ -2404,17 +2432,21 @@ fn generate_selector_impl(
         let variant_ident = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
         let selector_variant = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
 
-        let field_inits: Vec<_> = field_refs.iter().map(|(obj, _ref_attr)| {
-            let field_ident = &obj.ident;
-            quote! {
-                #field_ident: unsafe {
-                    zweidraehte::objects::comm::TypedComObj::new(
-                        objs.#field_ident.value.as_mut(),
-                        &mut objs.#field_ident.status,
-                    )
+        // Deduplicate by field name, keeping the first ref for each field
+        let mut seen_fields = std::collections::HashSet::new();
+        let field_inits: Vec<_> = field_refs.iter()
+            .filter(|(obj, _)| seen_fields.insert(obj.ident.to_string()))
+            .map(|(obj, _ref_attr)| {
+                let field_ident = &obj.ident;
+                quote! {
+                    #field_ident: unsafe {
+                        zweidraehte::objects::comm::TypedComObj::new(
+                            objs.#field_ident.value.as_mut(),
+                            &mut objs.#field_ident.status,
+                        )
+                    }
                 }
-            }
-        }).collect();
+            }).collect();
 
         quote! {
             #selector_enum::#selector_variant => #objs_enum_name::#variant_ident {

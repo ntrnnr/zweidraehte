@@ -5,9 +5,11 @@
 
 use std::fs;
 
-use testutil::devices::mdt_push_button_lite::{DEVICE_DESCRIPTOR, MdtParams, SERIAL_NUMBER, comm_objs, MdtStack};
-use testutil::mtxml_gen::{ApplicationProgramConfig, MtxmlGenerator, HardwareGenerator, CatalogGenerator, System7MemoryLayout, System7Segment};
+use testutil::devices::mdt_push_button_lite::{DEVICE_DESCRIPTOR, MdtParams, MdtStack, SERIAL_NUMBER, comm_objs};
 use testutil::mtxml_gen::page_layout::EtsPageLayout;
+use testutil::mtxml_gen::{
+    ApplicationProgramConfig, CatalogGenerator, HardwareGenerator, MtxmlGenerator, System7MemoryLayout, System7Segment,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -15,10 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get default parameter values as bytes
     let defaults: MdtParams = Default::default();
     let param_bytes = unsafe {
-        core::slice::from_raw_parts(
-            &defaults as *const MdtParams as *const u8,
-            core::mem::size_of::<MdtParams>(),
-        )
+        core::slice::from_raw_parts(&defaults as *const MdtParams as *const u8, core::mem::size_of::<MdtParams>())
     };
 
     // System 7 memory layout matching MDT original (MV-0705)
@@ -35,9 +34,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 name: "4000",
                 address: 16384,
                 size: 513,
-                memory_type: None, // Default
+                memory_type: None,       // Default
                 data: Some(param_bytes), // Address table initial data
-                mask: None, // TODO: Add mask if needed
+                mask: None,              // TODO: Add mask if needed
             },
             System7Segment {
                 name: "4201",
@@ -71,14 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 data: None, // RAM - no initial data
                 mask: None,
             },
-            System7Segment {
-                name: "083C",
-                address: 2108,
-                size: 1,
-                memory_type: Some("RAM"),
-                data: None,
-                mask: None,
-            },
+            System7Segment { name: "083C", address: 2108, size: 1, memory_type: Some("RAM"), data: None, mask: None },
         ],
         address_table_segment: "4000",
         association_table_segment: "4201",
@@ -121,22 +113,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_xml = MtxmlGenerator::generate(&config)?;
     let app_path = "MdtApplicationProgram1.mtxml";
     fs::write(app_path, &app_xml)?;
-    println!("Generated: {}", app_path);
+    eprintln!("Generated: {}", app_path);
 
     // Generate Hardware MTXML
     let hw_xml = HardwareGenerator::generate(&config)?;
     let hw_path = "MdtHardware1.mtxml";
     fs::write(hw_path, &hw_xml)?;
-    println!("Generated: {}", hw_path);
+    eprintln!("Generated: {}", hw_path);
 
     // Generate Catalog MTXML
     let cat_xml = CatalogGenerator::generate(&config)?;
     let cat_path = "MdtCatalog1.mtxml";
     fs::write(cat_path, &cat_xml)?;
-    println!("Generated: {}", cat_path);
+    eprintln!("Generated: {}", cat_path);
 
-    println!("\nAll MDT MTXML files generated successfully!");
-    println!("\nApplicationProgram preview (first 2000 chars):\n{}", &app_xml[..app_xml.len().min(2000)]);
+    eprintln!("\nAll MDT MTXML files generated successfully!");
+    //eprintln!("\nApplicationProgram preview (first 2000 chars):\n{}", &app_xml[..app_xml.len().min(2000)]);
 
     Ok(())
 }

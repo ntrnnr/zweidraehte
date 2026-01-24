@@ -496,7 +496,20 @@ macro_rules! ets_pages {
         vec![]
     };
 
-    // Parse element case with enum variants (cast directly to i64 since they're repr(isize))
+    // Parse element case with enum path expressions (e.g., EnumType::Variant)
+    // Must come before the simple ident rule to match first
+    (@element_cases [$($enum_type:ident :: $variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
+        let mut cases = vec![$crate::page_layout::ElementCase {
+            condition: $crate::page_layout::Condition::values(&[
+                $($enum_type::$variant as i64),+
+            ]),
+            elements: $crate::ets_pages!(@elements $($content)*),
+        }];
+        cases.extend($crate::ets_pages!(@element_cases $($rest)*));
+        cases
+    }};
+
+    // Parse element case with simple enum variants (cast directly to i64 since they're repr(isize))
     (@element_cases [$($variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
         let mut cases = vec![$crate::page_layout::ElementCase {
             condition: $crate::page_layout::Condition::values(&[
@@ -835,7 +848,20 @@ macro_rules! ets_pages {
         vec![]
     };
 
-    // Parse item case with enum variants (cast directly to i64 since they're repr(isize))
+    // Parse item case with enum path expressions (e.g., EnumType::Variant)
+    // Must come before the simple ident rule to match first
+    (@item_cases [$($enum_type:ident :: $variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
+        let mut cases = vec![$crate::page_layout::ItemCase {
+            condition: $crate::page_layout::Condition::values(&[
+                $($enum_type::$variant as i64),+
+            ]),
+            items: $crate::ets_pages!(@items $($content)*),
+        }];
+        cases.extend($crate::ets_pages!(@item_cases $($rest)*));
+        cases
+    }};
+
+    // Parse item case with simple enum variants (cast directly to i64 since they're repr(isize))
     (@item_cases [$($variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
         let mut cases = vec![$crate::page_layout::ItemCase {
             condition: $crate::page_layout::Condition::values(&[

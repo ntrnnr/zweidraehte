@@ -71,170 +71,6 @@ pub enum GEboolEnableDisable {
     Active = 1,
 }
 
-/// ModeCyclic1min4h - Cyclic send interval
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum ModeCyclic1min4h {
-    #[default]
-    #[ets(display = "not active")]
-    NotActive = 0,
-    #[ets(display = "1 min")]
-    Min1 = 1,
-    #[ets(display = "2 min")]
-    Min2 = 2,
-    #[ets(display = "5 min")]
-    Min5 = 5,
-    #[ets(display = "10 min")]
-    Min10 = 10,
-    #[ets(display = "20 min")]
-    Min20 = 20,
-    #[ets(display = "30 min")]
-    Min30 = 30,
-    #[ets(display = "1 h")]
-    Hour1 = 60,
-    #[ets(display = "2 h")]
-    Hour2 = 120,
-    #[ets(display = "4 h")]
-    Hour4 = 240,
-}
-
-/// ValueRead - Status request on bus power return
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum ValueRead {
-    #[default]
-    #[ets(display = "no request")]
-    NoRequest = 0,
-    #[ets(display = "request")]
-    Request = 1,
-}
-
-/// EingangType - Button mode selector
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum EingangType {
-    #[ets(display = "not active")]
-    NotActive = 0,
-    #[ets(display = "two-button function")]
-    TwoButton = 1,
-    #[default]
-    #[ets(display = "single-button function (2 functions, top/bottom)")]
-    SingleButton2Func = 2,
-    #[ets(display = "single-button function (1 function, top/bottom together)")]
-    SingleButton1Func = 3,
-}
-
-
-/// DebounceTime - Reaction time on keypress
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u16)]
-pub enum DebounceTime {
-    #[default]
-    #[ets(display = "fast")]
-    Fast = 80,
-    #[ets(display = "medium")]
-    Medium = 100,
-    #[ets(display = "slow")]
-    Slow = 150,
-}
-
-
-/// ButtonSwitchType - Switch subfunction type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u16)]
-pub enum ButtonSwitchType {
-    #[ets(display = "switch")]
-    Switch = 0,
-    #[default]
-    #[ets(display = "toggle")]
-    Toggle = 1,
-    #[ets(display = "send status")]
-    SendStatus = 2,
-}
-
-
-/// TwoButtonFunction - Function selector for two-button mode (P-91)
-/// Maps to MDT's EingangFunctionGroup parameter type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u16)]
-#[ets(type_name = "EingangFunctionGroup")]
-pub enum TwoButtonFunction {
-    #[default]
-    #[ets(display = "switch")]
-    Switch = 0,
-    #[ets(display = "dimming")]
-    Dimming = 1,
-    #[ets(display = "blinds/shutter")]
-    BlindsShutter = 2,
-    #[ets(display = "send values")]
-    SendValues = 3,
-    #[ets(display = "switch/send values short/long (with 2 objects)")]
-    SwitchSendValues = 5,
-}
-
-
-/// SwitchType - Button assignment for two-button switch mode (P-92)
-/// Maps to MDT's SwitchType parameter type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u16)]
-#[ets(type_name = "SwitchType")]
-pub enum SwitchType {
-    #[default]
-    #[ets(display = "ON/OFF")]
-    OnOff = 0,
-    #[ets(display = "OFF/ON")]
-    OffOn = 1,
-}
-
-
-/// GroupLongSendCondition - Group long sends option for two-button mode (P-93, P-94)
-/// Maps to MDT's GroupLongSendCondition parameter type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-#[ets(type_name = "GroupLongSendCondition")]
-pub enum GroupLongSendCondition {
-    #[default]
-    #[ets(display = "send ON/OFF")]
-    SendOnOff = 0,
-    #[ets(display = "send OFF/ON")]
-    SendOffOn = 1,
-    #[ets(display = "send toggle")]
-    SendToggle = 2,
-}
-
-
-/// ButtonGroupValueType - Subfunction for two-button send values mode (P-95)
-/// Maps to MDT's ButtonGrouptValueType parameter type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-#[ets(type_name = "ButtonGrouptValueType")]
-pub enum ButtonGroupValueType {
-    #[default]
-    #[ets(display = "send values")]
-    SendValues = 1,
-    #[ets(display = "toggle values/scenes (up to 4 values)")]
-    ToggleValues = 2,
-    #[ets(display = "shift value")]
-    ShiftValue = 3,
-}
-
-
-/// GroupSend - Group long sends options for two-button mode (P-96)
-/// Maps to MDT's GroupSend parameter type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-#[ets(type_name = "GroupSend")]
-pub enum GroupSend {
-    #[default]
-    #[ets(display = "value for upper and lower button")]
-    ValueBothButtons = 0,
-    #[ets(display = "value for upper button")]
-    ValueUpperButton = 1,
-    #[ets(display = "value for lower button")]
-    ValueLowerButton = 2,
-}
-
-
 /// ObjectType enum for send values mode - matches MDT's DPTType1Bit values
 /// Used as selector_param values for ComObjectRefs in send values mode
 /// Note: Switch is at value 10 (not 0) to match MDT's DPTType1Bit
@@ -272,59 +108,36 @@ pub enum ObjectType {
     Switch = 10,
 }
 
-/// EnableDisable1Byte - 8-bit enable/disable
+/// DptType enum for cases where Switch (10) is not an option
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
 #[repr(u8)]
-pub enum EnableDisable1Byte {
-    #[default]
-    #[ets(display = "not active")]
-    NotActive = 0,
-    #[ets(display = "active")]
-    Active = 1,
-}
-
-
-/// ButtonValueType - Send value mode selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u16)]
-pub enum ButtonValueType {
-    #[default]
-    #[ets(display = "send values")]
-    SendValues = 0,
-    #[ets(display = "send values by state")]
-    SendValuesByState = 1,
-    #[ets(display = "toggle values/scenes (up to 4 values)")]
-    ToggleValues = 2,
-    #[ets(display = "Multi-tip function (send values after number of operations)")]
-    MultiTip = 3,
-}
-
-
-/// DPTType1Bit - DPT type selection for 1-bit compatible outputs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum DPTType1Bit {
+pub enum DptType {
+    /// 2Bit DPT 2.001 Forcible control
     #[ets(display = "2Bit DPT 2.001 Forcible control")]
-    ForcibleControl = 1,
+    Bit2 = 1,
+    /// 1Byte DPT 5.001 Percent (0...100%)
     #[default]
     #[ets(display = "1Byte DPT 5.001 Percent (0...100%)")]
     Percent = 2,
+    /// 1Byte DPT 5.005 Decimal factor (0...255)
     #[ets(display = "1Byte DPT 5.005 Decimal factor (0...255)")]
-    DecimalFactor = 3,
+    Decimal = 3,
+    /// 1Byte DPT 17.001 Scene number
     #[ets(display = "1Byte DPT 17.001 Scene number")]
-    SceneNumber = 4,
+    Scene = 4,
+    /// 2Byte DPT 7.600 Colour Temperature (Kelvin)
     #[ets(display = "2Byte DPT 7.600 Colour Temperature (Kelvin)")]
-    ColourTemperature = 6,
+    ColourTemp = 6,
+    /// 2Byte DPT 9.001 Temperature (°C)
     #[ets(display = "2Byte DPT 9.001 Temperature (°C)")]
     Temperature = 7,
+    /// 2Byte DPT 9.004 Brightness (Lux)
     #[ets(display = "2Byte DPT 9.004 Brightness (Lux)")]
     Brightness = 8,
+    /// 3Byte DPT 232.600 RGB value 3x(0...255)
     #[ets(display = "3Byte DPT 232.600 RGB value 3x(0...255)")]
-    RgbValue = 9,
-    #[ets(display = "1Bit DPT 1.001 Switch")]
-    Switch = 10,
+    Rgb = 9,
 }
-
 
 /// Zwangsfuehrung - Priority/Forcible control
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -341,69 +154,6 @@ pub enum Zwangsfuehrung {
     PriorityOn = 3,
 }
 
-
-/// ButtonFunction - Main button function selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u16)]
-pub enum ButtonFunction {
-    #[default]
-    #[ets(display = "switch")]
-    Switch = 0,
-    #[ets(display = "dimming")]
-    Dimming = 1,
-    #[ets(display = "blinds/shutter")]
-    Blinds = 2,
-    #[ets(display = "scene")]
-    Scene = 3,
-    #[ets(display = "send values")]
-    SendValues = 4,
-    #[ets(display = "switch/send values short/long (with 2 objects)")]
-    SwitchSendValues = 7,
-    #[ets(display = "not active")]
-    NotActive = 255,
-}
-
-
-/// SpecialFunction - Innovative group control options
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum SpecialFunction {
-    #[default]
-    #[ets(display = "innovative group control")]
-    InnovativeGroupControl = 0,
-    #[ets(display = "additional object")]
-    AdditionalObject = 1,
-}
-
-
-/// ModeRGBHSV - RGB vs HSV color mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum ModeRGBHSV {
-    #[default]
-    #[ets(display = "RGB")]
-    Rgb = 1,
-    #[ets(display = "HSV")]
-    Hsv = 2,
-}
-
-
-/// LogicType - Logic function type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum LogicType {
-    #[ets(display = "Or")]
-    Or = 0,
-    #[ets(display = "And")]
-    And = 1,
-    #[ets(display = "send value when button is pressed")]
-    SendValueOnPress = 2,
-    #[default]
-    #[ets(display = "not active")]
-    NotActive = 255,
-}
-
-
 /// LogicObjectType - Logic output object type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
 #[repr(u8)]
@@ -418,25 +168,6 @@ pub enum LogicObjectType {
     #[ets(display = "forcible control 2Bit")]
     ForcibleControl = 4,
 }
-
-
-/// SendCondition - Logic send condition
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum SendCondition {
-    #[default]
-    #[ets(display = "not automatic")]
-    NotAutomatic = 0,
-    #[ets(display = "at input telegram")]
-    AtInputTelegram = 1,
-    #[ets(display = "at change output")]
-    AtChangeOutput = 2,
-    #[ets(display = "at change output (send only 0)")]
-    AtChangeOutputSendOnly0 = 5,
-    #[ets(display = "at change output (send only 1)")]
-    AtChangeOutputSendOnly1 = 6,
-}
-
 
 /// ExtInputLogicType - External logic input configuration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -455,19 +186,6 @@ pub enum ExtInputLogicType {
     InvertedActivePrealloc1 = 130,
 }
 
-
-/// IntInputLogicType - Internal logic input from buttons
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum IntInputLogicType {
-    #[default]
-    #[ets(display = "pressed = ON")]
-    PressedOn = 1,
-    #[ets(display = "pressed = OFF")]
-    PressedOff = 2,
-}
-
-
 /// LogicButton - Button selection for logic inputs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
 #[repr(u8)]
@@ -481,97 +199,6 @@ pub enum LogicButton {
     Button2 = 2,
 }
 
-
-/// JaNein - Yes/No selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum JaNein {
-    #[default]
-    #[ets(display = "no")]
-    No = 0,
-    #[ets(display = "yes")]
-    Yes = 1,
-}
-
-
-/// Cleaning - Slap/Cleaning function mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum Cleaning {
-    #[default]
-    #[ets(display = "cleaning not active, slap active")]
-    SlapOnly = 0,
-    #[ets(display = "cleaning = long button, slap = short button")]
-    CleaningLongSlapShort = 1,
-    #[ets(display = "cleaning = short button, slap = long button")]
-    CleaningShortSlapLong = 2,
-}
-
-
-/// LEDRGBColorPatch - LED color for slap indication
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum LEDRGBColorPatch {
-    #[ets(display = "off")]
-    Off = 0,
-    #[ets(display = "red")]
-    Red = 1,
-    #[ets(display = "green")]
-    Green = 2,
-    #[ets(display = "yellow")]
-    Yellow = 3,
-    #[ets(display = "blue")]
-    Blue = 4,
-    #[ets(display = "pink")]
-    Pink = 5,
-    #[ets(display = "cyan")]
-    Cyan = 6,
-    #[default]
-    #[ets(display = "white")]
-    White = 16,
-    #[ets(display = "no signal slap function over LEDs")]
-    NoSignal = 31,
-}
-
-
-/// DimmType - Dimmer direction configuration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u16)]
-pub enum DimmType {
-    #[default]
-    #[ets(display = "brighter / darker")]
-    BrighterDarker = 0,
-    #[ets(display = "darker / brighter")]
-    DarkerBrighter = 1,
-}
-
-
-/// ConfigChan - Blind channel direction
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u16)]
-pub enum ConfigChan {
-    #[default]
-    #[ets(display = "Up/Down")]
-    UpDown = 0,
-    #[ets(display = "Down/Up")]
-    DownUp = 1,
-}
-
-
-/// ShortLongInverse - Blind operation function (1-bit)
-/// MDT: PT-Short.2FLong.5FInverse, SizeInBit="1"
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[ets(size = "1 Bit")]
-#[repr(u8)]
-pub enum ShortLongInverse {
-    #[default]
-    #[ets(display = "long=move / short=stop/slats Open/Close")]
-    LongMoveShortStop = 0,
-    #[ets(display = "short=move / long=stop/slats Open/Close")]
-    ShortMoveLongStop = 1,
-}
-
-
 // SceneValue - Scene number selection (1-64)
 // Display shows 1-64, stored as 0-63 (DPT 17.001 format)
 ets_range_enum! {
@@ -583,7 +210,6 @@ ets_range_enum! {
     }
 }
 
-
 // Select0to100Percent - Percentage selection (0-100%)
 // Maps percentage display to byte values using formula: round(percent * 2.55)
 ets_range_enum! {
@@ -594,7 +220,6 @@ ets_range_enum! {
         default = 0;
     }
 }
-
 
 /// GEDPT_Switch - Basic ON/OFF switch value
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -632,30 +257,6 @@ pub enum PressedOnOff {
     PressedOff = 2,
 }
 
-/// OnOff - Simple ON/OFF toggle
-/// Used for various boolean-like parameters (5 occurrences)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum OnOff {
-    #[default]
-    #[ets(display = "OFF")]
-    Off = 0,
-    #[ets(display = "ON")]
-    On = 1,
-}
-
-/// AndOr - Logic gate type selector
-/// Used for logic channel configuration (4 occurrences)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
-#[repr(u8)]
-pub enum AndOr {
-    #[default]
-    #[ets(display = "Or")]
-    Or = 0,
-    #[ets(display = "And")]
-    And = 1,
-}
-
 /// YesNo - Simple yes/no toggle
 /// Used for various confirmation parameters (4 occurrences)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
@@ -666,6 +267,605 @@ pub enum YesNo {
     No = 0,
     #[ets(display = "yes")]
     Yes = 1,
+}
+
+/// TipOperationCount - Number of tip operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum TipOperationCount {
+    #[default]
+    #[ets(display = "2")]
+    Two = 1,
+    #[ets(display = "3")]
+    Three = 2,
+}
+
+/// ValueCount - Number of values/scenes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum ValueCount {
+    #[default]
+    #[ets(display = "2")]
+    Two = 1,
+    #[ets(display = "3")]
+    Three = 2,
+    #[ets(display = "4")]
+    Four = 3,
+}
+
+/// TimeForLongKeypress - Time duration for long keypress detection
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u16)]
+pub enum TimeForLongKeypress {
+    #[ets(display = "basic setting")]
+    BasicSetting = 0,
+    #[ets(display = "0,1 s")]
+    Ms100 = 32868,
+    #[ets(display = "0,2 s")]
+    Ms200 = 32968,
+    #[ets(display = "0,3 s")]
+    Ms300 = 33068,
+    #[default]
+    #[ets(display = "0,4 s")]
+    Ms400 = 33168,
+    #[ets(display = "0,5 s")]
+    Ms500 = 33268,
+    #[ets(display = "0,6 s")]
+    Ms600 = 33368,
+    #[ets(display = "0,7 s")]
+    Ms700 = 33468,
+    #[ets(display = "0,8 s")]
+    Ms800 = 33568,
+    #[ets(display = "0,9 s")]
+    Ms900 = 33668,
+    #[ets(display = "1,0 s")]
+    S1 = 33768,
+    #[ets(display = "1,5 s")]
+    S1_5 = 34268,
+    #[ets(display = "2,0 s")]
+    S2 = 34768,
+    #[ets(display = "2,5 s")]
+    S2_5 = 35268,
+    #[ets(display = "3,0 s")]
+    S3 = 35768,
+    #[ets(display = "3,5 s")]
+    S3_5 = 36268,
+    #[ets(display = "4,0 s")]
+    S4 = 36768,
+    #[ets(display = "4,5 s")]
+    S4_5 = 37268,
+    #[ets(display = "5,5 s")]
+    S5_5 = 38268,
+    #[ets(display = "6,5 s")]
+    S6_5 = 39268,
+    #[ets(display = "7,5 s")]
+    S7_5 = 40268,
+    #[ets(display = "8,5 s")]
+    S8_5 = 41268,
+    #[ets(display = "9,5 s")]
+    S9_5 = 42268,
+    #[ets(display = "12,0 s")]
+    S12 = 12,
+    #[ets(display = "15,0 s")]
+    S15 = 15,
+    #[ets(display = "20,0 s")]
+    S20 = 20,
+    #[ets(display = "25,0 s")]
+    S25 = 25,
+    #[ets(display = "30,0 s")]
+    S30 = 30,
+}
+
+/// DelayTime1sTo60min - Delay time from 1 second to 60 minutes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u16)]
+pub enum DelayTime1sTo60min {
+    #[default]
+    #[ets(display = "1 s")]
+    S1 = 1,
+    #[ets(display = "2 s")]
+    S2 = 2,
+    #[ets(display = "3 s")]
+    S3 = 3,
+    #[ets(display = "4 s")]
+    S4 = 4,
+    #[ets(display = "5 s")]
+    S5 = 5,
+    #[ets(display = "10 s")]
+    S10 = 10,
+    #[ets(display = "15 s")]
+    S15 = 15,
+    #[ets(display = "20 s")]
+    S20 = 20,
+    #[ets(display = "25 s")]
+    S25 = 25,
+    #[ets(display = "30 s")]
+    S30 = 30,
+    #[ets(display = "35 s")]
+    S35 = 35,
+    #[ets(display = "40 s")]
+    S40 = 40,
+    #[ets(display = "45 s")]
+    S45 = 45,
+    #[ets(display = "60 s")]
+    S60 = 60,
+    #[ets(display = "2 min")]
+    Min2 = 120,
+    #[ets(display = "3 min")]
+    Min3 = 180,
+    #[ets(display = "4 min")]
+    Min4 = 240,
+    #[ets(display = "5 min")]
+    Min5 = 300,
+    #[ets(display = "6 min")]
+    Min6 = 360,
+    #[ets(display = "7 min")]
+    Min7 = 420,
+    #[ets(display = "8 min")]
+    Min8 = 480,
+    #[ets(display = "9 min")]
+    Min9 = 540,
+    #[ets(display = "10 min")]
+    Min10 = 600,
+    #[ets(display = "15 min")]
+    Min15 = 900,
+    #[ets(display = "20 min")]
+    Min20 = 1200,
+    #[ets(display = "25 min")]
+    Min25 = 1500,
+    #[ets(display = "30 min")]
+    Min30 = 1800,
+    #[ets(display = "35 min")]
+    Min35 = 2100,
+    #[ets(display = "40 min")]
+    Min40 = 2400,
+    #[ets(display = "45 min")]
+    Min45 = 2700,
+    #[ets(display = "60 min")]
+    Min60 = 3600,
+}
+
+/// SceneToggleDelayTime - Delay time for scene toggling (0-10 seconds)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u16)]
+pub enum SceneToggleDelayTime {
+    #[default]
+    #[ets(display = "0 s")]
+    S0 = 0,
+    #[ets(display = "0,5 s")]
+    Ms500 = 5,
+    #[ets(display = "1 s")]
+    S1 = 10,
+    #[ets(display = "2 s")]
+    S2 = 20,
+    #[ets(display = "3 s")]
+    S3 = 30,
+    #[ets(display = "4 s")]
+    S4 = 40,
+    #[ets(display = "5 s")]
+    S5 = 50,
+    #[ets(display = "6 s")]
+    S6 = 60,
+    #[ets(display = "7 s")]
+    S7 = 70,
+    #[ets(display = "8 s")]
+    S8 = 80,
+    #[ets(display = "9 s")]
+    S9 = 90,
+    #[ets(display = "10 s")]
+    S10 = 100,
+}
+
+/// ExtraLongKeypressTime - Time for extra long keypress (no basic setting option)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u16)]
+pub enum ExtraLongKeypressTime {
+    #[ets(display = "0,1 s")]
+    Ms100 = 32868,
+    #[ets(display = "0,2 s")]
+    Ms200 = 32968,
+    #[ets(display = "0,3 s")]
+    Ms300 = 33068,
+    #[ets(display = "0,4 s")]
+    Ms400 = 33168,
+    #[ets(display = "0,5 s")]
+    Ms500 = 33268,
+    #[ets(display = "0,6 s")]
+    Ms600 = 33368,
+    #[ets(display = "0,7 s")]
+    Ms700 = 33468,
+    #[ets(display = "0,8 s")]
+    Ms800 = 33568,
+    #[ets(display = "0,9 s")]
+    Ms900 = 33668,
+    #[ets(display = "1,0 s")]
+    S1 = 33768,
+    #[ets(display = "1,5 s")]
+    S1_5 = 34268,
+    #[default]
+    #[ets(display = "2,0 s")]
+    S2 = 34768,
+    #[ets(display = "2,5 s")]
+    S2_5 = 35268,
+    #[ets(display = "3,0 s")]
+    S3 = 35768,
+    #[ets(display = "3,5 s")]
+    S3_5 = 36268,
+    #[ets(display = "4,0 s")]
+    S4 = 36768,
+    #[ets(display = "4,5 s")]
+    S4_5 = 37268,
+    #[ets(display = "5,5 s")]
+    S5_5 = 38268,
+    #[ets(display = "6,5 s")]
+    S6_5 = 39268,
+    #[ets(display = "7,5 s")]
+    S7_5 = 40268,
+    #[ets(display = "8,5 s")]
+    S8_5 = 41268,
+    #[ets(display = "9,5 s")]
+    S9_5 = 42268,
+    #[ets(display = "12,0 s")]
+    S12 = 12,
+    #[ets(display = "15,0 s")]
+    S15 = 15,
+    #[ets(display = "20,0 s")]
+    S20 = 20,
+    #[ets(display = "25,0 s")]
+    S25 = 25,
+    #[ets(display = "30,0 s")]
+    S30 = 30,
+}
+
+/// SendingCondition - When to send logic output
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum SendingCondition {
+    #[ets(display = "not automatic")]
+    NotAutomatic = 0,
+    #[ets(display = "at input telegram")]
+    AtInputTelegram = 1,
+    #[default]
+    #[ets(display = "at change output")]
+    AtChangeOutput = 2,
+    #[ets(display = "at change output (send only 0)")]
+    AtChangeOutputSendOnly0 = 5,
+    #[ets(display = "at change output (send only 1)")]
+    AtChangeOutputSendOnly1 = 6,
+}
+
+/// NoYes - No/Yes toggle (different from YesNo)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum NoYes {
+    #[default]
+    #[ets(display = "No")]
+    No = 0,
+    #[ets(display = "Yes")]
+    Yes = 1,
+}
+
+/// ForcibleControlValue - 2-bit forcible control value (used in unions)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum ForcibleControlValue {
+    #[default]
+    #[ets(display = "00 - no priority, OFF")]
+    NoPriorityOff = 0,
+    #[ets(display = "01 - no priority, ON")]
+    NoPriorityOn = 1,
+    #[ets(display = "10 - priority, OFF")]
+    PriorityOff = 2,
+    #[ets(display = "11 - priority, ON")]
+    PriorityOn = 3,
+}
+
+/// ReactionTime - Reaction time on keypress
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum ReactionTime {
+    #[default]
+    #[ets(display = "fast")]
+    Fast = 80,
+    #[ets(display = "medium")]
+    Medium = 100,
+    #[ets(display = "slow")]
+    Slow = 150,
+}
+
+/// CyclicSendInterval - Cyclic sending interval
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum CyclicSendInterval {
+    #[default]
+    #[ets(display = "not active")]
+    NotActive = 0,
+    #[ets(display = "1 min")]
+    Min1 = 1,
+    #[ets(display = "2 min")]
+    Min2 = 2,
+    #[ets(display = "5 min")]
+    Min5 = 5,
+    #[ets(display = "10 min")]
+    Min10 = 10,
+    #[ets(display = "20 min")]
+    Min20 = 20,
+    #[ets(display = "30 min")]
+    Min30 = 30,
+    #[ets(display = "1 h")]
+    Hour1 = 60,
+    #[ets(display = "2 h")]
+    Hour2 = 120,
+    #[ets(display = "4 h")]
+    Hour4 = 240,
+}
+
+/// RequestNoRequest - Request/No request toggle
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum RequestNoRequest {
+    #[ets(display = "no request")]
+    NoRequest = 0,
+    #[default]
+    #[ets(display = "request")]
+    Request = 1,
+}
+
+/// ButtonsType - Button 1/2 function type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum ButtonsType {
+    #[ets(display = "not active")]
+    NotActive = 0,
+    #[ets(display = "two-button function")]
+    TwoButton = 1,
+    #[default]
+    #[ets(display = "single-button function (2 functions, top/bottom)")]
+    SingleButton2Functions = 2,
+    #[ets(display = "single-button function (1 function, top/bottom together)")]
+    SingleButton1Function = 3,
+}
+
+/// ButtonFunction - Main button function mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u16)]
+pub enum ButtonFunction {
+    #[ets(display = "not active")]
+    NotActive = 255,
+    #[default]
+    #[ets(display = "switch")]
+    Switch = 0,
+    #[ets(display = "dimming")]
+    Dimming = 1,
+    #[ets(display = "blinds/shutter")]
+    BlindsShutter = 2,
+    #[ets(display = "scene")]
+    Scene = 3,
+    #[ets(display = "send values")]
+    SendValues = 4,
+    #[ets(display = "switch/send values short/long (with 2 objects)")]
+    SwitchSendValuesShortLong = 7,
+}
+
+/// SwitchSubfunction - Switch subfunction type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u16)]
+pub enum SwitchSubfunction {
+    #[ets(display = "switch")]
+    Switch = 0,
+    #[default]
+    #[ets(display = "toggle")]
+    Toggle = 1,
+    #[ets(display = "send status")]
+    SendStatus = 2,
+}
+
+/// LogicType - Logic channel type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum LogicType {
+    #[ets(display = "not active")]
+    #[default]
+    NotActive = 255,
+    #[ets(display = "Or")]
+    Or = 0,
+    #[ets(display = "And")]
+    And = 1,
+    #[ets(display = "send value when button is pressed")]
+    SendValueWhenPressed = 2,
+}
+
+/// SlapObjectType - Slap button object type selector
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum SlapObjectType {
+    #[default]
+    #[ets(display = "1Bit")]
+    Bit1 = 0,
+    #[ets(display = "2Bit")]
+    Bit2 = 1,
+    #[ets(display = "1Byte Char")]
+    Byte1Char = 2,
+    #[ets(display = "1Byte SignedChar")]
+    Byte1SignedChar = 3,
+    #[ets(display = "2Byte KNX_Float")]
+    Byte2KnxFloat = 4,
+    #[ets(display = "2Byte Short")]
+    Byte2Short = 5,
+    #[ets(display = "3Byte RGB")]
+    Byte3Rgb = 6,
+    #[ets(display = "3Byte HSV")]
+    Byte3Hsv = 7,
+    #[ets(display = "4Byte SignedLong")]
+    Byte4SignedLong = 8,
+    #[ets(display = "4Byte Long Float")]
+    Byte4LongFloat = 9,
+    #[ets(display = "1Byte Scene")]
+    Byte1Scene = 10,
+}
+
+/// LogicOutputType - Logic output object type selector
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum LogicOutputType {
+    #[default]
+    #[ets(display = "switch")]
+    Switch = 1,
+    #[ets(display = "scene")]
+    Scene = 2,
+    #[ets(display = "value")]
+    Value = 3,
+    #[ets(display = "forcible control 2Bit")]
+    ForcibleControl = 4,
+}
+
+/// ButtonValueFunction - Button value function mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum ButtonValueFunction {
+    #[default]
+    #[ets(display = "send values")]
+    SendValues = 0,
+    #[ets(display = "send values by state")]
+    SendValuesByState = 1,
+    #[ets(display = "toggle values/scenes (up to 4 values)")]
+    ToggleValues = 2,
+    #[ets(display = "Multi-tip function (send values after number of operations)")]
+    MultiTip = 3,
+}
+
+/// SpecialFunction - Button special function selector
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum SpecialFunction {
+    #[default]
+    #[ets(display = "Innovative group control")]
+    InnovativeGroupControl = 0,
+    #[ets(display = "Additional object")]
+    AdditionalObject = 1,
+}
+
+/// BlindsOperationFunction - Operation function for blinds
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum BlindsOperationFunction {
+    #[default]
+    #[ets(display = "long=move / short=stop/slats Open/Close")]
+    LongMoveShortStop = 0,
+    #[ets(display = "short=move / long=stop/slats Open/Close")]
+    ShortMoveLongStop = 1,
+}
+
+/// TipOutputObjects - Tip output objects mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum TipOutputObjects {
+    #[default]
+    #[ets(display = "common object /DPT")]
+    CommonObject = 0,
+    #[ets(display = "different objects / DPT")]
+    DifferentObjects = 1,
+}
+
+/// SlapCleaningMode - Slap cleaning function mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum SlapCleaningMode {
+    #[default]
+    #[ets(display = "cleaning not active, slap active")]
+    CleaningNotActive = 0,
+    #[ets(display = "cleaning = long button, slap = short button")]
+    CleaningLongSlapShort = 1,
+    #[ets(display = "cleaning = short button, slap = long button")]
+    CleaningShortSlapLong = 2,
+}
+
+/// TwoButtonValueFunction - Two-button value function mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum TwoButtonValueFunction {
+    #[default]
+    #[ets(display = "send values")]
+    SendValues = 1,
+    #[ets(display = "toggle values/scenes (up to 4 values)")]
+    ToggleValues = 2,
+    #[ets(display = "shift value")]
+    ShiftValue = 3,
+}
+
+/// GroupSendOption - Group send option for two-button mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum GroupSendOption {
+    #[default]
+    #[ets(display = "value for upper and lower button")]
+    UpperAndLower = 0,
+    #[ets(display = "value for upper button")]
+    UpperButton = 1,
+    #[ets(display = "value for lower button")]
+    LowerButton = 2,
+}
+
+/// LongAction - Action for long keypress
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum LongAction {
+    #[default]
+    #[ets(display = "switch OFF")]
+    SwitchOff = 0,
+    #[ets(display = "switch ON")]
+    SwitchOn = 1,
+    #[ets(display = "toggle")]
+    Toggle = 2,
+    #[ets(display = "send values")]
+    SendValues = 3,
+    #[ets(display = "not active")]
+    NotActive = 255,
+}
+
+/// ShortAction - Action for short keypress in SwitchSendValuesShortLong mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u8)]
+pub enum ShortAction {
+    #[default]
+    #[ets(display = "switch OFF")]
+    SwitchOff = 0,
+    #[ets(display = "switch ON")]
+    SwitchOn = 1,
+    #[ets(display = "toggle")]
+    Toggle = 2,
+    #[ets(display = "send values")]
+    SendValues = 3,
+    #[ets(display = "not active")]
+    NotActive = 255,
+}
+
+/// TwoButtonFunction - Two-button function selector
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u16)]
+pub enum TwoButtonFunction {
+    #[default]
+    #[ets(display = "switch")]
+    Switch = 0,
+    #[ets(display = "dimming")]
+    Dimming = 1,
+    #[ets(display = "blinds/shutter")]
+    BlindsShutter = 2,
+    #[ets(display = "send values")]
+    SendValues = 3,
+    #[ets(display = "switch/send values short/long (with 2 objects)")]
+    SwitchSendValues = 5,
+}
+
+/// ButtonAssignment - Button assignment for two-button mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[repr(u16)]
+pub enum ButtonAssignment {
+    #[default]
+    #[ets(display = "ON/OFF")]
+    OnOff = 0,
+    #[ets(display = "OFF/ON")]
+    OffOn = 1,
 }
 
 // ============================================================================
@@ -681,16 +881,16 @@ pub enum SubTypeHUnion {
     /// MDT: TipValueCount enum - Value=1 means "2 operations", Value=2 means "3 operations"
     #[ets(default_variant, display = "Tip operations")]
     TipOperations {
-        #[ets(display = "Number of tip-operations", enum_variants("2" => 1, "3" => 2), default = 1)]
-        count: u8,
+        #[ets(display = "Number of tip-operations", ets_enum)]
+        count: TipOperationCount,
     } = 0,
 
     /// Number of values for toggle values/scenes mode (2, 3, or 4 values)
     /// MDT: ValueCount enum - Value=1 means "2 values", Value=2 means "3 values", Value=3 means "4 values"
     #[ets(display = "Value count")]
     ValueCount {
-        #[ets(display = "Number of values", enum_variants("2" => 1, "3" => 2, "4" => 3), default = 1)]
-        count: u8,
+        #[ets(display = "Number of values", ets_enum)]
+        count: ValueCount,
     } = 1,
 }
 
@@ -719,10 +919,10 @@ pub enum ButtonValueUnion {
     } = 1,
 
     /// Percent value (0-100%) - matches ObjectType::Percent = 2 (button_object_type "1Byte Char")
-    /// Default value is 63 (25%) for button1_value_00 "Value tip once"
+    /// Default value is 64 (25%) for button1_value_00 "Value tip once"
     #[ets(display = "Percent")]
     Percent {
-        #[ets(display = "Value", ets_enum, default = 63)]
+        #[ets(display = "Value", ets_enum, default = 64)]
         value: Select0to100Percent,
         #[ets(skip)]
         _pad: [u8; 3],
@@ -808,60 +1008,6 @@ pub enum ButtonValueUnion {
     } = 11,
 }
 
-/// Long Button Action Union (8-bit) - Action type for long keypress
-#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
-#[repr(C, u8)]
-pub enum LongButtonActionUnion {
-    /// No long action (dummy/hidden)
-    #[ets(default_variant, display = "None")]
-    None {
-        #[ets(skip)]
-        _dummy: u8,
-    } = 0,
-
-    /// Toggle between 2 values
-    #[ets(display = "2 values")]
-    TwoValues {
-        #[ets(display = "Action with long keypress", enum_variants("toggle value 1/2" => 0, "toggle value 2/1" => 1, "send value 1" => 2, "send value 2" => 3, "no action" => 4))]
-        action: u8,
-    } = 1,
-
-    /// Toggle between 3 values
-    #[ets(display = "3 values")]
-    ThreeValues {
-        #[ets(display = "Action with long keypress", enum_variants("toggle value 1/2/3" => 0, "toggle value 3/2/1" => 1, "send value 1" => 2, "send value 2" => 3, "send value 3" => 4, "no action" => 5))]
-        action: u8,
-    } = 2,
-
-    /// Toggle between 4 values
-    #[ets(display = "4 values")]
-    FourValues {
-        #[ets(display = "Action with long keypress", enum_variants("toggle value 1/2/3/4" => 0, "toggle value 4/3/2/1" => 1, "send value 1" => 2, "send value 2" => 3, "send value 3" => 4, "send value 4" => 5, "no action" => 6))]
-        action: u8,
-    } = 3,
-
-    /// Scene toggle with 2 values (includes save option)
-    #[ets(display = "2 scenes")]
-    TwoScenes {
-        #[ets(display = "Action with long keypress", enum_variants("toggle scene 1/2" => 0, "toggle scene 2/1" => 1, "call scene 1" => 2, "call scene 2" => 3, "no action" => 4, "save scene" => 5))]
-        action: u8,
-    } = 4,
-
-    /// Scene toggle with 3 values (includes save option)
-    #[ets(display = "3 scenes")]
-    ThreeScenes {
-        #[ets(display = "Action with long keypress", enum_variants("toggle scene 1/2/3" => 0, "toggle scene 3/2/1" => 1, "call scene 1" => 2, "call scene 2" => 3, "call scene 3" => 4, "no action" => 5, "save scene" => 6))]
-        action: u8,
-    } = 5,
-
-    /// Scene toggle with 4 values (includes save option)
-    #[ets(display = "4 scenes")]
-    FourScenes {
-        #[ets(display = "Action with long keypress", enum_variants("toggle scene 1/2/3/4" => 0, "toggle scene 4/3/2/1" => 1, "call scene 1" => 2, "call scene 2" => 3, "call scene 3" => 4, "call scene 4" => 5, "no action" => 6, "save scene" => 7))]
-        action: u8,
-    } = 6,
-}
-
 /// Time Duration Union (16-bit) - Various time values
 #[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
 #[repr(C, u8)]
@@ -869,96 +1015,22 @@ pub enum TimeDurationUnion {
     /// Time for long keypress (with "basic setting" option) - TimeforLongSwitchGroup0-30s
     #[ets(default_variant, display = "Long keypress time")]
     LongKeypressTime {
-        #[ets(display = "Time for long keypress", enum_variants(
-            "basic setting" => 0,
-            "0,1 s" => 32868,
-            "0,2 s" => 32968,
-            "0,3 s" => 33068,
-            "0,4 s" => 33168,
-            "0,5 s" => 33268,
-            "0,6 s" => 33368,
-            "0,7 s" => 33468,
-            "0,8 s" => 33568,
-            "0,9 s" => 33668,
-            "1,0 s" => 33768,
-            "1,5 s" => 34268,
-            "2,0 s" => 34768,
-            "2,5 s" => 35268,
-            "3,0 s" => 35768,
-            "3,5 s" => 36268,
-            "4,0 s" => 36768,
-            "4,5 s" => 37268,
-            "5,5 s" => 38268,
-            "6,5 s" => 39268,
-            "7,5 s" => 40268,
-            "8,5 s" => 41268,
-            "9,5 s" => 42268,
-            "12,0 s" => 12,
-            "15,0 s" => 15,
-            "20,0 s" => 20,
-            "25,0 s" => 25,
-            "30,0 s" => 30
-        ))]
-        value: u16,
+        #[ets(display = "Time for long keypress", ets_enum)]
+        value: TimeForLongKeypress,
     } = 0,
 
     /// Delay time (1s to 60min) - DelayTime1s-60min
     #[ets(display = "Delay time")]
     DelayTime {
-        #[ets(display = "Time delay", default = 1, enum_variants(
-            "1 s" => 1,
-            "2 s" => 2,
-            "3 s" => 3,
-            "4 s" => 4,
-            "5 s" => 5,
-            "10 s" => 10,
-            "15 s" => 15,
-            "20 s" => 20,
-            "25 s" => 25,
-            "30 s" => 30,
-            "35 s" => 35,
-            "40 s" => 40,
-            "45 s" => 45,
-            "60 s" => 60,
-            "2 min" => 120,
-            "3 min" => 180,
-            "4 min" => 240,
-            "5 min" => 300,
-            "6 min" => 360,
-            "7 min" => 420,
-            "8 min" => 480,
-            "9 min" => 540,
-            "10 min" => 600,
-            "15 min" => 900,
-            "20 min" => 1200,
-            "25 min" => 1500,
-            "30 min" => 1800,
-            "35 min" => 2100,
-            "40 min" => 2400,
-            "45 min" => 2700,
-            "60 min" => 3600
-        ))]
-        delay_time: u16,
+        #[ets(display = "Time delay", ets_enum, default = 1)]
+        delay_time: DelayTime1sTo60min,
     } = 1,
 
     /// Scene toggle delay (0-10s) - DelayTime0-10s
     #[ets(display = "Scene toggle delay")]
     SceneToggleDelay {
-        #[ets(display = "Time delay between scene toggling", enum_variants(
-            "0 s" => 0,
-            "0,5 s" => 5,
-            "1 s" => 10,
-            "2 s" => 20,
-            "3 s" => 30,
-            "4 s" => 40,
-            "5 s" => 50,
-            "6 s" => 60,
-            "7 s" => 70,
-            "8 s" => 80,
-            "9 s" => 90,
-            "10 s" => 100
-        ))]
-        value: u16,
+        #[ets(display = "Time delay between scene toggling", ets_enum)]
+        value: SceneToggleDelayTime,
     } = 2,
 
     /// Repeat time for switch
@@ -978,36 +1050,8 @@ pub enum TimeDurationUnion {
     /// Time for extra long keypress (NO "basic setting" option) - TimeforLongSwitch0,1-30s
     #[ets(display = "Extra long keypress time")]
     ExtraLongKeypressTime {
-        #[ets(display = "Time for extra long keypress", default = 34768, enum_variants(
-            "0,1 s" => 32868,
-            "0,2 s" => 32968,
-            "0,3 s" => 33068,
-            "0,4 s" => 33168,
-            "0,5 s" => 33268,
-            "0,6 s" => 33368,
-            "0,7 s" => 33468,
-            "0,8 s" => 33568,
-            "0,9 s" => 33668,
-            "1,0 s" => 33768,
-            "1,5 s" => 34268,
-            "2,0 s" => 34768,
-            "2,5 s" => 35268,
-            "3,0 s" => 35768,
-            "3,5 s" => 36268,
-            "4,0 s" => 36768,
-            "4,5 s" => 37268,
-            "5,5 s" => 38268,
-            "6,5 s" => 39268,
-            "7,5 s" => 40268,
-            "8,5 s" => 41268,
-            "9,5 s" => 42268,
-            "12,0 s" => 12,
-            "15,0 s" => 15,
-            "20,0 s" => 20,
-            "25,0 s" => 25,
-            "30,0 s" => 30
-        ))]
-        extra_long_time: u16,
+        #[ets(display = "Time for extra long keypress", ets_enum, default = 34768)]
+        extra_long_time: ExtraLongKeypressTime,
     } = 5,
 }
 
@@ -1018,8 +1062,8 @@ pub enum ExtraLongValueUnion {
     /// Switch value
     #[ets(default_variant, display = "Switch")]
     Switch {
-        #[ets(display = "Value", enum_variants("OFF" => 0, "ON" => 1))]
-        value: u8,
+        #[ets(display = "Value", ets_enum)]
+        value: GedptSwitch,
         #[ets(skip)]
         _pad: u8,
     } = 0,
@@ -1027,8 +1071,8 @@ pub enum ExtraLongValueUnion {
     /// Forcible control value
     #[ets(display = "Forcible control")]
     ForcibleControl {
-        #[ets(display = "Value", enum_variants("00 - no priority, OFF" => 0, "01 - no priority, ON" => 1, "10 - priority, OFF" => 2, "11 - priority, ON" => 3))]
-        value: u8,
+        #[ets(display = "Value", ets_enum)]
+        value: ForcibleControlValue,
         #[ets(skip)]
         _pad: u8,
     } = 1,
@@ -1067,14 +1111,8 @@ pub enum SendConditionUnion {
     /// Standard send condition with enum selection
     #[ets(default_variant, display = "Send condition")]
     Condition {
-        #[ets(display = "    Sending condition", enum_variants(
-            "not automatic" => 0,
-            "at input telegram" => 1,
-            "at change output" => 2,
-            "at change output (send only 0)" => 5,
-            "at change output (send only 1)" => 6
-        ), default = 2)]
-        value: u8,
+        #[ets(display = "    Sending condition", ets_enum, default = 2)]
+        value: SendingCondition,
     } = 0,
 
     /// Hidden/raw value (for "send value when pressed" mode)
@@ -1093,8 +1131,8 @@ pub enum LogicValueUnion {
     /// Switch value (Yes/No)
     #[ets(display = "    Switch")]
     Switch {
-        #[ets(display = "    Value", enum_variants("No" => 0, "Yes" => 1))]
-        value: u8,
+        #[ets(display = "    Value", ets_enum)]
+        value: NoYes,
     } = 0,
 
     /// Scene number (1-64) - uses SceneValue enum for dropdown
@@ -1114,13 +1152,8 @@ pub enum LogicValueUnion {
     /// Forcible control (2-bit priority)
     #[ets(display = "    Forcible control")]
     ForcibleControl {
-        #[ets(display = "    Forcible control", enum_variants(
-            "00 - no priority, OFF" => 0,
-            "01 - no priority, ON" => 1,
-            "10 - priority, OFF" => 2,
-            "11 - priority, ON" => 3
-        ))]
-        value: u8,
+        #[ets(display = "    Forcible control", ets_enum)]
+        value: ForcibleControlValue,
     } = 3,
 }
 
@@ -1147,6 +1180,7 @@ pub mod comm_objs {
     /// - 3 Bytes (DPT 232.600 RGB)
     /// - 4 Bytes (reserved for future use)
     #[derive(EtsComObjects)]
+    #[ets(selector_enum = ObjectType)]
     pub struct MdtComObjects {
         // ====================================================================
         // Status Objects
@@ -2090,7 +2124,13 @@ pub mod comm_objs {
 
         /// Slap button - Blocking object
         /// MDT: C=1, T=1, R=0, W=1, U=1, ROI=0
-        #[ets(index = 49, name = "Eingang Patsch", display = "Slap-button", function = "Blocking Object", flags = 0xD7)]
+        #[ets(
+            index = 49,
+            name = "Eingang Patsch",
+            display = "Slap-button",
+            function = "Blocking Object",
+            flags = 0xD7
+        )]
         pub slap_blocking: ComObject<DPT_Enable>,
 
         // ====================================================================
@@ -2378,36 +2418,40 @@ pub struct MdtParams {
     pub startup_timeout: u16,
 
     /// Debounce time (80=fast, 100=medium, 150=slow), default: fast (80)
-    #[ets(display = "Reaction time on keypress", default = 80, enum_variants("fast" => 80, "medium" => 100, "slow" => 150))]
-    pub debounce_time: u16,
+    #[ets(display = "Reaction time on keypress", ets_enum)]
+    pub debounce_time: ReactionTime,
 
     /// Time for long keypress (encoded value), default: 0.4s (33168)
-    #[ets(display = "Time for long keypress (Basic setting)", default = 33168, enum_variants("0,1 s" => 32868, "0,2 s" => 32968, "0,3 s" => 33068, "0,4 s" => 33168, "0,5 s" => 33268, "0,6 s" => 33368, "0,7 s" => 33468, "0,8 s" => 33568, "0,9 s" => 33668, "1,0 s" => 33768, "1,5 s" => 34268, "2,0 s" => 34768, "2,5 s" => 35268, "3,0 s" => 35768, "3,5 s" => 36268, "4,0 s" => 36768, "4,5 s" => 37268, "5,5 s" => 38268, "6,5 s" => 39268, "7,5 s" => 40268, "8,5 s" => 41268, "9,5 s" => 42268, "12,0 s" => 12, "15,0 s" => 15, "20,0 s" => 20, "25,0 s" => 25, "30,0 s" => 30))]
-    pub long_action_time: u16,
+    #[ets(display = "Time for long keypress (Basic setting)", ets_enum)]
+    pub long_action_time: TimeForLongKeypress,
 
     /// Cyclic send mode for operation status, default: not active (0)
-    #[ets(display = "Send 'Operation' cyclically", default = 0, enum_variants("not active" => 0, "1 min" => 1, "2 min" => 2, "5 min" => 5, "10 min" => 10, "20 min" => 20, "30 min" => 30, "1 h" => 60, "2 h" => 120, "4 h" => 240))]
-    pub mode_cyclic: u8,
+    #[ets(display = "Send 'Operation' cyclically", ets_enum)]
+    pub mode_cyclic: CyclicSendInterval,
 
     /// Status for toggle after bus power return, default: request (1)
-    #[ets(display = "Status for toggle after bus power return", default = 1, enum_variants("no request" => 0, "request" => 1))]
-    pub value_read_on_init: u8,
+    #[ets(display = "Status for toggle after bus power return", ets_enum)]
+    pub value_read_on_init: RequestNoRequest,
 
     /// Button 1/2 function type, default: single-button function 2 functions (2)
-    #[ets(display = "Buttons 1/2 (top/bottom)", default = 2, enum_variants("not active" => 0, "two-button function" => 1, "single-button function (2 functions, top/bottom)" => 2, "single-button function (1 function, top/bottom together)" => 3))]
-    pub eingang_type: u8,
+    #[ets(display = "Buttons 1/2 (top/bottom)", ets_enum)]
+    pub eingang_type: ButtonsType,
 
     /// Slap/Cleaning function enable (hidden in 1-fold Basic - hardware doesn't support it)
     #[ets(display = "Slap / Cleaning function", hidden, ets_enum)]
     pub eingang_type_patsch: GEboolEnableDisable,
 
+    /// Button 1 description text
+    #[ets(display = "Description of buttons/objects", string)]
+    pub button1_description: [u8; 30],
+
     /// Button 1 main function (matching MDT ButtonFunction type values)
-    #[ets(display = "Single-button function", enum_variants("not active" => 255, "switch" => 0, "dimming" => 1, "blinds/shutter" => 2, "scene" => 3, "send values" => 4, "switch/send values short/long (with 2 objects)" => 7))]
-    pub button1_function: u16,
+    #[ets(display = "Single-button function", ets_enum)]
+    pub button1_function: ButtonFunction,
 
     /// Button 1 switch subfunction (default: toggle)
-    #[ets(display = "Subfunction", default = 1, enum_variants("switch" => 0, "toggle" => 1, "send status" => 2))]
-    pub button1_switch_type: u16,
+    #[ets(display = "Subfunction", ets_enum)]
+    pub button1_switch_type: SwitchSubfunction,
 
     /// Button 1 blocking object enable
     #[ets(display = "Blocking Object", ets_enum)]
@@ -2416,16 +2460,16 @@ pub struct MdtParams {
     /// Button 1 object type selector (for ComObjectRef DPT selection)
     /// Values match MDT's DPTType1Bit: 10=Switch, 1=Bit2, 2=Percent, 3=Decimal, 4=Scene, 6=ColourTemp, 7=Temperature, 8=Brightness, 9=RGB
     /// Default: 2 (Percent) to match MDT P-35
-    #[ets(display = "Datapoint type", default = 2, enum_variants("1Bit DPT 1.001 Switch" => 10, "2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button1_object_type: u8,
+    #[ets(display = "Datapoint type", ets_enum, default = 2)]
+    pub button1_object_type: ObjectType,
 
     /// Button 2 main function (matching MDT ButtonFunction type values)
-    #[ets(display = "Single-button function", enum_variants("not active" => 255, "switch" => 0, "dimming" => 1, "blinds/shutter" => 2, "scene" => 3, "send values" => 4, "switch/send values short/long (with 2 objects)" => 7))]
-    pub button2_function: u16,
+    #[ets(display = "Single-button function", ets_enum)]
+    pub button2_function: ButtonFunction,
 
     /// Button 2 switch subfunction (default: toggle)
-    #[ets(display = "Subfunction", default = 1, enum_variants("switch" => 0, "toggle" => 1, "send status" => 2))]
-    pub button2_switch_type: u16,
+    #[ets(display = "Subfunction", ets_enum)]
+    pub button2_switch_type: SwitchSubfunction,
 
     /// Button 2 blocking object enable
     #[ets(display = "Blocking Object", ets_enum)]
@@ -2434,103 +2478,63 @@ pub struct MdtParams {
     /// Button 2 object type selector (for ComObjectRef DPT selection)
     /// Values match MDT's DPTType1Bit: 10=Switch, 1=Bit2, 2=Percent, 3=Decimal, 4=Scene, 6=ColourTemp, 7=Temperature, 8=Brightness, 9=RGB
     /// Default: 2 (Percent) to match MDT P-69
-    #[ets(display = "Datapoint type", default = 2, enum_variants("1Bit DPT 1.001 Switch" => 10, "2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button2_object_type: u8,
+    #[ets(display = "Datapoint type", ets_enum, default = 2)]
+    pub button2_object_type: ObjectType,
 
     /// Slap button object type selector (for ComObjectRef DPT selection)
-    #[ets(display = "Object type", enum_variants("1Bit" => 0, "2Bit" => 1, "1Byte Char" => 2, "1Byte SignedChar" => 3, "2Byte KNX_Float" => 4, "2Byte Short" => 5, "3Byte RGB" => 6, "3Byte HSV" => 7, "4Byte SignedLong" => 8, "4Byte Long Float" => 9, "1Byte Scene" => 10))]
-    pub slap_object_type: u8,
+    #[ets(display = "Object type", ets_enum)]
+    pub slap_object_type: SlapObjectType,
 
     /// Logic 1 type
-    #[ets(display = "Setting Logic 1", enum_variants("not active" => 255, "And" => 1, "Or" => 0, "send value when button is pressed" => 2))]
-    pub logic1_type: u8,
+    #[ets(display = "Setting Logic 1", ets_enum)]
+    pub logic1_type: LogicType,
 
     /// Logic 2 type
-    #[ets(display = "Setting Logic 2", enum_variants("not active" => 255, "And" => 1, "Or" => 0, "send value when button is pressed" => 2))]
-    pub logic2_type: u8,
+    #[ets(display = "Setting Logic 2", ets_enum)]
+    pub logic2_type: LogicType,
 
     /// Logic 3 type
-    #[ets(display = "Setting Logic 3", enum_variants("not active" => 255, "And" => 1, "Or" => 0, "send value when button is pressed" => 2))]
-    pub logic3_type: u8,
+    #[ets(display = "Setting Logic 3", ets_enum)]
+    pub logic3_type: LogicType,
 
     /// Logic 4 type
-    #[ets(display = "Setting Logic 4", enum_variants("not active" => 255, "And" => 1, "Or" => 0, "send value when button is pressed" => 2))]
-    pub logic4_type: u8,
+    #[ets(display = "Setting Logic 4", ets_enum)]
+    pub logic4_type: LogicType,
 
     /// Logic 1 output object type
-    #[ets(display = "    Object type 1", enum_variants("switch" => 1, "scene" => 2, "value" => 3, "forcible control 2Bit" => 4), default = 1)]
-    pub logic1_output_type: u8,
+    #[ets(display = "    Object type 1", ets_enum)]
+    pub logic1_output_type: LogicOutputType,
 
     /// Logic 2 output object type
-    #[ets(display = "    Object type 2", enum_variants("switch" => 1, "scene" => 2, "value" => 3, "forcible control 2Bit" => 4), default = 1)]
-    pub logic2_output_type: u8,
+    #[ets(display = "    Object type 2", ets_enum)]
+    pub logic2_output_type: LogicOutputType,
 
     /// Logic 3 output object type
-    #[ets(display = "    Object type 3", enum_variants("switch" => 1, "scene" => 2, "value" => 3, "forcible control 2Bit" => 4), default = 1)]
-    pub logic3_output_type: u8,
+    #[ets(display = "    Object type 3", ets_enum)]
+    pub logic3_output_type: LogicOutputType,
 
     /// Logic 4 output object type
-    #[ets(display = "    Object type 4", enum_variants("switch" => 1, "scene" => 2, "value" => 3, "forcible control 2Bit" => 4), default = 1)]
-    pub logic4_output_type: u8,
+    #[ets(display = "    Object type 4", ets_enum)]
+    pub logic4_output_type: LogicOutputType,
 
     /// Slap short object type (for status ref selection)
-    #[ets(display = "Object type", enum_variants("1Bit" => 0, "2Bit" => 1, "1Byte Char" => 2, "1Byte SignedChar" => 3, "2Byte KNX_Float" => 4, "2Byte Short" => 5, "3Byte RGB" => 6, "3Byte HSV" => 7, "4Byte SignedLong" => 8, "4Byte Long Float" => 9, "1Byte Scene" => 10))]
-    pub slap_short_object_type: u8,
+    #[ets(display = "Object type", ets_enum)]
+    pub slap_short_object_type: SlapObjectType,
 
     /// Slap long object type (for status ref selection)
-    #[ets(display = "Object type", enum_variants("1Bit" => 0, "2Bit" => 1, "1Byte Char" => 2, "1Byte SignedChar" => 3, "2Byte KNX_Float" => 4, "2Byte Short" => 5, "3Byte RGB" => 6, "3Byte HSV" => 7, "4Byte SignedLong" => 8, "4Byte Long Float" => 9, "1Byte Scene" => 10))]
-    pub slap_long_object_type: u8,
+    #[ets(display = "Object type", ets_enum)]
+    pub slap_long_object_type: SlapObjectType,
 
     // ========================================================================
     // Button 1 Value Parameters
     // ========================================================================
-    /// Button 1 value mode (for send value function)
-    #[ets(display = "Value mode", enum_variants("send values" => 0, "send values by state" => 1, "toggle values/scenes (up to 4 values)" => 2, "Multi-tip function (send values after number of operations)" => 3))]
-    pub button1_value_mode: u16,
-
-    /// Button 1 DPT type for values
-    #[ets(display = "Object type", enum_variants("1Bit DPT 1.001 Switch" => 10, "2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button1_dpt_type: u8,
-
     /// Button 1 value for released button (switch mode)
     #[ets(display = "Value released button", ets_enum)]
-    pub button1_value_released: OnOff,
+    pub button1_value_released: GedptSwitch,
 
     /// Button 1 value for pushed button (switch mode)
     #[ets(display = "Value pushed button", ets_enum)]
-    pub button1_value_pushed: OnOff,
-
-    /// Button 1 percent value
-    #[ets(display = "Percent value")]
-    pub button1_percent_value: u8,
-
-    /// Button 1 scene number (1-64)
-    #[ets(display = "Scene number")]
-    pub button1_scene_number: u8,
-
-    /// Button 1 colour temperature (Kelvin)
-    #[ets(display = "Colour temperature")]
-    pub button1_colour_temp: u16,
-
-    /// Button 1 group long keypress enable
-    #[ets(display = "Group long keypress", ets_enum)]
-    pub button1_group_long_enable: GEboolEnableDisable,
-
-    /// Button 1 time for long keypress
-    #[ets(display = "Time for long keypress")]
-    pub button1_long_time: u16,
-
-    /// Button 1 dimming direction
-    #[ets(display = "Dimming direction", enum_variants("brighter / darker" => 0, "darker / brighter" => 1))]
-    pub button1_dimm_direction: u16,
-
-    /// Button 1 blinds direction
-    #[ets(display = "Blinds direction", enum_variants("Up/Down" => 0, "Down/Up" => 1))]
-    pub button1_blinds_direction: u16,
-
-    /// Button 1 blinds function mode
-    #[ets(display = "Blinds function", enum_variants("long=Up/Down / short=stop/slats Open/Close" => 0, "short=Up/Down / long=stop/slats Open/Close" => 1, "short=Up/Down/Stop (MDT Single Object Control)" => 2, "short=Up/Down/Stop / long=central object (MDT Single Object Control)" => 3))]
-    pub button1_blinds_function: u8,
+    pub button1_value_pushed: GedptSwitch,
 
     /// Button 1 scene save enable (P-53 equivalent)
     /// MDT: SaveScene_0
@@ -2540,53 +2544,13 @@ pub struct MdtParams {
     // ========================================================================
     // Button 2 Value Parameters
     // ========================================================================
-    /// Button 2 value mode (for send value function)
-    #[ets(display = "Value mode", enum_variants("send values" => 0, "send values by state" => 1, "toggle values/scenes (up to 4 values)" => 2, "Multi-tip function (send values after number of operations)" => 3))]
-    pub button2_value_mode: u16,
-
-    /// Button 2 DPT type for values
-    #[ets(display = "Object type", enum_variants("1Bit DPT 1.001 Switch" => 10, "2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button2_dpt_type: u8,
-
     /// Button 2 value for released button (switch mode)
     #[ets(display = "Value released button", ets_enum)]
-    pub button2_value_released: OnOff,
+    pub button2_value_released: GedptSwitch,
 
     /// Button 2 value for pushed button (switch mode)
     #[ets(display = "Value pushed button", ets_enum)]
-    pub button2_value_pushed: OnOff,
-
-    /// Button 2 percent value
-    #[ets(display = "Percent value")]
-    pub button2_percent_value: u8,
-
-    /// Button 2 scene number (1-64)
-    #[ets(display = "Scene number")]
-    pub button2_scene_number: u8,
-
-    /// Button 2 colour temperature (Kelvin)
-    #[ets(display = "Colour temperature")]
-    pub button2_colour_temp: u16,
-
-    /// Button 2 group long keypress enable
-    #[ets(display = "Group long keypress", ets_enum)]
-    pub button2_group_long_enable: GEboolEnableDisable,
-
-    /// Button 2 time for long keypress
-    #[ets(display = "Time for long keypress")]
-    pub button2_long_time: u16,
-
-    /// Button 2 dimming direction
-    #[ets(display = "Dimming direction", enum_variants("brighter / darker" => 0, "darker / brighter" => 1))]
-    pub button2_dimm_direction: u16,
-
-    /// Button 2 blinds direction
-    #[ets(display = "Blinds direction", enum_variants("Up/Down" => 0, "Down/Up" => 1))]
-    pub button2_blinds_direction: u16,
-
-    /// Button 2 blinds function mode
-    #[ets(display = "Blinds function", enum_variants("long=Up/Down / short=stop/slats Open/Close" => 0, "short=Up/Down / long=stop/slats Open/Close" => 1, "short=Up/Down/Stop (MDT Single Object Control)" => 2, "short=Up/Down/Stop / long=central object (MDT Single Object Control)" => 3))]
-    pub button2_blinds_function: u8,
+    pub button2_value_pushed: GedptSwitch,
 
     /// Button 2 scene save enable (P-87 equivalent)
     /// MDT: SaveScene_1
@@ -2597,8 +2561,8 @@ pub struct MdtParams {
     // Slap Button Parameters
     // ========================================================================
     /// Slap cleaning mode
-    #[ets(display = "Cleaning function", enum_variants("cleaning not active, slap active" => 0, "cleaning = long button, slap = short button" => 1, "cleaning = short button, slap = long button" => 2))]
-    pub slap_cleaning_mode: u8,
+    #[ets(display = "Cleaning function", ets_enum)]
+    pub slap_cleaning_mode: SlapCleaningMode,
 
     /// Slap LED colour
     #[ets(display = "LED colour for slap indication", enum_variants("off" => 0, "red" => 1, "green" => 2, "yellow" => 3, "blue" => 4, "pink" => 5, "cyan" => 6, "white" => 16, "no signal slap function over LEDs" => 31))]
@@ -2619,113 +2583,42 @@ pub struct MdtParams {
     // ========================================================================
     // Logic Channel Parameters
     // ========================================================================
-    /// Logic 1 send condition
-    #[ets(display = "Send condition", enum_variants("not automatic" => 0, "at input telegram" => 1, "at change output" => 2, "at change output (send only 0)" => 5, "at change output (send only 1)" => 6))]
-    pub logic1_send_condition: u8,
-
     /// Logic 1 external input A type
-    #[ets(display = "Logic object 1 A (external)", ets_enum)]
+    #[ets(display = "    External Input A", ets_enum)]
     pub logic1_ext_input_a: ExtInputLogicType,
 
     /// Logic 1 external input B type
-    #[ets(display = "Logic object 1 B (external)", ets_enum)]
+    #[ets(display = "    External Input B", ets_enum)]
     pub logic1_ext_input_b: ExtInputLogicType,
 
-    /// Logic 1 internal input button
-    #[ets(display = "Internal input (button)", ets_enum)]
-    pub logic1_int_button: LogicButton,
-
-    /// Logic 1 output value ON
-    #[ets(display = "Output value ON")]
-    pub logic1_output_on: u8,
-
-    /// Logic 1 output value OFF
-    #[ets(display = "Output value OFF")]
-    pub logic1_output_off: u8,
-
-    /// Logic 2 send condition
-    #[ets(display = "Send condition", enum_variants("not automatic" => 0, "at input telegram" => 1, "at change output" => 2, "at change output (send only 0)" => 5, "at change output (send only 1)" => 6))]
-    pub logic2_send_condition: u8,
-
     /// Logic 2 external input A type
-    #[ets(display = "Logic object 2 A (external)", ets_enum)]
+    #[ets(display = "    External Input A", ets_enum)]
     pub logic2_ext_input_a: ExtInputLogicType,
 
     /// Logic 2 external input B type
-    #[ets(display = "Logic object 2 B (external)", ets_enum)]
+    #[ets(display = "    External Input B", ets_enum)]
     pub logic2_ext_input_b: ExtInputLogicType,
 
-    /// Logic 2 internal input button
-    #[ets(display = "Internal input (button)", ets_enum)]
-    pub logic2_int_button: LogicButton,
-
-    /// Logic 2 output value ON
-    #[ets(display = "Output value ON")]
-    pub logic2_output_on: u8,
-
-    /// Logic 2 output value OFF
-    #[ets(display = "Output value OFF")]
-    pub logic2_output_off: u8,
-
-    /// Logic 3 send condition
-    #[ets(display = "Send condition", enum_variants("not automatic" => 0, "at input telegram" => 1, "at change output" => 2, "at change output (send only 0)" => 5, "at change output (send only 1)" => 6))]
-    pub logic3_send_condition: u8,
-
     /// Logic 3 external input A type
-    #[ets(display = "Logic object 3 A (external)", ets_enum)]
+    #[ets(display = "    External Input A", ets_enum)]
     pub logic3_ext_input_a: ExtInputLogicType,
 
     /// Logic 3 external input B type
-    #[ets(display = "Logic object 3 B (external)", ets_enum)]
+    #[ets(display = "    External Input B", ets_enum)]
     pub logic3_ext_input_b: ExtInputLogicType,
 
-    /// Logic 3 internal input button
-    #[ets(display = "Internal input (button)", ets_enum)]
-    pub logic3_int_button: LogicButton,
-
-    /// Logic 3 output value ON
-    #[ets(display = "Output value ON")]
-    pub logic3_output_on: u8,
-
-    /// Logic 3 output value OFF
-    #[ets(display = "Output value OFF")]
-    pub logic3_output_off: u8,
-
-    /// Logic 4 send condition
-    #[ets(display = "Send condition", enum_variants("not automatic" => 0, "at input telegram" => 1, "at change output" => 2, "at change output (send only 0)" => 5, "at change output (send only 1)" => 6))]
-    pub logic4_send_condition: u8,
-
     /// Logic 4 external input A type
-    #[ets(display = "Logic object 4 A (external)", ets_enum)]
+    #[ets(display = "    External Input A", ets_enum)]
     pub logic4_ext_input_a: ExtInputLogicType,
 
     /// Logic 4 external input B type
-    #[ets(display = "Logic object 4 B (external)", ets_enum)]
+    #[ets(display = "    External Input B", ets_enum)]
     pub logic4_ext_input_b: ExtInputLogicType,
-
-    /// Logic 4 internal input button
-    #[ets(display = "Internal input (button)", ets_enum)]
-    pub logic4_int_button: LogicButton,
-
-    /// Logic 4 output value ON
-    #[ets(display = "Output value ON")]
-    pub logic4_output_on: u8,
-
-    /// Logic 4 output value OFF
-    #[ets(display = "Output value OFF")]
-    pub logic4_output_off: u8,
-
-    // ========================================================================
-    // Button 1 Extended Parameters
-    // ========================================================================
-    /// Button 1 description text
-    #[ets(display = "Description of buttons/objects", string)]
-    pub button1_description: [u8; 30],
 
     /// Button 1 short action (P-48 equivalent)
     /// MDT: ButtonShort_0, ValueShort type
-    #[ets(display = "Action short keypress", enum_variants("switch OFF" => 0, "switch ON" => 1, "toggle" => 2, "send values" => 3, "not active" => 255))]
-    pub button1_short_action: u8,
+    #[ets(display = "Action short keypress", ets_enum)]
+    pub button1_short_action: ShortAction,
 
     /// Button 1 long behavior (P-50 equivalent)
     /// MDT: NumberTelergamLong_0, NumberTelgram type
@@ -2734,44 +2627,12 @@ pub struct MdtParams {
 
     /// Button 1 long action (P-51 equivalent)
     /// MDT: ButtonLong_0, ValueLong type
-    #[ets(display = "Action long keypress", enum_variants("switch OFF" => 0, "switch ON" => 1, "toggle" => 2, "send values" => 3, "not active" => 255))]
-    pub button1_long_action: u8,
-
-    /// Button 1 short value function
-    #[ets(display = "Subfunction", enum_variants("send values" => 0, "send values by state" => 1, "toggle values/scenes" => 2, "multi-tip" => 3))]
-    pub button1_short_value_func: u8,
-
-    /// Button 1 long value function
-    #[ets(display = "Subfunction", enum_variants("send values" => 0, "send values by state" => 1, "toggle values/scenes" => 2, "multi-tip" => 3))]
-    pub button1_long_value_func: u8,
-
-    /// Button 1 behavior on long keypress
-    #[ets(display = "Behavior on long keypress", enum_variants("send 1 telegram" => 0, "send 2 telegrams" => 1, "send 3 telegrams" => 2))]
-    pub button1_long_telegram_count: u8,
-
-    /// Button 1 tip long active (3rd function)
-    #[ets(display = "3. function (long keypress)", ets_enum)]
-    pub button1_tip_long_active: GEboolEnableDisable,
-
-    /// Button 1 long keypress enable
-    #[ets(display = "Long keypress", ets_enum)]
-    pub button1_long_enable: GEboolEnableDisable,
-
-    /// Button 1 switching type
-    #[ets(display = "Switching type", enum_variants("send when pressed" => 0, "send when released" => 1, "send when pressed and released" => 2))]
-    pub button1_switch_mode: u8,
-
-    /// Button 1 repeat switch
-    #[ets(display = "Repeat switch on long keypress", ets_enum)]
-    pub button1_repeat_switch: GEboolEnableDisable,
+    #[ets(display = "Action long keypress", ets_enum)]
+    pub button1_long_action: LongAction,
 
     /// Button 1 delay for released button
     #[ets(display = "Delay for released button", ets_enum)]
     pub button1_delay_state: GEboolEnableDisable,
-
-    /// Button 1 group extra long keypress enable
-    #[ets(display = "Group extra long keypress", ets_enum)]
-    pub button1_group_extra_long_enable: GEboolEnableDisable,
 
     /// Button 1 LED color
     #[ets(display = "LED colour", enum_variants("off" => 0, "green" => 1, "red" => 2, "orange" => 3, "blue" => 4, "white" => 5, "pink" => 6))]
@@ -2791,28 +2652,24 @@ pub struct MdtParams {
 
     /// Button 1 special function (P-37 equivalent)
     /// MDT: GroupSpecialFunction_0 - switches between "Innovative group control" and "Additional object"
-    #[ets(display = "Special function", enum_variants("Innovative group control" => 0, "Additional object" => 1))]
-    pub button1_special_function: u8,
+    #[ets(display = "Special function", ets_enum)]
+    pub button1_special_function: SpecialFunction,
 
     /// Button 1 additional object DPT type (P-39 equivalent)
     /// MDT: DPTButtonGrouptSendValue_0 - DPT type for the additional object
     /// Uses same enum values as button1_object_type for comm object ref selection
-    #[ets(display = "Datapoint type (2. object)", default = 2, enum_variants("1Bit DPT 1.001 Switch" => 10, "2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button1_additional_object_type: u8,
+    #[ets(display = "Datapoint type (2. object)", ets_enum, default = 2)]
+    pub button1_additional_object_type: ObjectType,
 
     /// Button 1 additional object RGB/HSV colour control (P-40 equivalent)
     /// MDT: ModeRGB_HSV_Long_0
     #[ets(display = "    Colour control", ets_enum)]
     pub button1_additional_colour_control: ColourControl,
 
-    /// Button 1 dimmer style
-    #[ets(display = "Dimmer style", enum_variants("short/long" => 0, "long/short" => 1))]
-    pub button1_dimmer_style: u8,
-
     /// Button 1 blinds operation function (P-54 equivalent)
     /// MDT: ShutterShortLongInv_0, 1-bit
-    #[ets(display = "Operation function", enum_variants("long=move / short=stop/slats Open/Close" => 0, "short=move / long=stop/slats Open/Close" => 1))]
-    pub button1_operation_function: u8,
+    #[ets(display = "Operation function", ets_enum)]
+    pub button1_operation_function: BlindsOperationFunction,
 
     /// Button 1 blinds group control extra long (P-55 equivalent)
     /// MDT: ShutterLongGroup_0
@@ -2826,23 +2683,23 @@ pub struct MdtParams {
 
     /// Button 1 value function (P-34 equivalent)
     /// MDT: Button_Value_Function_0, ButtonValueType
-    #[ets(display = "Subfunction", enum_variants("send values" => 0, "send values by state" => 1, "toggle values/scenes (up to 4 values)" => 2, "Multi-tip function (send values after number of operations)" => 3))]
-    pub button1_value_function: u8,
+    #[ets(display = "Subfunction", ets_enum)]
+    pub button1_value_function: ButtonValueFunction,
 
     /// Button 1 DPT type for "send values by state" mode (P-41 equivalent)
     /// MDT: DPTButton_0, DPTType (no Switch option - only for mode 1)
-    #[ets(display = "Datapoint type", default = 2, enum_variants("2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button1_object_type_no_switch: u8,
+    #[ets(display = "Datapoint type", ets_enum)]
+    pub button1_object_type_no_switch: DptType,
 
     /// Button 1 tip output objects (P-42 equivalent)
     /// MDT: TipOutputObjects_0 - selects common vs different objects/DPT for toggle mode
-    #[ets(display = "Output objects", enum_variants("common object /DPT" => 0, "different objects / DPT" => 1))]
-    pub button1_tip_output_objects: u8,
+    #[ets(display = "Output objects", ets_enum)]
+    pub button1_tip_output_objects: TipOutputObjects,
 
     /// Button 1 DPT type for tip 2 in "different objects" mode
     /// Separate selector for the second tip object
-    #[ets(display = "Datapoint type", default = 2, enum_variants("1Bit DPT 1.001 Switch" => 10, "2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button1_tip2_object_type: u8,
+    #[ets(display = "Datapoint type", ets_enum, default = 2)]
+    pub button1_tip2_object_type: ObjectType,
 
     /// Button 1 colour control for tip 2
     #[ets(display = "    Colour control", ets_enum)]
@@ -2850,8 +2707,8 @@ pub struct MdtParams {
 
     /// Button 1 DPT type for tip 3 in "different objects" mode
     /// Separate selector for the third tip object
-    #[ets(display = "Datapoint type", default = 2, enum_variants("1Bit DPT 1.001 Switch" => 10, "2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button1_tip3_object_type: u8,
+    #[ets(display = "Datapoint type", ets_enum, default = 2)]
+    pub button1_tip3_object_type: ObjectType,
 
     /// Button 1 colour control for tip 3
     #[ets(display = "    Colour control", ets_enum)]
@@ -2864,22 +2721,18 @@ pub struct MdtParams {
 
     /// Button 1 short DPT type (P-49 equivalent) for Mode 7 short action
     /// MDT: Button_Value_short_0, DPTType (no Switch option)
-    #[ets(display = "    Datapoint type", default = 2, enum_variants("2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button1_short_dpt_type: u8,
+    #[ets(display = "    Datapoint type", ets_enum)]
+    pub button1_short_dpt_type: DptType,
 
     /// Button 1 long DPT type (P-52 equivalent) for Mode 7 long action
     /// MDT: Button_Value_long_0, DPTType (no Switch option)
-    #[ets(display = "    Datapoint type", default = 2, enum_variants("2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button1_long_dpt_type: u8,
+    #[ets(display = "    Datapoint type", ets_enum)]
+    pub button1_long_dpt_type: DptType,
 
     /// Button 1 long colour control (P-40 equivalent) for Mode 7 long RGB/HSV
     /// MDT: ModeRGB_HSV_Long_0
     #[ets(display = "    Colour control", ets_enum)]
     pub button1_long_colour_control: ColourControl,
-
-    /// Button 1 long time special
-    #[ets(display = "Time for long keypress")]
-    pub button1_long_time_special: u16,
 
     // ========================================================================
     // Button 2 Extended Parameters
@@ -2890,8 +2743,8 @@ pub struct MdtParams {
 
     /// Button 2 short action (P-48 equivalent for button 2)
     /// MDT: ButtonShort_1, ValueShort type
-    #[ets(display = "Action short keypress", enum_variants("switch OFF" => 0, "switch ON" => 1, "toggle" => 2, "send values" => 3, "not active" => 255))]
-    pub button2_short_action: u8,
+    #[ets(display = "Action short keypress", ets_enum)]
+    pub button2_short_action: ShortAction,
 
     /// Button 2 long behavior (P-50 equivalent for button 2)
     /// MDT: NumberTelergamLong_1, NumberTelgram type
@@ -2900,48 +2753,12 @@ pub struct MdtParams {
 
     /// Button 2 long action (P-51 equivalent for button 2)
     /// MDT: ButtonLong_1, ValueLong type
-    #[ets(display = "Action long keypress", enum_variants("switch OFF" => 0, "switch ON" => 1, "toggle" => 2, "send values" => 3, "not active" => 255))]
-    pub button2_long_action: u8,
-
-    /// Button 2 short value function
-    #[ets(display = "Subfunction", enum_variants("send values" => 0, "send values by state" => 1, "toggle values/scenes" => 2, "multi-tip" => 3))]
-    pub button2_short_value_func: u8,
-
-    /// Button 2 long value function
-    #[ets(display = "Subfunction", enum_variants("send values" => 0, "send values by state" => 1, "toggle values/scenes" => 2, "multi-tip" => 3))]
-    pub button2_long_value_func: u8,
-
-    /// Button 2 behavior on long keypress
-    #[ets(display = "Behavior on long keypress", enum_variants("send 1 telegram" => 0, "send 2 telegrams" => 1, "send 3 telegrams" => 2))]
-    pub button2_long_telegram_count: u8,
-
-    /// Button 2 tip long active (3rd function)
-    #[ets(display = "3. function (long keypress)", ets_enum)]
-    pub button2_tip_long_active: GEboolEnableDisable,
-
-    /// Button 2 long keypress enable
-    #[ets(display = "Long keypress", ets_enum)]
-    pub button2_long_enable: GEboolEnableDisable,
-
-    /// Button 2 switching type
-    #[ets(display = "Switching type", enum_variants("send when pressed" => 0, "send when released" => 1, "send when pressed and released" => 2))]
-    pub button2_switch_mode: u8,
+    #[ets(display = "Action long keypress", ets_enum)]
+    pub button2_long_action: LongAction,
 
     /// Button 2 delay for released button
     #[ets(display = "Delay for released button", ets_enum)]
     pub button2_delay_state: GEboolEnableDisable,
-
-    /// Button 2 group extra long keypress enable
-    #[ets(display = "Group extra long keypress", ets_enum)]
-    pub button2_group_extra_long_enable: GEboolEnableDisable,
-
-    /// Button 2 LED color
-    #[ets(display = "LED colour", enum_variants("off" => 0, "green" => 1, "red" => 2, "orange" => 3, "blue" => 4, "white" => 5, "pink" => 6))]
-    pub button2_led_color: u8,
-
-    /// Button 2 LED brightness
-    #[ets(display = "LED brightness", enum_variants("off" => 0, "10%" => 1, "20%" => 2, "30%" => 3, "40%" => 4, "50%" => 5, "60%" => 6, "70%" => 7, "80%" => 8, "90%" => 9, "100%" => 10))]
-    pub button2_led_brightness: u8,
 
     /// Button 2 group function (Group long keypress in MDT)
     #[ets(display = "Group long keypress", ets_enum)]
@@ -2953,28 +2770,24 @@ pub struct MdtParams {
 
     /// Button 2 special function (P-81 equivalent)
     /// MDT: GroupSpecialFunction_1 - switches between "Innovative group control" and "Additional object"
-    #[ets(display = "Special function", enum_variants("Innovative group control" => 0, "Additional object" => 1))]
-    pub button2_special_function: u8,
+    #[ets(display = "Special function", ets_enum)]
+    pub button2_special_function: SpecialFunction,
 
     /// Button 2 additional object DPT type (P-73 equivalent)
     /// MDT: DPTButtonGrouptSendValue_1 - DPT type for the additional object
     /// Uses same enum values as button2_object_type for comm object ref selection
-    #[ets(display = "Datapoint type (2. object)", default = 2, enum_variants("1Bit DPT 1.001 Switch" => 10, "2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button2_additional_object_type: u8,
+    #[ets(display = "Datapoint type (2. object)", ets_enum, default = 2)]
+    pub button2_additional_object_type: ObjectType,
 
     /// Button 2 additional object RGB/HSV colour control (P-74 equivalent)
     /// MDT: ModeRGB_HSV_Long_1
     #[ets(display = "    Colour control", ets_enum)]
     pub button2_additional_colour_control: ColourControl,
 
-    /// Button 2 dimmer style
-    #[ets(display = "Dimmer style", enum_variants("short/long" => 0, "long/short" => 1))]
-    pub button2_dimmer_style: u8,
-
     /// Button 2 blinds operation function (P-88 equivalent)
     /// MDT: ShutterShortLongInv_1, 1-bit
-    #[ets(display = "Operation function", enum_variants("long=move / short=stop/slats Open/Close" => 0, "short=move / long=stop/slats Open/Close" => 1))]
-    pub button2_operation_function: u8,
+    #[ets(display = "Operation function", ets_enum)]
+    pub button2_operation_function: BlindsOperationFunction,
 
     /// Button 2 blinds group control extra long (P-89 equivalent)
     /// MDT: ShutterLongGroup_1
@@ -2988,23 +2801,23 @@ pub struct MdtParams {
 
     /// Button 2 value function (P-68 equivalent)
     /// MDT: Button_Value_Function_1, ButtonValueType
-    #[ets(display = "Subfunction", enum_variants("send values" => 0, "send values by state" => 1, "toggle values/scenes (up to 4 values)" => 2, "Multi-tip function (send values after number of operations)" => 3))]
-    pub button2_value_function: u8,
+    #[ets(display = "Subfunction", ets_enum)]
+    pub button2_value_function: ButtonValueFunction,
 
     /// Button 2 DPT type for "send values by state" mode (P-74 equivalent)
     /// MDT: DPTButton_1, DPTType (no Switch option - only for mode 1)
-    #[ets(display = "Datapoint type", default = 2, enum_variants("2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button2_object_type_no_switch: u8,
+    #[ets(display = "Datapoint type", ets_enum)]
+    pub button2_object_type_no_switch: DptType,
 
     /// Button 2 tip output objects (P-75 equivalent)
     /// MDT: TipOutputObjects_1 - selects common vs different objects/DPT for toggle mode
-    #[ets(display = "Output objects", enum_variants("common object /DPT" => 0, "different objects / DPT" => 1))]
-    pub button2_tip_output_objects: u8,
+    #[ets(display = "Output objects", ets_enum)]
+    pub button2_tip_output_objects: TipOutputObjects,
 
     /// Button 2 DPT type for tip 2 in "different objects" mode
     /// Separate selector for the second tip object
-    #[ets(display = "Datapoint type", default = 2, enum_variants("1Bit DPT 1.001 Switch" => 10, "2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button2_tip2_object_type: u8,
+    #[ets(display = "Datapoint type", ets_enum, default = 2)]
+    pub button2_tip2_object_type: ObjectType,
 
     /// Button 2 colour control for tip 2
     #[ets(display = "    Colour control", ets_enum)]
@@ -3012,8 +2825,8 @@ pub struct MdtParams {
 
     /// Button 2 DPT type for tip 3 in "different objects" mode
     /// Separate selector for the third tip object
-    #[ets(display = "Datapoint type", default = 2, enum_variants("1Bit DPT 1.001 Switch" => 10, "2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button2_tip3_object_type: u8,
+    #[ets(display = "Datapoint type", ets_enum, default = 2)]
+    pub button2_tip3_object_type: ObjectType,
 
     /// Button 2 colour control for tip 3
     #[ets(display = "    Colour control", ets_enum)]
@@ -3026,13 +2839,13 @@ pub struct MdtParams {
 
     /// Button 2 short DPT type (P-83 equivalent) for Mode 7 short action
     /// MDT: Button_Value_short_1, DPTType (no Switch option)
-    #[ets(display = "    Datapoint type", default = 2, enum_variants("2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button2_short_dpt_type: u8,
+    #[ets(display = "    Datapoint type", ets_enum)]
+    pub button2_short_dpt_type: DptType,
 
     /// Button 2 long DPT type (P-86 equivalent) for Mode 7 long action
     /// MDT: Button_Value_long_1, DPTType (no Switch option)
-    #[ets(display = "    Datapoint type", default = 2, enum_variants("2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent (0...100%)" => 2, "1Byte DPT 5.005 Decimal factor (0...255)" => 3, "1Byte DPT 17.001 Scene number" => 4, "2Byte DPT 7.600 Colour Temperature (Kelvin)" => 6, "2Byte DPT 9.001 Temperature (°C)" => 7, "2Byte DPT 9.004 Brightness (Lux)" => 8, "3Byte DPT 232.600 RGB value 3x(0...255)" => 9))]
-    pub button2_long_dpt_type: u8,
+    #[ets(display = "    Datapoint type", ets_enum)]
+    pub button2_long_dpt_type: DptType,
 
     /// Button 2 long colour control (P-74 equivalent) for Mode 7 long RGB/HSV
     /// MDT: ModeRGB_HSV_Long_1
@@ -3044,13 +2857,13 @@ pub struct MdtParams {
     // ========================================================================
     /// Two-button function selector (P-91 equivalent)
     /// MDT: EnableGrupMain_0, EingangFunctionGroup type
-    #[ets(display = "Two-button function", type_name = "EingangFunctionGroup", enum_variants("switch" => 0, "dimming" => 1, "blinds/shutter" => 2, "send values" => 3, "switch/send values short/long (with 2 objects)" => 5))]
-    pub two_button_function: u16,
+    #[ets(display = "Two-button function", type_name = "EingangFunctionGroup", ets_enum)]
+    pub two_button_function: TwoButtonFunction,
 
     /// Button assignment for two-button switch mode (P-92 equivalent)
     /// MDT: ConfigSwitch_0, SwitchType type
-    #[ets(display = "Button assignment (1/2)", type_name = "SwitchType", enum_variants("ON/OFF" => 0, "OFF/ON" => 1))]
-    pub button_assignment: u16,
+    #[ets(display = "Button assignment (1/2)", type_name = "SwitchType", ets_enum)]
+    pub button_assignment: ButtonAssignment,
 
     /// Group long sends condition (P-93 equivalent)
     /// MDT: GroupSwitchLong_0, GroupLongSendCondition type
@@ -3064,17 +2877,13 @@ pub struct MdtParams {
 
     /// Two-button value function (P-95 equivalent)
     /// MDT: ButtonGroupt_ValueFunction_0, ButtonGrouptValueType type
-    #[ets(display = "Subfunction", type_name = "ButtonGrouptValueType", default = 1, enum_variants("send values" => 1, "toggle values/scenes (up to 4 values)" => 2, "shift value" => 3))]
-    pub two_button_value_function: u8,
+    #[ets(display = "Subfunction", type_name = "ButtonGrouptValueType", ets_enum)]
+    pub two_button_value_function: TwoButtonValueFunction,
 
     /// Group send option (P-96 equivalent)
     /// MDT: GroupSend_0, GroupSend type
-    #[ets(display = "    Group long sends", type_name = "GroupSend", enum_variants("value for upper and lower button" => 0, "value for upper button" => 1, "value for lower button" => 2))]
-    pub group_send_option: u8,
-
-    /// Two-button switch configuration
-    #[ets(display = "Switch configuration", enum_variants("brighter/darker" => 0, "darker/brighter" => 1))]
-    pub config_switch: u8,
+    #[ets(display = "    Group long sends", type_name = "GroupSend", ets_enum)]
+    pub group_send_option: GroupSendOption,
 
     /// Two-button dimmer configuration
     #[ets(display = "Dimmer configuration", enum_variants("brighter/darker" => 0, "darker/brighter" => 1))]
@@ -3092,139 +2901,9 @@ pub struct MdtParams {
     #[ets(display = "Shift value configuration", enum_variants("increment/decrement" => 0, "decrement/increment" => 1))]
     pub config_shift_value: u8,
 
-    /// Button mapping for two-button mode
-    #[ets(display = "Button mapping")]
-    pub button_mapping: u8,
-
-    /// Main type for button 0 (two-button mode)
-    #[ets(display = "Main type button 0")]
-    pub main_type_0: u8,
-
-    /// Main type for button 1 (two-button mode)
-    #[ets(display = "Main type button 1")]
-    pub main_type_1: u8,
-
-    /// Sub type for button 0 (two-button mode)
-    #[ets(display = "Sub type button 0")]
-    pub sub_type_0: u8,
-
-    /// Sub type for button 1 (two-button mode)
-    #[ets(display = "Sub type button 1")]
-    pub sub_type_1: u8,
-
     // ========================================================================
-    // Group Functions Parameters
+    // Logic Channel Parameters
     // ========================================================================
-    /// Group main enable
-    #[ets(display = "Enable group function", ets_enum)]
-    pub group_main_enable: GEboolEnableDisable,
-
-    /// Group switch long
-    #[ets(display = "Group switch on long keypress", ets_enum)]
-    pub group_switch_long: GEboolEnableDisable,
-
-    /// Group switch extra long
-    #[ets(display = "Group switch on extra long keypress", ets_enum)]
-    pub group_switch_extra_long: GEboolEnableDisable,
-
-    /// Button short group action
-    #[ets(display = "Short group action")]
-    pub button_short_groupt: u8,
-
-    /// Button long group action
-    #[ets(display = "Long group action")]
-    pub button_long_groupt: u8,
-
-    /// Group long condition
-    #[ets(display = "Condition for long group", enum_variants("always" => 0, "on button 1" => 1, "on button 2" => 2))]
-    pub cond_long_groupt: u8,
-
-    /// Group value function
-    #[ets(display = "Group value function", enum_variants("send values" => 0, "toggle values" => 1))]
-    pub button_groupt_value_func: u8,
-
-    /// Group DPT type
-    #[ets(display = "Group datapoint type", enum_variants("1Bit" => 0, "2Bit" => 1, "1Byte" => 2))]
-    pub dpt_button_groupt: u8,
-
-    /// Group send value DPT type (button 0)
-    #[ets(display = "Datapoint type", enum_variants("1Bit DPT 1.001 Switch" => 10, "2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent" => 2))]
-    pub dpt_button_groupt_send_value_0: u8,
-
-    /// Group send value DPT type (button 1)
-    #[ets(display = "Datapoint type (2. object)", enum_variants("1Bit DPT 1.001 Switch" => 10, "2Bit DPT 2.001 Forcible control" => 1, "1Byte DPT 5.001 Percent" => 2))]
-    pub dpt_button_groupt_send_value_1: u8,
-
-    /// Group special function (button 0)
-    #[ets(display = "Special function", enum_variants("innovative group control" => 0, "additional object" => 1))]
-    pub group_special_func_0: u8,
-
-    /// Group special function (button 1)
-    #[ets(display = "Special function", enum_variants("innovative group control" => 0, "additional object" => 1))]
-    pub group_special_func_1: u8,
-
-    /// Blocking object for group
-    #[ets(display = "Blocking object", ets_enum)]
-    pub block_object_groupt: GEboolEnableDisable,
-
-    // ========================================================================
-    // Panic/Slap Extended Parameters
-    // ========================================================================
-    /// Panic block switch
-    #[ets(display = "Block switch during panic", ets_enum)]
-    pub block_switch_panic: GEboolEnableDisable,
-
-    /// Panic value/control mode
-    #[ets(display = "Panic value/control", enum_variants("value" => 0, "control" => 1))]
-    pub value_control_panic: u8,
-
-    /// Panic short function
-    #[ets(display = "Short function during panic", enum_variants("switch" => 0, "send value" => 1))]
-    pub button_func_short_panic: u8,
-
-    /// Panic long function
-    #[ets(display = "Long function during panic", enum_variants("switch" => 0, "send value" => 1))]
-    pub button_func_long_panic: u8,
-
-    /// Panic RGB/HSV mode
-    #[ets(display = "Colour control", ets_enum)]
-    pub mode_rgb_hsv_panic: ColourControl,
-
-    /// Panic long RGB/HSV mode
-    #[ets(display = "Colour control (long)", ets_enum)]
-    pub mode_rgb_hsv_lang_panic: ColourControl,
-
-    /// Panic time duration
-    #[ets(display = "Panic time duration")]
-    pub time_duration_panic: u16,
-
-    // ========================================================================
-    // Logic Extended Parameters
-    // ========================================================================
-    /// Logic read on init
-    #[ets(display = "Read logic on init", enum_variants("no request" => 0, "request" => 1))]
-    pub logic_read: u8,
-
-    /// Logic delay time
-    #[ets(display = "Logic delay time")]
-    pub logic_delay_time: u16,
-
-    /// Logic 1 operation type
-    #[ets(display = "Logic operation", ets_enum)]
-    pub logic1_operation: AndOr,
-
-    /// Logic 2 operation type
-    #[ets(display = "Logic operation", ets_enum)]
-    pub logic2_operation: AndOr,
-
-    /// Logic 3 operation type
-    #[ets(display = "Logic operation", ets_enum)]
-    pub logic3_operation: AndOr,
-
-    /// Logic 4 operation type
-    #[ets(display = "Logic operation", ets_enum)]
-    pub logic4_operation: AndOr,
-
     /// Logic 1 output inversion
     #[ets(display = "    Invert output", ets_enum)]
     pub logic1_invert_output: YesNo,
@@ -3341,33 +3020,6 @@ pub struct MdtParams {
     #[ets(display = "Behaviour on bus power return", enum_variants("no request ext. logic objects" => 0, "request ext. logic objects" => 1))]
     pub logic_read_on_init: u8,
 
-    /// Logic output object type (Or 0)
-    #[ets(display = "Output object type", enum_variants("switch" => 1, "scene" => 2, "value" => 3, "forcible control" => 4))]
-    pub logic_objecttype_or_0: u8,
-
-    /// Logic output object type (Or 1)
-    #[ets(display = "Output object type", enum_variants("switch" => 1, "scene" => 2, "value" => 3, "forcible control" => 4))]
-    pub logic_objecttype_or_1: u8,
-
-    /// Logic output object type (And 2)
-    #[ets(display = "Output object type", enum_variants("switch" => 1, "scene" => 2, "value" => 3, "forcible control" => 4))]
-    pub logic_objecttype_and_2: u8,
-
-    /// Logic output object type (And 3)
-    #[ets(display = "Output object type", enum_variants("switch" => 1, "scene" => 2, "value" => 3, "forcible control" => 4))]
-    pub logic_objecttype_and_3: u8,
-
-    // ========================================================================
-    // Blocking Object Parameters
-    // ========================================================================
-    /// Block object enable (button 0)
-    #[ets(display = "Blocking Object", ets_enum)]
-    pub block_object_0: GEboolEnableDisable,
-
-    /// Block object enable (button 1)
-    #[ets(display = "Blocking Object", ets_enum)]
-    pub block_object_1: GEboolEnableDisable,
-
     // ========================================================================
     // Union Parameters - Button 1 Values (share same memory locations)
     // ========================================================================
@@ -3390,14 +3042,6 @@ pub struct MdtParams {
     /// Button 1 value 3 (4th toggle value / button 1 value)
     #[ets(display = "Value 3", union)]
     pub button1_value_03: ButtonValueUnion,
-
-    /// Button 1 long action type (upper button)
-    #[ets(display = "Long action type (upper)", union)]
-    pub button1_long_action_type_upper: LongButtonActionUnion,
-
-    /// Button 1 long action type (main)
-    #[ets(display = "Long action type", union)]
-    pub button1_long_action_type: LongButtonActionUnion,
 
     /// Button 1 time duration (long keypress / delay / repeat)
     #[ets(display = "Time for long keypress", union)]
@@ -3434,14 +3078,6 @@ pub struct MdtParams {
     #[ets(display = "Value 3", union)]
     pub button2_value_03: ButtonValueUnion,
 
-    /// Button 2 long action type (upper button)
-    #[ets(display = "Long action type (upper)", union)]
-    pub button2_long_action_type_upper: LongButtonActionUnion,
-
-    /// Button 2 long action type (main)
-    #[ets(display = "Long action type", union)]
-    pub button2_long_action_type: LongButtonActionUnion,
-
     /// Button 2 time duration (long keypress / delay / repeat)
     #[ets(display = "Time duration", union)]
     pub button2_time_duration: TimeDurationUnion,
@@ -3457,10 +3093,6 @@ pub struct MdtParams {
     // ========================================================================
     // Union Parameters - Panic/Slap Values
     // ========================================================================
-    /// Panic sub-type configuration
-    #[ets(display = "Panic sub type", union)]
-    pub panic_sub_type: LongButtonActionUnion,
-
     /// Panic value 0
     #[ets(display = "Panic value 0", union)]
     pub panic_value_00: ButtonValueUnion,
@@ -3511,7 +3143,6 @@ pub struct MdtParams {
     // ========================================================================
     // Hidden/Internal Parameters (MDT bookkeeping for ETS)
     // ========================================================================
-
     /// Button 1 value type (hidden - stores current value mode code for ETS)
     /// This is P-27 in MDT's structure
     #[ets(display = "", hidden)]
@@ -3529,14 +3160,6 @@ pub struct MdtParams {
     /// Button 2 subtype (hidden - stores current subtype code for ETS)
     #[ets(display = "", hidden)]
     pub button2_subtype: u8,
-
-    /// Slap button value type (hidden)
-    #[ets(display = "", hidden)]
-    pub slap_value_type: u8,
-
-    /// Slap button subtype (hidden)
-    #[ets(display = "", hidden)]
-    pub slap_subtype: u8,
 
     // ========================================================================
     // Dummy/Hidden Parameters (for enabling conditional object display)
@@ -3675,9 +3298,9 @@ impl EtsPageLayout for MdtStack {
                     obj presence
                     // Hidden dummy enable parameter (MDT internal feature)
                     param dummy_enable
-                    // When dummy_enable = 1, show all dummy objects (MDT has 57 ComObjectRefRefs here)
+                    // When dummy_enable = Active, show all dummy objects (MDT has 57 ComObjectRefRefs here)
                     when @dummy_enable {
-                        [1] => {
+                        [GEboolEnableDisable::Active] => {
                             // Dummy objects at various indices
                             obj dummy_5
                             obj dummy_6
@@ -3740,10 +3363,10 @@ impl EtsPageLayout for MdtStack {
                     }
                     param startup_timeout
                     param mode_cyclic
-                    // Mode object is shown when cyclic mode is enabled (default=true), hidden when 0
+                    // Mode object is shown when cyclic mode is enabled (default=true), hidden when NotActive
                     when @mode_cyclic {
                         _ => { obj mode }
-                        [0] => { }
+                        [CyclicSendInterval::NotActive] => { }
                     }
                     param value_read_on_init
                 }
@@ -3759,16 +3382,16 @@ impl EtsPageLayout for MdtStack {
                     // These are dummy/hidden params for internal use, not visible "Time for long keypress"
                     when @eingang_type {
                         // Two-button mode: show LED params, subtype, etc.
-                        [1] => {
+                        [ButtonsType::TwoButton] => {
                             param button1_led_color
                             param button1_led_brightness
                             param button1_subtype
                             param button1_value_type
                         }
                         // Single-button 2 functions: no additional visible params
-                        [2] => { }
+                        [ButtonsType::SingleButton2Functions] => { }
                         // Single-button 1 function: no additional visible params
-                        [3] => { }
+                        [ButtonsType::SingleButton1Function] => { }
                     }
                 }
 
@@ -3776,33 +3399,33 @@ impl EtsPageLayout for MdtStack {
                 // All three blocks in a single choose to match MDT's structure
                 when @eingang_type {
                     // Single-button modes (2, 3) - PB1 block comes first in MDT
-                    [2, 3] => {
+                    [ButtonsType::SingleButton2Functions, ButtonsType::SingleButton1Function] => {
                         block "pButton_0" => "    PB1: {{button1_description:Push button 1}}" {
                             param button1_description
                             param button1_function
                             // Mode 0 = switch: nested choose on switch_type (subfunction)
                             when @button1_function {
-                                [0] => {
+                                [ButtonFunction::Switch] => {
                                     param button1_switch_type
                                     when @button1_switch_type {
                                         // switch_type 0 = switch (simple) - MDT pattern: direct object output
                                         // In MDT, switch/switch has only "Value pushed button" visible
                                         // The "Value released button" (UP-109) has Access="None" and is hidden
-                                        [0] => {
+                                        [SwitchSubfunction::Switch] => {
                                             obj_fixed_variant button1_main with [button1_value_type, button1_subtype] => button1_value_00::Switch @ 0 text "Value pushed button"
                                             sep "Innovative group control"
                                             param button1_group_function
                                             when @button1_group_function {
-                                                // When P-28=0 (no group): UP-109 is hidden (sets internal value)
-                                                [0] => { }
-                                                [1] => {
+                                                // When P-28=NotActive (no group): UP-109 is hidden (sets internal value)
+                                                [GEboolEnableDisable::NotActive] => { }
+                                                [GEboolEnableDisable::Active] => {
                                                     // MDT outputs O-2 directly in switch mode (fixed to Switch type)
                                                     objs_by_ref_name ["button1_status_toggle_switch"] with []
                                                     // UP-109 hidden here too (Access="None")
                                                     param button1_group_send_condition
                                                     union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
                                                     when @button1_group_send_condition {
-                                                        [1] => {
+                                                        [GEboolEnableDisable::Active] => {
                                                             obj_direct button1_extra_long with []
                                                             union_variant button1_extra_long_time::ExtraLongKeypressTime
                                                         }
@@ -3813,19 +3436,19 @@ impl EtsPageLayout for MdtStack {
                                         // switch_type 1 = toggle (with 2 objects) - MDT pattern: no visible Value param
                                         // Toggle mode just toggles ON/OFF based on current status, no value config needed
                                         // Objects are output directly without choose block (fixed to Switch type)
-                                        [1] => {
+                                        [SwitchSubfunction::Toggle] => {
                                             objs_by_ref_name ["button1_main_switch", "button1_secondary_switch"] with []
                                             // MDT shows hidden params P-26, P-15, P-27 here - we skip visible value params
                                             sep "Innovative group control"
                                             param button1_group_function
                                             when @button1_group_function {
-                                                [0] => { }
-                                                [1] => {
+                                                [GEboolEnableDisable::NotActive] => { }
+                                                [GEboolEnableDisable::Active] => {
                                                     objs_by_ref_name ["button1_status_toggle_switch"] with []
                                                     param button1_group_send_condition
                                                     union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
                                                     when @button1_group_send_condition {
-                                                        [1] => {
+                                                        [GEboolEnableDisable::Active] => {
                                                             obj_direct button1_extra_long with []
                                                             union_variant button1_extra_long_time::ExtraLongKeypressTime
                                                         }
@@ -3835,13 +3458,13 @@ impl EtsPageLayout for MdtStack {
                                         }
                                         // switch_type 2 = send status - MDT pattern: direct object output (fixed to Switch type)
                                         // Shows: O-0 (Send status), Value pushed, Value released, Delay for released button
-                                        [2] => {
+                                        [SwitchSubfunction::SendStatus] => {
                                             objs_by_ref_name ["button1_main_switch"] with []
                                             param button1_value_pushed
                                             param button1_value_released
                                             param button1_delay_state
                                             when @button1_delay_state {
-                                                [1] => {
+                                                [GEboolEnableDisable::Active] => {
                                                     union_variant button1_time_duration::DelayTime
                                                 }
                                             }
@@ -3849,7 +3472,7 @@ impl EtsPageLayout for MdtStack {
                                     }
                                 }
                                 // Mode 4 = send values
-                                [4] => {
+                                [ButtonFunction::SendValues] => {
                                     param button1_value_function
                                     when @button1_value_function {
                                         // value_function 0 = send values
@@ -3859,7 +3482,7 @@ impl EtsPageLayout for MdtStack {
                                         // P-27 is OM_InputUsage_valueType00_0 (hidden/Access=None)
                                         // value_function 0 = send values
                                         // MDT structure: P-15 (hidden subtype), P-35 (Datapoint type), choose P-35, P-37 (special function)
-                                        [0] => {
+                                        [ButtonValueFunction::SendValues] => {
                                             param button1_subtype
                                             param button1_object_type
                                             // Choose on object_type (DPT): each when has obj + hidden value_type + value param
@@ -3870,14 +3493,14 @@ impl EtsPageLayout for MdtStack {
                                             param button1_special_function
                                             when @button1_special_function {
                                                 // Special function 0 = Innovative group control
-                                                [0] => {
+                                                [SpecialFunction::InnovativeGroupControl] => {
                                                     sep "Innovative group control"
                                                     param button1_group_function
                                                     when @button1_group_function {
-                                                        // group_function 0 = not active: just hidden value param
-                                                        [0] => { }
-                                                        // group_function 1 = active: show status toggle object and timing
-                                                        [1] => {
+                                                        // group_function NotActive: just hidden value param
+                                                        [GEboolEnableDisable::NotActive] => { }
+                                                        // group_function Active: show status toggle object and timing
+                                                        [GEboolEnableDisable::Active] => {
                                                             // O-2 (status toggle) depends on object_type for DPT - uses same DPT as main
                                                             obj_with_value button1_status_toggle by button1_object_type => button1_value_01 with [button1_value_type] sub_select {
                                                                 9 => button1_colour_control [(1, button1_status_toggle_rgb, Rgb), (2, button1_status_toggle_hsv, Hsv)]
@@ -3885,10 +3508,10 @@ impl EtsPageLayout for MdtStack {
                                                             param button1_group_send_condition
                                                             union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
                                                             when @button1_group_send_condition {
-                                                                // 0 = not active: hidden extra long value
-                                                                [0] => { }
-                                                                // 1 = active: show extra long object and timing
-                                                                [1] => {
+                                                                // NotActive: hidden extra long value
+                                                                [GEboolEnableDisable::NotActive] => { }
+                                                                // Active: show extra long object and timing
+                                                                [GEboolEnableDisable::Active] => {
                                                                     // O-4 (extra long) also depends on object_type
                                                                     obj_with_value button1_extra_long by button1_object_type => button1_extra_long_value with [button1_value_type] sub_select {
                                                                         9 => button1_colour_control [(1, button1_main_rgb, Rgb), (2, button1_main_hsv, Hsv)]
@@ -3901,51 +3524,51 @@ impl EtsPageLayout for MdtStack {
                                                 }
                                                 // Special function 1 = Additional object
                                                 // MDT: UP-123 (hidden), P-39 (DPT type), choose P-39 with O-2 + UP-109 + value
-                                                [1] => {
+                                                [SpecialFunction::AdditionalObject] => {
                                                     param button1_additional_object_type
                                                     // O-2 (status toggle) with DPT based on additional_object_type
                                                     // Each DPT value selects a different named ref
                                                     when @button1_additional_object_type {
-                                                        [10] => {
+                                                        [ObjectType::Switch] => {
                                                             objs_by_ref_name ["button1_additional_obj_switch"] with []
                                                             union_variant button1_value_01::Switch text "    Value"
                                                         }
-                                                        [1] => {
+                                                        [ObjectType::Bit2] => {
                                                             objs_by_ref_name ["button1_additional_obj_bit2"] with []
                                                             union_variant button1_value_01::ForcibleControl text "    Value"
                                                         }
-                                                        [2] => {
+                                                        [ObjectType::Percent] => {
                                                             objs_by_ref_name ["button1_additional_obj_percent"] with []
                                                             union_variant button1_value_01::Percent text "    Value"
                                                         }
-                                                        [3] => {
+                                                        [ObjectType::Decimal] => {
                                                             objs_by_ref_name ["button1_additional_obj_decimal"] with []
                                                             union_variant button1_value_01::Decimal text "    Value"
                                                         }
-                                                        [4] => {
+                                                        [ObjectType::Scene] => {
                                                             objs_by_ref_name ["button1_additional_obj_scene"] with []
                                                             union_variant button1_value_01::Scene text "    Value"
                                                         }
-                                                        [6] => {
+                                                        [ObjectType::ColourTemp] => {
                                                             objs_by_ref_name ["button1_additional_obj_colour_temp"] with []
                                                             union_variant button1_value_01::ColourTemp text "    Value"
                                                         }
-                                                        [7] => {
+                                                        [ObjectType::Temperature] => {
                                                             objs_by_ref_name ["button1_additional_obj_temp"] with []
                                                             union_variant button1_value_01::Temperature text "    Value"
                                                         }
-                                                        [8] => {
+                                                        [ObjectType::Brightness] => {
                                                             objs_by_ref_name ["button1_additional_obj_lux"] with []
                                                             union_variant button1_value_01::Brightness text "    Value"
                                                         }
-                                                        [9] => {
+                                                        [ObjectType::Rgb] => {
                                                             param button1_additional_colour_control
                                                             when @button1_additional_colour_control {
-                                                                [1] => {
+                                                                [ColourControl::Rgb] => {
                                                                     objs_by_ref_name ["button1_additional_obj_rgb"] with []
                                                                     union_variant button1_value_01::Rgb text "    Value"
                                                                 }
-                                                                [2] => {
+                                                                [ColourControl::Hsv] => {
                                                                     objs_by_ref_name ["button1_additional_obj_hsv"] with []
                                                                     union_variant button1_value_01::Hsv text "    Value"
                                                                 }
@@ -3959,73 +3582,73 @@ impl EtsPageLayout for MdtStack {
                                         // MDT: P-15 (hidden), P-41 (DPT type), choose P-41 with obj + pushed + released + delay
                                         // NOTE: DPT type P-41 uses DPTType (no 1Bit Switch value 10), not DPTType1Bit
                                         // For each DPT: O-0 (comm obj), UP-134/etc (pushed), UP-114/etc (released), P-26 (delay)
-                                        [1] => {
+                                        [ButtonValueFunction::SendValuesByState] => {
                                             param button1_subtype
                                             param button1_object_type_no_switch
                                             // Choose on object_type_no_switch (DPT): each when has obj + pushed value + released value + delay
                                             when @button1_object_type_no_switch {
-                                                // DPT 1 = 2Bit Forcible control
-                                                [1] => {
+                                                // DPT Bit2 = 2Bit Forcible control
+                                                [ObjectType::Bit2] => {
                                                     objs_by_ref_name ["button1_main_bit2"] with []
                                                     union_variant button1_value_01::ForcibleControl text "Value pushed button"
                                                     union_variant button1_value_00::ForcibleControl text "Value released button"
                                                     param button1_delay_state
                                                 }
-                                                // DPT 2 = 1Byte Percent (0...100%)
-                                                [2] => {
+                                                // DPT Percent = 1Byte Percent (0...100%)
+                                                [ObjectType::Percent] => {
                                                     objs_by_ref_name ["button1_main_percent"] with []
                                                     union_variant button1_value_01::Percent text "Value pushed button"
                                                     union_variant button1_value_00::Percent text "Value released button"
                                                     param button1_delay_state
                                                 }
-                                                // DPT 3 = 1Byte Decimal factor (0...255)
-                                                [3] => {
+                                                // DPT Decimal = 1Byte Decimal factor (0...255)
+                                                [ObjectType::Decimal] => {
                                                     objs_by_ref_name ["button1_main_decimal"] with []
                                                     union_variant button1_value_01::Decimal text "Value pushed button"
                                                     union_variant button1_value_00::Decimal text "Value released button"
                                                     param button1_delay_state
                                                 }
-                                                // DPT 4 = 1Byte Scene number
-                                                [4] => {
+                                                // DPT Scene = 1Byte Scene number
+                                                [ObjectType::Scene] => {
                                                     objs_by_ref_name ["button1_main_scene"] with []
                                                     param button1_delay_state
                                                     union_variant button1_value_01::Scene text "Value pushed button"
                                                     union_variant button1_value_00::Scene text "Value released button"
                                                 }
-                                                // DPT 6 = 2Byte Colour Temperature (Kelvin)
-                                                [6] => {
+                                                // DPT ColourTemp = 2Byte Colour Temperature (Kelvin)
+                                                [ObjectType::ColourTemp] => {
                                                     objs_by_ref_name ["button1_main_colour_temp"] with []
                                                     union_variant button1_value_01::ColourTemp text "Value pushed button"
                                                     union_variant button1_value_00::ColourTemp text "Value released button"
                                                     param button1_delay_state
                                                 }
-                                                // DPT 7 = 2Byte Temperature (°C)
-                                                [7] => {
+                                                // DPT Temperature = 2Byte Temperature (°C)
+                                                [ObjectType::Temperature] => {
                                                     objs_by_ref_name ["button1_main_temp"] with []
                                                     union_variant button1_value_01::Temperature text "Value pushed button"
                                                     union_variant button1_value_00::Temperature text "Value released button"
                                                     param button1_delay_state
                                                 }
-                                                // DPT 8 = 2Byte Brightness (Lux)
-                                                [8] => {
+                                                // DPT Brightness = 2Byte Brightness (Lux)
+                                                [ObjectType::Brightness] => {
                                                     objs_by_ref_name ["button1_main_lux"] with []
                                                     param button1_delay_state
                                                     union_variant button1_value_01::Brightness text "Value pushed button"
                                                     union_variant button1_value_00::Brightness text "Value released button"
                                                 }
-                                                // DPT 9 = 3Byte RGB/HSV
-                                                [9] => {
+                                                // DPT Rgb = 3Byte RGB/HSV
+                                                [ObjectType::Rgb] => {
                                                     param button1_delay_state
                                                     param button1_colour_control
                                                     when @button1_colour_control {
                                                         // RGB mode
-                                                        [1] => {
+                                                        [ColourControl::Rgb] => {
                                                             objs_by_ref_name ["button1_main_rgb"] with []
                                                             union_variant button1_value_01::Rgb text "    Value pushed button"
                                                             union_variant button1_value_00::Rgb text "    Value released button"
                                                         }
                                                         // HSV mode
-                                                        [2] => {
+                                                        [ColourControl::Hsv] => {
                                                             objs_by_ref_name ["button1_main_hsv"] with []
                                                             union_variant button1_value_01::Hsv text "    Value pushed button"
                                                             union_variant button1_value_00::Hsv text "    Value released button"
@@ -4037,12 +3660,12 @@ impl EtsPageLayout for MdtStack {
                                         // value_function 2 = toggle values/scenes (up to 4 values)
                                         // MDT: P-41 (DPT without Switch), UP-156 (value count 2/3/4), choose P-41
                                         // Each DPT: obj + delay + value00 + value01 + conditional value02 (when >=3) + value03 (when 4)
-                                        [2] => {
+                                        [LogicType::SendValueWhenPressed] => {
                                             param button1_object_type_no_switch
                                             union_variant button1_sub_type_h::ValueCount text "Number of values"
                                             when @button1_object_type_no_switch {
-                                                // Forcible control (1)
-                                                [1] => {
+                                                // Forcible control
+                                                [ObjectType::Bit2] => {
                                                     objs_by_ref_name ["button1_main_bit2"] with []
                                                     param button1_delay_state
                                                     union_variant button1_value_00::ForcibleControl text "    1. Toggle value"
@@ -4058,8 +3681,8 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                     }
                                                 }
-                                                // Percent (2)
-                                                [2] => {
+                                                // Percent
+                                                [ObjectType::Percent] => {
                                                     objs_by_ref_name ["button1_main_percent", "button1_secondary_percent"] with []
                                                     param button1_delay_state
                                                     union_variant button1_value_00::Percent text "    1. Toggle value"
@@ -4075,8 +3698,8 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                     }
                                                 }
-                                                // Decimal (3)
-                                                [3] => {
+                                                // Decimal
+                                                [ObjectType::Decimal] => {
                                                     objs_by_ref_name ["button1_main_decimal", "button1_secondary_decimal"] with []
                                                     param button1_delay_state
                                                     union_variant button1_value_00::Decimal text "    1. Toggle value"
@@ -4092,8 +3715,8 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                     }
                                                 }
-                                                // Scene (4)
-                                                [4] => {
+                                                // Scene
+                                                [ObjectType::Scene] => {
                                                     objs_by_ref_name ["button1_main_scene"] with []
                                                     param button1_delay_state
                                                     union_variant button1_value_00::Scene text "    1. Toggle Scene number"
@@ -4161,11 +3784,11 @@ impl EtsPageLayout for MdtStack {
                                                     }
                                                 }
                                                 // RGB/HSV (9)
-                                                [9] => {
+                                                [ObjectType::Rgb] => {
                                                     param button1_delay_state
                                                     param button1_colour_control
                                                     when @button1_colour_control {
-                                                        [1] => {
+                                                        [ColourControl::Rgb] => {
                                                             objs_by_ref_name ["button1_main_rgb"] with []
                                                             union_variant button1_value_00::Rgb text "    1. Toggle value"
                                                             union_variant button1_value_01::Rgb text "    2. Toggle value"
@@ -4180,7 +3803,7 @@ impl EtsPageLayout for MdtStack {
                                                                 }
                                                             }
                                                         }
-                                                        [2] => {
+                                                        [ColourControl::Hsv] => {
                                                             objs_by_ref_name ["button1_main_hsv"] with []
                                                             union_variant button1_value_00::Hsv text "    1. Toggle value"
                                                             union_variant button1_value_01::Hsv text "    2. Toggle value"
@@ -4208,118 +3831,118 @@ impl EtsPageLayout for MdtStack {
                                             union_variant button1_sub_type_h::TipOperations text "Number of tip-operations"
                                             when @button1_tip_output_objects {
                                                 // Common object/DPT
-                                                [0] => {
+                                                [TipOutputObjects::CommonObject] => {
                                                     param button1_subtype
                                                     param button1_object_type
                                                     when @button1_object_type {
-                                                        // Switch (10)
-                                                        [10] => {
+                                                        // Switch
+                                                        [ObjectType::Switch] => {
                                                             objs_by_ref_name ["button1_main_switch"] with []
                                                             union_variant button1_value_00::Switch text "    Value tip once"
                                                             union_variant button1_value_01::Switch text "    Value tip twice"
                                                             choose_on_union_variant button1_sub_type_h::TipOperations {
-                                                                [2] => {
+                                                                [LogicType::SendValueWhenPressed] => {
                                                                     union_variant button1_value_02::Switch text "    Value tip triple"
                                                                 }
                                                             }
                                                         }
-                                                        // Forcible control (1)
-                                                        [1] => {
+                                                        // Forcible control
+                                                        [ObjectType::Bit2] => {
                                                             objs_by_ref_name ["button1_main_bit2"] with []
                                                             union_variant button1_value_00::ForcibleControl text "    Value tip once"
                                                             union_variant button1_value_01::ForcibleControl text "    Value tip twice"
                                                             choose_on_union_variant button1_sub_type_h::TipOperations {
-                                                                [2] => {
+                                                                [LogicType::SendValueWhenPressed] => {
                                                                     union_variant button1_value_02::ForcibleControl text "    Value tip triple"
                                                                 }
                                                             }
                                                         }
-                                                        // Percent (2)
-                                                        [2] => {
+                                                        // Percent
+                                                        [ObjectType::Percent] => {
                                                             objs_by_ref_name ["button1_main_percent"] with []
                                                             union_variant button1_value_00::Percent text "    Value tip once"
                                                             union_variant button1_value_01::Percent text "    Value tip twice"
                                                             choose_on_union_variant button1_sub_type_h::TipOperations {
-                                                                [2] => {
+                                                                [LogicType::SendValueWhenPressed] => {
                                                                     union_variant button1_value_02::Percent text "    Value tip triple"
                                                                 }
                                                             }
                                                         }
-                                                        // Decimal (3)
-                                                        [3] => {
+                                                        // Decimal
+                                                        [ObjectType::Decimal] => {
                                                             objs_by_ref_name ["button1_main_decimal"] with []
                                                             union_variant button1_value_00::Decimal text "    Value tip once"
                                                             union_variant button1_value_01::Decimal text "    Value tip twice"
                                                             choose_on_union_variant button1_sub_type_h::TipOperations {
-                                                                [2] => {
+                                                                [LogicType::SendValueWhenPressed] => {
                                                                     union_variant button1_value_02::Decimal text "    Value tip triple"
                                                                 }
                                                             }
                                                         }
-                                                        // Scene (4)
-                                                        [4] => {
+                                                        // Scene
+                                                        [ObjectType::Scene] => {
                                                             objs_by_ref_name ["button1_main_scene"] with []
                                                             union_variant button1_value_00::Scene text "    Scene number tip once"
                                                             union_variant button1_value_01::Scene text "    Scene number tip twice"
                                                             choose_on_union_variant button1_sub_type_h::TipOperations {
-                                                                [2] => {
+                                                                [LogicType::SendValueWhenPressed] => {
                                                                     union_variant button1_value_02::Scene text "    Scene number tip 3 times"
                                                                 }
                                                             }
                                                         }
-                                                        // ColourTemp (6)
-                                                        [6] => {
+                                                        // ColourTemp
+                                                        [ObjectType::ColourTemp] => {
                                                             objs_by_ref_name ["button1_main_colour_temp"] with []
                                                             union_variant button1_value_00::ColourTemp text "    Value tip once"
                                                             union_variant button1_value_01::ColourTemp text "    Value tip twice"
                                                             choose_on_union_variant button1_sub_type_h::TipOperations {
-                                                                [2] => {
+                                                                [LogicType::SendValueWhenPressed] => {
                                                                     union_variant button1_value_02::ColourTemp text "    Value tip triple"
                                                                 }
                                                             }
                                                         }
-                                                        // Temperature (7)
-                                                        [7] => {
+                                                        // Temperature
+                                                        [ObjectType::Temperature] => {
                                                             objs_by_ref_name ["button1_main_temp"] with []
                                                             union_variant button1_value_00::Temperature text "    Value tip once"
                                                             union_variant button1_value_01::Temperature text "    Value tip twice"
                                                             choose_on_union_variant button1_sub_type_h::TipOperations {
-                                                                [2] => {
+                                                                [LogicType::SendValueWhenPressed] => {
                                                                     union_variant button1_value_02::Temperature text "    Value tip triple"
                                                                 }
                                                             }
                                                         }
-                                                        // Brightness (8)
-                                                        [8] => {
+                                                        // Brightness
+                                                        [ObjectType::Brightness] => {
                                                             objs_by_ref_name ["button1_main_lux"] with []
                                                             union_variant button1_value_00::Brightness text "    Value tip once"
                                                             union_variant button1_value_01::Brightness text "    Value tip twice"
                                                             choose_on_union_variant button1_sub_type_h::TipOperations {
-                                                                [2] => {
+                                                                [LogicType::SendValueWhenPressed] => {
                                                                     union_variant button1_value_02::Brightness text "    Value tip triple"
                                                                 }
                                                             }
                                                         }
-                                                        // RGB/HSV (9)
-                                                        [9] => {
+                                                        // RGB/HSV
+                                                        [ObjectType::Rgb] => {
                                                             param button1_colour_control
                                                             when @button1_colour_control {
-                                                                [1] => {
+                                                                [ColourControl::Rgb] => {
                                                                     objs_by_ref_name ["button1_main_rgb"] with []
                                                                     union_variant button1_value_00::Rgb text "    RGB-Value tip once"
                                                                     union_variant button1_value_01::Rgb text "    RGB-Value tip twice"
                                                                     choose_on_union_variant button1_sub_type_h::TipOperations {
-                                                                        [2] => {
+                                                                        [LogicType::SendValueWhenPressed] => {
                                                                             union_variant button1_value_02::Rgb text "    RGB-Value tip triple"
                                                                         }
                                                                     }
                                                                 }
-                                                                [2] => {
+                                                                [ColourControl::Hsv] => {
                                                                     objs_by_ref_name ["button1_main_hsv"] with []
                                                                     union_variant button1_value_00::Hsv text "    HSV-Value tip once"
                                                                     union_variant button1_value_01::Hsv text "    HSV-Value tip twice"
                                                                     choose_on_union_variant button1_sub_type_h::TipOperations {
-                                                                        [2] => {
+                                                                        [LogicType::SendValueWhenPressed] => {
                                                                             union_variant button1_value_02::Hsv text "    HSV-Value tip triple"
                                                                         }
                                                                     }
@@ -4330,64 +3953,64 @@ impl EtsPageLayout for MdtStack {
                                                 }
                                                 // Different objects/DPT - each tip has its own DPT selector (MDT pattern)
                                                 // Each tip gets its own button1_object_type / button1_tip2_object_type / button1_tip3_object_type
-                                                [1] => {
+                                                [TipOutputObjects::DifferentObjects] => {
                                                     // Tip 1 - uses button1_object_type
                                                     param button1_subtype
                                                     param button1_object_type
                                                     when @button1_object_type {
-                                                        [10] => { objs_by_ref_name ["button1_tip_switch"] with [] union_variant button1_value_00::Switch text "    Value tip once" }
-                                                        [1] => { objs_by_ref_name ["button1_tip_bit2"] with [] union_variant button1_value_00::ForcibleControl text "    Value tip once" }
-                                                        [2] => { objs_by_ref_name ["button1_tip_percent"] with [] union_variant button1_value_00::Percent text "    Value tip once" }
-                                                        [3] => { objs_by_ref_name ["button1_tip_decimal"] with [] union_variant button1_value_00::Decimal text "    Value tip once" }
-                                                        [4] => { objs_by_ref_name ["button1_tip_scene"] with [] union_variant button1_value_00::Scene text "    Scene number tip once" }
-                                                        [6] => { objs_by_ref_name ["button1_tip_colour_temp"] with [] union_variant button1_value_00::ColourTemp text "    Value tip once" }
-                                                        [7] => { objs_by_ref_name ["button1_tip_temp"] with [] union_variant button1_value_00::Temperature text "    Value tip once" }
-                                                        [8] => { objs_by_ref_name ["button1_tip_lux"] with [] union_variant button1_value_00::Brightness text "    Value tip once" }
-                                                        [9] => {
+                                                        [ObjectType::Switch] => { objs_by_ref_name ["button1_tip_switch"] with [] union_variant button1_value_00::Switch text "    Value tip once" }
+                                                        [ObjectType::Bit2] => { objs_by_ref_name ["button1_tip_bit2"] with [] union_variant button1_value_00::ForcibleControl text "    Value tip once" }
+                                                        [ObjectType::Percent] => { objs_by_ref_name ["button1_tip_percent"] with [] union_variant button1_value_00::Percent text "    Value tip once" }
+                                                        [ObjectType::Decimal] => { objs_by_ref_name ["button1_tip_decimal"] with [] union_variant button1_value_00::Decimal text "    Value tip once" }
+                                                        [ObjectType::Scene] => { objs_by_ref_name ["button1_tip_scene"] with [] union_variant button1_value_00::Scene text "    Scene number tip once" }
+                                                        [ObjectType::ColourTemp] => { objs_by_ref_name ["button1_tip_colour_temp"] with [] union_variant button1_value_00::ColourTemp text "    Value tip once" }
+                                                        [ObjectType::Temperature] => { objs_by_ref_name ["button1_tip_temp"] with [] union_variant button1_value_00::Temperature text "    Value tip once" }
+                                                        [ObjectType::Brightness] => { objs_by_ref_name ["button1_tip_lux"] with [] union_variant button1_value_00::Brightness text "    Value tip once" }
+                                                        [ObjectType::Rgb] => {
                                                             param button1_colour_control
                                                             when @button1_colour_control {
-                                                                [1] => { objs_by_ref_name ["button1_tip_rgb"] with [] union_variant button1_value_00::Rgb text "    RGB-Value tip once" }
-                                                                [2] => { objs_by_ref_name ["button1_tip_hsv"] with [] union_variant button1_value_00::Hsv text "    HSV-Value tip once" }
+                                                                [ColourControl::Rgb] => { objs_by_ref_name ["button1_tip_rgb"] with [] union_variant button1_value_00::Rgb text "    RGB-Value tip once" }
+                                                                [ColourControl::Hsv] => { objs_by_ref_name ["button1_tip_hsv"] with [] union_variant button1_value_00::Hsv text "    HSV-Value tip once" }
                                                             }
                                                         }
                                                     }
                                                     // Tip 2 - uses button1_tip2_object_type (separate DPT selector)
                                                     param button1_tip2_object_type
                                                     when @button1_tip2_object_type {
-                                                        [10] => { objs_by_ref_name ["button1_2x_tip_switch"] with [] union_variant button1_value_01::Switch text "    Value tip twice" }
-                                                        [1] => { objs_by_ref_name ["button1_2x_tip_bit2"] with [] union_variant button1_value_01::ForcibleControl text "    Value tip twice" }
-                                                        [2] => { objs_by_ref_name ["button1_2x_tip_percent"] with [] union_variant button1_value_01::Percent text "    Value tip twice" }
-                                                        [3] => { objs_by_ref_name ["button1_2x_tip_decimal"] with [] union_variant button1_value_01::Decimal text "    Value tip twice" }
-                                                        [4] => { objs_by_ref_name ["button1_2x_tip_scene"] with [] union_variant button1_value_01::Scene text "    Scene number tip twice" }
-                                                        [6] => { objs_by_ref_name ["button1_2x_tip_colour_temp"] with [] union_variant button1_value_01::ColourTemp text "    Value tip twice" }
-                                                        [7] => { objs_by_ref_name ["button1_2x_tip_temp"] with [] union_variant button1_value_01::Temperature text "    Value tip twice" }
-                                                        [8] => { objs_by_ref_name ["button1_2x_tip_lux"] with [] union_variant button1_value_01::Brightness text "    Value tip twice" }
-                                                        [9] => {
+                                                        [ObjectType::Switch] => { objs_by_ref_name ["button1_2x_tip_switch"] with [] union_variant button1_value_01::Switch text "    Value tip twice" }
+                                                        [ObjectType::Bit2] => { objs_by_ref_name ["button1_2x_tip_bit2"] with [] union_variant button1_value_01::ForcibleControl text "    Value tip twice" }
+                                                        [ObjectType::Percent] => { objs_by_ref_name ["button1_2x_tip_percent"] with [] union_variant button1_value_01::Percent text "    Value tip twice" }
+                                                        [ObjectType::Decimal] => { objs_by_ref_name ["button1_2x_tip_decimal"] with [] union_variant button1_value_01::Decimal text "    Value tip twice" }
+                                                        [ObjectType::Scene] => { objs_by_ref_name ["button1_2x_tip_scene"] with [] union_variant button1_value_01::Scene text "    Scene number tip twice" }
+                                                        [ObjectType::ColourTemp] => { objs_by_ref_name ["button1_2x_tip_colour_temp"] with [] union_variant button1_value_01::ColourTemp text "    Value tip twice" }
+                                                        [ObjectType::Temperature] => { objs_by_ref_name ["button1_2x_tip_temp"] with [] union_variant button1_value_01::Temperature text "    Value tip twice" }
+                                                        [ObjectType::Brightness] => { objs_by_ref_name ["button1_2x_tip_lux"] with [] union_variant button1_value_01::Brightness text "    Value tip twice" }
+                                                        [ObjectType::Rgb] => {
                                                             param button1_tip2_colour_control
                                                             when @button1_tip2_colour_control {
-                                                                [1] => { objs_by_ref_name ["button1_2x_tip_rgb"] with [] union_variant button1_value_01::Rgb text "    RGB-Value tip twice" }
-                                                                [2] => { objs_by_ref_name ["button1_2x_tip_hsv"] with [] union_variant button1_value_01::Hsv text "    HSV-Value tip twice" }
+                                                                [ColourControl::Rgb] => { objs_by_ref_name ["button1_2x_tip_rgb"] with [] union_variant button1_value_01::Rgb text "    RGB-Value tip twice" }
+                                                                [ColourControl::Hsv] => { objs_by_ref_name ["button1_2x_tip_hsv"] with [] union_variant button1_value_01::Hsv text "    HSV-Value tip twice" }
                                                             }
                                                         }
                                                     }
                                                     // Tip 3 - only shown when 3 tips selected, uses button1_tip3_object_type
                                                     choose_on_union_variant button1_sub_type_h::TipOperations {
-                                                        [2] => {
+                                                        [LogicType::SendValueWhenPressed] => {
                                                             param button1_tip3_object_type
                                                             when @button1_tip3_object_type {
-                                                                [10] => { objs_by_ref_name ["button1_3x_tip_switch"] with [] union_variant button1_value_02::Switch text "    Value tip triple" }
-                                                                [1] => { objs_by_ref_name ["button1_3x_tip_bit2"] with [] union_variant button1_value_02::ForcibleControl text "    Value tip triple" }
-                                                                [2] => { objs_by_ref_name ["button1_3x_tip_percent"] with [] union_variant button1_value_02::Percent text "    Value tip triple" }
-                                                                [3] => { objs_by_ref_name ["button1_3x_tip_decimal"] with [] union_variant button1_value_02::Decimal text "    Value tip triple" }
-                                                                [4] => { objs_by_ref_name ["button1_3x_tip_scene"] with [] union_variant button1_value_02::Scene text "    Scene number tip 3 times" }
-                                                                [6] => { objs_by_ref_name ["button1_3x_tip_colour_temp"] with [] union_variant button1_value_02::ColourTemp text "    Value tip triple" }
-                                                                [7] => { objs_by_ref_name ["button1_3x_tip_temp"] with [] union_variant button1_value_02::Temperature text "    Value tip triple" }
-                                                                [8] => { objs_by_ref_name ["button1_3x_tip_lux"] with [] union_variant button1_value_02::Brightness text "    Value tip triple" }
-                                                                [9] => {
+                                                                [ObjectType::Switch] => { objs_by_ref_name ["button1_3x_tip_switch"] with [] union_variant button1_value_02::Switch text "    Value tip triple" }
+                                                                [ObjectType::Bit2] => { objs_by_ref_name ["button1_3x_tip_bit2"] with [] union_variant button1_value_02::ForcibleControl text "    Value tip triple" }
+                                                                [ObjectType::Percent] => { objs_by_ref_name ["button1_3x_tip_percent"] with [] union_variant button1_value_02::Percent text "    Value tip triple" }
+                                                                [ObjectType::Decimal] => { objs_by_ref_name ["button1_3x_tip_decimal"] with [] union_variant button1_value_02::Decimal text "    Value tip triple" }
+                                                                [ObjectType::Scene] => { objs_by_ref_name ["button1_3x_tip_scene"] with [] union_variant button1_value_02::Scene text "    Scene number tip 3 times" }
+                                                                [ObjectType::ColourTemp] => { objs_by_ref_name ["button1_3x_tip_colour_temp"] with [] union_variant button1_value_02::ColourTemp text "    Value tip triple" }
+                                                                [ObjectType::Temperature] => { objs_by_ref_name ["button1_3x_tip_temp"] with [] union_variant button1_value_02::Temperature text "    Value tip triple" }
+                                                                [ObjectType::Brightness] => { objs_by_ref_name ["button1_3x_tip_lux"] with [] union_variant button1_value_02::Brightness text "    Value tip triple" }
+                                                                [ObjectType::Rgb] => {
                                                                     param button1_tip3_colour_control
                                                                     when @button1_tip3_colour_control {
-                                                                        [1] => { objs_by_ref_name ["button1_3x_tip_rgb"] with [] union_variant button1_value_02::Rgb text "    RGB-Value tip triple" }
-                                                                        [2] => { objs_by_ref_name ["button1_3x_tip_hsv"] with [] union_variant button1_value_02::Hsv text "    HSV-Value tip triple" }
+                                                                        [ColourControl::Rgb] => { objs_by_ref_name ["button1_3x_tip_rgb"] with [] union_variant button1_value_02::Rgb text "    RGB-Value tip triple" }
+                                                                        [ColourControl::Hsv] => { objs_by_ref_name ["button1_3x_tip_hsv"] with [] union_variant button1_value_02::Hsv text "    HSV-Value tip triple" }
                                                                     }
                                                                 }
                                                             }
@@ -4410,17 +4033,17 @@ impl EtsPageLayout for MdtStack {
                                     param button1_short_action
                                     when @button1_short_action {
                                         // short_action 0 = switch OFF: O-0, P-27 (hidden), UP-116 hidden with Value=0
-                                        [0] => {
+                                        [ShortAction::SwitchOff] => {
                                             objs_by_ref_name ["button1_main_switch_off"] with []
                                             // P-27 and UP-116 are both hidden - no visible value selector
                                         }
                                         // short_action 1 = switch ON: O-0, P-27 (hidden), UP-116 hidden with Value=1
-                                        [1] => {
+                                        [ShortAction::SwitchOn] => {
                                             objs_by_ref_name ["button1_main_switch_on"] with []
                                             // P-27 and UP-116 are both hidden - no visible value selector
                                         }
                                         // short_action 2 = toggle: O-0, O-1, P-27 (hidden) - no value params at all
-                                        [2] => {
+                                        [LogicType::SendValueWhenPressed] => {
                                             objs_by_ref_name ["button1_main_toggle", "button1_secondary_toggle"] with []
                                             // No value selector for toggle
                                         }
@@ -4428,42 +4051,42 @@ impl EtsPageLayout for MdtStack {
                                         [3] => {
                                             param button1_short_dpt_type
                                             when @button1_short_dpt_type {
-                                                [1] => {
+                                                [ObjectType::Bit2] => {
                                                     objs_by_ref_name ["button1_main_bit2"] with []
                                                     union_variant button1_value_00::ForcibleControl text "    Value"
                                                 }
-                                                [2] => {
+                                                [ObjectType::Percent] => {
                                                     objs_by_ref_name ["button1_main_percent"] with []
                                                     union_variant button1_value_00::Percent text "    Value"
                                                 }
-                                                [3] => {
+                                                [ObjectType::Decimal] => {
                                                     objs_by_ref_name ["button1_main_decimal"] with []
                                                     union_variant button1_value_00::Decimal text "    Value"
                                                 }
-                                                [4] => {
+                                                [ObjectType::Scene] => {
                                                     objs_by_ref_name ["button1_main_scene"] with []
                                                     union_variant button1_value_00::Scene text "    Scene number"
                                                 }
-                                                [6] => {
+                                                [ObjectType::ColourTemp] => {
                                                     objs_by_ref_name ["button1_main_colour_temp"] with []
                                                     union_variant button1_value_00::ColourTemp text "    Value"
                                                 }
-                                                [7] => {
+                                                [ObjectType::Temperature] => {
                                                     objs_by_ref_name ["button1_main_temp"] with []
                                                     union_variant button1_value_00::Temperature text "    Value"
                                                 }
-                                                [8] => {
+                                                [ObjectType::Brightness] => {
                                                     objs_by_ref_name ["button1_main_lux"] with []
                                                     union_variant button1_value_00::Brightness text "    Value"
                                                 }
-                                                [9] => {
+                                                [ObjectType::Rgb] => {
                                                     param button1_colour_control
                                                     when @button1_colour_control {
-                                                        [1] => {
+                                                        [ColourControl::Rgb] => {
                                                             objs_by_ref_name ["button1_main_rgb"] with []
                                                             union_variant button1_value_00::Rgb text "    RGB-Value"
                                                         }
-                                                        [2] => {
+                                                        [ColourControl::Hsv] => {
                                                             objs_by_ref_name ["button1_main_hsv"] with []
                                                             union_variant button1_value_00::Hsv text "    HSV-Value"
                                                         }
@@ -4491,17 +4114,17 @@ impl EtsPageLayout for MdtStack {
                                     param button1_long_action
                                     when @button1_long_action {
                                         // long_action 0 = switch OFF: O-2, UP-109 (hidden), UP-127 hidden with Value=0
-                                        [0] => {
+                                        [LongAction::SwitchOff] => {
                                             objs_by_ref_name ["button1_long_switch_off"] with []
                                             // UP-109 and UP-127 are hidden - no visible value selector
                                         }
                                         // long_action 1 = switch ON: O-2, UP-109 (hidden), UP-127 hidden with Value=1
-                                        [1] => {
+                                        [LongAction::SwitchOn] => {
                                             objs_by_ref_name ["button1_long_switch_on"] with []
                                             // UP-109 and UP-127 are hidden - no visible value selector
                                         }
                                         // long_action 2 = toggle: O-2, O-3, UP-109 (hidden) - no value params
-                                        [2] => {
+                                        [LogicType::SendValueWhenPressed] => {
                                             objs_by_ref_name ["button1_long_toggle", "button1_long_status_toggle"] with []
                                             // No value selector for toggle
                                         }
@@ -4509,42 +4132,42 @@ impl EtsPageLayout for MdtStack {
                                         [3] => {
                                             param button1_long_dpt_type
                                             when @button1_long_dpt_type {
-                                                [1] => {
+                                                [ObjectType::Bit2] => {
                                                     objs_by_ref_name ["button1_long_bit2"] with []
                                                     union_variant button1_value_03::ForcibleControl text "    Value"
                                                 }
-                                                [2] => {
+                                                [ObjectType::Percent] => {
                                                     objs_by_ref_name ["button1_long_percent"] with []
                                                     union_variant button1_value_03::Percent text "    Value"
                                                 }
-                                                [3] => {
+                                                [ObjectType::Decimal] => {
                                                     objs_by_ref_name ["button1_long_decimal"] with []
                                                     union_variant button1_value_03::Decimal text "    Value"
                                                 }
-                                                [4] => {
+                                                [ObjectType::Scene] => {
                                                     objs_by_ref_name ["button1_long_scene"] with []
                                                     union_variant button1_value_03::Scene text "    Scene number"
                                                 }
-                                                [6] => {
+                                                [ObjectType::ColourTemp] => {
                                                     objs_by_ref_name ["button1_long_colour_temp"] with []
                                                     union_variant button1_value_03::ColourTemp text "    Value"
                                                 }
-                                                [7] => {
+                                                [ObjectType::Temperature] => {
                                                     objs_by_ref_name ["button1_long_temp"] with []
                                                     union_variant button1_value_03::Temperature text "    Value"
                                                 }
-                                                [8] => {
+                                                [ObjectType::Brightness] => {
                                                     objs_by_ref_name ["button1_long_lux"] with []
                                                     union_variant button1_value_03::Brightness text "    Value"
                                                 }
-                                                [9] => {
+                                                [ObjectType::Rgb] => {
                                                     param button1_long_colour_control
                                                     when @button1_long_colour_control {
-                                                        [1] => {
+                                                        [ColourControl::Rgb] => {
                                                             objs_by_ref_name ["button1_long_rgb"] with []
                                                             union_variant button1_value_03::Rgb text "    RGB-Value"
                                                         }
-                                                        [2] => {
+                                                        [ColourControl::Hsv] => {
                                                             objs_by_ref_name ["button1_long_hsv"] with []
                                                             union_variant button1_value_03::Hsv text "    HSV-Value"
                                                         }
@@ -4559,23 +4182,23 @@ impl EtsPageLayout for MdtStack {
                                     }
                                     // Time shown after long_action choose when long_action in [0,1,2,3]
                                     when @button1_long_action {
-                                        [0, 1, 2, 3] => {
+                                        [LongAction::SwitchOff, LongAction::SwitchOn, LongAction::Toggle, LongAction::SendValues] => {
                                             union_variant button1_extra_long_time::ExtraLongKeypressTime text "Time for keypress"
                                         }
                                     }
                                 }
                                 // Mode 2 = blinds/shutter - MDT outputs objects directly (fixed type)
                                 // Uses named refs to select the blinds DPT refs
-                                [2] => {
+                                [LogicType::SendValueWhenPressed] => {
                                     objs_by_ref_name ["button1_main_blinds", "button1_secondary_blinds", "button1_status_toggle_blinds"] with []
                                     param button1_operation_function
                                     when @button1_operation_function {
-                                        [0] => {
+                                        [BlindsOperationFunction::LongMoveShortStop] => {
                                             // long=move / short=stop mode
                                             sep "Innovative group control"
                                             param button1_group_extra_long
                                         }
-                                        [1] => {
+                                        [BlindsOperationFunction::ShortMoveLongStop] => {
                                             // short=move / long=stop mode - no group control
                                         }
                                     }
@@ -4583,7 +4206,7 @@ impl EtsPageLayout for MdtStack {
                                     union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
                                     // Extra long objects only when group control is enabled
                                     when @button1_group_extra_long {
-                                        [1] => {
+                                        [GEboolEnableDisable::Active] => {
                                             objs_direct [button1_status_display, button1_extra_long] with []
                                             union_variant button1_extra_long_time::ExtraLongKeypressTime text "Time for extra long keypress"
                                         }
@@ -4591,7 +4214,7 @@ impl EtsPageLayout for MdtStack {
                                 }
                                 // Mode 1 = dimming - MDT outputs objects directly (fixed type)
                                 // Uses named refs to select the dimming DPT refs
-                                [1] => {
+                                [ButtonFunction::Dimming] => {
                                     objs_by_ref_name ["button1_main_dimming", "button1_secondary_dimming", "button1_status_toggle_dimming"] with []
                                     union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
                                 }
@@ -4615,42 +4238,42 @@ impl EtsPageLayout for MdtStack {
                             }
                             // Blocking object section - shown when default true (all modes except 255)
                             when @button1_function {
-                                [0, 1, 2, 3, 4, 7] => {
+                                [ButtonFunction::Switch, ButtonFunction::Dimming, ButtonFunction::BlindsShutter, ButtonFunction::Scene, ButtonFunction::SendValues, ButtonFunction::SwitchSendValuesShortLong] => {
                                     sep " "
                                     param button1_blocking_enable
-                                    when @button1_blocking_enable { [1] => { obj button1_blocking } }
+                                    when @button1_blocking_enable { [GEboolEnableDisable::Active] => { obj button1_blocking } }
                                 }
                             }
                         }
                     }
                     // Single-button mode with 2 functions (eingang_type = 2) - PB2 block comes second in MDT
-                    [2] => {
+                    [LogicType::SendValueWhenPressed] => {
                         block "pButton_1" => "    PB2: {{button2_description:Push button 2}}" {
                             param button2_description
                             param button2_function
                             // Mode 0 = switch: nested choose on switch_type (subfunction)
                             when @button2_function {
-                                [0] => {
+                                [ButtonFunction::Switch] => {
                                     param button2_switch_type
                                     when @button2_switch_type {
                                         // switch_type 0 = switch (simple) - MDT pattern: direct object output
                                         // In MDT, switch/switch has only "Value pushed button" visible
                                         // The "Value released button" (UP-109) has Access="None" and is hidden
-                                        [0] => {
+                                        [SwitchSubfunction::Switch] => {
                                             obj_fixed_variant button2_main with [button2_value_type, button2_subtype] => button2_value_00::Switch @ 0 text "Value pushed button"
                                             sep "Innovative group control"
                                             param button2_group_function
                                             when @button2_group_function {
-                                                // When P-28=0 (no group): UP-109 is hidden (sets internal value)
-                                                [0] => { }
-                                                [1] => {
+                                                // When P-28=NotActive (no group): UP-109 is hidden (sets internal value)
+                                                [GEboolEnableDisable::NotActive] => { }
+                                                [GEboolEnableDisable::Active] => {
                                                     // MDT outputs O-12 directly in switch mode (fixed to Switch type)
                                                     objs_by_ref_name ["button2_status_toggle_switch"] with []
                                                     // UP-109 hidden here too (Access="None")
                                                     param button2_group_send_condition
                                                     union_variant button2_time_duration::LongKeypressTime text "Time for long keypress"
                                                     when @button2_group_send_condition {
-                                                        [1] => {
+                                                        [GEboolEnableDisable::Active] => {
                                                             obj_direct button2_extra_long with []
                                                             union_variant button2_extra_long_time::ExtraLongKeypressTime
                                                         }
@@ -4661,19 +4284,19 @@ impl EtsPageLayout for MdtStack {
                                         // switch_type 1 = toggle (with 2 objects) - MDT pattern: no visible Value param
                                         // Toggle mode just toggles ON/OFF based on current status, no value config needed
                                         // Objects are output directly without choose block (fixed to Switch type)
-                                        [1] => {
+                                        [SwitchSubfunction::Toggle] => {
                                             objs_by_ref_name ["button2_main_switch", "button2_secondary_switch"] with []
                                             // MDT shows hidden params P-60, P-15, P-61 here - we skip visible value params
                                             sep "Innovative group control"
                                             param button2_group_function
                                             when @button2_group_function {
-                                                [0] => { }
-                                                [1] => {
+                                                [GEboolEnableDisable::NotActive] => { }
+                                                [GEboolEnableDisable::Active] => {
                                                     objs_by_ref_name ["button2_status_toggle_switch"] with []
                                                     param button2_group_send_condition
                                                     union_variant button2_time_duration::LongKeypressTime text "Time for long keypress"
                                                     when @button2_group_send_condition {
-                                                        [1] => {
+                                                        [GEboolEnableDisable::Active] => {
                                                             obj_direct button2_extra_long with []
                                                             union_variant button2_extra_long_time::ExtraLongKeypressTime
                                                         }
@@ -4683,13 +4306,13 @@ impl EtsPageLayout for MdtStack {
                                         }
                                         // switch_type 2 = send status - MDT pattern: direct object output (fixed to Switch type)
                                         // Shows: O-10 (Send status), Value pushed, Value released, Delay for released button
-                                        [2] => {
+                                        [SwitchSubfunction::SendStatus] => {
                                             objs_by_ref_name ["button2_main_switch"] with []
                                             param button2_value_pushed
                                             param button2_value_released
                                             param button2_delay_state
                                             when @button2_delay_state {
-                                                [1] => {
+                                                [GEboolEnableDisable::Active] => {
                                                     union_variant button2_time_duration::DelayTime
                                                 }
                                             }
@@ -4697,12 +4320,12 @@ impl EtsPageLayout for MdtStack {
                                     }
                                 }
                                 // Mode 4 = send values
-                                [4] => {
+                                [ButtonFunction::SendValues] => {
                                     param button2_value_function
                                     when @button2_value_function {
                                         // value_function 0 = send values
                                         // MDT structure: P-55 (hidden subtype), P-79 (Datapoint type), choose P-79, P-81 (special function)
-                                        [0] => {
+                                        [ButtonValueFunction::SendValues] => {
                                             param button2_subtype
                                             param button2_object_type
                                             // Choose on object_type (DPT): each when has obj + hidden value_type + value param
@@ -4713,14 +4336,14 @@ impl EtsPageLayout for MdtStack {
                                             param button2_special_function
                                             when @button2_special_function {
                                                 // Special function 0 = Innovative group control
-                                                [0] => {
+                                                [SpecialFunction::InnovativeGroupControl] => {
                                                     sep "Innovative group control"
                                                     param button2_group_function
                                                     when @button2_group_function {
-                                                        // group_function 0 = not active: just hidden value param
-                                                        [0] => { }
-                                                        // group_function 1 = active: show status toggle object and timing
-                                                        [1] => {
+                                                        // group_function NotActive: just hidden value param
+                                                        [GEboolEnableDisable::NotActive] => { }
+                                                        // group_function Active: show status toggle object and timing
+                                                        [GEboolEnableDisable::Active] => {
                                                             // O-12 (status toggle) depends on object_type for DPT - uses same DPT as main
                                                             obj_with_value button2_status_toggle by button2_object_type => button2_value_01 with [button2_value_type] sub_select {
                                                                 9 => button2_colour_control [(1, button2_status_toggle_rgb, Rgb), (2, button2_status_toggle_hsv, Hsv)]
@@ -4728,10 +4351,10 @@ impl EtsPageLayout for MdtStack {
                                                             param button2_group_send_condition
                                                             union_variant button2_time_duration::LongKeypressTime text "Time for long keypress"
                                                             when @button2_group_send_condition {
-                                                                // 0 = not active: hidden extra long value
-                                                                [0] => { }
-                                                                // 1 = active: show extra long object and timing
-                                                                [1] => {
+                                                                // NotActive: hidden extra long value
+                                                                [GEboolEnableDisable::NotActive] => { }
+                                                                // Active: show extra long object and timing
+                                                                [GEboolEnableDisable::Active] => {
                                                                     // O-14 (extra long) also depends on object_type
                                                                     obj_with_value button2_extra_long by button2_object_type => button2_extra_long_value with [button2_value_type] sub_select {
                                                                         9 => button2_colour_control [(1, button2_main_rgb, Rgb), (2, button2_main_hsv, Hsv)]
@@ -4744,50 +4367,50 @@ impl EtsPageLayout for MdtStack {
                                                 }
                                                 // Special function 1 = Additional object
                                                 // MDT: UP-189 (hidden), P-73 (DPT type), choose P-73 with O-12 + UP-175 + value
-                                                [1] => {
+                                                [SpecialFunction::AdditionalObject] => {
                                                     param button2_additional_object_type
                                                     // O-12 (status toggle) with DPT based on additional_object_type
                                                     when @button2_additional_object_type {
-                                                        [10] => {
+                                                        [ObjectType::Switch] => {
                                                             objs_by_ref_name ["button2_additional_obj_switch"] with []
                                                             union_variant button2_value_01::Switch text "    Value"
                                                         }
-                                                        [1] => {
+                                                        [ObjectType::Bit2] => {
                                                             objs_by_ref_name ["button2_additional_obj_bit2"] with []
                                                             union_variant button2_value_01::ForcibleControl text "    Value"
                                                         }
-                                                        [2] => {
+                                                        [ObjectType::Percent] => {
                                                             objs_by_ref_name ["button2_additional_obj_percent"] with []
                                                             union_variant button2_value_01::Percent text "    Value"
                                                         }
-                                                        [3] => {
+                                                        [ObjectType::Decimal] => {
                                                             objs_by_ref_name ["button2_additional_obj_decimal"] with []
                                                             union_variant button2_value_01::Decimal text "    Value"
                                                         }
-                                                        [4] => {
+                                                        [ObjectType::Scene] => {
                                                             objs_by_ref_name ["button2_additional_obj_scene"] with []
                                                             union_variant button2_value_01::Scene text "    Value"
                                                         }
-                                                        [6] => {
+                                                        [ObjectType::ColourTemp] => {
                                                             objs_by_ref_name ["button2_additional_obj_colour_temp"] with []
                                                             union_variant button2_value_01::ColourTemp text "    Value"
                                                         }
-                                                        [7] => {
+                                                        [ObjectType::Temperature] => {
                                                             objs_by_ref_name ["button2_additional_obj_temp"] with []
                                                             union_variant button2_value_01::Temperature text "    Value"
                                                         }
-                                                        [8] => {
+                                                        [ObjectType::Brightness] => {
                                                             objs_by_ref_name ["button2_additional_obj_lux"] with []
                                                             union_variant button2_value_01::Brightness text "    Value"
                                                         }
-                                                        [9] => {
+                                                        [ObjectType::Rgb] => {
                                                             param button2_additional_colour_control
                                                             when @button2_additional_colour_control {
-                                                                [1] => {
+                                                                [ColourControl::Rgb] => {
                                                                     objs_by_ref_name ["button2_additional_obj_rgb"] with []
                                                                     union_variant button2_value_01::Rgb text "    Value"
                                                                 }
-                                                                [2] => {
+                                                                [ColourControl::Hsv] => {
                                                                     objs_by_ref_name ["button2_additional_obj_hsv"] with []
                                                                     union_variant button2_value_01::Hsv text "    Value"
                                                                 }
@@ -4801,73 +4424,73 @@ impl EtsPageLayout for MdtStack {
                                         // MDT: P-55 (hidden), P-74 (DPT type), choose P-74 with obj + pushed + released + delay
                                         // NOTE: DPT type P-74 uses DPTType (no 1Bit Switch value 10), not DPTType1Bit
                                         // For each DPT: O-10 (comm obj), UP-192/etc (pushed), UP-172/etc (released), P-60 (delay)
-                                        [1] => {
+                                        [ButtonValueFunction::SendValuesByState] => {
                                             param button2_subtype
                                             param button2_object_type_no_switch
                                             // Choose on object_type_no_switch (DPT): each when has obj + pushed value + released value + delay
                                             when @button2_object_type_no_switch {
-                                                // DPT 1 = 2Bit Forcible control
-                                                [1] => {
+                                                // DPT Bit2 = 2Bit Forcible control
+                                                [ObjectType::Bit2] => {
                                                     objs_by_ref_name ["button2_main_bit2"] with []
                                                     union_variant button2_value_01::ForcibleControl text "Value pushed button"
                                                     union_variant button2_value_00::ForcibleControl text "Value released button"
                                                     param button2_delay_state
                                                 }
-                                                // DPT 2 = 1Byte Percent (0...100%)
-                                                [2] => {
+                                                // DPT Percent = 1Byte Percent (0...100%)
+                                                [ObjectType::Percent] => {
                                                     objs_by_ref_name ["button2_main_percent"] with []
                                                     union_variant button2_value_01::Percent text "Value pushed button"
                                                     union_variant button2_value_00::Percent text "Value released button"
                                                     param button2_delay_state
                                                 }
-                                                // DPT 3 = 1Byte Decimal factor (0...255)
-                                                [3] => {
+                                                // DPT Decimal = 1Byte Decimal factor (0...255)
+                                                [ObjectType::Decimal] => {
                                                     objs_by_ref_name ["button2_main_decimal"] with []
                                                     union_variant button2_value_01::Decimal text "Value pushed button"
                                                     union_variant button2_value_00::Decimal text "Value released button"
                                                     param button2_delay_state
                                                 }
-                                                // DPT 4 = 1Byte Scene number
-                                                [4] => {
+                                                // DPT Scene = 1Byte Scene number
+                                                [ObjectType::Scene] => {
                                                     objs_by_ref_name ["button2_main_scene"] with []
                                                     param button2_delay_state
                                                     union_variant button2_value_01::Scene text "Value pushed button"
                                                     union_variant button2_value_00::Scene text "Value released button"
                                                 }
-                                                // DPT 6 = 2Byte Colour Temperature (Kelvin)
-                                                [6] => {
+                                                // DPT ColourTemp = 2Byte Colour Temperature (Kelvin)
+                                                [ObjectType::ColourTemp] => {
                                                     objs_by_ref_name ["button2_main_colour_temp"] with []
                                                     union_variant button2_value_01::ColourTemp text "Value pushed button"
                                                     union_variant button2_value_00::ColourTemp text "Value released button"
                                                     param button2_delay_state
                                                 }
-                                                // DPT 7 = 2Byte Temperature (°C)
-                                                [7] => {
+                                                // DPT Temperature = 2Byte Temperature (°C)
+                                                [ObjectType::Temperature] => {
                                                     objs_by_ref_name ["button2_main_temp"] with []
                                                     union_variant button2_value_01::Temperature text "Value pushed button"
                                                     union_variant button2_value_00::Temperature text "Value released button"
                                                     param button2_delay_state
                                                 }
-                                                // DPT 8 = 2Byte Brightness (Lux)
-                                                [8] => {
+                                                // DPT Brightness = 2Byte Brightness (Lux)
+                                                [ObjectType::Brightness] => {
                                                     objs_by_ref_name ["button2_main_lux"] with []
                                                     param button2_delay_state
                                                     union_variant button2_value_01::Brightness text "Value pushed button"
                                                     union_variant button2_value_00::Brightness text "Value released button"
                                                 }
-                                                // DPT 9 = 3Byte RGB/HSV
-                                                [9] => {
+                                                // DPT Rgb = 3Byte RGB/HSV
+                                                [ObjectType::Rgb] => {
                                                     param button2_delay_state
                                                     param button2_colour_control
                                                     when @button2_colour_control {
                                                         // RGB mode
-                                                        [1] => {
+                                                        [ColourControl::Rgb] => {
                                                             objs_by_ref_name ["button2_main_rgb"] with []
                                                             union_variant button2_value_01::Rgb text "    Value pushed button"
                                                             union_variant button2_value_00::Rgb text "    Value released button"
                                                         }
                                                         // HSV mode
-                                                        [2] => {
+                                                        [ColourControl::Hsv] => {
                                                             objs_by_ref_name ["button2_main_hsv"] with []
                                                             union_variant button2_value_01::Hsv text "    Value pushed button"
                                                             union_variant button2_value_00::Hsv text "    Value released button"
@@ -4879,12 +4502,12 @@ impl EtsPageLayout for MdtStack {
                                         // value_function 2 = toggle values/scenes (up to 4 values)
                                         // MDT: P-74 (DPT without Switch), UP-213 (value count 2/3/4), choose P-74
                                         // Each DPT: obj + delay + value00 + value01 + conditional value02 (when >=3) + value03 (when 4)
-                                        [2] => {
+                                        [LogicType::SendValueWhenPressed] => {
                                             param button2_object_type_no_switch
                                             union_variant button2_sub_type_h::ValueCount text "Number of values"
                                             when @button2_object_type_no_switch {
-                                                // Forcible control (1)
-                                                [1] => {
+                                                // Forcible control
+                                                [ObjectType::Bit2] => {
                                                     objs_by_ref_name ["button2_main_bit2"] with []
                                                     param button2_delay_state
                                                     union_variant button2_value_00::ForcibleControl text "    1. Toggle value"
@@ -4900,8 +4523,8 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                     }
                                                 }
-                                                // Percent (2)
-                                                [2] => {
+                                                // Percent
+                                                [ObjectType::Percent] => {
                                                     objs_by_ref_name ["button2_main_percent", "button2_secondary_percent"] with []
                                                     param button2_delay_state
                                                     union_variant button2_value_00::Percent text "    1. Toggle value"
@@ -4917,8 +4540,8 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                     }
                                                 }
-                                                // Decimal (3)
-                                                [3] => {
+                                                // Decimal
+                                                [ObjectType::Decimal] => {
                                                     objs_by_ref_name ["button2_main_decimal", "button2_secondary_decimal"] with []
                                                     param button2_delay_state
                                                     union_variant button2_value_00::Decimal text "    1. Toggle value"
@@ -4934,8 +4557,8 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                     }
                                                 }
-                                                // Scene (4)
-                                                [4] => {
+                                                // Scene
+                                                [ObjectType::Scene] => {
                                                     objs_by_ref_name ["button2_main_scene"] with []
                                                     param button2_delay_state
                                                     union_variant button2_value_00::Scene text "    1. Toggle Scene number"
@@ -4951,8 +4574,8 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                     }
                                                 }
-                                                // ColourTemp (6)
-                                                [6] => {
+                                                // ColourTemp
+                                                [ObjectType::ColourTemp] => {
                                                     objs_by_ref_name ["button2_main_colour_temp"] with []
                                                     param button2_delay_state
                                                     union_variant button2_value_00::ColourTemp text "    1. Toggle value"
@@ -4968,8 +4591,8 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                     }
                                                 }
-                                                // Temperature (7)
-                                                [7] => {
+                                                // Temperature
+                                                [ObjectType::Temperature] => {
                                                     objs_by_ref_name ["button2_main_temp"] with []
                                                     param button2_delay_state
                                                     union_variant button2_value_00::Temperature text "    1. Toggle value"
@@ -4985,8 +4608,8 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                     }
                                                 }
-                                                // Brightness (8)
-                                                [8] => {
+                                                // Brightness
+                                                [ObjectType::Brightness] => {
                                                     objs_by_ref_name ["button2_main_lux"] with []
                                                     param button2_delay_state
                                                     union_variant button2_value_00::Brightness text "    1. Toggle value"
@@ -5002,12 +4625,12 @@ impl EtsPageLayout for MdtStack {
                                                         }
                                                     }
                                                 }
-                                                // RGB/HSV (9)
-                                                [9] => {
+                                                // RGB/HSV
+                                                [ObjectType::Rgb] => {
                                                     param button2_delay_state
                                                     param button2_colour_control
                                                     when @button2_colour_control {
-                                                        [1] => {
+                                                        [ColourControl::Rgb] => {
                                                             objs_by_ref_name ["button2_main_rgb"] with []
                                                             union_variant button2_value_00::Rgb text "    1. Toggle value"
                                                             union_variant button2_value_01::Rgb text "    2. Toggle value"
@@ -5022,7 +4645,7 @@ impl EtsPageLayout for MdtStack {
                                                                 }
                                                             }
                                                         }
-                                                        [2] => {
+                                                        [ColourControl::Hsv] => {
                                                             objs_by_ref_name ["button2_main_hsv"] with []
                                                             union_variant button2_value_00::Hsv text "    1. Toggle value"
                                                             union_variant button2_value_01::Hsv text "    2. Toggle value"
@@ -5050,12 +4673,12 @@ impl EtsPageLayout for MdtStack {
                                             union_variant button2_sub_type_h::TipOperations text "Number of tip-operations"
                                             when @button2_tip_output_objects {
                                                 // Common object/DPT
-                                                [0] => {
+                                                [TipOutputObjects::CommonObject] => {
                                                     param button2_subtype
                                                     param button2_object_type
                                                     when @button2_object_type {
-                                                        // Switch (10)
-                                                        [10] => {
+                                                        // Switch
+                                                        [ObjectType::Switch] => {
                                                             objs_by_ref_name ["button2_main_switch"] with []
                                                             union_variant button2_value_00::Switch text "    Value tip once"
                                                             union_variant button2_value_01::Switch text "    Value tip twice"
@@ -5065,8 +4688,8 @@ impl EtsPageLayout for MdtStack {
                                                                 }
                                                             }
                                                         }
-                                                        // Forcible control (1)
-                                                        [1] => {
+                                                        // Forcible control
+                                                        [ObjectType::Bit2] => {
                                                             objs_by_ref_name ["button2_main_bit2"] with []
                                                             union_variant button2_value_00::ForcibleControl text "    Value tip once"
                                                             union_variant button2_value_01::ForcibleControl text "    Value tip twice"
@@ -5076,8 +4699,8 @@ impl EtsPageLayout for MdtStack {
                                                                 }
                                                             }
                                                         }
-                                                        // Percent (2)
-                                                        [2] => {
+                                                        // Percent
+                                                        [ObjectType::Percent] => {
                                                             objs_by_ref_name ["button2_main_percent"] with []
                                                             union_variant button2_value_00::Percent text "    Value tip once"
                                                             union_variant button2_value_01::Percent text "    Value tip twice"
@@ -5087,8 +4710,8 @@ impl EtsPageLayout for MdtStack {
                                                                 }
                                                             }
                                                         }
-                                                        // Decimal (3)
-                                                        [3] => {
+                                                        // Decimal
+                                                        [ObjectType::Decimal] => {
                                                             objs_by_ref_name ["button2_main_decimal"] with []
                                                             union_variant button2_value_00::Decimal text "    Value tip once"
                                                             union_variant button2_value_01::Decimal text "    Value tip twice"
@@ -5098,8 +4721,8 @@ impl EtsPageLayout for MdtStack {
                                                                 }
                                                             }
                                                         }
-                                                        // Scene (4)
-                                                        [4] => {
+                                                        // Scene
+                                                        [ObjectType::Scene] => {
                                                             objs_by_ref_name ["button2_main_scene"] with []
                                                             union_variant button2_value_00::Scene text "    Scene number tip once"
                                                             union_variant button2_value_01::Scene text "    Scene number tip twice"
@@ -5109,8 +4732,8 @@ impl EtsPageLayout for MdtStack {
                                                                 }
                                                             }
                                                         }
-                                                        // ColourTemp (6)
-                                                        [6] => {
+                                                        // ColourTemp
+                                                        [ObjectType::ColourTemp] => {
                                                             objs_by_ref_name ["button2_main_colour_temp"] with []
                                                             union_variant button2_value_00::ColourTemp text "    Value tip once"
                                                             union_variant button2_value_01::ColourTemp text "    Value tip twice"
@@ -5120,8 +4743,8 @@ impl EtsPageLayout for MdtStack {
                                                                 }
                                                             }
                                                         }
-                                                        // Temperature (7)
-                                                        [7] => {
+                                                        // Temperature
+                                                        [ObjectType::Temperature] => {
                                                             objs_by_ref_name ["button2_main_temp"] with []
                                                             union_variant button2_value_00::Temperature text "    Value tip once"
                                                             union_variant button2_value_01::Temperature text "    Value tip twice"
@@ -5131,8 +4754,8 @@ impl EtsPageLayout for MdtStack {
                                                                 }
                                                             }
                                                         }
-                                                        // Brightness (8)
-                                                        [8] => {
+                                                        // Brightness
+                                                        [ObjectType::Brightness] => {
                                                             objs_by_ref_name ["button2_main_lux"] with []
                                                             union_variant button2_value_00::Brightness text "    Value tip once"
                                                             union_variant button2_value_01::Brightness text "    Value tip twice"
@@ -5142,11 +4765,11 @@ impl EtsPageLayout for MdtStack {
                                                                 }
                                                             }
                                                         }
-                                                        // RGB/HSV (9)
-                                                        [9] => {
+                                                        // RGB/HSV
+                                                        [ObjectType::Rgb] => {
                                                             param button2_colour_control
                                                             when @button2_colour_control {
-                                                                [1] => {
+                                                                [ColourControl::Rgb] => {
                                                                     objs_by_ref_name ["button2_main_rgb"] with []
                                                                     union_variant button2_value_00::Rgb text "    RGB-Value tip once"
                                                                     union_variant button2_value_01::Rgb text "    RGB-Value tip twice"
@@ -5156,7 +4779,7 @@ impl EtsPageLayout for MdtStack {
                                                                         }
                                                                     }
                                                                 }
-                                                                [2] => {
+                                                                [ColourControl::Hsv] => {
                                                                     objs_by_ref_name ["button2_main_hsv"] with []
                                                                     union_variant button2_value_00::Hsv text "    HSV-Value tip once"
                                                                     union_variant button2_value_01::Hsv text "    HSV-Value tip twice"
@@ -5172,43 +4795,43 @@ impl EtsPageLayout for MdtStack {
                                                 }
                                                 // Different objects/DPT - each tip has its own DPT selector (MDT pattern)
                                                 // Each tip gets its own button2_object_type / button2_tip2_object_type / button2_tip3_object_type
-                                                [1] => {
+                                                [TipOutputObjects::DifferentObjects] => {
                                                     // Tip 1 - uses button2_object_type
                                                     param button2_subtype
                                                     param button2_object_type
                                                     when @button2_object_type {
-                                                        [10] => { objs_by_ref_name ["button2_tip_switch"] with [] union_variant button2_value_00::Switch text "    Value tip once" }
-                                                        [1] => { objs_by_ref_name ["button2_tip_bit2"] with [] union_variant button2_value_00::ForcibleControl text "    Value tip once" }
-                                                        [2] => { objs_by_ref_name ["button2_tip_percent"] with [] union_variant button2_value_00::Percent text "    Value tip once" }
-                                                        [3] => { objs_by_ref_name ["button2_tip_decimal"] with [] union_variant button2_value_00::Decimal text "    Value tip once" }
-                                                        [4] => { objs_by_ref_name ["button2_tip_scene"] with [] union_variant button2_value_00::Scene text "    Scene number tip once" }
-                                                        [6] => { objs_by_ref_name ["button2_tip_colour_temp"] with [] union_variant button2_value_00::ColourTemp text "    Value tip once" }
-                                                        [7] => { objs_by_ref_name ["button2_tip_temp"] with [] union_variant button2_value_00::Temperature text "    Value tip once" }
-                                                        [8] => { objs_by_ref_name ["button2_tip_lux"] with [] union_variant button2_value_00::Brightness text "    Value tip once" }
-                                                        [9] => {
+                                                        [ObjectType::Switch] => { objs_by_ref_name ["button2_tip_switch"] with [] union_variant button2_value_00::Switch text "    Value tip once" }
+                                                        [ObjectType::Bit2] => { objs_by_ref_name ["button2_tip_bit2"] with [] union_variant button2_value_00::ForcibleControl text "    Value tip once" }
+                                                        [ObjectType::Percent] => { objs_by_ref_name ["button2_tip_percent"] with [] union_variant button2_value_00::Percent text "    Value tip once" }
+                                                        [ObjectType::Decimal] => { objs_by_ref_name ["button2_tip_decimal"] with [] union_variant button2_value_00::Decimal text "    Value tip once" }
+                                                        [ObjectType::Scene] => { objs_by_ref_name ["button2_tip_scene"] with [] union_variant button2_value_00::Scene text "    Scene number tip once" }
+                                                        [ObjectType::ColourTemp] => { objs_by_ref_name ["button2_tip_colour_temp"] with [] union_variant button2_value_00::ColourTemp text "    Value tip once" }
+                                                        [ObjectType::Temperature] => { objs_by_ref_name ["button2_tip_temp"] with [] union_variant button2_value_00::Temperature text "    Value tip once" }
+                                                        [ObjectType::Brightness] => { objs_by_ref_name ["button2_tip_lux"] with [] union_variant button2_value_00::Brightness text "    Value tip once" }
+                                                        [ObjectType::Rgb] => {
                                                             param button2_colour_control
                                                             when @button2_colour_control {
-                                                                [1] => { objs_by_ref_name ["button2_tip_rgb"] with [] union_variant button2_value_00::Rgb text "    RGB-Value tip once" }
-                                                                [2] => { objs_by_ref_name ["button2_tip_hsv"] with [] union_variant button2_value_00::Hsv text "    HSV-Value tip once" }
+                                                                [ColourControl::Rgb] => { objs_by_ref_name ["button2_tip_rgb"] with [] union_variant button2_value_00::Rgb text "    RGB-Value tip once" }
+                                                                [ColourControl::Hsv] => { objs_by_ref_name ["button2_tip_hsv"] with [] union_variant button2_value_00::Hsv text "    HSV-Value tip once" }
                                                             }
                                                         }
                                                     }
                                                     // Tip 2 - uses button2_tip2_object_type (separate DPT selector)
                                                     param button2_tip2_object_type
                                                     when @button2_tip2_object_type {
-                                                        [10] => { objs_by_ref_name ["button2_2x_tip_switch"] with [] union_variant button2_value_01::Switch text "    Value tip twice" }
-                                                        [1] => { objs_by_ref_name ["button2_2x_tip_bit2"] with [] union_variant button2_value_01::ForcibleControl text "    Value tip twice" }
-                                                        [2] => { objs_by_ref_name ["button2_2x_tip_percent"] with [] union_variant button2_value_01::Percent text "    Value tip twice" }
-                                                        [3] => { objs_by_ref_name ["button2_2x_tip_decimal"] with [] union_variant button2_value_01::Decimal text "    Value tip twice" }
-                                                        [4] => { objs_by_ref_name ["button2_2x_tip_scene"] with [] union_variant button2_value_01::Scene text "    Scene number tip twice" }
-                                                        [6] => { objs_by_ref_name ["button2_2x_tip_colour_temp"] with [] union_variant button2_value_01::ColourTemp text "    Value tip twice" }
-                                                        [7] => { objs_by_ref_name ["button2_2x_tip_temp"] with [] union_variant button2_value_01::Temperature text "    Value tip twice" }
-                                                        [8] => { objs_by_ref_name ["button2_2x_tip_lux"] with [] union_variant button2_value_01::Brightness text "    Value tip twice" }
-                                                        [9] => {
+                                                        [ObjectType::Switch] => { objs_by_ref_name ["button2_2x_tip_switch"] with [] union_variant button2_value_01::Switch text "    Value tip twice" }
+                                                        [ObjectType::Bit2] => { objs_by_ref_name ["button2_2x_tip_bit2"] with [] union_variant button2_value_01::ForcibleControl text "    Value tip twice" }
+                                                        [ObjectType::Percent] => { objs_by_ref_name ["button2_2x_tip_percent"] with [] union_variant button2_value_01::Percent text "    Value tip twice" }
+                                                        [ObjectType::Decimal] => { objs_by_ref_name ["button2_2x_tip_decimal"] with [] union_variant button2_value_01::Decimal text "    Value tip twice" }
+                                                        [ObjectType::Scene] => { objs_by_ref_name ["button2_2x_tip_scene"] with [] union_variant button2_value_01::Scene text "    Scene number tip twice" }
+                                                        [ObjectType::ColourTemp] => { objs_by_ref_name ["button2_2x_tip_colour_temp"] with [] union_variant button2_value_01::ColourTemp text "    Value tip twice" }
+                                                        [ObjectType::Temperature] => { objs_by_ref_name ["button2_2x_tip_temp"] with [] union_variant button2_value_01::Temperature text "    Value tip twice" }
+                                                        [ObjectType::Brightness] => { objs_by_ref_name ["button2_2x_tip_lux"] with [] union_variant button2_value_01::Brightness text "    Value tip twice" }
+                                                        [ObjectType::Rgb] => {
                                                             param button2_tip2_colour_control
                                                             when @button2_tip2_colour_control {
-                                                                [1] => { objs_by_ref_name ["button2_2x_tip_rgb"] with [] union_variant button2_value_01::Rgb text "    RGB-Value tip twice" }
-                                                                [2] => { objs_by_ref_name ["button2_2x_tip_hsv"] with [] union_variant button2_value_01::Hsv text "    HSV-Value tip twice" }
+                                                                [ColourControl::Rgb] => { objs_by_ref_name ["button2_2x_tip_rgb"] with [] union_variant button2_value_01::Rgb text "    RGB-Value tip twice" }
+                                                                [ColourControl::Hsv] => { objs_by_ref_name ["button2_2x_tip_hsv"] with [] union_variant button2_value_01::Hsv text "    HSV-Value tip twice" }
                                                             }
                                                         }
                                                     }
@@ -5217,19 +4840,19 @@ impl EtsPageLayout for MdtStack {
                                                         [2] => {
                                                             param button2_tip3_object_type
                                                             when @button2_tip3_object_type {
-                                                                [10] => { objs_by_ref_name ["button2_3x_tip_switch"] with [] union_variant button2_value_02::Switch text "    Value tip triple" }
-                                                                [1] => { objs_by_ref_name ["button2_3x_tip_bit2"] with [] union_variant button2_value_02::ForcibleControl text "    Value tip triple" }
-                                                                [2] => { objs_by_ref_name ["button2_3x_tip_percent"] with [] union_variant button2_value_02::Percent text "    Value tip triple" }
-                                                                [3] => { objs_by_ref_name ["button2_3x_tip_decimal"] with [] union_variant button2_value_02::Decimal text "    Value tip triple" }
-                                                                [4] => { objs_by_ref_name ["button2_3x_tip_scene"] with [] union_variant button2_value_02::Scene text "    Scene number tip 3 times" }
-                                                                [6] => { objs_by_ref_name ["button2_3x_tip_colour_temp"] with [] union_variant button2_value_02::ColourTemp text "    Value tip triple" }
-                                                                [7] => { objs_by_ref_name ["button2_3x_tip_temp"] with [] union_variant button2_value_02::Temperature text "    Value tip triple" }
-                                                                [8] => { objs_by_ref_name ["button2_3x_tip_lux"] with [] union_variant button2_value_02::Brightness text "    Value tip triple" }
-                                                                [9] => {
+                                                                [ObjectType::Switch] => { objs_by_ref_name ["button2_3x_tip_switch"] with [] union_variant button2_value_02::Switch text "    Value tip triple" }
+                                                                [ObjectType::Bit2] => { objs_by_ref_name ["button2_3x_tip_bit2"] with [] union_variant button2_value_02::ForcibleControl text "    Value tip triple" }
+                                                                [ObjectType::Percent] => { objs_by_ref_name ["button2_3x_tip_percent"] with [] union_variant button2_value_02::Percent text "    Value tip triple" }
+                                                                [ObjectType::Decimal] => { objs_by_ref_name ["button2_3x_tip_decimal"] with [] union_variant button2_value_02::Decimal text "    Value tip triple" }
+                                                                [ObjectType::Scene] => { objs_by_ref_name ["button2_3x_tip_scene"] with [] union_variant button2_value_02::Scene text "    Scene number tip 3 times" }
+                                                                [ObjectType::ColourTemp] => { objs_by_ref_name ["button2_3x_tip_colour_temp"] with [] union_variant button2_value_02::ColourTemp text "    Value tip triple" }
+                                                                [ObjectType::Temperature] => { objs_by_ref_name ["button2_3x_tip_temp"] with [] union_variant button2_value_02::Temperature text "    Value tip triple" }
+                                                                [ObjectType::Brightness] => { objs_by_ref_name ["button2_3x_tip_lux"] with [] union_variant button2_value_02::Brightness text "    Value tip triple" }
+                                                                [ObjectType::Rgb] => {
                                                                     param button2_tip3_colour_control
                                                                     when @button2_tip3_colour_control {
-                                                                        [1] => { objs_by_ref_name ["button2_3x_tip_rgb"] with [] union_variant button2_value_02::Rgb text "    RGB-Value tip triple" }
-                                                                        [2] => { objs_by_ref_name ["button2_3x_tip_hsv"] with [] union_variant button2_value_02::Hsv text "    HSV-Value tip triple" }
+                                                                        [ColourControl::Rgb] => { objs_by_ref_name ["button2_3x_tip_rgb"] with [] union_variant button2_value_02::Rgb text "    RGB-Value tip triple" }
+                                                                        [ColourControl::Hsv] => { objs_by_ref_name ["button2_3x_tip_hsv"] with [] union_variant button2_value_02::Hsv text "    HSV-Value tip triple" }
                                                                     }
                                                                 }
                                                             }
@@ -5250,12 +4873,12 @@ impl EtsPageLayout for MdtStack {
                                     param button2_short_action
                                     when @button2_short_action {
                                         // short_action 0 = switch OFF: O-10, hidden value preset to 0
-                                        [0] => {
+                                        [ShortAction::SwitchOff] => {
                                             objs_by_ref_name ["button2_main_switch_off"] with []
                                             // No visible value selector - MDT uses Access="None"
                                         }
                                         // short_action 1 = switch ON: O-10, hidden value preset to 1
-                                        [1] => {
+                                        [ShortAction::SwitchOn] => {
                                             objs_by_ref_name ["button2_main_switch_on"] with []
                                             // No visible value selector - MDT uses Access="None"
                                         }
@@ -5268,42 +4891,42 @@ impl EtsPageLayout for MdtStack {
                                         [3] => {
                                             param button2_short_dpt_type
                                             when @button2_short_dpt_type {
-                                                [1] => {
+                                                [ObjectType::Bit2] => {
                                                     objs_by_ref_name ["button2_main_bit2"] with []
                                                     union_variant button2_value_00::ForcibleControl text "    Value"
                                                 }
-                                                [2] => {
+                                                [ObjectType::Percent] => {
                                                     objs_by_ref_name ["button2_main_percent"] with []
                                                     union_variant button2_value_00::Percent text "    Value"
                                                 }
-                                                [3] => {
+                                                [ObjectType::Decimal] => {
                                                     objs_by_ref_name ["button2_main_decimal"] with []
                                                     union_variant button2_value_00::Decimal text "    Value"
                                                 }
-                                                [4] => {
+                                                [ObjectType::Scene] => {
                                                     objs_by_ref_name ["button2_main_scene"] with []
                                                     union_variant button2_value_00::Scene text "    Scene number"
                                                 }
-                                                [6] => {
+                                                [ObjectType::ColourTemp] => {
                                                     objs_by_ref_name ["button2_main_colour_temp"] with []
                                                     union_variant button2_value_00::ColourTemp text "    Value"
                                                 }
-                                                [7] => {
+                                                [ObjectType::Temperature] => {
                                                     objs_by_ref_name ["button2_main_temp"] with []
                                                     union_variant button2_value_00::Temperature text "    Value"
                                                 }
-                                                [8] => {
+                                                [ObjectType::Brightness] => {
                                                     objs_by_ref_name ["button2_main_lux"] with []
                                                     union_variant button2_value_00::Brightness text "    Value"
                                                 }
-                                                [9] => {
+                                                [ObjectType::Rgb] => {
                                                     param button2_colour_control
                                                     when @button2_colour_control {
-                                                        [1] => {
+                                                        [ColourControl::Rgb] => {
                                                             objs_by_ref_name ["button2_main_rgb"] with []
                                                             union_variant button2_value_00::Rgb text "    RGB-Value"
                                                         }
-                                                        [2] => {
+                                                        [ColourControl::Hsv] => {
                                                             objs_by_ref_name ["button2_main_hsv"] with []
                                                             union_variant button2_value_00::Hsv text "    HSV-Value"
                                                         }
@@ -5331,12 +4954,12 @@ impl EtsPageLayout for MdtStack {
                                     param button2_long_action
                                     when @button2_long_action {
                                         // long_action 0 = switch OFF: O-12, hidden value preset to 0
-                                        [0] => {
+                                        [LongAction::SwitchOff] => {
                                             objs_by_ref_name ["button2_long_switch_off"] with []
                                             // No visible value selector - MDT uses Access="None"
                                         }
                                         // long_action 1 = switch ON: O-12, hidden value preset to 1
-                                        [1] => {
+                                        [LongAction::SwitchOn] => {
                                             objs_by_ref_name ["button2_long_switch_on"] with []
                                             // No visible value selector - MDT uses Access="None"
                                         }
@@ -5377,10 +5000,10 @@ impl EtsPageLayout for MdtStack {
                                                     objs_by_ref_name ["button2_long_lux"] with []
                                                     union_variant button2_value_03::Brightness text "    Value"
                                                 }
-                                                [9] => {
+                                                [ObjectType::Rgb] => {
                                                     param button2_long_colour_control
                                                     when @button2_long_colour_control {
-                                                        [1] => {
+                                                        [ColourControl::Rgb] => {
                                                             objs_by_ref_name ["button2_long_rgb"] with []
                                                             union_variant button2_value_03::Rgb text "    RGB-Value"
                                                         }
@@ -5399,7 +5022,7 @@ impl EtsPageLayout for MdtStack {
                                     }
                                     // Time shown after long_action choose when long_action in [0,1,2,3]
                                     when @button2_long_action {
-                                        [0, 1, 2, 3] => {
+                                        [LongAction::SwitchOff, LongAction::SwitchOn, LongAction::Toggle, LongAction::SendValues] => {
                                             union_variant button2_extra_long_time::ExtraLongKeypressTime text "Time for keypress"
                                         }
                                     }
@@ -5427,12 +5050,12 @@ impl EtsPageLayout for MdtStack {
                                     objs_by_ref_name ["button2_main_blinds", "button2_secondary_blinds", "button2_status_toggle_blinds"] with []
                                     param button2_operation_function
                                     when @button2_operation_function {
-                                        [0] => {
+                                        [BlindsOperationFunction::LongMoveShortStop] => {
                                             // long=move / short=stop mode
                                             sep "Innovative group control"
                                             param button2_group_extra_long
                                         }
-                                        [1] => {
+                                        [BlindsOperationFunction::ShortMoveLongStop] => {
                                             // short=move / long=stop mode - no group control
                                         }
                                     }
@@ -5440,7 +5063,7 @@ impl EtsPageLayout for MdtStack {
                                     union_variant button2_time_duration::LongKeypressTime text "Time for long keypress"
                                     // Extra long objects only when group control is enabled
                                     when @button2_group_extra_long {
-                                        [1] => {
+                                        [GEboolEnableDisable::Active] => {
                                             objs_direct [button2_status_display, button2_extra_long] with []
                                             union_variant button2_extra_long_time::ExtraLongKeypressTime text "Time for extra long keypress"
                                         }
@@ -5448,29 +5071,29 @@ impl EtsPageLayout for MdtStack {
                                 }
                                 // Mode 1 = dimming - MDT outputs objects directly (fixed type)
                                 // Uses named refs to select the dimming DPT refs
-                                [1] => {
+                                [ButtonFunction::Dimming] => {
                                     objs_by_ref_name ["button2_main_dimming", "button2_secondary_dimming", "button2_status_toggle_dimming"] with []
                                     union_variant button2_time_duration::LongKeypressTime text "Time for long keypress"
                                 }
                             }
                             // Blocking object section - shown when default true (all modes except 255)
                             when @button2_function {
-                                [0, 1, 2, 3, 4, 7] => {
+                                [ButtonFunction::Switch, ButtonFunction::Dimming, ButtonFunction::BlindsShutter, ButtonFunction::Scene, ButtonFunction::SendValues, ButtonFunction::SwitchSendValuesShortLong] => {
                                     sep " "
                                     param button2_blocking_enable
-                                    when @button2_blocking_enable { [1] => { obj button2_blocking } }
+                                    when @button2_blocking_enable { [GEboolEnableDisable::Active] => { obj button2_blocking } }
                                 }
                             }
                         }
                     }
                     // Two-button mode (eingang_type = 1) - PB1/2 block comes third in MDT
-                    [1] => {
+                    [ButtonsType::TwoButton] => {
                         block "pButtonGroupt_0" => "    PB1/2: {{button1_description:Push buttons 1/2}}" {
                             param button1_description
                             param two_button_function
                             when @two_button_function {
                                 // Mode 0 = switch: MDT pattern - O-0, hidden params, P-92, group control
-                                [0] => {
+                                [TwoButtonFunction::Switch] => {
                                     obj_direct button1_main with []
                                     // Hidden params P-13,14,15,16 (main_type/sub_type) - we use hidden params
                                     // P-92 button_assignment: ON/OFF or OFF/ON
@@ -5479,7 +5102,7 @@ impl EtsPageLayout for MdtStack {
                                     sep "Innovative group control"
                                     param button1_group_function
                                     when @button1_group_function {
-                                        [1] => {
+                                        [GEboolEnableDisable::Active] => {
                                             obj_direct button1_status_toggle with []
                                             // P-93 Group long sends
                                             param group_long_send_cond
@@ -5487,7 +5110,7 @@ impl EtsPageLayout for MdtStack {
                                             // P-29 Group send condition for extra long
                                             param button1_group_send_condition
                                             when @button1_group_send_condition {
-                                                [1] => {
+                                                [GEboolEnableDisable::Active] => {
                                                     obj_direct button1_extra_long with []
                                                     // P-94 Group extra long sends
                                                     param group_extra_long_send_cond
@@ -5496,7 +5119,7 @@ impl EtsPageLayout for MdtStack {
                                             // UP-110 Time for long keypress
                                             union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
                                             when @button1_group_send_condition {
-                                                [1] => {
+                                                [GEboolEnableDisable::Active] => {
                                                     // UP-155 Time for extra long keypress
                                                     union_variant button1_extra_long_time::ExtraLongKeypressTime
                                                 }
@@ -5505,11 +5128,11 @@ impl EtsPageLayout for MdtStack {
                                     }
                                 }
                                 // Mode 3 = send values: MDT pattern - P-95 subfunction, then DPT-based objects
-                                [3] => {
+                                [TwoButtonFunction::SendValues] => {
                                     param two_button_value_function
                                     when @two_button_value_function {
                                         // send values mode (P-95=1)
-                                        [1] => {
+                                        [TwoButtonValueFunction::SendValues] => {
                                             // Hidden params, P-39 (DPT type), choose P-39 for objects
                                             param button1_object_type
                                             obj_with_value button1_main by button1_object_type => button1_value_00 with [button1_value_type] sub_select {
@@ -5523,7 +5146,7 @@ impl EtsPageLayout for MdtStack {
                                                     sep "Innovative group control"
                                                     param button1_group_function
                                                     when @button1_group_function {
-                                                        [1] => {
+                                                        [GEboolEnableDisable::Active] => {
                                                             // Object based on DPT
                                                             obj_with_value button1_status_toggle by button1_object_type => button1_value_01 with [button1_value_type] sub_select {
                                                                 9 => button1_colour_control [(1, button1_status_toggle_rgb, Rgb), (2, button1_status_toggle_hsv, Hsv)]
@@ -5531,7 +5154,7 @@ impl EtsPageLayout for MdtStack {
                                                             param group_send_option
                                                             param button1_group_send_condition
                                                             when @button1_group_send_condition {
-                                                                [1] => {
+                                                                [GEboolEnableDisable::Active] => {
                                                                     obj_with_value button1_extra_long by button1_object_type => button1_extra_long_value with [button1_value_type] sub_select {
                                                                         9 => button1_colour_control [(1, button1_main_rgb, Rgb), (2, button1_main_hsv, Hsv)]
                                                                     }
@@ -5542,7 +5165,7 @@ impl EtsPageLayout for MdtStack {
                                                             }
                                                             union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
                                                             when @button1_group_send_condition {
-                                                                [1] => {
+                                                                [GEboolEnableDisable::Active] => {
                                                                     union_variant button1_extra_long_time::ExtraLongKeypressTime
                                                                 }
                                                             }
@@ -5550,14 +5173,14 @@ impl EtsPageLayout for MdtStack {
                                                     }
                                                 }
                                                 // Additional object
-                                                [1] => {
+                                                [SpecialFunction::AdditionalObject] => {
                                                     param button1_additional_object_type
                                                     when @button1_additional_object_type {
-                                                        [10] => {
+                                                        [ObjectType::Switch] => {
                                                             objs_by_ref_name ["button1_additional_obj_switch"] with []
                                                             union_variant button1_value_01::Switch text "    Value"
                                                         }
-                                                        [1] => {
+                                                        [ObjectType::Bit2] => {
                                                             objs_by_ref_name ["button1_additional_obj_bit2"] with []
                                                             union_variant button1_value_01::ForcibleControl text "    Value"
                                                         }
@@ -5585,14 +5208,14 @@ impl EtsPageLayout for MdtStack {
                                                             objs_by_ref_name ["button1_additional_obj_brightness"] with []
                                                             union_variant button1_value_01::Brightness text "    Value"
                                                         }
-                                                        [9] => {
+                                                        [ObjectType::Rgb] => {
                                                             param button1_colour_control
                                                             when @button1_colour_control {
-                                                                [1] => {
+                                                                [ColourControl::Rgb] => {
                                                                     objs_by_ref_name ["button1_additional_obj_rgb"] with []
                                                                     union_variant button1_value_01::Rgb text "    Value"
                                                                 }
-                                                                [2] => {
+                                                                [ColourControl::Hsv] => {
                                                                     objs_by_ref_name ["button1_additional_obj_hsv"] with []
                                                                     union_variant button1_value_01::Hsv text "    Value"
                                                                 }
@@ -5622,37 +5245,37 @@ impl EtsPageLayout for MdtStack {
                                     }
                                 }
                                 // Mode 2 = blinds/shutter
-                                [2] => {
+                                [TwoButtonFunction::BlindsShutter] => {
                                     param config_shutter
                                     objs_by_ref_name ["button1_main_blinds", "button1_secondary_blinds"] with []
                                     param button1_operation_function
                                     when @button1_operation_function {
-                                        [0] => {
+                                        [BlindsOperationFunction::LongMoveShortStop] => {
                                             // short=step / long=move mode - with group control
                                             sep "Innovative group control"
                                             param button1_group_function
                                             when @button1_group_function {
-                                                [1] => {
+                                                [BlindsOperationFunction::ShortMoveLongStop] => {
                                                     objs_by_ref_name ["button1_status_display_blinds", "button1_extra_long_blinds"] with []
                                                     union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
                                                     union_variant button1_extra_long_time::ExtraLongKeypressTime text "Time for extra long keypress"
                                                 }
                                             }
                                         }
-                                        [1] => {
+                                        [BlindsOperationFunction::ShortMoveLongStop] => {
                                             // short=move / long=stop mode - no group control
                                             union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
                                         }
                                     }
                                 }
                                 // Mode 1 = dimming
-                                [1] => {
+                                [TwoButtonFunction::Dimming] => {
                                     param config_dimmer
                                     objs_by_ref_name ["button1_main_dimming", "button1_secondary_dimming", "button1_status_toggle_dimming"] with []
                                     union_variant button1_time_duration::LongKeypressTime text "Time for long keypress"
                                 }
                                 // Mode 5 = switch/send values short/long (with 2 objects)
-                                [5] => {
+                                [TwoButtonFunction::SwitchSendValues] => {
                                     // Short: switch
                                     param button_assignment
                                     obj_direct button1_main with []
@@ -5667,20 +5290,20 @@ impl EtsPageLayout for MdtStack {
                             }
                             sep " "
                             param button1_blocking_enable
-                            when @button1_blocking_enable { [1] => { obj_direct button1_blocking with [] } }
+                            when @button1_blocking_enable { [GEboolEnableDisable::Active] => { obj_direct button1_blocking with [] } }
                         }
                     }
                 }
 
                 // Slap button - only shown when slap function is enabled
                 when @eingang_type_patsch {
-                    [1] => {
+                    [GEboolEnableDisable::Active] => {
                         block "PatchButtton" => "    Slap / Cleaning function" {
                             param slap_cleaning_mode
                             when @slap_cleaning_mode {
-                                [0] => { param slap_led_colour }
-                                [1] => { param slap_led_colour sep "Cleaning time config" }
-                                [2] => { param slap_led_colour sep "Extended cleaning" }
+                                [SlapCleaningMode::CleaningNotActive] => { param slap_led_colour }
+                                [SlapCleaningMode::CleaningLongSlapShort] => { param slap_led_colour sep "Cleaning time config" }
+                                [SlapCleaningMode::CleaningShortSlapLong] => { param slap_led_colour sep "Extended cleaning" }
                             }
                             sep "Short keypress"
                             param slap_short_dpt_type
@@ -5696,7 +5319,7 @@ impl EtsPageLayout for MdtStack {
                             when @slap_long_object_type { [1, 2, 3] => { obj slap_long_status selector panic_time_duration_union } }
                             sep " "
                             param slap_blocking_enable
-                            when @slap_blocking_enable { [1] => { obj slap_blocking } }
+                            when @slap_blocking_enable { [GEboolEnableDisable::Active] => { obj slap_blocking } }
                         }
                     }
                 }
@@ -5710,55 +5333,55 @@ impl EtsPageLayout for MdtStack {
                     param logic1_type
                     when @logic1_type {
                         // Active modes (And/Or/SendValue) - show description params
-                        [0, 1, 2] => {
+                        [LogicType::Or, LogicType::And, LogicType::SendValueWhenPressed] => {
                             param logic1_description
                             param logic1_add_description
                         }
                         // And/Or modes - show object type and output config
-                        [0, 1] => {
+                        [LogicType::Or, LogicType::And] => {
                             param logic1_output_type
                             when @logic1_output_type {
                                 // Switch (1)
-                                [1] => {
+                                [LogicOutputType::Switch] => {
                                     obj logic1_output
                                     union_variant logic1_send_condition_union::Condition
                                     param logic1_invert_output
                                 }
                                 // Scene (2)
-                                [2] => {
+                                [LogicOutputType::Scene] => {
                                     obj logic1_output
                                     union_variant logic1_value_union::Scene text "    Scene number"
                                 }
                                 // Value (3)
-                                [3] => {
+                                [LogicOutputType::Value] => {
                                     obj logic1_output
                                     union_variant logic1_value_union::ByteValue text "    1Byte Value"
                                 }
                                 // Forcible control (4)
-                                [4] => {
+                                [LogicOutputType::ForcibleControl] => {
                                     obj logic1_output
                                     union_variant logic1_value_union::ForcibleControl text "    Forcible control"
                                 }
                             }
                         }
                         // Send value mode - different structure
-                        [2] => {
+                        [LogicType::SendValueWhenPressed] => {
                             param logic1_output_type
                             when @logic1_output_type {
-                                [1] => {
+                                [LogicOutputType::Switch] => {
                                     obj logic1_output
                                     union_variant logic1_send_condition_union::Condition
                                     param logic1_invert_output
                                 }
-                                [2] => {
+                                [LogicOutputType::Scene] => {
                                     obj logic1_output
                                     union_variant logic1_value_union::Scene text "    Scene number"
                                 }
-                                [3] => {
+                                [LogicOutputType::Value] => {
                                     obj logic1_output
                                     union_variant logic1_value_union::ByteValue text "    1Byte Value"
                                 }
-                                [4] => {
+                                [LogicOutputType::ForcibleControl] => {
                                     obj logic1_output
                                     union_variant logic1_value_union::ForcibleControl text "    Forcible control"
                                 }
@@ -5769,49 +5392,49 @@ impl EtsPageLayout for MdtStack {
                     // Logic 2 settings
                     param logic2_type
                     when @logic2_type {
-                        [0, 1, 2] => {
+                        [LogicType::Or, LogicType::And, LogicType::SendValueWhenPressed] => {
                             param logic2_description
                             param logic2_add_description
                         }
-                        [0, 1] => {
+                        [LogicType::Or, LogicType::And] => {
                             param logic2_output_type
                             when @logic2_output_type {
-                                [1] => {
+                                [LogicOutputType::Switch] => {
                                     obj logic2_output
                                     union_variant logic2_send_condition_union::Condition
                                     param logic2_invert_output
                                 }
-                                [2] => {
+                                [LogicOutputType::Scene] => {
                                     obj logic2_output
                                     union_variant logic2_value_union::Scene text "    Scene number"
                                 }
-                                [3] => {
+                                [LogicOutputType::Value] => {
                                     obj logic2_output
                                     union_variant logic2_value_union::ByteValue text "    1Byte Value"
                                 }
-                                [4] => {
+                                [LogicOutputType::ForcibleControl] => {
                                     obj logic2_output
                                     union_variant logic2_value_union::ForcibleControl text "    Forcible control"
                                 }
                             }
                         }
-                        [2] => {
+                        [LogicType::SendValueWhenPressed] => {
                             param logic2_output_type
                             when @logic2_output_type {
-                                [1] => {
+                                [LogicOutputType::Switch] => {
                                     obj logic2_output
                                     union_variant logic2_send_condition_union::Condition
                                     param logic2_invert_output
                                 }
-                                [2] => {
+                                [LogicOutputType::Scene] => {
                                     obj logic2_output
                                     union_variant logic2_value_union::Scene text "    Scene number"
                                 }
-                                [3] => {
+                                [LogicOutputType::Value] => {
                                     obj logic2_output
                                     union_variant logic2_value_union::ByteValue text "    1Byte Value"
                                 }
-                                [4] => {
+                                [LogicOutputType::ForcibleControl] => {
                                     obj logic2_output
                                     union_variant logic2_value_union::ForcibleControl text "    Forcible control"
                                 }
@@ -5822,49 +5445,49 @@ impl EtsPageLayout for MdtStack {
                     // Logic 3 settings
                     param logic3_type
                     when @logic3_type {
-                        [0, 1, 2] => {
+                        [LogicType::Or, LogicType::And, LogicType::SendValueWhenPressed] => {
                             param logic3_description
                             param logic3_add_description
                         }
-                        [0, 1] => {
+                        [LogicType::Or, LogicType::And] => {
                             param logic3_output_type
                             when @logic3_output_type {
-                                [1] => {
+                                [LogicOutputType::Switch] => {
                                     obj logic3_output
                                     union_variant logic3_send_condition_union::Condition
                                     param logic3_invert_output
                                 }
-                                [2] => {
+                                [LogicOutputType::Scene] => {
                                     obj logic3_output
                                     union_variant logic3_value_union::Scene text "    Scene number"
                                 }
-                                [3] => {
+                                [LogicOutputType::Value] => {
                                     obj logic3_output
                                     union_variant logic3_value_union::ByteValue text "    1Byte Value"
                                 }
-                                [4] => {
+                                [LogicOutputType::ForcibleControl] => {
                                     obj logic3_output
                                     union_variant logic3_value_union::ForcibleControl text "    Forcible control"
                                 }
                             }
                         }
-                        [2] => {
+                        [LogicType::SendValueWhenPressed] => {
                             param logic3_output_type
                             when @logic3_output_type {
-                                [1] => {
+                                [LogicOutputType::Switch] => {
                                     obj logic3_output
                                     union_variant logic3_send_condition_union::Condition
                                     param logic3_invert_output
                                 }
-                                [2] => {
+                                [LogicOutputType::Scene] => {
                                     obj logic3_output
                                     union_variant logic3_value_union::Scene text "    Scene number"
                                 }
-                                [3] => {
+                                [LogicOutputType::Value] => {
                                     obj logic3_output
                                     union_variant logic3_value_union::ByteValue text "    1Byte Value"
                                 }
-                                [4] => {
+                                [LogicOutputType::ForcibleControl] => {
                                     obj logic3_output
                                     union_variant logic3_value_union::ForcibleControl text "    Forcible control"
                                 }
@@ -5875,49 +5498,49 @@ impl EtsPageLayout for MdtStack {
                     // Logic 4 settings
                     param logic4_type
                     when @logic4_type {
-                        [0, 1, 2] => {
+                        [LogicType::Or, LogicType::And, LogicType::SendValueWhenPressed] => {
                             param logic4_description
                             param logic4_add_description
                         }
-                        [0, 1] => {
+                        [LogicType::Or, LogicType::And] => {
                             param logic4_output_type
                             when @logic4_output_type {
-                                [1] => {
+                                [LogicOutputType::Switch] => {
                                     obj logic4_output
                                     union_variant logic4_send_condition_union::Condition
                                     param logic4_invert_output
                                 }
-                                [2] => {
+                                [LogicOutputType::Scene] => {
                                     obj logic4_output
                                     union_variant logic4_value_union::Scene text "    Scene number"
                                 }
-                                [3] => {
+                                [LogicOutputType::Value] => {
                                     obj logic4_output
                                     union_variant logic4_value_union::ByteValue text "    1Byte Value"
                                 }
-                                [4] => {
+                                [LogicOutputType::ForcibleControl] => {
                                     obj logic4_output
                                     union_variant logic4_value_union::ForcibleControl text "    Forcible control"
                                 }
                             }
                         }
-                        [2] => {
+                        [LogicType::SendValueWhenPressed] => {
                             param logic4_output_type
                             when @logic4_output_type {
-                                [1] => {
+                                [LogicOutputType::Switch] => {
                                     obj logic4_output
                                     union_variant logic4_send_condition_union::Condition
                                     param logic4_invert_output
                                 }
-                                [2] => {
+                                [LogicOutputType::Scene] => {
                                     obj logic4_output
                                     union_variant logic4_value_union::Scene text "    Scene number"
                                 }
-                                [3] => {
+                                [LogicOutputType::Value] => {
                                     obj logic4_output
                                     union_variant logic4_value_union::ByteValue text "    1Byte Value"
                                 }
-                                [4] => {
+                                [LogicOutputType::ForcibleControl] => {
                                     obj logic4_output
                                     union_variant logic4_value_union::ForcibleControl text "    Forcible control"
                                 }
@@ -5931,34 +5554,34 @@ impl EtsPageLayout for MdtStack {
 
                 // Logic 1 input configuration block (for And/Or modes)
                 when @logic1_type {
-                    [0, 1] => {
+                    [LogicType::Or, LogicType::And] => {
                         block "Logic_1" => "    Logic 1 {{logic1_description:}}" {
                             param logic1_ext_input_a
                             when @logic1_ext_input_a {
-                                [1, 2, 129, 130] => { obj logic1_input_a }
+                                [ExtInputLogicType::NormallyActivePrealloc0, ExtInputLogicType::InvertedActivePrealloc0, ExtInputLogicType::NormallyActivePrealloc1, ExtInputLogicType::InvertedActivePrealloc1] => { obj logic1_input_a }
                             }
                             param logic1_ext_input_b
                             when @logic1_ext_input_b {
-                                [1, 2, 129, 130] => { obj logic1_input_b }
+                                [ExtInputLogicType::NormallyActivePrealloc0, ExtInputLogicType::InvertedActivePrealloc0, ExtInputLogicType::NormallyActivePrealloc1, ExtInputLogicType::InvertedActivePrealloc1] => { obj logic1_input_b }
                             }
                             param logic1_button_choose_0
                             when @logic1_button_choose_0 {
-                                [1] => { param logic1_int_button1 }
-                                [2] => { param logic1_int_button2 }
+                                [LogicButton::Button1] => { param logic1_int_button1 }
+                                [LogicButton::Button2] => { param logic1_int_button2 }
                             }
                             param logic1_button_choose_1
                             when @logic1_button_choose_1 {
-                                [1] => { param logic1_int_button1 }
-                                [2] => { param logic1_int_button2 }
+                                [LogicButton::Button1] => { param logic1_int_button1 }
+                                [LogicButton::Button2] => { param logic1_int_button2 }
                             }
                         }
                     }
-                    [2] => {
+                    [LogicType::SendValueWhenPressed] => {
                         block "Logic_1" => "    Logic 1 {{logic1_description:}}" {
                             param logic1_button_choose_0
                             when @logic1_button_choose_0 {
-                                [1] => { param logic1_int_button1 }
-                                [2] => { param logic1_int_button2 }
+                                [LogicButton::Button1] => { param logic1_int_button1 }
+                                [LogicButton::Button2] => { param logic1_int_button2 }
                             }
                         }
                     }
@@ -5966,34 +5589,34 @@ impl EtsPageLayout for MdtStack {
 
                 // Logic 2 input configuration block
                 when @logic2_type {
-                    [0, 1] => {
+                    [LogicType::Or, LogicType::And] => {
                         block "Logic_2" => "    Logic 2 {{logic2_description:}}" {
                             param logic2_ext_input_a
                             when @logic2_ext_input_a {
-                                [1, 2, 129, 130] => { obj logic2_input_a }
+                                [ExtInputLogicType::NormallyActivePrealloc0, ExtInputLogicType::InvertedActivePrealloc0, ExtInputLogicType::NormallyActivePrealloc1, ExtInputLogicType::InvertedActivePrealloc1] => { obj logic2_input_a }
                             }
                             param logic2_ext_input_b
                             when @logic2_ext_input_b {
-                                [1, 2, 129, 130] => { obj logic2_input_b }
+                                [ExtInputLogicType::NormallyActivePrealloc0, ExtInputLogicType::InvertedActivePrealloc0, ExtInputLogicType::NormallyActivePrealloc1, ExtInputLogicType::InvertedActivePrealloc1] => { obj logic2_input_b }
                             }
                             param logic2_button_choose_0
                             when @logic2_button_choose_0 {
-                                [1] => { param logic2_int_button1 }
-                                [2] => { param logic2_int_button2 }
+                                [LogicButton::Button1] => { param logic2_int_button1 }
+                                [LogicButton::Button2] => { param logic2_int_button2 }
                             }
                             param logic2_button_choose_1
                             when @logic2_button_choose_1 {
-                                [1] => { param logic2_int_button1 }
-                                [2] => { param logic2_int_button2 }
+                                [LogicButton::Button1] => { param logic2_int_button1 }
+                                [LogicButton::Button2] => { param logic2_int_button2 }
                             }
                         }
                     }
-                    [2] => {
+                    [LogicType::SendValueWhenPressed] => {
                         block "Logic_2" => "    Logic 2 {{logic2_description:}}" {
                             param logic2_button_choose_0
                             when @logic2_button_choose_0 {
-                                [1] => { param logic2_int_button1 }
-                                [2] => { param logic2_int_button2 }
+                                [LogicButton::Button1] => { param logic2_int_button1 }
+                                [LogicButton::Button2] => { param logic2_int_button2 }
                             }
                         }
                     }
@@ -6001,34 +5624,34 @@ impl EtsPageLayout for MdtStack {
 
                 // Logic 3 input configuration block
                 when @logic3_type {
-                    [0, 1] => {
+                    [LogicType::Or, LogicType::And] => {
                         block "Logic_3" => "    Logic 3 {{logic3_description:}}" {
                             param logic3_ext_input_a
                             when @logic3_ext_input_a {
-                                [1, 2, 129, 130] => { obj logic3_input_a }
+                                [ExtInputLogicType::NormallyActivePrealloc0, ExtInputLogicType::InvertedActivePrealloc0, ExtInputLogicType::NormallyActivePrealloc1, ExtInputLogicType::InvertedActivePrealloc1] => { obj logic3_input_a }
                             }
                             param logic3_ext_input_b
                             when @logic3_ext_input_b {
-                                [1, 2, 129, 130] => { obj logic3_input_b }
+                                [ExtInputLogicType::NormallyActivePrealloc0, ExtInputLogicType::InvertedActivePrealloc0, ExtInputLogicType::NormallyActivePrealloc1, ExtInputLogicType::InvertedActivePrealloc1] => { obj logic3_input_b }
                             }
                             param logic3_button_choose_0
                             when @logic3_button_choose_0 {
-                                [1] => { param logic3_int_button1 }
-                                [2] => { param logic3_int_button2 }
+                                [LogicButton::Button1] => { param logic3_int_button1 }
+                                [LogicButton::Button2] => { param logic3_int_button2 }
                             }
                             param logic3_button_choose_1
                             when @logic3_button_choose_1 {
-                                [1] => { param logic3_int_button1 }
-                                [2] => { param logic3_int_button2 }
+                                [LogicButton::Button1] => { param logic3_int_button1 }
+                                [LogicButton::Button2] => { param logic3_int_button2 }
                             }
                         }
                     }
-                    [2] => {
+                    [LogicType::SendValueWhenPressed] => {
                         block "Logic_3" => "    Logic 3 {{logic3_description:}}" {
                             param logic3_button_choose_0
                             when @logic3_button_choose_0 {
-                                [1] => { param logic3_int_button1 }
-                                [2] => { param logic3_int_button2 }
+                                [LogicButton::Button1] => { param logic3_int_button1 }
+                                [LogicButton::Button2] => { param logic3_int_button2 }
                             }
                         }
                     }
@@ -6036,34 +5659,34 @@ impl EtsPageLayout for MdtStack {
 
                 // Logic 4 input configuration block
                 when @logic4_type {
-                    [0, 1] => {
+                    [LogicType::Or, LogicType::And] => {
                         block "Logic_4" => "    Logic 4 {{logic4_description:}}" {
                             param logic4_ext_input_a
                             when @logic4_ext_input_a {
-                                [1, 2, 129, 130] => { obj logic4_input_a }
+                                [ExtInputLogicType::NormallyActivePrealloc0, ExtInputLogicType::InvertedActivePrealloc0, ExtInputLogicType::NormallyActivePrealloc1, ExtInputLogicType::InvertedActivePrealloc1] => { obj logic4_input_a }
                             }
                             param logic4_ext_input_b
                             when @logic4_ext_input_b {
-                                [1, 2, 129, 130] => { obj logic4_input_b }
+                                [ExtInputLogicType::NormallyActivePrealloc0, ExtInputLogicType::InvertedActivePrealloc0, ExtInputLogicType::NormallyActivePrealloc1, ExtInputLogicType::InvertedActivePrealloc1] => { obj logic4_input_b }
                             }
                             param logic4_button_choose_0
                             when @logic4_button_choose_0 {
-                                [1] => { param logic4_int_button1 }
-                                [2] => { param logic4_int_button2 }
+                                [LogicButton::Button1] => { param logic4_int_button1 }
+                                [LogicButton::Button2] => { param logic4_int_button2 }
                             }
                             param logic4_button_choose_1
                             when @logic4_button_choose_1 {
-                                [1] => { param logic4_int_button1 }
-                                [2] => { param logic4_int_button2 }
+                                [LogicButton::Button1] => { param logic4_int_button1 }
+                                [LogicButton::Button2] => { param logic4_int_button2 }
                             }
                         }
                     }
-                    [2] => {
+                    [LogicType::SendValueWhenPressed] => {
                         block "Logic_4" => "    Logic 4 {{logic4_description:}}" {
                             param logic4_button_choose_0
                             when @logic4_button_choose_0 {
-                                [1] => { param logic4_int_button1 }
-                                [2] => { param logic4_int_button2 }
+                                [LogicButton::Button1] => { param logic4_int_button1 }
+                                [LogicButton::Button2] => { param logic4_int_button2 }
                             }
                         }
                     }
