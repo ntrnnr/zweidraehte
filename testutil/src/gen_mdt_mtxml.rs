@@ -85,8 +85,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         device: &DEVICE_DESCRIPTOR,
         params: MdtParams::ETS_PARAMS_EXT,
         param_defaults: param_bytes,
-        comm_objects: &comm_objs::ETS_COMM_OBJECTS,
-        comm_object_refs: &comm_objs::ETS_COMM_OBJECT_REFS,
+        comm_objects: comm_objs::MdtComObjects::ETS_COMM_OBJECTS,
+        comm_object_refs: comm_objs::MdtComObjects::ETS_COMM_OBJECT_REFS,
         union_fields: Some(MdtParams::ETS_UNIONS),
         channel_name: "Push Button",
         absolute_segment_address: None, // Using system7_layout instead

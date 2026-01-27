@@ -385,7 +385,7 @@ mod tests {
             static_section: ModuleDefStatic {
                 parameters: None,
                 parameter_refs: None,
-                com_object_table: None,
+                com_objects: None,
                 com_object_refs: None,
             },
             dynamic: None,

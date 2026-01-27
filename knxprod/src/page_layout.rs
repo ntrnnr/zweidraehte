@@ -219,7 +219,7 @@ pub enum PageItem {
         variant_name: &'static str,
         cases: Vec<ItemCase>,
     },
-    /// A module instance reference.
+    /// A module instance reference by index.
     ///
     /// This represents a module instantiation within the page layout. The module definition
     /// must be registered in the ModuleCollection, and this creates a reference to instantiate
@@ -238,6 +238,53 @@ pub enum PageItem {
     Module {
         module_name: &'static str,
         instance_index: usize,
+    },
+    /// A module instance with inline argument values.
+    ///
+    /// This allows defining module instances directly in the page layout DSL without
+    /// needing a separate `create_modules()` function. The module definition must still
+    /// be registered, but instances are created from the inline arguments.
+    ///
+    /// DSL syntax in `ets_pages!` macro:
+    /// ```ignore
+    /// // With literal values:
+    /// module DimmerChannelModule { ParamBase: 5, ObjBase: 0, ChNo: 1 }
+    ///
+    /// // With expressions (using auto-generated helpers):
+    /// module DimmerChannelModule {
+    ///     ParamBase: DeviceParams::channel_param_offset(1),
+    ///     ObjBase: DeviceParams::channel_object_base(1),
+    ///     ChNo: 1
+    /// }
+    /// ```
+    ///
+    /// This is more self-contained than `Module` as it includes all argument values
+    /// directly rather than referencing a pre-created instance by index.
+    ///
+    /// Fields:
+    /// - `module_name`: The name of the module definition (matches KnxModule::NAME)
+    /// - `args`: Vec of (argument_name, value) pairs - supports expressions
+    ModuleInline {
+        module_name: &'static str,
+        args: Vec<(&'static str, i64)>,
+    },
+    /// Multiple module instances with visibility conditions.
+    ///
+    /// This is a convenience variant that generates multiple `When` blocks containing
+    /// `ModuleInline` items. Used for ergonomic multi-channel module instantiation.
+    ///
+    /// Each instance entry contains:
+    /// - `selector`: Parameter name that controls visibility (e.g., "enable_ch1")
+    /// - `args`: Argument values for this instance
+    ///
+    /// Use the `module_instances()` helper function to create this:
+    /// ```ignore
+    /// module_instances::<DimmerChannelModule, DeviceParams, 4>("enable_ch")
+    /// ```
+    ModuleInstances {
+        module_name: &'static str,
+        /// Vec of (selector_param, args) - each entry becomes a when block
+        instances: Vec<(String, Vec<(&'static str, i64)>)>,
     },
 }
 
@@ -791,6 +838,43 @@ macro_rules! ets_pages {
     // Parse separator without text
     (@items sep $($rest:tt)*) => {{
         let mut items = vec![$crate::page_layout::PageItem::Separator(None)];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse module instance with inline arguments
+    // Syntax: module ModuleName { ArgName: value, ArgName2: value2, ... }
+    // Example: module DimmerChannel { ParamBase: 5, ObjBase: 0, ChNo: 1 }
+    // This creates a ModuleInline PageItem with the specified argument values.
+    // The module definition must be registered in the ModuleCollection.
+    // Compile-time validation ensures all argument names match the module's ARGUMENTS definition.
+    // Values can be expressions (e.g., DeviceParams::channel_param_offset(1)).
+    (@items module $module_name:ident { $($arg_name:ident : $arg_value:expr),* $(,)? } $($rest:tt)*) => {{
+        // Compile-time validation: check argument names match module definition
+        const _: () = $crate::module::validate_module_args(
+            <$module_name as $crate::module::KnxModule>::ARGUMENTS,
+            &[$(stringify!($arg_name)),*]
+        );
+        let mut items = vec![$crate::page_layout::PageItem::ModuleInline {
+            module_name: <$module_name as $crate::module::KnxModule>::NAME,
+            args: vec![
+                $((stringify!($arg_name), $arg_value as i64)),*
+            ],
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse raw PageItem expression
+    // Syntax: raw <expression>
+    // Example: raw module_instances::<DimmerChannelModule, DeviceParams>("enable_ch")
+    // This allows passing any expression that evaluates to a PageItem.
+    // Useful for computed items like multi-channel module instances.
+    (@items raw $item_expr:expr) => {{
+        vec![$item_expr]
+    }};
+    (@items raw $item_expr:expr, $($rest:tt)*) => {{
+        let mut items = vec![$item_expr];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};

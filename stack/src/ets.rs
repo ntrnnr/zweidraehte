@@ -362,6 +362,20 @@ pub struct EtsParamDefExt {
     pub enum_variants: Option<&'static [EtsEnumVariant]>,
     /// Explicit default value (overrides byte-slice defaults when present)
     pub default_value: Option<i64>,
+    /// Whether this parameter is the source for `{{0}}` text template substitution.
+    /// In module definitions, the first parameter with this flag set is used
+    /// as the `TextParameterRefId` for communication object text templates.
+    pub is_text_source: bool,
+}
+
+impl EtsParamDefExt {
+    /// Find the index of the first parameter marked as text source.
+    ///
+    /// Returns `Some(index)` if a parameter has `is_text_source = true`,
+    /// otherwise `None`.
+    pub fn find_text_source_index(params: &[EtsParamDefExt]) -> Option<usize> {
+        params.iter().position(|p| p.is_text_source)
+    }
 }
 
 // ============================================================================
@@ -570,6 +584,17 @@ pub struct EtsCommObjectDef {
     /// When `Some`, this overrides the size derived from `size_bits`.
     /// Useful when the same object supports multiple DPT sizes.
     pub object_size_override: Option<&'static str>,
+
+    /// Text template for the ComObjectRef Text attribute.
+    ///
+    /// Supports placeholder syntax used in KNX module text templates:
+    /// - `{{ArgName}}` - Substitutes the value of a module argument (e.g., `{{ChNo}}` → "1")
+    /// - `{{0}}` - Substitutes the value of the parameter referenced by `TextParameterRefId`
+    ///
+    /// Example: `"F{{ChNo}} Switch: {{0}}"` renders as `"F1 Switch: Living Room"`
+    ///
+    /// When `None`, the `display_name` is used directly without any template substitution.
+    pub text_template: Option<&'static str>,
 }
 
 // ============================================================================
@@ -705,4 +730,44 @@ pub trait HasDptInfo {
     /// This is the actual datapoint size, not the backing storage size.
     /// For example, DPT 1.x (Switch) is 1 bit, DPT 2.x is 2 bits, etc.
     const SIZE_BITS: usize;
+}
+
+// ============================================================================
+// Module helper traits
+// ============================================================================
+
+/// Marker trait for parameter structs that provide ETS extended parameter definitions.
+///
+/// This trait is automatically implemented by `#[derive(EtsParams)]` and provides
+/// access to the `ETS_PARAMS_EXT` constant containing extended parameter metadata.
+///
+/// Used by `KnxModule` to automatically discover module parameters.
+///
+/// Also implemented for `()` to allow modules without parameters.
+pub trait HasModuleParams {
+    /// Extended parameter definitions for this type.
+    const ETS_PARAMS_EXT: &'static [EtsParamDefExt];
+}
+
+/// Implementation for unit type allows modules to have no parameters.
+impl HasModuleParams for () {
+    const ETS_PARAMS_EXT: &'static [EtsParamDefExt] = &[];
+}
+
+/// Marker trait for communication object structs that provide ETS object definitions.
+///
+/// This trait is automatically implemented by `#[derive(EtsComObjects)]` and provides
+/// access to the `ETS_COMM_OBJECTS` constant containing communication object metadata.
+///
+/// Used by `KnxModule` to automatically discover module communication objects.
+///
+/// Also implemented for `()` to allow modules without communication objects.
+pub trait HasModuleCommObjects {
+    /// Communication object definitions for this type.
+    const ETS_COMM_OBJECTS: &'static [EtsCommObjectDef];
+}
+
+/// Implementation for unit type allows modules to have no communication objects.
+impl HasModuleCommObjects for () {
+    const ETS_COMM_OBJECTS: &'static [EtsCommObjectDef] = &[];
 }

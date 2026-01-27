@@ -12,7 +12,7 @@ use zweidraehte::ets::{
 use super::page_layout::{
     ConditionalElement, ConditionalItem, PageBlock, PageElement, PageItem, PageStructure,
 };
-use super::module::{ModuleArgType, ModuleCollection};
+use super::module::{ModuleArgRole, ModuleArgType, ModuleCollection, StoredModuleDef};
 use super::schema::*;
 
 /// Tracks active conditions when generating nested XML structures.
@@ -644,6 +644,12 @@ impl MtxmlGenerator {
         for (def_idx, def) in modules.definitions().iter().enumerate() {
             let module_id = format!("{}_MD-{}", app_id, def_idx + 1);
 
+            // Compute allocates values from params/objects for role-based arguments
+            let param_size: u32 = def.params
+                .map(|p| p.iter().map(|param| (param.base.size_bits as u32 + 7) / 8).sum())
+                .unwrap_or(0);
+            let object_count: u32 = def.comm_objects.map(|o| o.len() as u32).unwrap_or(0);
+
             // Build argument definitions
             let arguments = if def.arguments.is_empty() {
                 None
@@ -653,10 +659,16 @@ impl MtxmlGenerator {
                     .iter()
                     .enumerate()
                     .map(|(arg_idx, arg)| {
+                        // Compute allocates based on role
+                        let allocates = match arg.role {
+                            ModuleArgRole::ParamOffset => param_size,
+                            ModuleArgRole::ObjectNumber => object_count,
+                            _ => arg.allocates,
+                        };
                         ModuleDefArgument {
                             id: format!("{}_A-{}", module_id, arg_idx + 1),
                             name: arg.name.to_string(),
-                            allocates: arg.allocates,
+                            allocates,
                             alignment: arg.alignment,
                             arg_type: match arg.arg_type {
                                 ModuleArgType::Numeric => None, // Default, no need to specify
@@ -668,25 +680,516 @@ impl MtxmlGenerator {
                 Some(ModuleDefArguments { arguments: args })
             };
 
-            // Build the module definition
-            // Note: The actual Static section contents (parameters, objects) would be
-            // filled in when we have parameter/object metadata from the module traits
+            // Build the BaseOffset argument ID using role-based lookup
+            let base_offset_arg_id = def.arg_index_by_role(ModuleArgRole::ParamOffset).map(|idx| {
+                format!("{}_A-{}", module_id, idx + 1)
+            });
+
+            // Build the BaseNumber argument ID using role-based lookup
+            let base_number_arg_id = def.arg_index_by_role(ModuleArgRole::ObjectNumber).map(|idx| {
+                format!("{}_A-{}", module_id, idx + 1)
+            });
+
+            // Build the BaseValue argument ID using role-based lookup
+            let base_value_arg_id = def.arg_index_by_role(ModuleArgRole::ValueBase).map(|idx| {
+                format!("{}_A-{}", module_id, idx + 1)
+            });
+
+            // Build module-internal parameters if provided
+            let (module_params, module_param_refs) = Self::build_module_parameters(
+                config,
+                app_id,
+                &module_id,
+                def,
+                base_offset_arg_id.as_deref(),
+                base_value_arg_id.as_deref(),
+            );
+
+            // Build the TextParameterRefId for {{0}} text template substitution
+            // This references the parameter ref of the text parameter within this module
+            // Auto-detect text source parameter via #[ets(text_source)] attribute
+            let text_param_idx = def.params.and_then(|params| {
+                zweidraehte::ets::EtsParamDefExt::find_text_source_index(params)
+            });
+            let text_param_ref_id = text_param_idx.and_then(|param_idx| {
+                def.params.and_then(|params| {
+                    params.get(param_idx).map(|_| {
+                        // Reference the ParameterRef ID within this module
+                        format!("{}_P-{}_R-{}", module_id, param_idx + 1, param_idx + 1)
+                    })
+                })
+            });
+
+            // Build module-internal communication objects if provided
+            let (module_com_objects, module_com_object_refs) = Self::build_module_com_objects(
+                app_id,
+                &module_id,
+                def,
+                base_number_arg_id.as_deref(),
+                text_param_ref_id.as_deref(),
+            );
+
+            // Build module Dynamic section with a ParameterBlock containing all parameter refs
+            let module_dynamic = Self::build_module_dynamic(&module_id, def, text_param_ref_id.as_deref());
+
             module_defs.push(ModuleDef {
                 id: module_id,
                 name: def.name.clone(),
                 internal_description: def.internal_description.clone(),
                 arguments,
                 static_section: ModuleDefStatic {
-                    parameters: None,
-                    parameter_refs: None,
-                    com_object_table: None,
-                    com_object_refs: None,
+                    parameters: module_params,
+                    parameter_refs: module_param_refs,
+                    com_objects: module_com_objects,
+                    com_object_refs: module_com_object_refs,
                 },
-                dynamic: None,
+                dynamic: module_dynamic,
             });
         }
 
         Some(ModuleDefs { module_defs })
+    }
+
+    /// Build parameters for a module definition.
+    ///
+    /// Creates the Parameters and ParameterRefs elements for the module's Static section.
+    /// Parameters use `BaseOffset` to reference the module's parameter base argument,
+    /// and `BaseValue` to reference the module's value base argument for relative values.
+    #[allow(unused_variables)]
+    fn build_module_parameters(
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        module_id: &str,
+        def: &StoredModuleDef,
+        base_offset_arg_id: Option<&str>,
+        base_value_arg_id: Option<&str>,
+    ) -> (Option<Parameters>, Option<ParameterRefs>) {
+        let params: &[EtsParamDefExt] = match def.params {
+            Some(params) if !params.is_empty() => params,
+            _ => return (None, None),
+        };
+
+        let code_segment_id = format!("{}_RS-04-00000", app_id);
+        let mut parameters = Parameters::default();
+        let mut parameter_refs = ParameterRefs::default();
+
+        for (idx, param_ext) in params.iter().enumerate() {
+            let param = &param_ext.base;
+            let param_num = idx + 1;
+
+            // Generate parameter ID within the module
+            let param_id = format!("{}_P-{}", module_id, param_num);
+
+            // Get the parameter type ID (reuse the app-level type if available)
+            let type_name = Self::param_type_name(param);
+            let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
+
+            // Get default value - use empty string for text parameters
+            let default_value: String = if let Some(val) = param_ext.default_value {
+                val.to_string()
+            } else if param.param_type == zweidraehte::ets::EtsParamType::String {
+                String::new() // Empty string for text parameters
+            } else {
+                "0".to_string()
+            };
+
+            // Build memory location with BaseOffset if argument is specified
+            let memory = Some(MemoryLocation {
+                code_segment: code_segment_id.clone(),
+                offset: param.offset as u32,
+                bit_offset: param.bit_offset,
+                base_offset: base_offset_arg_id.map(|s| s.to_string()),
+            });
+
+            parameters.items.push(ParameterItem::Parameter(Parameter {
+                id: param_id.clone(),
+                name: param.name.to_string(),
+                parameter_type: type_id,
+                text: param.display_name.to_string(),
+                value: default_value,
+                suffix_text: param.suffix.map(|s| s.to_string()),
+                access: None,
+                base_value: base_value_arg_id.map(|s| s.to_string()),
+                memory,
+                internal_description: None,
+            }));
+
+            // Generate parameter reference
+            let ref_id = format!("{}_R-{}", param_id, param_num);
+            parameter_refs.refs.push(ParameterRef {
+                id: ref_id,
+                ref_id: param_id,
+                text: None,
+                internal_description: None,
+                access: None,
+                value: None,
+                base_value: None,
+            });
+        }
+
+        (
+            Some(parameters),
+            if parameter_refs.refs.is_empty() { None } else { Some(parameter_refs) },
+        )
+    }
+
+    /// Build communication objects for a module definition.
+    ///
+    /// Creates the ComObjects and ComObjectRefs elements for the module's Static section.
+    /// Note: Module static sections use `<ComObjects>` (not `<ComObjectTable>`).
+    /// ComObjects use `BaseNumber` to reference the module's object base argument.
+    /// ComObjectRefs use `TextParameterRefId` for `{{0}}` text template substitution.
+    #[allow(unused_variables)]
+    fn build_module_com_objects(
+        app_id: &str,
+        module_id: &str,
+        def: &StoredModuleDef,
+        base_number_arg_id: Option<&str>,
+        text_param_ref_id: Option<&str>,
+    ) -> (Option<ModuleComObjects>, Option<ComObjectRefs>) {
+        let objects: &[EtsCommObjectDef] = match def.comm_objects {
+            Some(objects) if !objects.is_empty() => objects,
+            _ => return (None, None),
+        };
+
+        let mut module_com_objects = ModuleComObjects {
+            objects: Vec::new(),
+        };
+        let mut com_object_refs = ComObjectRefs::default();
+
+        for obj_def in objects.iter() {
+            // Module ComObject IDs use a different format: {module_id}_O-{table}-{number}
+            let obj_id = format!("{}_O-2-{}", module_id, obj_def.index);
+
+            // Parse flags from bitmask (same as in build_com_object_table)
+            let flags = obj_def.default_flags;
+            let communication_flag = if flags & 0x04 != 0 { EnableFlag::Enabled } else { EnableFlag::Disabled };
+            let read_flag = if flags & 0x08 != 0 { EnableFlag::Enabled } else { EnableFlag::Disabled };
+            let write_flag = if flags & 0x10 != 0 { EnableFlag::Enabled } else { EnableFlag::Disabled };
+            let transmit_flag = if flags & 0x20 != 0 { EnableFlag::Enabled } else { EnableFlag::Disabled };
+            let update_flag = if flags & 0x80 != 0 { EnableFlag::Enabled } else { EnableFlag::Disabled };
+            let read_on_init_flag = EnableFlag::Disabled; // Not in bitmask
+
+            module_com_objects.objects.push(ComObject {
+                id: obj_id.clone(),
+                name: obj_def.name.to_string(),
+                text: obj_def.display_name.to_string(),
+                number: obj_def.index,
+                function_text: obj_def.function_text.to_string(),
+                object_size: object_size_to_string(obj_def.size_bits).to_string(),
+                datapoint_type: Some(dpt_to_string(obj_def.dpt_main, obj_def.dpt_sub)),
+                read_flag,
+                write_flag,
+                communication_flag,
+                transmit_flag,
+                update_flag,
+                read_on_init_flag,
+                priority: None,
+                internal_description: None,
+                base_number: base_number_arg_id.map(|s| s.to_string()),
+            });
+
+            // Generate ComObjectRef with text template support
+            let ref_id = format!("{}_R-{}", obj_id, obj_def.index + 1);
+
+            // Use text_template if provided, otherwise use display_name
+            let text = obj_def.text_template
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| obj_def.display_name.to_string());
+
+            // Only set TextParameterRefId if we have a text template containing {{0}}
+            let text_parameter_ref_id = if obj_def.text_template.map(|t| t.contains("{{0}}")).unwrap_or(false) {
+                text_param_ref_id.map(|s| s.to_string())
+            } else {
+                None
+            };
+
+            com_object_refs.refs.push(ComObjectRef {
+                id: ref_id,
+                ref_id: obj_id,
+                name: None,
+                text: Some(text),
+                function_text: Some(obj_def.function_text.to_string()),
+                datapoint_type: Some(dpt_to_string(obj_def.dpt_main, obj_def.dpt_sub)),
+                object_size: Some(object_size_to_string(obj_def.size_bits).to_string()),
+                text_parameter_ref_id,
+                ..Default::default()
+            });
+        }
+
+        (
+            Some(module_com_objects),
+            if com_object_refs.refs.is_empty() { None } else { Some(com_object_refs) },
+        )
+    }
+
+    /// Build the Dynamic section for a module definition.
+    ///
+    /// Creates a ParameterBlock containing ParameterRefRef elements for all
+    /// parameters in the module. This defines the UI layout that ETS displays
+    /// when the module is active/visible.
+    fn build_module_dynamic(
+        module_id: &str,
+        def: &StoredModuleDef,
+        text_param_ref_id: Option<&str>,
+    ) -> Option<ModuleDefDynamic> {
+        // If custom dynamic layout is provided, use it
+        if let Some(custom) = def.custom_dynamic {
+            return Self::build_custom_module_dynamic(module_id, def, custom, text_param_ref_id);
+        }
+
+        // Otherwise, auto-generate a simple layout
+        Self::build_default_module_dynamic(module_id, def, text_param_ref_id)
+    }
+
+    /// Build custom module dynamic layout from CUSTOM_DYNAMIC definition.
+    fn build_custom_module_dynamic(
+        module_id: &str,
+        def: &StoredModuleDef,
+        custom: &[crate::module::ModuleDynamicItem],
+        text_param_ref_id: Option<&str>,
+    ) -> Option<ModuleDefDynamic> {
+        use crate::module::ModuleDynamicItem;
+
+        let obj_base_arg_idx = def.arg_index_by_role(crate::module::ModuleArgRole::ObjectNumber)
+            .unwrap_or(1);
+
+        let mut block_counter = 0u32;
+        let mut dynamic_items = Vec::new();
+
+        for item in custom {
+            match item {
+                ModuleDynamicItem::ParameterBlock { name, text, items } => {
+                    block_counter += 1;
+                    let block_id = format!("{}_PB-{}", module_id, block_counter);
+                    let block_items = Self::convert_module_block_items(
+                        module_id, obj_base_arg_idx, items
+                    );
+                    // Only set text_parameter_ref_id if the text contains {{0}}
+                    let block_text_ref = if text.contains("{{0}}") {
+                        text_param_ref_id.map(|s| s.to_string())
+                    } else {
+                        None
+                    };
+                    dynamic_items.push(ModuleDefDynamicItem::ParameterBlock(ParameterBlock {
+                        id: block_id,
+                        name: name.to_string(),
+                        text: Some(text.to_string()),
+                        text_parameter_ref_id: block_text_ref,
+                        internal_description: None,
+                        items: block_items,
+                    }));
+                }
+                ModuleDynamicItem::Choose { param_index, whens } => {
+                    let param_num = param_index + 1;
+                    let param_ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+                    let mut when_items = Vec::new();
+                    for (test_value, when_block_items) in *whens {
+                        let converted = Self::convert_module_block_items_to_when(
+                            module_id, obj_base_arg_idx, when_block_items
+                        );
+                        when_items.push(When {
+                            test: Some(test_value.to_string()),
+                            default: None,
+                            internal_description: None,
+                            items: converted,
+                        });
+                    }
+                    dynamic_items.push(ModuleDefDynamicItem::Choose(Choose {
+                        param_ref_id,
+                        whens: when_items,
+                    }));
+                }
+            }
+        }
+
+        if dynamic_items.is_empty() {
+            None
+        } else {
+            Some(ModuleDefDynamic { items: dynamic_items })
+        }
+    }
+
+    /// Convert module block items to ParameterBlockItem list.
+    fn convert_module_block_items(
+        module_id: &str,
+        obj_base_arg_idx: usize,
+        items: &[crate::module::ModuleBlockItem],
+    ) -> Vec<ParameterBlockItem> {
+        use crate::module::ModuleBlockItem;
+
+        let mut result = Vec::new();
+        for item in items {
+            match item {
+                ModuleBlockItem::ParamRef(idx) => {
+                    let param_num = idx + 1;
+                    let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+                    result.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
+                        ref_id,
+                        text: None,
+                        internal_description: None,
+                    }));
+                }
+                ModuleBlockItem::ComObjRef(idx) => {
+                    let ref_num = idx + 1;
+                    let ref_id = format!("{}_O-{}-{}_R-{}", module_id, obj_base_arg_idx + 1, idx, ref_num);
+                    result.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
+                        ref_id,
+                        internal_description: None,
+                    }));
+                }
+                ModuleBlockItem::Separator(text) => {
+                    result.push(ParameterBlockItem::ParameterSeparator(ParameterSeparator {
+                        id: format!("{}_SEP", module_id),
+                        text: text.map(|s| s.to_string()),
+                    }));
+                }
+                ModuleBlockItem::Choose { param_index, whens } => {
+                    let param_num = param_index + 1;
+                    let param_ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+                    let mut when_items = Vec::new();
+                    for (test_value, when_block_items) in *whens {
+                        let converted = Self::convert_module_block_items_to_when(
+                            module_id, obj_base_arg_idx, when_block_items
+                        );
+                        when_items.push(When {
+                            test: Some(test_value.to_string()),
+                            default: None,
+                            internal_description: None,
+                            items: converted,
+                        });
+                    }
+                    result.push(ParameterBlockItem::Choose(Choose {
+                        param_ref_id,
+                        whens: when_items,
+                    }));
+                }
+            }
+        }
+        result
+    }
+
+    /// Convert module block items to WhenItem list (for use inside when clauses).
+    fn convert_module_block_items_to_when(
+        module_id: &str,
+        obj_base_arg_idx: usize,
+        items: &[crate::module::ModuleBlockItem],
+    ) -> Vec<WhenItem> {
+        use crate::module::ModuleBlockItem;
+
+        let mut result = Vec::new();
+        for item in items {
+            match item {
+                ModuleBlockItem::ParamRef(idx) => {
+                    let param_num = idx + 1;
+                    let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+                    result.push(WhenItem::ParameterRefRef(ParameterRefRef {
+                        ref_id,
+                        text: None,
+                        internal_description: None,
+                    }));
+                }
+                ModuleBlockItem::ComObjRef(idx) => {
+                    let ref_num = idx + 1;
+                    let ref_id = format!("{}_O-{}-{}_R-{}", module_id, obj_base_arg_idx + 1, idx, ref_num);
+                    result.push(WhenItem::ComObjectRefRef(ComObjectRefRef {
+                        ref_id,
+                        internal_description: None,
+                    }));
+                }
+                ModuleBlockItem::Separator(text) => {
+                    result.push(WhenItem::ParameterSeparator(ParameterSeparator {
+                        id: format!("{}_SEP", module_id),
+                        text: text.map(|s| s.to_string()),
+                    }));
+                }
+                ModuleBlockItem::Choose { param_index, whens } => {
+                    let param_num = param_index + 1;
+                    let param_ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+                    let mut when_items = Vec::new();
+                    for (test_value, when_block_items) in *whens {
+                        let converted = Self::convert_module_block_items_to_when(
+                            module_id, obj_base_arg_idx, when_block_items
+                        );
+                        when_items.push(When {
+                            test: Some(test_value.to_string()),
+                            default: None,
+                            internal_description: None,
+                            items: converted,
+                        });
+                    }
+                    result.push(WhenItem::Choose(Choose {
+                        param_ref_id,
+                        whens: when_items,
+                    }));
+                }
+            }
+        }
+        result
+    }
+
+    /// Build default module dynamic layout (all params and comm objects in one block).
+    fn build_default_module_dynamic(
+        module_id: &str,
+        def: &StoredModuleDef,
+        text_param_ref_id: Option<&str>,
+    ) -> Option<ModuleDefDynamic> {
+        // Check if we have either params or comm objects
+        let has_params = def.params.map_or(false, |p| !p.is_empty());
+        let has_comm_objs = def.comm_objects.map_or(false, |c| !c.is_empty());
+
+        if !has_params && !has_comm_objs {
+            return None;
+        }
+
+        let mut items: Vec<ParameterBlockItem> = Vec::new();
+
+        // Build ParameterRefRef items for each parameter
+        if let Some(params) = def.params {
+            for (idx, _param) in params.iter().enumerate() {
+                let param_num = idx + 1;
+                let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+                items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
+                    ref_id,
+                    text: None,
+                    internal_description: None,
+                }));
+            }
+        }
+
+        // Build ComObjectRefRef items for each communication object
+        // This makes the comm objects visible in ETS when the module is instantiated
+        if let Some(comm_objs) = def.comm_objects {
+            // Find the ObjBase argument index (argument with ObjectNumber role)
+            let obj_base_arg_idx = def.arg_index_by_role(crate::module::ModuleArgRole::ObjectNumber);
+            let obj_base_arg_idx = obj_base_arg_idx.unwrap_or(1); // Default to second argument
+
+            for (idx, _obj) in comm_objs.iter().enumerate() {
+                let ref_num = idx + 1;
+                // ComObjectRef ID format: {module_id}_O-{arg_idx+1}-{obj_index}_R-{ref_num}
+                let ref_id = format!("{}_O-{}-{}_R-{}", module_id, obj_base_arg_idx + 1, idx, ref_num);
+                items.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
+                    ref_id,
+                    internal_description: None,
+                }));
+            }
+        }
+
+        // Create a ParameterBlock with a name based on module name
+        // The text uses {{ChNo}} for channel number and {{0}} for the text param value
+        // TextParameterRefId must be set when using {{0}} template
+        let block = ParameterBlock {
+            id: format!("{}_PB-1", module_id),
+            name: def.name.clone(),
+            text: Some("{{ChNo}}: {{0}}".to_string()), // Use module argument for channel and text param for name
+            text_parameter_ref_id: text_param_ref_id.map(|s| s.to_string()),
+            internal_description: None,
+            items,
+        };
+
+        Some(ModuleDefDynamic {
+            items: vec![ModuleDefDynamicItem::ParameterBlock(block)],
+        })
     }
 
     /// Build the Code section with appropriate segment type for the mask.
@@ -823,6 +1326,31 @@ impl MtxmlGenerator {
                         seen_types.insert(type_name.clone());
                         let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
                         let type_def = Self::build_type_def(&param.param, param.enum_variants, &type_id);
+                        types.types.push(ParameterType {
+                            id: type_id,
+                            name: type_name,
+                            internal_description: None,
+                            type_def,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Add types for module parameters
+        if let Some(modules) = &config.modules {
+            for def in modules.definitions() {
+                if let Some(params) = def.params {
+                    for param_ext in params {
+                        let type_name = Self::param_type_name(&param_ext.base);
+                        if seen_types.contains(&type_name) {
+                            continue;
+                        }
+                        seen_types.insert(type_name.clone());
+
+                        let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
+                        let type_def = Self::build_type_def(&param_ext.base, param_ext.enum_variants, &type_id);
+
                         types.types.push(ParameterType {
                             id: type_id,
                             name: type_name,
@@ -1043,6 +1571,7 @@ impl MtxmlGenerator {
                 suffix_text: param.suffix.map(|s| s.to_string()),
                 access: if param.hidden { Some("None".to_string()) } else { None },
                 value: default_value,
+                base_value: None,
                 internal_description: None,
                 memory: Some(MemoryLocation {
                     code_segment: code_segment_id.to_string(),
@@ -1218,6 +1747,7 @@ impl MtxmlGenerator {
                     internal_description: None,
                     access: None,
                     value: None,
+                    base_value: None,
                 });
                 next_ref_num += 1;
             }
@@ -1249,6 +1779,7 @@ impl MtxmlGenerator {
                         internal_description: None,
                         access: None,
                         value: None,
+                        base_value: None,
                     });
                     next_ref_num += 1;
                 }
@@ -1275,6 +1806,7 @@ impl MtxmlGenerator {
                             internal_description: None,
                             access: None,
                             value: None,
+                            base_value: None,
                         });
                         next_ref_num += 1;
                     }
@@ -1912,6 +2444,7 @@ impl MtxmlGenerator {
                     id: format!("{}_PB-1", app_id),
                     name: config.name.to_string(),
                     text: None,
+                    text_parameter_ref_id: None,
                     internal_description: None,
                     items,
                 })],
@@ -2372,6 +2905,7 @@ impl MtxmlGenerator {
             id: format!("{}_PB-{}", app_id, block_id),
             name: block.name.to_string(),
             text: Some(resolved_text),
+            text_parameter_ref_id: None,
             internal_description: None,
             items,
         })
@@ -3256,6 +3790,110 @@ impl MtxmlGenerator {
                         }
                     }
                 }
+                PageItem::ModuleInline { module_name, args: inline_args } => {
+                    // Module instances with inline arguments - create instance on the fly.
+                    // This allows defining module instances directly in the page layout.
+                    if let Some(modules) = config.modules.as_ref() {
+                        // Find the module definition by name
+                        let def = modules.definitions().iter().enumerate().find(|(_, d)| d.name == *module_name);
+                        if let Some((def_idx, def)) = def {
+                            // Count how many inline instances we've seen for this module
+                            // to generate unique instance IDs
+                            // We use a simple approach: hash the inline args to create a unique suffix
+                            let args_hash: i64 = inline_args.iter()
+                                .map(|(name, val)| name.len() as i64 * 31 + val)
+                                .sum();
+                            let instance_suffix = (args_hash.abs() % 10000) + 1;
+
+                            let module_def_id = format!("{}_MD-{}", app_id, def_idx + 1);
+                            let module_instance_id = format!("{}_M-{}", module_def_id, instance_suffix);
+
+                            // Build argument values from inline args, matching by name
+                            let mut schema_args = Vec::new();
+                            for (arg_idx, arg_def) in def.arguments.iter().enumerate() {
+                                let arg_ref_id = format!("{}_A-{}", module_def_id, arg_idx + 1);
+                                // Find the inline arg value by name
+                                if let Some((_, value)) = inline_args.iter().find(|(name, _)| *name == arg_def.name) {
+                                    schema_args.push(ModuleArg::NumericArg {
+                                        ref_id: arg_ref_id,
+                                        value: *value,
+                                    });
+                                } else {
+                                    // Argument not found in inline args - use 0 as default
+                                    schema_args.push(ModuleArg::NumericArg {
+                                        ref_id: arg_ref_id,
+                                        value: 0,
+                                    });
+                                }
+                            }
+
+                            items.push(ParameterBlockItem::Module(Module {
+                                id: module_instance_id,
+                                ref_id: module_def_id,
+                                name: None,
+                                internal_description: None,
+                                args: schema_args,
+                            }));
+                        }
+                    }
+                }
+                PageItem::ModuleInstances { module_name, instances } => {
+                    // Multiple module instances with visibility conditions.
+                    // Generates a choose/when block for each instance.
+                    if let Some(modules) = config.modules.as_ref() {
+                        // Find the module definition by name
+                        let def = modules.definitions().iter().enumerate().find(|(_, d)| d.name == *module_name);
+                        if let Some((def_idx, def)) = def {
+                            let module_def_id = format!("{}_MD-{}", app_id, def_idx + 1);
+
+                            for (idx, (selector, inline_args)) in instances.iter().enumerate() {
+                                // Get the param ref for the selector
+                                if let Some(selector_ref_id) = param_ref_map.get_primary(selector) {
+                                    // Create module instance
+                                    let instance_suffix = idx + 1;
+                                    let module_instance_id = format!("{}_M-{}", module_def_id, instance_suffix);
+
+                                    // Build argument values from inline args
+                                    let mut schema_args = Vec::new();
+                                    for (arg_idx, arg_def) in def.arguments.iter().enumerate() {
+                                        let arg_ref_id = format!("{}_A-{}", module_def_id, arg_idx + 1);
+                                        if let Some((_, value)) = inline_args.iter().find(|(name, _)| *name == arg_def.name) {
+                                            schema_args.push(ModuleArg::NumericArg {
+                                                ref_id: arg_ref_id,
+                                                value: *value,
+                                            });
+                                        } else {
+                                            schema_args.push(ModuleArg::NumericArg {
+                                                ref_id: arg_ref_id,
+                                                value: 0,
+                                            });
+                                        }
+                                    }
+
+                                    // Create a choose/when wrapper for visibility
+                                    let module_item = WhenItem::Module(Module {
+                                        id: module_instance_id,
+                                        ref_id: module_def_id.clone(),
+                                        name: None,
+                                        internal_description: None,
+                                        args: schema_args,
+                                    });
+
+                                    // Wrap in choose/when for conditional visibility
+                                    items.push(ParameterBlockItem::Choose(Choose {
+                                        param_ref_id: selector_ref_id.clone(),
+                                        whens: vec![When {
+                                            test: Some("1".to_string()),
+                                            default: None,
+                                            internal_description: None,
+                                            items: vec![module_item],
+                                        }],
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -3659,7 +4297,8 @@ impl HardwareGenerator {
         );
 
         // Product ID: <hardware_id>_P-<order_number>
-        let product_id = format!("{}_P-{}", hardware_id, config.order_number);
+        // Order number must be URL-encoded for ID convention compliance
+        let product_id = format!("{}_P-{}", hardware_id, MtxmlGenerator::encode_id(config.order_number));
 
         let mut knx = HardwareKnx::default();
         knx.manufacturer_data.manufacturer.ref_id = manufacturer_id;
@@ -3741,14 +4380,15 @@ impl CatalogGenerator {
             hardware_id, config.device.application_id, config.device.application_version, app_hash
         );
 
-        // Product ID
-        let product_id = format!("{}_P-{}", hardware_id, config.order_number);
+        // Product ID - must be URL-encoded for ID convention compliance
+        let product_id = format!("{}_P-{}", hardware_id, MtxmlGenerator::encode_id(config.order_number));
 
         // Catalog Section ID
         let section_id = format!("{}_CS-1", manufacturer_id);
 
         // Catalog Item ID: <h2p_id>_CI-<order_number>-1
-        let catalog_item_id = format!("{}_CI-{}-1", h2p_id, config.order_number);
+        // Order number must be URL-encoded for ID convention compliance
+        let catalog_item_id = format!("{}_CI-{}-1", h2p_id, MtxmlGenerator::encode_id(config.order_number));
 
         let mut knx = CatalogKnx::default();
         knx.manufacturer_data.manufacturer.ref_id = manufacturer_id;
@@ -3971,9 +4611,9 @@ mod tests {
         impl KnxModule for TestDimmerModule {
             const NAME: &'static str = "DimmerChannel";
             const ARGUMENTS: &'static [ModuleArgDef] = &[
-                ModuleArgDef::param_offset("ParamBase", 8),
-                ModuleArgDef::object_number("ObjBase", 3),
-                ModuleArgDef::channel_number("ChNo"),
+                ModuleArgDef::param_offset("ParamBase"),
+                ModuleArgDef::object_number("ObjBase"),
+                ModuleArgDef::display("ChNo", 1),
             ];
             type Params = ();
             type Objects = ();
@@ -4038,8 +4678,9 @@ mod tests {
         assert!(xml.contains("ParamBase"), "XML should contain ParamBase argument");
         assert!(xml.contains("ObjBase"), "XML should contain ObjBase argument");
         assert!(xml.contains("ChNo"), "XML should contain ChNo argument");
-        assert!(xml.contains("Allocates=\"8\""), "XML should have correct ParamBase allocates");
-        assert!(xml.contains("Allocates=\"3\""), "XML should have correct ObjBase allocates");
+        // Allocates is computed from actual Params/Objects types, which are () here (size 0)
+        // Only ChNo has a fixed allocates value from display() constructor
+        assert!(xml.contains("Allocates=\"0\""), "XML should have allocates 0 for empty params/objects");
         assert!(xml.contains("Allocates=\"1\""), "XML should have correct ChNo allocates");
     }
 
@@ -4054,9 +4695,9 @@ mod tests {
         impl KnxModule for TestChannelModule {
             const NAME: &'static str = "ChannelModule";
             const ARGUMENTS: &'static [ModuleArgDef] = &[
-                ModuleArgDef::param_offset("ParamBase", 4),
-                ModuleArgDef::object_number("ObjBase", 2),
-                ModuleArgDef::channel_number("ChNo"),
+                ModuleArgDef::param_offset("ParamBase"),
+                ModuleArgDef::object_number("ObjBase"),
+                ModuleArgDef::display("ChNo", 1),
             ];
             type Params = ();
             type Objects = ();

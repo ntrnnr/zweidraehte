@@ -50,9 +50,9 @@
 //!     const NAME: &'static str = "DimmerChannel";
 //!
 //!     const ARGUMENTS: &'static [ModuleArgDef] = &[
-//!         ModuleArgDef::param_offset("ParamBase", 8),  // 8 bytes per channel
-//!         ModuleArgDef::object_number("ObjBase", 3),   // 3 objects per channel
-//!         ModuleArgDef::channel_number("ChNo"),        // Channel number for display
+//!         ModuleArgDef::param_offset("ParamBase"),
+//!         ModuleArgDef::object_number("ObjBase"),
+//!         ModuleArgDef::display("ChNo", 1),  // For {{ChNo}} in text templates
 //!     ];
 //!
 //!     type Params = DimmerChannelParams;
@@ -99,6 +99,9 @@ pub struct ModuleArgDef {
     pub alignment: Option<u8>,
     /// Argument type: Numeric (default) or Text
     pub arg_type: ModuleArgType,
+    /// Role of this argument - determines how it's used in XML generation.
+    /// Set automatically by constructor methods.
+    pub role: ModuleArgRole,
 }
 
 /// Type of module argument.
@@ -111,21 +114,98 @@ pub enum ModuleArgType {
     Text,
 }
 
+/// Role of a module argument - determines how it's used in XML generation.
+///
+/// The role is automatically set by the constructor methods:
+/// - `param_offset()` → `ParamOffset`
+/// - `object_number()` → `ObjectNumber`
+/// - `value_base()` → `ValueBase`
+/// - `custom()` / `text()` / `display()` → `Custom`
+///
+/// The generator uses roles to:
+/// - Compute `Allocates` from MODULE_PARAMS/MODULE_COMM_OBJECTS
+/// - Generate `BaseOffset` attributes on Memory elements
+/// - Generate `BaseNumber` attributes on ComObject elements
+/// - Generate `BaseValue` attributes on Parameter elements
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModuleArgRole {
+    /// Used for Memory/@BaseOffset - parameter memory addressing.
+    /// Allocates is computed from MODULE_PARAMS total size.
+    ParamOffset,
+    /// Used for ComObject/@BaseNumber - object numbering.
+    /// Allocates is computed from MODULE_COMM_OBJECTS length.
+    ObjectNumber,
+    /// Used for Parameter/@BaseValue - relative parameter values
+    ValueBase,
+    /// Generic argument without special handling
+    #[default]
+    Custom,
+}
+
+// ============================================================================
+// Module Dynamic Layout Types
+// ============================================================================
+
+/// An item in a module's custom dynamic layout.
+///
+/// Used with `KnxModule::CUSTOM_DYNAMIC` to define conditional visibility
+/// and custom parameter block structure for module parameters and comm objects.
+#[derive(Debug, Clone, Copy)]
+pub enum ModuleDynamicItem {
+    /// A parameter block grouping items together.
+    ParameterBlock {
+        /// Block name (for ID generation)
+        name: &'static str,
+        /// Display text (can use `{{ChNo}}` and `{{0}}` templates)
+        text: &'static str,
+        /// Items inside this block
+        items: &'static [ModuleBlockItem],
+    },
+    /// A choose/when conditional block based on a parameter value.
+    Choose {
+        /// Index of the parameter to test (0-based, into MODULE_PARAMS)
+        param_index: usize,
+        /// List of (test_value, items) pairs - items shown when param equals test_value
+        whens: &'static [(i64, &'static [ModuleBlockItem])],
+    },
+}
+
+/// An item that can appear inside a module's ParameterBlock or choose/when.
+#[derive(Debug, Clone, Copy)]
+pub enum ModuleBlockItem {
+    /// Reference to a parameter by index (0-based, into MODULE_PARAMS)
+    ParamRef(usize),
+    /// Reference to a communication object by index (0-based, into MODULE_COMM_OBJECTS)
+    ComObjRef(usize),
+    /// A separator with optional text
+    Separator(Option<&'static str>),
+    /// Nested choose/when block
+    Choose {
+        /// Index of the parameter to test (0-based)
+        param_index: usize,
+        /// List of (test_value, items) pairs
+        whens: &'static [(i64, &'static [ModuleBlockItem])],
+    },
+}
+
 impl ModuleArgDef {
     /// Create a parameter offset argument.
     ///
     /// This argument type is used for memory addressing - parameters within
     /// the module have their offset calculated as: `base_value + local_offset`.
     ///
+    /// The `Allocates` value in the generated XML is automatically computed from
+    /// the total size of `MODULE_PARAMS`. You don't need to specify it manually.
+    ///
     /// # Arguments
     /// * `name` - Argument name (e.g., "ParamOffsBase")
-    /// * `bytes_per_instance` - Number of bytes this module's parameters occupy
-    pub const fn param_offset(name: &'static str, bytes_per_instance: u32) -> Self {
+    pub const fn param_offset(name: &'static str) -> Self {
         Self {
             name,
-            allocates: bytes_per_instance,
+            allocates: 0, // Computed from MODULE_PARAMS by generator
             alignment: None,
             arg_type: ModuleArgType::Numeric,
+            role: ModuleArgRole::ParamOffset,
         }
     }
 
@@ -134,31 +214,37 @@ impl ModuleArgDef {
     /// This argument type is used for communication object numbering - objects
     /// within the module have their number calculated as: `base_value + local_number`.
     ///
+    /// The `Allocates` value in the generated XML is automatically computed from
+    /// the length of `MODULE_COMM_OBJECTS`. You don't need to specify it manually.
+    ///
     /// # Arguments
     /// * `name` - Argument name (e.g., "ObjNumberBase")
-    /// * `objects_per_instance` - Number of communication objects in this module
-    pub const fn object_number(name: &'static str, objects_per_instance: u32) -> Self {
+    pub const fn object_number(name: &'static str) -> Self {
         Self {
             name,
-            allocates: objects_per_instance,
+            allocates: 0, // Computed from MODULE_COMM_OBJECTS by generator
             alignment: None,
             arg_type: ModuleArgType::Numeric,
+            role: ModuleArgRole::ObjectNumber,
         }
     }
 
-    /// Create a channel number argument for display purposes.
+    /// Create a display argument for text template substitution.
     ///
-    /// This argument is typically used in text templates like `"F{{ChNo}} Switch"`
-    /// to show which channel an object belongs to.
+    /// This argument is used in text templates like `"F{{ChNo}} Switch"`.
+    /// ETS substitutes `{{ArgName}}` with the argument's value.
+    /// The name must match what you use in text templates.
     ///
     /// # Arguments
-    /// * `name` - Argument name (e.g., "ChNo")
-    pub const fn channel_number(name: &'static str) -> Self {
+    /// * `name` - Argument name (e.g., "ChNo" for `{{ChNo}}`)
+    /// * `allocates` - Number of values this argument consumes per instance
+    pub const fn display(name: &'static str, allocates: u32) -> Self {
         Self {
             name,
-            allocates: 1,
+            allocates,
             alignment: None,
             arg_type: ModuleArgType::Numeric,
+            role: ModuleArgRole::Custom,
         }
     }
 
@@ -173,6 +259,7 @@ impl ModuleArgDef {
             allocates: max_length,
             alignment: None,
             arg_type: ModuleArgType::Text,
+            role: ModuleArgRole::Custom,
         }
     }
 
@@ -188,7 +275,34 @@ impl ModuleArgDef {
             allocates,
             alignment,
             arg_type,
+            role: ModuleArgRole::Custom,
         }
+    }
+
+    /// Create a value base argument for relative parameter values.
+    ///
+    /// This argument type is used when parameter values need to be offset based on
+    /// instance number. For example, when parameters reference sequential indices
+    /// or object numbers that vary per instance.
+    ///
+    /// # Arguments
+    /// * `name` - Argument name (e.g., "ValueBase")
+    /// * `values_per_instance` - Number of sequential values this instance consumes
+    pub const fn value_base(name: &'static str, values_per_instance: u32) -> Self {
+        Self {
+            name,
+            allocates: values_per_instance,
+            alignment: None,
+            arg_type: ModuleArgType::Numeric,
+            role: ModuleArgRole::ValueBase,
+        }
+    }
+
+    /// Find the index of an argument with the given role in an argument slice.
+    ///
+    /// Returns the first argument matching the role, or `None` if no match.
+    pub fn find_by_role(args: &[ModuleArgDef], role: ModuleArgRole) -> Option<usize> {
+        args.iter().position(|a| a.role == role)
     }
 }
 
@@ -214,9 +328,9 @@ impl ModuleArgDef {
 /// impl KnxModule for DimmerChannelModule {
 ///     const NAME: &'static str = "DimmerChannel";
 ///     const ARGUMENTS: &'static [ModuleArgDef] = &[
-///         ModuleArgDef::param_offset("ParamBase", 8),
-///         ModuleArgDef::object_number("ObjBase", 3),
-///         ModuleArgDef::channel_number("ChNo"),
+///         ModuleArgDef::param_offset("ParamBase"),
+///         ModuleArgDef::object_number("ObjBase"),
+///         ModuleArgDef::display("ChNo", 1),
 ///     ];
 ///     type Params = DimmerChannelParams;
 ///     type Objects = DimmerChannelObjects;
@@ -229,16 +343,67 @@ pub trait KnxModule {
     /// Argument definitions for this module
     const ARGUMENTS: &'static [ModuleArgDef];
 
-    /// Parameter type - must implement the EtsParams derive traits.
-    /// Access parameter definitions via `Params::ETS_PARAMS_EXT`.
-    type Params;
+    /// Parameter type - must derive `EtsParams`.
+    ///
+    /// This type provides module parameter definitions via the `HasModuleParams` trait
+    /// which is automatically implemented by `#[derive(EtsParams)]`.
+    type Params: zweidraehte::ets::HasModuleParams;
 
-    /// Communication objects type - must implement the EtsComObjects derive traits.
-    /// Access object definitions via `Objects::ETS_COMM_OBJECTS`.
-    type Objects;
+    /// Communication objects type - must derive `EtsComObjects`.
+    ///
+    /// This type provides communication object definitions via the `HasModuleCommObjects`
+    /// trait which is automatically implemented by `#[derive(EtsComObjects)]`.
+    type Objects: zweidraehte::ets::HasModuleCommObjects;
 
     /// Optional internal description for the module
     const INTERNAL_DESCRIPTION: Option<&'static str> = None;
+
+    /// Parameter definitions for the module.
+    ///
+    /// **Default implementation**: Automatically uses `<Self::Params as HasModuleParams>::ETS_PARAMS_EXT`.
+    ///
+    /// Override only if you need different behavior (e.g., to return `None` for no params).
+    const MODULE_PARAMS: Option<&'static [zweidraehte::ets::EtsParamDefExt]> =
+        Some(<Self::Params as zweidraehte::ets::HasModuleParams>::ETS_PARAMS_EXT);
+
+    /// Communication object definitions for the module.
+    ///
+    /// **Default implementation**: Automatically uses `<Self::Objects as HasModuleCommObjects>::ETS_COMM_OBJECTS`.
+    ///
+    /// Override only if you need different behavior (e.g., to return `None` for no objects).
+    const MODULE_COMM_OBJECTS: Option<&'static [zweidraehte::ets::EtsCommObjectDef]> =
+        Some(<Self::Objects as zweidraehte::ets::HasModuleCommObjects>::ETS_COMM_OBJECTS);
+
+    /// Optional custom dynamic layout for the module.
+    ///
+    /// When `None` (the default), the generator creates a simple layout with all parameters
+    /// and comm objects in a single ParameterBlock.
+    ///
+    /// Set this to `Some(&[...])` with [`ModuleDynamicItem`] entries to define custom
+    /// conditional visibility using `choose/when` blocks, nested parameter blocks, etc.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// const CUSTOM_DYNAMIC: Option<&'static [ModuleDynamicItem]> = Some(&[
+    ///     ModuleDynamicItem::ParameterBlock {
+    ///         name: "Basic",
+    ///         text: "{{ChNo}}: {{0}}",
+    ///         items: &[
+    ///             ModuleBlockItem::ParamRef(0), // channel_name
+    ///             ModuleBlockItem::ParamRef(1), // min_brightness
+    ///         ],
+    ///     },
+    ///     ModuleDynamicItem::Choose {
+    ///         param_index: 2, // mode_selector
+    ///         whens: &[
+    ///             (0, &[ModuleBlockItem::ParamRef(3)]), // Show param 3 when mode=0
+    ///             (1, &[ModuleBlockItem::ComObjRef(0)]), // Show comm obj 0 when mode=1
+    ///         ],
+    ///     },
+    /// ]);
+    /// ```
+    const CUSTOM_DYNAMIC: Option<&'static [ModuleDynamicItem]> = None;
 
     /// Create a module instance with the given argument values.
     ///
@@ -268,6 +433,120 @@ pub trait KnxModule {
     /// Get the index of an argument by name.
     fn arg_index(name: &str) -> Option<usize> {
         Self::ARGUMENTS.iter().position(|a| a.name == name)
+    }
+
+    /// Get the index of an argument by role.
+    ///
+    /// Looks up arguments by their `ModuleArgRole`, which is automatically
+    /// set by constructor methods like `param_offset()`, `object_number()`, etc.
+    fn arg_index_by_role(role: ModuleArgRole) -> Option<usize> {
+        ModuleArgDef::find_by_role(Self::ARGUMENTS, role)
+    }
+}
+
+/// Validate that provided argument names match the module's expected arguments.
+///
+/// This is a const function that can be used at compile time to validate
+/// module arguments in the `ets_pages!` macro.
+///
+/// # Arguments
+/// * `module_args` - The module's ARGUMENTS constant
+/// * `provided_names` - The argument names provided in the macro invocation
+///
+/// # Panics
+/// Panics with a descriptive message if:
+/// - The number of arguments doesn't match
+/// - Any argument name doesn't match the expected name at that position
+pub const fn validate_module_args(module_args: &[ModuleArgDef], provided_names: &[&str]) {
+    // First check count
+    if provided_names.len() != module_args.len() {
+        panic!("Wrong number of arguments for module");
+    }
+
+    // Check each argument name matches the expected name at that position
+    let mut i = 0;
+    while i < provided_names.len() {
+        let provided_name = provided_names[i];
+        let expected_name = module_args[i].name;
+
+        // Compare strings byte by byte (const-compatible)
+        let provided_bytes = provided_name.as_bytes();
+        let expected_bytes = expected_name.as_bytes();
+
+        if provided_bytes.len() != expected_bytes.len() {
+            panic!("Module argument name mismatch - check argument names and order");
+        }
+
+        let mut j = 0;
+        while j < provided_bytes.len() {
+            if provided_bytes[j] != expected_bytes[j] {
+                panic!("Module argument name mismatch - check argument names and order");
+            }
+            j += 1;
+        }
+
+        i += 1;
+    }
+}
+
+/// Trait for device parameter types that have module channel helpers.
+///
+/// This trait is automatically used when you have a `#[ets(module = ...)]` field
+/// in your params struct. It provides the interface needed by `module_instances()`
+/// to generate module instance page items.
+pub trait HasChannelHelpers<M: KnxModule> {
+    /// Number of channel/module instances
+    const COUNT: usize;
+
+    /// Compute parameter offset for instance N (1-indexed)
+    fn param_offset(instance: usize) -> usize;
+
+    /// Compute first object index for instance N (1-indexed)
+    fn object_base(instance: usize) -> usize;
+}
+
+/// Create a `PageItem::ModuleInstances` for multi-channel modules.
+///
+/// This helper generates all module instances with proper argument values
+/// computed from the device params helpers, along with visibility selectors.
+///
+/// # Type Parameters
+/// - `M`: The module type (implements `KnxModule`)
+/// - `P`: The device params type (implements `HasChannelHelpers<M>`)
+///
+/// # Arguments
+/// - `enable_prefix`: Prefix for enable params (e.g., "enable_ch" generates "enable_ch1", "enable_ch2", etc.)
+///
+/// # Example
+/// ```ignore
+/// use knxprod::module::module_instances;
+///
+/// // In your page layout:
+/// block "channels" => "Channel Configuration" {
+///     // Generates 4 module instances with visibility conditions
+///     items: module_instances::<DimmerChannelModule, DeviceParams>("enable_ch")
+/// }
+/// ```
+pub fn module_instances<M, P>(enable_prefix: &str) -> crate::page_layout::PageItem
+where
+    M: KnxModule,
+    P: HasChannelHelpers<M>,
+{
+    let mut instances = Vec::with_capacity(P::COUNT);
+
+    for ch in 1..=P::COUNT {
+        let selector = format!("{}{}", enable_prefix, ch);
+        let args = vec![
+            ("ParamBase", P::param_offset(ch) as i64),
+            ("ObjBase", P::object_base(ch) as i64),
+            ("ChNo", ch as i64),
+        ];
+        instances.push((selector, args));
+    }
+
+    crate::page_layout::PageItem::ModuleInstances {
+        module_name: M::NAME,
+        instances,
     }
 }
 
@@ -549,6 +828,25 @@ pub struct StoredModuleDef {
     pub arguments: Vec<ModuleArgDef>,
     /// Optional internal description
     pub internal_description: Option<String>,
+    /// Parameter definitions for the module (from ETS_PARAMS_EXT).
+    /// Used to generate the ModuleDef/Static/Parameters section.
+    pub params: Option<&'static [zweidraehte::ets::EtsParamDefExt]>,
+    /// Communication object definitions for the module (from ETS_COMM_OBJECTS).
+    /// Used to generate the ModuleDef/Static/ComObjectTable section.
+    pub comm_objects: Option<&'static [zweidraehte::ets::EtsCommObjectDef]>,
+    /// Optional custom dynamic layout for the module.
+    /// If None, a simple layout with all params and comm objects is auto-generated.
+    pub custom_dynamic: Option<&'static [ModuleDynamicItem]>,
+}
+
+impl StoredModuleDef {
+    /// Find the index of an argument with the given role.
+    ///
+    /// Looks up arguments by their `ModuleArgRole`, which is automatically
+    /// set by constructor methods like `param_offset()`, `object_number()`, etc.
+    pub fn arg_index_by_role(&self, role: ModuleArgRole) -> Option<usize> {
+        ModuleArgDef::find_by_role(&self.arguments, role)
+    }
 }
 
 /// Stored module instance entry (internal representation).
@@ -610,6 +908,9 @@ impl ModuleCollection {
             name: M::NAME.to_string(),
             arguments: M::ARGUMENTS.to_vec(),
             internal_description: M::INTERNAL_DESCRIPTION.map(|s| s.to_string()),
+            params: M::MODULE_PARAMS,
+            comm_objects: M::MODULE_COMM_OBJECTS,
+            custom_dynamic: M::CUSTOM_DYNAMIC,
         });
         idx
     }
@@ -645,6 +946,22 @@ impl ModuleCollection {
     pub fn instance_count(&self) -> usize {
         self.instances.len()
     }
+
+    /// Create a collection with a single module definition (no instances).
+    ///
+    /// This is useful when using `module_instances()` in the page layout,
+    /// which generates instances at XML generation time. The collection
+    /// only needs to know about the module definition.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let modules = ModuleCollection::with_definition::<DimmerChannelModule>();
+    /// ```
+    pub fn with_definition<M: KnxModule>() -> Self {
+        let mut collection = Self::new();
+        collection.ensure_definition::<M>();
+        collection
+    }
 }
 
 // ============================================================================
@@ -661,9 +978,9 @@ mod tests {
     impl KnxModule for TestDimmerModule {
         const NAME: &'static str = "TestDimmer";
         const ARGUMENTS: &'static [ModuleArgDef] = &[
-            ModuleArgDef::param_offset("ParamBase", 8),
-            ModuleArgDef::object_number("ObjBase", 3),
-            ModuleArgDef::channel_number("ChNo"),
+            ModuleArgDef::param_offset("ParamBase"),
+            ModuleArgDef::object_number("ObjBase"),
+            ModuleArgDef::display("ChNo", 1),
         ];
         type Params = ();
         type Objects = ();
@@ -671,16 +988,16 @@ mod tests {
 
     #[test]
     fn test_module_arg_def_constructors() {
-        let param_arg = ModuleArgDef::param_offset("ParamBase", 52);
+        let param_arg = ModuleArgDef::param_offset("ParamBase");
         assert_eq!(param_arg.name, "ParamBase");
-        assert_eq!(param_arg.allocates, 52);
+        assert_eq!(param_arg.role, ModuleArgRole::ParamOffset);
         assert_eq!(param_arg.arg_type, ModuleArgType::Numeric);
 
-        let obj_arg = ModuleArgDef::object_number("ObjBase", 6);
+        let obj_arg = ModuleArgDef::object_number("ObjBase");
         assert_eq!(obj_arg.name, "ObjBase");
-        assert_eq!(obj_arg.allocates, 6);
+        assert_eq!(obj_arg.role, ModuleArgRole::ObjectNumber);
 
-        let ch_arg = ModuleArgDef::channel_number("ChNo");
+        let ch_arg = ModuleArgDef::display("ChNo", 1);
         assert_eq!(ch_arg.name, "ChNo");
         assert_eq!(ch_arg.allocates, 1);
     }

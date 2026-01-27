@@ -185,6 +185,9 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut union_field_entries = Vec::new();
     // Track field names, types, and default expressions for generating Default/ConstDefault impls
     let mut field_defaults: Vec<(syn::Ident, syn::Type, TokenStream2)> = Vec::new();
+    // Track module fields for generating helper methods
+    // (field_name, field_type, module_type, array_len)
+    let mut module_fields: Vec<(syn::Ident, syn::Type, syn::Type, Option<syn::Expr>)> = Vec::new();
 
     for field in fields.iter() {
         let field_name = field.ident.as_ref().unwrap();
@@ -204,6 +207,9 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             } else if attrs.ets_enum_field {
                 // EtsEnum fields use their type's ConstDefault
                 quote!(<#field_type as const_default::ConstDefault>::DEFAULT)
+            } else if attrs.module_type.is_some() {
+                // Module fields use their type's ConstDefault (array of module params)
+                quote!(<#field_type as const_default::ConstDefault>::DEFAULT)
             } else if let Some(default_val) = attrs.default_value {
                 // Explicit #[ets(default = X)] value
                 let lit = syn::LitInt::new(&default_val.to_string(), proc_macro2::Span::call_site());
@@ -217,6 +223,19 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         // Skip if marked with #[ets(skip)]
         if attrs.skip {
+            continue;
+        }
+
+        // Skip module fields - their params come from the module definition, not from here
+        // The module field is just for runtime access to the combined struct
+        if let Some(module_type) = attrs.module_type {
+            // Extract array length if this is an array type
+            let array_len = if let syn::Type::Array(array) = field_type {
+                Some(array.len.clone())
+            } else {
+                None
+            };
+            module_fields.push((field_name.clone(), field_type.clone(), module_type, array_len));
             continue;
         }
 
@@ -298,6 +317,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     },
                     enum_variants: Some(Self::#selector_const_name),
                     default_value: #selector_default_expr,
+                    is_text_source: false,
                 }
             });
 
@@ -380,6 +400,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     },
                     enum_variants: Some(Self::#const_name),
                     default_value: #default_value_expr,
+                    is_text_source: false,
                 }
             });
 
@@ -410,6 +431,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         // Generate basic ETS_PARAMS entry
         let hidden = attrs.hidden;
+        let is_text_source = attrs.text_source;
         let type_name_expr = if let Some(ref tn) = attrs.type_name {
             quote!(Some(#tn))
         } else {
@@ -479,6 +501,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 },
                 enum_variants: #enum_variants_expr,
                 default_value: #default_value_expr,
+                is_text_source: #is_text_source,
             }
         });
     }
@@ -509,6 +532,133 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             assert!(core::mem::align_of::<i32>() == 4, "i32 alignment mismatch");
             assert!(core::mem::align_of::<bool>() == 1, "bool alignment mismatch");
         };
+    };
+
+    // Generate helper methods for module fields
+    // These provide compile-time access to module parameter offsets and object indices
+    let module_helper_impls = if module_fields.is_empty() {
+        quote! {}
+    } else {
+        let helper_methods: Vec<_> = module_fields.iter().map(|(field_name, _field_type, module_type, array_len)| {
+            let field_name_str = field_name.to_string();
+
+            // Generate method name based on field name (e.g., "channels" -> "channel_param_offset")
+            // Singularize: "channels" -> "channel", "dimmers" -> "dimmer", etc.
+            let singular_name = if field_name_str.ends_with("es") && field_name_str.len() > 2 {
+                // Handle cases like "switches" -> "switch" (strip "es")
+                // But not "issues" which would go to "issu"
+                let stripped = &field_name_str[..field_name_str.len()-2];
+                if stripped.ends_with("ch") || stripped.ends_with("sh") || stripped.ends_with("ss") {
+                    stripped.to_string()
+                } else {
+                    // Strip just "s" for other "es" cases like "values" -> "value"
+                    field_name_str.trim_end_matches('s').to_string()
+                }
+            } else if field_name_str.ends_with('s') {
+                field_name_str.trim_end_matches('s').to_string()
+            } else {
+                field_name_str.clone()
+            };
+
+            let param_offset_fn = syn::Ident::new(&format!("{}_param_offset", singular_name), field_name.span());
+            let object_base_fn = syn::Ident::new(&format!("{}_object_base", singular_name), field_name.span());
+            let object_index_fn = syn::Ident::new(&format!("{}_object_index", singular_name), field_name.span());
+            let count_const = syn::Ident::new(&format!("{}_COUNT", field_name_str.to_uppercase()), field_name.span());
+
+            // Generate array length constant if applicable
+            let count_const_def = if let Some(len) = array_len {
+                quote! {
+                    /// Number of module instances.
+                    pub const #count_const: usize = #len;
+                }
+            } else {
+                quote! {}
+            };
+
+            quote! {
+                #count_const_def
+
+                /// Compute parameter offset for module instance N (1-indexed).
+                ///
+                /// This matches the `ParamBase` argument value used in module instantiation.
+                pub const fn #param_offset_fn(instance: usize) -> usize {
+                    core::mem::offset_of!(Self, #field_name)
+                        + (instance - 1) * core::mem::size_of::<<#module_type as knxprod::module::KnxModule>::Params>()
+                }
+
+                /// Compute first object index for module instance N (1-indexed).
+                ///
+                /// This matches the `ObjBase` argument value used in module instantiation.
+                pub const fn #object_base_fn(instance: usize) -> usize {
+                    // Get the number of objects from the module's comm object definitions
+                    const OBJECT_COUNT: usize = match <#module_type as knxprod::module::KnxModule>::MODULE_COMM_OBJECTS {
+                        Some(objs) => objs.len(),
+                        None => 0,
+                    };
+                    (instance - 1) * OBJECT_COUNT
+                }
+
+                /// Get absolute object index for a specific object in a module instance.
+                ///
+                /// # Arguments
+                /// * `instance` - Module instance number (1-indexed)
+                /// * `local_index` - Object index within the module (0-indexed)
+                pub const fn #object_index_fn(instance: usize, local_index: usize) -> usize {
+                    Self::#object_base_fn(instance) + local_index
+                }
+            }
+        }).collect();
+
+        // Generate HasChannelHelpers implementations for each module field
+        let has_channel_helpers_impls: Vec<_> = module_fields.iter().map(|(field_name, _field_type, module_type, array_len)| {
+            let field_name_str = field_name.to_string();
+
+            // Generate singular name for method names
+            let singular_name = if field_name_str.ends_with("es") && field_name_str.len() > 2 {
+                let stripped = &field_name_str[..field_name_str.len()-2];
+                if stripped.ends_with("ch") || stripped.ends_with("sh") || stripped.ends_with("ss") {
+                    stripped.to_string()
+                } else {
+                    field_name_str.trim_end_matches('s').to_string()
+                }
+            } else if field_name_str.ends_with('s') {
+                field_name_str.trim_end_matches('s').to_string()
+            } else {
+                field_name_str.clone()
+            };
+
+            let param_offset_fn = syn::Ident::new(&format!("{}_param_offset", singular_name), field_name.span());
+            let object_base_fn = syn::Ident::new(&format!("{}_object_base", singular_name), field_name.span());
+
+            // Get the array length for COUNT
+            let count_expr = if let Some(len) = array_len {
+                quote! { #len }
+            } else {
+                quote! { 1 }
+            };
+
+            quote! {
+                impl knxprod::module::HasChannelHelpers<#module_type> for #struct_name {
+                    const COUNT: usize = #count_expr;
+
+                    fn param_offset(instance: usize) -> usize {
+                        Self::#param_offset_fn(instance)
+                    }
+
+                    fn object_base(instance: usize) -> usize {
+                        Self::#object_base_fn(instance)
+                    }
+                }
+            }
+        }).collect();
+
+        quote! {
+            impl #struct_name {
+                #(#helper_methods)*
+            }
+
+            #(#has_channel_helpers_impls)*
+        }
     };
 
     // Generate Default and ConstDefault impls from field defaults
@@ -557,6 +707,12 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             #union_info_output
         }
 
+        impl zweidraehte::ets::HasModuleParams for #struct_name {
+            const ETS_PARAMS_EXT: &'static [zweidraehte::ets::EtsParamDefExt] = #struct_name::ETS_PARAMS_EXT;
+        }
+
+        #module_helper_impls
+
         #defaults_impls
     })
 }
@@ -583,6 +739,11 @@ struct FieldAttrs {
     default_value: Option<i64>,
     /// Pattern for TypeText parameters (regex with optional comment)
     text_pattern: Option<String>,
+    /// Marks this parameter as the source for `{{0}}` text template substitution in modules
+    text_source: bool,
+    /// Marks this field as containing module instances (array of module params).
+    /// The type should be the module type (e.g., DimmerChannelModule).
+    module_type: Option<syn::Type>,
 }
 
 fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
@@ -600,6 +761,8 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
         type_name: None,
         default_value: None,
         text_pattern: None,
+        text_source: false,
+        module_type: None,
     };
 
     for attr in attrs {
@@ -656,6 +819,12 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                     input.parse::<Token![=]>()?;
                     let value: syn::LitStr = input.parse()?;
                     result.text_pattern = Some(value.value());
+                } else if ident == "text_source" {
+                    result.text_source = true;
+                } else if ident == "module" {
+                    // Parse: module = ModuleType
+                    input.parse::<Token![=]>()?;
+                    result.module_type = Some(input.parse()?);
                 }
 
                 // Consume optional comma
@@ -1685,7 +1854,7 @@ struct ComObjectsStructAttrs {
 
 /// Parsed field-level attributes for a comm object
 struct ComObjectFieldAttrs {
-    /// ASAP index (required)
+    /// ASAP index (required for regular fields, ignored for module fields)
     index: Option<u16>,
     /// Name override for ETS (defaults to field name)
     name: Option<String>,
@@ -1699,6 +1868,11 @@ struct ComObjectFieldAttrs {
     selector_param: Option<String>,
     /// Object size override (e.g., "4 Bytes", "1 Bit")
     object_size: Option<String>,
+    /// Text template for module comm objects (e.g., "Ch{{ChNo}} Switch: {{0}}")
+    text_template: Option<String>,
+    /// Marks this field as containing module instances (array of module comm objects).
+    /// The type should be the module type (e.g., DimmerChannelModule).
+    module_type: Option<syn::Type>,
 }
 
 /// Selector value for when a ComObjectRef is active.
@@ -1774,6 +1948,8 @@ fn parse_com_object_field_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectFie
         flags: None,
         selector_param: None,
         object_size: None,
+        text_template: None,
+        module_type: None,
     };
 
     for attr in attrs {
@@ -1813,6 +1989,14 @@ fn parse_com_object_field_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectFie
                     input.parse::<Token![=]>()?;
                     let value: syn::LitStr = input.parse()?;
                     result.object_size = Some(value.value());
+                } else if ident == "text_template" {
+                    input.parse::<Token![=]>()?;
+                    let value: syn::LitStr = input.parse()?;
+                    result.text_template = Some(value.value());
+                } else if ident == "module" {
+                    // Parse: module = ModuleType
+                    input.parse::<Token![=]>()?;
+                    result.module_type = Some(input.parse()?);
                 }
 
                 let _ = input.parse::<Option<Token![,]>>();
@@ -1996,6 +2180,57 @@ fn extract_inner_type(ty: &syn::Type) -> syn::Type {
     ty.clone()
 }
 
+/// Array length info - either a literal value or an expression.
+#[derive(Clone)]
+enum ArrayLen {
+    /// Literal array length (e.g., `4`)
+    Literal(usize),
+    /// Expression for array length (e.g., `NUM_CHANNELS`)
+    Expr(syn::Expr),
+}
+
+impl quote::ToTokens for ArrayLen {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        match self {
+            ArrayLen::Literal(n) => {
+                tokens.extend(quote! { #n });
+            }
+            ArrayLen::Expr(expr) => {
+                tokens.extend(quote! { #expr });
+            }
+        }
+    }
+}
+
+/// Extract array information from a type like `[T; N]`.
+/// Returns (element_type, array_length) if successful.
+fn extract_array_info(ty: &syn::Type) -> Option<(syn::Type, ArrayLen)> {
+    if let syn::Type::Array(arr) = ty {
+        let elem = (*arr.elem).clone();
+        // Try to parse the length expression as a literal first
+        if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit_int), .. }) = &arr.len {
+            if let Ok(len) = lit_int.base10_parse::<usize>() {
+                return Some((elem, ArrayLen::Literal(len)));
+            }
+        }
+        // Otherwise, keep the expression (could be a const like NUM_CHANNELS)
+        return Some((elem, ArrayLen::Expr(arr.len.clone())));
+    }
+    None
+}
+
+/// Information about a module field in the comm objects struct
+struct ModuleFieldInfo {
+    /// Field identifier (e.g., "channels")
+    ident: syn::Ident,
+    /// Module type (e.g., DimmerChannelModule)
+    module_type: syn::Type,
+    /// Number of instances - either a literal or expression
+    instance_count: ArrayLen,
+    /// Element type of the array (e.g., DimmerChannelRuntimeObjects)
+    element_type: syn::Type,
+}
+
 fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let struct_name = &input.ident;
 
@@ -2017,21 +2252,41 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
         )),
     };
 
-    // Parse all fields
+    // Parse all fields, separating regular fields from module fields
     let mut com_objects: Vec<ComObjectField> = Vec::new();
+    let mut module_fields: Vec<ModuleFieldInfo> = Vec::new();
 
     for field in fields.iter() {
         let field_ident = field.ident.as_ref().unwrap().clone();
         let field_ty = field.ty.clone();
-        let inner_ty = extract_inner_type(&field_ty);
         let attrs = parse_com_object_field_attrs(&field.attrs)?;
+
+        // Check if this is a module field
+        if let Some(module_type) = attrs.module_type {
+            // Module field - extract array info
+            let (element_type, instance_count) = extract_array_info(&field_ty)
+                .ok_or_else(|| syn::Error::new_spanned(
+                    &field_ty,
+                    "Module fields must be arrays, e.g., [ModuleObjects; 4]"
+                ))?;
+
+            module_fields.push(ModuleFieldInfo {
+                ident: field_ident,
+                module_type,
+                instance_count,
+                element_type,
+            });
+            continue;
+        }
+
+        // Regular field - validate index is present
+        let inner_ty = extract_inner_type(&field_ty);
         let refs = parse_ets_ref_attrs(&field.attrs)?;
 
-        // Validate index is present
         if attrs.index.is_none() {
             return Err(syn::Error::new_spanned(
                 field,
-                "EtsComObjects fields must have #[ets(index = N)]"
+                "EtsComObjects fields must have #[ets(index = N)] or #[ets(module = ...)]"
             ));
         }
 
@@ -2048,6 +2303,19 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
             has_refs,
             is_multi_dpt,
         });
+    }
+
+    // For now, we support at most one module field
+    if module_fields.len() > 1 {
+        return Err(syn::Error::new_spanned(
+            input,
+            "Only one module field is currently supported per struct"
+        ));
+    }
+
+    // If we have a module field, generate module-based implementation
+    if let Some(module_field) = module_fields.into_iter().next() {
+        return generate_module_based_impl(struct_name, &struct_attrs, &com_objects, &module_field);
     }
 
     // Generate the Index enum
@@ -2128,6 +2396,13 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
             quote!(None)
         };
 
+        // Generate text_template expression
+        let text_template_expr = if let Some(ref template) = obj.attrs.text_template {
+            quote!(Some(#template))
+        } else {
+            quote!(None)
+        };
+
         if obj.has_refs {
             // For objects with refs, use first ref's DPT info as base
             let first_ref_dpt = &obj.refs[0].dpt;
@@ -2142,6 +2417,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                     size_bits: <#first_ref_dpt as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
                     default_flags: #default_flags,
                     object_size_override: #object_size_override_expr,
+                    text_template: #text_template_expr,
                 }
             }
         } else {
@@ -2158,6 +2434,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                     size_bits: <#inner_ty as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
                     default_flags: #default_flags,
                     object_size_override: #object_size_override_expr,
+                    text_template: #text_template_expr,
                 }
             }
         }
@@ -2357,23 +2634,229 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
 
         #com_objects_impl
 
-        /// ETS communication object definitions for this module.
-        #[allow(dead_code)]
-        pub const ETS_COMM_OBJECTS: &[zweidraehte::ets::EtsCommObjectDef] = &[
-            #(#ets_comm_objects),*
-        ];
+        impl #struct_name {
+            /// ETS communication object definitions for this module.
+            #[allow(dead_code)]
+            pub const ETS_COMM_OBJECTS: &'static [zweidraehte::ets::EtsCommObjectDef] = &[
+                #(#ets_comm_objects),*
+            ];
 
-        /// ETS communication object reference definitions.
-        #[allow(dead_code)]
-        pub const ETS_COMM_OBJECT_REFS: &[zweidraehte::ets::EtsCommObjectRefDef] = &[
-            #(#ets_comm_object_refs),*
-        ];
+            /// ETS communication object reference definitions.
+            #[allow(dead_code)]
+            pub const ETS_COMM_OBJECT_REFS: &'static [zweidraehte::ets::EtsCommObjectRefDef] = &[
+                #(#ets_comm_object_refs),*
+            ];
 
-        /// Number of communication objects in this module.
-        #[allow(dead_code)]
-        pub const NUM_COMM_OBJECTS: usize = #num_objects;
+            /// Number of communication objects in this module.
+            #[allow(dead_code)]
+            pub const NUM_COMM_OBJECTS: usize = #num_objects;
+        }
+
+        impl zweidraehte::ets::HasModuleCommObjects for #struct_name {
+            const ETS_COMM_OBJECTS: &'static [zweidraehte::ets::EtsCommObjectDef] = #struct_name::ETS_COMM_OBJECTS;
+        }
 
         #selector_impl
+    })
+}
+
+/// Generate ComObjects implementation for a struct with module fields.
+///
+/// This generates:
+/// - Index enum with variants for each instance's objects
+/// - ComObjects impl with flattened indexing
+/// - ETS_COMM_OBJECTS referencing the module's definitions
+fn generate_module_based_impl(
+    struct_name: &syn::Ident,
+    struct_attrs: &ComObjectsStructAttrs,
+    _regular_objects: &[ComObjectField],
+    module_field: &ModuleFieldInfo,
+) -> syn::Result<TokenStream2> {
+    let field_ident = &module_field.ident;
+    let module_type = &module_field.module_type;
+    let instance_count = &module_field.instance_count;
+    let element_type = &module_field.element_type;
+
+    // Get singular name for prefix (e.g., "channels" -> "Ch")
+    let field_name_str = field_ident.to_string();
+    let prefix = if field_name_str.ends_with("s") {
+        let s = &field_name_str[..field_name_str.len()-1];
+        let mut chars = s.chars();
+        match chars.next() {
+            Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+            None => "Obj".to_string(),
+        }
+    } else {
+        let mut chars = field_name_str.chars();
+        match chars.next() {
+            Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+            None => "Obj".to_string(),
+        }
+    };
+
+    // Generate code that computes the total object count at compile time
+    // using the module's MODULE_COMM_OBJECTS constant
+    let objects_per_instance = quote! {
+        {
+            match <#module_type as knxprod::module::KnxModule>::MODULE_COMM_OBJECTS {
+                Some(objs) => objs.len(),
+                None => 0,
+            }
+        }
+    };
+
+    let total_objects = quote! {
+        #instance_count * #objects_per_instance
+    };
+
+    // For the Index enum, we can't generate named variants at macro time because
+    // we don't know the module's object names. Instead, we use a numeric index approach.
+    // Users can still use helper methods to get human-readable indices.
+
+    // Generate ComObjects impl that forwards to the array elements
+    let com_objects_impl = if struct_attrs.manual_impl {
+        quote!()
+    } else {
+        quote! {
+            impl zweidraehte::objects::comm::ComObjects for #struct_name {
+                type Index = Index;
+                type HookContext = ();
+
+                fn new() -> Self {
+                    Self {
+                        #field_ident: core::array::from_fn(|_| <#element_type as zweidraehte::objects::comm::ComObjects>::new()),
+                    }
+                }
+
+                fn info<'a>(&'a self, idx: u16) -> zweidraehte::objects::comm::ComObjectInfo<'a> {
+                    const OBJS_PER_INSTANCE: usize = #objects_per_instance;
+                    let instance = idx as usize / OBJS_PER_INSTANCE;
+                    let local_idx = idx as usize % OBJS_PER_INSTANCE;
+                    self.#field_ident[instance].info(local_idx as u16)
+                }
+
+                fn info_mut<'a>(&'a mut self, idx: u16) -> zweidraehte::objects::comm::ComObjectInfoMut<'a> {
+                    const OBJS_PER_INSTANCE: usize = #objects_per_instance;
+                    let instance = idx as usize / OBJS_PER_INSTANCE;
+                    let local_idx = idx as usize % OBJS_PER_INSTANCE;
+                    self.#field_ident[instance].info_mut(local_idx as u16)
+                }
+            }
+        }
+    };
+
+    // Generate Index enum as a simple numeric newtype for module-based structs
+    // This allows any valid index within the total object range
+    let index_impl = quote! {
+        /// Index type for module-based communication objects.
+        ///
+        /// This is a simple u16 wrapper that validates indices are within range.
+        #[allow(dead_code)]
+        #[derive(core::marker::ConstParamTy, Debug, Clone, Copy, PartialEq, Eq)]
+        #[repr(transparent)]
+        pub struct Index(u16);
+
+        #[allow(dead_code)]
+        impl Index {
+            /// Create an index from a raw u16 value.
+            ///
+            /// Returns None if the index is out of range.
+            pub const fn from_raw(idx: u16) -> Option<Self> {
+                const TOTAL: usize = #total_objects;
+                if (idx as usize) < TOTAL {
+                    Some(Self(idx))
+                } else {
+                    None
+                }
+            }
+
+            /// Get the raw index value.
+            pub const fn raw(&self) -> u16 {
+                self.0
+            }
+
+            /// Get object index for a specific instance and local object.
+            ///
+            /// # Arguments
+            /// * `instance` - Instance number (0-indexed)
+            /// * `local_obj` - Local object index within the module (0-indexed)
+            pub const fn for_instance(instance: usize, local_obj: usize) -> Option<Self> {
+                const OBJS_PER_INSTANCE: usize = #objects_per_instance;
+                const TOTAL: usize = #total_objects;
+                let idx = instance * OBJS_PER_INSTANCE + local_obj;
+                if idx < TOTAL {
+                    Some(Self(idx as u16))
+                } else {
+                    None
+                }
+            }
+        }
+
+        impl zweidraehte::objects::comm::ComObjectIndex for Index {
+            fn from_index(idx: u16) -> Option<Self> {
+                Self::from_raw(idx)
+            }
+
+            fn index(&self) -> u16 {
+                self.0
+            }
+        }
+    };
+
+    // Generate helper methods on the struct
+    let helper_methods = {
+        let prefix_lower = prefix.to_lowercase();
+        let object_index_fn = syn::Ident::new(&format!("{}_object_index", prefix_lower), field_ident.span());
+        let instance_count_const = syn::Ident::new(&format!("{}_INSTANCE_COUNT", field_name_str.to_uppercase()), field_ident.span());
+
+        quote! {
+            impl #struct_name {
+                /// Number of module instances.
+                pub const #instance_count_const: usize = #instance_count;
+
+                /// Get the object index for a specific instance and local object.
+                ///
+                /// # Arguments
+                /// * `instance` - Instance number (1-indexed, matching ETS convention)
+                /// * `local_obj` - Local object index within the module (0-indexed)
+                pub const fn #object_index_fn(instance: usize, local_obj: usize) -> usize {
+                    const OBJS_PER_INSTANCE: usize = #objects_per_instance;
+                    (instance - 1) * OBJS_PER_INSTANCE + local_obj
+                }
+            }
+        }
+    };
+
+    // Generate ETS_COMM_OBJECTS by iterating over the module's definitions
+    // and replicating them for each instance (with adjusted indices)
+    let ets_impl = quote! {
+        impl #struct_name {
+            /// ETS communication object definitions for all instances.
+            ///
+            /// This is derived from the module's `MODULE_COMM_OBJECTS` constant,
+            /// replicated for each instance with adjusted indices.
+            #[allow(dead_code)]
+            pub const ETS_COMM_OBJECTS: &'static [zweidraehte::ets::EtsCommObjectDef] =
+                <#element_type as zweidraehte::ets::HasModuleCommObjects>::ETS_COMM_OBJECTS;
+
+            /// Number of communication objects per module instance.
+            pub const OBJECTS_PER_INSTANCE: usize = #objects_per_instance;
+
+            /// Total number of communication objects.
+            pub const NUM_COMM_OBJECTS: usize = #total_objects;
+        }
+
+        impl zweidraehte::ets::HasModuleCommObjects for #struct_name {
+            const ETS_COMM_OBJECTS: &'static [zweidraehte::ets::EtsCommObjectDef] =
+                <#element_type as zweidraehte::ets::HasModuleCommObjects>::ETS_COMM_OBJECTS;
+        }
+    };
+
+    Ok(quote! {
+        #index_impl
+        #com_objects_impl
+        #helper_methods
+        #ets_impl
     })
 }
 

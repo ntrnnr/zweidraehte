@@ -12,11 +12,12 @@ This document provides a comprehensive reference for the DSL (Domain Specific La
 6. [EtsUnion - Tagged Unions](#etsunion---tagged-unions)
 7. [EtsComObjects - Communication Objects](#etscomobjects---communication-objects)
 8. [ets_pages! - Page Layout Macro](#ets_pages---page-layout-macro)
-9. [Complete Example](#complete-example)
-10. [Common Patterns](#common-patterns)
-11. [Troubleshooting](#troubleshooting)
-12. [Firmware Code Access Patterns](#firmware-code-access-patterns)
-13. [Migration Guide](#migration-guide)
+9. [KnxModule - Reusable Module Definitions](#knxmodule---reusable-module-definitions)
+10. [Complete Example](#complete-example)
+11. [Common Patterns](#common-patterns)
+12. [Troubleshooting](#troubleshooting)
+13. [Firmware Code Access Patterns](#firmware-code-access-patterns)
+14. [Migration Guide](#migration-guide)
 
 ---
 
@@ -657,12 +658,198 @@ The macro expands `[Variant]` to `[Variant as i64]`, so both forms generate iden
 
 **Important:** The enum must be in scope where `ets_pages!` is invoked. Import it at the top of your page layout definition.
 
+#### Raw Expression Keyword
+
+| Keyword | Purpose | Syntax |
+|---------|---------|--------|
+| `raw <expr>` | Inject computed PageItem | `raw module_instances::<M, P>("prefix")` |
+
+The `raw` keyword allows injecting any expression that evaluates to a `PageItem`. This is useful for computed items that can't be expressed with static macro syntax, such as multi-channel module instances.
+
+```rust
+block "modules" => "Channel Configuration" {
+    // Inject a computed PageItem from a helper function
+    raw module_instances::<DimmerChannelModule, DeviceParams>("enable_ch")
+}
+```
+
+The expression is evaluated at runtime and the resulting `PageItem` is included in the block's items.
+
 #### Utility Keywords
 
 | Keyword | Purpose | Syntax |
 |---------|---------|--------|
 | `sep` | Visual separator | `sep` |
 | `sep "text"` | Separator with label | `sep "Advanced Settings"` |
+
+---
+
+## KnxModule - Reusable Module Definitions
+
+KNX modules allow you to define reusable parameter and communication object templates that can be instantiated multiple times (e.g., for multi-channel devices). Modules are an ETS/MTXML concept - at runtime, the firmware sees flat parameter memory and comm objects.
+
+### Overview
+
+Modules provide:
+- **ModuleDef**: A template defining parameters, comm objects, and their relative addressing
+- **Module instances**: Concrete uses of a ModuleDef with specific argument values
+- **Argument-based addressing**: Parameters use `BaseOffset`, comm objects use `BaseNumber`
+
+### Basic Module Definition
+
+```rust
+use knxprod::module::{KnxModule, ModuleArgDef};
+
+/// A dimmer channel module with 3 parameters and 3 comm objects
+pub struct DimmerChannelModule;
+
+impl KnxModule for DimmerChannelModule {
+    const NAME: &'static str = "DimmerChannel";
+
+    /// Module arguments define the variable parts
+    const ARGUMENTS: &'static [ModuleArgDef] = &[
+        ModuleArgDef::param_offset("ParamBase", 5),   // 5 bytes of params per instance
+        ModuleArgDef::object_number("ObjBase", 3),    // 3 comm objects per instance
+        ModuleArgDef::channel_number("ChNo"),         // For text templates like "Ch {{ChNo}}"
+    ];
+
+    // Parameters defined by this module (relative offsets)
+    type Params = DimmerChannelParams;
+
+    // Communication objects defined by this module
+    type Objects = DimmerChannelObjects;
+}
+```
+
+### Module Argument Types
+
+| Constructor | Role | Purpose |
+|-------------|------|---------|
+| `param_offset(name, size)` | ParamOffset | Base address for parameters (generates `BaseOffset`) |
+| `object_number(name, count)` | ObjectNumber | Base index for comm objects (generates `BaseNumber`) |
+| `channel_number(name)` | ChannelNumber | Instance number for `{{ChNo}}` text templates |
+| `value_base(name)` | ValueBase | Base for enum/value parameters (generates `BaseValue`) |
+| `custom(name)` | Custom | Generic argument for other uses |
+
+### Multi-Channel Module Instantiation
+
+For devices with multiple identical channels (e.g., 4-channel dimmer), use the `module_instances` helper with the `raw` keyword:
+
+```rust
+use knxprod::module::module_instances;
+
+impl EtsPageLayout for MyDevice {
+    fn page_layout() -> PageStructure {
+        ets_pages! {
+            device {
+                block "general" => "General Settings" {
+                    param global_setting
+                }
+            }
+
+            channel "channels" => "Dimmer Channels" (1) {
+                block "channel_enable" => "Channel Selection" {
+                    param enable_ch1
+                    param enable_ch2
+                    param enable_ch3
+                    param enable_ch4
+                }
+                block "channel_modules" => "Channel Configuration" {
+                    // Generates conditional module instances for channels 1-4
+                    raw module_instances::<DimmerChannelModule, DeviceParams>("enable_ch")
+                }
+            }
+        }
+    }
+}
+```
+
+### HasChannelHelpers Trait
+
+The `module_instances` helper requires your params type to implement `HasChannelHelpers`:
+
+```rust
+use knxprod::module::HasChannelHelpers;
+
+impl HasChannelHelpers<DimmerChannelModule> for DeviceParams {
+    /// Number of channel instances
+    const COUNT: usize = 4;
+
+    /// Compute parameter offset for instance N (1-indexed)
+    fn param_offset(instance: usize) -> usize {
+        // Global params size + (instance-1) * module param size
+        core::mem::size_of::<GlobalParams>() + (instance - 1) * 5
+    }
+
+    /// Compute first object index for instance N (1-indexed)
+    fn object_base(instance: usize) -> usize {
+        // (instance-1) * objects per module
+        (instance - 1) * 3
+    }
+}
+```
+
+### Generated XML Structure
+
+The module system generates:
+
+**ModuleDef** (in `<ModuleDefs>`):
+```xml
+<ModuleDef Id="MD-DimmerChannel" Name="DimmerChannel">
+  <Arguments>
+    <Argument Id="MD-DimmerChannel_A-ParamBase" Name="ParamBase" />
+    <Argument Id="MD-DimmerChannel_A-ObjBase" Name="ObjBase" />
+    <Argument Id="MD-DimmerChannel_A-ChNo" Name="ChNo" />
+  </Arguments>
+  <Static>
+    <Parameters>
+      <Parameter Id="MD-DimmerChannel_P-brightness" Name="brightness" ...>
+        <Memory ... BaseOffset="ParamBase" Offset="0" />
+      </Parameter>
+      <!-- More parameters with BaseOffset -->
+    </Parameters>
+    <ComObjectTable>
+      <ComObjectRef Id="MD-DimmerChannel_O-switch" Name="switch" ...
+                    BaseNumber="ObjBase" Number="0" />
+      <!-- More objects with BaseNumber -->
+    </ComObjectTable>
+  </Static>
+</ModuleDef>
+```
+
+**Module instances** (in channel's `<Dynamic>` section):
+```xml
+<choose ParamRefId="enable_ch1">
+  <when test="1">
+    <Module Id="M-ch1" Name="DimmerChannel">
+      <Arguments>
+        <Argument IdRef="MD-DimmerChannel_A-ParamBase" Value="5" />
+        <Argument IdRef="MD-DimmerChannel_A-ObjBase" Value="0" />
+        <Argument IdRef="MD-DimmerChannel_A-ChNo" Value="1" />
+      </Arguments>
+    </Module>
+  </when>
+</choose>
+<!-- Similar for channels 2, 3, 4 -->
+```
+
+### Runtime Behavior
+
+**Important:** Modules are purely a configuration-time abstraction. At runtime:
+
+1. **ETS Configuration Time:** ETS parses ModuleDefs and instances, user configures each module's parameters
+2. **Download Time:** Parameters written to absolute memory addresses, comm objects bound to absolute indices
+3. **Runtime:** Firmware accesses parameters at known offsets (same as non-module devices)
+
+No firmware changes are needed for modules - your firmware just sees flat parameter memory and comm objects at the computed absolute addresses.
+
+### Complete Module Example
+
+See [testutil/src/devices/module_test_device.rs](../testutil/src/devices/module_test_device.rs) for a complete working example with:
+- Module definition with parameters and comm objects
+- `HasChannelHelpers` implementation
+- `ets_pages!` layout with `module_instances`
+- Generated MTXML validation
 
 ---
 

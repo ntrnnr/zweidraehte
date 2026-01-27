@@ -214,7 +214,7 @@ impl Default for ApplicationProgram {
             default_language: "en-US".to_string(),
             dynamic_table_management: false,
             linkable: false,
-            min_ets_version: Some("4.0".to_string()),
+            min_ets_version: Some("5.0".to_string()),
             non_reg_relevant_data_version: None,
             replaces_versions: None,
             hash: None,
@@ -437,6 +437,11 @@ pub struct Parameter {
     pub access: Option<String>,
     #[serde(rename = "@Value")]
     pub value: String,
+    /// Reference to a module argument for relative value calculation.
+    /// When set, the final value = argument_value + Value.
+    /// Used in modules to add a base value to parameter defaults.
+    #[serde(rename = "@BaseValue", skip_serializing_if = "Option::is_none")]
+    pub base_value: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
 
@@ -542,6 +547,11 @@ pub struct ParameterRef {
     /// Optional value override for the parameter
     #[serde(rename = "@Value", skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// Reference to a module argument for relative value calculation.
+    /// When set, the final value = argument_value + Value.
+    /// Used in modules to add a base value to parameter values on the reference.
+    #[serde(rename = "@BaseValue", skip_serializing_if = "Option::is_none")]
+    pub base_value: Option<String>,
 }
 
 // ============================================================================
@@ -945,16 +955,27 @@ pub struct ModuleDefArgument {
 
 /// Static section within a module definition.
 /// Contains the same elements as the main Static section but scoped to the module.
+/// Note: For modules, comm objects use `ComObjects` element (not `ComObjectTable`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModuleDefStatic {
     #[serde(rename = "Parameters", skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Parameters>,
     #[serde(rename = "ParameterRefs", skip_serializing_if = "Option::is_none")]
     pub parameter_refs: Option<ParameterRefs>,
-    #[serde(rename = "ComObjectTable", skip_serializing_if = "Option::is_none")]
-    pub com_object_table: Option<ComObjectTable>,
+    /// Communication objects for the module. Note: This uses `ComObjects` (not `ComObjectTable`)
+    /// as required by the KNX schema for ModuleDefStatic_t.
+    #[serde(rename = "ComObjects", skip_serializing_if = "Option::is_none")]
+    pub com_objects: Option<ModuleComObjects>,
     #[serde(rename = "ComObjectRefs", skip_serializing_if = "Option::is_none")]
     pub com_object_refs: Option<ComObjectRefs>,
+}
+
+/// Communication objects container for module definitions.
+/// This is the module-specific equivalent of ComObjectTable.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModuleComObjects {
+    #[serde(rename = "ComObject", default)]
+    pub objects: Vec<ComObject>,
 }
 
 /// Dynamic section within a module definition.
@@ -1088,6 +1109,8 @@ pub struct ParameterBlock {
     pub name: String,
     #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(rename = "@TextParameterRefId", skip_serializing_if = "Option::is_none")]
+    pub text_parameter_ref_id: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
 
