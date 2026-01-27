@@ -394,6 +394,9 @@ impl App {
                 ChannelItem::Choose(choose) => {
                     self.collect_blocks_from_choose(choose, blocks);
                 }
+                ChannelItem::Module(_) => {
+                    // Module instances have their own dynamic content - skip for now
+                }
             }
         }
     }
@@ -660,6 +663,9 @@ impl App {
                         // Process Choose blocks to include their visible content
                         self.add_choose_items(choose);
                     }
+                    ChannelItem::Module(_) => {
+                        // Module instances have their own dynamic content - skip for now
+                    }
                 }
             }
         }
@@ -729,6 +735,9 @@ impl App {
                     if let Some(pb) = self.find_block_in_choose(choose, block_name) {
                         return Some(pb);
                     }
+                }
+                ChannelItem::Module(_) => {
+                    // Module instances have their own blocks - skip for now
                 }
             }
         }
@@ -960,8 +969,8 @@ impl App {
                 WhenItem::Choose(nested_choose) => {
                     self.add_choose_items(nested_choose);
                 }
-                WhenItem::ComObjectRefRef(_) | WhenItem::Assign(_) => {
-                    // Skip comm objects and assignments in parameters view
+                WhenItem::ComObjectRefRef(_) | WhenItem::Assign(_) | WhenItem::Module(_) => {
+                    // Skip comm objects, assignments, and modules in parameters view
                 }
             }
         }

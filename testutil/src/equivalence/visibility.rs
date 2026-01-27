@@ -304,6 +304,9 @@ impl VisibilityMap {
                 ChannelItem::Choose(choose) => {
                     self.process_choose(choose, parent_constraint.clone());
                 }
+                ChannelItem::Module(_) => {
+                    // Modules are instantiated templates - visibility is handled within the module definition
+                }
             }
         }
     }
@@ -382,6 +385,9 @@ impl VisibilityMap {
             }
             WhenItem::Assign(_) => {
                 // Assignments don't affect visibility
+            }
+            WhenItem::Module(_) => {
+                // Modules are instantiated templates - visibility is handled within the module definition
             }
         }
     }

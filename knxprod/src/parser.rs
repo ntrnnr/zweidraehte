@@ -247,4 +247,167 @@ mod tests {
         assert_eq!(program.name, "Test Application");
         assert_eq!(program.mask_version, "MV-07B0");
     }
+
+    #[test]
+    fn test_parse_module_definition() {
+        // XML with a ModuleDef containing arguments, parameters with BaseOffset, and ComObjects with BaseNumber
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+     CreatedBy="test"
+     ToolVersion="1.0"
+     xmlns="http://knx.org/xml/project/20">
+  <ManufacturerData>
+    <Manufacturer RefId="M-0001">
+      <ApplicationPrograms>
+        <ApplicationProgram Id="M-0001_A-0001-01-0001"
+                           ApplicationNumber="1"
+                           ApplicationVersion="1"
+                           ProgramType="ApplicationProgram"
+                           MaskVersion="MV-07B0"
+                           Name="Module Test"
+                           LoadProcedureStyle="MergedProcedure"
+                           PeiType="0"
+                           DefaultLanguage="en-US"
+                           DynamicTableManagement="false"
+                           Linkable="false">
+          <Static>
+            <ModuleDefs>
+              <ModuleDef Id="M-0001_A-0001-01-0001_MD-1" Name="TestModule">
+                <Arguments>
+                  <Argument Id="M-0001_A-0001-01-0001_MD-1_A-1" Name="ParamBase" Allocates="10" />
+                  <Argument Id="M-0001_A-0001-01-0001_MD-1_A-2" Name="ObjBase" Allocates="3" />
+                </Arguments>
+                <Static>
+                  <Parameters>
+                    <Parameter Id="M-0001_A-0001-01-0001_MD-1_P-1" Name="TestParam" Text="Test Parameter" ParameterType="M-0001_A-0001-01-0001_PT-1" Value="0">
+                      <Memory CodeSegment="M-0001_A-0001-01-0001_CS-1" Offset="0" BitOffset="0" BaseOffset="M-0001_A-0001-01-0001_MD-1_A-1" />
+                    </Parameter>
+                  </Parameters>
+                  <ComObjectTable>
+                    <ComObject Id="M-0001_A-0001-01-0001_MD-1_O-1" Name="TestObj" Text="Test Object" Number="0" BaseNumber="M-0001_A-0001-01-0001_MD-1_A-2" FunctionText="Switch" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
+                  </ComObjectTable>
+                </Static>
+              </ModuleDef>
+            </ModuleDefs>
+          </Static>
+          <Dynamic>
+            <Channel Id="M-0001_A-0001-01-0001_CH-1" Name="Test Channel">
+              <choose ParamRefId="M-0001_A-0001-01-0001_P-Enable_R-1">
+                <when test="1">
+                  <Module Id="M-0001_A-0001-01-0001_MD-1_M-1" RefId="M-0001_A-0001-01-0001_MD-1">
+                    <NumericArg RefId="M-0001_A-0001-01-0001_MD-1_A-1" Value="100" />
+                    <NumericArg RefId="M-0001_A-0001-01-0001_MD-1_A-2" Value="10" />
+                  </Module>
+                </when>
+              </choose>
+            </Channel>
+          </Dynamic>
+        </ApplicationProgram>
+      </ApplicationPrograms>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>"#;
+
+        let result = parse_application_program(xml);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        let knx = result.unwrap();
+        let program = &knx.manufacturer_data.manufacturer.application_programs.programs[0];
+
+        // Verify ModuleDefs was parsed
+        let module_defs = program
+            .static_section
+            .module_defs
+            .as_ref()
+            .expect("ModuleDefs should be present");
+        assert_eq!(module_defs.module_defs.len(), 1);
+
+        let module_def = &module_defs.module_defs[0];
+        assert_eq!(module_def.name, "TestModule");
+        assert_eq!(module_def.id, "M-0001_A-0001-01-0001_MD-1");
+
+        // Verify Arguments
+        let args = module_def.arguments.as_ref().expect("Arguments should be present");
+        assert_eq!(args.arguments.len(), 2);
+        assert_eq!(args.arguments[0].name, "ParamBase");
+        assert_eq!(args.arguments[0].allocates, 10);
+
+        // Verify Module instance in Dynamic section
+        let dynamic = program.dynamic.as_ref().expect("Dynamic should be present");
+        assert_eq!(dynamic.channels.len(), 1);
+
+        let channel = &dynamic.channels[0];
+        assert_eq!(channel.items.len(), 1);
+
+        // Check that the choose/when/Module structure is parsed
+        if let crate::schema::ChannelItem::Choose(choose) = &channel.items[0] {
+            assert_eq!(choose.whens.len(), 1);
+            assert_eq!(choose.whens[0].items.len(), 1);
+
+            if let crate::schema::WhenItem::Module(module) = &choose.whens[0].items[0] {
+                assert_eq!(module.ref_id, "M-0001_A-0001-01-0001_MD-1");
+                assert_eq!(module.args.len(), 2);
+
+                // Verify NumericArg values
+                if let crate::schema::ModuleArg::NumericArg { ref_id, value } = &module.args[0] {
+                    assert_eq!(ref_id, "M-0001_A-0001-01-0001_MD-1_A-1");
+                    assert_eq!(*value, 100);
+                } else {
+                    panic!("Expected NumericArg");
+                }
+            } else {
+                panic!("Expected Module in when block");
+            }
+        } else {
+            panic!("Expected Choose in channel items");
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_module_serialization() {
+        use crate::schema::*;
+
+        // Create a ModuleDef programmatically
+        let module_def = ModuleDef {
+            id: "M-0001_MD-1".to_string(),
+            name: "TestModule".to_string(),
+            internal_description: None,
+            arguments: Some(ModuleDefArguments {
+                arguments: vec![
+                    ModuleDefArgument {
+                        id: "M-0001_MD-1_A-1".to_string(),
+                        name: "ParamBase".to_string(),
+                        allocates: 10,
+                        alignment: None,
+                        arg_type: None,
+                    },
+                ],
+            }),
+            static_section: ModuleDefStatic {
+                parameters: None,
+                parameter_refs: None,
+                com_object_table: None,
+                com_object_refs: None,
+            },
+            dynamic: None,
+        };
+
+        // Serialize to XML
+        let xml_result = quick_xml::se::to_string(&module_def);
+        assert!(xml_result.is_ok(), "Serialization failed: {:?}", xml_result.err());
+
+        let xml = xml_result.unwrap();
+        assert!(xml.contains("TestModule"));
+        assert!(xml.contains("ParamBase"));
+        assert!(xml.contains("Allocates=\"10\""));
+
+        // Deserialize back
+        let parsed: Result<ModuleDef, _> = quick_xml::de::from_str(&xml);
+        assert!(parsed.is_ok(), "Deserialization failed: {:?}", parsed.err());
+
+        let parsed_def = parsed.unwrap();
+        assert_eq!(parsed_def.name, "TestModule");
+        assert_eq!(parsed_def.arguments.as_ref().unwrap().arguments.len(), 1);
+    }
 }

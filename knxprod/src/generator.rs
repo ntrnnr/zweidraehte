@@ -618,6 +618,7 @@ impl MtxmlGenerator {
                 comparable: Some(true),
                 reconstructable: Some(true),
             }),
+            module_defs: None,
         })
     }
 
@@ -980,6 +981,7 @@ impl MtxmlGenerator {
                     code_segment: code_segment_id.to_string(),
                     offset: param.offset as u32,
                     bit_offset: param.bit_offset,
+                    base_offset: None,
                 }),
             }));
 
@@ -1084,6 +1086,7 @@ impl MtxmlGenerator {
                 code_segment: code_segment_id.to_string(),
                 offset: field.offset as u32,
                 bit_offset: 0,
+                base_offset: None,
             },
             parameters,
         }, counter)
@@ -1331,6 +1334,7 @@ impl MtxmlGenerator {
                 read_on_init_flag: (flags & 0x20 != 0).into(),
                 priority: None, // MDT doesn't include Priority in ComObjects
                 internal_description: None,
+                base_number: None,
             });
         }
 
@@ -3381,6 +3385,9 @@ impl MtxmlGenerator {
                 ChannelItem::Choose(choose) => {
                     Self::validate_choose(choose, param_ref_ids, com_obj_ref_ids)?;
                 }
+                ChannelItem::Module(_) => {
+                    // Module instances are validated separately - skip for now
+                }
             }
         }
         Ok(())
@@ -3476,6 +3483,9 @@ impl MtxmlGenerator {
                 WhenItem::ParameterSeparator(_) => {}
                 WhenItem::Assign(_) => {
                     // Assign elements copy parameter values; validation would check refs exist
+                }
+                WhenItem::Module(_) => {
+                    // Module instances are validated separately - skip for now
                 }
             }
         }

@@ -241,6 +241,10 @@ impl DeviceModel {
                 ChannelItem::Choose(choose) => {
                     self.process_choose(choose);
                 }
+                ChannelItem::Module(_module) => {
+                    // Module instances contain their own parameters/objects
+                    // TODO: Expand module content when processing
+                }
             }
         }
     }
@@ -322,6 +326,10 @@ impl DeviceModel {
                 WhenItem::ParameterSeparator(_) => {}
                 WhenItem::Assign(_) => {
                     // Assign operations don't affect visibility
+                }
+                WhenItem::Module(_module) => {
+                    // Module instances contain their own parameters/objects
+                    // TODO: Expand module content when processing
                 }
             }
         }

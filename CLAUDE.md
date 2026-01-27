@@ -7,6 +7,8 @@ The stack needs to be conformance compliant and generic enough so that we can re
 We are also working on a product definition XML generator. We are generating XML files based on rust macro code that defines the device, its parameters and communication objects as well as dynamic pages that are presented to the user when configuring the device in the ETS.
 We try to replicate a real existing MDT device that is defined in `manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml` using this framework in `testutil/src/devices/mdt_push_button_lite.rs`.
 We aim for an accurate replication by using our own DSL to ensure feature parity - the parameters, the enums, the comm objects and the dynamic pages that select different combinations of references and show/hide parameters and/or communication objects based on the currently selected configuration. After that we will start optimizing everything and ensure some quality of life improvements when defining all these structures in our DSL to make it easier to understand.
+The file in `manuf_tool_data/VC-EASY-03_MDT_KP_V35/M-0083/M-0083_A-0070-35-1740.xml` contains so-called module definitions that we still need to replicate conceptually with a small test device.
+For all these XML files, an XSD schema is available at `manuf_tool_data/knx_project.xsd` for reference and checking of correctness.
 
 ## Codebase Structure
 
