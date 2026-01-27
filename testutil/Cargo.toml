@@ -76,3 +76,7 @@ path = "src/gen_mdt_mtxml.rs"
 [[bin]]
 name = "compare_programs"
 path = "src/compare_programs.rs"
+
+[[bin]]
+name = "gen_module_mtxml"
+path = "src/gen_module_mtxml.rs"

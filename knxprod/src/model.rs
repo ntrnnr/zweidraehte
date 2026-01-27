@@ -616,6 +616,7 @@ mod tests {
             replaces_versions: None,
             hash: None,
             static_section: StaticSection::default(),
+            module_defs: None,
             dynamic: None,
         };
         DeviceModel::new(program)

@@ -504,6 +504,9 @@ impl MtxmlGenerator {
         // Build Static section
         app.static_section = Self::build_static_section(config, app_id, mask_family)?;
 
+        // Build ModuleDefs (placed between Static and Dynamic per XSD schema)
+        app.module_defs = Self::build_module_defs(config, app_id);
+
         // Build Dynamic section - use page layout if provided, otherwise auto-generate
         let dynamic = if let Some(ref layout) = config.page_layout {
             Self::build_dynamic_section_from_layout(config, app_id, mask_family, layout)?
@@ -592,10 +595,11 @@ impl MtxmlGenerator {
 
         // Build ComObject table only for masks that support it
         let (com_object_table, com_object_refs) = if mask_family.has_com_object_table() {
-            (
-                Some(Self::build_com_object_table(config, app_id, mask_family)),
-                Some(Self::build_com_object_refs(config, app_id, mask_family, &param_ref_nums)),
-            )
+            let table = Self::build_com_object_table(config, app_id, mask_family);
+            let refs = Self::build_com_object_refs(config, app_id, mask_family, &param_ref_nums);
+            // XSD requires ComObjectRefs to have at least one child if present
+            let refs_opt = if refs.refs.is_empty() { None } else { Some(refs) };
+            (Some(table), refs_opt)
         } else {
             (None, None)
         };
@@ -622,7 +626,6 @@ impl MtxmlGenerator {
                 comparable: Some(true),
                 reconstructable: Some(true),
             }),
-            module_defs: Self::build_module_defs(config, app_id),
         })
     }
 
@@ -2046,13 +2049,14 @@ impl MtxmlGenerator {
                     &mut selector_counters,
                 )?;
                 // Use channel number in ID if specified, otherwise use sequential index
-                let ch_id = ch_def.number.unwrap_or(i as u32 + 1);
+                let ch_num = ch_def.number.unwrap_or(i as u32 + 1);
                 Ok(Channel {
-                    id: format!("{}_CH-{}", app_id, ch_id),
+                    id: format!("{}_CH-{}", app_id, ch_num),
                     // Use display text for Name attribute (matches MDT convention)
                     name: ch_def.text.to_string(),
                     text: Some(ch_def.text.to_string()),
-                    number: ch_def.number.map(|n| n.to_string()),
+                    // XSD requires Number attribute (use index + 1 as default)
+                    number: Some(ch_num.to_string()),
                     internal_description: None,
                     items,
                 })

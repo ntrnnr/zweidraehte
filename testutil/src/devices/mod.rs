@@ -7,6 +7,7 @@
 //! - Future `knxprod` generator tools
 
 pub mod mdt_push_button_lite;
+pub mod module_test_device;
 pub mod system_b_demo;
 
 // Re-export the demo device for convenience

@@ -1089,8 +1089,8 @@ mod tests {
 
         if let PageElement::Block(block) = &structure.device_settings[0] {
             assert_eq!(block.items.len(), 1);
-            // selector channel_config → "channel_config_selector"
-            assert!(matches!(block.items[0], PageItem::Param("channel_config_selector")));
+            // selector channel_config → UnionSelector("channel_config")
+            assert!(matches!(block.items[0], PageItem::UnionSelector("channel_config")));
         } else {
             panic!("Expected Block element");
         }

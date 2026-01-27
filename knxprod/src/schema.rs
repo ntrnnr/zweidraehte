@@ -192,6 +192,10 @@ pub struct ApplicationProgram {
 
     #[serde(rename = "Static")]
     pub static_section: StaticSection,
+    /// Module definitions - reusable templates for parameters and communication objects.
+    /// Note: This is placed at ApplicationProgram level, between Static and Dynamic.
+    #[serde(rename = "ModuleDefs", skip_serializing_if = "Option::is_none")]
+    pub module_defs: Option<ModuleDefs>,
     #[serde(rename = "Dynamic", skip_serializing_if = "Option::is_none")]
     pub dynamic: Option<DynamicSection>,
 }
@@ -215,6 +219,7 @@ impl Default for ApplicationProgram {
             replaces_versions: None,
             hash: None,
             static_section: StaticSection::default(),
+            module_defs: None,
             dynamic: None,
         }
     }
@@ -249,9 +254,6 @@ pub struct StaticSection {
     pub extension: Option<Extension>,
     #[serde(rename = "Options", skip_serializing_if = "Option::is_none")]
     pub options: Option<Options>,
-    /// Module definitions - reusable templates for parameters and communication objects.
-    #[serde(rename = "ModuleDefs", skip_serializing_if = "Option::is_none")]
-    pub module_defs: Option<ModuleDefs>,
 }
 
 /// Extension element - typically empty but required for some device programs

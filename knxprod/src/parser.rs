@@ -271,26 +271,25 @@ mod tests {
                            DefaultLanguage="en-US"
                            DynamicTableManagement="false"
                            Linkable="false">
-          <Static>
-            <ModuleDefs>
-              <ModuleDef Id="M-0001_A-0001-01-0001_MD-1" Name="TestModule">
-                <Arguments>
-                  <Argument Id="M-0001_A-0001-01-0001_MD-1_A-1" Name="ParamBase" Allocates="10" />
-                  <Argument Id="M-0001_A-0001-01-0001_MD-1_A-2" Name="ObjBase" Allocates="3" />
-                </Arguments>
-                <Static>
-                  <Parameters>
-                    <Parameter Id="M-0001_A-0001-01-0001_MD-1_P-1" Name="TestParam" Text="Test Parameter" ParameterType="M-0001_A-0001-01-0001_PT-1" Value="0">
-                      <Memory CodeSegment="M-0001_A-0001-01-0001_CS-1" Offset="0" BitOffset="0" BaseOffset="M-0001_A-0001-01-0001_MD-1_A-1" />
-                    </Parameter>
-                  </Parameters>
-                  <ComObjectTable>
-                    <ComObject Id="M-0001_A-0001-01-0001_MD-1_O-1" Name="TestObj" Text="Test Object" Number="0" BaseNumber="M-0001_A-0001-01-0001_MD-1_A-2" FunctionText="Switch" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
-                  </ComObjectTable>
-                </Static>
-              </ModuleDef>
-            </ModuleDefs>
-          </Static>
+          <Static/>
+          <ModuleDefs>
+            <ModuleDef Id="M-0001_A-0001-01-0001_MD-1" Name="TestModule">
+              <Arguments>
+                <Argument Id="M-0001_A-0001-01-0001_MD-1_A-1" Name="ParamBase" Allocates="10" />
+                <Argument Id="M-0001_A-0001-01-0001_MD-1_A-2" Name="ObjBase" Allocates="3" />
+              </Arguments>
+              <Static>
+                <Parameters>
+                  <Parameter Id="M-0001_A-0001-01-0001_MD-1_P-1" Name="TestParam" Text="Test Parameter" ParameterType="M-0001_A-0001-01-0001_PT-1" Value="0">
+                    <Memory CodeSegment="M-0001_A-0001-01-0001_CS-1" Offset="0" BitOffset="0" BaseOffset="M-0001_A-0001-01-0001_MD-1_A-1" />
+                  </Parameter>
+                </Parameters>
+                <ComObjectTable>
+                  <ComObject Id="M-0001_A-0001-01-0001_MD-1_O-1" Name="TestObj" Text="Test Object" Number="0" BaseNumber="M-0001_A-0001-01-0001_MD-1_A-2" FunctionText="Switch" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
+                </ComObjectTable>
+              </Static>
+            </ModuleDef>
+          </ModuleDefs>
           <Dynamic>
             <Channel Id="M-0001_A-0001-01-0001_CH-1" Name="Test Channel">
               <choose ParamRefId="M-0001_A-0001-01-0001_P-Enable_R-1">
@@ -315,9 +314,8 @@ mod tests {
         let knx = result.unwrap();
         let program = &knx.manufacturer_data.manufacturer.application_programs.programs[0];
 
-        // Verify ModuleDefs was parsed
+        // Verify ModuleDefs was parsed (at ApplicationProgram level, not in Static)
         let module_defs = program
-            .static_section
             .module_defs
             .as_ref()
             .expect("ModuleDefs should be present");
