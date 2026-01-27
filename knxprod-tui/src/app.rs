@@ -596,6 +596,9 @@ impl App {
                     return true;
                 }
                 ParameterBlockItem::ParameterSeparator(_) => {}
+                ParameterBlockItem::Module(_) => {
+                    // Module instances are shown separately
+                }
             }
         }
         false
@@ -869,6 +872,9 @@ impl App {
                 }
                 ParameterBlockItem::ComObjectRefRef(_) => {
                     // Skip comm objects in parameters view
+                }
+                ParameterBlockItem::Module(_) => {
+                    // Module instances are shown separately
                 }
             }
         }

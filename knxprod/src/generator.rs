@@ -3126,6 +3126,7 @@ impl MtxmlGenerator {
                                     ParameterBlockItem::ComObjectRefRef(r) => WhenItem::ComObjectRefRef(r),
                                     ParameterBlockItem::ParameterSeparator(s) => WhenItem::ParameterSeparator(s),
                                     ParameterBlockItem::Choose(c) => WhenItem::Choose(c),
+                                    ParameterBlockItem::Module(m) => WhenItem::Module(m),
                                 }
                             }).collect();
                             whens.push(When {
@@ -3183,6 +3184,7 @@ impl MtxmlGenerator {
                                     ParameterBlockItem::ComObjectRefRef(r) => WhenItem::ComObjectRefRef(r),
                                     ParameterBlockItem::ParameterSeparator(s) => WhenItem::ParameterSeparator(s),
                                     ParameterBlockItem::Choose(c) => WhenItem::Choose(c),
+                                    ParameterBlockItem::Module(m) => WhenItem::Module(m),
                                 }
                             }).collect();
                             whens.push(When {
@@ -3197,6 +3199,56 @@ impl MtxmlGenerator {
                                 param_ref_id: ref_id,
                                 whens,
                             }));
+                        }
+                    }
+                }
+                PageItem::Module { module_name, instance_index } => {
+                    // Module instances are generated as Module XML elements.
+                    // They need the module collection to look up the definition and instance data.
+                    if let Some(modules) = config.modules.as_ref() {
+                        // Find the module definition by name
+                        let def = modules.definitions().iter().enumerate().find(|(_, d)| d.name == *module_name);
+                        if let Some((def_idx, def)) = def {
+                            // Find the specific instance
+                            let instances_for_def: Vec<_> = modules.raw_instances()
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, inst)| inst.def_index == def_idx)
+                                .collect();
+
+                            if let Some((global_idx, instance)) = instances_for_def.get(*instance_index) {
+                                // Build the Module schema element
+                                let module_def_id = format!("{}_MD-{}", app_id, def_idx + 1);
+                                let module_instance_id = format!("{}_M-{}", module_def_id, global_idx + 1);
+
+                                let mut args = Vec::new();
+                                for (arg_idx, (_arg_def, arg_val)) in def.arguments.iter().zip(instance.args.iter()).enumerate() {
+                                    let arg_ref_id = format!("{}_A-{}", module_def_id, arg_idx + 1);
+                                    match arg_val {
+                                        crate::module::ModuleArgValue::Numeric(v) => {
+                                            args.push(ModuleArg::NumericArg {
+                                                ref_id: arg_ref_id,
+                                                value: *v,
+                                            });
+                                        }
+                                        crate::module::ModuleArgValue::Text(v) => {
+                                            args.push(ModuleArg::TextArg {
+                                                ref_id: arg_ref_id,
+                                                id: format!("{}_TA-{}", module_instance_id, arg_idx + 1),
+                                                value: v.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+
+                                items.push(ParameterBlockItem::Module(Module {
+                                    id: module_instance_id,
+                                    ref_id: module_def_id,
+                                    name: None,
+                                    internal_description: None,
+                                    args,
+                                }));
+                            }
                         }
                     }
                 }
@@ -3324,6 +3376,7 @@ impl MtxmlGenerator {
                     ParameterBlockItem::ComObjectRefRef(corr) => WhenItem::ComObjectRefRef(corr),
                     ParameterBlockItem::ParameterSeparator(ps) => WhenItem::ParameterSeparator(ps),
                     ParameterBlockItem::Choose(c) => WhenItem::Choose(c),
+                    ParameterBlockItem::Module(m) => WhenItem::Module(m),
                 })
                 .collect();
 
@@ -3486,6 +3539,9 @@ impl MtxmlGenerator {
                     Self::validate_choose(choose, param_ref_ids, com_obj_ref_ids)?;
                 }
                 ParameterBlockItem::ParameterSeparator(_) => {}
+                ParameterBlockItem::Module(_) => {
+                    // Module instances are validated separately - skip for now
+                }
             }
         }
         Ok(())
@@ -3981,5 +4037,119 @@ mod tests {
         assert!(xml.contains("Allocates=\"8\""), "XML should have correct ParamBase allocates");
         assert!(xml.contains("Allocates=\"3\""), "XML should have correct ObjBase allocates");
         assert!(xml.contains("Allocates=\"1\""), "XML should have correct ChNo allocates");
+    }
+
+    #[test]
+    fn test_generate_module_instances_in_dynamic() {
+        use crate::module::{KnxModule, ModuleArgDef, ModuleArgValue, ModuleCollection, ModuleInstanceBuilder};
+        use crate::page_layout::{PageStructure, PageElement, PageBlock, PageItem};
+
+        // Define a simple test module
+        struct TestChannelModule;
+
+        impl KnxModule for TestChannelModule {
+            const NAME: &'static str = "ChannelModule";
+            const ARGUMENTS: &'static [ModuleArgDef] = &[
+                ModuleArgDef::param_offset("ParamBase", 4),
+                ModuleArgDef::object_number("ObjBase", 2),
+                ModuleArgDef::channel_number("ChNo"),
+            ];
+            type Params = ();
+            type Objects = ();
+        }
+
+        // Create module instances
+        let mut modules = ModuleCollection::new();
+        let instances = ModuleInstanceBuilder::<TestChannelModule>::new()
+            .for_range(1..=2, |ch| {
+                vec![
+                    ModuleArgValue::numeric(100 + (ch - 1) * 4),  // ParamBase
+                    ModuleArgValue::numeric(10 + (ch - 1) * 2),   // ObjBase
+                    ModuleArgValue::numeric(ch),                   // ChNo
+                ]
+            })
+            .build();
+        modules.add_instances(instances);
+
+        // Create a page layout that includes module instances directly in a block
+        // This tests that PageItem::Module generates the proper XML in ParameterBlock
+        let page_layout = PageStructure {
+            device_settings: vec![
+                PageElement::Block(PageBlock {
+                    name: "modules",
+                    text: "Channel Modules",
+                    items: vec![
+                        // Module instances directly in the block (simpler test case)
+                        PageItem::Module {
+                            module_name: "ChannelModule",
+                            instance_index: 0,
+                        },
+                        PageItem::Module {
+                            module_name: "ChannelModule",
+                            instance_index: 1,
+                        },
+                    ],
+                }),
+            ],
+            channels: vec![],
+        };
+
+        let config = ApplicationProgramConfig {
+            name: "ModuleInstanceDevice",
+            device: &DeviceDescriptor {
+                mask_version: 0x57B0,
+                manufacturer_id: 0x00FA,
+                hardware_type: [0; 6],
+                application_id: 0x0400,
+                application_version: 0x01,
+                max_address_table_entries: 16,
+                max_association_table_entries: 16,
+                max_com_objects: 16,
+            },
+            params: &[],
+            param_defaults: &[],
+            comm_objects: &[],
+            comm_object_refs: &[],
+            union_fields: None,
+            channel_name: "General",
+            absolute_segment_address: None,
+            system7_layout: None,
+            application_hash: None,
+            non_reg_relevant_data_version: None,
+            replaces_versions: None,
+            application_data_hash: None,
+            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x04],
+            hardware_version: 1,
+            hardware_name: "Test Hardware",
+            product_name: "Module Instance Test",
+            order_number: "TEST-MOD-INST",
+            is_rail_mounted: false,
+            catalog_section: "Test Section",
+            page_layout: Some(page_layout),
+            modules: Some(modules),
+        };
+
+        let xml = MtxmlGenerator::generate(&config).unwrap();
+
+        // Verify ModuleDefs was generated
+        assert!(xml.contains("ModuleDefs"), "XML should contain ModuleDefs section");
+        assert!(xml.contains("ChannelModule"), "XML should contain module name");
+
+        // Verify Module instances appear in Dynamic section
+        assert!(xml.contains("<Dynamic>"), "XML should have Dynamic section");
+
+        // The Module instances should appear inside choose/when blocks
+        // Check for Module element with proper attributes
+        assert!(xml.contains("<Module "), "XML should contain Module elements");
+        assert!(xml.contains("RefId="), "Module should have RefId referencing the ModuleDef");
+
+        // Check for NumericArg elements with values
+        assert!(xml.contains("<NumericArg "), "XML should contain NumericArg elements");
+        assert!(xml.contains("Value=\"100\""), "First instance ParamBase should be 100");
+        assert!(xml.contains("Value=\"104\""), "Second instance ParamBase should be 104");
+        assert!(xml.contains("Value=\"10\""), "First instance ObjBase should be 10");
+        assert!(xml.contains("Value=\"12\""), "Second instance ObjBase should be 12");
+        assert!(xml.contains("Value=\"1\""), "First instance ChNo should be 1");
+        assert!(xml.contains("Value=\"2\""), "Second instance ChNo should be 2");
     }
 }

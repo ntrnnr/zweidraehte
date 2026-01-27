@@ -1105,6 +1105,9 @@ pub enum ParameterBlockItem {
     ParameterSeparator(ParameterSeparator),
     #[serde(rename = "choose")]
     Choose(Choose),
+    /// A module instance (can appear in parameter blocks, converted to WhenItem::Module in choose/when).
+    #[serde(rename = "Module")]
+    Module(Module),
 }
 
 /// A visual separator element in a parameter block

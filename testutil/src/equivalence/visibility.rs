@@ -332,6 +332,9 @@ impl VisibilityMap {
                 ParameterBlockItem::ParameterSeparator(_) => {
                     // Separators don't have visibility
                 }
+                ParameterBlockItem::Module(_) => {
+                    // Module instances have their own internal visibility
+                }
             }
         }
     }

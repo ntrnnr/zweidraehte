@@ -219,6 +219,26 @@ pub enum PageItem {
         variant_name: &'static str,
         cases: Vec<ItemCase>,
     },
+    /// A module instance reference.
+    ///
+    /// This represents a module instantiation within the page layout. The module definition
+    /// must be registered in the ModuleCollection, and this creates a reference to instantiate
+    /// it with specific argument values.
+    ///
+    /// Example in MDT XML:
+    ///   <Module Id="M-0083_..._MD-1_M-1" RefId="M-0083_..._MD-1">
+    ///     <NumericArg RefId="M-0083_..._MD-1_A-1" Value="5506" />
+    ///     <NumericArg RefId="M-0083_..._MD-1_A-2" Value="116" />
+    ///     <NumericArg RefId="M-0083_..._MD-1_A-3" Value="1" />
+    ///   </Module>
+    ///
+    /// Fields:
+    /// - `module_name`: The name of the module definition (matches KnxModule::NAME)
+    /// - `instance_index`: Index into the module instances (0-based)
+    Module {
+        module_name: &'static str,
+        instance_index: usize,
+    },
 }
 
 /// Conditional visibility at the block level (can wrap entire ParameterBlocks).

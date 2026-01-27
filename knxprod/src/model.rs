@@ -267,6 +267,9 @@ impl DeviceModel {
                 self.process_choose(choose);
             }
             ParameterBlockItem::ParameterSeparator(_) => {}
+            ParameterBlockItem::Module(_) => {
+                // Module instances have their own visibility logic
+            }
         }
     }
 
