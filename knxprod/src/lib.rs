@@ -45,16 +45,23 @@
 //! - [`schema`] - XML schema types for serialization
 //! - [`generator`] - MTXML generation engine
 //! - [`page_layout`] - ETS page layout definition DSL
+//! - [`module`] - KNX module definition DSL for reusable templates
 
 mod schema;
 mod generator;
 pub mod page_layout;
 pub mod parser;
 pub mod model;
+pub mod module;
 
 pub use schema::*;
 pub use generator::*;
 pub use page_layout::{
     EtsPageLayout, PageStructure, ChannelDef, PageElement, PageBlock, PageItem,
     ConditionalElement, ElementCase, ConditionalItem, ItemCase, Condition,
+};
+pub use module::{
+    KnxModule, ModuleArgDef, ModuleArgType, ModuleArgValue, ModuleInstance,
+    ModuleInstanceBuilder, ConditionalModuleInstance, ModuleCollection,
+    StoredModuleDef, StoredModuleInstance,
 };

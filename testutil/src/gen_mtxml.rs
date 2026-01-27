@@ -53,6 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Use the page layout from DemoStack
         page_layout: Some(DemoStack::page_layout()),
+        modules: None,
     };
 
     // Generate ApplicationProgram MTXML

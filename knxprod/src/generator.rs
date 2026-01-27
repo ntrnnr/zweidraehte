@@ -12,6 +12,7 @@ use zweidraehte::ets::{
 use super::page_layout::{
     ConditionalElement, ConditionalItem, PageBlock, PageElement, PageItem, PageStructure,
 };
+use super::module::{ModuleArgType, ModuleCollection};
 use super::schema::*;
 
 /// Tracks active conditions when generating nested XML structures.
@@ -424,6 +425,9 @@ pub struct ApplicationProgramConfig<'a> {
     /// Optional page layout definition. If provided, the Dynamic section will be
     /// generated according to this layout. If None, auto-generation is used.
     pub page_layout: Option<PageStructure>,
+    /// Optional module collection. If provided, ModuleDefs and Module instances
+    /// will be generated in the output XML.
+    pub modules: Option<ModuleCollection>,
 }
 
 impl<'a> ApplicationProgramConfig<'a> {
@@ -618,8 +622,68 @@ impl MtxmlGenerator {
                 comparable: Some(true),
                 reconstructable: Some(true),
             }),
-            module_defs: None,
+            module_defs: Self::build_module_defs(config, app_id),
         })
+    }
+
+    /// Build ModuleDefs from the module collection if present.
+    fn build_module_defs(
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+    ) -> Option<ModuleDefs> {
+        let modules = config.modules.as_ref()?;
+        if modules.is_empty() {
+            return None;
+        }
+
+        let mut module_defs = Vec::new();
+
+        for (def_idx, def) in modules.definitions().iter().enumerate() {
+            let module_id = format!("{}_MD-{}", app_id, def_idx + 1);
+
+            // Build argument definitions
+            let arguments = if def.arguments.is_empty() {
+                None
+            } else {
+                let args: Vec<ModuleDefArgument> = def
+                    .arguments
+                    .iter()
+                    .enumerate()
+                    .map(|(arg_idx, arg)| {
+                        ModuleDefArgument {
+                            id: format!("{}_A-{}", module_id, arg_idx + 1),
+                            name: arg.name.to_string(),
+                            allocates: arg.allocates,
+                            alignment: arg.alignment,
+                            arg_type: match arg.arg_type {
+                                ModuleArgType::Numeric => None, // Default, no need to specify
+                                ModuleArgType::Text => Some("Text".to_string()),
+                            },
+                        }
+                    })
+                    .collect();
+                Some(ModuleDefArguments { arguments: args })
+            };
+
+            // Build the module definition
+            // Note: The actual Static section contents (parameters, objects) would be
+            // filled in when we have parameter/object metadata from the module traits
+            module_defs.push(ModuleDef {
+                id: module_id,
+                name: def.name.clone(),
+                internal_description: def.internal_description.clone(),
+                arguments,
+                static_section: ModuleDefStatic {
+                    parameters: None,
+                    parameter_refs: None,
+                    com_object_table: None,
+                    com_object_refs: None,
+                },
+                dynamic: None,
+            });
+        }
+
+        Some(ModuleDefs { module_defs })
     }
 
     /// Build the Code section with appropriate segment type for the mask.
@@ -3729,6 +3793,7 @@ mod tests {
             is_rail_mounted: false,
             catalog_section: "Test Section",
             page_layout: None,
+            modules: None,
         };
 
         let app_id = MtxmlGenerator::format_app_id(&config);
@@ -3769,6 +3834,7 @@ mod tests {
             is_rail_mounted: false,
             catalog_section: "Test Section",
             page_layout: None,
+            modules: None,
         };
 
         let xml = MtxmlGenerator::generate(&config).unwrap();
@@ -3814,6 +3880,7 @@ mod tests {
             is_rail_mounted: true,
             catalog_section: "Test Section",
             page_layout: None,
+            modules: None,
         };
 
         let xml = MtxmlGenerator::generate(&config).unwrap();
@@ -3832,5 +3899,87 @@ mod tests {
         assert_eq!(MaskFamily::from_mask_version(0x0701), MaskFamily::System7);
         assert_eq!(MaskFamily::from_mask_version(0x0912), MaskFamily::Bim);
         assert_eq!(MaskFamily::from_mask_version(0x0920), MaskFamily::BimM);
+    }
+
+    #[test]
+    fn test_generate_with_modules() {
+        use crate::module::{KnxModule, ModuleArgDef, ModuleArgValue, ModuleCollection, ModuleInstanceBuilder};
+
+        // Define a simple test module
+        struct TestDimmerModule;
+
+        impl KnxModule for TestDimmerModule {
+            const NAME: &'static str = "DimmerChannel";
+            const ARGUMENTS: &'static [ModuleArgDef] = &[
+                ModuleArgDef::param_offset("ParamBase", 8),
+                ModuleArgDef::object_number("ObjBase", 3),
+                ModuleArgDef::channel_number("ChNo"),
+            ];
+            type Params = ();
+            type Objects = ();
+        }
+
+        // Create module instances
+        let mut modules = ModuleCollection::new();
+        let instances = ModuleInstanceBuilder::<TestDimmerModule>::new()
+            .for_range(1..=4, |ch| {
+                vec![
+                    ModuleArgValue::numeric(100 + (ch - 1) * 8),
+                    ModuleArgValue::numeric(10 + (ch - 1) * 3),
+                    ModuleArgValue::numeric(ch),
+                ]
+            })
+            .build();
+        modules.add_instances(instances);
+
+        let config = ApplicationProgramConfig {
+            name: "ModuleTestDevice",
+            device: &DeviceDescriptor {
+                mask_version: 0x57B0,
+                manufacturer_id: 0x00FA,
+                hardware_type: [0; 6],
+                application_id: 0x0300,
+                application_version: 0x01,
+                max_address_table_entries: 16,
+                max_association_table_entries: 16,
+                max_com_objects: 16,
+            },
+            params: &[],
+            param_defaults: &[],
+            comm_objects: &[],
+            comm_object_refs: &[],
+            union_fields: None,
+            channel_name: "General",
+            absolute_segment_address: None,
+            system7_layout: None,
+            application_hash: None,
+            non_reg_relevant_data_version: None,
+            replaces_versions: None,
+            application_data_hash: None,
+            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x03],
+            hardware_version: 1,
+            hardware_name: "Test Hardware",
+            product_name: "Test Product",
+            order_number: "TEST-MOD",
+            is_rail_mounted: false,
+            catalog_section: "Test Section",
+            page_layout: None,
+            modules: Some(modules),
+        };
+
+        let xml = MtxmlGenerator::generate(&config).unwrap();
+
+        // Verify ModuleDefs was generated
+        assert!(xml.contains("ModuleDefs"), "XML should contain ModuleDefs section");
+        assert!(xml.contains("ModuleDef"), "XML should contain ModuleDef elements");
+        assert!(xml.contains("DimmerChannel"), "XML should contain module name");
+        assert!(xml.contains("Arguments"), "XML should contain Arguments section");
+        assert!(xml.contains("Argument"), "XML should contain Argument elements");
+        assert!(xml.contains("ParamBase"), "XML should contain ParamBase argument");
+        assert!(xml.contains("ObjBase"), "XML should contain ObjBase argument");
+        assert!(xml.contains("ChNo"), "XML should contain ChNo argument");
+        assert!(xml.contains("Allocates=\"8\""), "XML should have correct ParamBase allocates");
+        assert!(xml.contains("Allocates=\"3\""), "XML should have correct ObjBase allocates");
+        assert!(xml.contains("Allocates=\"1\""), "XML should have correct ChNo allocates");
     }
 }

@@ -107,6 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Use the page layout from MdtStack
         page_layout: Some(MdtStack::page_layout()),
+        modules: None,
     };
 
     // Generate ApplicationProgram MTXML
