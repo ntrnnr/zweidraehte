@@ -142,52 +142,6 @@ pub enum ModuleArgRole {
     Custom,
 }
 
-// ============================================================================
-// Module Dynamic Layout Types
-// ============================================================================
-
-/// An item in a module's custom dynamic layout.
-///
-/// Used with `KnxModule::CUSTOM_DYNAMIC` to define conditional visibility
-/// and custom parameter block structure for module parameters and comm objects.
-#[derive(Debug, Clone, Copy)]
-pub enum ModuleDynamicItem {
-    /// A parameter block grouping items together.
-    ParameterBlock {
-        /// Block name (for ID generation)
-        name: &'static str,
-        /// Display text (can use `{{ChNo}}` and `{{0}}` templates)
-        text: &'static str,
-        /// Items inside this block
-        items: &'static [ModuleBlockItem],
-    },
-    /// A choose/when conditional block based on a parameter value.
-    Choose {
-        /// Index of the parameter to test (0-based, into MODULE_PARAMS)
-        param_index: usize,
-        /// List of (test_value, items) pairs - items shown when param equals test_value
-        whens: &'static [(i64, &'static [ModuleBlockItem])],
-    },
-}
-
-/// An item that can appear inside a module's ParameterBlock or choose/when.
-#[derive(Debug, Clone, Copy)]
-pub enum ModuleBlockItem {
-    /// Reference to a parameter by index (0-based, into MODULE_PARAMS)
-    ParamRef(usize),
-    /// Reference to a communication object by index (0-based, into MODULE_COMM_OBJECTS)
-    ComObjRef(usize),
-    /// A separator with optional text
-    Separator(Option<&'static str>),
-    /// Nested choose/when block
-    Choose {
-        /// Index of the parameter to test (0-based)
-        param_index: usize,
-        /// List of (test_value, items) pairs
-        whens: &'static [(i64, &'static [ModuleBlockItem])],
-    },
-}
-
 impl ModuleArgDef {
     /// Create a parameter offset argument.
     ///
@@ -374,36 +328,36 @@ pub trait KnxModule {
     const MODULE_COMM_OBJECTS: Option<&'static [zweidraehte::ets::EtsCommObjectDef]> =
         Some(<Self::Objects as zweidraehte::ets::HasModuleCommObjects>::ETS_COMM_OBJECTS);
 
-    /// Optional custom dynamic layout for the module.
+    /// Custom page layout for the module's `<Dynamic>` section.
     ///
-    /// When `None` (the default), the generator creates a simple layout with all parameters
-    /// and comm objects in a single ParameterBlock.
+    /// **Default implementation**: Returns `None`, which causes the generator to create
+    /// a simple layout with all parameters and comm objects in a single ParameterBlock.
     ///
-    /// Set this to `Some(&[...])` with [`ModuleDynamicItem`] entries to define custom
-    /// conditional visibility using `choose/when` blocks, nested parameter blocks, etc.
+    /// Override this method to define custom conditional visibility using `choose/when`
+    /// blocks, multiple parameter blocks, separators, etc.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// const CUSTOM_DYNAMIC: Option<&'static [ModuleDynamicItem]> = Some(&[
-    ///     ModuleDynamicItem::ParameterBlock {
-    ///         name: "Basic",
-    ///         text: "{{ChNo}}: {{0}}",
-    ///         items: &[
-    ///             ModuleBlockItem::ParamRef(0), // channel_name
-    ///             ModuleBlockItem::ParamRef(1), // min_brightness
-    ///         ],
-    ///     },
-    ///     ModuleDynamicItem::Choose {
-    ///         param_index: 2, // mode_selector
-    ///         whens: &[
-    ///             (0, &[ModuleBlockItem::ParamRef(3)]), // Show param 3 when mode=0
-    ///             (1, &[ModuleBlockItem::ComObjRef(0)]), // Show comm obj 0 when mode=1
-    ///         ],
-    ///     },
-    /// ]);
+    /// fn module_layout() -> Option<ModulePageLayout> {
+    ///     Some(ets_module_pages! {
+    ///         block "basic" => "{{ChNo}}: Basic Settings" {
+    ///             param channel_name
+    ///             param min_brightness
+    ///             sep "Communication Objects"
+    ///             obj switch_obj
+    ///         }
+    ///         when @dim_mode {
+    ///             [1] => {
+    ///                 param fade_time
+    ///             }
+    ///         }
+    ///     })
+    /// }
     /// ```
-    const CUSTOM_DYNAMIC: Option<&'static [ModuleDynamicItem]> = None;
+    fn module_layout() -> Option<crate::page_layout::ModulePageLayout> {
+        None
+    }
 
     /// Create a module instance with the given argument values.
     ///
@@ -834,9 +788,9 @@ pub struct StoredModuleDef {
     /// Communication object definitions for the module (from ETS_COMM_OBJECTS).
     /// Used to generate the ModuleDef/Static/ComObjectTable section.
     pub comm_objects: Option<&'static [zweidraehte::ets::EtsCommObjectDef]>,
-    /// Optional custom dynamic layout for the module.
+    /// Module page layout (using ets_module_pages! macro).
     /// If None, a simple layout with all params and comm objects is auto-generated.
-    pub custom_dynamic: Option<&'static [ModuleDynamicItem]>,
+    pub page_layout: Option<crate::page_layout::ModulePageLayout>,
 }
 
 impl StoredModuleDef {
@@ -910,7 +864,7 @@ impl ModuleCollection {
             internal_description: M::INTERNAL_DESCRIPTION.map(|s| s.to_string()),
             params: M::MODULE_PARAMS,
             comm_objects: M::MODULE_COMM_OBJECTS,
-            custom_dynamic: M::CUSTOM_DYNAMIC,
+            page_layout: M::module_layout(),
         });
         idx
     }

@@ -1,6 +1,6 @@
 //! Page Layout Definition for ETS Parameter Pages
 //!
-//! This module provides types and a macro for defining the structure of ETS parameter pages
+//! This module provides types and macros for defining the structure of ETS parameter pages
 //! in a declarative, Rust-native way. The layout controls how parameters are organized in
 //! the ETS software's parameter configuration UI.
 //!
@@ -12,7 +12,7 @@
 //! - **ParameterBlock** - Collapsible sections containing parameters
 //! - **choose/when** - Conditional visibility based on parameter values
 //!
-//! # Usage
+//! # Device Layout
 //!
 //! Implement `EtsPageLayout` on your device type and use the `ets_pages!` macro:
 //!
@@ -30,6 +30,31 @@
 //!                             param mode1_param1
 //!                         }
 //!                     }
+//!                 }
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! # Module Layout
+//!
+//! Modules can use the same types for their internal `<Dynamic>` section.
+//! Use [`ModulePageLayout`] to define the module's parameter/object layout:
+//!
+//! ```ignore
+//! impl KnxModule for DimmerChannelModule {
+//!     // ...
+//!     fn module_layout() -> ModulePageLayout {
+//!         ets_module_pages! {
+//!             block "basic" => "{{ChNo}}: Basic Settings" {
+//!                 param channel_name
+//!                 param min_brightness
+//!                 obj switch_obj
+//!             }
+//!             when @dim_mode {
+//!                 [1] => {
+//!                     param fade_time
 //!                 }
 //!             }
 //!         }
@@ -55,6 +80,99 @@ pub struct PageStructure {
     pub device_settings: Vec<PageElement>,
     /// Channel tabs for organizing parameters into functional groups
     pub channels: Vec<ChannelDef>,
+}
+
+// ============================================================================
+// Module Page Layout
+// ============================================================================
+
+/// Page layout for a KNX module's `<Dynamic>` section.
+///
+/// This is a simplified version of [`PageStructure`] for module definitions.
+/// Modules don't have the device/channel hierarchy - they just have blocks
+/// containing parameters and communication objects.
+///
+/// Use the [`ets_module_pages!`] macro to construct this:
+///
+/// ```ignore
+/// fn module_layout() -> ModulePageLayout {
+///     ets_module_pages! {
+///         block "settings" => "{{ChNo}}: Settings" {
+///             param channel_name
+///             param brightness
+///             sep "Objects"
+///             obj switch_obj
+///         }
+///         when @mode {
+///             [1] => {
+///                 param advanced_setting
+///             }
+///         }
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct ModulePageLayout {
+    /// Top-level elements in the module's dynamic section.
+    /// Can be blocks (ParameterBlock) or conditionals (choose/when).
+    pub elements: Vec<ModuleLayoutElement>,
+}
+
+/// Top-level elements in a module's dynamic layout.
+#[derive(Debug, Clone)]
+pub enum ModuleLayoutElement {
+    /// A parameter block with items
+    Block(ModuleLayoutBlock),
+    /// Conditional visibility at the top level
+    When(ModuleLayoutWhen),
+}
+
+/// A parameter block within a module layout.
+#[derive(Debug, Clone)]
+pub struct ModuleLayoutBlock {
+    /// Block name (for ID generation)
+    pub name: &'static str,
+    /// Display text (can use `{{ChNo}}` and `{{0}}` templates)
+    pub text: &'static str,
+    /// Items within this block
+    pub items: Vec<ModuleLayoutItem>,
+}
+
+/// Items within a module's parameter block.
+///
+/// These are the same kinds of items as device-level layouts,
+/// but reference params/objs by name that the generator looks up
+/// in the module's `MODULE_PARAMS` and `MODULE_COMM_OBJECTS`.
+#[derive(Debug, Clone)]
+pub enum ModuleLayoutItem {
+    /// A parameter reference by name
+    Param(&'static str),
+    /// A communication object reference by name
+    Obj(&'static str),
+    /// Visual separator with optional text
+    Separator(Option<&'static str>),
+    /// Nested conditional within a block
+    When(ModuleLayoutWhen),
+}
+
+/// Conditional visibility in a module layout.
+#[derive(Debug, Clone)]
+pub struct ModuleLayoutWhen {
+    /// Parameter name that controls visibility
+    pub selector: &'static str,
+    /// Cases for different selector values
+    pub cases: Vec<ModuleLayoutCase>,
+}
+
+/// A case within a module conditional.
+#[derive(Debug, Clone)]
+pub struct ModuleLayoutCase {
+    /// Condition that must match
+    pub condition: Condition,
+    /// Items shown when condition matches.
+    /// When used at top level (ModuleLayoutElement::When), these are blocks.
+    /// When used at item level (ModuleLayoutItem::When), these are items.
+    pub items: Vec<ModuleLayoutItem>,
 }
 
 /// Channel definition (appears as a tab in ETS).
@@ -998,6 +1116,182 @@ macro_rules! ets_pages {
     }};
 }
 
+// ============================================================================
+// Module Page Layout Macro
+// ============================================================================
+
+/// Declarative macro for defining module page layouts.
+///
+/// This macro generates a [`ModulePageLayout`] for use in module definitions.
+/// It uses the same syntax as [`ets_pages!`] but without the device/channel structure.
+///
+/// # Syntax
+///
+/// ```text
+/// ets_module_pages! {
+///     block "name" => "Display Text" {   // ParameterBlock
+///         <items>
+///     }
+///
+///     when @param_name {                  // Conditional blocks
+///         [1, 2] => { <items> }           // Integer literals
+///         _ => { <items> }                // Default case
+///     }
+/// }
+///
+/// <items> can be:
+///     param <name>                        // Parameter by name
+///     obj <name>                          // Communication object by name
+///     sep                                 // Separator (empty)
+///     sep "text"                          // Separator with text
+///     when @param_name { ... }            // Nested conditional
+/// ```
+///
+/// # Example
+///
+/// ```ignore
+/// fn module_layout() -> ModulePageLayout {
+///     ets_module_pages! {
+///         block "basic" => "{{ChNo}}: Basic Settings" {
+///             param channel_name
+///             param min_brightness
+///             sep "Communication Objects"
+///             obj switch_obj
+///             obj dim_obj
+///         }
+///         when @dim_mode {
+///             [1] => {
+///                 param fade_time
+///             }
+///             [2] => {
+///                 param ramp_rate
+///             }
+///         }
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! ets_module_pages {
+    // Internal: Parse elements (blocks and when clauses) - base case
+    (@elements) => {
+        vec![]
+    };
+
+    // Parse a block element
+    (@elements block $name:literal => $text:literal { $($items:tt)* } $($rest:tt)*) => {{
+        let mut elems = vec![$crate::page_layout::ModuleLayoutElement::Block(
+            $crate::page_layout::ModuleLayoutBlock {
+                name: $name,
+                text: $text,
+                items: $crate::ets_module_pages!(@items $($items)*),
+            }
+        )];
+        elems.extend($crate::ets_module_pages!(@elements $($rest)*));
+        elems
+    }};
+
+    // Parse a when element with @ prefix (for regular parameter names)
+    (@elements when @ $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
+        let mut elems = vec![$crate::page_layout::ModuleLayoutElement::When(
+            $crate::page_layout::ModuleLayoutWhen {
+                selector: stringify!($param),
+                cases: $crate::ets_module_pages!(@cases $($cases)*),
+            }
+        )];
+        elems.extend($crate::ets_module_pages!(@elements $($rest)*));
+        elems
+    }};
+
+    // Parse cases - base case
+    (@cases) => {
+        vec![]
+    };
+
+    // Parse case with integer literals
+    (@cases [$($val:literal),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
+        let mut cases = vec![$crate::page_layout::ModuleLayoutCase {
+            condition: $crate::page_layout::Condition::values(&[$($val as i64),+]),
+            items: $crate::ets_module_pages!(@items $($content)*),
+        }];
+        cases.extend($crate::ets_module_pages!(@cases $($rest)*));
+        cases
+    }};
+
+    // Parse case with enum variants
+    (@cases [$($variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
+        let mut cases = vec![$crate::page_layout::ModuleLayoutCase {
+            condition: $crate::page_layout::Condition::values(&[
+                $($variant as i64),+
+            ]),
+            items: $crate::ets_module_pages!(@items $($content)*),
+        }];
+        cases.extend($crate::ets_module_pages!(@cases $($rest)*));
+        cases
+    }};
+
+    // Parse default case (_)
+    (@cases _ => { $($content:tt)* } $($rest:tt)*) => {{
+        let mut cases = vec![$crate::page_layout::ModuleLayoutCase {
+            condition: $crate::page_layout::Condition::Default,
+            items: $crate::ets_module_pages!(@items $($content)*),
+        }];
+        cases.extend($crate::ets_module_pages!(@cases $($rest)*));
+        cases
+    }};
+
+    // Parse items - base case
+    (@items) => {
+        vec![]
+    };
+
+    // Parse param item
+    (@items param $name:ident $($rest:tt)*) => {{
+        let mut items = vec![$crate::page_layout::ModuleLayoutItem::Param(stringify!($name))];
+        items.extend($crate::ets_module_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse obj item
+    (@items obj $name:ident $($rest:tt)*) => {{
+        let mut items = vec![$crate::page_layout::ModuleLayoutItem::Obj(stringify!($name))];
+        items.extend($crate::ets_module_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse separator with text
+    (@items sep $text:literal $($rest:tt)*) => {{
+        let mut items = vec![$crate::page_layout::ModuleLayoutItem::Separator(Some($text))];
+        items.extend($crate::ets_module_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse separator without text
+    (@items sep $($rest:tt)*) => {{
+        let mut items = vec![$crate::page_layout::ModuleLayoutItem::Separator(None)];
+        items.extend($crate::ets_module_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse nested when with @ prefix
+    (@items when @ $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
+        let mut items = vec![$crate::page_layout::ModuleLayoutItem::When(
+            $crate::page_layout::ModuleLayoutWhen {
+                selector: stringify!($param),
+                cases: $crate::ets_module_pages!(@cases $($cases)*),
+            }
+        )];
+        items.extend($crate::ets_module_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Entry point: parse top-level content (must be last to avoid matching internal @ rules)
+    ( $($content:tt)* ) => {
+        $crate::page_layout::ModulePageLayout {
+            elements: $crate::ets_module_pages!(@elements $($content)*),
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1229,6 +1523,144 @@ mod tests {
             }
         } else {
             panic!("Expected When element");
+        }
+    }
+
+    // =========================================================================
+    // Tests for ets_module_pages! macro
+    // =========================================================================
+
+    #[test]
+    fn test_module_pages_basic() {
+        let layout = ets_module_pages! {
+            block "settings" => "{{ChNo}}: Settings" {
+                param channel_name
+                param brightness
+            }
+        };
+
+        assert_eq!(layout.elements.len(), 1);
+
+        if let ModuleLayoutElement::Block(block) = &layout.elements[0] {
+            assert_eq!(block.name, "settings");
+            assert_eq!(block.text, "{{ChNo}}: Settings");
+            assert_eq!(block.items.len(), 2);
+            assert!(matches!(block.items[0], ModuleLayoutItem::Param("channel_name")));
+            assert!(matches!(block.items[1], ModuleLayoutItem::Param("brightness")));
+        } else {
+            panic!("Expected Block element");
+        }
+    }
+
+    #[test]
+    fn test_module_pages_with_objects_and_separators() {
+        let layout = ets_module_pages! {
+            block "main" => "Main Settings" {
+                param setting1
+                sep
+                param setting2
+                sep "Objects"
+                obj switch_obj
+                obj dim_obj
+            }
+        };
+
+        if let ModuleLayoutElement::Block(block) = &layout.elements[0] {
+            assert_eq!(block.items.len(), 6);
+            assert!(matches!(block.items[0], ModuleLayoutItem::Param("setting1")));
+            assert!(matches!(block.items[1], ModuleLayoutItem::Separator(None)));
+            assert!(matches!(block.items[2], ModuleLayoutItem::Param("setting2")));
+            if let ModuleLayoutItem::Separator(Some(text)) = &block.items[3] {
+                assert_eq!(*text, "Objects");
+            } else {
+                panic!("Expected Separator with text");
+            }
+            assert!(matches!(block.items[4], ModuleLayoutItem::Obj("switch_obj")));
+            assert!(matches!(block.items[5], ModuleLayoutItem::Obj("dim_obj")));
+        } else {
+            panic!("Expected Block element");
+        }
+    }
+
+    #[test]
+    fn test_module_pages_with_when() {
+        let layout = ets_module_pages! {
+            block "basic" => "Basic" {
+                param mode
+            }
+            when @mode {
+                [1] => {
+                    param advanced1
+                }
+                [2, 3] => {
+                    param advanced2
+                    obj extra_obj
+                }
+                _ => {
+                    param default_param
+                }
+            }
+        };
+
+        assert_eq!(layout.elements.len(), 2);
+
+        // Check the when element
+        if let ModuleLayoutElement::When(when_elem) = &layout.elements[1] {
+            assert_eq!(when_elem.selector, "mode");
+            assert_eq!(when_elem.cases.len(), 3);
+
+            // Check first case [1]
+            if let Condition::Values(vals) = &when_elem.cases[0].condition {
+                assert_eq!(vals, &[1]);
+            } else {
+                panic!("Expected Values condition");
+            }
+            assert_eq!(when_elem.cases[0].items.len(), 1);
+            assert!(matches!(when_elem.cases[0].items[0], ModuleLayoutItem::Param("advanced1")));
+
+            // Check second case [2, 3]
+            if let Condition::Values(vals) = &when_elem.cases[1].condition {
+                assert_eq!(vals, &[2, 3]);
+            } else {
+                panic!("Expected Values condition");
+            }
+            assert_eq!(when_elem.cases[1].items.len(), 2);
+            assert!(matches!(when_elem.cases[1].items[0], ModuleLayoutItem::Param("advanced2")));
+            assert!(matches!(when_elem.cases[1].items[1], ModuleLayoutItem::Obj("extra_obj")));
+
+            // Check default case
+            assert!(when_elem.cases[2].condition.is_default());
+        } else {
+            panic!("Expected When element");
+        }
+    }
+
+    #[test]
+    fn test_module_pages_nested_when() {
+        let layout = ets_module_pages! {
+            block "config" => "Configuration" {
+                param mode
+                when @mode {
+                    [1] => {
+                        param sub_setting
+                    }
+                }
+            }
+        };
+
+        if let ModuleLayoutElement::Block(block) = &layout.elements[0] {
+            assert_eq!(block.items.len(), 2);
+            assert!(matches!(block.items[0], ModuleLayoutItem::Param("mode")));
+
+            if let ModuleLayoutItem::When(when_item) = &block.items[1] {
+                assert_eq!(when_item.selector, "mode");
+                assert_eq!(when_item.cases.len(), 1);
+                assert!(matches!(when_item.cases[0].items[0], ModuleLayoutItem::Param("sub_setting")));
+            } else {
+                panic!("Expected When item");
+            }
+        } else {
+            panic!("Expected Block element");
         }
     }
 }

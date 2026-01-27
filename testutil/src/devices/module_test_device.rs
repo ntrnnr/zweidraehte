@@ -417,6 +417,25 @@ pub mod comm_objs {
             type Objects = DimmerChannelObjects;
 
             const INTERNAL_DESCRIPTION: Option<&'static str> = Some("Dimmer channel module");
+
+            /// Custom module layout using the ets_module_pages! macro.
+            fn module_layout() -> Option<knxprod::page_layout::ModulePageLayout> {
+                use knxprod::ets_module_pages;
+
+                Some(ets_module_pages! {
+                    block "DimmerChannel" => "{{ChNo}}: {{0}}" {
+                        param channel_name
+                        sep "Dimming Settings"
+                        param min_brightness
+                        param max_brightness
+                        param dim_speed
+                        param power_on_level
+                        obj switch
+                        obj dim_value
+                        obj status
+                    }
+                })
+            }
         }
     }
     pub use channel::{DimmerChannelModule, DimmerChannelObjects};
@@ -430,7 +449,6 @@ pub mod comm_objs {
         #[ets(module = DimmerChannelModule)]
         pub channels: [DimmerChannelObjects; NUM_CHANNELS],
     }
-
 }
 
 // Re-export DimmerChannelModule at module level for use in DeviceParams
@@ -563,7 +581,7 @@ mod tests {
         raw_bytes[4] = 0x55; // global_dim_speed
 
         // Set channel 1 data (starts at offset 5)
-        raw_bytes[5] = 0xA1;  // ch1.channel_name[0]
+        raw_bytes[5] = 0xA1; // ch1.channel_name[0]
         raw_bytes[35] = 0xA2; // ch1.min_brightness at offset 5 + 30 = 35
 
         // Set channel 2 data (starts at offset 5 + 34 = 39)
@@ -774,9 +792,7 @@ mod tests {
 
         // Step 3: Apply channel's brightness constraints
         let ch_params = &params.channels[channel.unwrap() - 1]; // 0-indexed for array access
-        let constrained_brightness = requested_brightness
-            .max(ch_params.min_brightness)
-            .min(ch_params.max_brightness);
+        let constrained_brightness = requested_brightness.max(ch_params.min_brightness).min(ch_params.max_brightness);
         assert_eq!(constrained_brightness, 20); // Clamped to min of 20%
 
         // Step 4: Update the dim_value object
@@ -789,7 +805,7 @@ mod tests {
 
         // Verify final state
         assert_eq!(comm_object_values[7], 20); // dim_value at 20%
-        assert_eq!(comm_object_values[8], 1);  // status is ON
+        assert_eq!(comm_object_values[8], 1); // status is ON
     }
 
     /// Helper function to find which channel (1-indexed) an object index belongs to.
@@ -823,7 +839,8 @@ mod tests {
         let mut enabled_switch_objects = Vec::new();
 
         for ch in 1..=NUM_CHANNELS {
-            if params.is_channel_enabled(ch - 1) { // is_channel_enabled is 0-indexed
+            if params.is_channel_enabled(ch - 1) {
+                // is_channel_enabled is 0-indexed
                 let switch_idx = DeviceParams::channel_object_index(ch, channel_objects::SWITCH);
                 enabled_switch_objects.push((ch, switch_idx));
             }
@@ -894,9 +911,9 @@ mod tests {
 
         // Use channel_object_index(instance, local_obj) where instance is 1-indexed
         // and local_obj is 0-indexed (0=switch, 1=dim_value, 2=status)
-        assert_eq!(DimmerCommObjects::channel_object_index(1, 0), 0);  // ch1 switch
-        assert_eq!(DimmerCommObjects::channel_object_index(2, 0), 3);  // ch2 switch
-        assert_eq!(DimmerCommObjects::channel_object_index(3, 1), 7);  // ch3 dim
+        assert_eq!(DimmerCommObjects::channel_object_index(1, 0), 0); // ch1 switch
+        assert_eq!(DimmerCommObjects::channel_object_index(2, 0), 3); // ch2 switch
+        assert_eq!(DimmerCommObjects::channel_object_index(3, 1), 7); // ch3 dim
         assert_eq!(DimmerCommObjects::channel_object_index(4, 2), 11); // ch4 status
     }
 
@@ -962,10 +979,34 @@ mod tests {
             enable_ch4: ChannelEnable::Disabled,
             global_dim_speed: 50,
             channels: [
-                DimmerChannelParams { channel_name: *b"Ch1\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", min_brightness: 0, max_brightness: 100, dim_speed: 30, power_on_level: 50 },
-                DimmerChannelParams { channel_name: *b"Ch2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", min_brightness: 10, max_brightness: 90, dim_speed: 40, power_on_level: 60 },
-                DimmerChannelParams { channel_name: *b"Ch3\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", min_brightness: 20, max_brightness: 80, dim_speed: 50, power_on_level: 70 },
-                DimmerChannelParams { channel_name: *b"Ch4\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", min_brightness: 0, max_brightness: 100, dim_speed: 60, power_on_level: 80 },
+                DimmerChannelParams {
+                    channel_name: *b"Ch1\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+                    min_brightness: 0,
+                    max_brightness: 100,
+                    dim_speed: 30,
+                    power_on_level: 50,
+                },
+                DimmerChannelParams {
+                    channel_name: *b"Ch2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+                    min_brightness: 10,
+                    max_brightness: 90,
+                    dim_speed: 40,
+                    power_on_level: 60,
+                },
+                DimmerChannelParams {
+                    channel_name: *b"Ch3\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+                    min_brightness: 20,
+                    max_brightness: 80,
+                    dim_speed: 50,
+                    power_on_level: 70,
+                },
+                DimmerChannelParams {
+                    channel_name: *b"Ch4\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+                    min_brightness: 0,
+                    max_brightness: 100,
+                    dim_speed: 60,
+                    power_on_level: 80,
+                },
             ],
         };
 
@@ -1005,9 +1046,7 @@ mod tests {
         // === Apply business logic: brightness constraints ===
 
         let ch_params = &params.channels[channel - 1]; // 0-indexed for array access
-        let constrained = raw_value
-            .max(ch_params.min_brightness)
-            .min(ch_params.max_brightness);
+        let constrained = raw_value.max(ch_params.min_brightness).min(ch_params.max_brightness);
         assert_eq!(constrained, 20); // Clamped to min of 20%
 
         // Update the dim value with constrained value
@@ -1025,7 +1064,7 @@ mod tests {
 
         // Verify final state
         assert_eq!(comm_objs.value(updated_obj_idx), &[20]); // Dim at 20%
-        assert_eq!(comm_objs.value(status_idx), &[1]);       // Status is ON
+        assert_eq!(comm_objs.value(status_idx), &[1]); // Status is ON
         assert_eq!(comm_objs.status(status_idx), ComObjectStatus::WriteRequest);
 
         // The stack would now see WriteRequest and send GroupValueWrite for status
@@ -1045,14 +1084,14 @@ mod tests {
         // For module-based structs, Index is a simple wrapper that validates ranges
         // Use Index::for_instance(instance, local_obj) for type-safe access
         // instance is 0-indexed, local_obj is 0-indexed
-        let ch1_switch = Index::for_instance(0, 0).unwrap();  // channel 0, switch
-        let ch2_dim = Index::for_instance(1, 1).unwrap();     // channel 1, dim_value
-        let ch3_status = Index::for_instance(2, 2).unwrap();  // channel 2, status
+        let ch1_switch = Index::for_instance(0, 0).unwrap(); // channel 0, switch
+        let ch2_dim = Index::for_instance(1, 1).unwrap(); // channel 1, dim_value
+        let ch3_status = Index::for_instance(2, 2).unwrap(); // channel 2, status
 
         // Get the numeric index from the wrapper
-        assert_eq!(ch1_switch.index(), 0);  // 0*3 + 0 = 0
-        assert_eq!(ch2_dim.index(), 4);     // 1*3 + 1 = 4
-        assert_eq!(ch3_status.index(), 8);  // 2*3 + 2 = 8
+        assert_eq!(ch1_switch.index(), 0); // 0*3 + 0 = 0
+        assert_eq!(ch2_dim.index(), 4); // 1*3 + 1 = 4
+        assert_eq!(ch3_status.index(), 8); // 2*3 + 2 = 8
 
         // Use with ComObjects trait methods
         comm_objs.value_mut(ch1_switch.index())[0] = 1;

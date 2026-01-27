@@ -933,72 +933,60 @@ impl MtxmlGenerator {
         def: &StoredModuleDef,
         text_param_ref_id: Option<&str>,
     ) -> Option<ModuleDefDynamic> {
-        // If custom dynamic layout is provided, use it
-        if let Some(custom) = def.custom_dynamic {
-            return Self::build_custom_module_dynamic(module_id, def, custom, text_param_ref_id);
+        // If a custom page_layout is provided, use it
+        if let Some(ref layout) = def.page_layout {
+            return Self::build_module_dynamic_from_layout(module_id, def, layout, text_param_ref_id);
         }
 
         // Otherwise, auto-generate a simple layout
         Self::build_default_module_dynamic(module_id, def, text_param_ref_id)
     }
 
-    /// Build custom module dynamic layout from CUSTOM_DYNAMIC definition.
-    fn build_custom_module_dynamic(
+    /// Build module dynamic layout from the new ModulePageLayout structure.
+    fn build_module_dynamic_from_layout(
         module_id: &str,
         def: &StoredModuleDef,
-        custom: &[crate::module::ModuleDynamicItem],
+        layout: &crate::page_layout::ModulePageLayout,
         text_param_ref_id: Option<&str>,
     ) -> Option<ModuleDefDynamic> {
-        use crate::module::ModuleDynamicItem;
+        use crate::page_layout::ModuleLayoutElement;
 
         let obj_base_arg_idx = def.arg_index_by_role(crate::module::ModuleArgRole::ObjectNumber)
             .unwrap_or(1);
 
         let mut block_counter = 0u32;
+        let mut sep_counter = 0u32;
         let mut dynamic_items = Vec::new();
 
-        for item in custom {
-            match item {
-                ModuleDynamicItem::ParameterBlock { name, text, items } => {
+        for element in &layout.elements {
+            match element {
+                ModuleLayoutElement::Block(block) => {
                     block_counter += 1;
                     let block_id = format!("{}_PB-{}", module_id, block_counter);
-                    let block_items = Self::convert_module_block_items(
-                        module_id, obj_base_arg_idx, items
+                    let block_items = Self::convert_module_layout_items(
+                        module_id, def, obj_base_arg_idx, &block.items, &mut sep_counter
                     );
                     // Only set text_parameter_ref_id if the text contains {{0}}
-                    let block_text_ref = if text.contains("{{0}}") {
+                    let block_text_ref = if block.text.contains("{{0}}") {
                         text_param_ref_id.map(|s| s.to_string())
                     } else {
                         None
                     };
                     dynamic_items.push(ModuleDefDynamicItem::ParameterBlock(ParameterBlock {
                         id: block_id,
-                        name: name.to_string(),
-                        text: Some(text.to_string()),
+                        name: block.name.to_string(),
+                        text: Some(block.text.to_string()),
                         text_parameter_ref_id: block_text_ref,
                         internal_description: None,
                         items: block_items,
                     }));
                 }
-                ModuleDynamicItem::Choose { param_index, whens } => {
-                    let param_num = param_index + 1;
-                    let param_ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
-                    let mut when_items = Vec::new();
-                    for (test_value, when_block_items) in *whens {
-                        let converted = Self::convert_module_block_items_to_when(
-                            module_id, obj_base_arg_idx, when_block_items
-                        );
-                        when_items.push(When {
-                            test: Some(test_value.to_string()),
-                            default: None,
-                            internal_description: None,
-                            items: converted,
-                        });
+                ModuleLayoutElement::When(when_elem) => {
+                    if let Some(choose) = Self::convert_module_layout_when_to_choose(
+                        module_id, def, obj_base_arg_idx, when_elem, &mut sep_counter
+                    ) {
+                        dynamic_items.push(ModuleDefDynamicItem::Choose(choose));
                     }
-                    dynamic_items.push(ModuleDefDynamicItem::Choose(Choose {
-                        param_ref_id,
-                        whens: when_items,
-                    }));
                 }
             }
         }
@@ -1010,122 +998,164 @@ impl MtxmlGenerator {
         }
     }
 
-    /// Convert module block items to ParameterBlockItem list.
-    fn convert_module_block_items(
+    /// Convert ModuleLayoutItem list to ParameterBlockItem list.
+    fn convert_module_layout_items(
         module_id: &str,
+        def: &StoredModuleDef,
         obj_base_arg_idx: usize,
-        items: &[crate::module::ModuleBlockItem],
+        items: &[crate::page_layout::ModuleLayoutItem],
+        sep_counter: &mut u32,
     ) -> Vec<ParameterBlockItem> {
-        use crate::module::ModuleBlockItem;
+        use crate::page_layout::ModuleLayoutItem;
 
         let mut result = Vec::new();
         for item in items {
             match item {
-                ModuleBlockItem::ParamRef(idx) => {
-                    let param_num = idx + 1;
-                    let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
-                    result.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                        ref_id,
-                        text: None,
-                        internal_description: None,
-                    }));
+                ModuleLayoutItem::Param(name) => {
+                    // Look up param index by name
+                    if let Some(params) = def.params {
+                        if let Some(idx) = params.iter().position(|p| p.base.name == *name) {
+                            let param_num = idx + 1;
+                            let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+                            result.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
+                                ref_id,
+                                text: None,
+                                internal_description: None,
+                            }));
+                        }
+                    }
                 }
-                ModuleBlockItem::ComObjRef(idx) => {
-                    let ref_num = idx + 1;
-                    let ref_id = format!("{}_O-{}-{}_R-{}", module_id, obj_base_arg_idx + 1, idx, ref_num);
-                    result.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
-                        ref_id,
-                        internal_description: None,
-                    }));
+                ModuleLayoutItem::Obj(name) => {
+                    // Look up comm object index by name
+                    if let Some(objs) = def.comm_objects {
+                        if let Some(idx) = objs.iter().position(|o| o.name == *name) {
+                            let ref_num = idx + 1;
+                            let ref_id = format!("{}_O-{}-{}_R-{}", module_id, obj_base_arg_idx + 1, idx, ref_num);
+                            result.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
+                                ref_id,
+                                internal_description: None,
+                            }));
+                        }
+                    }
                 }
-                ModuleBlockItem::Separator(text) => {
+                ModuleLayoutItem::Separator(text) => {
+                    *sep_counter += 1;
                     result.push(ParameterBlockItem::ParameterSeparator(ParameterSeparator {
-                        id: format!("{}_SEP", module_id),
+                        id: format!("{}_PS-{}", module_id, sep_counter),
                         text: text.map(|s| s.to_string()),
                     }));
                 }
-                ModuleBlockItem::Choose { param_index, whens } => {
-                    let param_num = param_index + 1;
-                    let param_ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
-                    let mut when_items = Vec::new();
-                    for (test_value, when_block_items) in *whens {
-                        let converted = Self::convert_module_block_items_to_when(
-                            module_id, obj_base_arg_idx, when_block_items
-                        );
-                        when_items.push(When {
-                            test: Some(test_value.to_string()),
-                            default: None,
-                            internal_description: None,
-                            items: converted,
-                        });
+                ModuleLayoutItem::When(when_item) => {
+                    if let Some(choose) = Self::convert_module_layout_when_to_choose(
+                        module_id, def, obj_base_arg_idx, when_item, sep_counter
+                    ) {
+                        result.push(ParameterBlockItem::Choose(choose));
                     }
-                    result.push(ParameterBlockItem::Choose(Choose {
-                        param_ref_id,
-                        whens: when_items,
-                    }));
                 }
             }
         }
         result
     }
 
-    /// Convert module block items to WhenItem list (for use inside when clauses).
-    fn convert_module_block_items_to_when(
+    /// Convert ModuleLayoutItem list to WhenItem list (for inside choose/when clauses).
+    fn convert_module_layout_items_to_when(
         module_id: &str,
+        def: &StoredModuleDef,
         obj_base_arg_idx: usize,
-        items: &[crate::module::ModuleBlockItem],
+        items: &[crate::page_layout::ModuleLayoutItem],
+        sep_counter: &mut u32,
     ) -> Vec<WhenItem> {
-        use crate::module::ModuleBlockItem;
+        use crate::page_layout::ModuleLayoutItem;
 
         let mut result = Vec::new();
         for item in items {
             match item {
-                ModuleBlockItem::ParamRef(idx) => {
-                    let param_num = idx + 1;
-                    let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
-                    result.push(WhenItem::ParameterRefRef(ParameterRefRef {
-                        ref_id,
-                        text: None,
-                        internal_description: None,
-                    }));
+                ModuleLayoutItem::Param(name) => {
+                    // Look up param index by name
+                    if let Some(params) = def.params {
+                        if let Some(idx) = params.iter().position(|p| p.base.name == *name) {
+                            let param_num = idx + 1;
+                            let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+                            result.push(WhenItem::ParameterRefRef(ParameterRefRef {
+                                ref_id,
+                                text: None,
+                                internal_description: None,
+                            }));
+                        }
+                    }
                 }
-                ModuleBlockItem::ComObjRef(idx) => {
-                    let ref_num = idx + 1;
-                    let ref_id = format!("{}_O-{}-{}_R-{}", module_id, obj_base_arg_idx + 1, idx, ref_num);
-                    result.push(WhenItem::ComObjectRefRef(ComObjectRefRef {
-                        ref_id,
-                        internal_description: None,
-                    }));
+                ModuleLayoutItem::Obj(name) => {
+                    // Look up comm object index by name
+                    if let Some(objs) = def.comm_objects {
+                        if let Some(idx) = objs.iter().position(|o| o.name == *name) {
+                            let ref_num = idx + 1;
+                            let ref_id = format!("{}_O-{}-{}_R-{}", module_id, obj_base_arg_idx + 1, idx, ref_num);
+                            result.push(WhenItem::ComObjectRefRef(ComObjectRefRef {
+                                ref_id,
+                                internal_description: None,
+                            }));
+                        }
+                    }
                 }
-                ModuleBlockItem::Separator(text) => {
+                ModuleLayoutItem::Separator(text) => {
+                    *sep_counter += 1;
                     result.push(WhenItem::ParameterSeparator(ParameterSeparator {
-                        id: format!("{}_SEP", module_id),
+                        id: format!("{}_PS-{}", module_id, sep_counter),
                         text: text.map(|s| s.to_string()),
                     }));
                 }
-                ModuleBlockItem::Choose { param_index, whens } => {
-                    let param_num = param_index + 1;
-                    let param_ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
-                    let mut when_items = Vec::new();
-                    for (test_value, when_block_items) in *whens {
-                        let converted = Self::convert_module_block_items_to_when(
-                            module_id, obj_base_arg_idx, when_block_items
-                        );
-                        when_items.push(When {
-                            test: Some(test_value.to_string()),
-                            default: None,
-                            internal_description: None,
-                            items: converted,
-                        });
+                ModuleLayoutItem::When(when_item) => {
+                    if let Some(choose) = Self::convert_module_layout_when_to_choose(
+                        module_id, def, obj_base_arg_idx, when_item, sep_counter
+                    ) {
+                        result.push(WhenItem::Choose(choose));
                     }
-                    result.push(WhenItem::Choose(Choose {
-                        param_ref_id,
-                        whens: when_items,
-                    }));
                 }
             }
         }
         result
+    }
+
+    /// Convert a ModuleLayoutWhen to a Choose element.
+    fn convert_module_layout_when_to_choose(
+        module_id: &str,
+        def: &StoredModuleDef,
+        obj_base_arg_idx: usize,
+        when_elem: &crate::page_layout::ModuleLayoutWhen,
+        sep_counter: &mut u32,
+    ) -> Option<Choose> {
+        // Look up selector param index by name
+        let param_idx = def.params.and_then(|params|
+            params.iter().position(|p| p.base.name == when_elem.selector)
+        );
+
+        let param_idx = match param_idx {
+            Some(idx) => idx,
+            None => return None, // Param not found, skip this when
+        };
+
+        let param_num = param_idx + 1;
+        let param_ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+
+        let mut when_items = Vec::new();
+        for case in &when_elem.cases {
+            let test_str = case.condition.to_test_string();
+            let is_default = case.condition.is_default();
+            let converted = Self::convert_module_layout_items_to_when(
+                module_id, def, obj_base_arg_idx, &case.items, sep_counter
+            );
+            when_items.push(When {
+                test: test_str,
+                default: if is_default { Some(true) } else { None },
+                internal_description: None,
+                items: converted,
+            });
+        }
+
+        Some(Choose {
+            param_ref_id,
+            whens: when_items,
+        })
     }
 
     /// Build default module dynamic layout (all params and comm objects in one block).

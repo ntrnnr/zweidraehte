@@ -833,6 +833,88 @@ The module system generates:
 <!-- Similar for channels 2, 3, 4 -->
 ```
 
+### Custom Module Layout with ets_module_pages!
+
+By default, the generator creates a simple layout with all module parameters and comm objects in a single `ParameterBlock`. For more control over the ETS UI presentation, implement the `module_layout()` method using the `ets_module_pages!` macro:
+
+```rust
+use knxprod::module::{KnxModule, ModuleArgDef};
+use knxprod::ets_module_pages;
+
+impl KnxModule for DimmerChannelModule {
+    const NAME: &'static str = "DimmerChannel";
+    const ARGUMENTS: &'static [ModuleArgDef] = &[
+        ModuleArgDef::param_offset("ParamBase"),
+        ModuleArgDef::object_number("ObjBase"),
+        ModuleArgDef::channel_number("ChNo"),
+    ];
+
+    type Params = DimmerChannelParams;
+    type Objects = DimmerChannelObjects;
+
+    // Custom layout using the ets_module_pages! macro
+    fn module_layout() -> Option<knxprod::page_layout::ModulePageLayout> {
+        Some(ets_module_pages! {
+            block "DimmerChannel" => "{{ChNo}}: {{0}}" {
+                param channel_name      // References param by field name
+                param min_brightness
+                param max_brightness
+                sep "Timing"            // Visual separator with label
+                param dim_speed
+                param power_on_level
+                obj switch              // References comm object by field name
+                obj dim_value
+                obj status
+            }
+        })
+    }
+}
+```
+
+#### ets_module_pages! Syntax
+
+The macro supports these elements:
+
+| Element | Syntax | Purpose |
+|---------|--------|---------|
+| `block` | `block "name" => "text" { ... }` | A collapsible parameter section |
+| `param` | `param field_name` | Reference to parameter by field name |
+| `obj` | `obj field_name` | Reference to comm object by field name |
+| `sep` | `sep "label"` | Visual separator with label |
+| `when` | `when @ selector { [value] => { ... } }` | Conditional visibility |
+
+#### Conditional Visibility in Modules
+
+```rust
+fn module_layout() -> Option<knxprod::page_layout::ModulePageLayout> {
+    Some(ets_module_pages! {
+        block "Settings" => "{{ChNo}}: {{0}}" {
+            param channel_name
+            param mode
+            when @ mode {
+                [0] => {
+                    param manual_speed
+                }
+                [1] => {
+                    param auto_curve
+                    obj status
+                }
+            }
+        }
+    })
+}
+```
+
+#### Text Templates
+
+The block `text` field supports these templates:
+- `{{ChNo}}` - Replaced by the channel number argument value
+- `{{0}}` - Replaced by the value of the text source parameter (marked with `#[ets(text_source)]`)
+
+#### Note: Separator ID Convention
+
+ETS requires `ParameterSeparator` IDs to use the `PS-` prefix (e.g., `M-00FA_..._PS-1`). The generator handles this automatically, but if you see ETS errors about ID conventions, ensure you're using the latest version of the generator.
+
 ### Runtime Behavior
 
 **Important:** Modules are purely a configuration-time abstraction. At runtime:
