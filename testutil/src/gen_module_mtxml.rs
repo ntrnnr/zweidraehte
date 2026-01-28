@@ -8,7 +8,7 @@
 
 use std::fs;
 
-use testutil::devices::module_test_device::{DEVICE_DESCRIPTOR, DeviceParams, ModuleTestDevice, SERIAL_NUMBER};
+use testutil::devices::module_test_device::{DEVICE_DESCRIPTOR, DeviceParams, ModuleTestDevice, SERIAL_NUMBER, DEVICE_VIRTUAL_PARAMS};
 use testutil::mtxml_gen::page_layout::EtsPageLayout;
 use testutil::mtxml_gen::{ApplicationProgramConfig, CatalogGenerator, HardwareGenerator, MtxmlGenerator};
 
@@ -28,6 +28,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         name: "ModuleDimmer4Ch",
         device: &DEVICE_DESCRIPTOR,
         params: DeviceParams::ETS_PARAMS_EXT,
+        // Device-level virtual params (ETS-only, not stored in device memory)
+        virtual_params: Some(DEVICE_VIRTUAL_PARAMS),
         param_defaults: param_bytes,
         comm_objects: &[], // No global comm objects for this test
         comm_object_refs: &[],

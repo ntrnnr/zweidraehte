@@ -335,6 +335,12 @@ impl VisibilityMap {
                 ParameterBlockItem::Module(_) => {
                     // Module instances have their own internal visibility
                 }
+                ParameterBlockItem::Button(_) => {
+                    // Buttons are UI elements, don't have visibility
+                }
+                ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {
+                    // Table layout elements don't have visibility
+                }
             }
         }
     }

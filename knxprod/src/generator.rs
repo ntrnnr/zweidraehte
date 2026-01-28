@@ -372,6 +372,12 @@ pub struct ApplicationProgramConfig<'a> {
     pub device: &'a DeviceDescriptor,
     /// Extended parameter definitions with enum variants
     pub params: &'a [EtsParamDefExt],
+    /// Virtual parameter definitions that exist only in ETS (not stored in device memory).
+    /// These are useful for things like device name, channel names, or other text parameters
+    /// that are displayed in ETS but don't consume device memory.
+    ///
+    /// Virtual params appear first in the parameter list, followed by regular params.
+    pub virtual_params: Option<&'a [EtsParamDefExt]>,
     /// Default parameter values as raw bytes
     pub param_defaults: &'a [u8],
     /// Communication object definitions
@@ -435,6 +441,93 @@ impl<'a> ApplicationProgramConfig<'a> {
     pub fn mask_family(&self) -> MaskFamily {
         MaskFamily::from_mask_version(self.device.mask_version)
     }
+
+    /// Get the number of virtual params at the device level.
+    pub fn virtual_params_count(&self) -> usize {
+        self.virtual_params.map_or(0, |vp| vp.len())
+    }
+
+    /// Iterate over all device-level params (virtual params first, then regular params).
+    /// This matches the XML generation order.
+    pub fn all_params(&self) -> impl Iterator<Item = &EtsParamDefExt> {
+        let virtual_params = self.virtual_params.unwrap_or(&[]);
+        virtual_params.iter().chain(self.params.iter())
+    }
+
+    /// Find a device-level parameter by name (searches virtual params first, then regular).
+    /// Returns the 1-based parameter number.
+    pub fn find_param_num_by_name(&self, name: &str) -> Option<u32> {
+        let virtual_params = self.virtual_params.unwrap_or(&[]);
+
+        // First search virtual params (index 0 -> param_num 1)
+        if let Some(idx) = virtual_params.iter().position(|p| p.base.name == name) {
+            return Some((idx + 1) as u32);
+        }
+
+        // Then search regular params (offset by virtual_params.len())
+        if let Some(idx) = self.params.iter().position(|p| p.base.name == name) {
+            return Some((virtual_params.len() + idx + 1) as u32);
+        }
+
+        None
+    }
+}
+
+/// Strip bytes belonging to `no_memory` (virtual) parameters from the raw defaults.
+///
+/// Virtual parameters exist in the Rust struct for metadata purposes but should not
+/// occupy device memory. This function creates a new byte vector with the `no_memory`
+/// fields' bytes removed.
+///
+/// The function works by:
+/// 1. Identifying ranges of bytes that belong to `no_memory` parameters
+/// 2. Copying only the non-virtual bytes to the output
+///
+/// # Arguments
+/// * `raw_defaults` - The original parameter bytes (from the Rust struct)
+/// * `params` - Parameter definitions including offset and size info
+///
+/// # Returns
+/// A new `Vec<u8>` with virtual parameter bytes removed
+fn strip_no_memory_bytes(raw_defaults: &[u8], params: &[EtsParamDefExt]) -> Vec<u8> {
+    // Collect ranges of bytes to exclude (offset, size_bytes) for no_memory params
+    let mut exclude_ranges: Vec<(usize, usize)> = params
+        .iter()
+        .filter(|p| p.base.no_memory)
+        .map(|p| {
+            let offset = p.base.offset as usize;
+            let size_bytes = ((p.base.size_bits as usize) + 7) / 8;
+            (offset, size_bytes)
+        })
+        .collect();
+
+    // If no no_memory params, return as-is
+    if exclude_ranges.is_empty() {
+        return raw_defaults.to_vec();
+    }
+
+    // Sort by offset and merge overlapping ranges
+    exclude_ranges.sort_by_key(|(offset, _)| *offset);
+
+    // Build output by copying non-excluded ranges
+    let mut result = Vec::with_capacity(raw_defaults.len());
+    let mut current_pos = 0;
+
+    for (exclude_start, exclude_size) in &exclude_ranges {
+        // Copy bytes before this exclusion
+        if current_pos < *exclude_start {
+            result.extend_from_slice(&raw_defaults[current_pos..*exclude_start]);
+        }
+        // Skip past the excluded bytes
+        current_pos = (*exclude_start + *exclude_size).max(current_pos);
+    }
+
+    // Copy any remaining bytes after the last exclusion
+    if current_pos < raw_defaults.len() {
+        result.extend_from_slice(&raw_defaults[current_pos..]);
+    }
+
+    result
 }
 
 /// Generator for creating ApplicationProgram MTXML files.
@@ -524,7 +617,9 @@ impl MtxmlGenerator {
         app_id: &str,
         mask_family: MaskFamily,
     ) -> Result<StaticSection, GeneratorError> {
-        let param_size = config.param_defaults.len() as u32;
+        // Calculate the stripped param size (excluding no_memory virtual parameters)
+        let stripped_defaults = strip_no_memory_bytes(config.param_defaults, config.params);
+        let param_size = stripped_defaults.len() as u32;
 
         // Build code segment ID based on mask family (for parameter references)
         let code_segment_id = match mask_family.data_segment_type() {
@@ -561,12 +656,12 @@ impl MtxmlGenerator {
             (
                 Some(AddressTable {
                     code_segment: addr_seg,
-                    offset: 0,
+                    offset: Some(0),
                     max_entries: config.device.max_address_table_entries,
                 }),
                 Some(AssociationTable {
                     code_segment: assoc_seg,
-                    offset: 0,
+                    offset: Some(0),
                     max_entries: config.device.max_association_table_entries,
                 }),
             )
@@ -621,7 +716,8 @@ impl MtxmlGenerator {
                     Some(procs)
                 }
             },
-            extension: Some(Extension {}),
+            extension: Some(Extension { baggages: Vec::new() }),
+            messages: None,
             options: Some(Options {
                 comparable: Some(true),
                 reconstructable: Some(true),
@@ -646,7 +742,11 @@ impl MtxmlGenerator {
 
             // Compute allocates values from params/objects for role-based arguments
             let param_size: u32 = def.params
-                .map(|p| p.iter().map(|param| (param.base.size_bits as u32 + 7) / 8).sum())
+                .map(|p| p.iter()
+                    // Exclude no_memory (virtual) parameters - they don't occupy device memory
+                    .filter(|param| !param.base.no_memory)
+                    .map(|param| (param.base.size_bits as u32 + 7) / 8)
+                    .sum())
                 .unwrap_or(0);
             let object_count: u32 = def.comm_objects.map(|o| o.len() as u32).unwrap_or(0);
 
@@ -708,16 +808,22 @@ impl MtxmlGenerator {
             // Build the TextParameterRefId for {{0}} text template substitution
             // This references the parameter ref of the text parameter within this module
             // Auto-detect text source parameter via #[ets(text_source)] attribute
-            let text_param_idx = def.params.and_then(|params| {
-                zweidraehte::ets::EtsParamDefExt::find_text_source_index(params)
-            });
-            let text_param_ref_id = text_param_idx.and_then(|param_idx| {
-                def.params.and_then(|params| {
-                    params.get(param_idx).map(|_| {
-                        // Reference the ParameterRef ID within this module
-                        format!("{}_P-{}_R-{}", module_id, param_idx + 1, param_idx + 1)
-                    })
-                })
+            // Must search both virtual_params (first) and regular params, matching XML generation order
+            let virtual_params = def.virtual_params.unwrap_or(&[]);
+            let regular_params = def.params.unwrap_or(&[]);
+
+            // First check virtual params for text_source
+            let text_param_num = zweidraehte::ets::EtsParamDefExt::find_text_source_index(virtual_params)
+                .map(|idx| idx + 1)  // 1-based param number
+                .or_else(|| {
+                    // Then check regular params (offset by virtual_params length)
+                    zweidraehte::ets::EtsParamDefExt::find_text_source_index(regular_params)
+                        .map(|idx| virtual_params.len() + idx + 1)
+                });
+
+            let text_param_ref_id = text_param_num.map(|param_num| {
+                // Reference the ParameterRef ID within this module
+                format!("{}_P-{}_R-{}", module_id, param_num, param_num)
             });
 
             // Build module-internal communication objects if provided
@@ -764,16 +870,23 @@ impl MtxmlGenerator {
         base_offset_arg_id: Option<&str>,
         base_value_arg_id: Option<&str>,
     ) -> (Option<Parameters>, Option<ParameterRefs>) {
-        let params: &[EtsParamDefExt] = match def.params {
-            Some(params) if !params.is_empty() => params,
-            _ => return (None, None),
-        };
+        // Combine virtual params (first) and regular params
+        // Virtual params come first so that text_source param gets the right index for {{0}}
+        let virtual_params = def.virtual_params.unwrap_or(&[]);
+        let regular_params = def.params.unwrap_or(&[]);
+
+        if virtual_params.is_empty() && regular_params.is_empty() {
+            return (None, None);
+        }
 
         let code_segment_id = format!("{}_RS-04-00000", app_id);
         let mut parameters = Parameters::default();
         let mut parameter_refs = ParameterRefs::default();
 
-        for (idx, param_ext) in params.iter().enumerate() {
+        // Process all parameters (virtual + regular)
+        let all_params: Vec<_> = virtual_params.iter().chain(regular_params.iter()).collect();
+
+        for (idx, param_ext) in all_params.iter().enumerate() {
             let param = &param_ext.base;
             let param_num = idx + 1;
 
@@ -794,12 +907,17 @@ impl MtxmlGenerator {
             };
 
             // Build memory location with BaseOffset if argument is specified
-            let memory = Some(MemoryLocation {
-                code_segment: code_segment_id.clone(),
-                offset: param.offset as u32,
-                bit_offset: param.bit_offset,
-                base_offset: base_offset_arg_id.map(|s| s.to_string()),
-            });
+            // Virtual (no_memory) parameters don't have a Memory element
+            let memory = if param.no_memory {
+                None
+            } else {
+                Some(MemoryLocation {
+                    code_segment: code_segment_id.clone(),
+                    offset: param.offset as u32,
+                    bit_offset: param.bit_offset,
+                    base_offset: base_offset_arg_id.map(|s| s.to_string()),
+                })
+            };
 
             parameters.items.push(ParameterItem::Parameter(Parameter {
                 id: param_id.clone(),
@@ -974,10 +1092,13 @@ impl MtxmlGenerator {
                     };
                     dynamic_items.push(ModuleDefDynamicItem::ParameterBlock(ParameterBlock {
                         id: block_id,
-                        name: block.name.to_string(),
+                        name: Some(block.name.to_string()),
                         text: Some(block.text.to_string()),
                         text_parameter_ref_id: block_text_ref,
                         internal_description: None,
+                        inline: None,
+                        show_in_com_object_tree: None,
+                        layout: None,
                         items: block_items,
                     }));
                 }
@@ -1012,17 +1133,14 @@ impl MtxmlGenerator {
         for item in items {
             match item {
                 ModuleLayoutItem::Param(name) => {
-                    // Look up param index by name
-                    if let Some(params) = def.params {
-                        if let Some(idx) = params.iter().position(|p| p.base.name == *name) {
-                            let param_num = idx + 1;
-                            let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
-                            result.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                                ref_id,
-                                text: None,
-                                internal_description: None,
-                            }));
-                        }
+                    // Look up param number by name (searches both virtual_params and params)
+                    if let Some(param_num) = def.find_param_num_by_name(name) {
+                        let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+                        result.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
+                            ref_id,
+                            text: None,
+                            internal_description: None,
+                        }));
                     }
                 }
                 ModuleLayoutItem::Obj(name) => {
@@ -1071,17 +1189,14 @@ impl MtxmlGenerator {
         for item in items {
             match item {
                 ModuleLayoutItem::Param(name) => {
-                    // Look up param index by name
-                    if let Some(params) = def.params {
-                        if let Some(idx) = params.iter().position(|p| p.base.name == *name) {
-                            let param_num = idx + 1;
-                            let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
-                            result.push(WhenItem::ParameterRefRef(ParameterRefRef {
-                                ref_id,
-                                text: None,
-                                internal_description: None,
-                            }));
-                        }
+                    // Look up param number by name (searches both virtual_params and params)
+                    if let Some(param_num) = def.find_param_num_by_name(name) {
+                        let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+                        result.push(WhenItem::ParameterRefRef(ParameterRefRef {
+                            ref_id,
+                            text: None,
+                            internal_description: None,
+                        }));
                     }
                 }
                 ModuleLayoutItem::Obj(name) => {
@@ -1124,17 +1239,8 @@ impl MtxmlGenerator {
         when_elem: &crate::page_layout::ModuleLayoutWhen,
         sep_counter: &mut u32,
     ) -> Option<Choose> {
-        // Look up selector param index by name
-        let param_idx = def.params.and_then(|params|
-            params.iter().position(|p| p.base.name == when_elem.selector)
-        );
-
-        let param_idx = match param_idx {
-            Some(idx) => idx,
-            None => return None, // Param not found, skip this when
-        };
-
-        let param_num = param_idx + 1;
+        // Look up selector param number by name (searches both virtual_params and params)
+        let param_num = def.find_param_num_by_name(&when_elem.selector)?;
         let param_ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
 
         let mut when_items = Vec::new();
@@ -1210,10 +1316,13 @@ impl MtxmlGenerator {
         // TextParameterRefId must be set when using {{0}} template
         let block = ParameterBlock {
             id: format!("{}_PB-1", module_id),
-            name: def.name.clone(),
+            name: Some(def.name.clone()),
             text: Some("{{ChNo}}: {{0}}".to_string()), // Use module argument for channel and text param for name
             text_parameter_ref_id: text_param_ref_id.map(|s| s.to_string()),
             internal_description: None,
+            inline: None,
+            show_in_com_object_tree: None,
+            layout: None,
             items,
         };
 
@@ -1229,7 +1338,9 @@ impl MtxmlGenerator {
         size: u32,
         mask_family: MaskFamily,
     ) -> Code {
-        let data = base64::engine::general_purpose::STANDARD.encode(config.param_defaults);
+        // Strip no_memory (virtual) parameters' bytes from the raw defaults
+        let stripped_defaults = strip_no_memory_bytes(config.param_defaults, config.params);
+        let data = base64::engine::general_purpose::STANDARD.encode(&stripped_defaults);
 
         match mask_family.data_segment_type() {
             DataSegmentType::Relative => {
@@ -1298,7 +1409,8 @@ impl MtxmlGenerator {
         let mut types = ParameterTypes::default();
         let mut seen_types = std::collections::HashSet::new();
 
-        for param in config.params {
+        // Process all device params (virtual first, then regular)
+        for param in config.all_params() {
             let type_name = Self::param_type_name(&param.base);
             if seen_types.contains(&type_name) {
                 continue;
@@ -1367,27 +1479,30 @@ impl MtxmlGenerator {
             }
         }
 
-        // Add types for module parameters
+        // Add types for module parameters (both virtual and regular)
         if let Some(modules) = &config.modules {
             for def in modules.definitions() {
-                if let Some(params) = def.params {
-                    for param_ext in params {
-                        let type_name = Self::param_type_name(&param_ext.base);
-                        if seen_types.contains(&type_name) {
-                            continue;
-                        }
-                        seen_types.insert(type_name.clone());
+                // Process virtual params first (they come first in the combined param list)
+                let virtual_params = def.virtual_params.unwrap_or(&[]);
+                let regular_params = def.params.unwrap_or(&[]);
+                let all_params = virtual_params.iter().chain(regular_params.iter());
 
-                        let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
-                        let type_def = Self::build_type_def(&param_ext.base, param_ext.enum_variants, &type_id);
-
-                        types.types.push(ParameterType {
-                            id: type_id,
-                            name: type_name,
-                            internal_description: None,
-                            type_def,
-                        });
+                for param_ext in all_params {
+                    let type_name = Self::param_type_name(&param_ext.base);
+                    if seen_types.contains(&type_name) {
+                        continue;
                     }
+                    seen_types.insert(type_name.clone());
+
+                    let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
+                    let type_def = Self::build_type_def(&param_ext.base, param_ext.enum_variants, &type_id);
+
+                    types.types.push(ParameterType {
+                        id: type_id,
+                        name: type_name,
+                        internal_description: None,
+                        type_def,
+                    });
                 }
             }
         }
@@ -1546,8 +1661,9 @@ impl MtxmlGenerator {
             })
             .unwrap_or_default();
 
-        // Regular parameters
-        for param_ext in config.params {
+        // Process all parameters (virtual first, then regular)
+        // Virtual params have no_memory=true and don't use param_defaults
+        for param_ext in config.all_params() {
             let param = &param_ext.base;
 
             // Skip union selector parameters - they go inside the Union, not as separate params
@@ -1561,36 +1677,48 @@ impl MtxmlGenerator {
             let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
 
             // Get default value: prefer explicit default_value, then fall back to param_defaults byte slice
-            let offset = param.offset as usize;
+            let param_offset = param.offset as usize;
             let size_bytes = (param.size_bits as usize + 7) / 8;
             let default_value = if let Some(val) = param_ext.default_value {
                 val.to_string()
             } else if param.param_type == EtsParamType::String {
                 // String parameters default to empty string
                 String::new()
-            } else if offset + size_bytes <= config.param_defaults.len() {
+            } else if param_offset + size_bytes <= config.param_defaults.len() {
                 match size_bytes {
-                    1 => config.param_defaults[offset].to_string(),
+                    1 => config.param_defaults[param_offset].to_string(),
                     2 => {
                         let val = u16::from_le_bytes([
-                            config.param_defaults[offset],
-                            config.param_defaults[offset + 1],
+                            config.param_defaults[param_offset],
+                            config.param_defaults[param_offset + 1],
                         ]);
                         val.to_string()
                     }
                     4 => {
                         let val = u32::from_le_bytes([
-                            config.param_defaults[offset],
-                            config.param_defaults[offset + 1],
-                            config.param_defaults[offset + 2],
-                            config.param_defaults[offset + 3],
+                            config.param_defaults[param_offset],
+                            config.param_defaults[param_offset + 1],
+                            config.param_defaults[param_offset + 2],
+                            config.param_defaults[param_offset + 3],
                         ]);
                         val.to_string()
                     }
-                    _ => config.param_defaults[offset].to_string(),
+                    _ => config.param_defaults[param_offset].to_string(),
                 }
             } else {
                 "0".to_string()
+            };
+
+            // Virtual (no_memory) parameters don't have a Memory element
+            let memory = if param.no_memory {
+                None
+            } else {
+                Some(MemoryLocation {
+                    code_segment: code_segment_id.to_string(),
+                    offset: param.offset as u32,
+                    bit_offset: param.bit_offset,
+                    base_offset: None,
+                })
             };
 
             params.items.push(ParameterItem::Parameter(Parameter {
@@ -1603,12 +1731,7 @@ impl MtxmlGenerator {
                 value: default_value,
                 base_value: None,
                 internal_description: None,
-                memory: Some(MemoryLocation {
-                    code_segment: code_segment_id.to_string(),
-                    offset: param.offset as u32,
-                    bit_offset: param.bit_offset,
-                    base_offset: None,
-                }),
+                memory,
             }));
 
             param_counter += 1;
@@ -1620,7 +1743,7 @@ impl MtxmlGenerator {
             for field in union_fields {
                 // Look up the selector's explicit default from EtsParamDefExt
                 let selector_name = format!("{}_selector", field.field_name);
-                let selector_default = config.params.iter()
+                let selector_default = config.all_params()
                     .find(|p| p.base.name == selector_name)
                     .and_then(|p| p.default_value);
 
@@ -1749,7 +1872,8 @@ impl MtxmlGenerator {
         let mut next_ref_num = 1u32;
         let mut param_counter = 1u32;
 
-        for param in config.params {
+        // Process all params (virtual first, then regular)
+        for param in config.all_params() {
             // Skip union selector parameters - they are referenced via union param refs
             if union_selector_names.contains(param.base.name) {
                 continue;
@@ -2127,7 +2251,9 @@ impl MtxmlGenerator {
         controls.push(LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
             obj_idx: 0,
             prop_id: 78, // PID_SERIAL_NUMBER
-            inline_data: serial_padded,
+            inline_data: Some(serial_padded),
+            range: None,
+            on_error: None,
         }));
 
         // 3. Unload existing LSMs (1, 2, 3)
@@ -2264,9 +2390,9 @@ impl MtxmlGenerator {
             })
             .unwrap_or_default();
 
-        // Add ParameterRefRefs for regular parameters
+        // Add ParameterRefRefs for all parameters (virtual first, then regular)
         let mut param_counter = 1usize;
-        for param in config.params {
+        for param in config.all_params() {
             // Skip union selector parameters
             if union_selector_names.contains(param.base.name) {
                 continue;
@@ -2288,8 +2414,7 @@ impl MtxmlGenerator {
         if let Some(union_fields) = config.union_fields {
             // Count non-selector params for ref_counter
             let non_selector_param_count = config
-                .params
-                .iter()
+                .all_params()
                 .filter(|p| !union_selector_names.contains(p.base.name))
                 .count();
             let mut ref_counter = non_selector_param_count + 1;
@@ -2472,10 +2597,13 @@ impl MtxmlGenerator {
                 internal_description: None,
                 items: vec![ChannelItem::ParameterBlock(ParameterBlock {
                     id: format!("{}_PB-1", app_id),
-                    name: config.name.to_string(),
+                    name: Some(config.name.to_string()),
                     text: None,
                     text_parameter_ref_id: None,
                     internal_description: None,
+                    inline: None,
+                    show_in_com_object_tree: None,
+                    layout: None,
                     items,
                 })],
             }],
@@ -2498,9 +2626,9 @@ impl MtxmlGenerator {
             })
             .unwrap_or_default();
 
-        // Search through regular params first
+        // Search through all params (virtual first, then regular)
         let mut param_counter = 1usize;
-        for param_ext in config.params {
+        for param_ext in config.all_params() {
             // Skip union selector params - they are numbered differently
             if union_selector_names.contains(param_ext.base.name) {
                 continue;
@@ -2518,8 +2646,7 @@ impl MtxmlGenerator {
         if let Some(union_fields) = config.union_fields {
             // Count non-selector params for ref_counter
             let non_selector_param_count = config
-                .params
-                .iter()
+                .all_params()
                 .filter(|p| !union_selector_names.contains(p.base.name))
                 .count();
             let mut ref_counter = non_selector_param_count + 1;
@@ -2660,9 +2787,9 @@ impl MtxmlGenerator {
         // MDT uses high numbers for additional refs (e.g., R-90, R-174, R-216 for same P-35)
         let mut next_ref_num = 1u32;
 
-        // Map regular params (non-selector)
+        // Map all params (virtual first, then regular, non-selector)
         let mut param_counter = 1usize;
-        for param_ext in config.params {
+        for param_ext in config.all_params() {
             if union_selector_names.contains(param_ext.base.name) {
                 continue;
             }
@@ -2933,10 +3060,13 @@ impl MtxmlGenerator {
 
         Ok(ParameterBlock {
             id: format!("{}_PB-{}", app_id, block_id),
-            name: block.name.to_string(),
+            name: Some(block.name.to_string()),
             text: Some(resolved_text),
             text_parameter_ref_id: None,
             internal_description: None,
+            inline: None,
+            show_in_com_object_tree: None,
+            layout: None,
             items,
         })
     }
@@ -3688,13 +3818,15 @@ impl MtxmlGenerator {
                                 active_conditions,
                             )?;
                             // Convert ParameterBlockItem to WhenItem
-                            let when_items: Vec<WhenItem> = case_block_items.into_iter().map(|item| {
+                            let when_items: Vec<WhenItem> = case_block_items.into_iter().filter_map(|item| {
                                 match item {
-                                    ParameterBlockItem::ParameterRefRef(r) => WhenItem::ParameterRefRef(r),
-                                    ParameterBlockItem::ComObjectRefRef(r) => WhenItem::ComObjectRefRef(r),
-                                    ParameterBlockItem::ParameterSeparator(s) => WhenItem::ParameterSeparator(s),
-                                    ParameterBlockItem::Choose(c) => WhenItem::Choose(c),
-                                    ParameterBlockItem::Module(m) => WhenItem::Module(m),
+                                    ParameterBlockItem::ParameterRefRef(r) => Some(WhenItem::ParameterRefRef(r)),
+                                    ParameterBlockItem::ComObjectRefRef(r) => Some(WhenItem::ComObjectRefRef(r)),
+                                    ParameterBlockItem::ParameterSeparator(s) => Some(WhenItem::ParameterSeparator(s)),
+                                    ParameterBlockItem::Choose(c) => Some(WhenItem::Choose(c)),
+                                    ParameterBlockItem::Module(m) => Some(WhenItem::Module(m)),
+                                    ParameterBlockItem::Button(_) => None, // Buttons not in WhenItem
+                                    ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => None, // Table layout elements not in WhenItem
                                 }
                             }).collect();
                             whens.push(When {
@@ -3746,13 +3878,15 @@ impl MtxmlGenerator {
                                 active_conditions,
                             )?;
                             // Convert ParameterBlockItem to WhenItem
-                            let when_items: Vec<WhenItem> = case_block_items.into_iter().map(|item| {
+                            let when_items: Vec<WhenItem> = case_block_items.into_iter().filter_map(|item| {
                                 match item {
-                                    ParameterBlockItem::ParameterRefRef(r) => WhenItem::ParameterRefRef(r),
-                                    ParameterBlockItem::ComObjectRefRef(r) => WhenItem::ComObjectRefRef(r),
-                                    ParameterBlockItem::ParameterSeparator(s) => WhenItem::ParameterSeparator(s),
-                                    ParameterBlockItem::Choose(c) => WhenItem::Choose(c),
-                                    ParameterBlockItem::Module(m) => WhenItem::Module(m),
+                                    ParameterBlockItem::ParameterRefRef(r) => Some(WhenItem::ParameterRefRef(r)),
+                                    ParameterBlockItem::ComObjectRefRef(r) => Some(WhenItem::ComObjectRefRef(r)),
+                                    ParameterBlockItem::ParameterSeparator(s) => Some(WhenItem::ParameterSeparator(s)),
+                                    ParameterBlockItem::Choose(c) => Some(WhenItem::Choose(c)),
+                                    ParameterBlockItem::Module(m) => Some(WhenItem::Module(m)),
+                                    ParameterBlockItem::Button(_) => None, // Buttons not in WhenItem
+                                    ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => None, // Table layout elements not in WhenItem
                                 }
                             }).collect();
                             whens.push(When {
@@ -4040,15 +4174,17 @@ impl MtxmlGenerator {
                 &case_active_conditions,
             )?;
 
-            // Convert ParameterBlockItem to WhenItem
+            // Convert ParameterBlockItem to WhenItem (filter out Buttons/Rows/Columns which aren't in WhenItem)
             let when_items: Vec<WhenItem> = items
                 .into_iter()
-                .map(|item| match item {
-                    ParameterBlockItem::ParameterRefRef(prr) => WhenItem::ParameterRefRef(prr),
-                    ParameterBlockItem::ComObjectRefRef(corr) => WhenItem::ComObjectRefRef(corr),
-                    ParameterBlockItem::ParameterSeparator(ps) => WhenItem::ParameterSeparator(ps),
-                    ParameterBlockItem::Choose(c) => WhenItem::Choose(c),
-                    ParameterBlockItem::Module(m) => WhenItem::Module(m),
+                .filter_map(|item| match item {
+                    ParameterBlockItem::ParameterRefRef(prr) => Some(WhenItem::ParameterRefRef(prr)),
+                    ParameterBlockItem::ComObjectRefRef(corr) => Some(WhenItem::ComObjectRefRef(corr)),
+                    ParameterBlockItem::ParameterSeparator(ps) => Some(WhenItem::ParameterSeparator(ps)),
+                    ParameterBlockItem::Choose(c) => Some(WhenItem::Choose(c)),
+                    ParameterBlockItem::Module(m) => Some(WhenItem::Module(m)),
+                    ParameterBlockItem::Button(_) => None,
+                    ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => None,
                 })
                 .collect();
 
@@ -4213,6 +4349,12 @@ impl MtxmlGenerator {
                 ParameterBlockItem::ParameterSeparator(_) => {}
                 ParameterBlockItem::Module(_) => {
                     // Module instances are validated separately - skip for now
+                }
+                ParameterBlockItem::Button(_) => {
+                    // Buttons are UI elements, no validation needed
+                }
+                ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {
+                    // Table layout elements, no validation needed
                 }
             }
         }
@@ -4504,6 +4646,7 @@ mod tests {
             name: "TestDevice",
             device: &device,
             params: &[],
+            virtual_params: None,
             param_defaults: &[],
             comm_objects: &[],
             comm_object_refs: &[],
@@ -4545,6 +4688,7 @@ mod tests {
                 max_com_objects: 8,
             },
             params: &[],
+            virtual_params: None,
             param_defaults: &[],
             comm_objects: &[],
             comm_object_refs: &[],
@@ -4591,6 +4735,7 @@ mod tests {
                 max_com_objects: 8,
             },
             params: &[],
+            virtual_params: None,
             param_defaults: &[],
             comm_objects: &[],
             comm_object_refs: &[],
@@ -4675,6 +4820,7 @@ mod tests {
                 max_com_objects: 16,
             },
             params: &[],
+            virtual_params: None,
             param_defaults: &[],
             comm_objects: &[],
             comm_object_refs: &[],
@@ -4782,6 +4928,7 @@ mod tests {
                 max_com_objects: 16,
             },
             params: &[],
+            virtual_params: None,
             param_defaults: &[],
             comm_objects: &[],
             comm_object_refs: &[],

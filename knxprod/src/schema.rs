@@ -252,13 +252,43 @@ pub struct StaticSection {
     pub load_procedures: Option<LoadProcedures>,
     #[serde(rename = "Extension", skip_serializing_if = "Option::is_none")]
     pub extension: Option<Extension>,
+    #[serde(rename = "Messages", skip_serializing_if = "Option::is_none")]
+    pub messages: Option<Messages>,
     #[serde(rename = "Options", skip_serializing_if = "Option::is_none")]
     pub options: Option<Options>,
 }
 
-/// Extension element - typically empty but required for some device programs
+/// Extension element - contains baggages and other optional extension data
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Extension {}
+pub struct Extension {
+    #[serde(rename = "Baggage", default, skip_serializing_if = "Vec::is_empty")]
+    pub baggages: Vec<BaggageRef>,
+}
+
+/// Reference to a baggage item (image, etc.)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaggageRef {
+    #[serde(rename = "@RefId")]
+    pub ref_id: String,
+}
+
+/// Container for messages used in error handling, etc.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Messages {
+    #[serde(rename = "Message", default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<Message>,
+}
+
+/// A message displayed to the user (e.g., for error conditions)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Name")]
+    pub name: String,
+    #[serde(rename = "@Text")]
+    pub text: String,
+}
 
 /// Code section containing memory segments
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -337,6 +367,9 @@ pub enum ParameterTypeDef {
     TypeRestriction(TypeRestriction),
     TypeText(TypeText),
     TypeNone(TypeNone),
+    TypePicture(TypePicture),
+    #[serde(rename = "TypeIPAddress")]
+    TypeIpAddress(TypeIpAddress),
 }
 
 /// Numeric parameter type
@@ -399,6 +432,20 @@ pub struct TypeText {
 /// No type (raw bytes)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TypeNone {}
+
+/// Picture/image parameter type (references a baggaged image file)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypePicture {
+    #[serde(rename = "@RefId")]
+    pub ref_id: String,
+}
+
+/// IP address parameter type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeIpAddress {
+    #[serde(rename = "@AddressType")]
+    pub address_type: String,
+}
 
 // ============================================================================
 // Parameters
@@ -698,8 +745,8 @@ pub struct ComObjectRef {
 pub struct AddressTable {
     #[serde(rename = "@CodeSegment", skip_serializing_if = "Option::is_none")]
     pub code_segment: Option<String>,
-    #[serde(rename = "@Offset")]
-    pub offset: u32,
+    #[serde(rename = "@Offset", skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
     #[serde(rename = "@MaxEntries")]
     pub max_entries: u16,
 }
@@ -709,8 +756,8 @@ pub struct AddressTable {
 pub struct AssociationTable {
     #[serde(rename = "@CodeSegment", skip_serializing_if = "Option::is_none")]
     pub code_segment: Option<String>,
-    #[serde(rename = "@Offset")]
-    pub offset: u32,
+    #[serde(rename = "@Offset", skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
     #[serde(rename = "@MaxEntries")]
     pub max_entries: u16,
 }
@@ -756,6 +803,7 @@ pub enum LoadControl {
     LdCtrlTaskSegment(LdCtrlTaskSegment),
     LdCtrlLoadCompleted(LdCtrlLoadCompleted),
     LdCtrlRestart(LdCtrlRestart),
+    LdCtrlWriteProp(LdCtrlWriteProp),
 }
 
 /// Relative segment load control (System B)
@@ -812,8 +860,23 @@ pub struct LdCtrlCompareProp {
     pub obj_idx: u8,
     #[serde(rename = "@PropId")]
     pub prop_id: u8,
-    #[serde(rename = "@InlineData")]
-    pub inline_data: String,
+    #[serde(rename = "@InlineData", skip_serializing_if = "Option::is_none")]
+    pub inline_data: Option<String>,
+    /// Range comparison format, e.g., "[4160,65535]u"
+    #[serde(rename = "@Range", skip_serializing_if = "Option::is_none")]
+    pub range: Option<String>,
+    /// Error handling for comparison failure
+    #[serde(rename = "OnError", skip_serializing_if = "Option::is_none")]
+    pub on_error: Option<OnError>,
+}
+
+/// Error handler for load control commands
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnError {
+    #[serde(rename = "@Cause")]
+    pub cause: String,
+    #[serde(rename = "@MessageRef", skip_serializing_if = "Option::is_none")]
+    pub message_ref: Option<String>,
 }
 
 /// Unload control (System 7) - unloads a load state machine
@@ -868,6 +931,20 @@ pub struct LdCtrlLoadCompleted {
 /// Restart control (System 7) - restarts the device
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LdCtrlRestart {}
+
+/// Write property control - writes a value to an interface object property
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LdCtrlWriteProp {
+    #[serde(rename = "@ObjIdx")]
+    pub obj_idx: u8,
+    #[serde(rename = "@PropId")]
+    pub prop_id: u8,
+    #[serde(rename = "@Verify", skip_serializing_if = "Option::is_none")]
+    pub verify: Option<bool>,
+    /// Inline data to write (hex encoded)
+    #[serde(rename = "@InlineData", skip_serializing_if = "Option::is_none")]
+    pub inline_data: Option<String>,
+}
 
 /// Options element with device comparison/reconstruction flags.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1105,14 +1182,20 @@ pub enum ChannelItem {
 pub struct ParameterBlock {
     #[serde(rename = "@Id")]
     pub id: String,
-    #[serde(rename = "@Name")]
-    pub name: String,
+    #[serde(rename = "@Name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(rename = "@TextParameterRefId", skip_serializing_if = "Option::is_none")]
     pub text_parameter_ref_id: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
+    #[serde(rename = "@Inline", skip_serializing_if = "Option::is_none")]
+    pub inline: Option<bool>,
+    #[serde(rename = "@ShowInComObjectTree", skip_serializing_if = "Option::is_none")]
+    pub show_in_com_object_tree: Option<bool>,
+    #[serde(rename = "@Layout", skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
 
     #[serde(rename = "$value", default)]
     pub items: Vec<ParameterBlockItem>,
@@ -1133,6 +1216,68 @@ pub enum ParameterBlockItem {
     /// A module instance (can appear in parameter blocks, converted to WhenItem::Module in choose/when).
     #[serde(rename = "Module")]
     Module(Module),
+    /// A button that triggers an event handler
+    #[serde(rename = "Button")]
+    Button(Button),
+    /// Rows for table layout in parameter blocks
+    #[serde(rename = "Rows")]
+    Rows(TableRows),
+    /// Columns for table layout in parameter blocks
+    #[serde(rename = "Columns")]
+    Columns(TableColumns),
+}
+
+/// Container for table rows
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TableRows {
+    #[serde(rename = "Row", default, skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<TableRow>,
+}
+
+/// A single table row definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableRow {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Name")]
+    pub name: String,
+    #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// Container for table columns
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TableColumns {
+    #[serde(rename = "Column", default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<TableColumn>,
+}
+
+/// A single table column definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableColumn {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Name")]
+    pub name: String,
+    #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(rename = "@Width", skip_serializing_if = "Option::is_none")]
+    pub width: Option<String>,
+}
+
+/// A button element in a parameter block (triggers event handlers in ETS)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Button {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Name")]
+    pub name: String,
+    #[serde(rename = "@Text")]
+    pub text: String,
+    #[serde(rename = "@EventHandler")]
+    pub event_handler: String,
+    #[serde(rename = "@EventHandlerParameters", skip_serializing_if = "Option::is_none")]
+    pub event_handler_parameters: Option<String>,
 }
 
 /// A visual separator element in a parameter block
@@ -1197,13 +1342,17 @@ pub enum WhenItem {
     Module(Module),
 }
 
-/// Assignment element that copies one parameter value to another
+/// Assignment element that copies one parameter value to another (or assigns a constant)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Assign {
     #[serde(rename = "@TargetParamRefRef")]
     pub target_param_ref_ref: String,
-    #[serde(rename = "@SourceParamRefRef")]
-    pub source_param_ref_ref: String,
+    /// Reference to source parameter (mutually exclusive with Value)
+    #[serde(rename = "@SourceParamRefRef", skip_serializing_if = "Option::is_none")]
+    pub source_param_ref_ref: Option<String>,
+    /// Constant value to assign (mutually exclusive with SourceParamRefRef)
+    #[serde(rename = "@Value", skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
 }
 
 /// Reference to a parameter reference

@@ -13,3 +13,4 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 
 clap = { version = "4", features = ["derive"] }
+base64 = "0.22"

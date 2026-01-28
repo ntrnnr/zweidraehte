@@ -53,6 +53,7 @@ pub mod page_layout;
 pub mod parser;
 pub mod model;
 pub mod module;
+pub mod master_data;
 
 pub use schema::*;
 pub use generator::*;
@@ -65,3 +66,7 @@ pub use module::{
     ModuleInstanceBuilder, ConditionalModuleInstance, ModuleCollection,
     StoredModuleDef, StoredModuleInstance,
 };
+
+// Re-export paste for use by macros
+#[doc(hidden)]
+pub use paste;

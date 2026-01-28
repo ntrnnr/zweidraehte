@@ -695,41 +695,142 @@ Modules provide:
 - **Module instances**: Concrete uses of a ModuleDef with specific argument values
 - **Argument-based addressing**: Parameters use `BaseOffset`, comm objects use `BaseNumber`
 
-### Basic Module Definition
+A module consists of two parts:
+1. **Communication Objects** - Defined with `#[derive(EtsComObjects)]`
+2. **Module Definition** - Defined with the `define_module!` macro
+
+### Step 1: Define Communication Objects
+
+Define comm objects FIRST with `#[derive(EtsComObjects)]`. This single type serves both
+ETS metadata generation AND runtime storage:
 
 ```rust
-use knxprod::module::{KnxModule, ModuleArgDef};
+use ets_macros::EtsComObjects;
+use zweidraehte::objects::comm::{ComObject, ComObjectStorage};
+use zweidraehte::dpt::*;
 
-/// A dimmer channel module with 3 parameters and 3 comm objects
-pub struct DimmerChannelModule;
+#[derive(EtsComObjects)]
+pub struct DimmerChannelObjects {
+    #[ets(index = 0, display = "Switch", function = "Switch on/off",
+          flags = C | R | W | T, text_template = "Ch{{ChNo}} Switch: {{0}}")]
+    pub switch: ComObject<DPT_Switch>,
 
-impl KnxModule for DimmerChannelModule {
-    const NAME: &'static str = "DimmerChannel";
+    #[ets(index = 1, display = "Dimming", function = "Dimming value %",
+          flags = C | R | W | T)]
+    pub dim_value: ComObject<DPT_Scaling>,
 
-    /// Module arguments define the variable parts
-    const ARGUMENTS: &'static [ModuleArgDef] = &[
-        ModuleArgDef::param_offset("ParamBase", 5),   // 5 bytes of params per instance
-        ModuleArgDef::object_number("ObjBase", 3),    // 3 comm objects per instance
-        ModuleArgDef::channel_number("ChNo"),         // For text templates like "Ch {{ChNo}}"
-    ];
-
-    // Parameters defined by this module (relative offsets)
-    type Params = DimmerChannelParams;
-
-    // Communication objects defined by this module
-    type Objects = DimmerChannelObjects;
+    #[ets(index = 2, display = "Status", function = "Status feedback",
+          flags = C | T)]
+    pub status: ComObject<DPT_State>,
 }
 ```
 
+### Step 2: Define the Module with `define_module!`
+
+Use the `define_module!` macro to define the module with its parameters:
+
+```rust
+knxprod::define_module! {
+    pub module DimmerChannelModule {
+        name = "DimmerChannel",
+        description = "Dimmer channel module",
+
+        // Module arguments
+        args {
+            ParamBase: param_offset,    // Memory offset for parameters
+            ObjBase: object_number,     // First communication object number
+            ChNo: display(1),           // For {{ChNo}} in text templates
+        }
+
+        // Virtual parameters - ETS-only, not stored in device memory
+        // Syntax: name: Type(size) = "display" [modifier],
+        virtual_params {
+            channel_name: String(30) = "Channel name" [text_source],
+        }
+
+        // Regular parameters - stored in device memory
+        params {
+            #[ets(display = "Minimum brightness", suffix = "%")]
+            min_brightness: u8,
+
+            #[ets(display = "Maximum brightness", suffix = "%")]
+            max_brightness: u8,
+        }
+
+        // Reference the comm objects type defined above
+        objects: DimmerChannelObjects,
+
+        // Optional ETS page layout
+        layout {
+            block "DimmerChannel" => "{{ChNo}}: {{0}}" {
+                param channel_name
+                param min_brightness
+                obj switch
+            }
+        }
+    }
+}
+```
+
+The macro generates:
+- `DimmerChannelModuleParams` - params struct with `#[derive(EtsParams)]`
+- `DIMMER_CHANNEL_MODULE_VIRTUAL_PARAMS` - virtual params constant
+- `DimmerChannelModule` - module struct implementing `KnxModule`
+
 ### Module Argument Types
 
-| Constructor | Role | Purpose |
-|-------------|------|---------|
-| `param_offset(name, size)` | ParamOffset | Base address for parameters (generates `BaseOffset`) |
-| `object_number(name, count)` | ObjectNumber | Base index for comm objects (generates `BaseNumber`) |
-| `channel_number(name)` | ChannelNumber | Instance number for `{{ChNo}}` text templates |
-| `value_base(name)` | ValueBase | Base for enum/value parameters (generates `BaseValue`) |
-| `custom(name)` | Custom | Generic argument for other uses |
+In the `args { }` block of `define_module!`, use this syntax:
+
+```rust
+args {
+    ArgName: arg_type,           // Simple argument
+    ArgName: display(N),         // Display argument with allocation count
+}
+```
+
+| Argument Type | XML Role | Purpose |
+|---------------|----------|---------|
+| `param_offset` | `ParamOffset` | Base address for parameters (generates `BaseOffset`) |
+| `object_number` | `ObjectNumber` | Base index for comm objects (generates `BaseNumber`) |
+| `display(N)` | `Channel` | For `{{ArgName}}` text templates; N = values consumed per instance |
+| `value_base` | `ValueBase` | Base for enum/value parameters (generates `BaseValue`) |
+| `custom` | `Custom` | Generic argument for other uses |
+
+The `display(N)` argument allocates N sequential values per instance. For example, `ChNo: display(1)` gives:
+- Instance 1: `ChNo = 1`
+- Instance 2: `ChNo = 2`
+- Instance 3: `ChNo = 3`
+- etc.
+
+If you used `display(2)`, it would give 1, 3, 5, 7, etc. (each instance consumes 2 values).
+
+### Virtual Parameters
+
+Virtual parameters are ETS-only parameters that are NOT stored in device memory. They're useful for:
+- Text templates (e.g., user-editable channel names shown in `{{0}}`)
+- ETS-computed values
+- Display-only information
+
+Define them in the `virtual_params { }` block:
+
+```rust
+virtual_params {
+    // Syntax: name: Type(size) = "display" [modifier],
+    channel_name: String(30) = "Channel name" [text_source],
+    description: String(50) = "Description",
+}
+```
+
+| Part | Required | Description |
+|------|----------|-------------|
+| `name` | Yes | Parameter field name |
+| `Type` | Yes | `String`, `u8`, `u16`, etc. |
+| `(size)` | Yes | Size in bytes |
+| `= "display"` | Yes | Display name in ETS |
+| `[text_source]` | No | Mark as source for `{{0}}` text template |
+
+The `[text_source]` modifier marks this parameter as the source for `{{0}}` template substitution
+in block titles, comm object names, etc.
 
 ### Multi-Channel Module Instantiation
 
@@ -764,30 +865,47 @@ impl EtsPageLayout for MyDevice {
 }
 ```
 
-### HasChannelHelpers Trait
+### Using Modules in Device Parameters
 
-The `module_instances` helper requires your params type to implement `HasChannelHelpers`:
+Use `#[ets(module = ModuleType)]` on array fields to automatically generate `HasChannelHelpers`:
 
 ```rust
-use knxprod::module::HasChannelHelpers;
+#[derive(EtsParams)]
+#[repr(C)]
+pub struct DeviceParams {
+    pub enable_ch1: u8,
+    pub enable_ch2: u8,
+    pub enable_ch3: u8,
+    pub enable_ch4: u8,
+    pub global_dim_speed: u8,
 
-impl HasChannelHelpers<DimmerChannelModule> for DeviceParams {
-    /// Number of channel instances
-    const COUNT: usize = 4;
-
-    /// Compute parameter offset for instance N (1-indexed)
-    fn param_offset(instance: usize) -> usize {
-        // Global params size + (instance-1) * module param size
-        core::mem::size_of::<GlobalParams>() + (instance - 1) * 5
-    }
-
-    /// Compute first object index for instance N (1-indexed)
-    fn object_base(instance: usize) -> usize {
-        // (instance-1) * objects per module
-        (instance - 1) * 3
-    }
+    #[ets(module = DimmerChannelModule)]
+    pub channels: [DimmerChannelModuleParams; 4],
 }
 ```
+
+The `#[ets(module = ...)]` attribute automatically generates:
+- `DeviceParams::CHANNELS_COUNT` - Number of instances (4)
+- `DeviceParams::channel_param_offset(n)` - Parameter offset for instance n (1-indexed)
+- `DeviceParams::channel_object_base(n)` - First object index for instance n (1-indexed)
+- `DeviceParams::channel_object_index(n, local)` - Absolute object index
+- `HasChannelHelpers<DimmerChannelModule>` implementation
+
+### Using Modules for Runtime Comm Objects
+
+Similarly, use `#[ets(module = ModuleType)]` on comm object arrays:
+
+```rust
+#[derive(EtsComObjects)]
+pub struct DeviceCommObjects {
+    #[ets(module = DimmerChannelModule)]
+    pub channels: [DimmerChannelObjects; 4],
+}
+```
+
+This generates:
+- `DeviceCommObjects::channel_object_index(instance, local_obj)` - instance is 1-indexed
+- `DeviceCommObjects::CHANNELS_INSTANCE_COUNT` - Number of instances
 
 ### Generated XML Structure
 
@@ -833,28 +951,18 @@ The module system generates:
 <!-- Similar for channels 2, 3, 4 -->
 ```
 
-### Custom Module Layout with ets_module_pages!
+### Custom Module Layout
 
-By default, the generator creates a simple layout with all module parameters and comm objects in a single `ParameterBlock`. For more control over the ETS UI presentation, implement the `module_layout()` method using the `ets_module_pages!` macro:
+By default, the generator creates a simple layout with all module parameters and comm objects in a single `ParameterBlock`. For more control over the ETS UI presentation, use the `layout { }` block in `define_module!`:
 
 ```rust
-use knxprod::module::{KnxModule, ModuleArgDef};
-use knxprod::ets_module_pages;
+knxprod::define_module! {
+    pub module DimmerChannelModule {
+        name = "DimmerChannel",
+        // ... args, params, objects ...
 
-impl KnxModule for DimmerChannelModule {
-    const NAME: &'static str = "DimmerChannel";
-    const ARGUMENTS: &'static [ModuleArgDef] = &[
-        ModuleArgDef::param_offset("ParamBase"),
-        ModuleArgDef::object_number("ObjBase"),
-        ModuleArgDef::channel_number("ChNo"),
-    ];
-
-    type Params = DimmerChannelParams;
-    type Objects = DimmerChannelObjects;
-
-    // Custom layout using the ets_module_pages! macro
-    fn module_layout() -> Option<knxprod::page_layout::ModulePageLayout> {
-        Some(ets_module_pages! {
+        // Custom layout
+        layout {
             block "DimmerChannel" => "{{ChNo}}: {{0}}" {
                 param channel_name      // References param by field name
                 param min_brightness
@@ -866,14 +974,14 @@ impl KnxModule for DimmerChannelModule {
                 obj dim_value
                 obj status
             }
-        })
+        }
     }
 }
 ```
 
-#### ets_module_pages! Syntax
+#### Layout Block Syntax
 
-The macro supports these elements:
+The `layout { }` block supports these elements:
 
 | Element | Syntax | Purpose |
 |---------|--------|---------|
@@ -886,30 +994,28 @@ The macro supports these elements:
 #### Conditional Visibility in Modules
 
 ```rust
-fn module_layout() -> Option<knxprod::page_layout::ModulePageLayout> {
-    Some(ets_module_pages! {
-        block "Settings" => "{{ChNo}}: {{0}}" {
-            param channel_name
-            param mode
-            when @ mode {
-                [0] => {
-                    param manual_speed
-                }
-                [1] => {
-                    param auto_curve
-                    obj status
-                }
+layout {
+    block "Settings" => "{{ChNo}}: {{0}}" {
+        param channel_name
+        param mode
+        when @ mode {
+            [0] => {
+                param manual_speed
+            }
+            [1] => {
+                param auto_curve
+                obj status
             }
         }
-    })
+    }
 }
 ```
 
 #### Text Templates
 
 The block `text` field supports these templates:
-- `{{ChNo}}` - Replaced by the channel number argument value
-- `{{0}}` - Replaced by the value of the text source parameter (marked with `#[ets(text_source)]`)
+- `{{ArgName}}` - Replaced by the module argument value (e.g., `{{ChNo}}`)
+- `{{0}}` - Replaced by the value of the text source parameter (marked with `[text_source]`)
 
 #### Note: Separator ID Convention
 
@@ -928,8 +1034,9 @@ No firmware changes are needed for modules - your firmware just sees flat parame
 ### Complete Module Example
 
 See [testutil/src/devices/module_test_device.rs](../testutil/src/devices/module_test_device.rs) for a complete working example with:
-- Module definition with parameters and comm objects
-- `HasChannelHelpers` implementation
+- Module definition using `define_module!` macro
+- Communication objects with `#[derive(EtsComObjects)]`
+- Device params using `#[ets(module = ...)]` for automatic helpers
 - `ets_pages!` layout with `module_instances`
 - Generated MTXML validation
 

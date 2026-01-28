@@ -30,6 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         name: "DerGeraet",
         device: &DEVICE_DESCRIPTOR,
         params: DemoParams::ETS_PARAMS_EXT,
+        virtual_params: None,
         param_defaults: param_bytes,
         comm_objects: comm_objs::DemoComObjects::ETS_COMM_OBJECTS,
         comm_object_refs: comm_objs::DemoComObjects::ETS_COMM_OBJECT_REFS,

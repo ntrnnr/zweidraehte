@@ -18,6 +18,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use app::{App, EditMode};
+use knxprod::master_data::MasterData;
 use knxprod::model::DeviceModel;
 use knxprod::parser::{parse_application_program_from_file, ProgramSummary};
 
@@ -28,6 +29,10 @@ struct Args {
     /// Path to the MTXML file to view
     #[arg()]
     file: PathBuf,
+
+    /// Path to knx_master.xml for mask version info (enables proper table generation)
+    #[arg(short, long)]
+    master_data: Option<PathBuf>,
 
     /// Print summary only (no TUI)
     #[arg(short, long)]
@@ -71,6 +76,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Load master data if provided
+    let master_data = if let Some(master_path) = &args.master_data {
+        match MasterData::from_file(master_path) {
+            Ok(md) => {
+                eprintln!("Loaded {} mask versions from {:?}", md.mask_version_count(), master_path);
+                Some(md)
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to load master data from {:?}: {}", master_path, e);
+                None
+            }
+        }
+    } else {
+        // Try to find knx_master.xml in the same directory as the input file
+        let parent = args.file.parent();
+        let auto_paths = [
+            parent.map(|p| p.join("knx_master.xml")),
+            parent.and_then(|p| p.parent()).map(|p| p.join("knx_master.xml")),
+        ];
+
+        auto_paths.into_iter().flatten().find_map(|path| {
+            if path.exists() {
+                match MasterData::from_file(&path) {
+                    Ok(md) => {
+                        eprintln!("Auto-loaded {} mask versions from {:?}", md.mask_version_count(), path);
+                        Some(md)
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        })
+    };
+
     // Get the application program
     let program = knx
         .manufacturer_data
@@ -84,8 +124,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create device model
     let model = DeviceModel::new(program);
 
-    // Create app
-    let app = App::new(model);
+    // Create app with master data
+    let app = App::with_master_data(model, master_data);
 
     // Run TUI
     run_tui(app)?;

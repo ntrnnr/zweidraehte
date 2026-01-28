@@ -289,6 +289,11 @@ impl DeviceModel {
         self.expanded_modules.values()
     }
 
+    /// Get the mask version ID (e.g., "MV-07B0").
+    pub fn mask_version(&self) -> &str {
+        &self.program.mask_version
+    }
+
     /// Recompute visibility of all parameter refs and communication object refs
     /// based on current parameter values and choose/when conditions.
     pub fn recompute_visibility(&mut self) {
@@ -362,6 +367,8 @@ impl DeviceModel {
             ParameterBlockItem::Module(module) => {
                 self.process_module(module);
             }
+            ParameterBlockItem::Button(_) => {}
+            ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {}
         }
     }
 

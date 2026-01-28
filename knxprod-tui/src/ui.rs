@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, ContentItem, EditMode, Focus, MainTab, WidgetType};
+use crate::app::{App, ContentItem, EditMode, Focus, MainTab, SegmentType, WidgetType};
 
 /// Render the application UI.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -26,6 +26,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     match app.current_tab {
         MainTab::Parameters => render_parameters_view(frame, main_chunks[1], app),
         MainTab::CommObjects => render_comm_objects_view(frame, main_chunks[1], app),
+        MainTab::Memory => render_memory_view(frame, main_chunks[1], app),
     }
 
     render_status(frame, main_chunks[2], app);
@@ -48,6 +49,7 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
     let tabs = vec![
         ("Parameters", MainTab::Parameters),
         ("Communication Objects", MainTab::CommObjects),
+        ("Memory", MainTab::Memory),
     ];
 
     let mut spans = Vec::new();
@@ -82,10 +84,17 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    // Build title with program name and mask version info
+    let title = format!(
+        " KNX Viewer - {} │ {} ",
+        app.model.program.name,
+        app.mask_version_display()
+    );
+
     let block = Block::default()
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(Color::DarkGray))
-        .title(format!(" KNX Viewer - {} ", app.model.program.name));
+        .title(title);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -546,6 +555,265 @@ fn truncate_string(s: &str, max_len: usize) -> String {
     }
 }
 
+fn render_memory_view(frame: &mut Frame, area: Rect, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Max(35),        // Segment selector
+            Constraint::Percentage(75), // Hex view
+        ])
+        .split(area);
+
+    render_segment_selector(frame, chunks[0], app);
+    render_hex_view(frame, chunks[1], app);
+}
+
+fn render_segment_selector(frame: &mut Frame, area: Rect, app: &App) {
+    let focused = app.focus == Focus::Sidebar && app.current_tab == MainTab::Memory;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(if focused {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        })
+        .title(format!(" Segments ({}) ", app.memory_segments.len()));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.memory_segments.is_empty() {
+        let empty = Paragraph::new("No memory segments").style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .memory_segments
+        .iter()
+        .enumerate()
+        .map(|(i, seg)| {
+            let is_selected = i == app.selected_segment_idx && focused;
+
+            // Format segment info
+            let type_char = match seg.segment_type {
+                SegmentType::Absolute => "A",
+                SegmentType::Relative => "R",
+            };
+
+            let addr_str = match seg.segment_type {
+                SegmentType::Absolute => format!("0x{:04X}", seg.address),
+                SegmentType::Relative => format!("+0x{:04X}", seg.address),
+            };
+
+            let mem_type = seg.memory_type.as_deref().unwrap_or("");
+            let lsm = seg
+                .load_state_machine
+                .map(|l| format!(" LSM:{}", l))
+                .unwrap_or_default();
+
+            let size_str = if seg.data.is_empty() {
+                format!("{}B (no data)", seg.size)
+            } else {
+                format!("{}B", seg.data.len())
+            };
+
+            let text = format!(
+                "[{}] {} {} {}{}",
+                type_char, addr_str, size_str, mem_type, lsm
+            );
+
+            let style = if is_selected {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            // Truncate if needed
+            let max_len = inner.width.saturating_sub(2) as usize;
+            let display = if text.len() > max_len {
+                format!("{}…", &text[..max_len.saturating_sub(1)])
+            } else {
+                text
+            };
+
+            ListItem::new(Line::from(Span::styled(display, style)))
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, inner);
+}
+
+fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
+    let focused = app.focus == Focus::Content && app.current_tab == MainTab::Memory;
+
+    let segment = app.memory_segments.get(app.selected_segment_idx);
+
+    let title = if let Some(seg) = segment {
+        let addr_str = match seg.segment_type {
+            SegmentType::Absolute => format!("0x{:04X}", seg.address),
+            SegmentType::Relative => format!("+0x{:04X}", seg.address),
+        };
+        format!(" {} @ {} ", seg.id, addr_str)
+    } else {
+        " No Segment ".to_string()
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(if focused {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        })
+        .title(title);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let segment = match segment {
+        Some(s) => s,
+        None => {
+            let empty =
+                Paragraph::new("No segment selected").style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(empty, inner);
+            return;
+        }
+    };
+
+    if segment.data.is_empty() {
+        let empty =
+            Paragraph::new("(no data in segment)").style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    // Calculate visible lines (reserve 2 lines: 1 for header, 1 for info)
+    let visible_lines = (inner.height.saturating_sub(2)) as usize;
+    let total_lines = (segment.data.len() + 15) / 16;
+
+    // Build hex dump lines
+    let mut lines: Vec<Line> = Vec::with_capacity(visible_lines + 2);
+
+    // Header line
+    lines.push(Line::from(vec![
+        Span::styled(
+            "Offset    00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  ASCII",
+            Style::default().fg(Color::Cyan),
+        ),
+    ]));
+
+    // Data lines
+    for line_idx in 0..visible_lines {
+        let actual_line = app.memory_scroll_offset + line_idx;
+        if actual_line >= total_lines {
+            break;
+        }
+
+        let offset = actual_line * 16;
+        let mut spans = Vec::new();
+
+        // Offset column
+        spans.push(Span::styled(
+            format!("{:04X}:     ", offset),
+            Style::default().fg(Color::DarkGray),
+        ));
+
+        // Hex bytes
+        for i in 0..16 {
+            let byte_offset = offset + i;
+            if byte_offset >= segment.data.len() {
+                spans.push(Span::raw("   "));
+            } else {
+                let byte = segment.data[byte_offset];
+                let is_selected = byte_offset == app.selected_byte_offset && focused;
+                let is_annotated = app.get_annotation_at_offset(byte_offset).is_some();
+
+                let style = if is_selected {
+                    Style::default()
+                        .bg(Color::Yellow)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_annotated {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+
+                spans.push(Span::styled(format!("{:02X}", byte), style));
+                spans.push(Span::raw(" "));
+            }
+
+            // Add extra space in middle
+            if i == 7 {
+                spans.push(Span::raw(" "));
+            }
+        }
+
+        // ASCII representation
+        spans.push(Span::raw(" "));
+        for i in 0..16 {
+            let byte_offset = offset + i;
+            if byte_offset >= segment.data.len() {
+                spans.push(Span::raw(" "));
+            } else {
+                let byte = segment.data[byte_offset];
+                let ch = if byte.is_ascii_graphic() || byte == b' ' {
+                    byte as char
+                } else {
+                    '.'
+                };
+                let is_selected = byte_offset == app.selected_byte_offset && focused;
+
+                let style = if is_selected {
+                    Style::default()
+                        .bg(Color::Yellow)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+
+                spans.push(Span::styled(ch.to_string(), style));
+            }
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    // Info line at bottom showing annotation if cursor is on one
+    let info_text = if let Some(ann) = app.get_annotation_at_offset(app.selected_byte_offset) {
+        format!(
+            "Parameter: {} (offset: {}, {} bits)",
+            ann.name, ann.offset, ann.size_bits
+        )
+    } else {
+        let byte_val = segment.data.get(app.selected_byte_offset).copied();
+        if let Some(b) = byte_val {
+            format!(
+                "Offset: 0x{:04X} | Value: 0x{:02X} ({}) | Line {}/{}",
+                app.selected_byte_offset,
+                b,
+                b,
+                app.selected_byte_offset / 16 + 1,
+                total_lines
+            )
+        } else {
+            String::new()
+        }
+    };
+
+    lines.push(Line::from(Span::styled(
+        info_text,
+        Style::default().fg(Color::Cyan),
+    )));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+
 /// Maximum visible items in dropdown (must match App::DROPDOWN_VISIBLE_ITEMS)
 const DROPDOWN_VISIBLE_ITEMS: usize = 12;
 
@@ -644,13 +912,24 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
             // Shouldn't happen
             "Tab: Switch focus | q: Quit"
         }
+        (EditMode::None, MainTab::Memory, Focus::Sidebar) => {
+            "↑/↓: Select segment | Enter: View | Tab: Hex view | q: Quit"
+        }
+        (EditMode::None, MainTab::Memory, Focus::Content) => {
+            "↑/↓/←/→: Navigate bytes | Tab: Tabs | q: Quit"
+        }
+    };
+
+    // Build device info string from master data
+    let device_info = if let Some(model) = app.management_model() {
+        let first_obj = app.first_app_object_idx();
+        format!(" Params: {} | Objects: {} | {} | ObjIdx: {} ", visible_params, visible_objs, model, first_obj)
+    } else {
+        format!(" Params: {} | Objects: {} ", visible_params, visible_objs)
     };
 
     let status = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!(" Params: {} | Objects: {} ", visible_params, visible_objs),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(device_info, Style::default().fg(Color::DarkGray)),
         Span::styled("│ ", Style::default().fg(Color::DarkGray)),
         Span::styled(help, Style::default().fg(Color::Cyan)),
     ]));

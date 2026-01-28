@@ -5,9 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use knxprod::{
-    ApplicationProgram, ComObject, EnableFlag, ParameterItem, ParameterType, ParameterTypeDef,
-};
+use knxprod::{ApplicationProgram, ComObject, EnableFlag, ParameterItem, ParameterType, ParameterTypeDef};
 
 // ============================================================================
 // Semantic Keys
@@ -29,21 +27,13 @@ pub struct ParameterKey {
 impl ParameterKey {
     /// Create a new parameter key.
     pub fn new(memory_offset: u32, bit_offset: u8, size_bits: u32) -> Self {
-        Self {
-            memory_offset,
-            bit_offset,
-            size_bits,
-        }
+        Self { memory_offset, bit_offset, size_bits }
     }
 }
 
 impl std::fmt::Display for ParameterKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "0x{:X}:{}:{}",
-            self.memory_offset, self.bit_offset, self.size_bits
-        )
+        write!(f, "0x{:X}:{}:{}", self.memory_offset, self.bit_offset, self.size_bits)
     }
 }
 
@@ -58,12 +48,7 @@ impl std::fmt::Display for ParameterKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TypeSignature {
     /// Numeric type with range.
-    Number {
-        signed: bool,
-        min: i64,
-        max: i64,
-        size_bits: u32,
-    },
+    Number { signed: bool, min: i64, max: i64, size_bits: u32 },
     /// Enumeration type with named values.
     Enum {
         /// Sorted map of value -> display text.
@@ -71,16 +56,14 @@ pub enum TypeSignature {
         size_bits: u32,
     },
     /// Text type.
-    Text {
-        max_chars: usize,
-        pattern: Option<String>,
-    },
+    Text { max_chars: usize, pattern: Option<String> },
     /// Raw bytes (no type).
     None { size_bits: u32 },
 }
 
 impl TypeSignature {
     /// Extract type signature from a parsed ParameterType.
+    // FIXME: should we derive this from the DPT definitions in the master data?
     pub fn from_param_type(pt: &ParameterType) -> Self {
         match &pt.type_def {
             ParameterTypeDef::TypeNumber(tn) => TypeSignature::Number {
@@ -99,21 +82,16 @@ impl TypeSignature {
                 }
             }
             ParameterTypeDef::TypeRestriction(tr) => {
-                let variants: BTreeMap<i64, String> = tr
-                    .enumerations
-                    .iter()
-                    .map(|e| (e.value as i64, normalize_text(&e.text)))
-                    .collect();
-                TypeSignature::Enum {
-                    variants,
-                    size_bits: tr.size_in_bit,
-                }
+                let variants: BTreeMap<i64, String> =
+                    tr.enumerations.iter().map(|e| (e.value as i64, normalize_text(&e.text))).collect();
+                TypeSignature::Enum { variants, size_bits: tr.size_in_bit }
             }
-            ParameterTypeDef::TypeText(tt) => TypeSignature::Text {
-                max_chars: (tt.size_in_bit / 8) as usize,
-                pattern: tt.pattern.clone(),
-            },
+            ParameterTypeDef::TypeText(tt) => {
+                TypeSignature::Text { max_chars: (tt.size_in_bit / 8) as usize, pattern: tt.pattern.clone() }
+            }
             ParameterTypeDef::TypeNone(_) => TypeSignature::None { size_bits: 0 },
+            ParameterTypeDef::TypePicture(_) => TypeSignature::None { size_bits: 0 },
+            ParameterTypeDef::TypeIpAddress(_) => TypeSignature::None { size_bits: 32 },
         }
     }
 
@@ -342,11 +320,7 @@ impl CanonicalProgram {
                                 .get(&p.parameter_type)
                                 .cloned()
                                 .unwrap_or(TypeSignature::None { size_bits: 0 });
-                            let key = ParameterKey::new(
-                                mem.offset,
-                                mem.bit_offset,
-                                type_sig.size_bits(),
-                            );
+                            let key = ParameterKey::new(mem.offset, mem.bit_offset, type_sig.size_bits());
                             let cp = CanonicalParameter {
                                 key,
                                 original_id: p.id.clone(),
@@ -459,19 +433,10 @@ impl CanonicalProgram {
                         Some(ComObjectFlags {
                             read: cr.read_flag.map(|f| f == EnableFlag::Enabled).unwrap_or(false),
                             write: cr.write_flag.map(|f| f == EnableFlag::Enabled).unwrap_or(false),
-                            communicate: cr
-                                .communication_flag
-                                .map(|f| f == EnableFlag::Enabled)
-                                .unwrap_or(false),
-                            transmit: cr
-                                .transmit_flag
-                                .map(|f| f == EnableFlag::Enabled)
-                                .unwrap_or(false),
+                            communicate: cr.communication_flag.map(|f| f == EnableFlag::Enabled).unwrap_or(false),
+                            transmit: cr.transmit_flag.map(|f| f == EnableFlag::Enabled).unwrap_or(false),
                             update: cr.update_flag.map(|f| f == EnableFlag::Enabled).unwrap_or(false),
-                            read_on_init: cr
-                                .read_on_init_flag
-                                .map(|f| f == EnableFlag::Enabled)
-                                .unwrap_or(false),
+                            read_on_init: cr.read_on_init_flag.map(|f| f == EnableFlag::Enabled).unwrap_or(false),
                         })
                     } else {
                         None

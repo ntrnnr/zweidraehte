@@ -12,32 +12,18 @@
 //!
 //! # Defining a Module
 //!
-//! A module consists of three parts:
+//! A module consists of two parts:
 //!
-//! ## 1. Module Parameters (`DimmerChannelParams`)
+//! ## 1. Communication Objects (`DimmerChannelObjects`)
 //!
-//! ```rust,ignore
-//! #[derive(EtsParams)]
-//! #[repr(C)]
-//! pub struct DimmerChannelParams {
-//!     #[ets(display = "Minimum brightness", suffix = "%")]
-//!     pub min_brightness: u8,
-//!     #[ets(display = "Maximum brightness", suffix = "%")]
-//!     pub max_brightness: u8,
-//!     // ... more params
-//! }
-//! ```
-//!
-//! ## 2. Module Communication Objects (`DimmerChannelObjects`)
-//!
-//! Define comm objects with `ComObject<T>` wrappers. This single type serves both
+//! Define comm objects FIRST with `#[derive(EtsComObjects)]`. This single type serves both
 //! ETS metadata generation AND runtime storage:
 //!
 //! ```rust,ignore
 //! #[derive(EtsComObjects)]
 //! pub struct DimmerChannelObjects {
 //!     #[ets(index = 0, display = "Switch", function = "Switch on/off",
-//!           flags = C | R | W | T, text_template = "Ch{{ChNo}} Switch")]
+//!           flags = C | R | W | T, text_template = "Ch{{ChNo}} Switch: {{0}}")]
 //!     pub switch: ComObject<DPT_Switch>,
 //!
 //!     #[ets(index = 1, display = "Dimming", function = "Dimming value %",
@@ -50,22 +36,57 @@
 //! }
 //! ```
 //!
-//! ## 3. Module Definition (`DimmerChannelModule`)
+//! ## 2. Module Definition (`define_module!` macro)
+//!
+//! Use the `define_module!` macro to define the module with its parameters:
 //!
 //! ```rust,ignore
-//! pub struct DimmerChannelModule;
+//! knxprod::define_module! {
+//!     pub module DimmerChannelModule {
+//!         name = "DimmerChannel",
+//!         description = "Dimmer channel module",
 //!
-//! impl KnxModule for DimmerChannelModule {
-//!     const NAME: &'static str = "DimmerChannel";
-//!     const ARGUMENTS: &'static [ModuleArgDef] = &[
-//!         ModuleArgDef::param_offset("ParamBase"),   // Memory offset
-//!         ModuleArgDef::object_number("ObjBase"),    // First object number
-//!         ModuleArgDef::display("ChNo", 1),          // For {{ChNo}} in text templates
-//!     ];
-//!     type Params = DimmerChannelParams;
-//!     type Objects = DimmerChannelObjects;
+//!         // Module arguments
+//!         args {
+//!             ParamBase: param_offset,    // Memory offset for parameters
+//!             ObjBase: object_number,     // First communication object number
+//!             ChNo: display(1),           // For {{ChNo}} in text templates
+//!         }
+//!
+//!         // Virtual parameters - ETS-only, not stored in device memory
+//!         // Syntax: name: Type(size) = "display" [modifier],
+//!         virtual_params {
+//!             channel_name: String(30) = "Channel name" [text_source],
+//!         }
+//!
+//!         // Regular parameters - stored in device memory
+//!         params {
+//!             #[ets(display = "Minimum brightness", suffix = "%")]
+//!             min_brightness: u8,
+//!
+//!             #[ets(display = "Maximum brightness", suffix = "%")]
+//!             max_brightness: u8,
+//!         }
+//!
+//!         // Reference the comm objects type defined above
+//!         objects: DimmerChannelObjects,
+//!
+//!         // Optional ETS page layout
+//!         layout {
+//!             block "DimmerChannel" => "{{ChNo}}: {{0}}" {
+//!                 param channel_name
+//!                 param min_brightness
+//!                 obj switch
+//!             }
+//!         }
+//!     }
 //! }
 //! ```
+//!
+//! The macro generates:
+//! - `DimmerChannelModuleParams` - params struct with `#[derive(EtsParams)]`
+//! - `DIMMER_CHANNEL_MODULE_VIRTUAL_PARAMS` - virtual params constant
+//! - `DimmerChannelModule` - module struct implementing `KnxModule`
 //!
 //! # Using Modules in Device Parameters
 //!
@@ -80,7 +101,7 @@
 //!     pub global_dim_speed: u8,
 //!
 //!     #[ets(module = DimmerChannelModule)]
-//!     pub channels: [DimmerChannelParams; 4],
+//!     pub channels: [DimmerChannelModuleParams; 4],
 //! }
 //!
 //! // Auto-generated helpers:
@@ -121,10 +142,12 @@
 //! Offset 0-4:   Global params (5 bytes)
 //!   - enable_ch1, enable_ch2, enable_ch3, enable_ch4, global_dim_speed
 //!
-//! Offset 5-9:   Channel 1 DimmerChannelParams (5 bytes)
-//! Offset 10-14: Channel 2 DimmerChannelParams (5 bytes)
-//! Offset 15-19: Channel 3 DimmerChannelParams (5 bytes)
-//! Offset 20-24: Channel 4 DimmerChannelParams (5 bytes)
+//! Offset 5-8:   Channel 1 DimmerChannelModuleParams (4 bytes)
+//! Offset 9-12:  Channel 2 DimmerChannelModuleParams (4 bytes)
+//! Offset 13-16: Channel 3 DimmerChannelModuleParams (4 bytes)
+//! Offset 17-20: Channel 4 DimmerChannelModuleParams (4 bytes)
+//!
+//! Total: 21 bytes (5 global + 4 channels × 4 bytes)
 //! ```
 //!
 //! ## Communication Object Layout
@@ -148,7 +171,7 @@
 //! let speed = params.global_dim_speed;
 //!
 //! // Or use the array index directly
-//! let ch2_params = &params.channels[1];  // &DimmerChannelParams for ch2
+//! let ch2_params = &params.channels[1];  // &DimmerChannelModuleParams for ch2
 //! ```
 //!
 //! # Accessing Communication Objects at Runtime
@@ -183,7 +206,7 @@ use zweidraehte::dpt::{DPT_Scaling, DPT_State, DPT_Switch};
 use zweidraehte::ets::{EtsComObjects, EtsEnum, EtsParams};
 
 use knxprod::ets_pages;
-use knxprod::module::{KnxModule, ModuleArgDef, ModuleCollection};
+use knxprod::module::ModuleCollection;
 use knxprod::page_layout::EtsPageLayout;
 
 // ============================================================================
@@ -204,6 +227,23 @@ pub const DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::e
 
 /// Serial number for test device.
 pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x10, 0x00, 0x00, 0x01];
+
+// ============================================================================
+// Device-Level Virtual Parameters
+// ============================================================================
+
+// Device-level virtual parameters that exist only in ETS (not stored in device memory).
+// These appear at the top of the parameter list, before regular parameters.
+//
+// Use cases:
+// - Device name for display in ETS
+// - Location/room information
+// - Any text that's only needed in ETS, not on the device
+zweidraehte::ets_virtual_params! {
+    pub DEVICE_VIRTUAL_PARAMS {
+        device_name: String(50) => "Device name" [text_source],
+    }
+}
 
 // ============================================================================
 // Global Device Parameters (non-module)
@@ -274,7 +314,7 @@ pub struct DeviceParams {
 
     /// Per-channel parameters - module helpers generated automatically
     #[ets(module = DimmerChannelModule)]
-    pub channels: [DimmerChannelParams; NUM_CHANNELS],
+    pub channels: [DimmerChannelModuleParams; NUM_CHANNELS],
 }
 
 impl DeviceParams {
@@ -293,152 +333,138 @@ impl DeviceParams {
 // - DeviceParams::channel_object_index(instance, local_index)  // 1-indexed instance
 
 // ============================================================================
-// Dimmer Channel Module
+// Dimmer Channel Communication Objects
 // ============================================================================
+//
+// Define the communication objects FIRST using #[derive(EtsComObjects)].
+// This single type provides BOTH ETS metadata AND runtime storage.
 
-/// Parameters for a single dimmer channel.
+use zweidraehte::objects::comm::{ComObject, ComObjectIndex};
+
+/// Communication objects for a dimmer channel.
 ///
-/// These parameters are defined within the module and are instantiated
-/// for each channel with different memory offsets.
-#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize)]
-#[repr(C)]
-pub struct DimmerChannelParams {
-    /// Channel description/name - used for {{0}} text substitution in comm objects
-    /// This parameter's value appears in text templates like "Ch{{ChNo}} Switch: {{0}}"
-    /// 30 bytes like MDT device text parameters (240 bits).
-    #[ets(display = "Channel name", string, text_source)]
-    pub channel_name: [u8; 30],
+/// This type provides both ETS metadata (via `HasModuleCommObjects`) and
+/// runtime storage (via `ComObjects` trait). Define it once, use it in
+/// `define_module!` with `objects: DimmerChannelObjects,`.
+///
+/// Text template substitution in ETS:
+/// - `{{ChNo}}` is replaced by the channel number argument
+/// - `{{0}}` is replaced by the value of the parameter referenced by `TextParameterRefId`
+#[derive(EtsComObjects)]
+pub struct DimmerChannelObjects {
+    #[ets(
+        index = 0,
+        display = "Switch",
+        function = "Switch on/off",
+        flags = C | R | W | T,
+        text_template = "Ch{{ChNo}} Switch: {{0}}"
+    )]
+    pub switch: ComObject<DPT_Switch>,
 
-    /// Minimum brightness level (0-100%)
-    #[ets(display = "Minimum brightness", suffix = "%")]
-    pub min_brightness: u8,
+    #[ets(
+        index = 1,
+        display = "Dimming value",
+        function = "Dimming value %",
+        flags = C | R | W | T,
+        text_template = "Ch{{ChNo}} Dim: {{0}}"
+    )]
+    pub dim_value: ComObject<DPT_Scaling>,
 
-    /// Maximum brightness level (0-100%)
-    #[ets(display = "Maximum brightness", suffix = "%")]
-    pub max_brightness: u8,
-
-    /// Dimming speed for this channel (0-255, in 10ms steps)
-    #[ets(display = "Dimming speed", suffix = "x10ms")]
-    pub dim_speed: u8,
-
-    /// Power-on brightness level
-    #[ets(display = "Power-on level", suffix = "%")]
-    pub power_on_level: u8,
+    #[ets(
+        index = 2,
+        display = "Status",
+        function = "Status feedback",
+        flags = C | T,
+        text_template = "Ch{{ChNo}} Status: {{0}}"
+    )]
+    pub status: ComObject<DPT_State>,
 }
 
 // ============================================================================
-// Runtime Communication Objects
+// Dimmer Channel Module (using define_module! macro)
+// ============================================================================
+//
+// The define_module! macro generates:
+// - DimmerChannelModuleParams - parameter struct with EtsParams
+// - DIMMER_CHANNEL_MODULE_VIRTUAL_PARAMS - virtual params constant
+// - DimmerChannelModule - module struct implementing KnxModule
+//
+// Communication objects are provided by referencing the DimmerChannelObjects
+// type defined above with `objects: DimmerChannelObjects,`
+
+knxprod::define_module! {
+    /// Module definition for a dimmer channel.
+    ///
+    /// This module encapsulates all the parameters and communication objects
+    /// for a single dimmer channel. It can be instantiated multiple times
+    /// with different argument values for multi-channel devices.
+    pub module DimmerChannelModule {
+        name = "DimmerChannel",
+        description = "Dimmer channel module",
+
+        args {
+            ParamBase: param_offset,
+            ObjBase: object_number,
+            ChNo: display(1),
+        }
+
+        virtual_params {
+            // Inline syntax: name: Type(size) = "display" [modifier],
+            channel_name: String(30) = "Channel name" [text_source],
+        }
+
+        params {
+            /// Minimum brightness level (0-100%)
+            #[ets(display = "Minimum brightness", suffix = "%")]
+            min_brightness: u8,
+
+            /// Maximum brightness level (0-100%)
+            #[ets(display = "Maximum brightness", suffix = "%")]
+            max_brightness: u8,
+
+            /// Dimming speed for this channel (0-255, in 10ms steps)
+            #[ets(display = "Dimming speed", suffix = "x10ms")]
+            dim_speed: u8,
+
+            /// Power-on brightness level
+            #[ets(display = "Power-on level", suffix = "%")]
+            power_on_level: u8,
+        }
+
+        // Reference the objects type defined above - provides both ETS metadata and runtime storage
+        objects: DimmerChannelObjects,
+
+        layout {
+            block "DimmerChannel" => "{{ChNo}}: {{0}}" {
+                param channel_name
+                sep "Dimming Settings"
+                param min_brightness
+                param max_brightness
+                param dim_speed
+                param power_on_level
+                obj switch
+                obj dim_value
+                obj status
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Device-Level Communication Objects
 // ============================================================================
 //
 // At runtime, modules are flattened - the device sees a single flat array of
-// communication objects. This module defines the actual runtime storage for
-// all comm objects across all channel instances.
+// communication objects. This struct aggregates all channel instances.
 //
 // Object layout (4 channels × 3 objects = 12 total):
 //   0: Ch1 Switch     3: Ch2 Switch     6: Ch3 Switch     9:  Ch4 Switch
 //   1: Ch1 Dim        4: Ch2 Dim        7: Ch3 Dim        10: Ch4 Dim
 //   2: Ch1 Status     5: Ch2 Status     8: Ch3 Status     11: Ch4 Status
 
-/// Communication objects and module definitions.
-///
-/// This module contains `DimmerChannelObjects` which serves dual purposes:
-/// 1. **ETS metadata**: Provides comm object definitions for XML generation
-/// 2. **Runtime storage**: Implements `ComObjects` trait for actual use
-///
-/// The submodule structure avoids `Index` type name collisions from multiple
-/// `#[derive(EtsComObjects)]` invocations.
+/// Communication objects module - provides separate namespace for Index type.
 pub mod comm_objs {
     use super::*;
-    #[allow(unused_imports)]
-    use zweidraehte::objects::comm::{ComObject, ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects};
-
-    /// Per-channel module definition and runtime objects.
-    pub mod channel {
-        use super::*;
-
-        /// Communication objects for a dimmer channel.
-        ///
-        /// This type serves dual purposes:
-        /// 1. **ETS metadata**: Provides comm object definitions for XML generation via `ETS_COMM_OBJECTS`
-        /// 2. **Runtime storage**: Implements `ComObjects` trait for actual runtime use
-        ///
-        /// Text template substitution in ETS:
-        /// - `{{ChNo}}` is replaced by the channel number argument
-        /// - `{{0}}` is replaced by the value of the parameter referenced by `TextParameterRefId`
-        #[derive(EtsComObjects)]
-        pub struct DimmerChannelObjects {
-            #[ets(
-                index = 0,
-                display = "Switch",
-                function = "Switch on/off",
-                flags = C | R | W | T,
-                text_template = "Ch{{ChNo}} Switch: {{0}}"
-            )]
-            pub switch: ComObject<DPT_Switch>,
-
-            #[ets(
-                index = 1,
-                display = "Dimming value",
-                function = "Dimming value %",
-                flags = C | R | W | T,
-                text_template = "Ch{{ChNo}} Dim: {{0}}"
-            )]
-            pub dim_value: ComObject<DPT_Scaling>,
-
-            #[ets(
-                index = 2,
-                display = "Status",
-                function = "Status feedback",
-                flags = C | T,
-                text_template = "Ch{{ChNo}} Status: {{0}}"
-            )]
-            pub status: ComObject<DPT_State>,
-        }
-
-        /// Module definition for a dimmer channel.
-        ///
-        /// This module encapsulates all the parameters and communication objects
-        /// for a single dimmer channel. It can be instantiated multiple times
-        /// with different argument values for multi-channel devices.
-        pub struct DimmerChannelModule;
-
-        impl KnxModule for DimmerChannelModule {
-            const NAME: &'static str = "DimmerChannel";
-
-            // Allocates values are computed automatically from Params and Objects types
-            const ARGUMENTS: &'static [ModuleArgDef] = &[
-                ModuleArgDef::param_offset("ParamBase"),
-                ModuleArgDef::object_number("ObjBase"),
-                ModuleArgDef::display("ChNo", 1),
-            ];
-
-            // MODULE_PARAMS and MODULE_COMM_OBJECTS are automatically derived from these types
-            type Params = DimmerChannelParams;
-            type Objects = DimmerChannelObjects;
-
-            const INTERNAL_DESCRIPTION: Option<&'static str> = Some("Dimmer channel module");
-
-            /// Custom module layout using the ets_module_pages! macro.
-            fn module_layout() -> Option<knxprod::page_layout::ModulePageLayout> {
-                use knxprod::ets_module_pages;
-
-                Some(ets_module_pages! {
-                    block "DimmerChannel" => "{{ChNo}}: {{0}}" {
-                        param channel_name
-                        sep "Dimming Settings"
-                        param min_brightness
-                        param max_brightness
-                        param dim_speed
-                        param power_on_level
-                        obj switch
-                        obj dim_value
-                        obj status
-                    }
-                })
-            }
-        }
-    }
-    pub use channel::{DimmerChannelModule, DimmerChannelObjects};
 
     /// Runtime communication objects for all 4 dimmer channels (12 objects total).
     ///
@@ -450,9 +476,6 @@ pub mod comm_objs {
         pub channels: [DimmerChannelObjects; NUM_CHANNELS],
     }
 }
-
-// Re-export DimmerChannelModule at module level for use in DeviceParams
-pub use comm_objs::DimmerChannelModule;
 
 // ============================================================================
 // Device Definition
@@ -520,8 +543,9 @@ mod tests {
 
     #[test]
     fn test_param_size() {
-        // Global: 5 bytes, Channels: 4 * 34 = 136 bytes, Total: 141 bytes
-        assert_eq!(core::mem::size_of::<DeviceParams>(), 141);
+        // Global: 5 bytes, Channels: 4 * 4 = 16 bytes, Total: 21 bytes
+        // (channel_name is a virtual-only param, not in struct)
+        assert_eq!(core::mem::size_of::<DeviceParams>(), 21);
     }
 
     // ========================================================================
@@ -530,10 +554,15 @@ mod tests {
 
     #[test]
     fn test_all_device_params_layout() {
-        // DeviceParams = 5 global bytes + 4 * 34 channel bytes = 141 bytes
-        // DimmerChannelParams = 30 bytes channel_name + 4 * 1 byte = 34 bytes
-        assert_eq!(core::mem::size_of::<DeviceParams>(), 141);
-        assert_eq!(core::mem::size_of::<DimmerChannelParams>(), 34);
+        // Rust struct sizes (NO virtual channel_name - it's ETS-only metadata):
+        // DeviceParams = 5 global bytes + 4 * 4 channel bytes = 21 bytes
+        // DimmerChannelModuleParams = 4 bytes (min_brightness, max_brightness, dim_speed, power_on_level)
+        //
+        // The Rust struct layout now exactly matches device memory layout.
+        // Virtual parameters like channel_name exist only in ETS metadata
+        // (see DIMMER_CHANNEL_VIRTUAL_PARAMS).
+        assert_eq!(core::mem::size_of::<DeviceParams>(), 21);
+        assert_eq!(core::mem::size_of::<DimmerChannelModuleParams>(), 4);
     }
 
     #[test]
@@ -571,6 +600,7 @@ mod tests {
     fn test_all_device_params_memory_representation() {
         // Create params with known values
         // Write raw bytes directly to test memory layout
+        // DeviceParams is now 21 bytes: 5 global + 4 * 4 channel
         let mut raw_bytes = [0u8; core::mem::size_of::<DeviceParams>()];
 
         // Set global params (using valid enum values for ChannelEnable)
@@ -581,11 +611,15 @@ mod tests {
         raw_bytes[4] = 0x55; // global_dim_speed
 
         // Set channel 1 data (starts at offset 5)
-        raw_bytes[5] = 0xA1; // ch1.channel_name[0]
-        raw_bytes[35] = 0xA2; // ch1.min_brightness at offset 5 + 30 = 35
+        // DimmerChannelModuleParams is 4 bytes: min_brightness, max_brightness, dim_speed, power_on_level
+        raw_bytes[5] = 0xA1; // ch1.min_brightness
+        raw_bytes[6] = 0xA2; // ch1.max_brightness
+        raw_bytes[7] = 0xA3; // ch1.dim_speed
+        raw_bytes[8] = 0xA4; // ch1.power_on_level
 
-        // Set channel 2 data (starts at offset 5 + 34 = 39)
-        raw_bytes[39] = 0xB1; // ch2.channel_name[0]
+        // Set channel 2 data (starts at offset 5 + 4 = 9)
+        raw_bytes[9] = 0xB1; // ch2.min_brightness
+        raw_bytes[10] = 0xB2; // ch2.max_brightness
 
         // Interpret as DeviceParams
         let params: &DeviceParams = unsafe { &*(raw_bytes.as_ptr() as *const DeviceParams) };
@@ -597,10 +631,13 @@ mod tests {
         assert_eq!(params.enable_ch4, ChannelEnable::Disabled);
         assert_eq!(params.global_dim_speed, 0x55);
 
-        // Verify channel data
-        assert_eq!(params.channels[0].channel_name[0], 0xA1);
-        assert_eq!(params.channels[0].min_brightness, 0xA2);
-        assert_eq!(params.channels[1].channel_name[0], 0xB1);
+        // Verify channel data (now without channel_name)
+        assert_eq!(params.channels[0].min_brightness, 0xA1);
+        assert_eq!(params.channels[0].max_brightness, 0xA2);
+        assert_eq!(params.channels[0].dim_speed, 0xA3);
+        assert_eq!(params.channels[0].power_on_level, 0xA4);
+        assert_eq!(params.channels[1].min_brightness, 0xB1);
+        assert_eq!(params.channels[1].max_brightness, 0xB2);
     }
 
     #[test]
@@ -611,11 +648,11 @@ mod tests {
         assert_eq!(DeviceParams::CHANNELS_COUNT, 4);
 
         // Test channel_param_offset (1-indexed)
-        // Global params are 5 bytes, DimmerChannelParams is 34 bytes each
+        // Global params are 5 bytes, DimmerChannelModuleParams is 4 bytes each
         assert_eq!(DeviceParams::channel_param_offset(1), 5);
-        assert_eq!(DeviceParams::channel_param_offset(2), 5 + 34);
-        assert_eq!(DeviceParams::channel_param_offset(3), 5 + 2 * 34);
-        assert_eq!(DeviceParams::channel_param_offset(4), 5 + 3 * 34);
+        assert_eq!(DeviceParams::channel_param_offset(2), 5 + 4);
+        assert_eq!(DeviceParams::channel_param_offset(3), 5 + 2 * 4);
+        assert_eq!(DeviceParams::channel_param_offset(4), 5 + 3 * 4);
 
         // Test channel_object_base (1-indexed)
         assert_eq!(DeviceParams::channel_object_base(1), 0);
@@ -668,7 +705,7 @@ mod tests {
         assert_eq!(channels_offset, 5); // 5 global param bytes (enable_ch1-4, global_dim_speed)
 
         // Each channel's offset in raw bytes
-        let param_size = core::mem::size_of::<DimmerChannelParams>();
+        let param_size = core::mem::size_of::<DimmerChannelModuleParams>();
         for ch in 1..=NUM_CHANNELS {
             let expected = channels_offset + (ch - 1) * param_size;
             let from_helper = DeviceParams::channel_param_offset(ch);
@@ -742,34 +779,15 @@ mod tests {
             enable_ch4: ChannelEnable::Disabled, // Channel 4 disabled
             global_dim_speed: 50,
             channels: [
-                DimmerChannelParams {
-                    channel_name: *b"Channel 1\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-                    min_brightness: 0,
-                    max_brightness: 100,
-                    dim_speed: 30,
-                    power_on_level: 50,
-                },
-                DimmerChannelParams {
-                    channel_name: *b"Channel 2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-                    min_brightness: 10,
-                    max_brightness: 90,
-                    dim_speed: 40,
-                    power_on_level: 60,
-                },
-                DimmerChannelParams {
-                    channel_name: *b"Channel 3\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+                DimmerChannelModuleParams { min_brightness: 0, max_brightness: 100, dim_speed: 30, power_on_level: 50 },
+                DimmerChannelModuleParams { min_brightness: 10, max_brightness: 90, dim_speed: 40, power_on_level: 60 },
+                DimmerChannelModuleParams {
                     min_brightness: 20, // Channel 3 has 20% minimum
                     max_brightness: 80, // and 80% maximum
                     dim_speed: 50,
                     power_on_level: 70,
                 },
-                DimmerChannelParams {
-                    channel_name: *b"Channel 4\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-                    min_brightness: 0,
-                    max_brightness: 100,
-                    dim_speed: 60,
-                    power_on_level: 80,
-                },
+                DimmerChannelModuleParams { min_brightness: 0, max_brightness: 100, dim_speed: 60, power_on_level: 80 },
             ],
         };
 
@@ -979,34 +997,10 @@ mod tests {
             enable_ch4: ChannelEnable::Disabled,
             global_dim_speed: 50,
             channels: [
-                DimmerChannelParams {
-                    channel_name: *b"Ch1\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-                    min_brightness: 0,
-                    max_brightness: 100,
-                    dim_speed: 30,
-                    power_on_level: 50,
-                },
-                DimmerChannelParams {
-                    channel_name: *b"Ch2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-                    min_brightness: 10,
-                    max_brightness: 90,
-                    dim_speed: 40,
-                    power_on_level: 60,
-                },
-                DimmerChannelParams {
-                    channel_name: *b"Ch3\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-                    min_brightness: 20,
-                    max_brightness: 80,
-                    dim_speed: 50,
-                    power_on_level: 70,
-                },
-                DimmerChannelParams {
-                    channel_name: *b"Ch4\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-                    min_brightness: 0,
-                    max_brightness: 100,
-                    dim_speed: 60,
-                    power_on_level: 80,
-                },
+                DimmerChannelModuleParams { min_brightness: 0, max_brightness: 100, dim_speed: 30, power_on_level: 50 },
+                DimmerChannelModuleParams { min_brightness: 10, max_brightness: 90, dim_speed: 40, power_on_level: 60 },
+                DimmerChannelModuleParams { min_brightness: 20, max_brightness: 80, dim_speed: 50, power_on_level: 70 },
+                DimmerChannelModuleParams { min_brightness: 0, max_brightness: 100, dim_speed: 60, power_on_level: 80 },
             ],
         };
 

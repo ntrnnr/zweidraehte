@@ -307,8 +307,14 @@ pub struct EtsParamDef {
     /// Suffix text displayed after the parameter value (e.g., "s" for seconds)
     pub suffix: Option<&'static str>,
 
-    /// Offset in the parameter block (bytes)
+    /// Offset in device memory (bytes).
+    /// For `no_memory` (virtual) parameters, this is typically 0 since they have no memory location.
     pub offset: u16,
+
+    /// Offset in the Rust struct (bytes).
+    /// Note: This is now always equal to `offset` since virtual parameters are no longer
+    /// included in Rust structs. Kept for compatibility.
+    pub rust_offset: u16,
 
     /// Size in bits
     pub size_bits: u8,
@@ -321,6 +327,12 @@ pub struct EtsParamDef {
 
     /// Whether this parameter is hidden (Access="None" in ETS)
     pub hidden: bool,
+
+    /// Whether this parameter has no memory location (virtual/ETS-only parameter).
+    /// Virtual parameters exist only in ETS for text substitution (e.g., `{{0}}` templates)
+    /// and are not stored in device memory. They will not have a `<Memory>` element
+    /// in the generated XML.
+    pub no_memory: bool,
 
     /// Override for the ParameterType name in ETS export (optional)
     /// If None, a name is auto-generated based on param_type and size
@@ -770,4 +782,98 @@ pub trait HasModuleCommObjects {
 /// Implementation for unit type allows modules to have no communication objects.
 impl HasModuleCommObjects for () {
     const ETS_COMM_OBJECTS: &'static [EtsCommObjectDef] = &[];
+}
+
+// ============================================================================
+// Virtual Parameter Macro
+// ============================================================================
+
+/// Macro for defining virtual (no-memory) parameters.
+///
+/// Virtual parameters exist only in ETS for text substitution (e.g., `{{0}}` templates)
+/// and are NOT stored in device memory. They have no `<Memory>` element in the XML.
+///
+/// # Syntax
+///
+/// ```rust,ignore
+/// use zweidraehte::ets_virtual_params;
+///
+/// ets_virtual_params! {
+///     pub DIMMER_CHANNEL_VIRTUAL_PARAMS {
+///         // String parameter (30 bytes) marked as text source for {{0}}
+///         channel_name: String(30) => "Channel name" [text_source],
+///     }
+/// }
+/// ```
+///
+/// # Supported Types
+///
+/// - `String(N)` - Text parameter with N bytes (N * 8 bits)
+///
+/// # Modifiers
+///
+/// - `[text_source]` - Marks this parameter as the text source for `{{0}}` substitution
+#[macro_export]
+macro_rules! ets_virtual_params {
+    // String with text_source - single param
+    (
+        $(#[$attr:meta])*
+        $vis:vis $name:ident {
+            $param_name:ident : String($size:expr) => $display:literal [text_source] $(,)?
+        }
+    ) => {
+        $(#[$attr])*
+        $vis const $name: &[$crate::ets::EtsParamDefExt] = &[
+            $crate::ets::EtsParamDefExt {
+                base: $crate::ets::EtsParamDef {
+                    name: stringify!($param_name),
+                    display_name: $display,
+                    suffix: None,
+                    offset: 0,
+                    rust_offset: 0,
+                    size_bits: ($size * 8) as u8,
+                    bit_offset: 0,
+                    param_type: $crate::ets::EtsParamType::String,
+                    hidden: false,
+                    no_memory: true,
+                    type_name: None,
+                    text_pattern: None,
+                },
+                enum_variants: None,
+                default_value: None,
+                is_text_source: true,
+            },
+        ];
+    };
+
+    // String without modifier - single param
+    (
+        $(#[$attr:meta])*
+        $vis:vis $name:ident {
+            $param_name:ident : String($size:expr) => $display:literal $(,)?
+        }
+    ) => {
+        $(#[$attr])*
+        $vis const $name: &[$crate::ets::EtsParamDefExt] = &[
+            $crate::ets::EtsParamDefExt {
+                base: $crate::ets::EtsParamDef {
+                    name: stringify!($param_name),
+                    display_name: $display,
+                    suffix: None,
+                    offset: 0,
+                    rust_offset: 0,
+                    size_bits: ($size * 8) as u8,
+                    bit_offset: 0,
+                    param_type: $crate::ets::EtsParamType::String,
+                    hidden: false,
+                    no_memory: true,
+                    type_name: None,
+                    text_pattern: None,
+                },
+                enum_variants: None,
+                default_value: None,
+                is_text_source: false,
+            },
+        ];
+    };
 }

@@ -177,6 +177,18 @@ Contains:
   - Embedded firmware for STM32
   - Uses embassy async runtime, defmt logging, embassy-stm32 HAL
 
+### Documentation (`/docs`)
+
+- `DSL_REFERENCE.md` - Comprehensive reference for the ETS DSL macros:
+  - `#[derive(EtsParams)]` - Parameter struct definitions
+  - `#[derive(EtsEnum)]` - Simple enum dropdowns
+  - `#[derive(EtsUnion)]` - Tagged union/variant parameters
+  - `#[derive(EtsComObjects)]` - Communication object definitions
+  - `ets_pages!` - Page layout macro for ETS UI structure
+  - `define_module!` - Reusable module definitions for multi-channel devices
+  - Conditional visibility (`when`/`choose` blocks)
+  - Text templates (`{{0}}`, `{{ArgName}}`)
+
 ### Architecture Layers
 
 ```

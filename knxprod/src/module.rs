@@ -320,6 +320,34 @@ pub trait KnxModule {
     const MODULE_PARAMS: Option<&'static [zweidraehte::ets::EtsParamDefExt]> =
         Some(<Self::Params as zweidraehte::ets::HasModuleParams>::ETS_PARAMS_EXT);
 
+    /// Virtual parameter definitions for the module.
+    ///
+    /// Virtual parameters exist only in ETS for text substitution (e.g., `{{0}}` templates)
+    /// and are NOT stored in device memory. They have `no_memory: true` in their definition.
+    ///
+    /// **Default implementation**: Returns `None` (no virtual params).
+    ///
+    /// Override this to provide virtual parameters like channel names that appear in ETS
+    /// UI but don't consume device memory.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// const VIRTUAL_PARAMS: Option<&'static [EtsParamDefExt]> = Some(&[
+    ///     EtsParamDefExt {
+    ///         base: EtsParamDef {
+    ///             name: "channel_name",
+    ///             display_name: "Channel name",
+    ///             no_memory: true,  // Virtual - no device memory
+    ///             // ... other fields
+    ///         },
+    ///         is_text_source: true,  // Used for {{0}} substitution
+    ///         // ...
+    ///     },
+    /// ]);
+    /// ```
+    const VIRTUAL_PARAMS: Option<&'static [zweidraehte::ets::EtsParamDefExt]> = None;
+
     /// Communication object definitions for the module.
     ///
     /// **Default implementation**: Automatically uses `<Self::Objects as HasModuleCommObjects>::ETS_COMM_OBJECTS`.
@@ -785,6 +813,9 @@ pub struct StoredModuleDef {
     /// Parameter definitions for the module (from ETS_PARAMS_EXT).
     /// Used to generate the ModuleDef/Static/Parameters section.
     pub params: Option<&'static [zweidraehte::ets::EtsParamDefExt]>,
+    /// Virtual parameter definitions for the module (from VIRTUAL_PARAMS).
+    /// These exist only in ETS for text substitution and are NOT stored in device memory.
+    pub virtual_params: Option<&'static [zweidraehte::ets::EtsParamDefExt]>,
     /// Communication object definitions for the module (from ETS_COMM_OBJECTS).
     /// Used to generate the ModuleDef/Static/ComObjectTable section.
     pub comm_objects: Option<&'static [zweidraehte::ets::EtsCommObjectDef]>,
@@ -800,6 +831,28 @@ impl StoredModuleDef {
     /// set by constructor methods like `param_offset()`, `object_number()`, etc.
     pub fn arg_index_by_role(&self, role: ModuleArgRole) -> Option<usize> {
         ModuleArgDef::find_by_role(&self.arguments, role)
+    }
+
+    /// Find a parameter by name across both virtual_params and params.
+    ///
+    /// Returns the 1-based parameter number (matching the XML ID scheme).
+    /// Virtual params come first, then regular params, matching the order
+    /// used when generating the XML.
+    pub fn find_param_num_by_name(&self, name: &str) -> Option<u32> {
+        let virtual_params = self.virtual_params.unwrap_or(&[]);
+        let regular_params = self.params.unwrap_or(&[]);
+
+        // First search virtual params (index 0 -> param_num 1)
+        if let Some(idx) = virtual_params.iter().position(|p| p.base.name == name) {
+            return Some((idx + 1) as u32);
+        }
+
+        // Then search regular params (offset by virtual_params.len())
+        if let Some(idx) = regular_params.iter().position(|p| p.base.name == name) {
+            return Some((virtual_params.len() + idx + 1) as u32);
+        }
+
+        None
     }
 }
 
@@ -863,6 +916,7 @@ impl ModuleCollection {
             arguments: M::ARGUMENTS.to_vec(),
             internal_description: M::INTERNAL_DESCRIPTION.map(|s| s.to_string()),
             params: M::MODULE_PARAMS,
+            virtual_params: M::VIRTUAL_PARAMS,
             comm_objects: M::MODULE_COMM_OBJECTS,
             page_layout: M::module_layout(),
         });
@@ -916,6 +970,581 @@ impl ModuleCollection {
         collection.ensure_definition::<M>();
         collection
     }
+}
+
+// ============================================================================
+// define_module! Macro
+// ============================================================================
+
+/// Macro for defining KNX modules with an ergonomic DSL.
+///
+/// This macro generates:
+/// - A params struct with `#[derive(EtsParams)]`
+/// - Virtual params constant (optional)
+/// - The module struct implementing `KnxModule`
+///
+/// # Syntax
+///
+/// The syntax uses `=` for module-level assignments to be consistent with
+/// `#[ets(...)]` attribute style used in derive macros.
+///
+/// ```rust,ignore
+/// define_module! {
+///     /// Module documentation
+///     pub module DimmerChannelModule {
+///         name = "DimmerChannel",
+///         description = "Dimmer channel module",  // optional
+///
+///         // Module arguments (required)
+///         args {
+///             ParamBase: param_offset,
+///             ObjBase: object_number,
+///             ChNo: display(1),
+///         }
+///
+///         // Virtual parameters - ETS-only, not in device memory (optional)
+///         // Syntax: name: Type(size) = "display",
+///         //     or: name: Type(size) = "display" [text_source],
+///         virtual_params {
+///             channel_name: String(30) = "Channel name" [text_source],
+///         }
+///
+///         // Regular parameters (optional)
+///         params {
+///             #[ets(display = "Minimum brightness", suffix = "%")]
+///             min_brightness: u8,
+///
+///             #[ets(display = "Maximum brightness", suffix = "%")]
+///             max_brightness: u8 = 100,  // with default
+///         }
+///
+///         // Communication objects - reference an existing type with #[derive(EtsComObjects)]
+///         // This type provides BOTH ETS metadata AND runtime storage
+///         objects: DimmerChannelObjects,
+///
+///         // Page layout (optional) - uses ets_module_pages! syntax
+///         layout {
+///             block "DimmerChannel" => "{{ChNo}}: {{0}}" {
+///                 param channel_name
+///                 sep "Dimming Settings"
+///                 param min_brightness
+///                 obj switch
+///             }
+///         }
+///     }
+/// }
+/// ```
+///
+/// # Virtual Parameters
+///
+/// Virtual parameters use a compact inline syntax (no attributes):
+/// - `name: Type(size) = "display",` - Basic virtual param
+/// - `name: Type(size) = "display" [text_source],` - With text_source modifier
+///
+/// The `=` is used for the display name to be consistent with other assignment patterns.
+///
+/// # Communication Objects
+///
+/// Define your communication objects separately using `#[derive(EtsComObjects)]`:
+///
+/// ```rust,ignore
+/// #[derive(EtsComObjects)]
+/// pub struct DimmerChannelObjects {
+///     #[ets(index = 0, display = "Switch", function = "Switch on/off",
+///           flags = C | R | W | T, text_template = "Ch{{ChNo}} Switch: {{0}}")]
+///     pub switch: ComObject<DPT_Switch>,
+///
+///     #[ets(index = 1, display = "Dimming", function = "Dimming value %")]
+///     pub dim_value: ComObject<DPT_Scaling>,
+/// }
+/// ```
+///
+/// Then reference this type in the module definition with `objects: DimmerChannelObjects`.
+/// This single type provides both ETS metadata generation AND runtime storage.
+///
+/// # Generated Items
+///
+/// For a module named `FooModule`, the macro generates:
+/// - `FooModuleParams` - params struct (if params defined)
+/// - `FOO_MODULE_VIRTUAL_PARAMS` - virtual params constant (if virtual_params defined)
+/// - `FooModule` - the module type implementing `KnxModule`
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use knxprod::define_module;
+/// use zweidraehte::dpt::DPT_Switch;
+/// use zweidraehte::ets::EtsComObjects;
+/// use zweidraehte::objects::comm::ComObject;
+///
+/// // Define objects once - used for both ETS metadata and runtime storage
+/// #[derive(EtsComObjects)]
+/// pub struct SwitchObjects {
+///     #[ets(index = 0, display = "Switch", function = "Switching", flags = C | R | W | T)]
+///     pub switch: ComObject<DPT_Switch>,
+/// }
+///
+/// define_module! {
+///     pub module SwitchModule {
+///         name = "Switch",
+///
+///         args {
+///             ParamBase: param_offset,
+///             ObjBase: object_number,
+///             ChNo: display(1),
+///         }
+///
+///         params {
+///             #[ets(display = "Enable")]
+///             enabled: u8,
+///         }
+///
+///         objects: SwitchObjects,
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! define_module {
+    // Main entry point
+    // Uses `=` for module-level assignments
+    // Virtual params use inline syntax: `name: Type(size) = "display" [modifier],`
+    // Objects: reference an existing type with `objects: TypeName,`
+    (
+        $(#[$module_attr:meta])*
+        $vis:vis module $module_name:ident {
+            name = $name_str:literal,
+            $(description = $desc:literal,)?
+
+            args {
+                $($arg_name:ident : $arg_type:tt $(($arg_alloc:expr))?),* $(,)?
+            }
+
+            $(
+                virtual_params {
+                    $(
+                        $vp_name:ident : $vp_type:tt ($vp_size:expr) = $vp_display:literal $([$vp_mod:ident])?
+                    ),* $(,)?
+                }
+            )?
+
+            $(
+                params {
+                    $(
+                        $(#[$p_attr:meta])*
+                        $p_name:ident : $p_type:ty $(= $p_default:expr)? $(,)?
+                    )*
+                }
+            )?
+
+            $(objects: $objects_type:ty,)?
+
+            $(
+                layout $layout_body:tt
+            )?
+        }
+    ) => {
+        $crate::__define_module_impl! {
+            @module
+            attrs: [$(#[$module_attr])*]
+            vis: [$vis]
+            module_name: [$module_name]
+            name_str: [$name_str]
+            desc: [$($desc)?]
+            args: [$($arg_name : $arg_type $(($arg_alloc))?),*]
+            virtual_params: [$($(
+                name: [$vp_name]
+                type: [$vp_type]
+                size: [$vp_size]
+                display: [$vp_display]
+                modifier: [$($vp_mod)?]
+            )*)?]
+            params: [$($(
+                attrs: [$(#[$p_attr])*]
+                name: [$p_name]
+                type: [$p_type]
+                default: [$($p_default)?]
+            )*)?]
+            objects: [$($objects_type)?]
+            layout: [$($layout_body)?]
+        }
+    };
+}
+
+/// Internal implementation macro for define_module - generates the params struct.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __define_module_impl {
+    // Generate everything
+    (
+        @module
+        attrs: [$(#[$module_attr:meta])*]
+        vis: [$vis:vis]
+        module_name: [$module_name:ident]
+        name_str: [$name_str:literal]
+        desc: [$($desc:literal)?]
+        args: [$($arg_name:ident : $arg_type:tt $(($arg_alloc:expr))?),*]
+        virtual_params: [$(
+            name: [$vp_name:ident]
+            type: [$vp_type:tt]
+            size: [$vp_size:expr]
+            display: [$vp_display:literal]
+            modifier: [$($vp_mod:ident)?]
+        )*]
+        params: [$(
+            attrs: [$(#[$p_attr:meta])*]
+            name: [$p_name:ident]
+            type: [$p_type:ty]
+            default: [$($p_default:expr)?]
+        )*]
+        objects: [$($objects_type:ty)?]
+        layout: [$($layout_body:tt)?]
+    ) => {
+        // Generate params struct name (ModuleNameParams)
+        $crate::__define_module_params_struct! {
+            vis: [$vis]
+            module_name: [$module_name]
+            params: [$(
+                attrs: [$(#[$p_attr])*]
+                name: [$p_name]
+                type: [$p_type]
+            )*]
+        }
+
+        // Generate virtual params constant (MODULE_NAME_VIRTUAL_PARAMS)
+        $crate::__define_module_virtual_params! {
+            vis: [$vis]
+            module_name: [$module_name]
+            virtual_params: [$(
+                name: [$vp_name]
+                type: [$vp_type]
+                size: [$vp_size]
+                display: [$vp_display]
+                modifier: [$($vp_mod)?]
+            )*]
+        }
+
+        // Generate the module struct and KnxModule impl
+        $crate::__define_module_struct! {
+            attrs: [$(#[$module_attr])*]
+            vis: [$vis]
+            module_name: [$module_name]
+            name_str: [$name_str]
+            desc: [$($desc)?]
+            args: [$($arg_name : $arg_type $(($arg_alloc))?),*]
+            has_virtual_params: [$($vp_name)*]
+            has_params: [$($p_name)*]
+            objects_type: [$($objects_type)?]
+            layout: [$($layout_body)?]
+        }
+    };
+}
+
+/// Generate the params struct with #[derive(EtsParams)]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __define_module_params_struct {
+    // No params - generate unit type placeholder
+    (
+        vis: [$vis:vis]
+        module_name: [$module_name:ident]
+        params: []
+    ) => {
+        // No params struct needed - will use () as Params type
+    };
+
+    // Has params - generate the struct
+    (
+        vis: [$vis:vis]
+        module_name: [$module_name:ident]
+        params: [$(
+            attrs: [$(#[$p_attr:meta])*]
+            name: [$p_name:ident]
+            type: [$p_type:ty]
+        )+]
+    ) => {
+        $crate::paste::paste! {
+            #[derive(Debug, Clone, Copy, ::zweidraehte::ets::EtsParams, ::serde::Serialize, ::serde::Deserialize)]
+            #[repr(C)]
+            $vis struct [<$module_name Params>] {
+                $(
+                    $(#[$p_attr])*
+                    pub $p_name: $p_type,
+                )+
+            }
+        }
+    };
+}
+
+/// Generate the virtual params constant
+///
+/// Virtual params use inline syntax: `name: Type(size) = "display" [modifier],`
+/// Supported modifiers:
+/// - `text_source` - Mark as the text source for `{{0}}` template substitution
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __define_module_virtual_params {
+    // No virtual params - don't generate anything
+    (
+        vis: [$vis:vis]
+        module_name: [$module_name:ident]
+        virtual_params: []
+    ) => {
+        // No virtual params constant needed
+    };
+
+    // Has virtual params with inline syntax
+    (
+        vis: [$vis:vis]
+        module_name: [$module_name:ident]
+        virtual_params: [$(
+            name: [$vp_name:ident]
+            type: [$vp_type:tt]
+            size: [$vp_size:expr]
+            display: [$vp_display:literal]
+            modifier: [$($vp_mod:ident)?]
+        )+]
+    ) => {
+        $crate::paste::paste! {
+            $vis const [<$module_name:snake:upper _VIRTUAL_PARAMS>]: &[::zweidraehte::ets::EtsParamDefExt] = &[
+                $(
+                    $crate::__vp_def!(
+                        name: $vp_name,
+                        type: $vp_type,
+                        size: $vp_size,
+                        display: $vp_display,
+                        modifier: [$($vp_mod)?]
+                    ),
+                )+
+            ];
+        }
+    };
+}
+
+/// Generate EtsParamDefExt for a virtual param
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __vp_def {
+    // With text_source modifier
+    (
+        name: $name:ident,
+        type: $vp_type:tt,
+        size: $size:expr,
+        display: $display:literal,
+        modifier: [text_source]
+    ) => {
+        ::zweidraehte::ets::EtsParamDefExt {
+            base: ::zweidraehte::ets::EtsParamDef {
+                name: stringify!($name),
+                display_name: $display,
+                suffix: None,
+                offset: 0,
+                rust_offset: 0,
+                size_bits: ($size * 8) as u8,
+                bit_offset: 0,
+                param_type: $crate::__vp_param_type!($vp_type),
+                hidden: false,
+                no_memory: true,
+                type_name: None,
+                text_pattern: None,
+            },
+            enum_variants: None,
+            default_value: None,
+            is_text_source: true,
+        }
+    };
+
+    // Without modifier (no text_source)
+    (
+        name: $name:ident,
+        type: $vp_type:tt,
+        size: $size:expr,
+        display: $display:literal,
+        modifier: []
+    ) => {
+        ::zweidraehte::ets::EtsParamDefExt {
+            base: ::zweidraehte::ets::EtsParamDef {
+                name: stringify!($name),
+                display_name: $display,
+                suffix: None,
+                offset: 0,
+                rust_offset: 0,
+                size_bits: ($size * 8) as u8,
+                bit_offset: 0,
+                param_type: $crate::__vp_param_type!($vp_type),
+                hidden: false,
+                no_memory: true,
+                type_name: None,
+                text_pattern: None,
+            },
+            enum_variants: None,
+            default_value: None,
+            is_text_source: false,
+        }
+    };
+}
+
+/// Helper to determine parameter type for virtual params
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __vp_param_type {
+    (String) => { ::zweidraehte::ets::EtsParamType::String };
+    (u8) => { ::zweidraehte::ets::EtsParamType::UnsignedInt };
+    (u16) => { ::zweidraehte::ets::EtsParamType::UnsignedInt };
+    (u32) => { ::zweidraehte::ets::EtsParamType::UnsignedInt };
+    (i8) => { ::zweidraehte::ets::EtsParamType::SignedInt };
+    (i16) => { ::zweidraehte::ets::EtsParamType::SignedInt };
+    (i32) => { ::zweidraehte::ets::EtsParamType::SignedInt };
+}
+
+
+/// Generate the module struct and KnxModule impl
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __define_module_struct {
+    // With objects type
+    (
+        attrs: [$(#[$module_attr:meta])*]
+        vis: [$vis:vis]
+        module_name: [$module_name:ident]
+        name_str: [$name_str:literal]
+        desc: [$($desc:literal)?]
+        args: [$($arg_name:ident : $arg_type:tt $(($arg_alloc:expr))?),*]
+        has_virtual_params: [$($vp_name:ident)*]
+        has_params: [$($p_name:ident)*]
+        objects_type: [$objects_type:ty]
+        layout: [$($layout_body:tt)?]
+    ) => {
+        $crate::paste::paste! {
+            $(#[$module_attr])*
+            $vis struct $module_name;
+
+            impl $crate::module::KnxModule for $module_name {
+                const NAME: &'static str = $name_str;
+
+                const ARGUMENTS: &'static [$crate::module::ModuleArgDef] = &[
+                    $($crate::__module_arg_def!($arg_name : $arg_type $(($arg_alloc))?)),*
+                ];
+
+                $crate::__module_params_type!($module_name [$($p_name)*]);
+
+                type Objects = $objects_type;
+
+                $crate::__module_description!([$($desc)?]);
+
+                $crate::__module_virtual_params!($module_name [$($vp_name)*]);
+
+                $crate::__module_layout!([$($layout_body)?]);
+            }
+        }
+    };
+
+    // Without objects type
+    (
+        attrs: [$(#[$module_attr:meta])*]
+        vis: [$vis:vis]
+        module_name: [$module_name:ident]
+        name_str: [$name_str:literal]
+        desc: [$($desc:literal)?]
+        args: [$($arg_name:ident : $arg_type:tt $(($arg_alloc:expr))?),*]
+        has_virtual_params: [$($vp_name:ident)*]
+        has_params: [$($p_name:ident)*]
+        objects_type: []
+        layout: [$($layout_body:tt)?]
+    ) => {
+        $crate::paste::paste! {
+            $(#[$module_attr])*
+            $vis struct $module_name;
+
+            impl $crate::module::KnxModule for $module_name {
+                const NAME: &'static str = $name_str;
+
+                const ARGUMENTS: &'static [$crate::module::ModuleArgDef] = &[
+                    $($crate::__module_arg_def!($arg_name : $arg_type $(($arg_alloc))?)),*
+                ];
+
+                $crate::__module_params_type!($module_name [$($p_name)*]);
+
+                type Objects = ();
+
+                $crate::__module_description!([$($desc)?]);
+
+                $crate::__module_virtual_params!($module_name [$($vp_name)*]);
+
+                $crate::__module_layout!([$($layout_body)?]);
+            }
+        }
+    };
+}
+
+/// Generate ModuleArgDef from argument specification
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __module_arg_def {
+    ($name:ident : param_offset) => {
+        $crate::module::ModuleArgDef::param_offset(stringify!($name))
+    };
+    ($name:ident : object_number) => {
+        $crate::module::ModuleArgDef::object_number(stringify!($name))
+    };
+    ($name:ident : display ($alloc:expr)) => {
+        $crate::module::ModuleArgDef::display(stringify!($name), $alloc)
+    };
+    ($name:ident : value_base ($alloc:expr)) => {
+        $crate::module::ModuleArgDef::value_base(stringify!($name), $alloc)
+    };
+    ($name:ident : text ($max_len:expr)) => {
+        $crate::module::ModuleArgDef::text(stringify!($name), $max_len)
+    };
+}
+
+/// Generate type Params = ...
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __module_params_type {
+    ($module_name:ident []) => {
+        type Params = ();
+    };
+    ($module_name:ident [$($p_name:ident)+]) => {
+        $crate::paste::paste! {
+            type Params = [<$module_name Params>];
+        }
+    };
+}
+
+
+/// Generate INTERNAL_DESCRIPTION
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __module_description {
+    ([]) => {};
+    ([$desc:literal]) => {
+        const INTERNAL_DESCRIPTION: Option<&'static str> = Some($desc);
+    };
+}
+
+/// Generate VIRTUAL_PARAMS
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __module_virtual_params {
+    ($module_name:ident []) => {};
+    ($module_name:ident [$($vp_name:ident)+]) => {
+        $crate::paste::paste! {
+            const VIRTUAL_PARAMS: Option<&'static [::zweidraehte::ets::EtsParamDefExt]> =
+                Some([<$module_name:snake:upper _VIRTUAL_PARAMS>]);
+        }
+    };
+}
+
+/// Generate module_layout()
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __module_layout {
+    ([]) => {};
+    ([$layout_body:tt]) => {
+        fn module_layout() -> Option<$crate::page_layout::ModulePageLayout> {
+            Some($crate::ets_module_pages! $layout_body)
+        }
+    };
 }
 
 // ============================================================================
@@ -1039,5 +1668,76 @@ mod tests {
         let cond = ConditionalModuleInstance::new(instance, "EnableChannel", 1);
         assert_eq!(cond.selector_param, "EnableChannel");
         assert_eq!(cond.selector_values, vec![1]);
+    }
+
+    // ========================================================================
+    // define_module! macro tests
+    // ========================================================================
+
+    // Test minimal module definition (args only)
+    crate::define_module! {
+        /// A minimal module for testing
+        pub module MinimalModule {
+            name = "Minimal",
+
+            args {
+                ParamBase: param_offset,
+                ObjBase: object_number,
+                ChNo: display(1),
+            }
+        }
+    }
+
+    #[test]
+    fn test_define_module_minimal() {
+        assert_eq!(MinimalModule::NAME, "Minimal");
+        assert_eq!(MinimalModule::ARGUMENTS.len(), 3);
+        assert_eq!(MinimalModule::ARGUMENTS[0].name, "ParamBase");
+        assert_eq!(MinimalModule::ARGUMENTS[0].role, ModuleArgRole::ParamOffset);
+        assert_eq!(MinimalModule::ARGUMENTS[1].name, "ObjBase");
+        assert_eq!(MinimalModule::ARGUMENTS[1].role, ModuleArgRole::ObjectNumber);
+        assert_eq!(MinimalModule::ARGUMENTS[2].name, "ChNo");
+        assert_eq!(MinimalModule::ARGUMENTS[2].allocates, 1);
+    }
+
+    // Test module with params
+    crate::define_module! {
+        /// A module with params for testing
+        pub module ParamsTestModule {
+            name = "ParamsTest",
+            description = "Test module with params",
+
+            args {
+                ParamBase: param_offset,
+                ObjBase: object_number,
+                ChNo: display(1),
+            }
+
+            params {
+                #[ets(display = "Brightness", suffix = "%")]
+                brightness: u8,
+
+                #[ets(display = "Speed")]
+                speed: u8,
+            }
+        }
+    }
+
+    #[test]
+    fn test_define_module_with_params() {
+        assert_eq!(ParamsTestModule::NAME, "ParamsTest");
+        assert_eq!(ParamsTestModule::INTERNAL_DESCRIPTION, Some("Test module with params"));
+
+        // Check MODULE_PARAMS
+        let params = ParamsTestModule::MODULE_PARAMS.expect("Should have params");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].base.name, "brightness");
+        assert_eq!(params[0].base.display_name, "Brightness");
+        assert_eq!(params[0].base.suffix, Some("%"));
+        assert_eq!(params[1].base.name, "speed");
+        assert_eq!(params[1].base.display_name, "Speed");
+
+        // Check generated params struct size
+        assert_eq!(std::mem::size_of::<ParamsTestModuleParams>(), 2);
     }
 }

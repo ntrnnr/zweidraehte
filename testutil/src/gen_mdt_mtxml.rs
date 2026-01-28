@@ -84,6 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         name: "Push Button Lite 55 1-fold Basic",
         device: &DEVICE_DESCRIPTOR,
         params: MdtParams::ETS_PARAMS_EXT,
+        virtual_params: None,
         param_defaults: param_bytes,
         comm_objects: comm_objs::MdtComObjects::ETS_COMM_OBJECTS,
         comm_object_refs: comm_objs::MdtComObjects::ETS_COMM_OBJECT_REFS,

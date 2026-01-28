@@ -1036,6 +1036,8 @@ name = "knxprod"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "const-default",
+ "paste",
  "quick-xml",
  "regex",
  "serde",
@@ -1046,6 +1048,7 @@ dependencies = [
 name = "knxprod-tui"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "clap",
  "crossterm",
  "knxprod",
