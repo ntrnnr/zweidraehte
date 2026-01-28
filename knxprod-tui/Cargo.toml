@@ -11,6 +11,8 @@ knxprod = { path = "../knxprod" }
 
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+ratatui-image = { workspace = true }
+image = { workspace = true }
 
 clap = { version = "4", features = ["derive"] }
 base64 = "0.22"

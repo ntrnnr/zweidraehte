@@ -321,6 +321,15 @@ fn create_content_item<'a>(
                 Span::styled(info, Style::default().fg(Color::DarkGray).bg(bg)),
             ]))
         }
+        ContentItem::Picture { ref_id } => {
+            // For images, we display a placeholder line.
+            // The actual image is rendered separately in the content area.
+            let label = format!("🖼  [Image: {}]", ref_id);
+            ListItem::new(Line::from(vec![Span::styled(
+                label,
+                Style::default().fg(Color::Yellow).bg(bg),
+            )]))
+        }
     }
 }
 

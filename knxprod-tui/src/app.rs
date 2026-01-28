@@ -1,5 +1,9 @@
 //! Application state and logic for the KNX TUI viewer.
 
+use std::collections::HashMap;
+use std::path::Path;
+
+use knxprod::baggage::BaggageIndex;
 use knxprod::device_info::DeviceInfo;
 use knxprod::master_data::{MasterData, MaskVersion, TableFlavour};
 use knxprod::model::{DeviceModel, ParameterValue};
@@ -7,6 +11,8 @@ use knxprod::{
     Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose,
     ComObjectPriority, EnableFlag, ParameterBlock, ParameterBlockItem, ParameterTypeDef, WhenItem,
 };
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
 
 /// Interpolate text containing `{{ref:default}}` or `{{ref}}` patterns.
 ///
@@ -404,6 +410,11 @@ pub enum ContentItem {
         function: String,
         dpt: String,
     },
+    /// A picture/image reference
+    Picture {
+        /// Baggage reference ID
+        ref_id: String,
+    },
 }
 
 /// A row in the communication objects table.
@@ -443,6 +454,12 @@ pub struct App {
     pub master_data: Option<MasterData>,
     /// Device programming information (extracted from model and master data)
     pub device_info: DeviceInfo,
+    /// Baggage index for loading images
+    pub baggage_index: Option<BaggageIndex>,
+    /// Image picker for terminal protocol detection
+    pub image_picker: Option<Picker>,
+    /// Cache of loaded images by baggage RefId
+    pub image_cache: HashMap<String, StatefulProtocol>,
     /// Current main tab
     pub current_tab: MainTab,
     /// Sidebar tree nodes (for Parameters tab)
@@ -482,7 +499,7 @@ pub struct App {
 impl App {
     /// Create a new application with the given device model.
     pub fn new(model: DeviceModel) -> Self {
-        Self::with_master_data(model, None)
+        Self::with_options(model, None, None)
     }
 
     /// Create a new application with device model and optional master data.
@@ -490,13 +507,44 @@ impl App {
     /// When master data is provided, the app can use mask version information
     /// to correctly generate table layouts based on the device's mask version.
     pub fn with_master_data(model: DeviceModel, master_data: Option<MasterData>) -> Self {
+        Self::with_options(model, master_data, None)
+    }
+
+    /// Create a new application with device model, master data, and baggage directory.
+    ///
+    /// When a baggage directory is provided, images referenced in the program
+    /// can be displayed in the parameter view.
+    pub fn with_options(
+        model: DeviceModel,
+        master_data: Option<MasterData>,
+        baggage_dir: Option<&Path>,
+    ) -> Self {
         // Extract device info for future programming use
         let device_info = DeviceInfo::from_program(&model.program, master_data.as_ref());
+
+        // Load baggage index if directory provided
+        let baggage_index = baggage_dir.and_then(|dir| {
+            match BaggageIndex::from_directory(dir) {
+                Ok(index) if !index.is_empty() => Some(index),
+                Ok(_) => None,
+                Err(e) => {
+                    eprintln!("Warning: Failed to load baggages: {}", e);
+                    None
+                }
+            }
+        });
+
+        // Initialize image picker for terminal graphics protocol detection
+        // Use halfblocks as fallback since we can't do stdio queries during TUI
+        let image_picker = Some(Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks()));
 
         let mut app = Self {
             model,
             master_data,
             device_info,
+            baggage_index,
+            image_picker,
+            image_cache: HashMap::new(),
             current_tab: MainTab::Parameters,
             tree_nodes: Vec::new(),
             selected_tree_idx: 0,
@@ -523,6 +571,36 @@ impl App {
         app.rebuild_memory_segments();
 
         app
+    }
+
+    /// Load an image from the baggage index and cache it.
+    ///
+    /// Returns a reference to the cached StatefulProtocol if the image
+    /// was loaded successfully.
+    pub fn load_image(&mut self, ref_id: &str) -> Option<&mut StatefulProtocol> {
+        // Check if already cached
+        if self.image_cache.contains_key(ref_id) {
+            return self.image_cache.get_mut(ref_id);
+        }
+
+        // Try to load from baggage
+        let baggage_index = self.baggage_index.as_ref()?;
+        let picker = self.image_picker.as_mut()?;
+        let baggage = baggage_index.get(ref_id)?;
+
+        if !baggage.exists() {
+            return None;
+        }
+
+        // Load the image
+        let dyn_img = image::open(baggage.file_path()).ok()?;
+
+        // Create the protocol for rendering
+        let protocol = picker.new_resize_protocol(dyn_img);
+
+        // Cache it
+        self.image_cache.insert(ref_id.to_string(), protocol);
+        self.image_cache.get_mut(ref_id)
     }
 
     /// Switch to next main tab.
@@ -1341,15 +1419,20 @@ impl App {
         // Use a unique ID that includes the module instance
         let param_id = format!("{}::{}", expanded.instance_id, parameter.id);
 
-        // Build widget based on parameter type
-        let widget = self.build_widget_for_module_param(&parameter, &module_def, &param_id);
+        // Check if this is a picture type
+        if let Some(ref_id) = self.get_module_picture_ref_id(&parameter) {
+            self.content_items.push(ContentItem::Picture { ref_id });
+        } else {
+            // Build widget based on parameter type
+            let widget = self.build_widget_for_module_param(&parameter, &module_def, &param_id);
 
-        self.content_items.push(ContentItem::Parameter {
-            param_id,
-            text,
-            suffix: parameter.suffix_text.clone(),
-            widget,
-        });
+            self.content_items.push(ContentItem::Parameter {
+                param_id,
+                text,
+                suffix: parameter.suffix_text.clone(),
+                widget,
+            });
+        }
     }
 
     /// Build a widget for a module parameter.
@@ -1620,6 +1703,12 @@ impl App {
 
                             let param_id = pref.ref_id.clone();
 
+                            // Check if this is a picture type first - pictures don't need text
+                            if let Some(ref_id) = self.get_picture_ref_id(&param_id) {
+                                self.content_items.push(ContentItem::Picture { ref_id });
+                                continue;
+                            }
+
                             // Skip hidden parameters (Access="None") or those with empty text
                             if let Some(info) = self.model.get_parameter_info(&param_id) {
                                 if info.hidden || info.text.is_empty() {
@@ -1728,6 +1817,12 @@ impl App {
                             }
 
                             let param_id = pref.ref_id.clone();
+
+                            // Check if this is a picture type first - pictures don't need text
+                            if let Some(ref_id) = self.get_picture_ref_id(&param_id) {
+                                self.content_items.push(ContentItem::Picture { ref_id });
+                                continue;
+                            }
 
                             // Skip hidden parameters (Access="None") or those with empty text
                             if let Some(info) = self.model.get_parameter_info(&param_id) {
@@ -1848,11 +1943,35 @@ impl App {
                 WidgetType::Text { value: val }
             }
             Some(ParameterTypeDef::TypeNone(_))
-            | Some(ParameterTypeDef::TypePicture(_))
             | Some(ParameterTypeDef::TypeIpAddress(_))
             | None => WidgetType::ReadOnly {
                 value: "—".to_string(),
             },
+            // TypePicture should be handled separately - shouldn't reach here
+            Some(ParameterTypeDef::TypePicture(_)) => WidgetType::ReadOnly {
+                value: "[picture]".to_string(),
+            },
+        }
+    }
+
+    /// Check if a parameter is a TypePicture and return its ref_id if so.
+    fn get_picture_ref_id(&self, param_id: &str) -> Option<String> {
+        let info = self.model.get_parameter_info(param_id)?;
+        let ptype = self.model.get_parameter_type(&info.type_id)?;
+        if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def {
+            Some(tp.ref_id.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Check if a module parameter is a TypePicture and return its ref_id if so.
+    fn get_module_picture_ref_id(&self, parameter: &knxprod::Parameter) -> Option<String> {
+        let ptype = self.model.get_parameter_type(&parameter.parameter_type)?;
+        if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def {
+            Some(tp.ref_id.clone())
+        } else {
+            None
         }
     }
 

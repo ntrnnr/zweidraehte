@@ -124,8 +124,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create device model
     let model = DeviceModel::new(program);
 
-    // Create app with master data
-    let app = App::with_master_data(model, master_data);
+    // Create app with master data and baggage directory
+    // Baggage files are in the same directory as the MTXML file
+    let baggage_dir = args.file.parent();
+    let app = App::with_options(model, master_data, baggage_dir);
 
     // Run TUI
     run_tui(app)?;
