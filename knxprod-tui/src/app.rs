@@ -1,5 +1,6 @@
 //! Application state and logic for the KNX TUI viewer.
 
+use knxprod::device_info::DeviceInfo;
 use knxprod::master_data::{MasterData, MaskVersion, TableFlavour};
 use knxprod::model::{DeviceModel, ParameterValue};
 use knxprod::{
@@ -402,6 +403,8 @@ pub struct App {
     pub model: DeviceModel,
     /// KNX master data (optional - used for mask version info)
     pub master_data: Option<MasterData>,
+    /// Device programming information (extracted from model and master data)
+    pub device_info: DeviceInfo,
     /// Current main tab
     pub current_tab: MainTab,
     /// Sidebar tree nodes (for Parameters tab)
@@ -445,9 +448,13 @@ impl App {
     /// When master data is provided, the app can use mask version information
     /// to correctly generate table layouts based on the device's mask version.
     pub fn with_master_data(model: DeviceModel, master_data: Option<MasterData>) -> Self {
+        // Extract device info for future programming use
+        let device_info = DeviceInfo::from_program(&model.program, master_data.as_ref());
+
         let mut app = Self {
             model,
             master_data,
+            device_info,
             current_tab: MainTab::Parameters,
             tree_nodes: Vec::new(),
             selected_tree_idx: 0,

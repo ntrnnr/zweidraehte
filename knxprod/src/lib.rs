@@ -54,6 +54,7 @@ pub mod parser;
 pub mod model;
 pub mod module;
 pub mod master_data;
+pub mod device_info;
 
 pub use schema::*;
 pub use generator::*;
