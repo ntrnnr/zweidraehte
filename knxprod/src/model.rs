@@ -185,6 +185,16 @@ pub enum ModuleArgValue {
     Text(String),
 }
 
+/// Context for processing a module's dynamic section.
+/// Contains the module instance ID and definition for parameter lookups.
+#[derive(Clone)]
+struct ModuleContext {
+    /// The module instance ID
+    instance_id: String,
+    /// The module definition
+    module_def: ModuleDef,
+}
+
 /// An expanded module instance with resolved argument values.
 #[derive(Debug, Clone)]
 pub struct ExpandedModule {
@@ -278,8 +288,9 @@ impl DeviceModel {
     pub fn set_module_parameter_value(&mut self, composite_id: &str, value: ParameterValue) {
         if self.module_param_values.contains_key(composite_id) {
             self.module_param_values.insert(composite_id.to_string(), value);
-            // Note: Module parameters don't typically affect visibility conditions,
-            // but we could recompute if needed in the future
+            // Module parameters can affect visibility in module-internal choose blocks,
+            // so we need to recompute visibility
+            self.recompute_visibility();
         }
     }
 
@@ -636,6 +647,133 @@ impl DeviceModel {
         }
     }
 
+    /// Process a parameter block with optional module context for parameter lookups.
+    fn process_parameter_block_with_module(
+        &mut self,
+        pb: &ParameterBlock,
+        module_ctx: Option<&ModuleContext>,
+    ) {
+        for item in &pb.items {
+            self.process_parameter_block_item_with_module(item, module_ctx);
+        }
+    }
+
+    /// Process a parameter block item with optional module context.
+    fn process_parameter_block_item_with_module(
+        &mut self,
+        item: &ParameterBlockItem,
+        module_ctx: Option<&ModuleContext>,
+    ) {
+        match item {
+            ParameterBlockItem::ParameterRefRef(prr) => {
+                self.visible_param_refs.insert(prr.ref_id.clone());
+            }
+            ParameterBlockItem::ComObjectRefRef(corr) => {
+                self.visible_com_object_refs.insert(corr.ref_id.clone());
+            }
+            ParameterBlockItem::Choose(choose) => {
+                self.process_choose_with_module(choose, module_ctx);
+            }
+            ParameterBlockItem::ParameterSeparator(_) => {}
+            ParameterBlockItem::Module(module) => {
+                self.process_module(module);
+            }
+            ParameterBlockItem::Button(_) => {}
+            ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {}
+        }
+    }
+
+    /// Process a choose block with optional module context for parameter lookups.
+    fn process_choose_with_module(&mut self, choose: &Choose, module_ctx: Option<&ModuleContext>) {
+        // Get the selector parameter value - use module context if available
+        let selector_value = self.get_selector_value_with_module(&choose.param_ref_id, module_ctx);
+
+        // Collect items to process to avoid borrow issues
+        let mut items_to_process: Vec<Vec<WhenItem>> = Vec::new();
+        let mut any_matched = false;
+
+        for when in &choose.whens {
+            if when.default.unwrap_or(false) {
+                continue;
+            } else if let Some(test) = &when.test {
+                if self.matches_condition(selector_value, test) {
+                    items_to_process.push(when.items.clone());
+                    any_matched = true;
+                }
+            }
+        }
+
+        if !any_matched {
+            for when in &choose.whens {
+                if when.default.unwrap_or(false) {
+                    items_to_process.push(when.items.clone());
+                    break;
+                }
+            }
+        }
+
+        for items in items_to_process {
+            self.process_when_items_with_module(&items, module_ctx);
+        }
+    }
+
+    /// Process when items with optional module context.
+    fn process_when_items_with_module(
+        &mut self,
+        items: &[WhenItem],
+        module_ctx: Option<&ModuleContext>,
+    ) {
+        for item in items {
+            match item {
+                WhenItem::ParameterRefRef(prr) => {
+                    self.visible_param_refs.insert(prr.ref_id.clone());
+                }
+                WhenItem::ComObjectRefRef(corr) => {
+                    self.visible_com_object_refs.insert(corr.ref_id.clone());
+                }
+                WhenItem::ParameterBlock(pb) => {
+                    self.process_parameter_block_with_module(pb, module_ctx);
+                }
+                WhenItem::Choose(nested_choose) => {
+                    self.process_choose_with_module(nested_choose, module_ctx);
+                }
+                WhenItem::ParameterSeparator(_) => {}
+                WhenItem::Assign(_) => {}
+                WhenItem::Module(module) => {
+                    self.process_module(module);
+                }
+            }
+        }
+    }
+
+    /// Get the integer value of a selector parameter ref, with module context support.
+    fn get_selector_value_with_module(
+        &self,
+        param_ref_id: &str,
+        module_ctx: Option<&ModuleContext>,
+    ) -> Option<i64> {
+        // First try module context if available
+        if let Some(ctx) = module_ctx {
+            // Look up the parameter ref in the module's static section
+            if let Some(param_refs) = &ctx.module_def.static_section.parameter_refs {
+                if let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id) {
+                    // Build composite ID and look up in module param values
+                    let composite_id = format!("{}::{}", ctx.instance_id, param_ref.ref_id);
+                    if let Some(value) = self.module_param_values.get(&composite_id) {
+                        return match value {
+                            ParameterValue::Integer(v) => Some(*v),
+                            ParameterValue::Float(v) => Some(*v as i64),
+                            _ => None,
+                        };
+                    }
+                }
+            }
+        }
+
+        // Fall back to main device parameter lookup
+        self.get_selector_value(param_ref_id)
+    }
+
     /// Process a module instance - mark it as visible.
     fn process_module(&mut self, module: &Module) {
         // Mark this module instance as visible
@@ -644,13 +782,19 @@ impl DeviceModel {
         // Process the module's dynamic section if it has one
         if let Some(module_def) = self.module_defs.get(&module.ref_id).cloned() {
             if let Some(dynamic) = &module_def.dynamic {
+                // Create module context for parameter lookups
+                let module_ctx = ModuleContext {
+                    instance_id: module.id.clone(),
+                    module_def: module_def.clone(),
+                };
+
                 for item in &dynamic.items {
                     match item {
                         ModuleDefDynamicItem::ParameterBlock(pb) => {
-                            self.process_parameter_block(pb);
+                            self.process_parameter_block_with_module(pb, Some(&module_ctx));
                         }
                         ModuleDefDynamicItem::Choose(choose) => {
-                            self.process_choose(choose);
+                            self.process_choose_with_module(choose, Some(&module_ctx));
                         }
                     }
                 }
@@ -858,9 +1002,18 @@ fn build_module_param_values(
             // Get parameters from the module's static section
             if let Some(params) = &module_def.static_section.parameters {
                 for item in &params.items {
-                    if let ParameterItem::Parameter(p) = item {
-                        let composite_id = format!("{}::{}", instance_id, p.id);
-                        values.insert(composite_id, parse_default_value(&p.value));
+                    match item {
+                        ParameterItem::Parameter(p) => {
+                            let composite_id = format!("{}::{}", instance_id, p.id);
+                            values.insert(composite_id, parse_default_value(&p.value));
+                        }
+                        ParameterItem::Union(union) => {
+                            // Also process parameters inside unions
+                            for p in &union.parameters {
+                                let composite_id = format!("{}::{}", instance_id, p.id);
+                                values.insert(composite_id, parse_default_value(&p.value));
+                            }
+                        }
                     }
                 }
             }

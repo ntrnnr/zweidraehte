@@ -453,10 +453,14 @@ pub struct App {
     pub content_items: Vec<ContentItem>,
     /// Selected content item index
     pub selected_content_idx: usize,
+    /// Scroll offset for content items
+    pub content_scroll_offset: usize,
     /// Communication objects table rows
     pub com_object_rows: Vec<ComObjectRow>,
     /// Selected comm object row index
     pub selected_obj_idx: usize,
+    /// Scroll offset for comm objects table
+    pub comm_obj_scroll_offset: usize,
     /// Parsed memory segments for Memory tab
     pub memory_segments: Vec<MemorySegment>,
     /// Currently selected segment index
@@ -498,8 +502,10 @@ impl App {
             selected_tree_idx: 0,
             content_items: Vec::new(),
             selected_content_idx: 0,
+            content_scroll_offset: 0,
             com_object_rows: Vec::new(),
             selected_obj_idx: 0,
+            comm_obj_scroll_offset: 0,
             memory_segments: Vec::new(),
             selected_segment_idx: 0,
             memory_scroll_offset: 0,
@@ -1954,6 +1960,11 @@ impl App {
             };
 
             for oref in &com_obj_refs {
+                // Check if this comm object ref is visible (selected by dynamic section conditions)
+                if !self.model.is_com_object_ref_visible(&oref.id) {
+                    continue;
+                }
+
                 // Find the comm object
                 let obj = match com_objects.iter().find(|o| o.id == oref.ref_id) {
                     Some(o) => o,
@@ -3340,6 +3351,35 @@ impl App {
         }
     }
 
+    /// Maximum visible rows in comm objects table
+    const COMM_OBJ_VISIBLE_ROWS: usize = 20;
+
+    /// Adjust comm object scroll to keep selected item visible.
+    fn adjust_comm_obj_scroll(&mut self) {
+        // Scroll up if above visible area
+        if self.selected_obj_idx < self.comm_obj_scroll_offset {
+            self.comm_obj_scroll_offset = self.selected_obj_idx;
+        }
+
+        // Scroll down if below visible area
+        if self.selected_obj_idx >= self.comm_obj_scroll_offset + Self::COMM_OBJ_VISIBLE_ROWS {
+            self.comm_obj_scroll_offset = self.selected_obj_idx.saturating_sub(Self::COMM_OBJ_VISIBLE_ROWS - 1);
+        }
+    }
+
+    /// Adjust content scroll to keep selected item visible.
+    fn adjust_content_scroll(&mut self) {
+        // Scroll up if above visible area
+        if self.selected_content_idx < self.content_scroll_offset {
+            self.content_scroll_offset = self.selected_content_idx;
+        }
+
+        // Scroll down if below visible area
+        if self.selected_content_idx >= self.content_scroll_offset + Self::CONTENT_VISIBLE_ROWS {
+            self.content_scroll_offset = self.selected_content_idx.saturating_sub(Self::CONTENT_VISIBLE_ROWS - 1);
+        }
+    }
+
     /// Move segment selection up.
     pub fn segment_move_up(&mut self) {
         if self.selected_segment_idx > 0 {
@@ -3403,16 +3443,19 @@ impl App {
                         self.selected_tree_idx -= 1;
                         self.rebuild_content();
                         self.selected_content_idx = 0;
+                        self.content_scroll_offset = 0;
                     }
                 }
                 (MainTab::Parameters, Focus::Content) => {
                     if self.selected_content_idx > 0 {
                         self.selected_content_idx -= 1;
+                        self.adjust_content_scroll();
                     }
                 }
                 (MainTab::CommObjects, Focus::Content) => {
                     if self.selected_obj_idx > 0 {
                         self.selected_obj_idx -= 1;
+                        self.adjust_comm_obj_scroll();
                     }
                 }
                 (MainTab::Memory, Focus::Sidebar) => {
@@ -3429,6 +3472,9 @@ impl App {
 
     /// Maximum visible items in dropdown popup
     const DROPDOWN_VISIBLE_ITEMS: usize = 12;
+
+    /// Maximum visible rows in content area
+    const CONTENT_VISIBLE_ROWS: usize = 20;
 
     /// Move selection down.
     pub fn move_down(&mut self) {
@@ -3457,16 +3503,19 @@ impl App {
                         self.selected_tree_idx += 1;
                         self.rebuild_content();
                         self.selected_content_idx = 0;
+                        self.content_scroll_offset = 0;
                     }
                 }
                 (MainTab::Parameters, Focus::Content) => {
                     if self.selected_content_idx < self.content_items.len().saturating_sub(1) {
                         self.selected_content_idx += 1;
+                        self.adjust_content_scroll();
                     }
                 }
                 (MainTab::CommObjects, Focus::Content) => {
                     if self.selected_obj_idx < self.com_object_rows.len().saturating_sub(1) {
                         self.selected_obj_idx += 1;
+                        self.adjust_comm_obj_scroll();
                     }
                 }
                 (MainTab::Memory, Focus::Sidebar) => {

@@ -205,10 +205,16 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    // Calculate visible height
+    let visible_rows = inner.height as usize;
+
+    // Build list items with scroll offset
     let items: Vec<ListItem> = app
         .content_items
         .iter()
         .enumerate()
+        .skip(app.content_scroll_offset)
+        .take(visible_rows)
         .map(|(i, item)| {
             let is_selected = i == app.selected_content_idx && focused;
             create_content_item(item, is_selected, app, inner.width as usize)
@@ -451,10 +457,19 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             Style::default().fg(Color::DarkGray)
         })
-        .title(format!(
-            " Communication Objects ({}) ",
-            app.com_object_rows.len()
-        ));
+        .title(if app.comm_obj_scroll_offset > 0 || app.com_object_rows.len() > 20 {
+            format!(
+                " Communication Objects ({}) [{}-{}] ",
+                app.com_object_rows.len(),
+                app.comm_obj_scroll_offset + 1,
+                (app.comm_obj_scroll_offset + 20).min(app.com_object_rows.len())
+            )
+        } else {
+            format!(
+                " Communication Objects ({}) ",
+                app.com_object_rows.len()
+            )
+        });
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -494,11 +509,16 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
         _ => None,
     };
 
-    // Build table rows
+    // Calculate visible height (area minus header, borders)
+    let visible_rows = inner.height.saturating_sub(2) as usize;
+
+    // Build table rows with scroll offset
     let rows: Vec<Row> = app
         .com_object_rows
         .iter()
         .enumerate()
+        .skip(app.comm_obj_scroll_offset)
+        .take(visible_rows)
         .map(|(i, row)| {
             let is_selected = i == app.selected_obj_idx && focused;
             let is_editing = editing_object.as_ref().map_or(false, |(n, _)| *n == row.number);
