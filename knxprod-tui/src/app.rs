@@ -195,6 +195,37 @@ fn interpolate_module_text_with_param(
     result
 }
 
+/// Compute the actual object number for a module comm object.
+///
+/// Module comm objects have a local `number` (0, 1, 2, ...) and may have a `base_number`
+/// argument reference. The actual object number is `base_number_value + local_number`.
+/// If no BaseNumber is specified, the local number is used as-is.
+fn compute_module_object_number(
+    obj: &knxprod::ComObject,
+    expanded: &knxprod::model::ExpandedModule,
+    module_def: &knxprod::ModuleDef,
+) -> u16 {
+    use knxprod::model::ModuleArgValue;
+
+    let local_number = obj.number;
+
+    // Check if object has a BaseNumber argument reference
+    if let Some(base_number_ref) = &obj.base_number {
+        // The base_number_ref is an argument ID - we need to find the argument name first
+        if let Some(arguments) = &module_def.arguments {
+            if let Some(arg_def) = arguments.arguments.iter().find(|a| a.id == *base_number_ref) {
+                // Now look up the argument value by name in the expanded module
+                if let Some(ModuleArgValue::Numeric(base)) = expanded.args.get(&arg_def.name) {
+                    return (*base as u16).saturating_add(local_number);
+                }
+            }
+        }
+    }
+
+    // No BaseNumber or couldn't resolve - use local number as-is
+    local_number
+}
+
 /// Main tab in the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainTab {
@@ -325,6 +356,13 @@ pub enum EditMode {
         param_id: String,
         buffer: String,
         cursor: usize,
+    },
+    /// Editing a group address for a communication object
+    GroupAddressInput {
+        /// The communication object number (ASAP)
+        object_number: u16,
+        /// The input buffer (e.g., "1/2/3")
+        buffer: String,
     },
 }
 
@@ -1864,11 +1902,14 @@ impl App {
                 let flag_u =
                     oref.update_flag.unwrap_or(obj.update_flag) == EnableFlag::Enabled;
 
+                // Get group address binding if any
+                let group_address = self.format_group_address(obj.number);
+
                 self.com_object_rows.push(ComObjectRow {
                     number: obj.number,
                     name,
                     function,
-                    group_address: String::new(), // Empty for now
+                    group_address,
                     size,
                     dpt,
                     priority: priority_str.to_string(),
@@ -1918,6 +1959,9 @@ impl App {
                     Some(o) => o,
                     None => continue,
                 };
+
+                // Compute actual object number using BaseNumber argument if present
+                let actual_number = compute_module_object_number(obj, &expanded, &module_def);
 
                 // Look up the text parameter value for {{0}} substitution
                 let text_param_value = oref.text_parameter_ref_id.as_ref().and_then(|ref_id| {
@@ -1985,11 +2029,14 @@ impl App {
                 let flag_u =
                     oref.update_flag.unwrap_or(obj.update_flag) == EnableFlag::Enabled;
 
+                // Get group address binding if any - use actual computed number
+                let group_address = self.format_group_address(actual_number);
+
                 self.com_object_rows.push(ComObjectRow {
-                    number: obj.number,
+                    number: actual_number,
                     name,
                     function,
-                    group_address: String::new(), // Empty for now
+                    group_address,
                     size,
                     dpt,
                     priority: priority_str.to_string(),
@@ -2000,6 +2047,29 @@ impl App {
                     flag_u,
                 });
             }
+        }
+    }
+
+    /// Format the group address(es) bound to a communication object for display.
+    ///
+    /// Returns the primary sending address, or multiple addresses separated by ", ".
+    /// If no address is assigned, returns an empty string.
+    fn format_group_address(&self, object_number: u16) -> String {
+        let bindings = self.model.get_group_addresses(object_number);
+        if bindings.is_empty() {
+            return String::new();
+        }
+
+        // Format all bindings, sending address first
+        let mut addresses: Vec<String> = bindings
+            .iter()
+            .map(|b| b.group_address.to_string())
+            .collect();
+
+        if addresses.len() == 1 {
+            addresses.pop().unwrap()
+        } else {
+            addresses.join(", ")
         }
     }
 
@@ -2182,24 +2252,26 @@ impl App {
         }
 
         // Create a standalone synthetic segment (for System B or if segment not found)
-        let visible_count = self.model.visible_com_object_refs().count() as u16;
+        // Use real assigned group addresses instead of placeholders
+        let group_addresses = self.model.all_group_addresses();
+        let addr_count = group_addresses.len() as u16;
 
         // Build table data based on flavour
-        let mut data = Vec::with_capacity(count_size + (visible_count as usize) * entry_size);
+        let mut data = Vec::with_capacity(count_size + (addr_count as usize) * entry_size);
 
         // Count field (size depends on flavour)
         if count_size == 1 {
-            data.push(visible_count as u8);
+            data.push(addr_count as u8);
         } else {
-            data.push((visible_count >> 8) as u8);
-            data.push((visible_count & 0xFF) as u8);
+            data.push((addr_count >> 8) as u8);
+            data.push((addr_count & 0xFF) as u8);
         }
 
-        // Placeholder group addresses (0x0000 since not assigned in viewer)
-        for _ in 0..visible_count {
-            for _ in 0..entry_size {
-                data.push(0x00);
-            }
+        // Write actual group addresses (or 0x0000 if none assigned)
+        for addr in &group_addresses {
+            let bytes = addr.to_bytes();
+            data.push(bytes[0]);
+            data.push(bytes[1]);
         }
 
         let annotations = self.build_address_table_annotations(0, &flavour);
@@ -2234,20 +2306,16 @@ impl App {
             param_id: String::new(),
         });
 
-        let mut idx: u32 = 0;
-        for com_obj_ref in self.model.visible_com_object_refs() {
-            let name = com_obj_ref
-                .text
-                .clone()
-                .unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
+        // Use real group addresses for annotations
+        let group_addresses = self.model.all_group_addresses();
+        for (idx, addr) in group_addresses.iter().enumerate() {
             annotations.push(MemoryAnnotation {
-                offset: base_offset + count_size + (idx * entry_size),
+                offset: base_offset + count_size + (idx as u32 * entry_size),
                 bit_offset: 0,
-                name: format!("ADT[{}] {}", idx, name),
+                name: format!("ADT[{}] {}", idx + 1, addr), // 1-based TSAP
                 size_bits: (entry_size * 8) as u16,
-                param_id: com_obj_ref.id.clone(),
+                param_id: String::new(),
             });
-            idx += 1;
         }
 
         annotations
@@ -2295,36 +2363,33 @@ impl App {
             }
         }
 
-        // Create a standalone synthetic segment
-        let visible_objs: Vec<_> = self.model.visible_com_object_refs().collect();
-        let visible_count = visible_objs.len() as u16;
+        // Create a standalone synthetic segment using real association entries
+        let association_entries = self.model.build_association_entries();
+        let entry_count = association_entries.len() as u16;
 
         // Build table data based on flavour
-        let mut data = Vec::with_capacity(count_size + (visible_count as usize) * entry_size);
+        let mut data = Vec::with_capacity(count_size + (entry_count as usize) * entry_size);
 
         // Count field (size depends on flavour)
         if count_size == 1 {
-            data.push(visible_count as u8);
+            data.push(entry_count as u8);
         } else {
-            data.push((visible_count >> 8) as u8);
-            data.push((visible_count & 0xFF) as u8);
+            data.push((entry_count >> 8) as u8);
+            data.push((entry_count & 0xFF) as u8);
         }
 
-        // Association entries: TSAP -> ASAP (1:1 mapping for display)
-        for (idx, _) in visible_objs.iter().enumerate() {
-            let tsap = idx as u16;
-            let asap = idx as u16;
-
+        // Write association entries: TSAP -> ASAP mappings
+        for entry in &association_entries {
             if entry_size == 2 {
                 // BCU1: 1-byte TSAP + 1-byte ASAP
-                data.push(tsap as u8);
-                data.push(asap as u8);
+                data.push(entry.tsap as u8);
+                data.push(entry.asap as u8);
             } else {
                 // System B: 2-byte TSAP + 2-byte ASAP
-                data.push((tsap >> 8) as u8);
-                data.push((tsap & 0xFF) as u8);
-                data.push((asap >> 8) as u8);
-                data.push((asap & 0xFF) as u8);
+                data.push((entry.tsap >> 8) as u8);
+                data.push((entry.tsap & 0xFF) as u8);
+                data.push((entry.asap >> 8) as u8);
+                data.push((entry.asap & 0xFF) as u8);
             }
         }
 
@@ -2360,20 +2425,25 @@ impl App {
             param_id: String::new(),
         });
 
-        let mut idx: u32 = 0;
-        for com_obj_ref in self.model.visible_com_object_refs() {
-            let name = com_obj_ref
-                .text
-                .clone()
-                .unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
+        // Use real association entries for annotations
+        let association_entries = self.model.build_association_entries();
+        let address_table = self.model.all_group_addresses();
+
+        for (idx, entry) in association_entries.iter().enumerate() {
+            // Get the group address from TSAP (1-based index)
+            let ga_str = if entry.tsap > 0 && (entry.tsap as usize) <= address_table.len() {
+                address_table[(entry.tsap - 1) as usize].to_string()
+            } else {
+                format!("TSAP:{}", entry.tsap)
+            };
+
             annotations.push(MemoryAnnotation {
-                offset: base_offset + count_size + (idx * entry_size),
+                offset: base_offset + count_size + (idx as u32 * entry_size),
                 bit_offset: 0,
-                name: format!("AST[{}] {}", idx, name),
+                name: format!("AST[{}] {} -> CO{}", idx, ga_str, entry.asap),
                 size_bits: (entry_size * 8) as u16,
-                param_id: com_obj_ref.id.clone(),
+                param_id: String::new(),
             });
-            idx += 1;
         }
 
         annotations
@@ -2384,67 +2454,64 @@ impl App {
     /// The COT stores type and flags for each communication object.
     /// Format: 2-byte count + N x 2-byte entries (type/size byte + flags byte)
     ///
+    /// The COT is indexed by object number - object N is at position N+1 in the table
+    /// (since COT uses 1-based indexing). This means if we have objects 0,1,2 and 9,10,11,
+    /// we need a table with count=12, with entries at positions 1-3 and 10-12.
+    ///
     /// For System 7.x devices, the table is placed within an AbsoluteSegment.
     /// For System B devices, it's loaded via a separate Load State Machine.
     fn generate_com_object_table(&mut self) {
         let static_section = &self.model.program.static_section;
 
-        // Get ComObjectTable config if present
-        let cot = match &static_section.com_object_table {
-            Some(cot) => cot,
-            None => return, // No COM object table configured
-        };
+        // Collect all comm objects with their actual numbers and type/flag data
+        let cot_entries = self.collect_all_cot_entries();
 
-        let offset = cot.offset.unwrap_or(0);
-        let max_entries = cot.max_entries.unwrap_or(255);
+        if cot_entries.is_empty() {
+            return; // No communication objects to display
+        }
+
+        // Find the highest object number to determine table size
+        let max_obj_num = cot_entries.iter().map(|(num, _, _)| *num).max().unwrap_or(0);
+        let entry_count = max_obj_num + 1; // Object numbers are 0-indexed
+
+        // Get ComObjectTable config if present (may be None for some devices)
+        let cot_config = &static_section.com_object_table;
+        let offset = cot_config.as_ref().and_then(|c| c.offset).unwrap_or(0);
+        let max_entries = cot_config.as_ref().and_then(|c| c.max_entries).unwrap_or(255);
 
         // Check if this table references an existing code segment
-        if let Some(code_segment) = &cot.code_segment {
-            if let Some(seg_idx) = self
-                .memory_segments
-                .iter()
-                .position(|s| s.id == *code_segment)
-            {
-                // Add annotations to existing segment
-                let annotations = self.build_com_object_table_annotations(offset);
-                self.memory_segments[seg_idx].annotations.extend(annotations);
-                return;
+        if let Some(cot) = cot_config {
+            if let Some(code_segment) = &cot.code_segment {
+                if let Some(seg_idx) = self
+                    .memory_segments
+                    .iter()
+                    .position(|s| s.id == *code_segment)
+                {
+                    // Add annotations to existing segment
+                    let annotations = self.build_com_object_table_annotations(offset);
+                    self.memory_segments[seg_idx].annotations.extend(annotations);
+                    return;
+                }
             }
         }
 
         // Create a standalone synthetic segment
-        let visible_objs: Vec<_> = self.model.visible_com_object_refs().collect();
-        let visible_count = visible_objs.len() as u16;
-
-        // Build table data: 2-byte count + N x 2-byte entries
-        let mut data = Vec::with_capacity(2 + (visible_count as usize) * 2);
+        // Build table data: 2-byte count + entry_count x 2-byte entries
+        let table_size = 2 + (entry_count as usize) * 2;
+        let mut data = vec![0u8; table_size];
 
         // Count field (2 bytes, big-endian)
-        data.push((visible_count >> 8) as u8);
-        data.push((visible_count & 0xFF) as u8);
+        data[0] = (entry_count >> 8) as u8;
+        data[1] = (entry_count & 0xFF) as u8;
 
-        // Look up ComObject definitions to get type/flags
-        let com_objects = static_section
-            .com_object_table
-            .as_ref()
-            .map(|t| &t.objects)
-            .cloned()
-            .unwrap_or_default();
-
-        for com_obj_ref in &visible_objs {
-            let base_obj = com_objects.iter().find(|o| o.id == com_obj_ref.ref_id);
-
-            let size_str = com_obj_ref
-                .object_size
-                .clone()
-                .or_else(|| base_obj.map(|o| o.object_size.clone()))
-                .unwrap_or_else(|| "1 Byte".to_string());
-
-            let type_byte = self.object_size_to_type_byte(&size_str);
-            let flags = self.build_com_object_flags(com_obj_ref, base_obj);
-
-            data.push(type_byte);
-            data.push(flags);
+        // Place each entry at its correct position
+        // Object number N goes at offset 2 + N*2 (since count is at offset 0-1)
+        for (obj_num, type_byte, flags) in &cot_entries {
+            let entry_offset = 2 + (*obj_num as usize) * 2;
+            if entry_offset + 1 < data.len() {
+                data[entry_offset] = *type_byte;
+                data[entry_offset + 1] = *flags;
+            }
         }
 
         let annotations = self.build_com_object_table_annotations(0);
@@ -2461,32 +2528,224 @@ impl App {
         });
     }
 
+    /// Collect all visible comm objects with their actual numbers and COT entry data.
+    /// Returns Vec of (object_number, type_byte, flags_byte).
+    fn collect_all_cot_entries(&self) -> Vec<(u16, u8, u8)> {
+        let mut entries = Vec::new();
+        let static_section = &self.model.program.static_section;
+
+        // Get ComObjectTable config for looking up base objects
+        let com_objects = static_section
+            .com_object_table
+            .as_ref()
+            .map(|t| &t.objects)
+            .cloned()
+            .unwrap_or_default();
+
+        // Add main device comm objects
+        for com_obj_ref in self.model.visible_com_object_refs() {
+            let base_obj = com_objects.iter().find(|o| o.id == com_obj_ref.ref_id);
+
+            // For main device objects, the number comes from the base object
+            let obj_num = base_obj.map(|o| o.number).unwrap_or(0);
+
+            let size_str = com_obj_ref
+                .object_size
+                .clone()
+                .or_else(|| base_obj.map(|o| o.object_size.clone()))
+                .unwrap_or_else(|| "1 Byte".to_string());
+
+            let type_byte = self.object_size_to_type_byte(&size_str);
+            let flags = self.build_com_object_flags(com_obj_ref, base_obj);
+
+            entries.push((obj_num, type_byte, flags));
+        }
+
+        // Add module comm objects
+        let visible_modules: Vec<_> = self.model.visible_modules().cloned().collect();
+
+        for expanded in &visible_modules {
+            let module_def = match self.model.get_module_def(&expanded.module_def_id) {
+                Some(def) => def.clone(),
+                None => continue,
+            };
+
+            let com_obj_refs = match &module_def.static_section.com_object_refs {
+                Some(refs) => &refs.refs,
+                None => continue,
+            };
+
+            let module_com_objects = match &module_def.static_section.com_objects {
+                Some(objs) => &objs.objects,
+                None => continue,
+            };
+
+            for oref in com_obj_refs {
+                let obj = match module_com_objects.iter().find(|o| o.id == oref.ref_id) {
+                    Some(o) => o,
+                    None => continue,
+                };
+
+                // Compute actual object number using BaseNumber argument
+                let actual_number = compute_module_object_number(obj, expanded, &module_def);
+
+                let size_str = oref
+                    .object_size
+                    .clone()
+                    .unwrap_or_else(|| obj.object_size.clone());
+
+                let type_byte = self.object_size_to_type_byte(&size_str);
+                let flags = self.build_module_com_object_flags(oref, obj);
+
+                entries.push((actual_number, type_byte, flags));
+            }
+        }
+
+        entries
+    }
+
+    /// Build flags byte for a module comm object.
+    fn build_module_com_object_flags(
+        &self,
+        oref: &knxprod::ComObjectRef,
+        obj: &knxprod::ComObject,
+    ) -> u8 {
+        let mut flags: u8 = 0;
+
+        // Communication flag (bit 2)
+        if oref
+            .communication_flag
+            .unwrap_or(obj.communication_flag)
+            == EnableFlag::Enabled
+        {
+            flags |= 0x04;
+        }
+
+        // Read flag (bit 3)
+        if oref.read_flag.unwrap_or(obj.read_flag) == EnableFlag::Enabled {
+            flags |= 0x08;
+        }
+
+        // Write flag (bit 4)
+        if oref.write_flag.unwrap_or(obj.write_flag) == EnableFlag::Enabled {
+            flags |= 0x10;
+        }
+
+        // Transmit flag (bit 5)
+        if oref.transmit_flag.unwrap_or(obj.transmit_flag) == EnableFlag::Enabled {
+            flags |= 0x20;
+        }
+
+        // Update flag (bit 6)
+        if oref.update_flag.unwrap_or(obj.update_flag) == EnableFlag::Enabled {
+            flags |= 0x40;
+        }
+
+        // Read on init flag (bit 7)
+        if oref
+            .read_on_init_flag
+            .unwrap_or(obj.read_on_init_flag)
+            == EnableFlag::Enabled
+        {
+            flags |= 0x80;
+        }
+
+        flags
+    }
+
     /// Build annotations for ComObject Table entries.
+    ///
+    /// The COT format depends on the mask version:
+    /// - System 7.x (MV-0705, etc.): 4 bytes per entry (no count header)
+    ///   Format: [RAM_ptr_lo, RAM_ptr_hi, flags, type]
+    /// - System B (MV-07B0): 2-byte count + 2 bytes per entry
+    ///   Format: [count_lo, count_hi] + N × [type, flags]
     fn build_com_object_table_annotations(&self, base_offset: u32) -> Vec<MemoryAnnotation> {
         let mut annotations = Vec::new();
 
-        annotations.push(MemoryAnnotation {
-            offset: base_offset,
-            bit_offset: 0,
-            name: "COT: Entry Count".to_string(),
-            size_bits: 16,
-            param_id: String::new(),
-        });
+        // Determine format based on mask version
+        let mask_version = &self.model.program.mask_version;
+        let is_system_7x = mask_version.starts_with("MV-07") && !mask_version.ends_with("B0");
 
-        let mut idx: u32 = 0;
-        for com_obj_ref in self.model.visible_com_object_refs() {
-            let name = com_obj_ref
-                .text
-                .clone()
-                .unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
+        if is_system_7x {
+            // System 7.x: 4 bytes per entry, no count header
+            // Format: [RAM_ptr_lo, RAM_ptr_hi, flags, type] per entry
+            // The RAM pointer indicates where the object's value is stored at runtime
+            let mut idx: u32 = 0;
+            for com_obj_ref in self.model.visible_com_object_refs() {
+                let name = com_obj_ref
+                    .text
+                    .clone()
+                    .unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
+
+                // Include assigned group address in annotation if present
+                let ga_info = self.format_group_address(idx as u16);
+
+                // Get object size for display
+                let size_str = com_obj_ref
+                    .object_size
+                    .as_ref()
+                    .map(|s| s.as_str())
+                    .unwrap_or("?");
+
+                let full_name = if ga_info.is_empty() {
+                    format!("CO[{}] {} ({})", idx, name, size_str)
+                } else {
+                    format!("CO[{}] {} ({}) GA:{}", idx, name, size_str, ga_info)
+                };
+
+                annotations.push(MemoryAnnotation {
+                    offset: base_offset + (idx * 4),
+                    bit_offset: 0,
+                    name: full_name,
+                    size_bits: 32, // 4 bytes: RAM_ptr(2) + flags(1) + type(1)
+                    param_id: com_obj_ref.id.clone(),
+                });
+                idx += 1;
+            }
+        } else {
+            // System B: 2-byte count header + 2 bytes per entry
+            // Format: [count_lo, count_hi] + N × [type, flags]
             annotations.push(MemoryAnnotation {
-                offset: base_offset + 2 + (idx * 2),
+                offset: base_offset,
                 bit_offset: 0,
-                name: format!("COT[{}] {}", idx, name),
+                name: "COT: Entry Count".to_string(),
                 size_bits: 16,
-                param_id: com_obj_ref.id.clone(),
+                param_id: String::new(),
             });
-            idx += 1;
+
+            let mut idx: u32 = 0;
+            for com_obj_ref in self.model.visible_com_object_refs() {
+                let name = com_obj_ref
+                    .text
+                    .clone()
+                    .unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
+
+                // Include assigned group address in annotation if present
+                let ga_info = self.format_group_address(idx as u16);
+
+                // Get object size for display
+                let size_str = com_obj_ref
+                    .object_size
+                    .as_ref()
+                    .map(|s| s.as_str())
+                    .unwrap_or("?");
+
+                let full_name = if ga_info.is_empty() {
+                    format!("CO[{}] {} ({})", idx, name, size_str)
+                } else {
+                    format!("CO[{}] {} ({}) GA:{}", idx, name, size_str, ga_info)
+                };
+
+                annotations.push(MemoryAnnotation {
+                    offset: base_offset + 2 + (idx * 2),
+                    bit_offset: 0,
+                    name: full_name,
+                    size_bits: 16, // 2 bytes: type(1) + flags(1)
+                    param_id: com_obj_ref.id.clone(),
+                });
+                idx += 1;
+            }
         }
 
         annotations
@@ -3313,6 +3572,29 @@ impl App {
                 self.rebuild_com_objects();
                 self.rebuild_memory_segments();
             }
+            EditMode::GroupAddressInput {
+                object_number,
+                buffer,
+            } => {
+                // Parse and assign the group address
+                let object_number = *object_number;
+                let buffer = buffer.clone();
+
+                // Clear existing addresses for this object first
+                self.model.clear_group_addresses(object_number);
+
+                // If buffer is non-empty, parse and assign the new address
+                if !buffer.is_empty() {
+                    if let Some(addr) = knxprod::model::GroupAddress::parse(&buffer) {
+                        // First assigned address becomes the sending address
+                        self.model.assign_group_address(object_number, addr);
+                    }
+                }
+
+                self.edit_mode = EditMode::None;
+                self.rebuild_com_objects();
+                self.rebuild_memory_segments();
+            }
             EditMode::None => match (self.current_tab, self.focus) {
                 (_, Focus::Tabs) => {
                     // Enter into the content area
@@ -3337,7 +3619,8 @@ impl App {
                     self.enter_edit_mode();
                 }
                 (MainTab::CommObjects, Focus::Content) => {
-                    // No editing for comm objects (read-only for now)
+                    // Enter group address edit mode for the selected comm object
+                    self.enter_group_address_edit_mode();
                 }
                 _ => {}
             },
@@ -3398,6 +3681,18 @@ impl App {
         }
     }
 
+    /// Enter group address edit mode for the currently selected communication object.
+    fn enter_group_address_edit_mode(&mut self) {
+        if let Some(row) = self.com_object_rows.get(self.selected_obj_idx) {
+            // Get existing group address as initial buffer value
+            let existing = self.format_group_address(row.number);
+            self.edit_mode = EditMode::GroupAddressInput {
+                object_number: row.number,
+                buffer: existing,
+            };
+        }
+    }
+
     /// Handle character input for editing.
     pub fn handle_char(&mut self, c: char) {
         match &mut self.edit_mode {
@@ -3410,6 +3705,12 @@ impl App {
                 buffer.insert(*cursor, c);
                 *cursor += 1;
             }
+            EditMode::GroupAddressInput { buffer, .. } => {
+                // Allow digits and slashes for group address format (e.g., "1/2/3")
+                if c.is_ascii_digit() || c == '/' {
+                    buffer.push(c);
+                }
+            }
             _ => {}
         }
     }
@@ -3417,7 +3718,8 @@ impl App {
     /// Handle backspace for editing.
     pub fn handle_backspace(&mut self) {
         match &mut self.edit_mode {
-            EditMode::NumberInput { buffer, .. } => {
+            EditMode::NumberInput { buffer, .. }
+            | EditMode::GroupAddressInput { buffer, .. } => {
                 buffer.pop();
             }
             EditMode::TextInput { buffer, cursor, .. } => {

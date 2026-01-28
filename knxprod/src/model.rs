@@ -32,6 +32,91 @@ impl Default for ParameterValue {
     }
 }
 
+/// A KNX group address in 3-level notation (main/middle/sub).
+///
+/// This is a simplified representation for the TUI. The raw 16-bit value
+/// can be obtained via `to_u16()` for table generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct GroupAddress {
+    /// Main group (0-31)
+    pub main: u8,
+    /// Middle group (0-7)
+    pub middle: u8,
+    /// Sub group (0-255)
+    pub sub: u8,
+}
+
+impl GroupAddress {
+    /// Create a new group address from 3-level notation.
+    pub const fn new(main: u8, middle: u8, sub: u8) -> Self {
+        Self { main, middle, sub }
+    }
+
+    /// Parse a group address from string (e.g., "1/2/3").
+    pub fn parse(s: &str) -> Option<Self> {
+        let parts: Vec<&str> = s.split('/').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let main = parts[0].parse().ok()?;
+        let middle = parts[1].parse().ok()?;
+        let sub = parts[2].parse().ok()?;
+        if main > 31 || middle > 7 {
+            return None;
+        }
+        Some(Self { main, middle, sub })
+    }
+
+    /// Convert to raw 16-bit value (big-endian format for KNX tables).
+    pub const fn to_u16(&self) -> u16 {
+        (((self.main as u16) & 0x1f) << 11) | (((self.middle as u16) & 0x07) << 8) | (self.sub as u16)
+    }
+
+    /// Convert to bytes (big-endian) for table storage.
+    pub const fn to_bytes(&self) -> [u8; 2] {
+        let val = self.to_u16();
+        [(val >> 8) as u8, (val & 0xff) as u8]
+    }
+
+    /// Create from raw 16-bit value.
+    pub const fn from_u16(val: u16) -> Self {
+        Self {
+            main: ((val >> 11) & 0x1f) as u8,
+            middle: ((val >> 8) & 0x07) as u8,
+            sub: (val & 0xff) as u8,
+        }
+    }
+
+    /// Check if this is a valid (non-zero) group address.
+    pub const fn is_valid(&self) -> bool {
+        self.main != 0 || self.middle != 0 || self.sub != 0
+    }
+}
+
+impl std::fmt::Display for GroupAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}/{}", self.main, self.middle, self.sub)
+    }
+}
+
+/// A binding between a communication object and a group address.
+#[derive(Debug, Clone)]
+pub struct GroupAddressBinding {
+    /// The group address
+    pub group_address: GroupAddress,
+    /// Whether this is the sending address (first/primary binding)
+    pub is_sending: bool,
+}
+
+/// Association entry for table generation (TSAP -> ASAP mapping).
+#[derive(Debug, Clone, Copy)]
+pub struct AssociationEntry {
+    /// Transport Service Access Point (index into address table, 1-based)
+    pub tsap: u16,
+    /// Application Service Access Point (communication object number)
+    pub asap: u16,
+}
+
 /// Runtime model for a KNX device configuration.
 ///
 /// This holds the parsed application program and tracks:
@@ -39,6 +124,7 @@ impl Default for ParameterValue {
 /// - Computed visibility states for parameters and objects
 /// - Parameter type lookups
 /// - Module definitions and expanded instances
+/// - Group address bindings for communication objects
 pub struct DeviceModel {
     /// The parsed application program
     pub program: ApplicationProgram,
@@ -66,6 +152,9 @@ pub struct DeviceModel {
     visible_modules: HashSet<String>,
     /// Module parameter values indexed by composite ID (instance_id::param_id)
     module_param_values: HashMap<String, ParameterValue>,
+    /// Group address bindings indexed by communication object number
+    /// Each object can have multiple bindings (one sending + multiple listening)
+    group_address_bindings: HashMap<u16, Vec<GroupAddressBinding>>,
 }
 
 /// Information about a parameter including its default value.
@@ -154,6 +243,7 @@ impl DeviceModel {
             expanded_modules,
             visible_modules: HashSet::new(),
             module_param_values,
+            group_address_bindings: HashMap::new(),
         };
 
         // Compute initial visibility
@@ -293,6 +383,116 @@ impl DeviceModel {
     pub fn mask_version(&self) -> &str {
         &self.program.mask_version
     }
+
+    // ========================================================================
+    // Group Address Binding Management
+    // ========================================================================
+
+    /// Assign a group address to a communication object.
+    ///
+    /// The first assignment becomes the "sending" address. Multiple addresses
+    /// can be assigned to a single object (one sending, others listening).
+    pub fn assign_group_address(&mut self, object_number: u16, group_address: GroupAddress) {
+        let bindings = self.group_address_bindings.entry(object_number).or_default();
+
+        // Check if this address is already assigned
+        if bindings.iter().any(|b| b.group_address == group_address) {
+            return;
+        }
+
+        // First binding is the sending address
+        let is_sending = bindings.is_empty();
+        bindings.push(GroupAddressBinding {
+            group_address,
+            is_sending,
+        });
+    }
+
+    /// Remove a group address binding from a communication object.
+    pub fn remove_group_address(&mut self, object_number: u16, group_address: &GroupAddress) {
+        if let Some(bindings) = self.group_address_bindings.get_mut(&object_number) {
+            let was_sending = bindings.first().map(|b| b.group_address == *group_address).unwrap_or(false);
+            bindings.retain(|b| b.group_address != *group_address);
+
+            // If we removed the sending address and there are others, promote the first
+            if was_sending && !bindings.is_empty() {
+                bindings[0].is_sending = true;
+            }
+        }
+    }
+
+    /// Clear all group addresses from a communication object.
+    pub fn clear_group_addresses(&mut self, object_number: u16) {
+        self.group_address_bindings.remove(&object_number);
+    }
+
+    /// Get all group addresses bound to a communication object.
+    pub fn get_group_addresses(&self, object_number: u16) -> &[GroupAddressBinding] {
+        self.group_address_bindings
+            .get(&object_number)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Get the primary (sending) group address for a communication object.
+    pub fn get_sending_group_address(&self, object_number: u16) -> Option<GroupAddress> {
+        self.group_address_bindings
+            .get(&object_number)
+            .and_then(|bindings| bindings.iter().find(|b| b.is_sending))
+            .map(|b| b.group_address)
+    }
+
+    /// Get all unique group addresses assigned across all objects (for address table).
+    ///
+    /// Returns addresses sorted and deduplicated.
+    pub fn all_group_addresses(&self) -> Vec<GroupAddress> {
+        let mut addresses: Vec<GroupAddress> = self
+            .group_address_bindings
+            .values()
+            .flatten()
+            .map(|b| b.group_address)
+            .collect();
+        addresses.sort_by_key(|a| a.to_u16());
+        addresses.dedup();
+        addresses
+    }
+
+    /// Build the association table entries (TSAP -> ASAP mappings).
+    ///
+    /// Returns entries sorted by TSAP (address table index).
+    /// TSAP is 1-based index into the address table.
+    /// ASAP is the communication object number.
+    pub fn build_association_entries(&self) -> Vec<AssociationEntry> {
+        // First, build the address table to get TSAP indices
+        let address_table = self.all_group_addresses();
+
+        let mut entries = Vec::new();
+
+        for (&object_number, bindings) in &self.group_address_bindings {
+            for binding in bindings {
+                // Find the TSAP (1-based index into address table)
+                if let Some(idx) = address_table.iter().position(|a| *a == binding.group_address) {
+                    entries.push(AssociationEntry {
+                        tsap: (idx + 1) as u16, // 1-based
+                        asap: object_number,
+                    });
+                }
+            }
+        }
+
+        // Sort by TSAP, then by ASAP
+        entries.sort_by_key(|e| (e.tsap, e.asap));
+        entries
+    }
+
+    /// Check if any group addresses are assigned.
+    pub fn has_group_addresses(&self) -> bool {
+        !self.group_address_bindings.is_empty()
+    }
+
+    // ========================================================================
+    // Visibility Computation
+    // ========================================================================
 
     /// Recompute visibility of all parameter refs and communication object refs
     /// based on current parameter values and choose/when conditions.

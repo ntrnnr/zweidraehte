@@ -249,7 +249,7 @@ fn create_content_item<'a>(
                 EditMode::EnumDropdown {
                     param_id: edit_id, ..
                 } => edit_id == param_id,
-                EditMode::None => false,
+                EditMode::GroupAddressInput { .. } | EditMode::None => false,
             };
 
             // Use 40% of width for label, leave rest for value
@@ -488,6 +488,12 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
     )
     .bottom_margin(0);
 
+    // Check if we're editing a group address
+    let editing_object = match &app.edit_mode {
+        EditMode::GroupAddressInput { object_number, buffer } => Some((*object_number, buffer.clone())),
+        _ => None,
+    };
+
     // Build table rows
     let rows: Vec<Row> = app
         .com_object_rows
@@ -495,6 +501,7 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(i, row)| {
             let is_selected = i == app.selected_obj_idx && focused;
+            let is_editing = editing_object.as_ref().map_or(false, |(n, _)| *n == row.number);
             let style = if is_selected {
                 Style::default().bg(Color::DarkGray).fg(Color::White)
             } else {
@@ -503,15 +510,21 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
 
             let flag = |b: bool| if b { "●" } else { "○" };
 
+            // Show input buffer if editing this row's group address
+            let group_addr_display = if is_editing {
+                let buffer = &editing_object.as_ref().unwrap().1;
+                format!("▸{}█", buffer)
+            } else if row.group_address.is_empty() {
+                "—".to_string()
+            } else {
+                row.group_address.clone()
+            };
+
             Row::new(vec![
                 format!("{:3}", row.number),
                 truncate_string(&row.name, 35),
                 truncate_string(&row.function, 25),
-                if row.group_address.is_empty() {
-                    "—".to_string()
-                } else {
-                    row.group_address.clone()
-                },
+                group_addr_display,
                 row.size.clone(),
                 truncate_string(&row.dpt, 14),
                 row.priority.clone(),
@@ -898,6 +911,9 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         (EditMode::EnumDropdown { .. }, _, _) => "↑/↓: Select | Enter: Confirm | Esc: Cancel",
         (EditMode::NumberInput { .. }, _, _) => "Type number | Enter: Confirm | Esc: Cancel",
         (EditMode::TextInput { .. }, _, _) => "Type text | Enter: Confirm | Esc: Cancel",
+        (EditMode::GroupAddressInput { .. }, _, _) => {
+            "Type group address (e.g., 1/2/3) | Enter: Confirm | Esc: Cancel"
+        }
         (EditMode::None, _, Focus::Tabs) => "←/→: Switch tab | Tab/Enter: Focus content | q: Quit",
         (EditMode::None, MainTab::Parameters, Focus::Sidebar) => {
             "↑/↓: Navigate | Enter: Expand | Tab: Content | q: Quit"
@@ -906,7 +922,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
             "↑/↓: Navigate | Enter: Edit | Tab: Tabs | q: Quit"
         }
         (EditMode::None, MainTab::CommObjects, Focus::Content) => {
-            "↑/↓: Navigate | Tab: Tabs | q: Quit"
+            "↑/↓: Navigate | Enter: Set Group Address | Tab: Tabs | q: Quit"
         }
         (EditMode::None, MainTab::CommObjects, Focus::Sidebar) => {
             // Shouldn't happen
