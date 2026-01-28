@@ -2391,12 +2391,12 @@ impl App {
 
         // Write association entries: TSAP -> ASAP mappings
         for entry in &association_entries {
-            if entry_size == 2 {
-                // BCU1: 1-byte TSAP + 1-byte ASAP
+            if flavour.uses_u8_entries() {
+                // Small format: u8 TSAP + u8 ASAP (BCU1/BCU2/M112/SystemBSmall)
                 data.push(entry.tsap as u8);
                 data.push(entry.asap as u8);
             } else {
-                // System B: 2-byte TSAP + 2-byte ASAP
+                // Big format: u16 TSAP + u16 ASAP (SystemB/SystemBBig)
                 data.push((entry.tsap >> 8) as u8);
                 data.push((entry.tsap & 0xFF) as u8);
                 data.push((entry.asap >> 8) as u8);

@@ -512,16 +512,29 @@ pub struct AccessRights {
 }
 
 /// Table flavours that indicate the semantic type of a table resource.
+///
+/// These flavours determine the binary format of KNX tables (count field size,
+/// entry size, and entry structure).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableFlavour {
     /// BCU1-style address table (1-byte count + 2-byte entries)
     AddressTableBcu1,
     /// System B address table (2-byte count + 2-byte entries)
     AddressTableSystemB,
-    /// BCU1-style association table
+
+    /// BCU1-style association table (1-byte count + 2-byte entries: u8 TSAP + u8 ASAP)
     AssociationTableBcu1,
-    /// System B association table
+    /// BCU2-style association table
+    AssociationTableBcu2,
+    /// BIM M112 association table
+    AssociationTableM112,
+    /// System B association table (2-byte count + 4-byte entries: u16 TSAP + u16 ASAP)
     AssociationTableSystemB,
+    /// System B small association table (2-byte count + 2-byte entries: u8 TSAP + u8 ASAP)
+    AssociationTableSystemBSmall,
+    /// System B big association table (2-byte count + 4-byte entries: u16 TSAP + u16 ASAP)
+    AssociationTableSystemBBig,
+
     /// Group object table
     GroupObjectTable,
     /// Unknown flavour
@@ -535,7 +548,11 @@ impl TableFlavour {
             "AddressTable_Bcu1" => TableFlavour::AddressTableBcu1,
             "AddressTable_SystemB" => TableFlavour::AddressTableSystemB,
             "AssociationTable_Bcu1" => TableFlavour::AssociationTableBcu1,
+            "AssociationTable_Bcu2" => TableFlavour::AssociationTableBcu2,
+            "AssociationTable_M112" => TableFlavour::AssociationTableM112,
             "AssociationTable_SystemB" => TableFlavour::AssociationTableSystemB,
+            "AssociationTable_SystemBSmall" => TableFlavour::AssociationTableSystemBSmall,
+            "AssociationTable_SystemBBig" => TableFlavour::AssociationTableSystemBBig,
             s if s.contains("GroupObject") => TableFlavour::GroupObjectTable,
             _ => TableFlavour::Unknown,
         }
@@ -544,21 +561,50 @@ impl TableFlavour {
     /// Get the count field size in bytes.
     pub fn count_size(&self) -> usize {
         match self {
-            TableFlavour::AddressTableBcu1 => 1,
-            TableFlavour::AssociationTableBcu1 => 1,
-            _ => 2, // System B and others use 2-byte count
+            // BCU1/BCU2/M112 use 1-byte count
+            TableFlavour::AddressTableBcu1
+            | TableFlavour::AssociationTableBcu1
+            | TableFlavour::AssociationTableBcu2
+            | TableFlavour::AssociationTableM112 => 1,
+            // System B uses 2-byte count
+            _ => 2,
         }
     }
 
     /// Get the entry size in bytes.
     pub fn entry_size(&self) -> usize {
         match self {
+            // Address tables are always 2 bytes per entry (group address)
             TableFlavour::AddressTableBcu1 | TableFlavour::AddressTableSystemB => 2,
-            TableFlavour::AssociationTableBcu1 => 2, // TSAP only
-            TableFlavour::AssociationTableSystemB => 4, // TSAP + ASAP
-            TableFlavour::GroupObjectTable => 2, // Type + flags (System B)
+
+            // BCU1/BCU2/M112 use 2-byte entries (u8 TSAP + u8 ASAP)
+            TableFlavour::AssociationTableBcu1
+            | TableFlavour::AssociationTableBcu2
+            | TableFlavour::AssociationTableM112 => 2,
+
+            // SystemBSmall uses 2-byte entries (u8 TSAP + u8 ASAP)
+            TableFlavour::AssociationTableSystemBSmall => 2,
+
+            // SystemB and SystemBBig use 4-byte entries (u16 TSAP + u16 ASAP)
+            TableFlavour::AssociationTableSystemB
+            | TableFlavour::AssociationTableSystemBBig => 4,
+
+            // Group object table: 2 bytes (type + flags)
+            TableFlavour::GroupObjectTable => 2,
+
             TableFlavour::Unknown => 2,
         }
+    }
+
+    /// Check if this is a "small" format using u8 pairs for TSAP/ASAP.
+    pub fn uses_u8_entries(&self) -> bool {
+        matches!(
+            self,
+            TableFlavour::AssociationTableBcu1
+                | TableFlavour::AssociationTableBcu2
+                | TableFlavour::AssociationTableM112
+                | TableFlavour::AssociationTableSystemBSmall
+        )
     }
 }
 
