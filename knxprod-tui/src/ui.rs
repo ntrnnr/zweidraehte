@@ -281,6 +281,31 @@ fn create_content_item<'a>(
                 Style::default().fg(Color::DarkGray).bg(bg),
             )]))
         }
+        ContentItem::CommObject {
+            name,
+            function,
+            dpt,
+        } => {
+            // Display comm object with distinctive styling
+            let label_width = (width * 40 / 100).max(20).min(45);
+            let label = if name.len() > label_width {
+                format!("📡{}…", &name[..label_width - 3])
+            } else {
+                format!("📡{:width$}", name, width = label_width - 2)
+            };
+
+            // Show function and DPT in value area
+            let info = if dpt.is_empty() {
+                function.clone()
+            } else {
+                format!("{} [{}]", function, dpt)
+            };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(label, Style::default().fg(Color::Cyan).bg(bg)),
+                Span::styled(info, Style::default().fg(Color::DarkGray).bg(bg)),
+            ]))
+        }
     }
 }
 

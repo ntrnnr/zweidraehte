@@ -8,8 +8,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::schema::{
     ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem,
-    Choose, ComObject, ComObjectRef, DynamicSection, ParameterBlock, ParameterBlockItem,
-    ParameterItem, ParameterRef, ParameterType, StaticSection, WhenItem,
+    Choose, ComObject, ComObjectRef, DynamicSection, Module, ModuleArg, ModuleDef,
+    ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, ParameterItem, ParameterRef,
+    ParameterType, StaticSection, WhenItem,
 };
 
 /// Represents a parameter value that can be stored in the device model.
@@ -37,6 +38,7 @@ impl Default for ParameterValue {
 /// - Current parameter values
 /// - Computed visibility states for parameters and objects
 /// - Parameter type lookups
+/// - Module definitions and expanded instances
 pub struct DeviceModel {
     /// The parsed application program
     pub program: ApplicationProgram,
@@ -56,6 +58,14 @@ pub struct DeviceModel {
     visible_param_refs: HashSet<String>,
     /// Set of visible communication object ref IDs
     visible_com_object_refs: HashSet<String>,
+    /// Module definitions indexed by ID
+    module_defs: HashMap<String, ModuleDef>,
+    /// Expanded module instances indexed by instance ID
+    expanded_modules: HashMap<String, ExpandedModule>,
+    /// Set of visible module instance IDs
+    visible_modules: HashSet<String>,
+    /// Module parameter values indexed by composite ID (instance_id::param_id)
+    module_param_values: HashMap<String, ParameterValue>,
 }
 
 /// Information about a parameter including its default value.
@@ -75,6 +85,28 @@ pub struct ParameterInfo {
     pub suffix: Option<String>,
     /// Whether hidden from user (Access = "None")
     pub hidden: bool,
+}
+
+/// A module argument value (numeric or text).
+#[derive(Debug, Clone)]
+pub enum ModuleArgValue {
+    /// Numeric argument (used for BaseOffset, BaseNumber, channel numbers)
+    Numeric(i64),
+    /// Text argument (used for text substitution like {{0}})
+    Text(String),
+}
+
+/// An expanded module instance with resolved argument values.
+#[derive(Debug, Clone)]
+pub struct ExpandedModule {
+    /// The module instance ID
+    pub instance_id: String,
+    /// Reference to the ModuleDef being instantiated
+    pub module_def_id: String,
+    /// Module instance name (may contain templates)
+    pub name: Option<String>,
+    /// Resolved argument values by argument name
+    pub args: HashMap<String, ModuleArgValue>,
 }
 
 impl DeviceModel {
@@ -98,6 +130,16 @@ impl DeviceModel {
         let com_objects = build_com_object_lookup(static_section);
         let com_object_refs = build_com_object_ref_lookup(static_section);
 
+        // Build module definition lookup
+        let module_defs = build_module_def_lookup(&program);
+
+        // Expand module instances from dynamic section
+        let expanded_modules = expand_all_modules(&program, &module_defs);
+
+        // Initialize module parameter values from defaults
+        let module_param_values =
+            build_module_param_values(&expanded_modules, &module_defs);
+
         let mut model = Self {
             program,
             param_values,
@@ -108,6 +150,10 @@ impl DeviceModel {
             com_object_refs,
             visible_param_refs: HashSet::new(),
             visible_com_object_refs: HashSet::new(),
+            module_defs,
+            expanded_modules,
+            visible_modules: HashSet::new(),
+            module_param_values,
         };
 
         // Compute initial visibility
@@ -131,6 +177,25 @@ impl DeviceModel {
             // Recompute visibility since this parameter might be a selector
             self.recompute_visibility();
         }
+    }
+
+    /// Get a module parameter value by composite ID (instance_id::param_id).
+    pub fn get_module_parameter_value(&self, composite_id: &str) -> Option<&ParameterValue> {
+        self.module_param_values.get(composite_id)
+    }
+
+    /// Set a module parameter value by composite ID (instance_id::param_id).
+    pub fn set_module_parameter_value(&mut self, composite_id: &str, value: ParameterValue) {
+        if self.module_param_values.contains_key(composite_id) {
+            self.module_param_values.insert(composite_id.to_string(), value);
+            // Note: Module parameters don't typically affect visibility conditions,
+            // but we could recompute if needed in the future
+        }
+    }
+
+    /// Check if a parameter ID is a module parameter (contains "::").
+    pub fn is_module_parameter(&self, param_id: &str) -> bool {
+        param_id.contains("::")
     }
 
     /// Get parameter info by ID.
@@ -197,11 +262,39 @@ impl DeviceModel {
         self.program.dynamic.as_ref()
     }
 
+    /// Get a module definition by ID.
+    pub fn get_module_def(&self, def_id: &str) -> Option<&ModuleDef> {
+        self.module_defs.get(def_id)
+    }
+
+    /// Get an expanded module instance by ID.
+    pub fn get_expanded_module(&self, instance_id: &str) -> Option<&ExpandedModule> {
+        self.expanded_modules.get(instance_id)
+    }
+
+    /// Check if a module instance is currently visible.
+    pub fn is_module_visible(&self, instance_id: &str) -> bool {
+        self.visible_modules.contains(instance_id)
+    }
+
+    /// Get all visible module instances.
+    pub fn visible_modules(&self) -> impl Iterator<Item = &ExpandedModule> {
+        self.visible_modules
+            .iter()
+            .filter_map(|id| self.expanded_modules.get(id))
+    }
+
+    /// Get all expanded module instances.
+    pub fn all_expanded_modules(&self) -> impl Iterator<Item = &ExpandedModule> {
+        self.expanded_modules.values()
+    }
+
     /// Recompute visibility of all parameter refs and communication object refs
     /// based on current parameter values and choose/when conditions.
     pub fn recompute_visibility(&mut self) {
         self.visible_param_refs.clear();
         self.visible_com_object_refs.clear();
+        self.visible_modules.clear();
 
         // Clone the dynamic section to avoid borrow conflicts
         let dynamic = self.program.dynamic.clone();
@@ -241,9 +334,8 @@ impl DeviceModel {
                 ChannelItem::Choose(choose) => {
                     self.process_choose(choose);
                 }
-                ChannelItem::Module(_module) => {
-                    // Module instances contain their own parameters/objects
-                    // TODO: Expand module content when processing
+                ChannelItem::Module(module) => {
+                    self.process_module(module);
                 }
             }
         }
@@ -267,8 +359,8 @@ impl DeviceModel {
                 self.process_choose(choose);
             }
             ParameterBlockItem::ParameterSeparator(_) => {}
-            ParameterBlockItem::Module(_) => {
-                // Module instances have their own visibility logic
+            ParameterBlockItem::Module(module) => {
+                self.process_module(module);
             }
         }
     }
@@ -330,9 +422,30 @@ impl DeviceModel {
                 WhenItem::Assign(_) => {
                     // Assign operations don't affect visibility
                 }
-                WhenItem::Module(_module) => {
-                    // Module instances contain their own parameters/objects
-                    // TODO: Expand module content when processing
+                WhenItem::Module(module) => {
+                    self.process_module(module);
+                }
+            }
+        }
+    }
+
+    /// Process a module instance - mark it as visible.
+    fn process_module(&mut self, module: &Module) {
+        // Mark this module instance as visible
+        self.visible_modules.insert(module.id.clone());
+
+        // Process the module's dynamic section if it has one
+        if let Some(module_def) = self.module_defs.get(&module.ref_id).cloned() {
+            if let Some(dynamic) = &module_def.dynamic {
+                for item in &dynamic.items {
+                    match item {
+                        ModuleDefDynamicItem::ParameterBlock(pb) => {
+                            self.process_parameter_block(pb);
+                        }
+                        ModuleDefDynamicItem::Choose(choose) => {
+                            self.process_choose(choose);
+                        }
+                    }
                 }
             }
         }
@@ -511,6 +624,199 @@ fn build_com_object_ref_lookup(static_section: &StaticSection) -> HashMap<String
         }
     }
     map
+}
+
+/// Build a lookup map of module definitions by ID.
+fn build_module_def_lookup(program: &ApplicationProgram) -> HashMap<String, ModuleDef> {
+    let mut map = HashMap::new();
+    if let Some(module_defs) = &program.module_defs {
+        for module_def in &module_defs.module_defs {
+            map.insert(module_def.id.clone(), module_def.clone());
+        }
+    }
+    map
+}
+
+/// Build module parameter values with defaults from module definitions.
+///
+/// Returns a map of composite IDs (instance_id::param_id) to parameter values.
+fn build_module_param_values(
+    expanded_modules: &HashMap<String, ExpandedModule>,
+    module_defs: &HashMap<String, ModuleDef>,
+) -> HashMap<String, ParameterValue> {
+    let mut values = HashMap::new();
+
+    for (instance_id, expanded) in expanded_modules {
+        if let Some(module_def) = module_defs.get(&expanded.module_def_id) {
+            // Get parameters from the module's static section
+            if let Some(params) = &module_def.static_section.parameters {
+                for item in &params.items {
+                    if let ParameterItem::Parameter(p) = item {
+                        let composite_id = format!("{}::{}", instance_id, p.id);
+                        values.insert(composite_id, parse_default_value(&p.value));
+                    }
+                }
+            }
+        }
+    }
+
+    values
+}
+
+/// Expand all module instances found in the dynamic section.
+fn expand_all_modules(
+    program: &ApplicationProgram,
+    module_defs: &HashMap<String, ModuleDef>,
+) -> HashMap<String, ExpandedModule> {
+    let mut expanded = HashMap::new();
+
+    if let Some(dynamic) = &program.dynamic {
+        // Collect modules from channel-independent block
+        if let Some(cib) = &dynamic.channel_independent_block {
+            collect_modules_from_cib(&cib.items, module_defs, &mut expanded);
+        }
+
+        // Collect modules from channels
+        for channel in &dynamic.channels {
+            collect_modules_from_channel(&channel.items, module_defs, &mut expanded);
+        }
+    }
+
+    expanded
+}
+
+/// Collect modules from channel-independent block items.
+fn collect_modules_from_cib(
+    items: &[ChannelIndependentItem],
+    module_defs: &HashMap<String, ModuleDef>,
+    expanded: &mut HashMap<String, ExpandedModule>,
+) {
+    for item in items {
+        match item {
+            ChannelIndependentItem::ParameterBlock(pb) => {
+                collect_modules_from_pb(&pb.items, module_defs, expanded);
+            }
+            ChannelIndependentItem::Choose(choose) => {
+                collect_modules_from_choose(choose, module_defs, expanded);
+            }
+        }
+    }
+}
+
+/// Collect modules from channel items.
+fn collect_modules_from_channel(
+    items: &[ChannelItem],
+    module_defs: &HashMap<String, ModuleDef>,
+    expanded: &mut HashMap<String, ExpandedModule>,
+) {
+    for item in items {
+        match item {
+            ChannelItem::ParameterBlock(pb) => {
+                collect_modules_from_pb(&pb.items, module_defs, expanded);
+            }
+            ChannelItem::Choose(choose) => {
+                collect_modules_from_choose(choose, module_defs, expanded);
+            }
+            ChannelItem::Module(module) => {
+                expand_module(module, module_defs, expanded);
+            }
+        }
+    }
+}
+
+/// Collect modules from parameter block items.
+fn collect_modules_from_pb(
+    items: &[ParameterBlockItem],
+    module_defs: &HashMap<String, ModuleDef>,
+    expanded: &mut HashMap<String, ExpandedModule>,
+) {
+    for item in items {
+        match item {
+            ParameterBlockItem::Choose(choose) => {
+                collect_modules_from_choose(choose, module_defs, expanded);
+            }
+            ParameterBlockItem::Module(module) => {
+                expand_module(module, module_defs, expanded);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect modules from choose/when blocks.
+fn collect_modules_from_choose(
+    choose: &Choose,
+    module_defs: &HashMap<String, ModuleDef>,
+    expanded: &mut HashMap<String, ExpandedModule>,
+) {
+    for when in &choose.whens {
+        for item in &when.items {
+            match item {
+                WhenItem::ParameterBlock(pb) => {
+                    collect_modules_from_pb(&pb.items, module_defs, expanded);
+                }
+                WhenItem::Choose(nested_choose) => {
+                    collect_modules_from_choose(nested_choose, module_defs, expanded);
+                }
+                WhenItem::Module(module) => {
+                    expand_module(module, module_defs, expanded);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Expand a single module instance.
+fn expand_module(
+    module: &Module,
+    module_defs: &HashMap<String, ModuleDef>,
+    expanded: &mut HashMap<String, ExpandedModule>,
+) {
+    // Look up the module definition
+    let module_def = match module_defs.get(&module.ref_id) {
+        Some(def) => def,
+        None => return, // Module def not found, skip
+    };
+
+    // Build argument values map
+    let mut args = HashMap::new();
+    for arg in &module.args {
+        match arg {
+            ModuleArg::NumericArg { ref_id, value } => {
+                // Find the argument name from the module def
+                if let Some(arg_defs) = &module_def.arguments {
+                    for arg_def in &arg_defs.arguments {
+                        if arg_def.id == *ref_id {
+                            args.insert(arg_def.name.clone(), ModuleArgValue::Numeric(*value));
+                            break;
+                        }
+                    }
+                }
+            }
+            ModuleArg::TextArg { ref_id, value, .. } => {
+                // Find the argument name from the module def
+                if let Some(arg_defs) = &module_def.arguments {
+                    for arg_def in &arg_defs.arguments {
+                        if arg_def.id == *ref_id {
+                            args.insert(arg_def.name.clone(), ModuleArgValue::Text(value.clone()));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Create expanded module
+    let expanded_module = ExpandedModule {
+        instance_id: module.id.clone(),
+        module_def_id: module.ref_id.clone(),
+        name: module.name.clone(),
+        args,
+    };
+
+    expanded.insert(module.id.clone(), expanded_module);
 }
 
 /// Helper struct for iterating over the dynamic structure with visibility context.

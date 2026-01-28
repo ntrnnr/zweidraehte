@@ -101,6 +101,98 @@ fn resolve_param_ref_value(ref_num: &str, model: &DeviceModel) -> Option<String>
     None
 }
 
+/// Interpolate module text templates like "{{ChNo}}" and "{{0}}".
+///
+/// Module text templates use argument names:
+/// - `{{ChNo}}` - Replaced with the channel number argument value
+/// - `{{0}}` - Replaced with the text_param_value if provided, or first text arg
+fn interpolate_module_text(text: &str, expanded: &knxprod::model::ExpandedModule) -> String {
+    interpolate_module_text_with_param(text, expanded, None)
+}
+
+/// Interpolate module text templates with an optional text parameter value.
+///
+/// The `text_param_value` is used for `{{0}}` substitution when provided.
+/// This is typically the value of the parameter referenced by TextParameterRefId.
+fn interpolate_module_text_with_param(
+    text: &str,
+    expanded: &knxprod::model::ExpandedModule,
+    text_param_value: Option<&str>,
+) -> String {
+    use knxprod::model::ModuleArgValue;
+
+    if !text.contains("{{") {
+        return text.to_string();
+    }
+
+    let mut result = String::with_capacity(text.len());
+    let mut remaining = text;
+
+    while let Some(start) = remaining.find("{{") {
+        // Add text before the pattern
+        result.push_str(&remaining[..start]);
+
+        // Find the end of the pattern
+        if let Some(end) = remaining[start..].find("}}") {
+            let pattern = &remaining[start + 2..start + end];
+
+            // Look up the argument value
+            let resolved = match expanded.args.get(pattern) {
+                Some(ModuleArgValue::Numeric(n)) => Some(n.to_string()),
+                Some(ModuleArgValue::Text(s)) => Some(s.clone()),
+                None => {
+                    // Try to interpret as a number index for text args ({{0}}, {{1}}, etc.)
+                    if let Ok(idx) = pattern.parse::<usize>() {
+                        if idx == 0 {
+                            // {{0}} is typically the text parameter value
+                            text_param_value.map(|s| s.to_string()).or_else(|| {
+                                // Fall back to first text argument if available
+                                expanded
+                                    .args
+                                    .values()
+                                    .filter_map(|v| match v {
+                                        ModuleArgValue::Text(s) => Some(s.clone()),
+                                        _ => None,
+                                    })
+                                    .next()
+                            })
+                        } else {
+                            // Find the idx-th text argument
+                            let text_args: Vec<_> = expanded
+                                .args
+                                .iter()
+                                .filter_map(|(_, v)| match v {
+                                    ModuleArgValue::Text(s) => Some(s.clone()),
+                                    _ => None,
+                                })
+                                .collect();
+                            text_args.get(idx).cloned()
+                        }
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some(value) = resolved {
+                result.push_str(&value);
+            }
+            // If not resolved, leave empty
+
+            remaining = &remaining[start + end + 2..];
+        } else {
+            // Malformed pattern, just add the rest
+            result.push_str(&remaining[start..]);
+            break;
+        }
+    }
+
+    // Add any remaining text
+    result.push_str(remaining);
+
+    result
+}
+
 /// Main tab in the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainTab {
@@ -140,6 +232,13 @@ pub enum NodeType {
         parent: Option<usize>,
         /// Block name/ID
         block_name: String,
+    },
+    /// A module instance
+    ModuleInstance {
+        /// Module instance ID
+        instance_id: String,
+        /// Parent context: None = device level, Some(idx) = channel
+        parent: Option<usize>,
     },
 }
 
@@ -212,6 +311,12 @@ pub enum ContentItem {
     },
     /// A separator
     Separator { text: Option<String> },
+    /// A communication object (displayed inline in module content)
+    CommObject {
+        name: String,
+        function: String,
+        dpt: String,
+    },
 }
 
 /// A row in the communication objects table.
@@ -375,7 +480,11 @@ impl App {
     fn count_visible_blocks_in_channel(&self, channel: &Channel) -> usize {
         let mut blocks = Vec::new();
         self.collect_visible_channel_blocks(channel, &mut blocks);
-        blocks.len()
+
+        let mut modules = Vec::new();
+        self.collect_visible_channel_modules(channel, &mut modules);
+
+        blocks.len() + modules.len()
     }
 
     /// Collect all visible parameter blocks from a channel, including those nested in Choose blocks.
@@ -395,8 +504,105 @@ impl App {
                     self.collect_blocks_from_choose(choose, blocks);
                 }
                 ChannelItem::Module(_) => {
-                    // Module instances have their own dynamic content - skip for now
+                    // Modules are collected separately via collect_visible_modules
                 }
+            }
+        }
+    }
+
+    /// Collect all visible module instances from a channel.
+    fn collect_visible_channel_modules<'a>(
+        &self,
+        channel: &'a Channel,
+        modules: &mut Vec<&'a knxprod::Module>,
+    ) {
+        for item in &channel.items {
+            match item {
+                ChannelItem::Module(module) => {
+                    if self.model.is_module_visible(&module.id) {
+                        modules.push(module);
+                    }
+                }
+                ChannelItem::Choose(choose) => {
+                    self.collect_modules_from_choose(choose, modules);
+                }
+                ChannelItem::ParameterBlock(pb) => {
+                    // Modules can be inside parameter blocks
+                    self.collect_modules_from_pb(&pb.items, modules);
+                }
+            }
+        }
+    }
+
+    /// Collect modules from parameter block items.
+    fn collect_modules_from_pb<'a>(
+        &self,
+        items: &'a [ParameterBlockItem],
+        modules: &mut Vec<&'a knxprod::Module>,
+    ) {
+        for item in items {
+            match item {
+                ParameterBlockItem::Module(module) => {
+                    if self.model.is_module_visible(&module.id) {
+                        modules.push(module);
+                    }
+                }
+                ParameterBlockItem::Choose(choose) => {
+                    self.collect_modules_from_choose(choose, modules);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Collect modules from Choose blocks.
+    fn collect_modules_from_choose<'a>(
+        &self,
+        choose: &'a Choose,
+        modules: &mut Vec<&'a knxprod::Module>,
+    ) {
+        let selector_value = self.get_selector_value(&choose.param_ref_id);
+
+        let mut any_matched = false;
+        for when in &choose.whens {
+            if when.default.unwrap_or(false) {
+                continue;
+            }
+            if let Some(test) = &when.test {
+                if self.matches_condition(selector_value, test) {
+                    any_matched = true;
+                    self.collect_modules_from_when(&when.items, modules);
+                }
+            }
+        }
+
+        if !any_matched {
+            for when in &choose.whens {
+                if when.default.unwrap_or(false) {
+                    self.collect_modules_from_when(&when.items, modules);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Collect modules from when items.
+    fn collect_modules_from_when<'a>(
+        &self,
+        items: &'a [WhenItem],
+        modules: &mut Vec<&'a knxprod::Module>,
+    ) {
+        for item in items {
+            match item {
+                WhenItem::Module(module) => {
+                    if self.model.is_module_visible(&module.id) {
+                        modules.push(module);
+                    }
+                }
+                WhenItem::Choose(nested_choose) => {
+                    self.collect_modules_from_choose(nested_choose, modules);
+                }
+                _ => {}
             }
         }
     }
@@ -557,6 +763,7 @@ impl App {
     }
 
     fn add_channel_blocks_to_tree(&mut self, channel: &Channel, channel_idx: usize, depth: usize) {
+        // Add parameter blocks
         let mut blocks = Vec::new();
         self.collect_visible_channel_blocks(channel, &mut blocks);
 
@@ -574,6 +781,96 @@ impl App {
                 node_type: NodeType::ParameterBlock {
                     parent: Some(channel_idx),
                     block_name: pb.name.clone(),
+                },
+            });
+        }
+
+        // Add visible module instances
+        let mut modules = Vec::new();
+        self.collect_visible_channel_modules(channel, &mut modules);
+
+        for module in modules {
+            // Get module name from expanded module data
+            let expanded = self.model.get_expanded_module(&module.id);
+            let name = if let Some(exp) = expanded {
+                // Try to build a friendly display name from the module's Dynamic section
+                if let Some(module_def) = self.model.get_module_def(&exp.module_def_id) {
+                    // Get the first ParameterBlock's text and text_parameter_ref_id
+                    let (block_text, text_param_ref_id) = module_def
+                        .dynamic
+                        .as_ref()
+                        .and_then(|dyn_sec| {
+                            dyn_sec.items.iter().find_map(|item| {
+                                if let knxprod::ModuleDefDynamicItem::ParameterBlock(pb) = item {
+                                    Some((pb.text.clone(), pb.text_parameter_ref_id.clone()))
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .unwrap_or((None, None));
+
+                    // Look up the text parameter value for {{0}} substitution
+                    let text_param_value = text_param_ref_id.and_then(|ref_id| {
+                        // Find the ParameterRef to get the parameter ID
+                        let param_ref = module_def
+                            .static_section
+                            .parameter_refs
+                            .as_ref()
+                            .and_then(|refs| refs.refs.iter().find(|pr| pr.id == ref_id));
+
+                        param_ref.and_then(|pr| {
+                            // Build composite ID and look up value
+                            let composite_id = format!("{}::{}", exp.instance_id, pr.ref_id);
+                            self.model
+                                .get_module_parameter_value(&composite_id)
+                                .and_then(|v| match v {
+                                    ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
+                                    ParameterValue::Integer(i) => Some(i.to_string()),
+                                    _ => None,
+                                })
+                        })
+                    });
+
+                    if let Some(text) = block_text {
+                        // Interpolate {{ChNo}} and {{0}} in the text
+                        interpolate_module_text_with_param(
+                            &text,
+                            exp,
+                            text_param_value.as_deref(),
+                        )
+                    } else if let Some(instance_name) = &exp.name {
+                        interpolate_module_text(instance_name, exp)
+                    } else {
+                        // Fallback: use module name with channel number
+                        if let Some(knxprod::model::ModuleArgValue::Numeric(ch)) =
+                            exp.args.get("ChNo")
+                        {
+                            format!("{} {}", module_def.name, ch)
+                        } else {
+                            module_def.name.clone()
+                        }
+                    }
+                } else if let Some(instance_name) = &exp.name {
+                    interpolate_module_text(instance_name, exp)
+                } else {
+                    module.id.clone()
+                }
+            } else {
+                module.name.clone().unwrap_or_else(|| module.id.clone())
+            };
+
+            let node_id = format!("channel_{}_module_{}", channel_idx, module.id);
+
+            self.tree_nodes.push(TreeNode {
+                id: node_id,
+                name,
+                depth,
+                expanded: false,
+                has_children: false,
+                node_type: NodeType::ModuleInstance {
+                    instance_id: module.id.clone(),
+                    parent: Some(channel_idx),
                 },
             });
         }
@@ -604,6 +901,15 @@ impl App {
         false
     }
 
+    /// Set a parameter value, handling both regular and module parameters.
+    fn set_any_parameter_value(&mut self, param_id: &str, value: ParameterValue) {
+        if self.model.is_module_parameter(param_id) {
+            self.model.set_module_parameter_value(param_id, value);
+        } else {
+            self.model.set_parameter_value(param_id, value);
+        }
+    }
+
     /// Rebuild parameter content based on selected tree node.
     pub fn rebuild_content(&mut self) {
         self.content_items.clear();
@@ -624,6 +930,9 @@ impl App {
                 }
                 NodeType::ParameterBlock { parent, block_name } => {
                     self.build_block_content(*parent, block_name);
+                }
+                NodeType::ModuleInstance { instance_id, .. } => {
+                    self.build_module_content(instance_id);
                 }
             }
         }
@@ -696,6 +1005,350 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Build content for a module instance.
+    fn build_module_content(&mut self, instance_id: &str) {
+        // Get the expanded module and its definition
+        let expanded = self.model.get_expanded_module(instance_id).cloned();
+        let expanded = match expanded {
+            Some(e) => e,
+            None => return,
+        };
+
+        let module_def = self.model.get_module_def(&expanded.module_def_id).cloned();
+        let module_def = match module_def {
+            Some(def) => def,
+            None => return,
+        };
+
+        // If the module has a Dynamic section, render its contents
+        if let Some(dynamic) = &module_def.dynamic {
+            for item in &dynamic.items {
+                match item {
+                    knxprod::ModuleDefDynamicItem::ParameterBlock(pb) => {
+                        self.add_module_block_items(&pb.items, &expanded);
+                    }
+                    knxprod::ModuleDefDynamicItem::Choose(choose) => {
+                        self.add_module_choose_items(choose, &expanded);
+                    }
+                }
+            }
+        } else {
+            // Fall back to rendering params from Static section
+            // For now, just show a placeholder message
+            self.content_items.push(ContentItem::Separator {
+                text: Some(format!(
+                    "Module: {}",
+                    expanded.name.as_deref().unwrap_or(&expanded.instance_id)
+                )),
+            });
+        }
+    }
+
+    /// Add parameter block items for a module, applying text interpolation.
+    fn add_module_block_items(
+        &mut self,
+        items: &[ParameterBlockItem],
+        expanded: &knxprod::model::ExpandedModule,
+    ) {
+        for item in items {
+            match item {
+                ParameterBlockItem::ParameterRefRef(prr) => {
+                    self.add_module_param_ref(&prr.ref_id, expanded);
+                }
+                ParameterBlockItem::ComObjectRefRef(corr) => {
+                    self.add_module_com_obj_ref(&corr.ref_id, expanded);
+                }
+                ParameterBlockItem::Choose(choose) => {
+                    self.add_module_choose_items(choose, expanded);
+                }
+                ParameterBlockItem::ParameterSeparator(sep) => {
+                    let raw_text = sep.text.clone();
+                    let text = raw_text.map(|t| interpolate_module_text(&t, expanded));
+                    self.content_items.push(ContentItem::Separator { text });
+                }
+                ParameterBlockItem::Module(_) => {
+                    // Nested modules not supported yet
+                }
+            }
+        }
+    }
+
+    /// Add choose items for a module.
+    fn add_module_choose_items(
+        &mut self,
+        choose: &Choose,
+        expanded: &knxprod::model::ExpandedModule,
+    ) {
+        let selector_value = self.get_selector_value(&choose.param_ref_id);
+
+        let mut any_matched = false;
+        for when in &choose.whens {
+            if when.default.unwrap_or(false) {
+                continue;
+            }
+            if let Some(test) = &when.test {
+                if self.matches_condition(selector_value, test) {
+                    any_matched = true;
+                    self.add_module_when_items(&when.items, expanded);
+                }
+            }
+        }
+
+        if !any_matched {
+            for when in &choose.whens {
+                if when.default.unwrap_or(false) {
+                    self.add_module_when_items(&when.items, expanded);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Add when items for a module.
+    fn add_module_when_items(
+        &mut self,
+        items: &[WhenItem],
+        expanded: &knxprod::model::ExpandedModule,
+    ) {
+        for item in items {
+            match item {
+                WhenItem::ParameterRefRef(prr) => {
+                    self.add_module_param_ref(&prr.ref_id, expanded);
+                }
+                WhenItem::ComObjectRefRef(corr) => {
+                    self.add_module_com_obj_ref(&corr.ref_id, expanded);
+                }
+                WhenItem::ParameterBlock(pb) => {
+                    self.add_module_block_items(&pb.items, expanded);
+                }
+                WhenItem::Choose(nested_choose) => {
+                    self.add_module_choose_items(nested_choose, expanded);
+                }
+                WhenItem::ParameterSeparator(sep) => {
+                    let raw_text = sep.text.clone();
+                    let text = raw_text.map(|t| interpolate_module_text(&t, expanded));
+                    self.content_items.push(ContentItem::Separator { text });
+                }
+                WhenItem::Assign(_) => {}
+                WhenItem::Module(_) => {}
+            }
+        }
+    }
+
+    /// Add a module parameter ref to content items.
+    fn add_module_param_ref(
+        &mut self,
+        ref_id: &str,
+        expanded: &knxprod::model::ExpandedModule,
+    ) {
+        // Look up the ModuleDef to access its static section
+        let module_def = match self.model.get_module_def(&expanded.module_def_id) {
+            Some(def) => def.clone(),
+            None => return,
+        };
+
+        // Find the ParameterRef in the module's static section
+        let param_ref = module_def
+            .static_section
+            .parameter_refs
+            .as_ref()
+            .and_then(|refs| refs.refs.iter().find(|pr| pr.id == ref_id));
+
+        let param_ref = match param_ref {
+            Some(pr) => pr.clone(),
+            None => return,
+        };
+
+        // Find the Parameter using the RefId
+        let parameter = module_def
+            .static_section
+            .parameters
+            .as_ref()
+            .and_then(|params| {
+                params.items.iter().find_map(|item| match item {
+                    knxprod::ParameterItem::Parameter(p) if p.id == param_ref.ref_id => Some(p),
+                    _ => None,
+                })
+            });
+
+        let parameter = match parameter {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        // Skip hidden parameters
+        if parameter.access.as_deref() == Some("None") {
+            return;
+        }
+
+        // Build display text with interpolation
+        let raw_text = param_ref
+            .text
+            .clone()
+            .unwrap_or_else(|| parameter.text.clone());
+
+        if raw_text.is_empty() {
+            return;
+        }
+
+        let text = interpolate_module_text(&raw_text, expanded);
+
+        // Use a unique ID that includes the module instance
+        let param_id = format!("{}::{}", expanded.instance_id, parameter.id);
+
+        // Build widget based on parameter type
+        let widget = self.build_widget_for_module_param(&parameter, &module_def, &param_id);
+
+        self.content_items.push(ContentItem::Parameter {
+            param_id,
+            text,
+            suffix: parameter.suffix_text.clone(),
+            widget,
+        });
+    }
+
+    /// Build a widget for a module parameter.
+    fn build_widget_for_module_param(
+        &self,
+        parameter: &knxprod::Parameter,
+        _module_def: &knxprod::ModuleDef,
+        composite_param_id: &str,
+    ) -> WidgetType {
+        use knxprod::ParameterTypeDef;
+
+        // Get the current value from module parameter storage
+        let current_value = self.model.get_module_parameter_value(composite_param_id);
+
+        // Look up the parameter type
+        let param_type = self.model.get_parameter_type(&parameter.parameter_type);
+
+        match param_type.map(|pt| &pt.type_def) {
+            Some(ParameterTypeDef::TypeRestriction(tr)) => {
+                // Build dropdown options from enumerations
+                let options: Vec<(i64, String)> = tr
+                    .enumerations
+                    .iter()
+                    .map(|e| (e.value as i64, e.text.clone()))
+                    .collect();
+
+                let current_val = match current_value {
+                    Some(ParameterValue::Integer(v)) => *v,
+                    _ => parameter.value.parse().unwrap_or(0),
+                };
+
+                let current_idx = options
+                    .iter()
+                    .position(|(v, _)| *v == current_val)
+                    .unwrap_or(0);
+
+                WidgetType::Dropdown {
+                    options,
+                    current_idx,
+                }
+            }
+            Some(ParameterTypeDef::TypeNumber(tn)) => {
+                let current_val = match current_value {
+                    Some(ParameterValue::Integer(v)) => *v,
+                    _ => parameter.value.parse().unwrap_or(0),
+                };
+
+                WidgetType::Number {
+                    value: current_val,
+                    min: Some(tn.min_inclusive),
+                    max: Some(tn.max_inclusive),
+                }
+            }
+            Some(ParameterTypeDef::TypeText(_)) => {
+                let val = match current_value {
+                    Some(ParameterValue::Text(s)) => s.clone(),
+                    _ => parameter.value.clone(),
+                };
+                WidgetType::Text { value: val }
+            }
+            Some(ParameterTypeDef::TypeFloat(tf)) => {
+                let current_val = match current_value {
+                    Some(ParameterValue::Integer(v)) => *v,
+                    Some(ParameterValue::Float(v)) => *v as i64,
+                    _ => parameter.value.parse().unwrap_or(0),
+                };
+
+                WidgetType::Number {
+                    value: current_val,
+                    min: Some(tf.min_inclusive as i64),
+                    max: Some(tf.max_inclusive as i64),
+                }
+            }
+            Some(ParameterTypeDef::TypeNone(_)) | None => {
+                // For unknown types, show as read-only
+                let val = match current_value {
+                    Some(ParameterValue::Integer(v)) => v.to_string(),
+                    Some(ParameterValue::Text(s)) => s.clone(),
+                    _ => parameter.value.clone(),
+                };
+                WidgetType::ReadOnly { value: val }
+            }
+        }
+    }
+
+    /// Add a module comm object ref to content items.
+    fn add_module_com_obj_ref(
+        &mut self,
+        ref_id: &str,
+        expanded: &knxprod::model::ExpandedModule,
+    ) {
+        // Look up the ModuleDef to access its static section
+        let module_def = match self.model.get_module_def(&expanded.module_def_id) {
+            Some(def) => def.clone(),
+            None => return,
+        };
+
+        // Find the ComObjectRef in the module's static section
+        let com_obj_ref = module_def
+            .static_section
+            .com_object_refs
+            .as_ref()
+            .and_then(|refs| refs.refs.iter().find(|cor| cor.id == ref_id));
+
+        let com_obj_ref = match com_obj_ref {
+            Some(cor) => cor.clone(),
+            None => return,
+        };
+
+        // Find the ComObject using the RefId
+        let com_object = module_def
+            .static_section
+            .com_objects
+            .as_ref()
+            .and_then(|objs| objs.objects.iter().find(|o| o.id == com_obj_ref.ref_id));
+
+        let com_object = match com_object {
+            Some(o) => o.clone(),
+            None => return,
+        };
+
+        // Build display text with interpolation
+        let raw_text = com_obj_ref
+            .text
+            .clone()
+            .unwrap_or_else(|| com_object.text.clone());
+
+        let text = interpolate_module_text(&raw_text, expanded);
+
+        // Add as a comm object display item
+        self.content_items.push(ContentItem::CommObject {
+            name: text,
+            function: com_obj_ref
+                .function_text
+                .clone()
+                .unwrap_or_else(|| com_object.function_text.clone()),
+            dpt: com_obj_ref
+                .datapoint_type
+                .clone()
+                .or_else(|| com_object.datapoint_type.clone())
+                .unwrap_or_default(),
+        });
     }
 
     /// Find a parameter block by name in a CIB, including inside Choose blocks.
@@ -1052,6 +1705,7 @@ impl App {
     pub fn rebuild_com_objects(&mut self) {
         self.com_object_rows.clear();
 
+        // Add comm objects from main device
         let visible_refs: Vec<_> = self.model.visible_com_object_refs().cloned().collect();
 
         for oref in visible_refs {
@@ -1116,8 +1770,126 @@ impl App {
             }
         }
 
+        // Add comm objects from visible modules
+        self.add_module_com_objects_to_list();
+
         // Sort by object number
         self.com_object_rows.sort_by_key(|r| r.number);
+    }
+
+    /// Add comm objects from visible modules to the com_object_rows list.
+    fn add_module_com_objects_to_list(&mut self) {
+        // Collect visible modules first to avoid borrow issues
+        let visible_modules: Vec<_> = self.model.visible_modules().cloned().collect();
+
+        for expanded in visible_modules {
+            // Get the ModuleDef
+            let module_def = match self.model.get_module_def(&expanded.module_def_id) {
+                Some(def) => def.clone(),
+                None => continue,
+            };
+
+            // Get comm object refs from the module's static section
+            let com_obj_refs = match &module_def.static_section.com_object_refs {
+                Some(refs) => refs.refs.clone(),
+                None => continue,
+            };
+
+            // Get comm objects from the module's static section
+            let com_objects = match &module_def.static_section.com_objects {
+                Some(objs) => &objs.objects,
+                None => continue,
+            };
+
+            for oref in &com_obj_refs {
+                // Find the comm object
+                let obj = match com_objects.iter().find(|o| o.id == oref.ref_id) {
+                    Some(o) => o,
+                    None => continue,
+                };
+
+                // Look up the text parameter value for {{0}} substitution
+                let text_param_value = oref.text_parameter_ref_id.as_ref().and_then(|ref_id| {
+                    // Find the ParameterRef to get the parameter ID
+                    let param_ref = module_def
+                        .static_section
+                        .parameter_refs
+                        .as_ref()
+                        .and_then(|refs| refs.refs.iter().find(|pr| pr.id == *ref_id));
+
+                    param_ref.and_then(|pr| {
+                        // Build composite ID and look up value
+                        let composite_id = format!("{}::{}", expanded.instance_id, pr.ref_id);
+                        self.model
+                            .get_module_parameter_value(&composite_id)
+                            .and_then(|v| match v {
+                                ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
+                                ParameterValue::Integer(i) => Some(i.to_string()),
+                                _ => None,
+                            })
+                    })
+                });
+
+                let raw_name = oref.text.clone().unwrap_or_else(|| obj.text.clone());
+                let name =
+                    interpolate_module_text_with_param(&raw_name, &expanded, text_param_value.as_deref());
+                let raw_function = oref
+                    .function_text
+                    .clone()
+                    .unwrap_or_else(|| obj.function_text.clone());
+                let function = interpolate_module_text(&raw_function, &expanded);
+
+                // Get effective values (ref overrides base object)
+                let size = oref
+                    .object_size
+                    .clone()
+                    .unwrap_or_else(|| obj.object_size.clone());
+                let dpt = oref
+                    .datapoint_type
+                    .clone()
+                    .or_else(|| obj.datapoint_type.clone())
+                    .unwrap_or_default();
+                let priority = oref.priority.unwrap_or(
+                    obj.priority.unwrap_or(ComObjectPriority::Low),
+                );
+                let priority_str = match priority {
+                    ComObjectPriority::Low => "Low",
+                    ComObjectPriority::High => "High",
+                    ComObjectPriority::Alert => "Alert",
+                };
+
+                // Flags (ref overrides base)
+                let flag_c = oref
+                    .communication_flag
+                    .unwrap_or(obj.communication_flag)
+                    == EnableFlag::Enabled;
+                let flag_r =
+                    oref.read_flag.unwrap_or(obj.read_flag) == EnableFlag::Enabled;
+                let flag_w =
+                    oref.write_flag.unwrap_or(obj.write_flag) == EnableFlag::Enabled;
+                let flag_t = oref
+                    .transmit_flag
+                    .unwrap_or(obj.transmit_flag)
+                    == EnableFlag::Enabled;
+                let flag_u =
+                    oref.update_flag.unwrap_or(obj.update_flag) == EnableFlag::Enabled;
+
+                self.com_object_rows.push(ComObjectRow {
+                    number: obj.number,
+                    name,
+                    function,
+                    group_address: String::new(), // Empty for now
+                    size,
+                    dpt,
+                    priority: priority_str.to_string(),
+                    flag_c,
+                    flag_r,
+                    flag_w,
+                    flag_t,
+                    flag_u,
+                });
+            }
+        }
     }
 
     /// Toggle focus between tabs, sidebar, and content.
@@ -1229,15 +2001,41 @@ impl App {
 
     /// Move selection left (for tabs).
     pub fn move_left(&mut self) {
-        if self.focus == Focus::Tabs && matches!(self.edit_mode, EditMode::None) {
-            self.prev_tab();
+        if !matches!(self.edit_mode, EditMode::None) {
+            return;
+        }
+        match self.focus {
+            Focus::Tabs => self.prev_tab(),
+            Focus::Sidebar => {
+                // Collapse the selected tree node
+                if let Some(node) = self.tree_nodes.get(self.selected_tree_idx) {
+                    if node.has_children && self.expanded_nodes.contains(&node.id) {
+                        self.expanded_nodes.remove(&node.id);
+                        self.rebuild_tree();
+                    }
+                }
+            }
+            Focus::Content => {}
         }
     }
 
-    /// Move selection right (for tabs).
+    /// Move selection right (for tabs) or expand tree node (for sidebar).
     pub fn move_right(&mut self) {
-        if self.focus == Focus::Tabs && matches!(self.edit_mode, EditMode::None) {
-            self.next_tab();
+        if !matches!(self.edit_mode, EditMode::None) {
+            return;
+        }
+        match self.focus {
+            Focus::Tabs => self.next_tab(),
+            Focus::Sidebar => {
+                // Expand the selected tree node
+                if let Some(node) = self.tree_nodes.get(self.selected_tree_idx) {
+                    if node.has_children && !self.expanded_nodes.contains(&node.id) {
+                        self.expanded_nodes.insert(node.id.clone());
+                        self.rebuild_tree();
+                    }
+                }
+            }
+            Focus::Content => {}
         }
     }
 
@@ -1253,8 +2051,7 @@ impl App {
                 // Commit the selection
                 let param_id = param_id.clone();
                 let new_value = options[*selected_idx].0;
-                self.model
-                    .set_parameter_value(&param_id, ParameterValue::Integer(new_value));
+                self.set_any_parameter_value(&param_id, ParameterValue::Integer(new_value));
                 self.edit_mode = EditMode::None;
                 // Rebuild everything since visibility may have changed
                 self.rebuild_tree();
@@ -1265,8 +2062,7 @@ impl App {
                 // Commit the number
                 let param_id = param_id.clone();
                 if let Ok(v) = buffer.parse::<i64>() {
-                    self.model
-                        .set_parameter_value(&param_id, ParameterValue::Integer(v));
+                    self.set_any_parameter_value(&param_id, ParameterValue::Integer(v));
                 }
                 self.edit_mode = EditMode::None;
                 self.rebuild_tree();
@@ -1277,8 +2073,7 @@ impl App {
                 // Commit the text
                 let param_id = param_id.clone();
                 let text = buffer.clone();
-                self.model
-                    .set_parameter_value(&param_id, ParameterValue::Text(text));
+                self.set_any_parameter_value(&param_id, ParameterValue::Text(text));
                 self.edit_mode = EditMode::None;
                 self.rebuild_tree();
                 self.rebuild_content();
