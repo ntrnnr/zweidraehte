@@ -52,7 +52,7 @@ futures-lite = "2.5"
 test-case = "3.3"
 
 # TUI
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 ratatui-image = { version = "10.0", default-features = false, features = ["crossterm"] }
 image = "0.25"

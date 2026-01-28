@@ -1,7 +1,17 @@
 //! Application state and logic for the KNX TUI viewer.
 
-use std::collections::HashMap;
 use std::path::Path;
+use std::io::Write;
+
+fn debug_log(msg: &str) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/knxprod-tui-debug.log")
+    {
+        let _ = writeln!(file, "{}", msg);
+    }
+}
 
 use knxprod::baggage::BaggageIndex;
 use knxprod::device_info::DeviceInfo;
@@ -11,7 +21,12 @@ use knxprod::{
     Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose,
     ComObjectPriority, EnableFlag, ParameterBlock, ParameterBlockItem, ParameterTypeDef, WhenItem,
 };
+
+#[cfg(feature = "images")]
+use std::collections::HashMap;
+#[cfg(feature = "images")]
 use ratatui_image::picker::Picker;
+#[cfg(feature = "images")]
 use ratatui_image::protocol::StatefulProtocol;
 
 /// Interpolate text containing `{{ref:default}}` or `{{ref}}` patterns.
@@ -199,6 +214,36 @@ fn interpolate_module_text_with_param(
     result.push_str(remaining);
 
     result
+}
+
+/// Interpolate channel text with the {{0}} pattern using TextParameterRefId.
+///
+/// Channel text like "Functions 1-10: {{0}}" uses the TextParameterRefId attribute
+/// to reference a parameter whose value should be substituted for {{0}}.
+fn interpolate_channel_text(text: &str, text_param_ref_id: Option<&str>, model: &DeviceModel) -> String {
+    if !text.contains("{{0}}") {
+        return text.to_string();
+    }
+
+    // If we have a TextParameterRefId, look up its value
+    let text_value = text_param_ref_id.and_then(|ref_id| {
+        // Find the ParameterRef by its ID
+        model.program.static_section.parameter_refs.as_ref().and_then(|refs| {
+            refs.refs.iter().find(|pr| pr.id == ref_id).and_then(|pr| {
+                // Get the parameter value
+                model.get_parameter_value(&pr.ref_id).and_then(|v| {
+                    match v {
+                        ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
+                        ParameterValue::Integer(i) => Some(i.to_string()),
+                        _ => None,
+                    }
+                })
+            })
+        })
+    });
+
+    // Replace {{0}} with the value or empty string
+    text.replace("{{0}}", text_value.as_deref().unwrap_or(""))
 }
 
 /// Compute the actual object number for a module comm object.
@@ -457,8 +502,10 @@ pub struct App {
     /// Baggage index for loading images
     pub baggage_index: Option<BaggageIndex>,
     /// Image picker for terminal protocol detection
+    #[cfg(feature = "images")]
     pub image_picker: Option<Picker>,
     /// Cache of loaded images by baggage RefId
+    #[cfg(feature = "images")]
     pub image_cache: HashMap<String, StatefulProtocol>,
     /// Current main tab
     pub current_tab: MainTab,
@@ -513,7 +560,7 @@ impl App {
     /// Create a new application with device model, master data, and baggage directory.
     ///
     /// When a baggage directory is provided, images referenced in the program
-    /// can be displayed in the parameter view.
+    /// can be displayed in the parameter view (requires "images" feature).
     pub fn with_options(
         model: DeviceModel,
         master_data: Option<MasterData>,
@@ -534,16 +581,14 @@ impl App {
             }
         });
 
-        // Initialize image picker for terminal graphics protocol detection
-        // Use halfblocks as fallback since we can't do stdio queries during TUI
-        let image_picker = Some(Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks()));
-
         let mut app = Self {
             model,
             master_data,
             device_info,
             baggage_index,
-            image_picker,
+            #[cfg(feature = "images")]
+            image_picker: Some(Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())),
+            #[cfg(feature = "images")]
             image_cache: HashMap::new(),
             current_tab: MainTab::Parameters,
             tree_nodes: Vec::new(),
@@ -577,6 +622,7 @@ impl App {
     ///
     /// Returns a reference to the cached StatefulProtocol if the image
     /// was loaded successfully.
+    #[cfg(feature = "images")]
     pub fn load_image(&mut self, ref_id: &str) -> Option<&mut StatefulProtocol> {
         // Check if already cached
         if self.image_cache.contains_key(ref_id) {
@@ -626,6 +672,7 @@ impl App {
 
     /// Rebuild the sidebar tree based on the model structure.
     pub fn rebuild_tree(&mut self) {
+        debug_log("rebuild_tree called");
         self.tree_nodes.clear();
 
         // Clone to avoid borrow issues
@@ -656,10 +703,16 @@ impl App {
             for (i, channel) in dynamic.channels.iter().enumerate() {
                 let channel_id = format!("channel_{}", i);
                 let channel_expanded = self.expanded_nodes.contains(&channel_id);
-                let channel_name = channel
+                let raw_text = channel
                     .text
                     .clone()
                     .unwrap_or_else(|| channel.name.clone());
+                // Interpolate {{0}} with TextParameterRefId value
+                let channel_name = interpolate_channel_text(
+                    &raw_text,
+                    channel.text_parameter_ref_id.as_deref(),
+                    &self.model,
+                );
 
                 self.tree_nodes.push(TreeNode {
                     id: channel_id.clone(),
@@ -691,6 +744,7 @@ impl App {
         let mut modules = Vec::new();
         self.collect_visible_channel_modules(channel, &mut modules);
 
+        debug_log(&format!("count_visible_blocks_in_channel: {} blocks, {} modules", blocks.len(), modules.len()));
         blocks.len() + modules.len()
     }
 
@@ -769,6 +823,7 @@ impl App {
         modules: &mut Vec<&'a knxprod::Module>,
     ) {
         let selector_value = self.get_selector_value(&choose.param_ref_id);
+        debug_log(&format!("collect_modules_from_choose: param_ref_id={}, value={:?}", choose.param_ref_id, selector_value));
 
         let mut any_matched = false;
         for when in &choose.whens {
@@ -776,7 +831,9 @@ impl App {
                 continue;
             }
             if let Some(test) = &when.test {
-                if self.matches_condition(selector_value, test) {
+                let matches = self.matches_condition(selector_value, test);
+                debug_log(&format!("  module choose test='{}' matches={}", test, matches));
+                if matches {
                     any_matched = true;
                     self.collect_modules_from_when(&when.items, modules);
                 }
@@ -784,6 +841,7 @@ impl App {
         }
 
         if !any_matched {
+            debug_log("  No module when matched, checking default");
             for when in &choose.whens {
                 if when.default.unwrap_or(false) {
                     self.collect_modules_from_when(&when.items, modules);
@@ -799,10 +857,13 @@ impl App {
         items: &'a [WhenItem],
         modules: &mut Vec<&'a knxprod::Module>,
     ) {
+        debug_log(&format!("  collect_modules_from_when: {} items", items.len()));
         for item in items {
             match item {
                 WhenItem::Module(module) => {
-                    if self.model.is_module_visible(&module.id) {
+                    let is_visible = self.model.is_module_visible(&module.id);
+                    debug_log(&format!("    Found module id={}, is_visible={}", module.id, is_visible));
+                    if is_visible {
                         modules.push(module);
                     }
                 }
@@ -1118,6 +1179,7 @@ impl App {
 
     /// Set a parameter value, handling both regular and module parameters.
     fn set_any_parameter_value(&mut self, param_id: &str, value: ParameterValue) {
+        debug_log(&format!("set_any_parameter_value: param_id={}, value={:?}", param_id, value));
         if self.model.is_module_parameter(param_id) {
             self.model.set_module_parameter_value(param_id, value);
         } else {
@@ -1127,6 +1189,7 @@ impl App {
 
     /// Rebuild parameter content based on selected tree node.
     pub fn rebuild_content(&mut self) {
+        debug_log(&format!("rebuild_content: selected_tree_idx={}", self.selected_tree_idx));
         self.content_items.clear();
 
         // Clone node_type to avoid borrow conflict
@@ -1136,6 +1199,7 @@ impl App {
             .map(|n| n.node_type.clone());
 
         if let Some(node_type) = node_type {
+            debug_log(&format!("  node_type={:?}", node_type));
             match &node_type {
                 NodeType::DeviceSettings => {
                     self.build_device_settings_content();
@@ -1144,6 +1208,7 @@ impl App {
                     self.build_channel_content(*idx);
                 }
                 NodeType::ParameterBlock { parent, block_name } => {
+                    debug_log(&format!("  building block content: block_name={}", block_name));
                     self.build_block_content(*parent, block_name);
                 }
                 NodeType::ModuleInstance { instance_id, .. } => {
@@ -1151,6 +1216,7 @@ impl App {
                 }
             }
         }
+        debug_log(&format!("  content_items.len()={}", self.content_items.len()));
     }
 
     fn build_device_settings_content(&mut self) {
@@ -1302,7 +1368,15 @@ impl App {
         choose: &Choose,
         expanded: &knxprod::model::ExpandedModule,
     ) {
-        let selector_value = self.get_selector_value(&choose.param_ref_id);
+        // Try module-internal lookup first, fall back to device-level
+        let selector_value = self
+            .get_module_selector_value(&choose.param_ref_id, expanded)
+            .or_else(|| self.get_selector_value(&choose.param_ref_id));
+
+        debug_log(&format!(
+            "add_module_choose_items: ParamRefId={}, selector_value={:?}, instance={}",
+            choose.param_ref_id, selector_value, expanded.instance_id
+        ));
 
         let mut any_matched = false;
         for when in &choose.whens {
@@ -1310,7 +1384,9 @@ impl App {
                 continue;
             }
             if let Some(test) = &when.test {
-                if self.matches_condition(selector_value, test) {
+                let matches = self.matches_condition(selector_value, test);
+                debug_log(&format!("  module when test='{}' matches={}", test, matches));
+                if matches {
                     any_matched = true;
                     self.add_module_when_items(&when.items, expanded);
                 }
@@ -1318,12 +1394,44 @@ impl App {
         }
 
         if !any_matched {
+            debug_log("  No module when matched, checking default");
             for when in &choose.whens {
                 if when.default.unwrap_or(false) {
                     self.add_module_when_items(&when.items, expanded);
                     break;
                 }
             }
+        }
+    }
+
+    /// Get the selector value for a module-internal parameter ref.
+    fn get_module_selector_value(
+        &self,
+        param_ref_id: &str,
+        expanded: &knxprod::model::ExpandedModule,
+    ) -> Option<i64> {
+        // Get the module definition
+        let module_def = self.model.get_module_def(&expanded.module_def_id)?;
+
+        // Find the ParameterRef in the module's static section
+        let param_ref = module_def
+            .static_section
+            .parameter_refs
+            .as_ref()?
+            .refs
+            .iter()
+            .find(|pr| pr.id == param_ref_id)?;
+
+        // Build the composite ID for module parameter lookup
+        let composite_id = format!("{}::{}", expanded.instance_id, param_ref.ref_id);
+
+        // Get the value from module params
+        let param_value = self.model.get_module_parameter_value(&composite_id)?;
+
+        match param_value {
+            ParameterValue::Integer(v) => Some(*v),
+            ParameterValue::Float(v) => Some(*v as i64),
+            _ => None,
         }
     }
 
@@ -1778,6 +1886,7 @@ impl App {
     /// Note: Multiple when clauses can match the same value in KNX choose blocks.
     fn add_choose_items(&mut self, choose: &Choose) {
         let selector_value = self.get_selector_value(&choose.param_ref_id);
+        debug_log(&format!("add_choose_items: ParamRefId={}, selector_value={:?}", choose.param_ref_id, selector_value));
 
         // First pass: process all matching non-default whens
         let mut any_matched = false;
@@ -1786,7 +1895,9 @@ impl App {
                 continue; // Handle defaults in second pass
             }
             if let Some(test) = &when.test {
-                if self.matches_condition(selector_value, test) {
+                let matches = self.matches_condition(selector_value, test);
+                debug_log(&format!("  when test='{}' matches={}", test, matches));
+                if matches {
                     any_matched = true;
                     self.add_when_items(&when.items);
                 }
@@ -1795,8 +1906,10 @@ impl App {
 
         // Second pass: if no explicit when matched, process default
         if !any_matched {
+            debug_log("  No explicit when matched, checking default");
             for when in &choose.whens {
                 if when.default.unwrap_or(false) {
+                    debug_log("  Using default when");
                     self.add_when_items(&when.items);
                     break;
                 }

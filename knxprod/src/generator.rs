@@ -2595,6 +2595,7 @@ impl MtxmlGenerator {
                 text: None,
                 number: Some("1".to_string()),
                 internal_description: None,
+                text_parameter_ref_id: None,
                 items: vec![ChannelItem::ParameterBlock(ParameterBlock {
                     id: format!("{}_PB-1", app_id),
                     name: Some(config.name.to_string()),
@@ -2748,6 +2749,7 @@ impl MtxmlGenerator {
                     // XSD requires Number attribute (use index + 1 as default)
                     number: Some(ch_num.to_string()),
                     internal_description: None,
+                    text_parameter_ref_id: None,
                     items,
                 })
             })

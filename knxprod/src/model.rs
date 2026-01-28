@@ -5,6 +5,17 @@
 //! blocks, and visibility computation.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
+
+fn model_debug_log(msg: &str) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/knxprod-model-debug.log")
+    {
+        let _ = writeln!(file, "[MODEL] {}", msg);
+    }
+}
 
 use crate::schema::{
     ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem,
@@ -272,10 +283,15 @@ impl DeviceModel {
     /// This will trigger a visibility recomputation if the parameter is used
     /// as a selector in any choose blocks.
     pub fn set_parameter_value(&mut self, param_id: &str, value: ParameterValue) {
+        model_debug_log(&format!("set_parameter_value: param_id={}, value={:?}, key_exists={}",
+            param_id, value, self.param_values.contains_key(param_id)));
         if self.param_values.contains_key(param_id) {
             self.param_values.insert(param_id.to_string(), value);
             // Recompute visibility since this parameter might be a selector
             self.recompute_visibility();
+            model_debug_log(&format!("after recompute_visibility: visible_modules={:?}", self.visible_modules));
+        } else {
+            model_debug_log("WARNING: param_id not found in param_values!");
         }
     }
 
@@ -586,6 +602,7 @@ impl DeviceModel {
     fn process_choose(&mut self, choose: &Choose) {
         // Get the selector parameter value
         let selector_value = self.get_selector_value(&choose.param_ref_id);
+        model_debug_log(&format!("process_choose: param_ref_id={}, selector_value={:?}", choose.param_ref_id, selector_value));
 
         // Collect items to process to avoid borrow issues
         // Note: Multiple when clauses can match the same value in KNX choose blocks,
@@ -598,7 +615,9 @@ impl DeviceModel {
                 // Default is processed only if no other when matched at all
                 continue; // We'll handle defaults after checking all whens
             } else if let Some(test) = &when.test {
-                if self.matches_condition(selector_value, test) {
+                let matches = self.matches_condition(selector_value, test);
+                model_debug_log(&format!("  when test='{}' matches={}", test, matches));
+                if matches {
                     items_to_process.push(when.items.clone());
                     any_matched = true;
                 }
@@ -607,6 +626,7 @@ impl DeviceModel {
 
         // If no explicit when matched, process the default (if any)
         if !any_matched {
+            model_debug_log("  no match, checking default");
             for when in &choose.whens {
                 if when.default.unwrap_or(false) {
                     items_to_process.push(when.items.clone());
@@ -616,6 +636,7 @@ impl DeviceModel {
         }
 
         // Process collected items
+        model_debug_log(&format!("  processing {} item sets", items_to_process.len()));
         for items in items_to_process {
             self.process_when_items(&items);
         }
@@ -759,24 +780,42 @@ impl DeviceModel {
                 if let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id) {
                     // Build composite ID and look up in module param values
                     let composite_id = format!("{}::{}", ctx.instance_id, param_ref.ref_id);
+                    model_debug_log(&format!(
+                        "get_selector_value_with_module: looking up composite_id={}",
+                        composite_id
+                    ));
                     if let Some(value) = self.module_param_values.get(&composite_id) {
-                        return match value {
+                        let result = match value {
                             ParameterValue::Integer(v) => Some(*v),
                             ParameterValue::Float(v) => Some(*v as i64),
                             _ => None,
                         };
+                        model_debug_log(&format!("  found value={:?}", result));
+                        return result;
+                    } else {
+                        model_debug_log("  composite_id not found in module_param_values");
                     }
+                } else {
+                    model_debug_log(&format!(
+                        "get_selector_value_with_module: param_ref_id={} not found in module static section",
+                        param_ref_id
+                    ));
                 }
             }
         }
 
         // Fall back to main device parameter lookup
+        model_debug_log(&format!(
+            "get_selector_value_with_module: falling back to device-level lookup for {}",
+            param_ref_id
+        ));
         self.get_selector_value(param_ref_id)
     }
 
     /// Process a module instance - mark it as visible.
     fn process_module(&mut self, module: &Module) {
         // Mark this module instance as visible
+        model_debug_log(&format!("process_module: id={}", module.id));
         self.visible_modules.insert(module.id.clone());
 
         // Process the module's dynamic section if it has one

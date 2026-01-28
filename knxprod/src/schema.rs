@@ -1160,6 +1160,8 @@ pub struct Channel {
     pub number: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
+    #[serde(rename = "@TextParameterRefId", skip_serializing_if = "Option::is_none")]
+    pub text_parameter_ref_id: Option<String>,
 
     #[serde(rename = "$value", default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<ChannelItem>,

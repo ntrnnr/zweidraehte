@@ -8,10 +8,13 @@ use ratatui::{
     Frame,
 };
 
+#[cfg(feature = "images")]
+use ratatui_image::{Resize, StatefulImage, protocol::StatefulProtocol};
+
 use crate::app::{App, ContentItem, EditMode, Focus, MainTab, SegmentType, WidgetType};
 
 /// Render the application UI.
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -25,8 +28,8 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     match app.current_tab {
         MainTab::Parameters => render_parameters_view(frame, main_chunks[1], app),
-        MainTab::CommObjects => render_comm_objects_view(frame, main_chunks[1], app),
-        MainTab::Memory => render_memory_view(frame, main_chunks[1], app),
+        MainTab::CommObjects => render_comm_objects_view(frame, main_chunks[1], &*app),
+        MainTab::Memory => render_memory_view(frame, main_chunks[1], &*app),
     }
 
     render_status(frame, main_chunks[2], app);
@@ -103,7 +106,7 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(tabs_line, inner);
 }
 
-fn render_parameters_view(frame: &mut Frame, area: Rect, app: &App) {
+fn render_parameters_view(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -112,7 +115,7 @@ fn render_parameters_view(frame: &mut Frame, area: Rect, app: &App) {
         ])
         .split(area);
 
-    render_sidebar(frame, chunks[0], app);
+    render_sidebar(frame, chunks[0], &*app);
     render_param_content(frame, chunks[1], app);
 }
 
@@ -185,7 +188,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(list, inner);
 }
 
-fn render_param_content(frame: &mut Frame, area: Rect, app: &App) {
+fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focus == Focus::Content && app.current_tab == MainTab::Parameters;
     let block = Block::default()
         .borders(Borders::ALL)
@@ -205,32 +208,68 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Calculate visible height
-    let visible_rows = inner.height as usize;
+    // We need to render items manually to support inline images
+    // Each item gets 1 row, except Picture items which get multiple rows for the image
+    let label_width = (inner.width as usize * 40 / 100).max(20).min(45);
 
-    // Build list items with scroll offset
-    let items: Vec<ListItem> = app
+    // First pass: collect what we need to render to avoid borrow issues
+    let items_to_render: Vec<_> = app
         .content_items
         .iter()
         .enumerate()
         .skip(app.content_scroll_offset)
-        .take(visible_rows)
         .map(|(i, item)| {
             let is_selected = i == app.selected_content_idx && focused;
-            create_content_item(item, is_selected, app, inner.width as usize)
+            match item {
+                ContentItem::Picture { ref_id } => (i, is_selected, Some(ref_id.clone()), None),
+                _ => {
+                    let line = create_content_line(item, is_selected, app, inner.width as usize);
+                    (i, is_selected, None, Some(line))
+                }
+            }
         })
         .collect();
 
-    let list = List::new(items);
-    frame.render_widget(list, inner);
+    // Second pass: render
+    let mut y_offset = 0u16;
+    for (_i, is_selected, picture_ref, line) in items_to_render {
+        if y_offset >= inner.height {
+            break;
+        }
+
+        if let Some(ref_id) = picture_ref {
+            // Render picture - use 5 rows (1 padding + 3 image + 1 padding)
+            let item_area = Rect {
+                x: inner.x,
+                y: inner.y + y_offset,
+                width: inner.width,
+                height: (inner.height - y_offset).min(5),
+            };
+
+            render_picture_item(frame, item_area, app, &ref_id, is_selected, label_width);
+            y_offset += item_area.height;
+        } else if let Some(line) = line {
+            // Render regular item as single line
+            let item_area = Rect {
+                x: inner.x,
+                y: inner.y + y_offset,
+                width: inner.width,
+                height: 1,
+            };
+
+            frame.render_widget(Paragraph::new(line), item_area);
+            y_offset += 1;
+        }
+    }
 }
 
-fn create_content_item<'a>(
+/// Create a Line for a content item (used for manual rendering).
+fn create_content_line<'a>(
     item: &ContentItem,
     is_selected: bool,
     app: &App,
     width: usize,
-) -> ListItem<'a> {
+) -> Line<'a> {
     let bg = if is_selected {
         Color::DarkGray
     } else {
@@ -278,7 +317,7 @@ fn create_content_item<'a>(
                 }
             }));
 
-            ListItem::new(Line::from(spans))
+            Line::from(spans)
         }
         ContentItem::Separator { text } => {
             let sep_text = text.as_deref().unwrap_or("");
@@ -291,10 +330,10 @@ fn create_content_item<'a>(
                 let remaining = width.saturating_sub(prefix.chars().count());
                 format!("{}{}", prefix, "─".repeat(remaining))
             };
-            ListItem::new(Line::from(vec![Span::styled(
+            Line::from(vec![Span::styled(
                 separator_line,
                 Style::default().fg(Color::DarkGray).bg(bg),
-            )]))
+            )])
         }
         ContentItem::CommObject {
             name,
@@ -316,22 +355,67 @@ fn create_content_item<'a>(
                 format!("{} [{}]", function, dpt)
             };
 
-            ListItem::new(Line::from(vec![
+            Line::from(vec![
                 Span::styled(label, Style::default().fg(Color::Cyan).bg(bg)),
                 Span::styled(info, Style::default().fg(Color::DarkGray).bg(bg)),
-            ]))
+            ])
         }
-        ContentItem::Picture { ref_id } => {
-            // For images, we display a placeholder line.
-            // The actual image is rendered separately in the content area.
-            let label = format!("🖼  [Image: {}]", ref_id);
-            ListItem::new(Line::from(vec![Span::styled(
-                label,
-                Style::default().fg(Color::Yellow).bg(bg),
-            )]))
+        ContentItem::Picture { .. } => {
+            // Pictures are handled separately by render_picture_item
+            Line::from(vec![])
         }
     }
 }
+
+/// Render a picture item with inline image in the value column.
+fn render_picture_item(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    ref_id: &str,
+    is_selected: bool,
+    label_width: usize,
+) {
+    let bg = if is_selected {
+        Color::DarkGray
+    } else {
+        Color::Reset
+    };
+
+    // Calculate value column area (skip the label column width)
+    // Add 1 row padding top and bottom for breathing room
+    let padding = if area.height > 2 { 1 } else { 0 };
+    let value_area = Rect {
+        x: area.x + (label_width as u16).min(area.width),
+        y: area.y + padding,
+        width: area.width.saturating_sub(label_width as u16),
+        height: area.height.saturating_sub(padding * 2),
+    };
+
+    // Render image in the value column
+    #[cfg(feature = "images")]
+    {
+        if let Some(protocol) = app.load_image(ref_id) {
+            let image: StatefulImage<StatefulProtocol> = StatefulImage::default()
+                .resize(Resize::Fit(None));
+            frame.render_stateful_widget(image, value_area, protocol);
+        } else {
+            // Show placeholder if image not found
+            let placeholder = Paragraph::new(format!("[{}]", ref_id))
+                .style(Style::default().fg(Color::DarkGray).bg(bg));
+            frame.render_widget(placeholder, value_area);
+        }
+    }
+    #[cfg(not(feature = "images"))]
+    {
+        // Without images feature, just show the ref_id as text
+        let _ = app; // suppress unused warning
+        let placeholder = Paragraph::new(format!("[Image: {}]", ref_id))
+            .style(Style::default().fg(Color::Yellow).bg(bg));
+        frame.render_widget(placeholder, value_area);
+    }
+}
+
 
 fn render_widget<'a>(
     widget: &WidgetType,
@@ -981,3 +1065,4 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
 
     frame.render_widget(status, area);
 }
+
