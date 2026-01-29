@@ -1,25 +1,11 @@
 //! Application state and logic for the KNX TUI viewer.
 
-use std::path::Path;
-use std::io::Write;
-
-fn debug_log(msg: &str) {
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/knxprod-tui-debug.log")
-    {
-        let _ = writeln!(file, "{}", msg);
-    }
-}
-
-use knxprod::baggage::BaggageIndex;
-use knxprod::device_info::DeviceInfo;
 use knxprod::master_data::{MasterData, MaskVersion, TableFlavour};
-use knxprod::model::{DeviceModel, ParameterValue};
+use knxprod::model::{DynamicVisitor, ParameterValue, walk_dynamic};
+use knxprod::Device;
 use knxprod::{
     Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose,
-    ComObjectPriority, EnableFlag, ParameterBlock, ParameterBlockItem, ParameterTypeDef, WhenItem,
+    ComObjectPriority, EnableFlag, Module, ParameterBlock, ParameterBlockItem, ParameterTypeDef, WhenItem,
 };
 
 #[cfg(feature = "images")]
@@ -28,223 +14,6 @@ use std::collections::HashMap;
 use ratatui_image::picker::Picker;
 #[cfg(feature = "images")]
 use ratatui_image::protocol::StatefulProtocol;
-
-/// Interpolate text containing `{{ref:default}}` or `{{ref}}` patterns.
-///
-/// For patterns like `{{48:Push button 1}}`:
-/// - First tries to look up the parameter value via ParameterRef with suffix `_R-48`
-/// - If the parameter has a non-empty string value, uses that
-/// - Otherwise falls back to the default text after the colon
-///
-/// For patterns like `{{3059}}` without default:
-/// - Looks up the parameter value via ParameterRef with suffix `_R-3059`
-/// - If found and non-empty, uses the parameter's string value
-/// - Otherwise shows empty string (the parameter is meant to be user-filled)
-fn interpolate_text(text: &str, model: &DeviceModel) -> String {
-    if !text.contains("{{") {
-        return text.to_string();
-    }
-
-    let mut result = String::with_capacity(text.len());
-    let mut remaining = text;
-
-    while let Some(start) = remaining.find("{{") {
-        // Add text before the pattern
-        result.push_str(&remaining[..start]);
-
-        // Find the end of the pattern
-        if let Some(end) = remaining[start..].find("}}") {
-            let pattern = &remaining[start + 2..start + end];
-
-            // Check if there's a default text (format: ref:default)
-            let (ref_num, default_text) = if let Some(colon_pos) = pattern.find(':') {
-                (&pattern[..colon_pos], Some(&pattern[colon_pos + 1..]))
-            } else {
-                (pattern, None)
-            };
-
-            // Try to look up the parameter value
-            let resolved = resolve_param_ref_value(ref_num, model);
-
-            if let Some(value) = resolved {
-                if !value.is_empty() {
-                    result.push_str(&value);
-                } else if let Some(default) = default_text {
-                    result.push_str(default);
-                }
-                // If no value and no default, leave empty
-            } else if let Some(default) = default_text {
-                // Couldn't find parameter, use default
-                result.push_str(default);
-            }
-            // If no value and no default, leave empty (don't show [ref] placeholder)
-
-            remaining = &remaining[start + end + 2..];
-        } else {
-            // Malformed pattern, just add the rest
-            result.push_str(&remaining[start..]);
-            break;
-        }
-    }
-
-    // Add any remaining text
-    result.push_str(remaining);
-
-    result
-}
-
-/// Resolve a parameter reference number to its current string value.
-///
-/// The ref_num is the numeric suffix of a ParameterRef ID (e.g., "3059" for "*_R-3059").
-/// Returns the parameter's string value if found, or None.
-fn resolve_param_ref_value(ref_num: &str, model: &DeviceModel) -> Option<String> {
-    // Find a ParameterRef whose ID ends with _R-{ref_num}
-    let suffix = format!("_R-{}", ref_num);
-
-    // Search through all parameter refs to find one matching this suffix
-    if let Some(param_refs) = model.program.static_section.parameter_refs.as_ref() {
-        for pref in &param_refs.refs {
-            if pref.id.ends_with(&suffix) {
-                // Found the ParameterRef, now get the parameter value
-                if let Some(value) = model.get_parameter_value(&pref.ref_id) {
-                    return match value {
-                        ParameterValue::Text(s) => Some(s.clone()),
-                        ParameterValue::Integer(i) => Some(i.to_string()),
-                        ParameterValue::Float(f) => Some(f.to_string()),
-                        ParameterValue::Bytes(b) => {
-                            // Try to interpret as UTF-8 string
-                            String::from_utf8(b.clone()).ok()
-                        }
-                    };
-                }
-            }
-        }
-    }
-
-    None
-}
-
-/// Interpolate module text templates like "{{ChNo}}" and "{{0}}".
-///
-/// Module text templates use argument names:
-/// - `{{ChNo}}` - Replaced with the channel number argument value
-/// - `{{0}}` - Replaced with the text_param_value if provided, or first text arg
-fn interpolate_module_text(text: &str, expanded: &knxprod::model::ExpandedModule) -> String {
-    interpolate_module_text_with_param(text, expanded, None)
-}
-
-/// Interpolate module text templates with an optional text parameter value.
-///
-/// The `text_param_value` is used for `{{0}}` substitution when provided.
-/// This is typically the value of the parameter referenced by TextParameterRefId.
-fn interpolate_module_text_with_param(
-    text: &str,
-    expanded: &knxprod::model::ExpandedModule,
-    text_param_value: Option<&str>,
-) -> String {
-    use knxprod::model::ModuleArgValue;
-
-    if !text.contains("{{") {
-        return text.to_string();
-    }
-
-    let mut result = String::with_capacity(text.len());
-    let mut remaining = text;
-
-    while let Some(start) = remaining.find("{{") {
-        // Add text before the pattern
-        result.push_str(&remaining[..start]);
-
-        // Find the end of the pattern
-        if let Some(end) = remaining[start..].find("}}") {
-            let pattern = &remaining[start + 2..start + end];
-
-            // Look up the argument value
-            let resolved = match expanded.args.get(pattern) {
-                Some(ModuleArgValue::Numeric(n)) => Some(n.to_string()),
-                Some(ModuleArgValue::Text(s)) => Some(s.clone()),
-                None => {
-                    // Try to interpret as a number index for text args ({{0}}, {{1}}, etc.)
-                    if let Ok(idx) = pattern.parse::<usize>() {
-                        if idx == 0 {
-                            // {{0}} is typically the text parameter value
-                            text_param_value.map(|s| s.to_string()).or_else(|| {
-                                // Fall back to first text argument if available
-                                expanded
-                                    .args
-                                    .values()
-                                    .filter_map(|v| match v {
-                                        ModuleArgValue::Text(s) => Some(s.clone()),
-                                        _ => None,
-                                    })
-                                    .next()
-                            })
-                        } else {
-                            // Find the idx-th text argument
-                            let text_args: Vec<_> = expanded
-                                .args
-                                .iter()
-                                .filter_map(|(_, v)| match v {
-                                    ModuleArgValue::Text(s) => Some(s.clone()),
-                                    _ => None,
-                                })
-                                .collect();
-                            text_args.get(idx).cloned()
-                        }
-                    } else {
-                        None
-                    }
-                }
-            };
-
-            if let Some(value) = resolved {
-                result.push_str(&value);
-            }
-            // If not resolved, leave empty
-
-            remaining = &remaining[start + end + 2..];
-        } else {
-            // Malformed pattern, just add the rest
-            result.push_str(&remaining[start..]);
-            break;
-        }
-    }
-
-    // Add any remaining text
-    result.push_str(remaining);
-
-    result
-}
-
-/// Interpolate channel text with the {{0}} pattern using TextParameterRefId.
-///
-/// Channel text like "Functions 1-10: {{0}}" uses the TextParameterRefId attribute
-/// to reference a parameter whose value should be substituted for {{0}}.
-fn interpolate_channel_text(text: &str, text_param_ref_id: Option<&str>, model: &DeviceModel) -> String {
-    if !text.contains("{{0}}") {
-        return text.to_string();
-    }
-
-    // If we have a TextParameterRefId, look up its value
-    let text_value = text_param_ref_id.and_then(|ref_id| {
-        // Find the ParameterRef by its ID
-        model.program.static_section.parameter_refs.as_ref().and_then(|refs| {
-            refs.refs.iter().find(|pr| pr.id == ref_id).and_then(|pr| {
-                // Get the parameter value
-                model.get_parameter_value(&pr.ref_id).and_then(|v| {
-                    match v {
-                        ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
-                        ParameterValue::Integer(i) => Some(i.to_string()),
-                        _ => None,
-                    }
-                })
-            })
-        })
-    });
-
-    // Replace {{0}} with the value or empty string
-    text.replace("{{0}}", text_value.as_deref().unwrap_or(""))
-}
 
 /// Compute the actual object number for a module comm object.
 ///
@@ -320,6 +89,7 @@ pub struct MemorySegment {
 
 /// Annotation for a memory region occupied by a parameter.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Fields reserved for future use (click-to-navigate)
 pub struct MemoryAnnotation {
     /// Byte offset within the segment
     pub offset: u32,
@@ -352,6 +122,7 @@ pub struct TreeNode {
 
 /// Type of sidebar tree node.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Fields reserved for future use
 pub enum NodeType {
     /// Device-wide settings (ChannelIndependentBlock)
     DeviceSettings,
@@ -371,6 +142,239 @@ pub enum NodeType {
         /// Parent context: None = device level, Some(idx) = channel
         parent: Option<usize>,
     },
+}
+
+// ============================================================================
+// Tree Builder Visitor
+// ============================================================================
+
+/// Intermediate tree node for building the sidebar tree.
+///
+/// This is collected by TreeBuilderVisitor and then flattened to TreeNode
+/// based on expansion state.
+#[derive(Debug, Clone)]
+pub struct VisibleTreeNode {
+    /// Unique identifier
+    pub id: String,
+    /// Display name (may need interpolation)
+    pub raw_name: String,
+    /// Node type
+    pub node_type: VisibleNodeType,
+    /// Children (parameter blocks and modules)
+    pub children: Vec<VisibleTreeNode>,
+}
+
+/// Type of node in the visible tree.
+#[derive(Debug, Clone)]
+pub enum VisibleNodeType {
+    /// Channel-independent block (device settings)
+    DeviceSettings,
+    /// A channel with its index
+    Channel { index: usize },
+    /// A parameter block
+    ParameterBlock { block_name: String },
+    /// A module instance
+    Module { instance_id: String },
+}
+
+/// Visitor that builds a tree of visible elements.
+///
+/// This visitor walks the dynamic section and builds an intermediate tree
+/// structure representing only the visible blocks and modules. The tree
+/// can then be flattened to `TreeNode` list based on expansion state.
+pub struct TreeBuilderVisitor<'a> {
+    /// Reference to device for visibility checks and text interpolation
+    device: &'a Device,
+    /// Root nodes (CIB and channels)
+    root_nodes: Vec<VisibleTreeNode>,
+    /// Current channel index (None when in CIB)
+    current_channel_idx: Option<usize>,
+    /// Stack of parent nodes we're building into
+    node_stack: Vec<VisibleTreeNode>,
+    /// Whether we're inside a parameter block that has visible items
+    in_visible_block: bool,
+    /// Whether we're inside a module (skip internal ParameterBlocks from tree)
+    in_module: bool,
+}
+
+impl<'a> TreeBuilderVisitor<'a> {
+    /// Create a new visitor for building the tree.
+    pub fn new(device: &'a Device) -> Self {
+        Self {
+            device,
+            root_nodes: Vec::new(),
+            current_channel_idx: None,
+            node_stack: Vec::new(),
+            in_visible_block: false,
+            in_module: false,
+        }
+    }
+
+    /// Consume the visitor and return the collected tree nodes.
+    pub fn into_tree(self) -> Vec<VisibleTreeNode> {
+        self.root_nodes
+    }
+
+    /// Check if parameter block has any visible content.
+    fn block_has_visible_items(&self, block: &ParameterBlock) -> bool {
+        for item in &block.items {
+            match item {
+                ParameterBlockItem::ParameterRefRef(prr) => {
+                    if self.device.is_param_ref_visible(&prr.ref_id) {
+                        return true;
+                    }
+                }
+                ParameterBlockItem::ComObjectRefRef(corr) => {
+                    if self.device.is_com_object_ref_visible(&corr.ref_id) {
+                        return true;
+                    }
+                }
+                ParameterBlockItem::Choose(_) => {
+                    // Choose blocks may contain visible items
+                    return true;
+                }
+                ParameterBlockItem::ParameterSeparator(_)
+                | ParameterBlockItem::Module(_)
+                | ParameterBlockItem::Button(_)
+                | ParameterBlockItem::Rows(_)
+                | ParameterBlockItem::Columns(_) => {}
+            }
+        }
+        false
+    }
+}
+
+impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
+    fn enter_channel_independent_block(&mut self, _block: &ChannelIndependentBlock) {
+        self.current_channel_idx = None;
+        // Create device settings node that will collect children
+        self.node_stack.push(VisibleTreeNode {
+            id: "device".to_string(),
+            raw_name: "Device Settings".to_string(),
+            node_type: VisibleNodeType::DeviceSettings,
+            children: Vec::new(),
+        });
+    }
+
+    fn leave_channel_independent_block(&mut self, _block: &ChannelIndependentBlock) {
+        if let Some(node) = self.node_stack.pop() {
+            // Only add if it has children (visible blocks)
+            if !node.children.is_empty() {
+                self.root_nodes.push(node);
+            }
+        }
+    }
+
+    fn enter_channel(&mut self, channel: &Channel) {
+        // Determine channel index by counting existing channel nodes
+        let channel_idx = self.root_nodes.iter().filter(|n| {
+            matches!(n.node_type, VisibleNodeType::Channel { .. })
+        }).count();
+
+        // Also count the CIB node that may have been added
+        let has_cib = self.root_nodes.iter().any(|n| {
+            matches!(n.node_type, VisibleNodeType::DeviceSettings)
+        });
+
+        // The actual channel index in the dynamic section
+        let actual_idx = if has_cib { channel_idx } else { channel_idx };
+        self.current_channel_idx = Some(actual_idx);
+
+        let raw_name = channel.text.clone().unwrap_or_else(|| channel.name.clone());
+
+        self.node_stack.push(VisibleTreeNode {
+            id: format!("channel_{}", actual_idx),
+            raw_name,
+            node_type: VisibleNodeType::Channel { index: actual_idx },
+            children: Vec::new(),
+        });
+    }
+
+    fn leave_channel(&mut self, _channel: &Channel) {
+        if let Some(node) = self.node_stack.pop() {
+            self.root_nodes.push(node);
+        }
+        self.current_channel_idx = None;
+    }
+
+    fn enter_parameter_block(&mut self, block: &ParameterBlock) {
+        // Skip module-internal ParameterBlocks from tree (modules show their own content)
+        if self.in_module {
+            return;
+        }
+
+        // Only track visible blocks
+        self.in_visible_block = self.block_has_visible_items(block);
+        if !self.in_visible_block {
+            return;
+        }
+
+        let block_name = block.name.clone().unwrap_or_else(|| block.id.clone());
+        let raw_text = block.text.clone().unwrap_or_else(|| block_name.clone());
+
+        let id = if let Some(ch_idx) = self.current_channel_idx {
+            format!("channel_{}_block_{}", ch_idx, block_name)
+        } else {
+            format!("device_block_{}", block_name)
+        };
+
+        let child_node = VisibleTreeNode {
+            id,
+            raw_name: raw_text,
+            node_type: VisibleNodeType::ParameterBlock {
+                block_name: block_name.clone(),
+            },
+            children: Vec::new(),
+        };
+
+        // Add to current parent
+        if let Some(parent) = self.node_stack.last_mut() {
+            parent.children.push(child_node);
+        }
+    }
+
+    fn leave_parameter_block(&mut self, _block: &ParameterBlock) {
+        self.in_visible_block = false;
+    }
+
+    fn visit_module(&mut self, module: &Module) {
+        // Only add visible modules
+        if !self.device.is_module_visible(&module.id) {
+            return;
+        }
+
+        let id = if let Some(ch_idx) = self.current_channel_idx {
+            format!("channel_{}_module_{}", ch_idx, module.id)
+        } else {
+            format!("device_module_{}", module.id)
+        };
+
+        // Get raw name - will be interpolated later
+        let raw_name = module.name.clone().unwrap_or_else(|| module.id.clone());
+
+        let child_node = VisibleTreeNode {
+            id,
+            raw_name,
+            node_type: VisibleNodeType::Module {
+                instance_id: module.id.clone(),
+            },
+            children: Vec::new(),
+        };
+
+        // Add to current parent
+        if let Some(parent) = self.node_stack.last_mut() {
+            parent.children.push(child_node);
+        }
+    }
+
+    fn enter_module(&mut self, _module: &Module, _ctx: &knxprod::model::VisitorModuleContext) {
+        // Mark that we're inside a module - skip internal ParameterBlocks from tree
+        self.in_module = true;
+    }
+
+    fn leave_module(&mut self, _module: &Module, _ctx: &knxprod::model::VisitorModuleContext) {
+        self.in_module = false;
+    }
 }
 
 /// Focus state within the app.
@@ -492,15 +496,12 @@ pub struct ComObjectRow {
 }
 
 /// Application state.
+#[allow(dead_code)] // Some fields reserved for future use
 pub struct App {
-    /// The device model
-    pub model: DeviceModel,
-    /// KNX master data (optional - used for mask version info)
+    /// The unified device (model + info + baggage)
+    pub device: Device,
+    /// KNX master data (optional - used for mask version info, shared across devices)
     pub master_data: Option<MasterData>,
-    /// Device programming information (extracted from model and master data)
-    pub device_info: DeviceInfo,
-    /// Baggage index for loading images
-    pub baggage_index: Option<BaggageIndex>,
     /// Image picker for terminal protocol detection
     #[cfg(feature = "images")]
     pub image_picker: Option<Picker>,
@@ -543,49 +544,21 @@ pub struct App {
     pub should_quit: bool,
 }
 
+#[allow(dead_code)] // Convenience constructors for library use
 impl App {
-    /// Create a new application with the given device model.
-    pub fn new(model: DeviceModel) -> Self {
-        Self::with_options(model, None, None)
+    /// Create a new application with the given device.
+    pub fn new(device: Device) -> Self {
+        Self::with_master_data(device, None)
     }
 
-    /// Create a new application with device model and optional master data.
+    /// Create a new application with device and optional master data.
     ///
     /// When master data is provided, the app can use mask version information
     /// to correctly generate table layouts based on the device's mask version.
-    pub fn with_master_data(model: DeviceModel, master_data: Option<MasterData>) -> Self {
-        Self::with_options(model, master_data, None)
-    }
-
-    /// Create a new application with device model, master data, and baggage directory.
-    ///
-    /// When a baggage directory is provided, images referenced in the program
-    /// can be displayed in the parameter view (requires "images" feature).
-    pub fn with_options(
-        model: DeviceModel,
-        master_data: Option<MasterData>,
-        baggage_dir: Option<&Path>,
-    ) -> Self {
-        // Extract device info for future programming use
-        let device_info = DeviceInfo::from_program(&model.program, master_data.as_ref());
-
-        // Load baggage index if directory provided
-        let baggage_index = baggage_dir.and_then(|dir| {
-            match BaggageIndex::from_directory(dir) {
-                Ok(index) if !index.is_empty() => Some(index),
-                Ok(_) => None,
-                Err(e) => {
-                    eprintln!("Warning: Failed to load baggages: {}", e);
-                    None
-                }
-            }
-        });
-
+    pub fn with_master_data(device: Device, master_data: Option<MasterData>) -> Self {
         let mut app = Self {
-            model,
+            device,
             master_data,
-            device_info,
-            baggage_index,
             #[cfg(feature = "images")]
             image_picker: Some(Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())),
             #[cfg(feature = "images")]
@@ -629,8 +602,8 @@ impl App {
             return self.image_cache.get_mut(ref_id);
         }
 
-        // Try to load from baggage
-        let baggage_index = self.baggage_index.as_ref()?;
+        // Try to load from baggage (baggage_index is now in device)
+        let baggage_index = self.device.baggage_index()?;
         let picker = self.image_picker.as_mut()?;
         let baggage = baggage_index.get(ref_id)?;
 
@@ -670,65 +643,249 @@ impl App {
         self.focus = Focus::Tabs;
     }
 
-    /// Rebuild the sidebar tree based on the model structure.
+    /// Rebuild the sidebar tree based on the model structure using the visitor pattern.
     pub fn rebuild_tree(&mut self) {
-        debug_log("rebuild_tree called");
         self.tree_nodes.clear();
 
         // Clone to avoid borrow issues
-        let dynamic = self.model.dynamic_section().cloned();
+        let dynamic = self.device.dynamic_section().cloned();
+        let module_defs = self.device.module_defs().clone();
 
         if let Some(dynamic) = dynamic {
-            // Device settings node (if there's a channel-independent block)
-            if let Some(cib) = &dynamic.channel_independent_block {
-                let device_id = "device".to_string();
-                let device_expanded = self.expanded_nodes.contains(&device_id);
+            // Use the visitor to walk the dynamic section and collect visible tree
+            let mut visitor = TreeBuilderVisitor::new(&self.device);
+            walk_dynamic(&dynamic, &mut visitor, &self.device, &module_defs);
 
-                self.tree_nodes.push(TreeNode {
-                    id: device_id.clone(),
-                    name: "Device Settings".to_string(),
-                    depth: 0,
-                    expanded: device_expanded,
-                    has_children: self.count_visible_blocks_in_cib(cib) > 0,
-                    node_type: NodeType::DeviceSettings,
-                });
+            let visible_tree = visitor.into_tree();
 
-                // Add child blocks if expanded
-                if device_expanded {
-                    self.add_cib_blocks_to_tree(cib, 1);
+            // Flatten the visible tree to TreeNode list based on expansion state
+            self.flatten_visible_tree(&visible_tree, &dynamic);
+        }
+    }
+
+    /// Flatten a VisibleTreeNode tree to the flat TreeNode list.
+    ///
+    /// This traverses the collected visible tree and creates TreeNode entries,
+    /// respecting expansion state to determine which children to include.
+    fn flatten_visible_tree(
+        &mut self,
+        visible_tree: &[VisibleTreeNode],
+        dynamic: &knxprod::DynamicSection,
+    ) {
+        for node in visible_tree {
+            let is_expanded = self.expanded_nodes.contains(&node.id);
+
+            // Interpolate the display name
+            let name = match &node.node_type {
+                VisibleNodeType::DeviceSettings => node.raw_name.clone(),
+                VisibleNodeType::Channel { index } => {
+                    // For channels, interpolate {{0}} with TextParameterRefId
+                    if let Some(channel) = dynamic.channels.get(*index) {
+                        self.device.interpolate_channel_text(
+                            &node.raw_name,
+                            channel.text_parameter_ref_id.as_deref(),
+                        )
+                    } else {
+                        self.device.interpolate_text(&node.raw_name)
+                    }
                 }
-            }
-
-            // Channel nodes
-            for (i, channel) in dynamic.channels.iter().enumerate() {
-                let channel_id = format!("channel_{}", i);
-                let channel_expanded = self.expanded_nodes.contains(&channel_id);
-                let raw_text = channel
-                    .text
-                    .clone()
-                    .unwrap_or_else(|| channel.name.clone());
-                // Interpolate {{0}} with TextParameterRefId value
-                let channel_name = interpolate_channel_text(
-                    &raw_text,
-                    channel.text_parameter_ref_id.as_deref(),
-                    &self.model,
-                );
-
-                self.tree_nodes.push(TreeNode {
-                    id: channel_id.clone(),
-                    name: channel_name,
-                    depth: 0,
-                    expanded: channel_expanded,
-                    has_children: self.count_visible_blocks_in_channel(channel) > 0,
-                    node_type: NodeType::Channel(i),
-                });
-
-                // Add child blocks if expanded
-                if channel_expanded {
-                    self.add_channel_blocks_to_tree(channel, i, 1);
+                VisibleNodeType::ParameterBlock { .. } => {
+                    self.device.interpolate_text(&node.raw_name)
                 }
+                VisibleNodeType::Module { instance_id } => {
+                    // For modules, get the expanded module and interpolate with its args
+                    self.interpolate_module_name(instance_id, &node.raw_name)
+                }
+            };
+
+            // Convert to NodeType
+            let node_type = match &node.node_type {
+                VisibleNodeType::DeviceSettings => NodeType::DeviceSettings,
+                VisibleNodeType::Channel { index } => NodeType::Channel(*index),
+                VisibleNodeType::ParameterBlock { block_name } => {
+                    // Determine parent from node id
+                    let parent = if node.id.starts_with("channel_") {
+                        // Extract channel index from id like "channel_0_block_foo"
+                        node.id
+                            .strip_prefix("channel_")
+                            .and_then(|s| s.split('_').next())
+                            .and_then(|s| s.parse().ok())
+                    } else {
+                        None
+                    };
+                    NodeType::ParameterBlock {
+                        parent,
+                        block_name: block_name.clone(),
+                    }
+                }
+                VisibleNodeType::Module { instance_id } => {
+                    // Determine parent from node id
+                    let parent = if node.id.starts_with("channel_") {
+                        node.id
+                            .strip_prefix("channel_")
+                            .and_then(|s| s.split('_').next())
+                            .and_then(|s| s.parse().ok())
+                    } else {
+                        None
+                    };
+                    NodeType::ModuleInstance {
+                        instance_id: instance_id.clone(),
+                        parent,
+                    }
+                }
+            };
+
+            self.tree_nodes.push(TreeNode {
+                id: node.id.clone(),
+                name,
+                depth: 0, // Root nodes
+                expanded: is_expanded,
+                has_children: !node.children.is_empty(),
+                node_type,
+            });
+
+            // If expanded, add children at depth 1
+            if is_expanded {
+                self.flatten_children(&node.children, 1, dynamic);
             }
         }
+    }
+
+    /// Flatten children of a visible tree node at a given depth.
+    fn flatten_children(
+        &mut self,
+        children: &[VisibleTreeNode],
+        depth: usize,
+        dynamic: &knxprod::DynamicSection,
+    ) {
+        for child in children {
+            let is_expanded = self.expanded_nodes.contains(&child.id);
+
+            let name = match &child.node_type {
+                VisibleNodeType::ParameterBlock { .. } => {
+                    self.device.interpolate_text(&child.raw_name)
+                }
+                VisibleNodeType::Module { instance_id } => {
+                    self.interpolate_module_name(instance_id, &child.raw_name)
+                }
+                _ => child.raw_name.clone(),
+            };
+
+            let node_type = match &child.node_type {
+                VisibleNodeType::ParameterBlock { block_name } => {
+                    let parent = if child.id.starts_with("channel_") {
+                        child
+                            .id
+                            .strip_prefix("channel_")
+                            .and_then(|s| s.split('_').next())
+                            .and_then(|s| s.parse().ok())
+                    } else {
+                        None
+                    };
+                    NodeType::ParameterBlock {
+                        parent,
+                        block_name: block_name.clone(),
+                    }
+                }
+                VisibleNodeType::Module { instance_id } => {
+                    let parent = if child.id.starts_with("channel_") {
+                        child
+                            .id
+                            .strip_prefix("channel_")
+                            .and_then(|s| s.split('_').next())
+                            .and_then(|s| s.parse().ok())
+                    } else {
+                        None
+                    };
+                    NodeType::ModuleInstance {
+                        instance_id: instance_id.clone(),
+                        parent,
+                    }
+                }
+                _ => continue, // Skip unexpected types at child level
+            };
+
+            self.tree_nodes.push(TreeNode {
+                id: child.id.clone(),
+                name,
+                depth,
+                expanded: is_expanded,
+                has_children: !child.children.is_empty(),
+                node_type,
+            });
+
+            // If expanded, recursively add grandchildren
+            if is_expanded {
+                self.flatten_children(&child.children, depth + 1, dynamic);
+            }
+        }
+    }
+
+    /// Interpolate module display name using expanded module args.
+    fn interpolate_module_name(&self, instance_id: &str, raw_name: &str) -> String {
+        if let Some(expanded) = self.device.get_expanded_module(instance_id) {
+            // Try to get a better display name from the module def
+            if let Some(module_def) = self.device.get_module_def(&expanded.module_def_id) {
+                // Get the first ParameterBlock's text and text_parameter_ref_id
+                let (block_text, text_param_ref_id) = module_def
+                    .dynamic
+                    .as_ref()
+                    .and_then(|dyn_sec| {
+                        dyn_sec.items.iter().find_map(|item| {
+                            if let knxprod::ModuleDefDynamicItem::ParameterBlock(pb) = item {
+                                Some((pb.text.clone(), pb.text_parameter_ref_id.clone()))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .unwrap_or((None, None));
+
+                // Look up the text parameter value for {{0}} substitution
+                let text_param_value = text_param_ref_id.and_then(|ref_id| {
+                    let param_ref = module_def
+                        .static_section
+                        .parameter_refs
+                        .as_ref()
+                        .and_then(|refs| refs.refs.iter().find(|pr| pr.id == ref_id));
+
+                    param_ref.and_then(|pr| {
+                        let composite_id = format!("{}::{}", expanded.instance_id, pr.ref_id);
+                        self.device
+                            .get_module_parameter_value_by_composite_id(&composite_id)
+                            .and_then(|v| match v {
+                                // Only return actual text values for {{0}} substitution
+                                // Integer 0 should NOT be converted to "0" - that's not meaningful text
+                                ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
+                                _ => None,
+                            })
+                    })
+                });
+
+                if let Some(text) = block_text {
+                    return self.device.interpolate_module_text_with_param(
+                        &text,
+                        expanded,
+                        text_param_value.as_deref(),
+                    );
+                } else if let Some(instance_name) = &expanded.name {
+                    return self.device.interpolate_module_text(instance_name, expanded);
+                } else {
+                    // Fallback: use module name with channel number
+                    if let Some(knxprod::model::ModuleArgValue::Numeric(ch)) =
+                        expanded.args.get("ChNo")
+                    {
+                        return format!("{} {}", module_def.name, ch);
+                    }
+                    return module_def.name.clone();
+                }
+            } else if let Some(instance_name) = &expanded.name {
+                return self.device.interpolate_module_text(instance_name, expanded);
+            }
+        } else {
+            log::warn!("  expanded module NOT found for instance_id='{}'", instance_id);
+        }
+        raw_name.to_string()
     }
 
     fn count_visible_blocks_in_cib(&self, cib: &ChannelIndependentBlock) -> usize {
@@ -744,7 +901,6 @@ impl App {
         let mut modules = Vec::new();
         self.collect_visible_channel_modules(channel, &mut modules);
 
-        debug_log(&format!("count_visible_blocks_in_channel: {} blocks, {} modules", blocks.len(), modules.len()));
         blocks.len() + modules.len()
     }
 
@@ -780,7 +936,7 @@ impl App {
         for item in &channel.items {
             match item {
                 ChannelItem::Module(module) => {
-                    if self.model.is_module_visible(&module.id) {
+                    if self.device.is_module_visible(&module.id) {
                         modules.push(module);
                     }
                 }
@@ -804,7 +960,7 @@ impl App {
         for item in items {
             match item {
                 ParameterBlockItem::Module(module) => {
-                    if self.model.is_module_visible(&module.id) {
+                    if self.device.is_module_visible(&module.id) {
                         modules.push(module);
                     }
                 }
@@ -823,7 +979,6 @@ impl App {
         modules: &mut Vec<&'a knxprod::Module>,
     ) {
         let selector_value = self.get_selector_value(&choose.param_ref_id);
-        debug_log(&format!("collect_modules_from_choose: param_ref_id={}, value={:?}", choose.param_ref_id, selector_value));
 
         let mut any_matched = false;
         for when in &choose.whens {
@@ -831,9 +986,7 @@ impl App {
                 continue;
             }
             if let Some(test) = &when.test {
-                let matches = self.matches_condition(selector_value, test);
-                debug_log(&format!("  module choose test='{}' matches={}", test, matches));
-                if matches {
+                if self.matches_condition(selector_value, test) {
                     any_matched = true;
                     self.collect_modules_from_when(&when.items, modules);
                 }
@@ -841,7 +994,6 @@ impl App {
         }
 
         if !any_matched {
-            debug_log("  No module when matched, checking default");
             for when in &choose.whens {
                 if when.default.unwrap_or(false) {
                     self.collect_modules_from_when(&when.items, modules);
@@ -857,13 +1009,10 @@ impl App {
         items: &'a [WhenItem],
         modules: &mut Vec<&'a knxprod::Module>,
     ) {
-        debug_log(&format!("  collect_modules_from_when: {} items", items.len()));
         for item in items {
             match item {
                 WhenItem::Module(module) => {
-                    let is_visible = self.model.is_module_visible(&module.id);
-                    debug_log(&format!("    Found module id={}, is_visible={}", module.id, is_visible));
-                    if is_visible {
+                    if self.device.is_module_visible(&module.id) {
                         modules.push(module);
                     }
                 }
@@ -929,8 +1078,8 @@ impl App {
 
     /// Get the integer value of a selector parameter ref.
     fn get_selector_value(&self, param_ref_id: &str) -> Option<i64> {
-        let param_ref = self.model.get_parameter_ref(param_ref_id)?;
-        let param_value = self.model.get_parameter_value(&param_ref.ref_id)?;
+        let param_ref = self.device.get_parameter_ref(param_ref_id)?;
+        let param_value = self.device.get_parameter_value(&param_ref.ref_id)?;
 
         match param_value {
             ParameterValue::Integer(v) => Some(*v),
@@ -995,7 +1144,7 @@ impl App {
             let block_name = pb.name.clone().unwrap_or_else(|| pb.id.clone());
             let block_id = format!("device_block_{}", block_name);
             let raw_text = pb.text.clone().unwrap_or_else(|| block_name.clone());
-            let text = interpolate_text(&raw_text, &self.model);
+            let text = self.device.interpolate_text(&raw_text);
 
             self.tree_nodes.push(TreeNode {
                 id: block_id,
@@ -1040,7 +1189,7 @@ impl App {
             let block_name = pb.name.clone().unwrap_or_else(|| pb.id.clone());
             let block_id = format!("channel_{}_block_{}", channel_idx, block_name);
             let raw_text = pb.text.clone().unwrap_or_else(|| block_name.clone());
-            let text = interpolate_text(&raw_text, &self.model);
+            let text = self.device.interpolate_text(&raw_text);
 
             self.tree_nodes.push(TreeNode {
                 id: block_id,
@@ -1061,10 +1210,10 @@ impl App {
 
         for module in modules {
             // Get module name from expanded module data
-            let expanded = self.model.get_expanded_module(&module.id);
+            let expanded = self.device.get_expanded_module(&module.id);
             let name = if let Some(exp) = expanded {
                 // Try to build a friendly display name from the module's Dynamic section
-                if let Some(module_def) = self.model.get_module_def(&exp.module_def_id) {
+                if let Some(module_def) = self.device.get_module_def(&exp.module_def_id) {
                     // Get the first ParameterBlock's text and text_parameter_ref_id
                     let (block_text, text_param_ref_id) = module_def
                         .dynamic
@@ -1092,8 +1241,8 @@ impl App {
                         param_ref.and_then(|pr| {
                             // Build composite ID and look up value
                             let composite_id = format!("{}::{}", exp.instance_id, pr.ref_id);
-                            self.model
-                                .get_module_parameter_value(&composite_id)
+                            self.device
+                                .get_module_parameter_value_by_composite_id(&composite_id)
                                 .and_then(|v| match v {
                                     ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
                                     ParameterValue::Integer(i) => Some(i.to_string()),
@@ -1104,13 +1253,13 @@ impl App {
 
                     if let Some(text) = block_text {
                         // Interpolate {{ChNo}} and {{0}} in the text
-                        interpolate_module_text_with_param(
+                        self.device.interpolate_module_text_with_param(
                             &text,
                             exp,
                             text_param_value.as_deref(),
                         )
                     } else if let Some(instance_name) = &exp.name {
-                        interpolate_module_text(instance_name, exp)
+                        self.device.interpolate_module_text(instance_name, exp)
                     } else {
                         // Fallback: use module name with channel number
                         if let Some(knxprod::model::ModuleArgValue::Numeric(ch)) =
@@ -1122,7 +1271,7 @@ impl App {
                         }
                     }
                 } else if let Some(instance_name) = &exp.name {
-                    interpolate_module_text(instance_name, exp)
+                    self.device.interpolate_module_text(instance_name, exp)
                 } else {
                     module.id.clone()
                 }
@@ -1150,12 +1299,12 @@ impl App {
         for item in items {
             match item {
                 ParameterBlockItem::ParameterRefRef(prr) => {
-                    if self.model.is_param_ref_visible(&prr.ref_id) {
+                    if self.device.is_param_ref_visible(&prr.ref_id) {
                         return true;
                     }
                 }
                 ParameterBlockItem::ComObjectRefRef(corr) => {
-                    if self.model.is_com_object_ref_visible(&corr.ref_id) {
+                    if self.device.is_com_object_ref_visible(&corr.ref_id) {
                         return true;
                     }
                 }
@@ -1179,17 +1328,15 @@ impl App {
 
     /// Set a parameter value, handling both regular and module parameters.
     fn set_any_parameter_value(&mut self, param_id: &str, value: ParameterValue) {
-        debug_log(&format!("set_any_parameter_value: param_id={}, value={:?}", param_id, value));
-        if self.model.is_module_parameter(param_id) {
-            self.model.set_module_parameter_value(param_id, value);
+        if self.device.is_module_parameter(param_id) {
+            self.device.set_module_parameter_value_by_composite_id(param_id, value);
         } else {
-            self.model.set_parameter_value(param_id, value);
+            self.device.set_parameter_value(param_id, value);
         }
     }
 
     /// Rebuild parameter content based on selected tree node.
     pub fn rebuild_content(&mut self) {
-        debug_log(&format!("rebuild_content: selected_tree_idx={}", self.selected_tree_idx));
         self.content_items.clear();
 
         // Clone node_type to avoid borrow conflict
@@ -1199,7 +1346,6 @@ impl App {
             .map(|n| n.node_type.clone());
 
         if let Some(node_type) = node_type {
-            debug_log(&format!("  node_type={:?}", node_type));
             match &node_type {
                 NodeType::DeviceSettings => {
                     self.build_device_settings_content();
@@ -1208,7 +1354,6 @@ impl App {
                     self.build_channel_content(*idx);
                 }
                 NodeType::ParameterBlock { parent, block_name } => {
-                    debug_log(&format!("  building block content: block_name={}", block_name));
                     self.build_block_content(*parent, block_name);
                 }
                 NodeType::ModuleInstance { instance_id, .. } => {
@@ -1216,12 +1361,11 @@ impl App {
                 }
             }
         }
-        debug_log(&format!("  content_items.len()={}", self.content_items.len()));
     }
 
     fn build_device_settings_content(&mut self) {
         let cib = self
-            .model
+            .device
             .dynamic_section()
             .and_then(|d| d.channel_independent_block.clone());
 
@@ -1242,7 +1386,7 @@ impl App {
 
     fn build_channel_content(&mut self, channel_idx: usize) {
         let channel = self
-            .model
+            .device
             .dynamic_section()
             .and_then(|d| d.channels.get(channel_idx).cloned());
 
@@ -1265,7 +1409,7 @@ impl App {
     }
 
     fn build_block_content(&mut self, parent: Option<usize>, block_name: &str) {
-        let dynamic = self.model.dynamic_section().cloned();
+        let dynamic = self.device.dynamic_section().cloned();
 
         if let Some(dynamic) = dynamic {
             match parent {
@@ -1290,17 +1434,25 @@ impl App {
 
     /// Build content for a module instance.
     fn build_module_content(&mut self, instance_id: &str) {
+
         // Get the expanded module and its definition
-        let expanded = self.model.get_expanded_module(instance_id).cloned();
+        let expanded = self.device.get_expanded_module(instance_id).cloned();
         let expanded = match expanded {
             Some(e) => e,
-            None => return,
+            None => {
+                log::warn!("build_module_content: expanded module NOT found for '{}'", instance_id);
+                return;
+            }
         };
 
-        let module_def = self.model.get_module_def(&expanded.module_def_id).cloned();
+
+        let module_def = self.device.get_module_def(&expanded.module_def_id).cloned();
         let module_def = match module_def {
             Some(def) => def,
-            None => return,
+            None => {
+                log::warn!("build_module_content: module def NOT found for '{}'", expanded.module_def_id);
+                return;
+            }
         };
 
         // If the module has a Dynamic section, render its contents
@@ -1346,7 +1498,7 @@ impl App {
                 }
                 ParameterBlockItem::ParameterSeparator(sep) => {
                     let raw_text = sep.text.clone();
-                    let text = raw_text.map(|t| interpolate_module_text(&t, expanded));
+                    let text = raw_text.map(|t| self.device.interpolate_module_text(&t, expanded));
                     self.content_items.push(ContentItem::Separator { text });
                 }
                 ParameterBlockItem::Module(_) => {
@@ -1368,15 +1520,12 @@ impl App {
         choose: &Choose,
         expanded: &knxprod::model::ExpandedModule,
     ) {
-        // Try module-internal lookup first, fall back to device-level
-        let selector_value = self
-            .get_module_selector_value(&choose.param_ref_id, expanded)
-            .or_else(|| self.get_selector_value(&choose.param_ref_id));
 
-        debug_log(&format!(
-            "add_module_choose_items: ParamRefId={}, selector_value={:?}, instance={}",
-            choose.param_ref_id, selector_value, expanded.instance_id
-        ));
+        // Try module-internal lookup first, fall back to device-level
+        let module_val = self.get_module_selector_value(&choose.param_ref_id, expanded);
+        let device_val = self.get_selector_value(&choose.param_ref_id);
+        let selector_value = module_val.or(device_val);
+
 
         let mut any_matched = false;
         for when in &choose.whens {
@@ -1385,7 +1534,6 @@ impl App {
             }
             if let Some(test) = &when.test {
                 let matches = self.matches_condition(selector_value, test);
-                debug_log(&format!("  module when test='{}' matches={}", test, matches));
                 if matches {
                     any_matched = true;
                     self.add_module_when_items(&when.items, expanded);
@@ -1394,7 +1542,6 @@ impl App {
         }
 
         if !any_matched {
-            debug_log("  No module when matched, checking default");
             for when in &choose.whens {
                 if when.default.unwrap_or(false) {
                     self.add_module_when_items(&when.items, expanded);
@@ -1402,6 +1549,7 @@ impl App {
                 }
             }
         }
+
     }
 
     /// Get the selector value for a module-internal parameter ref.
@@ -1410,8 +1558,9 @@ impl App {
         param_ref_id: &str,
         expanded: &knxprod::model::ExpandedModule,
     ) -> Option<i64> {
+
         // Get the module definition
-        let module_def = self.model.get_module_def(&expanded.module_def_id)?;
+        let module_def = self.device.get_module_def(&expanded.module_def_id)?;
 
         // Find the ParameterRef in the module's static section
         let param_ref = module_def
@@ -1420,18 +1569,33 @@ impl App {
             .as_ref()?
             .refs
             .iter()
-            .find(|pr| pr.id == param_ref_id)?;
+            .find(|pr| pr.id == param_ref_id);
+
+        let param_ref = match param_ref {
+            Some(pr) => {
+                pr
+            }
+            None => {
+                return None;
+            }
+        };
 
         // Build the composite ID for module parameter lookup
         let composite_id = format!("{}::{}", expanded.instance_id, param_ref.ref_id);
 
         // Get the value from module params
-        let param_value = self.model.get_module_parameter_value(&composite_id)?;
+        let param_value = self.device.get_module_parameter_value_by_composite_id(&composite_id);
 
         match param_value {
-            ParameterValue::Integer(v) => Some(*v),
-            ParameterValue::Float(v) => Some(*v as i64),
-            _ => None,
+            Some(ParameterValue::Integer(v)) => {
+                Some(*v)
+            }
+            Some(ParameterValue::Float(v)) => {
+                Some(*v as i64)
+            }
+            _ => {
+                None
+            }
         }
     }
 
@@ -1457,11 +1621,13 @@ impl App {
                 }
                 WhenItem::ParameterSeparator(sep) => {
                     let raw_text = sep.text.clone();
-                    let text = raw_text.map(|t| interpolate_module_text(&t, expanded));
+                    let text = raw_text.map(|t| self.device.interpolate_module_text(&t, expanded));
                     self.content_items.push(ContentItem::Separator { text });
                 }
-                WhenItem::Assign(_) => {}
-                WhenItem::Module(_) => {}
+                WhenItem::Assign(_) => {
+                }
+                WhenItem::Module(_) => {
+                }
             }
         }
     }
@@ -1472,10 +1638,13 @@ impl App {
         ref_id: &str,
         expanded: &knxprod::model::ExpandedModule,
     ) {
+
         // Look up the ModuleDef to access its static section
-        let module_def = match self.model.get_module_def(&expanded.module_def_id) {
+        let module_def = match self.device.get_module_def(&expanded.module_def_id) {
             Some(def) => def.clone(),
-            None => return,
+            None => {
+                return;
+            }
         };
 
         // Find the ParameterRef in the module's static section
@@ -1486,61 +1655,102 @@ impl App {
             .and_then(|refs| refs.refs.iter().find(|pr| pr.id == ref_id));
 
         let param_ref = match param_ref {
-            Some(pr) => pr.clone(),
-            None => return,
+            Some(pr) => {
+                pr.clone()
+            }
+            None => {
+                return;
+            }
         };
 
-        // Find the Parameter using the RefId
-        let parameter = module_def
+        // Find the Parameter using the RefId - check both regular parameters and union parameters
+        enum FoundParameter {
+            Regular(knxprod::Parameter),
+            Union(knxprod::UnionParameter),
+        }
+
+        let found_param: Option<FoundParameter> = module_def
             .static_section
             .parameters
             .as_ref()
             .and_then(|params| {
-                params.items.iter().find_map(|item| match item {
-                    knxprod::ParameterItem::Parameter(p) if p.id == param_ref.ref_id => Some(p),
-                    _ => None,
-                })
+                for item in &params.items {
+                    match item {
+                        knxprod::ParameterItem::Parameter(p) if p.id == param_ref.ref_id => {
+                            return Some(FoundParameter::Regular(p.clone()));
+                        }
+                        knxprod::ParameterItem::Union(u) => {
+                            // Search inside union parameters
+                            if let Some(up) = u.parameters.iter().find(|up| up.id == param_ref.ref_id) {
+                                return Some(FoundParameter::Union(up.clone()));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
             });
 
-        let parameter = match parameter {
-            Some(p) => p.clone(),
-            None => return,
+        // Extract common fields based on parameter type
+        let (param_id_str, param_text, param_suffix, param_type, is_hidden) = match &found_param {
+            Some(FoundParameter::Regular(p)) => {
+                (
+                    p.id.clone(),
+                    p.text.clone(),
+                    p.suffix_text.clone(),
+                    p.parameter_type.clone(),
+                    p.access.as_deref() == Some("None"),
+                )
+            }
+            Some(FoundParameter::Union(up)) => {
+                (
+                    up.id.clone(),
+                    up.text.clone(),
+                    up.suffix_text.clone(),
+                    up.parameter_type.clone(),
+                    false, // Union parameters don't have access field
+                )
+            }
+            None => {
+                return;
+            }
         };
 
         // Skip hidden parameters
-        if parameter.access.as_deref() == Some("None") {
+        if is_hidden {
             return;
         }
 
         // Build display text with interpolation
-        let raw_text = param_ref
-            .text
-            .clone()
-            .unwrap_or_else(|| parameter.text.clone());
+        let raw_text = param_ref.text.clone().unwrap_or(param_text);
 
         if raw_text.is_empty() {
             return;
         }
 
-        let text = interpolate_module_text(&raw_text, expanded);
+
+        let text = self.device.interpolate_module_text(&raw_text, expanded);
 
         // Use a unique ID that includes the module instance
-        let param_id = format!("{}::{}", expanded.instance_id, parameter.id);
+        let param_id = format!("{}::{}", expanded.instance_id, param_id_str);
 
-        // Check if this is a picture type
-        if let Some(ref_id) = self.get_module_picture_ref_id(&parameter) {
-            self.content_items.push(ContentItem::Picture { ref_id });
-        } else {
-            // Build widget based on parameter type
-            let widget = self.build_widget_for_module_param(&parameter, &module_def, &param_id);
-
-            self.content_items.push(ContentItem::Parameter {
-                param_id,
-                text,
-                suffix: parameter.suffix_text.clone(),
-                widget,
-            });
+        // Check if this is a picture type (only for regular parameters)
+        if let Some(FoundParameter::Regular(ref p)) = found_param {
+            if let Some(ref_id) = self.get_module_picture_ref_id(p) {
+                self.content_items.push(ContentItem::Picture { ref_id });
+                return;
+            }
         }
+
+        // Build widget based on parameter type
+        let widget = self.build_widget_for_module_param_by_type(&param_type, &param_id);
+
+        self.content_items.push(ContentItem::Parameter {
+            param_id,
+            text,
+            suffix: param_suffix,
+            widget,
+        });
     }
 
     /// Build a widget for a module parameter.
@@ -1553,10 +1763,10 @@ impl App {
         use knxprod::ParameterTypeDef;
 
         // Get the current value from module parameter storage
-        let current_value = self.model.get_module_parameter_value(composite_param_id);
+        let current_value = self.device.get_module_parameter_value_by_composite_id(composite_param_id);
 
         // Look up the parameter type
-        let param_type = self.model.get_parameter_type(&parameter.parameter_type);
+        let param_type = self.device.get_parameter_type(&parameter.parameter_type);
 
         match param_type.map(|pt| &pt.type_def) {
             Some(ParameterTypeDef::TypeRestriction(tr)) => {
@@ -1568,7 +1778,7 @@ impl App {
                     .collect();
 
                 let current_val = match current_value {
-                    Some(ParameterValue::Integer(v)) => *v,
+                    Some(&ParameterValue::Integer(v)) => v,
                     _ => parameter.value.parse().unwrap_or(0),
                 };
 
@@ -1584,7 +1794,7 @@ impl App {
             }
             Some(ParameterTypeDef::TypeNumber(tn)) => {
                 let current_val = match current_value {
-                    Some(ParameterValue::Integer(v)) => *v,
+                    Some(&ParameterValue::Integer(v)) => v,
                     _ => parameter.value.parse().unwrap_or(0),
                 };
 
@@ -1603,8 +1813,8 @@ impl App {
             }
             Some(ParameterTypeDef::TypeFloat(tf)) => {
                 let current_val = match current_value {
-                    Some(ParameterValue::Integer(v)) => *v,
-                    Some(ParameterValue::Float(v)) => *v as i64,
+                    Some(&ParameterValue::Integer(v)) => v,
+                    Some(&ParameterValue::Float(v)) => v as i64,
                     _ => parameter.value.parse().unwrap_or(0),
                 };
 
@@ -1629,6 +1839,92 @@ impl App {
         }
     }
 
+    /// Build a widget for a module parameter using only the type ID.
+    /// Used when we have extracted parameter info (e.g., from union parameters).
+    fn build_widget_for_module_param_by_type(
+        &self,
+        type_id: &str,
+        composite_param_id: &str,
+    ) -> WidgetType {
+        use knxprod::ParameterTypeDef;
+
+        // Get the current value from module parameter storage
+        let current_value = self.device.get_module_parameter_value_by_composite_id(composite_param_id);
+
+        // Look up the parameter type
+        let param_type = self.device.get_parameter_type(type_id);
+
+        match param_type.map(|pt| &pt.type_def) {
+            Some(ParameterTypeDef::TypeRestriction(tr)) => {
+                // Build dropdown options from enumerations
+                let options: Vec<(i64, String)> = tr
+                    .enumerations
+                    .iter()
+                    .map(|e| (e.value as i64, e.text.clone()))
+                    .collect();
+
+                let current_val = match current_value {
+                    Some(&ParameterValue::Integer(v)) => v,
+                    _ => 0,
+                };
+
+                let current_idx = options
+                    .iter()
+                    .position(|(v, _)| *v == current_val)
+                    .unwrap_or(0);
+
+                WidgetType::Dropdown {
+                    options,
+                    current_idx,
+                }
+            }
+            Some(ParameterTypeDef::TypeNumber(tn)) => {
+                let current_val = match current_value {
+                    Some(&ParameterValue::Integer(v)) => v,
+                    _ => 0,
+                };
+
+                WidgetType::Number {
+                    value: current_val,
+                    min: Some(tn.min_inclusive),
+                    max: Some(tn.max_inclusive),
+                }
+            }
+            Some(ParameterTypeDef::TypeText(_)) => {
+                let val = match current_value {
+                    Some(ParameterValue::Text(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                WidgetType::Text { value: val }
+            }
+            Some(ParameterTypeDef::TypeFloat(tf)) => {
+                let current_val = match current_value {
+                    Some(&ParameterValue::Integer(v)) => v,
+                    Some(&ParameterValue::Float(v)) => v as i64,
+                    _ => 0,
+                };
+
+                WidgetType::Number {
+                    value: current_val,
+                    min: Some(tf.min_inclusive as i64),
+                    max: Some(tf.max_inclusive as i64),
+                }
+            }
+            Some(ParameterTypeDef::TypeNone(_))
+            | Some(ParameterTypeDef::TypePicture(_))
+            | Some(ParameterTypeDef::TypeIpAddress(_))
+            | None => {
+                // For unknown/picture/IP types, show as read-only
+                let val = match current_value {
+                    Some(ParameterValue::Integer(v)) => v.to_string(),
+                    Some(ParameterValue::Text(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                WidgetType::ReadOnly { value: val }
+            }
+        }
+    }
+
     /// Add a module comm object ref to content items.
     fn add_module_com_obj_ref(
         &mut self,
@@ -1636,7 +1932,7 @@ impl App {
         expanded: &knxprod::model::ExpandedModule,
     ) {
         // Look up the ModuleDef to access its static section
-        let module_def = match self.model.get_module_def(&expanded.module_def_id) {
+        let module_def = match self.device.get_module_def(&expanded.module_def_id) {
             Some(def) => def.clone(),
             None => return,
         };
@@ -1671,7 +1967,7 @@ impl App {
             .clone()
             .unwrap_or_else(|| com_object.text.clone());
 
-        let text = interpolate_module_text(&raw_text, expanded);
+        let text = self.device.interpolate_module_text(&raw_text, expanded);
 
         // Add as a comm object display item
         self.content_items.push(ContentItem::CommObject {
@@ -1802,8 +2098,8 @@ impl App {
         for item in items {
             match item {
                 ParameterBlockItem::ParameterRefRef(prr) => {
-                    if self.model.is_param_ref_visible(&prr.ref_id) {
-                        if let Some(pref) = self.model.get_parameter_ref(&prr.ref_id) {
+                    if self.device.is_param_ref_visible(&prr.ref_id) {
+                        if let Some(pref) = self.device.get_parameter_ref(&prr.ref_id) {
                             // Skip if the ParameterRef itself has Access="None"
                             if pref.access.as_deref() == Some("None") {
                                 continue;
@@ -1818,7 +2114,7 @@ impl App {
                             }
 
                             // Skip hidden parameters (Access="None") or those with empty text
-                            if let Some(info) = self.model.get_parameter_info(&param_id) {
+                            if let Some(info) = self.device.get_parameter_info(&param_id) {
                                 if info.hidden || info.text.is_empty() {
                                     continue;
                                 }
@@ -1829,7 +2125,7 @@ impl App {
                                 .clone()
                                 .or_else(|| pref.text.clone())
                                 .unwrap_or_else(|| {
-                                    self.model
+                                    self.device
                                         .get_parameter_info(&param_id)
                                         .map(|p| p.text.clone())
                                         .unwrap_or_else(|| param_id.clone())
@@ -1840,10 +2136,10 @@ impl App {
                                 continue;
                             }
 
-                            let text = interpolate_text(&raw_text, &self.model);
+                            let text = self.device.interpolate_text(&raw_text);
 
                             let suffix = self
-                                .model
+                                .device
                                 .get_parameter_info(&param_id)
                                 .and_then(|p| p.suffix.clone());
 
@@ -1859,7 +2155,7 @@ impl App {
                     }
                 }
                 ParameterBlockItem::ParameterSeparator(sep) => {
-                    let text = sep.text.as_ref().map(|t| interpolate_text(t, &self.model));
+                    let text = sep.text.as_ref().map(|t| self.device.interpolate_text(t));
                     self.content_items.push(ContentItem::Separator { text });
                 }
                 ParameterBlockItem::Choose(choose) => {
@@ -1886,7 +2182,6 @@ impl App {
     /// Note: Multiple when clauses can match the same value in KNX choose blocks.
     fn add_choose_items(&mut self, choose: &Choose) {
         let selector_value = self.get_selector_value(&choose.param_ref_id);
-        debug_log(&format!("add_choose_items: ParamRefId={}, selector_value={:?}", choose.param_ref_id, selector_value));
 
         // First pass: process all matching non-default whens
         let mut any_matched = false;
@@ -1895,9 +2190,7 @@ impl App {
                 continue; // Handle defaults in second pass
             }
             if let Some(test) = &when.test {
-                let matches = self.matches_condition(selector_value, test);
-                debug_log(&format!("  when test='{}' matches={}", test, matches));
-                if matches {
+                if self.matches_condition(selector_value, test) {
                     any_matched = true;
                     self.add_when_items(&when.items);
                 }
@@ -1906,10 +2199,8 @@ impl App {
 
         // Second pass: if no explicit when matched, process default
         if !any_matched {
-            debug_log("  No explicit when matched, checking default");
             for when in &choose.whens {
                 if when.default.unwrap_or(false) {
-                    debug_log("  Using default when");
                     self.add_when_items(&when.items);
                     break;
                 }
@@ -1922,8 +2213,8 @@ impl App {
         for item in items {
             match item {
                 WhenItem::ParameterRefRef(prr) => {
-                    if self.model.is_param_ref_visible(&prr.ref_id) {
-                        if let Some(pref) = self.model.get_parameter_ref(&prr.ref_id) {
+                    if self.device.is_param_ref_visible(&prr.ref_id) {
+                        if let Some(pref) = self.device.get_parameter_ref(&prr.ref_id) {
                             // Skip if the ParameterRef itself has Access="None"
                             if pref.access.as_deref() == Some("None") {
                                 continue;
@@ -1938,7 +2229,7 @@ impl App {
                             }
 
                             // Skip hidden parameters (Access="None") or those with empty text
-                            if let Some(info) = self.model.get_parameter_info(&param_id) {
+                            if let Some(info) = self.device.get_parameter_info(&param_id) {
                                 if info.hidden || info.text.is_empty() {
                                     continue;
                                 }
@@ -1949,7 +2240,7 @@ impl App {
                                 .clone()
                                 .or_else(|| pref.text.clone())
                                 .unwrap_or_else(|| {
-                                    self.model
+                                    self.device
                                         .get_parameter_info(&param_id)
                                         .map(|p| p.text.clone())
                                         .unwrap_or_else(|| param_id.clone())
@@ -1960,10 +2251,10 @@ impl App {
                                 continue;
                             }
 
-                            let text = interpolate_text(&raw_text, &self.model);
+                            let text = self.device.interpolate_text(&raw_text);
 
                             let suffix = self
-                                .model
+                                .device
                                 .get_parameter_info(&param_id)
                                 .and_then(|p| p.suffix.clone());
 
@@ -1979,7 +2270,7 @@ impl App {
                     }
                 }
                 WhenItem::ParameterSeparator(sep) => {
-                    let text = sep.text.as_ref().map(|t| interpolate_text(t, &self.model));
+                    let text = sep.text.as_ref().map(|t| self.device.interpolate_text(t));
                     self.content_items.push(ContentItem::Separator { text });
                 }
                 WhenItem::ParameterBlock(pb) => {
@@ -1996,7 +2287,7 @@ impl App {
     }
 
     fn build_widget_for_param(&self, param_id: &str) -> WidgetType {
-        let info = match self.model.get_parameter_info(param_id) {
+        let info = match self.device.get_parameter_info(param_id) {
             Some(i) => i,
             None => {
                 return WidgetType::ReadOnly {
@@ -2005,8 +2296,8 @@ impl App {
             }
         };
 
-        let ptype = self.model.get_parameter_type(&info.type_id);
-        let value = self.model.get_parameter_value(param_id);
+        let ptype = self.device.get_parameter_type(&info.type_id);
+        let value = self.device.get_parameter_value(param_id);
 
         match ptype.map(|pt| &pt.type_def) {
             Some(ParameterTypeDef::TypeRestriction(tr)) => {
@@ -2069,8 +2360,8 @@ impl App {
 
     /// Check if a parameter is a TypePicture and return its ref_id if so.
     fn get_picture_ref_id(&self, param_id: &str) -> Option<String> {
-        let info = self.model.get_parameter_info(param_id)?;
-        let ptype = self.model.get_parameter_type(&info.type_id)?;
+        let info = self.device.get_parameter_info(param_id)?;
+        let ptype = self.device.get_parameter_type(&info.type_id)?;
         if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def {
             Some(tp.ref_id.clone())
         } else {
@@ -2080,7 +2371,7 @@ impl App {
 
     /// Check if a module parameter is a TypePicture and return its ref_id if so.
     fn get_module_picture_ref_id(&self, parameter: &knxprod::Parameter) -> Option<String> {
-        let ptype = self.model.get_parameter_type(&parameter.parameter_type)?;
+        let ptype = self.device.get_parameter_type(&parameter.parameter_type)?;
         if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def {
             Some(tp.ref_id.clone())
         } else {
@@ -2093,17 +2384,17 @@ impl App {
         self.com_object_rows.clear();
 
         // Add comm objects from main device
-        let visible_refs: Vec<_> = self.model.visible_com_object_refs().cloned().collect();
+        let visible_refs: Vec<_> = self.device.visible_com_object_refs().cloned().collect();
 
         for oref in visible_refs {
-            if let Some(obj) = self.model.get_com_object(&oref.ref_id) {
+            if let Some(obj) = self.device.get_com_object(&oref.ref_id) {
                 let raw_name = oref.text.clone().unwrap_or_else(|| obj.text.clone());
-                let name = interpolate_text(&raw_name, &self.model);
+                let name = self.device.interpolate_text(&raw_name);
                 let raw_function = oref
                     .function_text
                     .clone()
                     .unwrap_or_else(|| obj.function_text.clone());
-                let function = interpolate_text(&raw_function, &self.model);
+                let function = self.device.interpolate_text(&raw_function);
 
                 // Get effective values (ref overrides base object)
                 let size = oref
@@ -2170,11 +2461,11 @@ impl App {
     /// Add comm objects from visible modules to the com_object_rows list.
     fn add_module_com_objects_to_list(&mut self) {
         // Collect visible modules first to avoid borrow issues
-        let visible_modules: Vec<_> = self.model.visible_modules().cloned().collect();
+        let visible_modules: Vec<_> = self.device.visible_modules().cloned().collect();
 
         for expanded in visible_modules {
             // Get the ModuleDef
-            let module_def = match self.model.get_module_def(&expanded.module_def_id) {
+            let module_def = match self.device.get_module_def(&expanded.module_def_id) {
                 Some(def) => def.clone(),
                 None => continue,
             };
@@ -2193,7 +2484,7 @@ impl App {
 
             for oref in &com_obj_refs {
                 // Check if this comm object ref is visible (selected by dynamic section conditions)
-                if !self.model.is_com_object_ref_visible(&oref.id) {
+                if !self.device.is_com_object_ref_visible(&oref.id) {
                     continue;
                 }
 
@@ -2218,8 +2509,8 @@ impl App {
                     param_ref.and_then(|pr| {
                         // Build composite ID and look up value
                         let composite_id = format!("{}::{}", expanded.instance_id, pr.ref_id);
-                        self.model
-                            .get_module_parameter_value(&composite_id)
+                        self.device
+                            .get_module_parameter_value_by_composite_id(&composite_id)
                             .and_then(|v| match v {
                                 ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
                                 ParameterValue::Integer(i) => Some(i.to_string()),
@@ -2230,12 +2521,12 @@ impl App {
 
                 let raw_name = oref.text.clone().unwrap_or_else(|| obj.text.clone());
                 let name =
-                    interpolate_module_text_with_param(&raw_name, &expanded, text_param_value.as_deref());
+                    self.device.interpolate_module_text_with_param(&raw_name, &expanded, text_param_value.as_deref());
                 let raw_function = oref
                     .function_text
                     .clone()
                     .unwrap_or_else(|| obj.function_text.clone());
-                let function = interpolate_module_text(&raw_function, &expanded);
+                let function = self.device.interpolate_module_text(&raw_function, &expanded);
 
                 // Get effective values (ref overrides base object)
                 let size = oref
@@ -2298,7 +2589,7 @@ impl App {
     /// Returns the primary sending address, or multiple addresses separated by ", ".
     /// If no address is assigned, returns an empty string.
     fn format_group_address(&self, object_number: u16) -> String {
-        let bindings = self.model.get_group_addresses(object_number);
+        let bindings = self.device.get_group_addresses(object_number);
         if bindings.is_empty() {
             return String::new();
         }
@@ -2320,13 +2611,13 @@ impl App {
     pub fn get_mask_version(&self) -> Option<&MaskVersion> {
         self.master_data
             .as_ref()
-            .and_then(|md| md.get_mask_version(self.model.mask_version()))
+            .and_then(|md| md.get_mask_version(self.device.mask_version()))
     }
 
     /// Get a human-readable mask version display string.
     /// Returns something like "System B (MV-07B0)" or just "MV-07B0" if no master data.
     pub fn mask_version_display(&self) -> String {
-        let mv_id = self.model.mask_version();
+        let mv_id = self.device.mask_version();
         if let Some(mv) = self.get_mask_version() {
             format!("{} ({})", mv.name, mv_id)
         } else {
@@ -2383,7 +2674,7 @@ impl App {
         self.memory_segments.clear();
 
         // Get Code section from static section
-        let code = match &self.model.program.static_section.code {
+        let code = match &self.device.static_section().code {
             Some(c) => c,
             None => return,
         };
@@ -2463,7 +2754,7 @@ impl App {
     /// For System 7.x devices, the table is placed within an AbsoluteSegment.
     /// For System B devices, it's loaded via a separate Load State Machine.
     fn generate_address_table(&mut self) {
-        let static_section = &self.model.program.static_section;
+        let static_section = &self.device.static_section();
 
         // Get AddressTable config if present
         let at = match &static_section.address_table {
@@ -2496,7 +2787,7 @@ impl App {
 
         // Create a standalone synthetic segment (for System B or if segment not found)
         // Use real assigned group addresses instead of placeholders
-        let group_addresses = self.model.all_group_addresses();
+        let group_addresses = self.device.all_group_addresses();
         let addr_count = group_addresses.len() as u16;
 
         // Build table data based on flavour
@@ -2550,7 +2841,7 @@ impl App {
         });
 
         // Use real group addresses for annotations
-        let group_addresses = self.model.all_group_addresses();
+        let group_addresses = self.device.all_group_addresses();
         for (idx, addr) in group_addresses.iter().enumerate() {
             annotations.push(MemoryAnnotation {
                 offset: base_offset + count_size + (idx as u32 * entry_size),
@@ -2576,7 +2867,7 @@ impl App {
     /// For System 7.x devices, the table is placed within an AbsoluteSegment.
     /// For System B devices, it's loaded via a separate Load State Machine.
     fn generate_association_table(&mut self) {
-        let static_section = &self.model.program.static_section;
+        let static_section = &self.device.static_section();
 
         // Get AssociationTable config if present
         let at = match &static_section.association_table {
@@ -2607,7 +2898,7 @@ impl App {
         }
 
         // Create a standalone synthetic segment using real association entries
-        let association_entries = self.model.build_association_entries();
+        let association_entries = self.device.build_association_entries();
         let entry_count = association_entries.len() as u16;
 
         // Build table data based on flavour
@@ -2669,8 +2960,8 @@ impl App {
         });
 
         // Use real association entries for annotations
-        let association_entries = self.model.build_association_entries();
-        let address_table = self.model.all_group_addresses();
+        let association_entries = self.device.build_association_entries();
+        let address_table = self.device.all_group_addresses();
 
         for (idx, entry) in association_entries.iter().enumerate() {
             // Get the group address from TSAP (1-based index)
@@ -2704,7 +2995,7 @@ impl App {
     /// For System 7.x devices, the table is placed within an AbsoluteSegment.
     /// For System B devices, it's loaded via a separate Load State Machine.
     fn generate_com_object_table(&mut self) {
-        let static_section = &self.model.program.static_section;
+        let static_section = &self.device.static_section();
 
         // Collect all comm objects with their actual numbers and type/flag data
         let cot_entries = self.collect_all_cot_entries();
@@ -2775,7 +3066,7 @@ impl App {
     /// Returns Vec of (object_number, type_byte, flags_byte).
     fn collect_all_cot_entries(&self) -> Vec<(u16, u8, u8)> {
         let mut entries = Vec::new();
-        let static_section = &self.model.program.static_section;
+        let static_section = &self.device.static_section();
 
         // Get ComObjectTable config for looking up base objects
         let com_objects = static_section
@@ -2786,7 +3077,7 @@ impl App {
             .unwrap_or_default();
 
         // Add main device comm objects
-        for com_obj_ref in self.model.visible_com_object_refs() {
+        for com_obj_ref in self.device.visible_com_object_refs() {
             let base_obj = com_objects.iter().find(|o| o.id == com_obj_ref.ref_id);
 
             // For main device objects, the number comes from the base object
@@ -2805,10 +3096,10 @@ impl App {
         }
 
         // Add module comm objects
-        let visible_modules: Vec<_> = self.model.visible_modules().cloned().collect();
+        let visible_modules: Vec<_> = self.device.visible_modules().cloned().collect();
 
         for expanded in &visible_modules {
-            let module_def = match self.model.get_module_def(&expanded.module_def_id) {
+            let module_def = match self.device.get_module_def(&expanded.module_def_id) {
                 Some(def) => def.clone(),
                 None => continue,
             };
@@ -2907,7 +3198,7 @@ impl App {
         let mut annotations = Vec::new();
 
         // Determine format based on mask version
-        let mask_version = &self.model.program.mask_version;
+        let mask_version = &self.device.mask_version().to_string();
         let is_system_7x = mask_version.starts_with("MV-07") && !mask_version.ends_with("B0");
 
         if is_system_7x {
@@ -2915,7 +3206,7 @@ impl App {
             // Format: [RAM_ptr_lo, RAM_ptr_hi, flags, type] per entry
             // The RAM pointer indicates where the object's value is stored at runtime
             let mut idx: u32 = 0;
-            for com_obj_ref in self.model.visible_com_object_refs() {
+            for com_obj_ref in self.device.visible_com_object_refs() {
                 let name = com_obj_ref
                     .text
                     .clone()
@@ -2958,7 +3249,7 @@ impl App {
             });
 
             let mut idx: u32 = 0;
-            for com_obj_ref in self.model.visible_com_object_refs() {
+            for com_obj_ref in self.device.visible_com_object_refs() {
                 let name = com_obj_ref
                     .text
                     .clone()
@@ -3086,13 +3377,13 @@ impl App {
     /// Apply current parameter values to a memory segment's data buffer.
     fn apply_parameter_values_to_segment(&self, segment_id: &str, data: &mut [u8]) {
         // Apply main static section parameters
-        if let Some(params) = &self.model.program.static_section.parameters {
+        if let Some(params) = &self.device.static_section().parameters {
             self.apply_params_to_segment(&params.items, segment_id, data, None);
         }
 
         // Apply module parameter values
-        for expanded in self.model.all_expanded_modules() {
-            if let Some(module_def) = self.model.get_module_def(&expanded.module_def_id) {
+        for expanded in self.device.all_expanded_modules() {
+            if let Some(module_def) = self.device.get_module_def(&expanded.module_def_id) {
                 let base_offset_value = self.get_module_param_offset_base(expanded, module_def);
 
                 if let Some(params) = &module_def.static_section.parameters {
@@ -3137,9 +3428,9 @@ impl App {
                     // Get value - use module value for module params, regular value for main params
                     let value = if let Some((_, instance_id)) = base_offset_info {
                         let composite_id = format!("{}::{}", instance_id, param.id);
-                        self.model.get_module_parameter_value(&composite_id)
+                        self.device.get_module_parameter_value_by_composite_id(&composite_id)
                     } else {
-                        self.model.get_parameter_value(&param.id)
+                        self.device.get_parameter_value(&param.id)
                     };
 
                     if let Some(value) = value {
@@ -3173,9 +3464,9 @@ impl App {
                 for param in &union.parameters {
                     let value = if let Some((_, instance_id)) = base_offset_info {
                         let composite_id = format!("{}::{}", instance_id, param.id);
-                        self.model.get_module_parameter_value(&composite_id)
+                        self.device.get_module_parameter_value_by_composite_id(&composite_id)
                     } else {
-                        self.model.get_parameter_value(&param.id)
+                        self.device.get_parameter_value(&param.id)
                     };
 
                     if let Some(value) = value {
@@ -3204,6 +3495,11 @@ impl App {
         size_bits: u16,
         value: &knxprod::model::ParameterValue,
     ) {
+        // Skip if no bits to write (e.g., picture types)
+        if size_bits == 0 {
+            return;
+        }
+
         // Convert value to integer (most parameters are integer-based)
         let int_value: u64 = match value {
             knxprod::model::ParameterValue::Integer(v) => *v as u64,
@@ -3238,6 +3534,8 @@ impl App {
         if bit_offset == 0 && size_bits % 8 == 0 {
             // Simple byte-aligned write
             let num_bytes = (size_bits / 8) as usize;
+            // Clamp to max 8 bytes (64 bits) since we use u64
+            let num_bytes = num_bytes.min(8);
             for i in 0..num_bytes {
                 if byte_offset + i < data.len() {
                     // Big-endian: most significant byte first
@@ -3248,7 +3546,7 @@ impl App {
         } else {
             // Bit-level write (handles non-byte-aligned parameters)
             // This is more complex - need to preserve surrounding bits
-            let total_bits = size_bits as usize;
+            let total_bits = (size_bits as usize).min(64); // Clamp to 64 bits
             let start_bit = byte_offset * 8 + bit_offset as usize;
 
             for bit_idx in 0..total_bits {
@@ -3279,13 +3577,13 @@ impl App {
         let mut mappings = Vec::new();
 
         // Get parameters from main static section
-        if let Some(params) = &self.model.program.static_section.parameters {
+        if let Some(params) = &self.device.static_section().parameters {
             self.collect_params_from_items(&params.items, &mut mappings, None);
         }
 
         // Collect parameters from expanded module instances
-        for expanded in self.model.all_expanded_modules() {
-            if let Some(module_def) = self.model.get_module_def(&expanded.module_def_id) {
+        for expanded in self.device.all_expanded_modules() {
+            if let Some(module_def) = self.device.get_module_def(&expanded.module_def_id) {
                 // Get the base offset value from the module's ParamOffsBase argument
                 let base_offset_value = self.get_module_param_offset_base(expanded, module_def);
 
@@ -3363,7 +3661,7 @@ impl App {
         // Fallback: use interpolated module name if available
         if let Some(name) = &expanded.name {
             // The name might contain templates like "{{ChNo}}" - try to interpolate
-            let interpolated = interpolate_module_text(name, expanded);
+            let interpolated = self.device.interpolate_module_text(name, expanded);
             if !interpolated.is_empty() && interpolated != *name {
                 return interpolated;
             }
@@ -3465,7 +3763,7 @@ impl App {
 
     /// Get the size in bits for a parameter type.
     fn get_parameter_size_bits(&self, type_id: &str) -> u16 {
-        if let Some(pt) = self.model.get_parameter_type(type_id) {
+        if let Some(pt) = self.device.get_parameter_type(type_id) {
             match &pt.type_def {
                 knxprod::ParameterTypeDef::TypeNumber(tn) => tn.size_in_bit as u16,
                 knxprod::ParameterTypeDef::TypeRestriction(tr) => tr.size_in_bit as u16,
@@ -3862,13 +4160,13 @@ impl App {
                 let buffer = buffer.clone();
 
                 // Clear existing addresses for this object first
-                self.model.clear_group_addresses(object_number);
+                self.device.clear_group_addresses(object_number);
 
                 // If buffer is non-empty, parse and assign the new address
                 if !buffer.is_empty() {
                     if let Some(addr) = knxprod::model::GroupAddress::parse(&buffer) {
                         // First assigned address becomes the sending address
-                        self.model.assign_group_address(object_number, addr);
+                        self.device.assign_group_address(object_number, addr);
                     }
                 }
 

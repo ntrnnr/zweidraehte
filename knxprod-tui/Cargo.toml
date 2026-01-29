@@ -20,3 +20,5 @@ image = { workspace = true, optional = true }
 
 clap = { version = "4", features = ["derive"] }
 base64 = "0.22"
+log = { workspace = true }
+simplelog = "0.12"

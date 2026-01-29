@@ -5,24 +5,90 @@
 //! blocks, and visibility computation.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
-
-fn model_debug_log(msg: &str) {
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/knxprod-model-debug.log")
-    {
-        let _ = writeln!(file, "[MODEL] {}", msg);
-    }
-}
 
 use crate::schema::{
-    ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem,
-    Choose, ComObject, ComObjectRef, DynamicSection, Module, ModuleArg, ModuleDef,
-    ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, ParameterItem, ParameterRef,
-    ParameterType, StaticSection, WhenItem,
+    Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem,
+    Choose, DynamicSection, Module, ModuleDef, ModuleDefDynamicItem,
+    ParameterBlock, ParameterBlockItem, WhenItem,
 };
+
+/// Represents a KNX choose/when condition test.
+///
+/// Test formats supported:
+/// - `Eq(values)` - equals any of the values (from "1" or "1 2 3")
+/// - `NotEq(value)` - not equals (from "!=0")
+/// - `GreaterThan(value)` - from ">5"
+/// - `LessThan(value)` - from "<10"
+/// - `GreaterOrEq(value)` - from ">=5"
+/// - `LessOrEq(value)` - from "<=10"
+#[derive(Debug, Clone, PartialEq)]
+pub enum Condition {
+    /// Value equals any of the specified values
+    Eq(Vec<i64>),
+    /// Value does not equal the specified value
+    NotEq(i64),
+    /// Value is greater than the specified value
+    GreaterThan(i64),
+    /// Value is less than the specified value
+    LessThan(i64),
+    /// Value is greater than or equal to the specified value
+    GreaterOrEq(i64),
+    /// Value is less than or equal to the specified value
+    LessOrEq(i64),
+}
+
+impl Condition {
+    /// Parse a condition from a KNX test string.
+    ///
+    /// Returns `None` if the string cannot be parsed as a valid condition.
+    pub fn parse(test: &str) -> Option<Self> {
+        let test = test.trim();
+
+        // Handle comparison operators (check multi-char operators first)
+        if let Some(rest) = test.strip_prefix("!=") {
+            return rest.trim().parse().ok().map(Condition::NotEq);
+        }
+        if let Some(rest) = test.strip_prefix(">=") {
+            return rest.trim().parse().ok().map(Condition::GreaterOrEq);
+        }
+        if let Some(rest) = test.strip_prefix("<=") {
+            return rest.trim().parse().ok().map(Condition::LessOrEq);
+        }
+        if let Some(rest) = test.strip_prefix('>') {
+            return rest.trim().parse().ok().map(Condition::GreaterThan);
+        }
+        if let Some(rest) = test.strip_prefix('<') {
+            return rest.trim().parse().ok().map(Condition::LessThan);
+        }
+        if let Some(rest) = test.strip_prefix('=') {
+            return rest.trim().parse().ok().map(|v| Condition::Eq(vec![v]));
+        }
+
+        // Handle space-separated list of values (OR)
+        let values: Vec<i64> = test
+            .split_whitespace()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+
+        if values.is_empty() {
+            None
+        } else {
+            Some(Condition::Eq(values))
+        }
+    }
+
+    /// Check if a value matches this condition.
+    pub fn matches(&self, value: i64) -> bool {
+        match self {
+            Condition::Eq(values) => values.contains(&value),
+            Condition::NotEq(v) => value != *v,
+            Condition::GreaterThan(v) => value > *v,
+            Condition::LessThan(v) => value < *v,
+            Condition::GreaterOrEq(v) => value >= *v,
+            Condition::LessOrEq(v) => value <= *v,
+        }
+    }
+}
 
 /// Represents a parameter value that can be stored in the device model.
 #[derive(Debug, Clone, PartialEq)]
@@ -128,46 +194,6 @@ pub struct AssociationEntry {
     pub asap: u16,
 }
 
-/// Runtime model for a KNX device configuration.
-///
-/// This holds the parsed application program and tracks:
-/// - Current parameter values
-/// - Computed visibility states for parameters and objects
-/// - Parameter type lookups
-/// - Module definitions and expanded instances
-/// - Group address bindings for communication objects
-pub struct DeviceModel {
-    /// The parsed application program
-    pub program: ApplicationProgram,
-    /// Current parameter values indexed by parameter ID
-    param_values: HashMap<String, ParameterValue>,
-    /// Parameter types indexed by type ID
-    param_types: HashMap<String, ParameterType>,
-    /// Parameters indexed by ID
-    parameters: HashMap<String, ParameterInfo>,
-    /// Parameter refs indexed by ID
-    param_refs: HashMap<String, ParameterRef>,
-    /// Communication objects indexed by ID
-    com_objects: HashMap<String, ComObject>,
-    /// Communication object refs indexed by ID
-    com_object_refs: HashMap<String, ComObjectRef>,
-    /// Set of visible parameter ref IDs
-    visible_param_refs: HashSet<String>,
-    /// Set of visible communication object ref IDs
-    visible_com_object_refs: HashSet<String>,
-    /// Module definitions indexed by ID
-    module_defs: HashMap<String, ModuleDef>,
-    /// Expanded module instances indexed by instance ID
-    expanded_modules: HashMap<String, ExpandedModule>,
-    /// Set of visible module instance IDs
-    visible_modules: HashSet<String>,
-    /// Module parameter values indexed by composite ID (instance_id::param_id)
-    module_param_values: HashMap<String, ParameterValue>,
-    /// Group address bindings indexed by communication object number
-    /// Each object can have multiple bindings (one sending + multiple listening)
-    group_address_bindings: HashMap<u16, Vec<GroupAddressBinding>>,
-}
-
 /// Information about a parameter including its default value.
 #[derive(Debug, Clone)]
 pub struct ParameterInfo {
@@ -196,16 +222,6 @@ pub enum ModuleArgValue {
     Text(String),
 }
 
-/// Context for processing a module's dynamic section.
-/// Contains the module instance ID and definition for parameter lookups.
-#[derive(Clone)]
-struct ModuleContext {
-    /// The module instance ID
-    instance_id: String,
-    /// The module definition
-    module_def: ModuleDef,
-}
-
 /// An expanded module instance with resolved argument values.
 #[derive(Debug, Clone)]
 pub struct ExpandedModule {
@@ -219,1043 +235,487 @@ pub struct ExpandedModule {
     pub args: HashMap<String, ModuleArgValue>,
 }
 
-impl DeviceModel {
-    /// Create a new device model from an application program.
+// ============================================================================
+// Dynamic Section Visitor Pattern
+// ============================================================================
+
+/// Visitor for traversing dynamic section elements.
+///
+/// The traversal walks through channels, parameter blocks, choose/when conditions,
+/// and module instances. Implement only the methods you need - all have default
+/// no-op implementations.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// struct VisibilityCollector {
+///     visible_params: HashSet<String>,
+/// }
+///
+/// impl DynamicVisitor for VisibilityCollector {
+///     fn visit_param_ref(&mut self, ref_id: &str, _module_ctx: Option<&VisitorModuleContext>) {
+///         self.visible_params.insert(ref_id.to_string());
+///     }
+/// }
+/// ```
+pub trait DynamicVisitor {
+    /// Called when visiting a parameter ref reference.
+    fn visit_param_ref(&mut self, _ref_id: &str, _module_ctx: Option<&VisitorModuleContext>) {}
+
+    /// Called when visiting a communication object ref reference.
+    fn visit_com_object_ref(&mut self, _ref_id: &str, _module_ctx: Option<&VisitorModuleContext>) {}
+
+    /// Called when visiting a module instance (before entering its content).
+    fn visit_module(&mut self, _module: &Module) {}
+
+    /// Called when entering a module's internal content.
     ///
-    /// This initializes all parameters to their default values and computes
-    /// initial visibility.
-    pub fn new(program: ApplicationProgram) -> Self {
-        let static_section = &program.static_section;
+    /// This is called after `visit_module` when the walker is about to traverse
+    /// the module definition's dynamic section. Tree builders can use this to
+    /// push the module onto their stack.
+    fn enter_module(&mut self, _module: &Module, _ctx: &VisitorModuleContext) {}
 
-        // Build parameter type lookup
-        let param_types = build_param_type_lookup(static_section);
+    /// Called when leaving a module's internal content.
+    ///
+    /// This is called after the module's dynamic section has been fully traversed.
+    fn leave_module(&mut self, _module: &Module, _ctx: &VisitorModuleContext) {}
 
-        // Build parameter lookup and extract default values
-        let (parameters, param_values) = build_parameter_lookup(static_section);
+    /// Called when entering a parameter block.
+    fn enter_parameter_block(&mut self, _block: &ParameterBlock) {}
 
-        // Build parameter ref lookup
-        let param_refs = build_param_ref_lookup(static_section);
+    /// Called when leaving a parameter block.
+    fn leave_parameter_block(&mut self, _block: &ParameterBlock) {}
 
-        // Build communication object lookups
-        let com_objects = build_com_object_lookup(static_section);
-        let com_object_refs = build_com_object_ref_lookup(static_section);
+    /// Called when entering a choose block (before condition evaluation).
+    fn enter_choose(&mut self, _choose: &Choose) {}
 
-        // Build module definition lookup
-        let module_defs = build_module_def_lookup(&program);
+    /// Called when leaving a choose block.
+    fn leave_choose(&mut self, _choose: &Choose) {}
 
-        // Expand module instances from dynamic section
-        let expanded_modules = expand_all_modules(&program, &module_defs);
+    /// Called when entering a channel.
+    fn enter_channel(&mut self, _channel: &Channel) {}
 
-        // Initialize module parameter values from defaults
-        let module_param_values =
-            build_module_param_values(&expanded_modules, &module_defs);
+    /// Called when leaving a channel.
+    fn leave_channel(&mut self, _channel: &Channel) {}
 
-        let mut model = Self {
-            program,
-            param_values,
-            param_types,
-            parameters,
-            param_refs,
-            com_objects,
-            com_object_refs,
-            visible_param_refs: HashSet::new(),
-            visible_com_object_refs: HashSet::new(),
-            module_defs,
-            expanded_modules,
-            visible_modules: HashSet::new(),
-            module_param_values,
-            group_address_bindings: HashMap::new(),
+    /// Called when entering a channel-independent block.
+    fn enter_channel_independent_block(&mut self, _block: &ChannelIndependentBlock) {}
+
+    /// Called when leaving a channel-independent block.
+    fn leave_channel_independent_block(&mut self, _block: &ChannelIndependentBlock) {}
+
+    /// Called for parameter separators.
+    fn visit_separator(&mut self, _id: Option<&str>, _text: Option<&str>) {}
+}
+
+/// Context for condition evaluation during traversal.
+///
+/// Implement this trait to provide parameter values for choose/when condition
+/// evaluation during the walk.
+pub trait ConditionEvaluator {
+    /// Get selector value for a parameter ref (for choose/when evaluation).
+    ///
+    /// Returns `None` if the parameter doesn't exist or has no value.
+    fn get_selector_value(&self, param_ref_id: &str) -> Option<i64>;
+
+    /// Get selector value with module context.
+    ///
+    /// For module-internal parameter refs, the module context provides
+    /// the instance ID for proper value lookup.
+    fn get_selector_value_with_module(
+        &self,
+        param_ref_id: &str,
+        module_ctx: Option<&VisitorModuleContext>,
+    ) -> Option<i64>;
+}
+
+/// Module context passed to visitors during module traversal.
+#[derive(Debug, Clone)]
+pub struct VisitorModuleContext<'a> {
+    /// The module instance ID
+    pub instance_id: &'a str,
+    /// The module definition
+    pub module_def: &'a ModuleDef,
+    /// The module instance
+    pub module_instance: &'a Module,
+}
+
+/// Walk the dynamic section with a visitor.
+///
+/// This function traverses the entire dynamic section structure, calling
+/// visitor methods at appropriate points. Condition evaluation is performed
+/// using the provided `ConditionEvaluator` to determine which `when` branches
+/// are active.
+pub fn walk_dynamic<V, E>(
+    dynamic: &DynamicSection,
+    visitor: &mut V,
+    evaluator: &E,
+    module_defs: &HashMap<String, ModuleDef>,
+) where
+    V: DynamicVisitor,
+    E: ConditionEvaluator,
+{
+    // Walk channel-independent block
+    if let Some(cib) = &dynamic.channel_independent_block {
+        visitor.enter_channel_independent_block(cib);
+        walk_channel_independent_block(cib, visitor, evaluator, module_defs, None);
+        visitor.leave_channel_independent_block(cib);
+    }
+
+    // Walk channels
+    for channel in &dynamic.channels {
+        visitor.enter_channel(channel);
+        walk_channel(channel, visitor, evaluator, module_defs);
+        visitor.leave_channel(channel);
+    }
+}
+
+fn walk_channel_independent_block<V, E>(
+    cib: &ChannelIndependentBlock,
+    visitor: &mut V,
+    evaluator: &E,
+    module_defs: &HashMap<String, ModuleDef>,
+    module_ctx: Option<&VisitorModuleContext>,
+) where
+    V: DynamicVisitor,
+    E: ConditionEvaluator,
+{
+    for item in &cib.items {
+        match item {
+            ChannelIndependentItem::ParameterBlock(pb) => {
+                walk_parameter_block(pb, visitor, evaluator, module_defs, module_ctx);
+            }
+            ChannelIndependentItem::Choose(choose) => {
+                walk_choose(choose, visitor, evaluator, module_defs, module_ctx);
+            }
+        }
+    }
+}
+
+fn walk_channel<V, E>(
+    channel: &Channel,
+    visitor: &mut V,
+    evaluator: &E,
+    module_defs: &HashMap<String, ModuleDef>,
+) where
+    V: DynamicVisitor,
+    E: ConditionEvaluator,
+{
+    for item in &channel.items {
+        match item {
+            ChannelItem::ParameterBlock(pb) => {
+                walk_parameter_block(pb, visitor, evaluator, module_defs, None);
+            }
+            ChannelItem::Choose(choose) => {
+                walk_choose(choose, visitor, evaluator, module_defs, None);
+            }
+            ChannelItem::Module(module) => {
+                walk_module(module, visitor, evaluator, module_defs);
+            }
+        }
+    }
+}
+
+fn walk_parameter_block<V, E>(
+    block: &ParameterBlock,
+    visitor: &mut V,
+    evaluator: &E,
+    module_defs: &HashMap<String, ModuleDef>,
+    module_ctx: Option<&VisitorModuleContext>,
+) where
+    V: DynamicVisitor,
+    E: ConditionEvaluator,
+{
+    visitor.enter_parameter_block(block);
+
+    for item in &block.items {
+        match item {
+            ParameterBlockItem::ParameterRefRef(prr) => {
+                visitor.visit_param_ref(&prr.ref_id, module_ctx);
+            }
+            ParameterBlockItem::ComObjectRefRef(corr) => {
+                visitor.visit_com_object_ref(&corr.ref_id, module_ctx);
+            }
+            ParameterBlockItem::Choose(choose) => {
+                walk_choose(choose, visitor, evaluator, module_defs, module_ctx);
+            }
+            ParameterBlockItem::Module(module) => {
+                walk_module(module, visitor, evaluator, module_defs);
+            }
+            ParameterBlockItem::ParameterSeparator(sep) => {
+                visitor.visit_separator(Some(&sep.id), sep.text.as_deref());
+            }
+            // Button, Rows, Columns are UI elements that don't affect visibility
+            ParameterBlockItem::Button(_)
+            | ParameterBlockItem::Rows(_)
+            | ParameterBlockItem::Columns(_) => {}
+        }
+    }
+
+    visitor.leave_parameter_block(block);
+}
+
+fn walk_choose<V, E>(
+    choose: &Choose,
+    visitor: &mut V,
+    evaluator: &E,
+    module_defs: &HashMap<String, ModuleDef>,
+    module_ctx: Option<&VisitorModuleContext>,
+) where
+    V: DynamicVisitor,
+    E: ConditionEvaluator,
+{
+    visitor.enter_choose(choose);
+
+    let selector_value = evaluator.get_selector_value_with_module(&choose.param_ref_id, module_ctx);
+
+    // Find matching when clauses (multiple can match!)
+    let mut any_matched = false;
+    for when in &choose.whens {
+        if when.default.unwrap_or(false) {
+            continue;
+        }
+        if let Some(test) = &when.test {
+            if let Some(condition) = Condition::parse(test) {
+                if selector_value.is_some_and(|v| condition.matches(v)) {
+                    walk_when_items(&when.items, visitor, evaluator, module_defs, module_ctx);
+                    any_matched = true;
+                }
+            }
+        }
+    }
+
+    // Process default if nothing matched
+    if !any_matched {
+        for when in &choose.whens {
+            if when.default.unwrap_or(false) {
+                walk_when_items(&when.items, visitor, evaluator, module_defs, module_ctx);
+                break;
+            }
+        }
+    }
+
+    visitor.leave_choose(choose);
+}
+
+fn walk_when_items<V, E>(
+    items: &[WhenItem],
+    visitor: &mut V,
+    evaluator: &E,
+    module_defs: &HashMap<String, ModuleDef>,
+    module_ctx: Option<&VisitorModuleContext>,
+) where
+    V: DynamicVisitor,
+    E: ConditionEvaluator,
+{
+    for item in items {
+        match item {
+            WhenItem::ParameterRefRef(prr) => {
+                visitor.visit_param_ref(&prr.ref_id, module_ctx);
+            }
+            WhenItem::ComObjectRefRef(corr) => {
+                visitor.visit_com_object_ref(&corr.ref_id, module_ctx);
+            }
+            WhenItem::ParameterBlock(pb) => {
+                walk_parameter_block(pb, visitor, evaluator, module_defs, module_ctx);
+            }
+            WhenItem::Choose(nested) => {
+                walk_choose(nested, visitor, evaluator, module_defs, module_ctx);
+            }
+            WhenItem::Module(module) => {
+                walk_module(module, visitor, evaluator, module_defs);
+            }
+            WhenItem::ParameterSeparator(sep) => {
+                visitor.visit_separator(Some(&sep.id), sep.text.as_deref());
+            }
+            // Assign elements are runtime operations, not structural
+            WhenItem::Assign(_) => {}
+        }
+    }
+}
+
+fn walk_module<V, E>(
+    module: &Module,
+    visitor: &mut V,
+    evaluator: &E,
+    module_defs: &HashMap<String, ModuleDef>,
+) where
+    V: DynamicVisitor,
+    E: ConditionEvaluator,
+{
+    visitor.visit_module(module);
+
+    // If we have the module definition, walk its dynamic section too
+    if let Some(module_def) = module_defs.get(&module.ref_id) {
+        let ctx = VisitorModuleContext {
+            instance_id: &module.id,
+            module_def,
+            module_instance: module,
         };
 
-        // Compute initial visibility
-        model.recompute_visibility();
+        if let Some(dynamic) = &module_def.dynamic {
+            visitor.enter_module(module, &ctx);
+            walk_module_dynamic(dynamic, visitor, evaluator, module_defs, &ctx);
+            visitor.leave_module(module, &ctx);
+        }
+    }
+}
 
-        model
+fn walk_module_dynamic<V, E>(
+    dynamic: &crate::schema::ModuleDefDynamic,
+    visitor: &mut V,
+    evaluator: &E,
+    module_defs: &HashMap<String, ModuleDef>,
+    module_ctx: &VisitorModuleContext,
+) where
+    V: DynamicVisitor,
+    E: ConditionEvaluator,
+{
+    for item in &dynamic.items {
+        match item {
+            ModuleDefDynamicItem::ParameterBlock(pb) => {
+                walk_parameter_block(pb, visitor, evaluator, module_defs, Some(module_ctx));
+            }
+            ModuleDefDynamicItem::Choose(choose) => {
+                walk_choose(choose, visitor, evaluator, module_defs, Some(module_ctx));
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Visibility Visitor Implementation
+// ============================================================================
+
+/// A visitor that collects visible parameter refs, com object refs, and modules.
+///
+/// Use this with `walk_dynamic` to compute visibility based on current parameter values.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let mut visitor = VisibilityVisitor::new();
+/// walk_dynamic(&program.dynamic.unwrap(), &mut visitor, &evaluator, &module_defs);
+///
+/// // Now visitor contains all visible refs
+/// for param_ref_id in visitor.visible_param_refs() {
+///     println!("Visible: {}", param_ref_id);
+/// }
+/// ```
+#[derive(Debug, Default)]
+pub struct VisibilityVisitor {
+    visible_param_refs: HashSet<String>,
+    visible_com_object_refs: HashSet<String>,
+    visible_modules: HashSet<String>,
+    /// Module-scoped param refs (keyed as "instance_id::param_ref_id")
+    visible_module_param_refs: HashSet<String>,
+    /// Module-scoped com object refs (keyed as "instance_id::com_obj_ref_id")
+    visible_module_com_object_refs: HashSet<String>,
+}
+
+impl VisibilityVisitor {
+    /// Create a new empty visibility visitor.
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Get the current value of a parameter by ID.
-    pub fn get_parameter_value(&self, param_id: &str) -> Option<&ParameterValue> {
-        self.param_values.get(param_id)
+    /// Get the set of visible parameter refs (device-level).
+    pub fn visible_param_refs(&self) -> &HashSet<String> {
+        &self.visible_param_refs
     }
 
-    /// Set a parameter value by ID.
+    /// Get the set of visible com object refs (device-level).
+    pub fn visible_com_object_refs(&self) -> &HashSet<String> {
+        &self.visible_com_object_refs
+    }
+
+    /// Get the set of visible module instance IDs.
+    pub fn visible_modules(&self) -> &HashSet<String> {
+        &self.visible_modules
+    }
+
+    /// Get the set of visible module-scoped param refs.
     ///
-    /// This will trigger a visibility recomputation if the parameter is used
-    /// as a selector in any choose blocks.
-    pub fn set_parameter_value(&mut self, param_id: &str, value: ParameterValue) {
-        model_debug_log(&format!("set_parameter_value: param_id={}, value={:?}, key_exists={}",
-            param_id, value, self.param_values.contains_key(param_id)));
-        if self.param_values.contains_key(param_id) {
-            self.param_values.insert(param_id.to_string(), value);
-            // Recompute visibility since this parameter might be a selector
-            self.recompute_visibility();
-            model_debug_log(&format!("after recompute_visibility: visible_modules={:?}", self.visible_modules));
-        } else {
-            model_debug_log("WARNING: param_id not found in param_values!");
-        }
+    /// Keys are in the format "instance_id::param_ref_id".
+    pub fn visible_module_param_refs(&self) -> &HashSet<String> {
+        &self.visible_module_param_refs
     }
 
-    /// Get a module parameter value by composite ID (instance_id::param_id).
-    pub fn get_module_parameter_value(&self, composite_id: &str) -> Option<&ParameterValue> {
-        self.module_param_values.get(composite_id)
+    /// Get the set of visible module-scoped com object refs.
+    ///
+    /// Keys are in the format "instance_id::com_obj_ref_id".
+    pub fn visible_module_com_object_refs(&self) -> &HashSet<String> {
+        &self.visible_module_com_object_refs
     }
 
-    /// Set a module parameter value by composite ID (instance_id::param_id).
-    pub fn set_module_parameter_value(&mut self, composite_id: &str, value: ParameterValue) {
-        if self.module_param_values.contains_key(composite_id) {
-            self.module_param_values.insert(composite_id.to_string(), value);
-            // Module parameters can affect visibility in module-internal choose blocks,
-            // so we need to recompute visibility
-            self.recompute_visibility();
-        }
-    }
-
-    /// Check if a parameter ID is a module parameter (contains "::").
-    pub fn is_module_parameter(&self, param_id: &str) -> bool {
-        param_id.contains("::")
-    }
-
-    /// Get parameter info by ID.
-    pub fn get_parameter_info(&self, param_id: &str) -> Option<&ParameterInfo> {
-        self.parameters.get(param_id)
-    }
-
-    /// Get parameter type by ID.
-    pub fn get_parameter_type(&self, type_id: &str) -> Option<&ParameterType> {
-        self.param_types.get(type_id)
-    }
-
-    /// Get parameter ref by ID.
-    pub fn get_parameter_ref(&self, ref_id: &str) -> Option<&ParameterRef> {
-        self.param_refs.get(ref_id)
-    }
-
-    /// Get communication object by ID.
-    pub fn get_com_object(&self, obj_id: &str) -> Option<&ComObject> {
-        self.com_objects.get(obj_id)
-    }
-
-    /// Get communication object ref by ID.
-    pub fn get_com_object_ref(&self, ref_id: &str) -> Option<&ComObjectRef> {
-        self.com_object_refs.get(ref_id)
-    }
-
-    /// Check if a parameter ref is currently visible.
+    /// Check if a device-level parameter ref is visible.
     pub fn is_param_ref_visible(&self, ref_id: &str) -> bool {
         self.visible_param_refs.contains(ref_id)
     }
 
-    /// Check if a communication object ref is currently visible.
+    /// Check if a device-level com object ref is visible.
     pub fn is_com_object_ref_visible(&self, ref_id: &str) -> bool {
         self.visible_com_object_refs.contains(ref_id)
     }
 
-    /// Get all visible parameter refs.
-    pub fn visible_parameter_refs(&self) -> impl Iterator<Item = &ParameterRef> {
-        self.visible_param_refs
-            .iter()
-            .filter_map(|id| self.param_refs.get(id))
-    }
-
-    /// Get all visible communication object refs.
-    pub fn visible_com_object_refs(&self) -> impl Iterator<Item = &ComObjectRef> {
-        self.visible_com_object_refs
-            .iter()
-            .filter_map(|id| self.com_object_refs.get(id))
-    }
-
-    /// Get all parameters.
-    pub fn all_parameters(&self) -> impl Iterator<Item = &ParameterInfo> {
-        self.parameters.values()
-    }
-
-    /// Get all communication objects.
-    pub fn all_com_objects(&self) -> impl Iterator<Item = &ComObject> {
-        self.com_objects.values()
-    }
-
-    /// Get the dynamic section of the program.
-    pub fn dynamic_section(&self) -> Option<&DynamicSection> {
-        self.program.dynamic.as_ref()
-    }
-
-    /// Get a module definition by ID.
-    pub fn get_module_def(&self, def_id: &str) -> Option<&ModuleDef> {
-        self.module_defs.get(def_id)
-    }
-
-    /// Get an expanded module instance by ID.
-    pub fn get_expanded_module(&self, instance_id: &str) -> Option<&ExpandedModule> {
-        self.expanded_modules.get(instance_id)
-    }
-
-    /// Check if a module instance is currently visible.
+    /// Check if a module instance is visible.
     pub fn is_module_visible(&self, instance_id: &str) -> bool {
         self.visible_modules.contains(instance_id)
     }
 
-    /// Get all visible module instances.
-    pub fn visible_modules(&self) -> impl Iterator<Item = &ExpandedModule> {
-        self.visible_modules
-            .iter()
-            .filter_map(|id| self.expanded_modules.get(id))
+    /// Check if a module-scoped parameter ref is visible.
+    pub fn is_module_param_ref_visible(&self, instance_id: &str, param_ref_id: &str) -> bool {
+        self.visible_module_param_refs
+            .contains(&format!("{}::{}", instance_id, param_ref_id))
     }
 
-    /// Get all expanded module instances.
-    pub fn all_expanded_modules(&self) -> impl Iterator<Item = &ExpandedModule> {
-        self.expanded_modules.values()
+    /// Check if a module-scoped com object ref is visible.
+    pub fn is_module_com_object_ref_visible(&self, instance_id: &str, com_obj_ref_id: &str) -> bool {
+        self.visible_module_com_object_refs
+            .contains(&format!("{}::{}", instance_id, com_obj_ref_id))
     }
 
-    /// Get the mask version ID (e.g., "MV-07B0").
-    pub fn mask_version(&self) -> &str {
-        &self.program.mask_version
-    }
-
-    // ========================================================================
-    // Group Address Binding Management
-    // ========================================================================
-
-    /// Assign a group address to a communication object.
-    ///
-    /// The first assignment becomes the "sending" address. Multiple addresses
-    /// can be assigned to a single object (one sending, others listening).
-    pub fn assign_group_address(&mut self, object_number: u16, group_address: GroupAddress) {
-        let bindings = self.group_address_bindings.entry(object_number).or_default();
-
-        // Check if this address is already assigned
-        if bindings.iter().any(|b| b.group_address == group_address) {
-            return;
-        }
-
-        // First binding is the sending address
-        let is_sending = bindings.is_empty();
-        bindings.push(GroupAddressBinding {
-            group_address,
-            is_sending,
-        });
-    }
-
-    /// Remove a group address binding from a communication object.
-    pub fn remove_group_address(&mut self, object_number: u16, group_address: &GroupAddress) {
-        if let Some(bindings) = self.group_address_bindings.get_mut(&object_number) {
-            let was_sending = bindings.first().map(|b| b.group_address == *group_address).unwrap_or(false);
-            bindings.retain(|b| b.group_address != *group_address);
-
-            // If we removed the sending address and there are others, promote the first
-            if was_sending && !bindings.is_empty() {
-                bindings[0].is_sending = true;
-            }
-        }
-    }
-
-    /// Clear all group addresses from a communication object.
-    pub fn clear_group_addresses(&mut self, object_number: u16) {
-        self.group_address_bindings.remove(&object_number);
-    }
-
-    /// Get all group addresses bound to a communication object.
-    pub fn get_group_addresses(&self, object_number: u16) -> &[GroupAddressBinding] {
-        self.group_address_bindings
-            .get(&object_number)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-    }
-
-    /// Get the primary (sending) group address for a communication object.
-    pub fn get_sending_group_address(&self, object_number: u16) -> Option<GroupAddress> {
-        self.group_address_bindings
-            .get(&object_number)
-            .and_then(|bindings| bindings.iter().find(|b| b.is_sending))
-            .map(|b| b.group_address)
-    }
-
-    /// Get all unique group addresses assigned across all objects (for address table).
-    ///
-    /// Returns addresses sorted and deduplicated.
-    pub fn all_group_addresses(&self) -> Vec<GroupAddress> {
-        let mut addresses: Vec<GroupAddress> = self
-            .group_address_bindings
-            .values()
-            .flatten()
-            .map(|b| b.group_address)
-            .collect();
-        addresses.sort_by_key(|a| a.to_u16());
-        addresses.dedup();
-        addresses
-    }
-
-    /// Build the association table entries (TSAP -> ASAP mappings).
-    ///
-    /// Returns entries sorted by TSAP (address table index).
-    /// TSAP is 1-based index into the address table.
-    /// ASAP is the communication object number.
-    pub fn build_association_entries(&self) -> Vec<AssociationEntry> {
-        // First, build the address table to get TSAP indices
-        let address_table = self.all_group_addresses();
-
-        let mut entries = Vec::new();
-
-        for (&object_number, bindings) in &self.group_address_bindings {
-            for binding in bindings {
-                // Find the TSAP (1-based index into address table)
-                if let Some(idx) = address_table.iter().position(|a| *a == binding.group_address) {
-                    entries.push(AssociationEntry {
-                        tsap: (idx + 1) as u16, // 1-based
-                        asap: object_number,
-                    });
-                }
-            }
-        }
-
-        // Sort by TSAP, then by ASAP
-        entries.sort_by_key(|e| (e.tsap, e.asap));
-        entries
-    }
-
-    /// Check if any group addresses are assigned.
-    pub fn has_group_addresses(&self) -> bool {
-        !self.group_address_bindings.is_empty()
-    }
-
-    // ========================================================================
-    // Visibility Computation
-    // ========================================================================
-
-    /// Recompute visibility of all parameter refs and communication object refs
-    /// based on current parameter values and choose/when conditions.
-    pub fn recompute_visibility(&mut self) {
-        self.visible_param_refs.clear();
-        self.visible_com_object_refs.clear();
-        self.visible_modules.clear();
-
-        // Clone the dynamic section to avoid borrow conflicts
-        let dynamic = self.program.dynamic.clone();
-
-        if let Some(dynamic) = dynamic {
-            // Process channel-independent block
-            if let Some(cib) = &dynamic.channel_independent_block {
-                self.process_channel_independent_block(cib);
-            }
-
-            // Process channels
-            for channel in &dynamic.channels {
-                self.process_channel(channel);
-            }
-        }
-    }
-
-    fn process_channel_independent_block(&mut self, cib: &ChannelIndependentBlock) {
-        for item in &cib.items {
-            match item {
-                ChannelIndependentItem::ParameterBlock(pb) => {
-                    self.process_parameter_block(pb);
-                }
-                ChannelIndependentItem::Choose(choose) => {
-                    self.process_choose(choose);
-                }
-            }
-        }
-    }
-
-    fn process_channel(&mut self, channel: &Channel) {
-        for item in &channel.items {
-            match item {
-                ChannelItem::ParameterBlock(pb) => {
-                    self.process_parameter_block(pb);
-                }
-                ChannelItem::Choose(choose) => {
-                    self.process_choose(choose);
-                }
-                ChannelItem::Module(module) => {
-                    self.process_module(module);
-                }
-            }
-        }
-    }
-
-    fn process_parameter_block(&mut self, pb: &ParameterBlock) {
-        for item in &pb.items {
-            self.process_parameter_block_item(item);
-        }
-    }
-
-    fn process_parameter_block_item(&mut self, item: &ParameterBlockItem) {
-        match item {
-            ParameterBlockItem::ParameterRefRef(prr) => {
-                self.visible_param_refs.insert(prr.ref_id.clone());
-            }
-            ParameterBlockItem::ComObjectRefRef(corr) => {
-                self.visible_com_object_refs.insert(corr.ref_id.clone());
-            }
-            ParameterBlockItem::Choose(choose) => {
-                self.process_choose(choose);
-            }
-            ParameterBlockItem::ParameterSeparator(_) => {}
-            ParameterBlockItem::Module(module) => {
-                self.process_module(module);
-            }
-            ParameterBlockItem::Button(_) => {}
-            ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {}
-        }
-    }
-
-    fn process_choose(&mut self, choose: &Choose) {
-        // Get the selector parameter value
-        let selector_value = self.get_selector_value(&choose.param_ref_id);
-        model_debug_log(&format!("process_choose: param_ref_id={}, selector_value={:?}", choose.param_ref_id, selector_value));
-
-        // Collect items to process to avoid borrow issues
-        // Note: Multiple when clauses can match the same value in KNX choose blocks,
-        // so we process ALL matching when clauses, not just the first one.
-        let mut items_to_process: Vec<Vec<WhenItem>> = Vec::new();
-        let mut any_matched = false;
-
-        for when in &choose.whens {
-            if when.default.unwrap_or(false) {
-                // Default is processed only if no other when matched at all
-                continue; // We'll handle defaults after checking all whens
-            } else if let Some(test) = &when.test {
-                let matches = self.matches_condition(selector_value, test);
-                model_debug_log(&format!("  when test='{}' matches={}", test, matches));
-                if matches {
-                    items_to_process.push(when.items.clone());
-                    any_matched = true;
-                }
-            }
-        }
-
-        // If no explicit when matched, process the default (if any)
-        if !any_matched {
-            model_debug_log("  no match, checking default");
-            for when in &choose.whens {
-                if when.default.unwrap_or(false) {
-                    items_to_process.push(when.items.clone());
-                    break; // Only one default
-                }
-            }
-        }
-
-        // Process collected items
-        model_debug_log(&format!("  processing {} item sets", items_to_process.len()));
-        for items in items_to_process {
-            self.process_when_items(&items);
-        }
-    }
-
-    fn process_when_items(&mut self, items: &[WhenItem]) {
-        for item in items {
-            match item {
-                WhenItem::ParameterRefRef(prr) => {
-                    self.visible_param_refs.insert(prr.ref_id.clone());
-                }
-                WhenItem::ComObjectRefRef(corr) => {
-                    self.visible_com_object_refs.insert(corr.ref_id.clone());
-                }
-                WhenItem::ParameterBlock(pb) => {
-                    self.process_parameter_block(pb);
-                }
-                WhenItem::Choose(nested_choose) => {
-                    self.process_choose(nested_choose);
-                }
-                WhenItem::ParameterSeparator(_) => {}
-                WhenItem::Assign(_) => {
-                    // Assign operations don't affect visibility
-                }
-                WhenItem::Module(module) => {
-                    self.process_module(module);
-                }
-            }
-        }
-    }
-
-    /// Process a parameter block with optional module context for parameter lookups.
-    fn process_parameter_block_with_module(
-        &mut self,
-        pb: &ParameterBlock,
-        module_ctx: Option<&ModuleContext>,
+    /// Take ownership of collected visibility sets, consuming the visitor.
+    pub fn into_parts(
+        self,
+    ) -> (
+        HashSet<String>,
+        HashSet<String>,
+        HashSet<String>,
+        HashSet<String>,
+        HashSet<String>,
     ) {
-        for item in &pb.items {
-            self.process_parameter_block_item_with_module(item, module_ctx);
-        }
+        (
+            self.visible_param_refs,
+            self.visible_com_object_refs,
+            self.visible_modules,
+            self.visible_module_param_refs,
+            self.visible_module_com_object_refs,
+        )
     }
+}
 
-    /// Process a parameter block item with optional module context.
-    fn process_parameter_block_item_with_module(
-        &mut self,
-        item: &ParameterBlockItem,
-        module_ctx: Option<&ModuleContext>,
-    ) {
-        match item {
-            ParameterBlockItem::ParameterRefRef(prr) => {
-                self.visible_param_refs.insert(prr.ref_id.clone());
-            }
-            ParameterBlockItem::ComObjectRefRef(corr) => {
-                self.visible_com_object_refs.insert(corr.ref_id.clone());
-            }
-            ParameterBlockItem::Choose(choose) => {
-                self.process_choose_with_module(choose, module_ctx);
-            }
-            ParameterBlockItem::ParameterSeparator(_) => {}
-            ParameterBlockItem::Module(module) => {
-                self.process_module(module);
-            }
-            ParameterBlockItem::Button(_) => {}
-            ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {}
-        }
-    }
-
-    /// Process a choose block with optional module context for parameter lookups.
-    fn process_choose_with_module(&mut self, choose: &Choose, module_ctx: Option<&ModuleContext>) {
-        // Get the selector parameter value - use module context if available
-        let selector_value = self.get_selector_value_with_module(&choose.param_ref_id, module_ctx);
-
-        // Collect items to process to avoid borrow issues
-        let mut items_to_process: Vec<Vec<WhenItem>> = Vec::new();
-        let mut any_matched = false;
-
-        for when in &choose.whens {
-            if when.default.unwrap_or(false) {
-                continue;
-            } else if let Some(test) = &when.test {
-                if self.matches_condition(selector_value, test) {
-                    items_to_process.push(when.items.clone());
-                    any_matched = true;
-                }
-            }
-        }
-
-        if !any_matched {
-            for when in &choose.whens {
-                if when.default.unwrap_or(false) {
-                    items_to_process.push(when.items.clone());
-                    break;
-                }
-            }
-        }
-
-        for items in items_to_process {
-            self.process_when_items_with_module(&items, module_ctx);
-        }
-    }
-
-    /// Process when items with optional module context.
-    fn process_when_items_with_module(
-        &mut self,
-        items: &[WhenItem],
-        module_ctx: Option<&ModuleContext>,
-    ) {
-        for item in items {
-            match item {
-                WhenItem::ParameterRefRef(prr) => {
-                    self.visible_param_refs.insert(prr.ref_id.clone());
-                }
-                WhenItem::ComObjectRefRef(corr) => {
-                    self.visible_com_object_refs.insert(corr.ref_id.clone());
-                }
-                WhenItem::ParameterBlock(pb) => {
-                    self.process_parameter_block_with_module(pb, module_ctx);
-                }
-                WhenItem::Choose(nested_choose) => {
-                    self.process_choose_with_module(nested_choose, module_ctx);
-                }
-                WhenItem::ParameterSeparator(_) => {}
-                WhenItem::Assign(_) => {}
-                WhenItem::Module(module) => {
-                    self.process_module(module);
-                }
-            }
-        }
-    }
-
-    /// Get the integer value of a selector parameter ref, with module context support.
-    fn get_selector_value_with_module(
-        &self,
-        param_ref_id: &str,
-        module_ctx: Option<&ModuleContext>,
-    ) -> Option<i64> {
-        // First try module context if available
+impl DynamicVisitor for VisibilityVisitor {
+    fn visit_param_ref(&mut self, ref_id: &str, module_ctx: Option<&VisitorModuleContext>) {
         if let Some(ctx) = module_ctx {
-            // Look up the parameter ref in the module's static section
-            if let Some(param_refs) = &ctx.module_def.static_section.parameter_refs {
-                if let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id) {
-                    // Build composite ID and look up in module param values
-                    let composite_id = format!("{}::{}", ctx.instance_id, param_ref.ref_id);
-                    model_debug_log(&format!(
-                        "get_selector_value_with_module: looking up composite_id={}",
-                        composite_id
-                    ));
-                    if let Some(value) = self.module_param_values.get(&composite_id) {
-                        let result = match value {
-                            ParameterValue::Integer(v) => Some(*v),
-                            ParameterValue::Float(v) => Some(*v as i64),
-                            _ => None,
-                        };
-                        model_debug_log(&format!("  found value={:?}", result));
-                        return result;
-                    } else {
-                        model_debug_log("  composite_id not found in module_param_values");
-                    }
-                } else {
-                    model_debug_log(&format!(
-                        "get_selector_value_with_module: param_ref_id={} not found in module static section",
-                        param_ref_id
-                    ));
-                }
-            }
+            self.visible_module_param_refs
+                .insert(format!("{}::{}", ctx.instance_id, ref_id));
+        } else {
+            self.visible_param_refs.insert(ref_id.to_string());
         }
-
-        // Fall back to main device parameter lookup
-        model_debug_log(&format!(
-            "get_selector_value_with_module: falling back to device-level lookup for {}",
-            param_ref_id
-        ));
-        self.get_selector_value(param_ref_id)
     }
 
-    /// Process a module instance - mark it as visible.
-    fn process_module(&mut self, module: &Module) {
-        // Mark this module instance as visible
-        model_debug_log(&format!("process_module: id={}", module.id));
+    fn visit_com_object_ref(&mut self, ref_id: &str, module_ctx: Option<&VisitorModuleContext>) {
+        if let Some(ctx) = module_ctx {
+            self.visible_module_com_object_refs
+                .insert(format!("{}::{}", ctx.instance_id, ref_id));
+        } else {
+            self.visible_com_object_refs.insert(ref_id.to_string());
+        }
+    }
+
+    fn visit_module(&mut self, module: &Module) {
         self.visible_modules.insert(module.id.clone());
-
-        // Process the module's dynamic section if it has one
-        if let Some(module_def) = self.module_defs.get(&module.ref_id).cloned() {
-            if let Some(dynamic) = &module_def.dynamic {
-                // Create module context for parameter lookups
-                let module_ctx = ModuleContext {
-                    instance_id: module.id.clone(),
-                    module_def: module_def.clone(),
-                };
-
-                for item in &dynamic.items {
-                    match item {
-                        ModuleDefDynamicItem::ParameterBlock(pb) => {
-                            self.process_parameter_block_with_module(pb, Some(&module_ctx));
-                        }
-                        ModuleDefDynamicItem::Choose(choose) => {
-                            self.process_choose_with_module(choose, Some(&module_ctx));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Get the integer value of a selector parameter ref.
-    fn get_selector_value(&self, param_ref_id: &str) -> Option<i64> {
-        // Parameter ref ID points to a ParameterRef which has a RefId pointing to the Parameter
-        let param_ref = self.param_refs.get(param_ref_id)?;
-        let param_value = self.param_values.get(&param_ref.ref_id)?;
-
-        match param_value {
-            ParameterValue::Integer(v) => Some(*v),
-            ParameterValue::Float(v) => Some(*v as i64),
-            _ => None,
-        }
-    }
-
-    /// Check if a selector value matches a condition test string.
-    ///
-    /// Test formats:
-    /// - "1" - equals 1
-    /// - "1 2 3" - equals 1 OR 2 OR 3
-    /// - "=1" - equals 1
-    /// - "!=0" - not equals 0
-    /// - ">5" - greater than 5
-    /// - "<10" - less than 10
-    /// - ">=5" - greater than or equal to 5
-    /// - "<=10" - less than or equal to 10
-    fn matches_condition(&self, value: Option<i64>, test: &str) -> bool {
-        let value = match value {
-            Some(v) => v,
-            None => return false,
-        };
-
-        let test = test.trim();
-
-        // Handle comparison operators
-        if let Some(rest) = test.strip_prefix("!=") {
-            if let Ok(test_val) = rest.trim().parse::<i64>() {
-                return value != test_val;
-            }
-        } else if let Some(rest) = test.strip_prefix(">=") {
-            if let Ok(test_val) = rest.trim().parse::<i64>() {
-                return value >= test_val;
-            }
-        } else if let Some(rest) = test.strip_prefix("<=") {
-            if let Ok(test_val) = rest.trim().parse::<i64>() {
-                return value <= test_val;
-            }
-        } else if let Some(rest) = test.strip_prefix('>') {
-            if let Ok(test_val) = rest.trim().parse::<i64>() {
-                return value > test_val;
-            }
-        } else if let Some(rest) = test.strip_prefix('<') {
-            if let Ok(test_val) = rest.trim().parse::<i64>() {
-                return value < test_val;
-            }
-        } else if let Some(rest) = test.strip_prefix('=') {
-            if let Ok(test_val) = rest.trim().parse::<i64>() {
-                return value == test_val;
-            }
-        }
-
-        // Handle space-separated list of values (OR)
-        for part in test.split_whitespace() {
-            if let Ok(test_val) = part.parse::<i64>() {
-                if value == test_val {
-                    return true;
-                }
-            }
-        }
-
-        false
-    }
-}
-
-/// Build a lookup map of parameter types by ID.
-fn build_param_type_lookup(static_section: &StaticSection) -> HashMap<String, ParameterType> {
-    let mut map = HashMap::new();
-    if let Some(pt) = &static_section.parameter_types {
-        for param_type in &pt.types {
-            map.insert(param_type.id.clone(), param_type.clone());
-        }
-    }
-    map
-}
-
-/// Build a lookup map of parameters and their default values.
-fn build_parameter_lookup(
-    static_section: &StaticSection,
-) -> (HashMap<String, ParameterInfo>, HashMap<String, ParameterValue>) {
-    let mut info_map = HashMap::new();
-    let mut value_map = HashMap::new();
-
-    if let Some(params) = &static_section.parameters {
-        for item in &params.items {
-            match item {
-                ParameterItem::Parameter(p) => {
-                    let info = ParameterInfo {
-                        id: p.id.clone(),
-                        name: p.name.clone(),
-                        text: p.text.clone(),
-                        type_id: p.parameter_type.clone(),
-                        default_value: p.value.clone(),
-                        suffix: p.suffix_text.clone(),
-                        hidden: p.access.as_deref() == Some("None"),
-                    };
-                    info_map.insert(p.id.clone(), info);
-                    value_map.insert(p.id.clone(), parse_default_value(&p.value));
-                }
-                ParameterItem::Union(u) => {
-                    for p in &u.parameters {
-                        let info = ParameterInfo {
-                            id: p.id.clone(),
-                            name: p.name.clone(),
-                            text: p.text.clone(),
-                            type_id: p.parameter_type.clone(),
-                            default_value: p.value.clone(),
-                            suffix: p.suffix_text.clone(),
-                            hidden: false,
-                        };
-                        info_map.insert(p.id.clone(), info);
-                        value_map.insert(p.id.clone(), parse_default_value(&p.value));
-                    }
-                }
-            }
-        }
-    }
-
-    (info_map, value_map)
-}
-
-/// Parse a default value string into a ParameterValue.
-fn parse_default_value(value: &str) -> ParameterValue {
-    // Try to parse as integer first
-    if let Ok(v) = value.parse::<i64>() {
-        return ParameterValue::Integer(v);
-    }
-    // Try to parse as float
-    if let Ok(v) = value.parse::<f64>() {
-        return ParameterValue::Float(v);
-    }
-    // Otherwise treat as text
-    ParameterValue::Text(value.to_string())
-}
-
-/// Build a lookup map of parameter refs by ID.
-fn build_param_ref_lookup(static_section: &StaticSection) -> HashMap<String, ParameterRef> {
-    let mut map = HashMap::new();
-    if let Some(pr) = &static_section.parameter_refs {
-        for param_ref in &pr.refs {
-            map.insert(param_ref.id.clone(), param_ref.clone());
-        }
-    }
-    map
-}
-
-/// Build a lookup map of communication objects by ID.
-fn build_com_object_lookup(static_section: &StaticSection) -> HashMap<String, ComObject> {
-    let mut map = HashMap::new();
-    if let Some(cot) = &static_section.com_object_table {
-        for obj in &cot.objects {
-            map.insert(obj.id.clone(), obj.clone());
-        }
-    }
-    map
-}
-
-/// Build a lookup map of communication object refs by ID.
-fn build_com_object_ref_lookup(static_section: &StaticSection) -> HashMap<String, ComObjectRef> {
-    let mut map = HashMap::new();
-    if let Some(cor) = &static_section.com_object_refs {
-        for obj_ref in &cor.refs {
-            map.insert(obj_ref.id.clone(), obj_ref.clone());
-        }
-    }
-    map
-}
-
-/// Build a lookup map of module definitions by ID.
-fn build_module_def_lookup(program: &ApplicationProgram) -> HashMap<String, ModuleDef> {
-    let mut map = HashMap::new();
-    if let Some(module_defs) = &program.module_defs {
-        for module_def in &module_defs.module_defs {
-            map.insert(module_def.id.clone(), module_def.clone());
-        }
-    }
-    map
-}
-
-/// Build module parameter values with defaults from module definitions.
-///
-/// Returns a map of composite IDs (instance_id::param_id) to parameter values.
-fn build_module_param_values(
-    expanded_modules: &HashMap<String, ExpandedModule>,
-    module_defs: &HashMap<String, ModuleDef>,
-) -> HashMap<String, ParameterValue> {
-    let mut values = HashMap::new();
-
-    for (instance_id, expanded) in expanded_modules {
-        if let Some(module_def) = module_defs.get(&expanded.module_def_id) {
-            // Get parameters from the module's static section
-            if let Some(params) = &module_def.static_section.parameters {
-                for item in &params.items {
-                    match item {
-                        ParameterItem::Parameter(p) => {
-                            let composite_id = format!("{}::{}", instance_id, p.id);
-                            values.insert(composite_id, parse_default_value(&p.value));
-                        }
-                        ParameterItem::Union(union) => {
-                            // Also process parameters inside unions
-                            for p in &union.parameters {
-                                let composite_id = format!("{}::{}", instance_id, p.id);
-                                values.insert(composite_id, parse_default_value(&p.value));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    values
-}
-
-/// Expand all module instances found in the dynamic section.
-fn expand_all_modules(
-    program: &ApplicationProgram,
-    module_defs: &HashMap<String, ModuleDef>,
-) -> HashMap<String, ExpandedModule> {
-    let mut expanded = HashMap::new();
-
-    if let Some(dynamic) = &program.dynamic {
-        // Collect modules from channel-independent block
-        if let Some(cib) = &dynamic.channel_independent_block {
-            collect_modules_from_cib(&cib.items, module_defs, &mut expanded);
-        }
-
-        // Collect modules from channels
-        for channel in &dynamic.channels {
-            collect_modules_from_channel(&channel.items, module_defs, &mut expanded);
-        }
-    }
-
-    expanded
-}
-
-/// Collect modules from channel-independent block items.
-fn collect_modules_from_cib(
-    items: &[ChannelIndependentItem],
-    module_defs: &HashMap<String, ModuleDef>,
-    expanded: &mut HashMap<String, ExpandedModule>,
-) {
-    for item in items {
-        match item {
-            ChannelIndependentItem::ParameterBlock(pb) => {
-                collect_modules_from_pb(&pb.items, module_defs, expanded);
-            }
-            ChannelIndependentItem::Choose(choose) => {
-                collect_modules_from_choose(choose, module_defs, expanded);
-            }
-        }
-    }
-}
-
-/// Collect modules from channel items.
-fn collect_modules_from_channel(
-    items: &[ChannelItem],
-    module_defs: &HashMap<String, ModuleDef>,
-    expanded: &mut HashMap<String, ExpandedModule>,
-) {
-    for item in items {
-        match item {
-            ChannelItem::ParameterBlock(pb) => {
-                collect_modules_from_pb(&pb.items, module_defs, expanded);
-            }
-            ChannelItem::Choose(choose) => {
-                collect_modules_from_choose(choose, module_defs, expanded);
-            }
-            ChannelItem::Module(module) => {
-                expand_module(module, module_defs, expanded);
-            }
-        }
-    }
-}
-
-/// Collect modules from parameter block items.
-fn collect_modules_from_pb(
-    items: &[ParameterBlockItem],
-    module_defs: &HashMap<String, ModuleDef>,
-    expanded: &mut HashMap<String, ExpandedModule>,
-) {
-    for item in items {
-        match item {
-            ParameterBlockItem::Choose(choose) => {
-                collect_modules_from_choose(choose, module_defs, expanded);
-            }
-            ParameterBlockItem::Module(module) => {
-                expand_module(module, module_defs, expanded);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Collect modules from choose/when blocks.
-fn collect_modules_from_choose(
-    choose: &Choose,
-    module_defs: &HashMap<String, ModuleDef>,
-    expanded: &mut HashMap<String, ExpandedModule>,
-) {
-    for when in &choose.whens {
-        for item in &when.items {
-            match item {
-                WhenItem::ParameterBlock(pb) => {
-                    collect_modules_from_pb(&pb.items, module_defs, expanded);
-                }
-                WhenItem::Choose(nested_choose) => {
-                    collect_modules_from_choose(nested_choose, module_defs, expanded);
-                }
-                WhenItem::Module(module) => {
-                    expand_module(module, module_defs, expanded);
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-/// Expand a single module instance.
-fn expand_module(
-    module: &Module,
-    module_defs: &HashMap<String, ModuleDef>,
-    expanded: &mut HashMap<String, ExpandedModule>,
-) {
-    // Look up the module definition
-    let module_def = match module_defs.get(&module.ref_id) {
-        Some(def) => def,
-        None => return, // Module def not found, skip
-    };
-
-    // Build argument values map
-    let mut args = HashMap::new();
-    for arg in &module.args {
-        match arg {
-            ModuleArg::NumericArg { ref_id, value } => {
-                // Find the argument name from the module def
-                if let Some(arg_defs) = &module_def.arguments {
-                    for arg_def in &arg_defs.arguments {
-                        if arg_def.id == *ref_id {
-                            args.insert(arg_def.name.clone(), ModuleArgValue::Numeric(*value));
-                            break;
-                        }
-                    }
-                }
-            }
-            ModuleArg::TextArg { ref_id, value, .. } => {
-                // Find the argument name from the module def
-                if let Some(arg_defs) = &module_def.arguments {
-                    for arg_def in &arg_defs.arguments {
-                        if arg_def.id == *ref_id {
-                            args.insert(arg_def.name.clone(), ModuleArgValue::Text(value.clone()));
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Create expanded module
-    let expanded_module = ExpandedModule {
-        instance_id: module.id.clone(),
-        module_def_id: module.ref_id.clone(),
-        name: module.name.clone(),
-        args,
-    };
-
-    expanded.insert(module.id.clone(), expanded_module);
-}
-
-/// Helper struct for iterating over the dynamic structure with visibility context.
-pub struct DynamicIterator<'a> {
-    model: &'a DeviceModel,
-}
-
-impl<'a> DynamicIterator<'a> {
-    pub fn new(model: &'a DeviceModel) -> Self {
-        Self { model }
-    }
-
-    /// Get the channel-independent block if present.
-    pub fn channel_independent_block(&self) -> Option<&'a ChannelIndependentBlock> {
-        self.model
-            .program
-            .dynamic
-            .as_ref()
-            .and_then(|d| d.channel_independent_block.as_ref())
-    }
-
-    /// Get all channels.
-    pub fn channels(&self) -> impl Iterator<Item = &'a Channel> {
-        self.model
-            .program
-            .dynamic
-            .as_ref()
-            .map(|d| d.channels.iter())
-            .into_iter()
-            .flatten()
-    }
-
-    /// Check if a parameter ref is visible.
-    pub fn is_param_ref_visible(&self, ref_id: &str) -> bool {
-        self.model.is_param_ref_visible(ref_id)
-    }
-
-    /// Check if a com object ref is visible.
-    pub fn is_com_object_ref_visible(&self, ref_id: &str) -> bool {
-        self.model.is_com_object_ref_visible(ref_id)
     }
 }
 
@@ -1263,67 +723,48 @@ impl<'a> DynamicIterator<'a> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_condition_matching() {
-        let model = create_test_model();
-
-        // Test simple equality
-        assert!(model.matches_condition(Some(1), "1"));
-        assert!(!model.matches_condition(Some(2), "1"));
-
-        // Test space-separated values (OR)
-        assert!(model.matches_condition(Some(1), "1 2 3"));
-        assert!(model.matches_condition(Some(2), "1 2 3"));
-        assert!(model.matches_condition(Some(3), "1 2 3"));
-        assert!(!model.matches_condition(Some(4), "1 2 3"));
-
-        // Test comparison operators
-        assert!(model.matches_condition(Some(5), "=5"));
-        assert!(!model.matches_condition(Some(4), "=5"));
-
-        assert!(model.matches_condition(Some(4), "!=5"));
-        assert!(!model.matches_condition(Some(5), "!=5"));
-
-        assert!(model.matches_condition(Some(6), ">5"));
-        assert!(!model.matches_condition(Some(5), ">5"));
-
-        assert!(model.matches_condition(Some(4), "<5"));
-        assert!(!model.matches_condition(Some(5), "<5"));
-
-        assert!(model.matches_condition(Some(5), ">=5"));
-        assert!(model.matches_condition(Some(6), ">=5"));
-        assert!(!model.matches_condition(Some(4), ">=5"));
-
-        assert!(model.matches_condition(Some(5), "<=5"));
-        assert!(model.matches_condition(Some(4), "<=5"));
-        assert!(!model.matches_condition(Some(6), "<=5"));
-
-        // Test None value
-        assert!(!model.matches_condition(None, "1"));
+    /// Helper to test condition matching.
+    fn matches(value: Option<i64>, test: &str) -> bool {
+        match (value, Condition::parse(test)) {
+            (Some(v), Some(cond)) => cond.matches(v),
+            _ => false,
+        }
     }
 
-    fn create_test_model() -> DeviceModel {
-        // Create a minimal application program for testing
-        let program = ApplicationProgram {
-            id: "test".to_string(),
-            application_number: 1,
-            application_version: 1,
-            program_type: "ApplicationProgram".to_string(),
-            mask_version: "MV-07B0".to_string(),
-            name: "Test".to_string(),
-            load_procedure_style: "MergedProcedure".to_string(),
-            pei_type: 0,
-            default_language: "en-US".to_string(),
-            dynamic_table_management: false,
-            linkable: false,
-            min_ets_version: None,
-            non_reg_relevant_data_version: None,
-            replaces_versions: None,
-            hash: None,
-            static_section: StaticSection::default(),
-            module_defs: None,
-            dynamic: None,
-        };
-        DeviceModel::new(program)
+    #[test]
+    fn test_condition_matching() {
+        // Test simple equality
+        assert!(matches(Some(1), "1"));
+        assert!(!matches(Some(2), "1"));
+
+        // Test space-separated values (OR)
+        assert!(matches(Some(1), "1 2 3"));
+        assert!(matches(Some(2), "1 2 3"));
+        assert!(matches(Some(3), "1 2 3"));
+        assert!(!matches(Some(4), "1 2 3"));
+
+        // Test comparison operators
+        assert!(matches(Some(5), "=5"));
+        assert!(!matches(Some(4), "=5"));
+
+        assert!(matches(Some(4), "!=5"));
+        assert!(!matches(Some(5), "!=5"));
+
+        assert!(matches(Some(6), ">5"));
+        assert!(!matches(Some(5), ">5"));
+
+        assert!(matches(Some(4), "<5"));
+        assert!(!matches(Some(5), "<5"));
+
+        assert!(matches(Some(5), ">=5"));
+        assert!(matches(Some(6), ">=5"));
+        assert!(!matches(Some(4), ">=5"));
+
+        assert!(matches(Some(5), "<=5"));
+        assert!(matches(Some(4), "<=5"));
+        assert!(!matches(Some(6), "<=5"));
+
+        // Test None value
+        assert!(!matches(None, "1"));
     }
 }

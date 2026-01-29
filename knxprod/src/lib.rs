@@ -56,6 +56,7 @@ pub mod module;
 pub mod master_data;
 pub mod device_info;
 pub mod baggage;
+pub mod device;
 
 pub use schema::*;
 pub use generator::*;
@@ -67,6 +68,10 @@ pub use module::{
     KnxModule, ModuleArgDef, ModuleArgType, ModuleArgValue, ModuleInstance,
     ModuleInstanceBuilder, ConditionalModuleInstance, ModuleCollection,
     StoredModuleDef, StoredModuleInstance,
+};
+pub use device::Device;
+pub use model::{
+    DynamicVisitor, ConditionEvaluator, VisitorModuleContext, VisibilityVisitor, walk_dynamic,
 };
 
 // Re-export paste for use by macros

@@ -6,10 +6,13 @@
 mod app;
 mod ui;
 
+use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 
 use clap::Parser;
+use log::LevelFilter;
+use simplelog::{Config, WriteLogger};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
@@ -18,9 +21,10 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use app::{App, EditMode};
+use knxprod::baggage::BaggageIndex;
 use knxprod::master_data::MasterData;
-use knxprod::model::DeviceModel;
 use knxprod::parser::{parse_application_program_from_file, ProgramSummary};
+use knxprod::Device;
 
 /// KNX ApplicationProgram TUI Viewer
 #[derive(Parser, Debug)]
@@ -41,6 +45,11 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    // Initialize file logging
+    let log_file = File::create("/tmp/knxprod-tui.log")?;
+    WriteLogger::init(LevelFilter::Debug, Config::default(), log_file)?;
+    log::info!("KNX TUI starting");
 
     // Parse the XML file
     let knx = parse_application_program_from_file(&args.file)?;
@@ -121,13 +130,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .next()
         .ok_or("No application program found")?;
 
-    // Create device model
-    let model = DeviceModel::new(program);
+    // Load baggage index from the same directory as the MTXML file
+    let baggage_index = args.file.parent().and_then(|dir| {
+        match BaggageIndex::from_directory(dir) {
+            Ok(index) => {
+                eprintln!("Loaded {} baggage files from {:?}", index.len(), dir);
+                Some(index)
+            }
+            Err(_) => None,
+        }
+    });
 
-    // Create app with master data and baggage directory
-    // Baggage files are in the same directory as the MTXML file
-    let baggage_dir = args.file.parent();
-    let app = App::with_options(model, master_data, baggage_dir);
+    // Create unified Device
+    let device = Device::new(program, master_data.as_ref(), baggage_index);
+
+    // Create app with master data
+    let app = App::with_master_data(device, master_data);
 
     // Run TUI
     run_tui(app)?;

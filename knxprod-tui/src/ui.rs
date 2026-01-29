@@ -90,7 +90,7 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
     // Build title with program name and mask version info
     let title = format!(
         " KNX Viewer - {} │ {} ",
-        app.model.program.name,
+        app.device.program().name,
         app.mask_version_display()
     );
 
@@ -1017,8 +1017,8 @@ fn render_dropdown_popup(
 }
 
 fn render_status(frame: &mut Frame, area: Rect, app: &App) {
-    let visible_params = app.model.visible_parameter_refs().count();
-    let visible_objs = app.model.visible_com_object_refs().count();
+    let visible_params = app.device.visible_param_refs().count();
+    let visible_objs = app.device.visible_com_object_refs().count();
 
     let help = match (&app.edit_mode, app.current_tab, app.focus) {
         (EditMode::EnumDropdown { .. }, _, _) => "↑/↓: Select | Enter: Confirm | Esc: Cancel",
