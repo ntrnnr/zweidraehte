@@ -2,9 +2,13 @@
 //!
 //! This binary generates a complete set of MTXML files from
 //! the MDT Push Button Lite device definition.
+//!
+//! Use --knxprod flag to also generate a signed .knxprod package.
 
+use std::env;
 use std::fs;
 
+use knxprod::signing::{create_knxprod, MasterDataSource, SigningConfig};
 use testutil::devices::mdt_push_button_lite::{DEVICE_DESCRIPTOR, MdtParams, MdtStack, SERIAL_NUMBER, comm_objs};
 use testutil::mtxml_gen::page_layout::EtsPageLayout;
 use testutil::mtxml_gen::{
@@ -83,6 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ApplicationProgramConfig {
         name: "Push Button Lite 55 1-fold Basic",
         device: &DEVICE_DESCRIPTOR,
+        schema_version: None, // Use default V20
         params: MdtParams::ETS_PARAMS_EXT,
         virtual_params: None,
         param_defaults: param_bytes,
@@ -130,7 +135,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Generated: {}", cat_path);
 
     eprintln!("\nAll MDT MTXML files generated successfully!");
-    //eprintln!("\nApplicationProgram preview (first 2000 chars):\n{}", &app_xml[..app_xml.len().min(2000)]);
+
+    // Check if --knxprod flag is provided
+    let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
+
+    if generate_knxprod {
+        eprintln!("\nGenerating signed .knxprod package...");
+
+        // Build the application program ID from the device descriptor
+        // MDT uses a custom hash suffix (E59D) in their app IDs
+        let manufacturer_id = format!("{:04X}", DEVICE_DESCRIPTOR.manufacturer_id);
+        let app_number = format!("{:04X}", DEVICE_DESCRIPTOR.application_id);
+        let app_version = format!("{:02X}", DEVICE_DESCRIPTOR.application_version);
+        let app_hash = config.application_hash.unwrap_or("0000");
+        let application_program_id = format!(
+            "M-{}_A-{}-{}-{}",
+            manufacturer_id, app_number, app_version, app_hash
+        );
+
+        let signing_config = SigningConfig {
+            manufacturer_id: manufacturer_id.clone(),
+            application_program: app_xml.clone(),
+            application_program_id,
+            hardware: hw_xml.clone(),
+            catalog: cat_xml.clone(),
+            baggage_files: vec![],
+        };
+
+        let knxprod_bytes = create_knxprod(&signing_config, MasterDataSource::Download)?;
+        // Use a safe filename (no spaces)
+        let output_path = "MdtPushButtonLite.knxprod";
+        fs::write(output_path, &knxprod_bytes)?;
+        eprintln!("Generated: {} ({} bytes)", output_path, knxprod_bytes.len());
+        eprintln!("\nVerify with: python3 manuf_tool_data/knx_verifier.py all .");
+    } else {
+        eprintln!("\nTip: Use --knxprod flag to also generate a signed .knxprod package");
+    }
 
     Ok(())
 }

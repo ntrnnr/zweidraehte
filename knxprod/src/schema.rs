@@ -126,7 +126,7 @@ impl Default for Knx {
             xmlns_xsd: "http://www.w3.org/2001/XMLSchema".to_string(),
             created_by: "zweidraehte".to_string(),
             tool_version: "0.1.0".to_string(),
-            xmlns: "http://knx.org/xml/project/20".to_string(),
+            xmlns: "http://knx.org/xml/project/23".to_string(),
             manufacturer_data: ManufacturerData::default(),
         }
     }
@@ -1481,7 +1481,7 @@ impl Default for HardwareKnx {
             xmlns_xsd: "http://www.w3.org/2001/XMLSchema".to_string(),
             created_by: "zweidraehte".to_string(),
             tool_version: "0.1.0".to_string(),
-            xmlns: "http://knx.org/xml/project/20".to_string(),
+            xmlns: "http://knx.org/xml/project/23".to_string(),
             manufacturer_data: HardwareManufacturerData::default(),
         }
     }
@@ -1644,7 +1644,7 @@ impl Default for CatalogKnx {
             xmlns_xsd: "http://www.w3.org/2001/XMLSchema".to_string(),
             created_by: "zweidraehte".to_string(),
             tool_version: "0.1.0".to_string(),
-            xmlns: "http://knx.org/xml/project/20".to_string(),
+            xmlns: "http://knx.org/xml/project/23".to_string(),
             manufacturer_data: CatalogManufacturerData::default(),
         }
     }

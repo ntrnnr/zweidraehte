@@ -370,6 +370,9 @@ pub struct ApplicationProgramConfig<'a> {
     pub name: &'a str,
     /// Device descriptor with mask version, manufacturer ID, etc.
     pub device: &'a DeviceDescriptor,
+    /// KNX XML schema version to use. If None, defaults to V20.
+    /// This affects the xmlns namespace in generated XML files.
+    pub schema_version: Option<crate::signing::KnxSchemaVersion>,
     /// Extended parameter definitions with enum variants
     pub params: &'a [EtsParamDefExt],
     /// Virtual parameter definitions that exist only in ETS (not stored in device memory).
@@ -553,6 +556,10 @@ impl MtxmlGenerator {
         let app_id = Self::format_app_id(config);
 
         let mut knx = Knx::default();
+        // Set schema version namespace if specified
+        if let Some(version) = config.schema_version {
+            knx.xmlns = version.namespace_url();
+        }
         knx.manufacturer_data.manufacturer.ref_id =
             format!("M-{:04X}", config.device.manufacturer_id);
         knx.manufacturer_data
@@ -4475,6 +4482,10 @@ impl HardwareGenerator {
         let product_id = format!("{}_P-{}", hardware_id, MtxmlGenerator::encode_id(config.order_number));
 
         let mut knx = HardwareKnx::default();
+        // Set schema version namespace if specified
+        if let Some(version) = config.schema_version {
+            knx.xmlns = version.namespace_url();
+        }
         knx.manufacturer_data.manufacturer.ref_id = manufacturer_id;
         knx.manufacturer_data.manufacturer.hardware.hardware = Hardware {
             id: hardware_id,
@@ -4565,6 +4576,10 @@ impl CatalogGenerator {
         let catalog_item_id = format!("{}_CI-{}-1", h2p_id, MtxmlGenerator::encode_id(config.order_number));
 
         let mut knx = CatalogKnx::default();
+        // Set schema version namespace if specified
+        if let Some(version) = config.schema_version {
+            knx.xmlns = version.namespace_url();
+        }
         knx.manufacturer_data.manufacturer.ref_id = manufacturer_id;
         knx.manufacturer_data.manufacturer.catalog.catalog_section = CatalogSection {
             id: section_id,
@@ -4647,6 +4662,7 @@ mod tests {
         let config = ApplicationProgramConfig {
             name: "TestDevice",
             device: &device,
+            schema_version: None,
             params: &[],
             virtual_params: None,
             param_defaults: &[],
@@ -4689,6 +4705,7 @@ mod tests {
                 max_association_table_entries: 16,
                 max_com_objects: 8,
             },
+            schema_version: None,
             params: &[],
             virtual_params: None,
             param_defaults: &[],
@@ -4736,6 +4753,7 @@ mod tests {
                 max_association_table_entries: 16,
                 max_com_objects: 8,
             },
+            schema_version: None,
             params: &[],
             virtual_params: None,
             param_defaults: &[],
@@ -4821,6 +4839,7 @@ mod tests {
                 max_association_table_entries: 16,
                 max_com_objects: 16,
             },
+            schema_version: None,
             params: &[],
             virtual_params: None,
             param_defaults: &[],
@@ -4929,6 +4948,7 @@ mod tests {
                 max_association_table_entries: 16,
                 max_com_objects: 16,
             },
+            schema_version: None,
             params: &[],
             virtual_params: None,
             param_defaults: &[],

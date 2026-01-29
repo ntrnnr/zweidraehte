@@ -57,6 +57,7 @@ pub mod master_data;
 pub mod device_info;
 pub mod baggage;
 pub mod device;
+pub mod signing;
 
 pub use schema::*;
 pub use generator::*;
