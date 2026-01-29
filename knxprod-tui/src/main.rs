@@ -215,6 +215,12 @@ fn run_app(
                 KeyCode::Down => {
                     app.move_down();
                 }
+                KeyCode::PageUp if !in_edit_mode => {
+                    app.page_up();
+                }
+                KeyCode::PageDown if !in_edit_mode => {
+                    app.page_down();
+                }
                 KeyCode::Enter => {
                     app.activate();
                 }

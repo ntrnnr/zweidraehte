@@ -4061,6 +4061,92 @@ impl App {
         }
     }
 
+    /// Page size for page up/down navigation
+    const PAGE_SIZE: usize = 10;
+
+    /// Move selection up by a page.
+    pub fn page_up(&mut self) {
+        match (self.current_tab, self.focus) {
+            (_, Focus::Tabs) => {
+                // No vertical movement in tabs
+            }
+            (MainTab::Parameters, Focus::Sidebar) => {
+                if self.selected_tree_idx > 0 {
+                    self.selected_tree_idx = self.selected_tree_idx.saturating_sub(Self::PAGE_SIZE);
+                    self.rebuild_content();
+                    self.selected_content_idx = 0;
+                    self.content_scroll_offset = 0;
+                }
+            }
+            (MainTab::Parameters, Focus::Content) => {
+                if self.selected_content_idx > 0 {
+                    self.selected_content_idx = self.selected_content_idx.saturating_sub(Self::PAGE_SIZE);
+                    self.adjust_content_scroll();
+                }
+            }
+            (MainTab::CommObjects, Focus::Content) => {
+                if self.selected_obj_idx > 0 {
+                    self.selected_obj_idx = self.selected_obj_idx.saturating_sub(Self::PAGE_SIZE);
+                    self.adjust_comm_obj_scroll();
+                }
+            }
+            (MainTab::Memory, Focus::Sidebar) => {
+                for _ in 0..Self::PAGE_SIZE {
+                    self.segment_move_up();
+                }
+            }
+            (MainTab::Memory, Focus::Content) => {
+                for _ in 0..Self::PAGE_SIZE {
+                    self.memory_move_up();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Move selection down by a page.
+    pub fn page_down(&mut self) {
+        match (self.current_tab, self.focus) {
+            (_, Focus::Tabs) => {
+                // No vertical movement in tabs
+            }
+            (MainTab::Parameters, Focus::Sidebar) => {
+                let max_idx = self.tree_nodes.len().saturating_sub(1);
+                if self.selected_tree_idx < max_idx {
+                    self.selected_tree_idx = (self.selected_tree_idx + Self::PAGE_SIZE).min(max_idx);
+                    self.rebuild_content();
+                    self.selected_content_idx = 0;
+                    self.content_scroll_offset = 0;
+                }
+            }
+            (MainTab::Parameters, Focus::Content) => {
+                let max_idx = self.content_items.len().saturating_sub(1);
+                if self.selected_content_idx < max_idx {
+                    self.selected_content_idx = (self.selected_content_idx + Self::PAGE_SIZE).min(max_idx);
+                    self.adjust_content_scroll();
+                }
+            }
+            (MainTab::CommObjects, Focus::Content) => {
+                let max_idx = self.com_object_rows.len().saturating_sub(1);
+                if self.selected_obj_idx < max_idx {
+                    self.selected_obj_idx = (self.selected_obj_idx + Self::PAGE_SIZE).min(max_idx);
+                    self.adjust_comm_obj_scroll();
+                }
+            }
+            (MainTab::Memory, Focus::Sidebar) => {
+                for _ in 0..Self::PAGE_SIZE {
+                    self.segment_move_down();
+                }
+            }
+            (MainTab::Memory, Focus::Content) => {
+                for _ in 0..Self::PAGE_SIZE {
+                    self.memory_move_down(20);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Move selection left (for tabs).
     pub fn move_left(&mut self) {
         if !matches!(self.edit_mode, EditMode::None) {
