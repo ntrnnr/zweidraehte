@@ -1,693 +1,3 @@
-//! MTXML Generator - Builds ApplicationProgram XML from device definitions.
-
-use std::collections::HashMap;
-
-use base64::Engine;
-
-use zweidraehte::ets::{
-    DeviceDescriptor, EtsCommObjectDef, EtsCommObjectRefDef, EtsParamDefExt, EtsParamType,
-    EtsUnionFieldInfo,
-};
-
-use super::page_layout::{
-    ConditionalElement, ConditionalItem, PageBlock, PageElement, PageItem, PageStructure,
-};
-use super::module::{ModuleArgRole, ModuleArgType, ModuleCollection, StoredModuleDef};
-use super::schema::*;
-use super::baggage_generator::{baggages_to_refs, make_baggage_id};
-
-/// Information about a picture collected from page layouts.
-/// Pictures are implemented as virtual parameters with TypePicture.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct PictureInfo {
-    /// The baggage filename (e.g., "xmas.png")
-    baggage_name: String,
-}
-
-/// Collects all pictures from page layouts (device-level and module-level).
-fn collect_pictures_from_layout(config: &ApplicationProgramConfig) -> Vec<PictureInfo> {
-    let mut pictures = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    // Collect from device page layout
-    if let Some(layout) = &config.page_layout {
-        collect_pictures_from_page_structure(layout, &mut pictures, &mut seen);
-    }
-
-    // Collect from module layouts
-    if let Some(modules) = &config.modules {
-        for def in modules.definitions() {
-            if let Some(module_layout) = &def.page_layout {
-                collect_pictures_from_module_layout(module_layout, &mut pictures, &mut seen);
-            }
-        }
-    }
-
-    pictures
-}
-
-fn collect_pictures_from_page_structure(
-    layout: &PageStructure,
-    pictures: &mut Vec<PictureInfo>,
-    seen: &mut std::collections::HashSet<String>,
-) {
-    // Collect from device settings
-    for elem in &layout.device_settings {
-        collect_pictures_from_page_element(elem, pictures, seen);
-    }
-
-    // Collect from channels
-    for channel in &layout.channels {
-        for elem in &channel.elements {
-            collect_pictures_from_page_element(elem, pictures, seen);
-        }
-    }
-}
-
-fn collect_pictures_from_page_element(
-    elem: &PageElement,
-    pictures: &mut Vec<PictureInfo>,
-    seen: &mut std::collections::HashSet<String>,
-) {
-    match elem {
-        PageElement::Block(block) => {
-            for item in &block.items {
-                collect_pictures_from_page_item(item, pictures, seen);
-            }
-        }
-        PageElement::When(cond) => {
-            for case in &cond.cases {
-                for elem in &case.elements {
-                    collect_pictures_from_page_element(elem, pictures, seen);
-                }
-            }
-        }
-    }
-}
-
-fn collect_pictures_from_page_item(
-    item: &PageItem,
-    pictures: &mut Vec<PictureInfo>,
-    seen: &mut std::collections::HashSet<String>,
-) {
-    match item {
-        PageItem::Picture(baggage_name) => {
-            if !seen.contains(*baggage_name) {
-                seen.insert(baggage_name.to_string());
-                pictures.push(PictureInfo {
-                    baggage_name: baggage_name.to_string(),
-                });
-            }
-        }
-        PageItem::When(cond) => {
-            for case in &cond.cases {
-                for item in &case.items {
-                    collect_pictures_from_page_item(item, pictures, seen);
-                }
-            }
-        }
-        // Other items don't contain pictures
-        _ => {}
-    }
-}
-
-fn collect_pictures_from_module_layout(
-    layout: &crate::page_layout::ModulePageLayout,
-    pictures: &mut Vec<PictureInfo>,
-    seen: &mut std::collections::HashSet<String>,
-) {
-    use crate::page_layout::{ModuleLayoutElement, ModuleLayoutItem};
-
-    for elem in &layout.elements {
-        match elem {
-            ModuleLayoutElement::Block(block) => {
-                for item in &block.items {
-                    collect_pictures_from_module_item(item, pictures, seen);
-                }
-            }
-            ModuleLayoutElement::When(when_elem) => {
-                for case in &when_elem.cases {
-                    for item in &case.items {
-                        collect_pictures_from_module_item(item, pictures, seen);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn collect_pictures_from_module_item(
-    item: &crate::page_layout::ModuleLayoutItem,
-    pictures: &mut Vec<PictureInfo>,
-    seen: &mut std::collections::HashSet<String>,
-) {
-    use crate::page_layout::ModuleLayoutItem;
-
-    match item {
-        ModuleLayoutItem::Picture(baggage_name) => {
-            if !seen.contains(*baggage_name) {
-                seen.insert(baggage_name.to_string());
-                pictures.push(PictureInfo {
-                    baggage_name: baggage_name.to_string(),
-                });
-            }
-        }
-        ModuleLayoutItem::When(when_elem) => {
-            for case in &when_elem.cases {
-                for item in &case.items {
-                    collect_pictures_from_module_item(item, pictures, seen);
-                }
-            }
-        }
-        // Other items don't contain pictures
-        _ => {}
-    }
-}
-
-/// Tracks active conditions when generating nested XML structures.
-/// This allows us to avoid redundant choose/when nesting when an object's
-/// selector_param matches an already-active condition.
-#[derive(Clone, Debug, Default)]
-struct ActiveConditions {
-    /// Active conditions as (selector_param_name, values) pairs.
-    /// When processing items inside a `when` block, this tracks which selector
-    /// is active and what values are being tested.
-    conditions: Vec<(String, Vec<i64>)>,
-}
-
-/// Tracks usage of selector params for creating separate ParameterRefs.
-/// MDT creates separate ParameterRefs for the same parameter when used in
-/// different ObjWithValue/GroupedObjChoose contexts.
-/// This allows for more choose blocks with fewer when clauses each.
-#[derive(Default)]
-struct SelectorRefCounters {
-    /// Counter per selector param name, incremented each time a new ref is used.
-    counters: HashMap<String, usize>,
-}
-
-impl SelectorRefCounters {
-    fn new() -> Self {
-        Self { counters: HashMap::new() }
-    }
-
-    /// Get the next ref index for a selector param and increment counter.
-    fn next_index(&mut self, param_name: &str) -> usize {
-        let counter = self.counters.entry(param_name.to_string()).or_insert(0);
-        let index = *counter;
-        *counter += 1;
-        index
-    }
-}
-
-/// Maps parameter names to multiple ParameterRef IDs.
-/// For params that are used multiple times as selectors, stores all their ref IDs.
-struct MultiParamRefMap {
-    /// Primary ref map (first/only ref for each param)
-    primary: HashMap<String, String>,
-    /// Multi-ref map: param name -> Vec<ref_id> for params with multiple refs
-    multi: HashMap<String, Vec<String>>,
-    /// Text-based ref map: (param_name, text_override) -> ref_id
-    /// For union variant params that have different text overrides in different contexts
-    by_text: HashMap<(String, Option<String>), String>,
-    /// Map from param name to primary ref number (for text interpolation)
-    param_ref_nums: HashMap<String, u32>,
-}
-
-impl MultiParamRefMap {
-    /// Get the ref ID for a param. If it has multiple refs and an index is provided,
-    /// returns the ref at that index. Otherwise returns the primary ref.
-    fn get(&self, param_name: &str, index: Option<usize>) -> Option<&String> {
-        if let Some(idx) = index {
-            // Try to get the indexed ref from multi map
-            if let Some(refs) = self.multi.get(param_name) {
-                if idx < refs.len() {
-                    return Some(&refs[idx]);
-                }
-            }
-        }
-        // Fall back to primary
-        self.primary.get(param_name)
-    }
-
-    /// Get the primary ref (for params that aren't selectors or when index doesn't matter)
-    fn get_primary(&self, param_name: &str) -> Option<&String> {
-        self.primary.get(param_name)
-    }
-
-    /// Get the ref ID for a param with a specific text override.
-    /// Used for union variant params that have context-specific text.
-    fn get_by_text(&self, param_name: &str, text: Option<&str>) -> Option<&String> {
-        let key = (param_name.to_string(), text.map(|s| s.to_string()));
-        self.by_text.get(&key)
-    }
-}
-
-impl ActiveConditions {
-    /// Create an empty set of active conditions.
-    fn new() -> Self {
-        Self { conditions: Vec::new() }
-    }
-
-    /// Add a condition to the active set.
-    fn with_condition(&self, selector: &str, values: Vec<i64>) -> Self {
-        let mut new = self.clone();
-        new.conditions.push((selector.to_string(), values));
-        new
-    }
-
-    /// Check if the given selector matches any active condition.
-    /// Returns Some(values) if the selector matches an active condition.
-    fn get_active_values(&self, selector: &str) -> Option<&Vec<i64>> {
-        self.conditions
-            .iter()
-            .find(|(sel, _)| sel == selector)
-            .map(|(_, vals)| vals)
-    }
-}
-
-/// Collects union variant text overrides from the page layout.
-/// Returns a map of (union_field, variant_name) -> Vec<text_override>
-/// where each text_override is a unique text used for that variant.
-fn collect_union_variant_texts(layout: &PageStructure) -> HashMap<(String, String), Vec<Option<String>>> {
-    let mut texts: HashMap<(String, String), Vec<Option<String>>> = HashMap::new();
-
-    // Process device settings
-    for element in &layout.device_settings {
-        collect_texts_in_element(element, &mut texts);
-    }
-
-    // Process channels
-    for channel in &layout.channels {
-        for element in &channel.elements {
-            collect_texts_in_element(element, &mut texts);
-        }
-    }
-
-    texts
-}
-
-fn collect_texts_in_element(
-    element: &PageElement,
-    texts: &mut HashMap<(String, String), Vec<Option<String>>>,
-) {
-    match element {
-        PageElement::Block(block) => {
-            collect_texts_in_block(block, texts);
-        }
-        PageElement::When(cond) => {
-            for case in &cond.cases {
-                for elem in &case.elements {
-                    collect_texts_in_element(elem, texts);
-                }
-            }
-        }
-    }
-}
-
-fn collect_texts_in_block(
-    block: &PageBlock,
-    texts: &mut HashMap<(String, String), Vec<Option<String>>>,
-) {
-    for item in &block.items {
-        collect_texts_in_item(item, texts);
-    }
-}
-
-fn collect_texts_in_item(
-    item: &PageItem,
-    texts: &mut HashMap<(String, String), Vec<Option<String>>>,
-) {
-    match item {
-        PageItem::When(cond) => {
-            for case in &cond.cases {
-                for nested_item in &case.items {
-                    collect_texts_in_item(nested_item, texts);
-                }
-            }
-        }
-        PageItem::UnionVariantDirect { union_field, variant_name, text_override } => {
-            let key = (union_field.to_string(), variant_name.to_string());
-            let text = text_override.map(|s| s.to_string());
-            let entry = texts.entry(key).or_insert_with(Vec::new);
-            if !entry.contains(&text) {
-                entry.push(text);
-            }
-        }
-        PageItem::UnionVariantWithChoose { union_field, variant_name, text_override, cases } => {
-            let key = (union_field.to_string(), variant_name.to_string());
-            let text = text_override.map(|s| s.to_string());
-            let entry = texts.entry(key).or_insert_with(Vec::new);
-            if !entry.contains(&text) {
-                entry.push(text);
-            }
-            // Also process nested cases
-            for case in cases {
-                for nested_item in &case.items {
-                    collect_texts_in_item(nested_item, texts);
-                }
-            }
-        }
-        PageItem::ChooseOnUnionVariant { cases, .. } => {
-            // This doesn't output the param itself, but process nested items
-            for case in cases {
-                for nested_item in &case.items {
-                    collect_texts_in_item(nested_item, texts);
-                }
-            }
-            // Don't add - this is just a choose block, not a param output
-        }
-        PageItem::ObjWithValue { value_union, sub_selectors, .. } => {
-            // ObjWithValue outputs union variant params without text override
-            // We need to track all variants that could be used
-            // The variants are determined by the selector_param values, but we don't know those here
-            // For now, just add a None text for all variants we might use
-            // This is handled in the generator when it iterates over union_info.selector_variants
-            let key = (value_union.to_string(), "".to_string()); // We'll handle this specially
-            let entry = texts.entry(key).or_insert_with(Vec::new);
-            if !entry.contains(&None) {
-                entry.push(None);
-            }
-            // Also handle sub_selectors which have their own variant params
-            for (_, _, sub_variants) in sub_selectors.iter() {
-                for (_, _, variant_name) in sub_variants.iter() {
-                    let key = (value_union.to_string(), variant_name.to_string());
-                    let entry = texts.entry(key).or_insert_with(Vec::new);
-                    if !entry.contains(&None) {
-                        entry.push(None);
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Counts how many times each parameter is used as a selector in ObjWithValue,
-/// GroupedObjChoose, or Obj items. Used to generate multiple ParameterRefs
-/// for the same parameter (matching MDT's fine-grained structure).
-///
-/// Takes comm_obj_ref_map to look up which objects have selector_params for PageItem::Obj counting.
-fn count_selector_usages_with_objects(
-    layout: &PageStructure,
-    comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
-) -> HashMap<String, usize> {
-    let mut counts: HashMap<String, usize> = HashMap::new();
-
-    // Process device settings
-    for element in &layout.device_settings {
-        count_selector_in_element_with_objects(element, &mut counts, comm_obj_ref_map);
-    }
-
-    // Process channels
-    for channel in &layout.channels {
-        for element in &channel.elements {
-            count_selector_in_element_with_objects(element, &mut counts, comm_obj_ref_map);
-        }
-    }
-
-    counts
-}
-
-fn count_selector_in_element_with_objects(
-    element: &PageElement,
-    counts: &mut HashMap<String, usize>,
-    comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
-) {
-    match element {
-        PageElement::Block(block) => {
-            count_selector_in_block_with_objects(block, counts, comm_obj_ref_map);
-        }
-        PageElement::When(cond) => {
-            for case in &cond.cases {
-                for elem in &case.elements {
-                    count_selector_in_element_with_objects(elem, counts, comm_obj_ref_map);
-                }
-            }
-        }
-    }
-}
-
-fn count_selector_in_block_with_objects(
-    block: &PageBlock,
-    counts: &mut HashMap<String, usize>,
-    comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
-) {
-    for item in &block.items {
-        count_selector_in_item_with_objects(item, counts, comm_obj_ref_map);
-    }
-}
-
-fn count_selector_in_item_with_objects(
-    item: &PageItem,
-    counts: &mut HashMap<String, usize>,
-    comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
-) {
-    match item {
-        PageItem::When(cond) => {
-            for case in &cond.cases {
-                for nested_item in &case.items {
-                    count_selector_in_item_with_objects(nested_item, counts, comm_obj_ref_map);
-                }
-            }
-        }
-        // These items create choose blocks on their selector_param
-        PageItem::ObjWithValue { selector_param, .. } => {
-            *counts.entry(selector_param.to_string()).or_insert(0) += 1;
-        }
-        PageItem::GroupedObjChoose { selector_param, .. } => {
-            *counts.entry(selector_param.to_string()).or_insert(0) += 1;
-        }
-        // Obj items also create choose blocks - count selectors from the object refs
-        PageItem::Obj(name) => {
-            if let Some(refs) = comm_obj_ref_map.get(*name) {
-                // Collect unique selector params from this object's refs
-                let mut seen_selectors: std::collections::HashSet<&str> = std::collections::HashSet::new();
-                for (_, sel_param, sel_val) in refs {
-                    if let (Some(param), Some(_)) = (sel_param.as_ref(), sel_val) {
-                        // Only count each selector once per Obj item (it creates one choose per selector)
-                        if seen_selectors.insert(param.as_str()) {
-                            *counts.entry(param.clone()).or_insert(0) += 1;
-                        }
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-
-/// Memory segment definition for System 7 devices.
-#[derive(Debug, Clone)]
-pub struct System7Segment {
-    /// Segment name suffix (e.g., "4000" for address table)
-    pub name: &'static str,
-    /// Memory address
-    pub address: u32,
-    /// Segment size in bytes
-    pub size: u32,
-    /// Memory type ("EEPROM" or "RAM", None for default)
-    pub memory_type: Option<&'static str>,
-    /// Data bytes (base64 encoded). If None, segment is uninitialized (RAM).
-    pub data: Option<&'static [u8]>,
-    /// Mask bytes (base64 encoded). If None, no mask.
-    pub mask: Option<&'static [u8]>,
-}
-
-/// System 7 memory layout configuration.
-#[derive(Debug, Clone)]
-pub struct System7MemoryLayout {
-    /// Memory segments for the Code section
-    pub segments: Vec<System7Segment>,
-    /// Address table segment name (reference to segment in segments)
-    pub address_table_segment: &'static str,
-    /// Association table segment name
-    pub association_table_segment: &'static str,
-    /// Address table offset within segment
-    pub address_table_offset: u32,
-    /// Association table offset within segment
-    pub association_table_offset: u32,
-    /// Address table max entries
-    pub address_table_max_entries: u16,
-    /// Association table max entries
-    pub association_table_max_entries: u16,
-}
-
-/// Configuration for generating MTXML files (ApplicationProgram, Hardware, Catalog).
-pub struct ApplicationProgramConfig<'a> {
-    /// Human-readable application name
-    pub name: &'a str,
-    /// Device descriptor with mask version, manufacturer ID, etc.
-    pub device: &'a DeviceDescriptor,
-    /// KNX XML schema version to use. If None, defaults to V20.
-    /// This affects the xmlns namespace in generated XML files.
-    pub schema_version: Option<crate::signing::KnxSchemaVersion>,
-    /// Extended parameter definitions with enum variants
-    pub params: &'a [EtsParamDefExt],
-    /// Virtual parameter definitions that exist only in ETS (not stored in device memory).
-    /// These are useful for things like device name, channel names, or other text parameters
-    /// that are displayed in ETS but don't consume device memory.
-    ///
-    /// Virtual params appear first in the parameter list, followed by regular params.
-    pub virtual_params: Option<&'a [EtsParamDefExt]>,
-    /// Default parameter values as raw bytes
-    pub param_defaults: &'a [u8],
-    /// Communication object definitions
-    pub comm_objects: &'a [EtsCommObjectDef],
-    /// Communication object reference definitions (for multi-ref objects)
-    pub comm_object_refs: &'a [EtsCommObjectRefDef],
-    /// Union fields from derive macro (optional)
-    pub union_fields: Option<&'a [EtsUnionFieldInfo]>,
-    /// Channel name for the UI grouping
-    pub channel_name: &'a str,
-    /// Base address for absolute segments (System 7 only, deprecated - use system7_layout)
-    /// For System 7, this is the memory address where parameters start
-    pub absolute_segment_address: Option<u32>,
-    /// System 7 memory layout configuration (if None, uses simple single-segment layout)
-    pub system7_layout: Option<System7MemoryLayout>,
-    /// Application hash/suffix for the ApplicationProgram ID (4 hex chars).
-    /// If None, defaults to "0000". Example: "E59D" for MDT devices.
-    pub application_hash: Option<&'a str>,
-
-    // ========================================================================
-    // ApplicationProgram optional version attributes
-    // ========================================================================
-    /// Non-registration relevant data version (optional).
-    /// Used for version management in ETS.
-    pub non_reg_relevant_data_version: Option<u32>,
-    /// Previous versions this program replaces (space-separated list).
-    /// Example: "18 19" means this version replaces versions 18 and 19.
-    pub replaces_versions: Option<&'a str>,
-    /// Hash of the application data (base64 encoded).
-    /// Used by ETS for integrity checking.
-    pub application_data_hash: Option<&'a str>,
-
-    // ========================================================================
-    // Hardware/Catalog fields (for Hardware.mtxml and Catalog.mtxml generation)
-    // ========================================================================
-    /// Device serial number (6 bytes, unique per device).
-    /// First 2 bytes should match manufacturer_id.
-    pub serial_number: [u8; 6],
-    /// Hardware version number (displayed in ETS)
-    pub hardware_version: u8,
-    /// Hardware name (displayed in ETS hardware list)
-    pub hardware_name: &'a str,
-    /// Product display text (shown in ETS catalog)
-    pub product_name: &'a str,
-    /// Product order number (for ordering/identification)
-    pub order_number: &'a str,
-    /// Whether the device is rail-mounted (DIN rail)
-    pub is_rail_mounted: bool,
-    /// Catalog section name (category in ETS catalog)
-    pub catalog_section: &'a str,
-    /// Optional page layout definition. If provided, the Dynamic section will be
-    /// generated according to this layout. If None, auto-generation is used.
-    pub page_layout: Option<PageStructure>,
-    /// Optional module collection. If provided, ModuleDefs and Module instances
-    /// will be generated in the output XML.
-    pub modules: Option<ModuleCollection>,
-    /// Optional baggage definitions. If provided, these files (images, etc.) will be:
-    /// - Referenced in the Extension section of ApplicationProgram
-    /// - Listed in a generated Baggages.xml manifest
-    /// - Included in the signed .knxprod package
-    pub baggages: Option<&'a [BaggageDef<'a>]>,
-}
-
-impl<'a> ApplicationProgramConfig<'a> {
-    /// Get the mask family for this configuration
-    pub fn mask_family(&self) -> MaskFamily {
-        MaskFamily::from_mask_version(self.device.mask_version)
-    }
-
-    /// Get the number of virtual params at the device level.
-    pub fn virtual_params_count(&self) -> usize {
-        self.virtual_params.map_or(0, |vp| vp.len())
-    }
-
-    /// Iterate over all device-level params (virtual params first, then regular params).
-    /// This matches the XML generation order.
-    pub fn all_params(&self) -> impl Iterator<Item = &EtsParamDefExt> {
-        let virtual_params = self.virtual_params.unwrap_or(&[]);
-        virtual_params.iter().chain(self.params.iter())
-    }
-
-    /// Find a device-level parameter by name (searches virtual params first, then regular).
-    /// Returns the 1-based parameter number.
-    pub fn find_param_num_by_name(&self, name: &str) -> Option<u32> {
-        let virtual_params = self.virtual_params.unwrap_or(&[]);
-
-        // First search virtual params (index 0 -> param_num 1)
-        if let Some(idx) = virtual_params.iter().position(|p| p.base.name == name) {
-            return Some((idx + 1) as u32);
-        }
-
-        // Then search regular params (offset by virtual_params.len())
-        if let Some(idx) = self.params.iter().position(|p| p.base.name == name) {
-            return Some((virtual_params.len() + idx + 1) as u32);
-        }
-
-        None
-    }
-}
-
-/// Strip bytes belonging to `no_memory` (virtual) parameters from the raw defaults.
-///
-/// Virtual parameters exist in the Rust struct for metadata purposes but should not
-/// occupy device memory. This function creates a new byte vector with the `no_memory`
-/// fields' bytes removed.
-///
-/// The function works by:
-/// 1. Identifying ranges of bytes that belong to `no_memory` parameters
-/// 2. Copying only the non-virtual bytes to the output
-///
-/// # Arguments
-/// * `raw_defaults` - The original parameter bytes (from the Rust struct)
-/// * `params` - Parameter definitions including offset and size info
-///
-/// # Returns
-/// A new `Vec<u8>` with virtual parameter bytes removed
-fn strip_no_memory_bytes(raw_defaults: &[u8], params: &[EtsParamDefExt]) -> Vec<u8> {
-    // Collect ranges of bytes to exclude (offset, size_bytes) for no_memory params
-    let mut exclude_ranges: Vec<(usize, usize)> = params
-        .iter()
-        .filter(|p| p.base.no_memory)
-        .map(|p| {
-            let offset = p.base.offset as usize;
-            let size_bytes = ((p.base.size_bits as usize) + 7) / 8;
-            (offset, size_bytes)
-        })
-        .collect();
-
-    // If no no_memory params, return as-is
-    if exclude_ranges.is_empty() {
-        return raw_defaults.to_vec();
-    }
-
-    // Sort by offset and merge overlapping ranges
-    exclude_ranges.sort_by_key(|(offset, _)| *offset);
-
-    // Build output by copying non-excluded ranges
-    let mut result = Vec::with_capacity(raw_defaults.len());
-    let mut current_pos = 0;
-
-    for (exclude_start, exclude_size) in &exclude_ranges {
-        // Copy bytes before this exclusion
-        if current_pos < *exclude_start {
-            result.extend_from_slice(&raw_defaults[current_pos..*exclude_start]);
-        }
-        // Skip past the excluded bytes
-        current_pos = (*exclude_start + *exclude_size).max(current_pos);
-    }
-
-    // Copy any remaining bytes after the last exclusion
-    if current_pos < raw_defaults.len() {
-        result.extend_from_slice(&raw_defaults[current_pos..]);
-    }
-
-    result
-}
-
-/// Generator for creating ApplicationProgram MTXML files.
 pub struct MtxmlGenerator;
 
 impl MtxmlGenerator {
@@ -1359,11 +669,7 @@ impl MtxmlGenerator {
                     // Look up param number by name (searches both virtual_params and params)
                     if let Some(param_num) = def.find_param_num_by_name(name) {
                         let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
-                        result.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                            ref_id,
-                            text: None,
-                            internal_description: None,
-                        }));
+                        result.push(block_param_ref(ref_id));
                     }
                 }
                 ModuleLayoutItem::Obj(name) => {
@@ -1372,10 +678,7 @@ impl MtxmlGenerator {
                         if let Some(idx) = objs.iter().position(|o| o.name == *name) {
                             let ref_num = idx + 1;
                             let ref_id = format!("{}_O-{}-{}_R-{}", module_id, obj_base_arg_idx + 1, idx, ref_num);
-                            result.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
-                                ref_id,
-                                internal_description: None,
-                            }));
+                            result.push(block_com_obj_ref(ref_id));
                         }
                     }
                 }
@@ -1397,11 +700,7 @@ impl MtxmlGenerator {
                     // Look up the picture param number from the map
                     if let Some(&param_num) = picture_param_map.get(*baggage_name) {
                         let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
-                        result.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                            ref_id,
-                            text: None,
-                            internal_description: None,
-                        }));
+                        result.push(block_param_ref(ref_id));
                     } else {
                         log::warn!(
                             "Picture '{}' not found in picture_param_map for module",
@@ -1432,11 +731,7 @@ impl MtxmlGenerator {
                     // Look up param number by name (searches both virtual_params and params)
                     if let Some(param_num) = def.find_param_num_by_name(name) {
                         let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
-                        result.push(WhenItem::ParameterRefRef(ParameterRefRef {
-                            ref_id,
-                            text: None,
-                            internal_description: None,
-                        }));
+                        result.push(when_param_ref(ref_id));
                     }
                 }
                 ModuleLayoutItem::Obj(name) => {
@@ -1445,10 +740,7 @@ impl MtxmlGenerator {
                         if let Some(idx) = objs.iter().position(|o| o.name == *name) {
                             let ref_num = idx + 1;
                             let ref_id = format!("{}_O-{}-{}_R-{}", module_id, obj_base_arg_idx + 1, idx, ref_num);
-                            result.push(WhenItem::ComObjectRefRef(ComObjectRefRef {
-                                ref_id,
-                                internal_description: None,
-                            }));
+                            result.push(when_com_obj_ref(ref_id));
                         }
                     }
                 }
@@ -1470,11 +762,7 @@ impl MtxmlGenerator {
                     // Look up the picture param number from the map
                     if let Some(&param_num) = picture_param_map.get(*baggage_name) {
                         let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
-                        result.push(WhenItem::ParameterRefRef(ParameterRefRef {
-                            ref_id,
-                            text: None,
-                            internal_description: None,
-                        }));
+                        result.push(when_param_ref(ref_id));
                     } else {
                         log::warn!(
                             "Picture '{}' not found in picture_param_map for module",
@@ -1542,11 +830,7 @@ impl MtxmlGenerator {
             for (idx, _param) in params.iter().enumerate() {
                 let param_num = idx + 1;
                 let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
-                items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                    ref_id,
-                    text: None,
-                    internal_description: None,
-                }));
+                items.push(block_param_ref(ref_id));
             }
         }
 
@@ -1561,10 +845,7 @@ impl MtxmlGenerator {
                 let ref_num = idx + 1;
                 // ComObjectRef ID format: {module_id}_O-{arg_idx+1}-{obj_index}_R-{ref_num}
                 let ref_id = format!("{}_O-{}-{}_R-{}", module_id, obj_base_arg_idx + 1, idx, ref_num);
-                items.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
-                    ref_id,
-                    internal_description: None,
-                }));
+                items.push(block_com_obj_ref(ref_id));
             }
         }
 
@@ -1844,7 +1125,7 @@ impl MtxmlGenerator {
     /// - Hyphens become .2D
     /// - Slashes become .2F
     /// This applies to all user-defined names that appear in IDs
-    fn encode_id(name: &str) -> String {
+    pub fn encode_id(name: &str) -> String {
         name.replace('_', ".5F")
             .replace('-', ".2D")
             .replace('/', ".2F")
@@ -2724,11 +2005,7 @@ impl MtxmlGenerator {
             // The ref_id must match what we generate in build_parameter_refs
             let ref_id = format!("{}_R-{}", param_id, param_counter);
 
-            items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                ref_id,
-                text: None,
-                internal_description: None,
-            }));
+            items.push(block_param_ref(ref_id));
             param_counter += 1;
         }
 
@@ -2748,11 +2025,7 @@ impl MtxmlGenerator {
                 let selector_id = format!("{}_UP-{}", app_id, up_counter);
                 let selector_ref_id = format!("{}_R-{}", selector_id, ref_counter);
 
-                items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                    ref_id: selector_ref_id.clone(),
-                    text: None,
-                    internal_description: None,
-                }));
+                items.push(block_param_ref(selector_ref_id.clone()));
                 ref_counter += 1;
                 up_counter += 1;
 
@@ -2791,11 +2064,7 @@ impl MtxmlGenerator {
                     let when_items: Vec<WhenItem> = param_ref_ids
                         .into_iter()
                         .map(|ref_id| {
-                            WhenItem::ParameterRefRef(ParameterRefRef {
-                                ref_id,
-                                text: None,
-                                internal_description: None,
-                            })
+                            when_param_ref(ref_id)
                         })
                         .collect();
 
@@ -2851,10 +2120,7 @@ impl MtxmlGenerator {
             let co_id = format!("{}_O-{}", app_id, adjusted_index);
             let ref_id = format!("{}_R-{}", co_id, i + 1);
 
-            items.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
-                ref_id,
-                internal_description: None,
-            }));
+            items.push(block_com_obj_ref(ref_id));
         }
 
         // Now build choose/when for each selector_param
@@ -2887,10 +2153,7 @@ impl MtxmlGenerator {
                     let when_items: Vec<WhenItem> = ref_ids
                         .into_iter()
                         .map(|ref_id| {
-                            WhenItem::ComObjectRefRef(ComObjectRefRef {
-                                ref_id,
-                                internal_description: None,
-                            })
+                            when_com_obj_ref(ref_id)
                         })
                         .collect();
 
@@ -3426,19 +2689,11 @@ impl MtxmlGenerator {
             match page_item {
                 PageItem::Param(name) => {
                     if let Some(ref_id) = param_ref_map.get_primary(*name) {
-                        items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                            ref_id: ref_id.clone(),
-                            text: None,
-                            internal_description: None,
-                        }));
+                        items.push(block_param_ref(ref_id.clone()));
                     } else {
                         // Try to find it using the existing method as fallback
                         let ref_id = Self::find_param_ref_id(config, app_id, name);
-                        items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                            ref_id,
-                            text: None,
-                            internal_description: None,
-                        }));
+                        items.push(block_param_ref(ref_id));
                     }
                 }
                 PageItem::Obj(name) => {
@@ -3455,10 +2710,7 @@ impl MtxmlGenerator {
                         // If there are no selector-based refs, just emit the unconditional ref
                         if refs_with_selector.is_empty() {
                             if let Some((ref_id, _, _)) = refs_without_selector.first() {
-                                items.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
-                                    ref_id: ref_id.clone(),
-                                    internal_description: None,
-                                }));
+                                items.push(block_com_obj_ref(ref_id.clone()));
                             }
                         } else {
                             // Group refs by selector_param name
@@ -3486,10 +2738,7 @@ impl MtxmlGenerator {
                                     // Emit refs that match the active values
                                     for active_val in active_vals {
                                         if let Some(ref_id) = value_to_ref.get(active_val) {
-                                            items.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
-                                                ref_id: (*ref_id).clone(),
-                                                internal_description: None,
-                                            }));
+                                            items.push(block_com_obj_ref((*ref_id).clone()));
                                         }
                                     }
                                 } else {
@@ -3516,10 +2765,7 @@ impl MtxmlGenerator {
                                             default: None,
                                             test: Some(val.to_string()),
                                             internal_description: None,
-                                            items: vec![WhenItem::ComObjectRefRef(ComObjectRefRef {
-                                                ref_id: (*ref_id).clone(),
-                                                internal_description: None,
-                                            })],
+                                            items: vec![when_com_obj_ref((*ref_id).clone())],
                                         })
                                         .collect();
 
@@ -3571,11 +2817,7 @@ impl MtxmlGenerator {
 
                     // Emit selector parameter ref
                     if let Some(ref_id) = param_ref_map.get_primary(&selector_name) {
-                        items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                            ref_id: ref_id.clone(),
-                            text: None,
-                            internal_description: None,
-                        }));
+                        items.push(block_param_ref(ref_id.clone()));
                     }
 
                     // Find the union field info to get variant info
@@ -3599,11 +2841,7 @@ impl MtxmlGenerator {
                                     .primary
                                     .iter()
                                     .filter(|(name, _)| name.starts_with(&variant_prefix))
-                                    .map(|(_, ref_id)| WhenItem::ParameterRefRef(ParameterRefRef {
-                                        ref_id: ref_id.clone(),
-                                        text: None,
-                                        internal_description: None,
-                                    }))
+                                    .map(|(_, ref_id)| when_param_ref(ref_id.clone()))
                                     .collect();
 
                                 // Only add when clause if there are params for this variant
@@ -3694,21 +2932,13 @@ impl MtxmlGenerator {
                                 // Add extra param refs first
                                 for extra_param in *extra_params {
                                     if let Some(ref_id) = param_ref_map.get_primary(*extra_param) {
-                                        when_items.push(WhenItem::ParameterRefRef(ParameterRefRef {
-                                            ref_id: ref_id.clone(),
-                                            text: None,
-                                            internal_description: None,
-                                        }));
+                                        when_items.push(when_param_ref(ref_id.clone()));
                                     }
                                 }
 
                                 // Add sub-selector param ref
                                 if let Some(ref_id) = param_ref_map.get_primary(*sub_selector_param) {
-                                    when_items.push(WhenItem::ParameterRefRef(ParameterRefRef {
-                                        ref_id: ref_id.clone(),
-                                        text: None,
-                                        internal_description: None,
-                                    }));
+                                    when_items.push(when_param_ref(ref_id.clone()));
                                 }
 
                                 // Build nested choose on sub-selector
@@ -3725,10 +2955,7 @@ impl MtxmlGenerator {
                                     // Look up object ref by ref_name
                                     if let Some(named_refs) = comm_obj_ref_map.get(*ref_name) {
                                         if let Some((ref_id, _, _)) = named_refs.first() {
-                                            nested_when_items.push(WhenItem::ComObjectRefRef(ComObjectRefRef {
-                                                ref_id: ref_id.clone(),
-                                                internal_description: None,
-                                            }));
+                                            nested_when_items.push(when_com_obj_ref(ref_id.clone()));
                                         }
                                     }
 
@@ -3736,11 +2963,7 @@ impl MtxmlGenerator {
                                     let variant_prefix = format!("{}_{}_", value_union, variant_name);
                                     for (param_name, ref_id) in param_ref_map.primary.iter() {
                                         if param_name.starts_with(&variant_prefix) {
-                                            nested_when_items.push(WhenItem::ParameterRefRef(ParameterRefRef {
-                                                ref_id: ref_id.clone(),
-                                                text: None,
-                                                internal_description: None,
-                                            }));
+                                            nested_when_items.push(when_param_ref(ref_id.clone()));
                                         }
                                     }
 
@@ -3765,20 +2988,13 @@ impl MtxmlGenerator {
 
                                 // Add object ref for this selector value
                                 if let Some(obj_ref_id) = obj_by_value.get(&selector_value) {
-                                    when_items.push(WhenItem::ComObjectRefRef(ComObjectRefRef {
-                                        ref_id: (*obj_ref_id).clone(),
-                                        internal_description: None,
-                                    }));
+                                    when_items.push(when_com_obj_ref((*obj_ref_id).clone()));
                                 }
 
                                 // Add extra param refs
                                 for extra_param in *extra_params {
                                     if let Some(ref_id) = param_ref_map.get_primary(*extra_param) {
-                                        when_items.push(WhenItem::ParameterRefRef(ParameterRefRef {
-                                            ref_id: ref_id.clone(),
-                                            text: None,
-                                            internal_description: None,
-                                        }));
+                                        when_items.push(when_param_ref(ref_id.clone()));
                                     }
                                 }
 
@@ -3792,11 +3008,7 @@ impl MtxmlGenerator {
                                 let variant_prefix = format!("{}_{}_{}", value_union, variant_name, "");
                                 for (param_name, ref_id) in param_ref_map.primary.iter() {
                                     if !variant_name.is_empty() && param_name.starts_with(&variant_prefix.trim_end_matches('_')) && param_name.len() > variant_prefix.len() - 1 {
-                                        when_items.push(WhenItem::ParameterRefRef(ParameterRefRef {
-                                            ref_id: ref_id.clone(),
-                                            text: None,
-                                            internal_description: None,
-                                        }));
+                                        when_items.push(when_param_ref(ref_id.clone()));
                                     }
                                 }
                             }
@@ -3882,10 +3094,7 @@ impl MtxmlGenerator {
                             for (_obj_name, _value_union, obj_by_value) in &all_obj_refs {
                                 // Add object ref for this selector value
                                 if let Some(obj_ref_id) = obj_by_value.get(&selector_value) {
-                                    when_items.push(WhenItem::ComObjectRefRef(ComObjectRefRef {
-                                        ref_id: (*obj_ref_id).clone(),
-                                        internal_description: None,
-                                    }));
+                                    when_items.push(when_com_obj_ref((*obj_ref_id).clone()));
                                 }
 
                                 // Add hidden param refs (same for all objects in the group)
@@ -3896,11 +3105,7 @@ impl MtxmlGenerator {
                             // Add hidden param refs (once per when clause)
                             for hidden_param in *hidden_params {
                                 if let Some(ref_id) = param_ref_map.get_primary(*hidden_param) {
-                                    when_items.push(WhenItem::ParameterRefRef(ParameterRefRef {
-                                        ref_id: ref_id.clone(),
-                                        text: None,
-                                        internal_description: None,
-                                    }));
+                                    when_items.push(when_param_ref(ref_id.clone()));
                                 }
                             }
 
@@ -3909,11 +3114,7 @@ impl MtxmlGenerator {
                                 let variant_prefix = format!("{}_{}_", value_union, variant.text);
                                 for (param_name, ref_id) in param_ref_map.primary.iter() {
                                     if param_name.starts_with(&variant_prefix) {
-                                        when_items.push(WhenItem::ParameterRefRef(ParameterRefRef {
-                                            ref_id: ref_id.clone(),
-                                            text: None,
-                                            internal_description: None,
-                                        }));
+                                        when_items.push(when_param_ref(ref_id.clone()));
                                     }
                                 }
                             }
@@ -3956,21 +3157,14 @@ impl MtxmlGenerator {
                             .or_else(|| refs.first());
 
                         if let Some((ref_id, _, _)) = ref_to_use {
-                            items.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
-                                ref_id: ref_id.clone(),
-                                internal_description: None,
-                            }));
+                            items.push(block_com_obj_ref(ref_id.clone()));
                         }
                     }
 
                     // Add param refs directly
                     for param_name in *params {
                         if let Some(ref_id) = param_ref_map.get_primary(*param_name) {
-                            items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                                ref_id: ref_id.clone(),
-                                text: None,
-                                internal_description: None,
-                            }));
+                            items.push(block_param_ref(ref_id.clone()));
                         }
                     }
                 }
@@ -3987,10 +3181,7 @@ impl MtxmlGenerator {
                                 .or_else(|| refs.first());
 
                             if let Some((ref_id, _, _)) = ref_to_use {
-                                items.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
-                                    ref_id: ref_id.clone(),
-                                    internal_description: None,
-                                }));
+                                items.push(block_com_obj_ref(ref_id.clone()));
                             }
                         }
                     }
@@ -3998,11 +3189,7 @@ impl MtxmlGenerator {
                     // Add param refs directly
                     for param_name in *params {
                         if let Some(ref_id) = param_ref_map.get_primary(*param_name) {
-                            items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                                ref_id: ref_id.clone(),
-                                text: None,
-                                internal_description: None,
-                            }));
+                            items.push(block_param_ref(ref_id.clone()));
                         }
                     }
                 }
@@ -4015,10 +3202,7 @@ impl MtxmlGenerator {
                         if let Some(refs) = comm_obj_ref_map.get(*ref_name) {
                             // Get the first ref with this name (should be unique)
                             if let Some((ref_id, _, _)) = refs.first() {
-                                items.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
-                                    ref_id: ref_id.clone(),
-                                    internal_description: None,
-                                }));
+                                items.push(block_com_obj_ref(ref_id.clone()));
                             }
                         }
                     }
@@ -4026,11 +3210,7 @@ impl MtxmlGenerator {
                     // Add param refs directly
                     for param_name in *params {
                         if let Some(ref_id) = param_ref_map.get_primary(*param_name) {
-                            items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                                ref_id: ref_id.clone(),
-                                text: None,
-                                internal_description: None,
-                            }));
+                            items.push(block_param_ref(ref_id.clone()));
                         }
                     }
                 }
@@ -4047,21 +3227,14 @@ impl MtxmlGenerator {
                             .or_else(|| refs.first());
 
                         if let Some((ref_id, _, _)) = ref_to_use {
-                            items.push(ParameterBlockItem::ComObjectRefRef(ComObjectRefRef {
-                                ref_id: ref_id.clone(),
-                                internal_description: None,
-                            }));
+                            items.push(block_com_obj_ref(ref_id.clone()));
                         }
                     }
 
                     // Add hidden param refs
                     for param_name in *hidden_params {
                         if let Some(ref_id) = param_ref_map.get_primary(*param_name) {
-                            items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                                ref_id: ref_id.clone(),
-                                text: None,
-                                internal_description: None,
-                            }));
+                            items.push(block_param_ref(ref_id.clone()));
                         }
                     }
 
@@ -4075,11 +3248,7 @@ impl MtxmlGenerator {
                             let ref_id = param_ref_map.get_by_text(param_name, *text_override)
                                 .or_else(|| param_ref_map.get_primary(param_name));
                             if let Some(ref_id) = ref_id {
-                                items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                                    ref_id: ref_id.clone(),
-                                    text: None, // Text is on ParameterRef, not ParameterRefRef
-                                    internal_description: None,
-                                }));
+                                items.push(block_param_ref(ref_id.clone()));
                             }
                         }
                     }
@@ -4099,11 +3268,7 @@ impl MtxmlGenerator {
                             let ref_id = param_ref_map.get_by_text(param_name, *text_override)
                                 .or_else(|| param_ref_map.get_primary(param_name));
                             if let Some(ref_id) = ref_id {
-                                items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                                    ref_id: ref_id.clone(),
-                                    text: None, // Text is on ParameterRef, not ParameterRefRef
-                                    internal_description: None,
-                                }));
+                                items.push(block_param_ref(ref_id.clone()));
                             }
                         }
                     }
@@ -4127,11 +3292,7 @@ impl MtxmlGenerator {
                             let ref_id = param_ref_map.get_by_text(param_name, *text_override)
                                 .or_else(|| param_ref_map.get_primary(param_name));
                             if let Some(ref_id) = ref_id {
-                                items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                                    ref_id: ref_id.clone(),
-                                    text: None, // Text is on ParameterRef, not ParameterRefRef
-                                    internal_description: None,
-                                }));
+                                items.push(block_param_ref(ref_id.clone()));
                                 param_ref_id = Some(ref_id.clone());
                             }
                             break; // Only output one param for the union variant
@@ -4155,17 +3316,7 @@ impl MtxmlGenerator {
                                 active_conditions,
                             )?;
                             // Convert ParameterBlockItem to WhenItem
-                            let when_items: Vec<WhenItem> = case_block_items.into_iter().filter_map(|item| {
-                                match item {
-                                    ParameterBlockItem::ParameterRefRef(r) => Some(WhenItem::ParameterRefRef(r)),
-                                    ParameterBlockItem::ComObjectRefRef(r) => Some(WhenItem::ComObjectRefRef(r)),
-                                    ParameterBlockItem::ParameterSeparator(s) => Some(WhenItem::ParameterSeparator(s)),
-                                    ParameterBlockItem::Choose(c) => Some(WhenItem::Choose(c)),
-                                    ParameterBlockItem::Module(m) => Some(WhenItem::Module(m)),
-                                    ParameterBlockItem::Button(_) => None, // Buttons not in WhenItem
-                                    ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => None, // Table layout elements not in WhenItem
-                                }
-                            }).collect();
+                            let when_items = block_items_to_when_items(case_block_items);
                             whens.push(When {
                                 test: case.condition.to_test_string(),
                                 default: if case.condition.is_default() { Some(true) } else { None },
@@ -4215,17 +3366,7 @@ impl MtxmlGenerator {
                                 active_conditions,
                             )?;
                             // Convert ParameterBlockItem to WhenItem
-                            let when_items: Vec<WhenItem> = case_block_items.into_iter().filter_map(|item| {
-                                match item {
-                                    ParameterBlockItem::ParameterRefRef(r) => Some(WhenItem::ParameterRefRef(r)),
-                                    ParameterBlockItem::ComObjectRefRef(r) => Some(WhenItem::ComObjectRefRef(r)),
-                                    ParameterBlockItem::ParameterSeparator(s) => Some(WhenItem::ParameterSeparator(s)),
-                                    ParameterBlockItem::Choose(c) => Some(WhenItem::Choose(c)),
-                                    ParameterBlockItem::Module(m) => Some(WhenItem::Module(m)),
-                                    ParameterBlockItem::Button(_) => None, // Buttons not in WhenItem
-                                    ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => None, // Table layout elements not in WhenItem
-                                }
-                            }).collect();
+                            let when_items = block_items_to_when_items(case_block_items);
                             whens.push(When {
                                 test: case.condition.to_test_string(),
                                 default: if case.condition.is_default() { Some(true) } else { None },
@@ -4400,11 +3541,7 @@ impl MtxmlGenerator {
                     // Look up the ParameterRefRef for this picture.
                     let pic_param_name = format!("Pic_{}", baggage_name.replace('.', "_"));
                     if let Some(ref_id) = param_ref_map.get_primary(&pic_param_name) {
-                        items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
-                            ref_id: ref_id.clone(),
-                            text: None,
-                            internal_description: None,
-                        }));
+                        items.push(block_param_ref(ref_id.clone()));
                     } else {
                         log::warn!("Picture param ref not found for: {}", baggage_name);
                     }
@@ -4782,567 +3919,3 @@ impl MtxmlGenerator {
 // Hardware MTXML Generator
 // ============================================================================
 
-/// Generator for creating Hardware MTXML files.
-pub struct HardwareGenerator;
-
-impl HardwareGenerator {
-    /// Generate a complete Hardware MTXML document from the configuration.
-    pub fn generate(config: &ApplicationProgramConfig) -> Result<String, GeneratorError> {
-        let knx = Self::build_hardware_knx(config);
-        Self::serialize(&knx)
-    }
-
-    /// Build the complete Hardware KNX document structure.
-    fn build_hardware_knx(config: &ApplicationProgramConfig) -> HardwareKnx {
-        let manufacturer_id = format!("M-{:04X}", config.device.manufacturer_id);
-        let serial_hex = config
-            .serial_number
-            .iter()
-            .map(|b| format!("{:02X}", b))
-            .collect::<String>();
-
-        // Hardware ID: M-XXXX_H-<serial>-<version>
-        let hardware_id = format!("{}_H-{}-{}", manufacturer_id, serial_hex, config.hardware_version);
-
-        // Application hash suffix (defaults to 0000)
-        let app_hash = config.application_hash.unwrap_or("0000");
-
-        // Application ID for reference - must match ApplicationProgram ID
-        let app_id = format!(
-            "{}_A-{:04X}-{:02X}-{}",
-            manufacturer_id, config.device.application_id, config.device.application_version, app_hash
-        );
-
-        // Hardware2Program ID: <hardware_id>_HP-<app_number>-<app_version>-<hash>
-        let h2p_id = format!(
-            "{}_HP-{:04X}-{:02X}-{}",
-            hardware_id, config.device.application_id, config.device.application_version, app_hash
-        );
-
-        // Product ID: <hardware_id>_P-<order_number>
-        // Order number must be URL-encoded for ID convention compliance
-        let product_id = format!("{}_P-{}", hardware_id, MtxmlGenerator::encode_id(config.order_number));
-
-        let mut knx = HardwareKnx::default();
-        // Set schema version namespace and tool version if specified
-        if let Some(version) = config.schema_version {
-            knx.xmlns = version.namespace_url();
-            knx.tool_version = version.tool_version().to_string();
-        }
-        knx.manufacturer_data.manufacturer.ref_id = manufacturer_id;
-        knx.manufacturer_data.manufacturer.hardware.hardware = Hardware {
-            id: hardware_id,
-            name: config.hardware_name.to_string(),
-            serial_number: serial_hex,
-            version_number: config.hardware_version,
-            has_individual_address: true,
-            has_application_program: true,
-            products: Products {
-                product: Product {
-                    id: product_id,
-                    text: config.product_name.to_string(),
-                    order_number: config.order_number.to_string(),
-                    is_rail_mounted: config.is_rail_mounted,
-                    default_language: "en-US".to_string(),
-                },
-            },
-            hardware2programs: Hardware2Programs {
-                hardware2program: Hardware2Program {
-                    id: h2p_id,
-                    medium_types: medium_type_from_mask(config.device.mask_version).to_string(),
-                    application_program_ref: ApplicationProgramRef { ref_id: app_id },
-                },
-            },
-        };
-
-        knx
-    }
-
-    /// Serialize the Hardware KNX document to XML string.
-    fn serialize(knx: &HardwareKnx) -> Result<String, GeneratorError> {
-        let mut buffer = String::new();
-        buffer.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
-
-        let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
-        serializer.indent(' ', 2);
-
-        serde::Serialize::serialize(knx, serializer)
-            .map_err(|e| GeneratorError::Serialization(e.to_string()))?;
-
-        Ok(buffer)
-    }
-}
-
-// ============================================================================
-// Catalog MTXML Generator
-// ============================================================================
-
-/// Generator for creating Catalog MTXML files.
-pub struct CatalogGenerator;
-
-impl CatalogGenerator {
-    /// Generate a complete Catalog MTXML document from the configuration.
-    pub fn generate(config: &ApplicationProgramConfig) -> Result<String, GeneratorError> {
-        let knx = Self::build_catalog_knx(config);
-        Self::serialize(&knx)
-    }
-
-    /// Build the complete Catalog KNX document structure.
-    fn build_catalog_knx(config: &ApplicationProgramConfig) -> CatalogKnx {
-        let manufacturer_id = format!("M-{:04X}", config.device.manufacturer_id);
-        let serial_hex = config
-            .serial_number
-            .iter()
-            .map(|b| format!("{:02X}", b))
-            .collect::<String>();
-
-        // Hardware ID: M-XXXX_H-<serial>-<version>
-        let hardware_id = format!("{}_H-{}-{}", manufacturer_id, serial_hex, config.hardware_version);
-
-        // Application hash suffix (defaults to 0000)
-        let app_hash = config.application_hash.unwrap_or("0000");
-
-        // Hardware2Program ID - must match Hardware2Program ID in Hardware.xml
-        let h2p_id = format!(
-            "{}_HP-{:04X}-{:02X}-{}",
-            hardware_id, config.device.application_id, config.device.application_version, app_hash
-        );
-
-        // Product ID - must be URL-encoded for ID convention compliance
-        let product_id = format!("{}_P-{}", hardware_id, MtxmlGenerator::encode_id(config.order_number));
-
-        // Catalog Section ID
-        let section_id = format!("{}_CS-1", manufacturer_id);
-
-        // Catalog Item ID: <h2p_id>_CI-<order_number>-1
-        // Order number must be URL-encoded for ID convention compliance
-        let catalog_item_id = format!("{}_CI-{}-1", h2p_id, MtxmlGenerator::encode_id(config.order_number));
-
-        let mut knx = CatalogKnx::default();
-        // Set schema version namespace and tool version if specified
-        if let Some(version) = config.schema_version {
-            knx.xmlns = version.namespace_url();
-            knx.tool_version = version.tool_version().to_string();
-        }
-        knx.manufacturer_data.manufacturer.ref_id = manufacturer_id;
-        knx.manufacturer_data.manufacturer.catalog.catalog_section = CatalogSection {
-            id: section_id,
-            name: config.catalog_section.to_string(),
-            number: "1".to_string(),
-            default_language: "en-US".to_string(),
-            catalog_item: CatalogItem {
-                id: catalog_item_id,
-                name: config.product_name.to_string(),
-                number: "1".to_string(),
-                product_ref_id: product_id,
-                hardware2program_ref_id: h2p_id,
-                default_language: "en-US".to_string(),
-            },
-        };
-
-        knx
-    }
-
-    /// Serialize the Catalog KNX document to XML string.
-    fn serialize(knx: &CatalogKnx) -> Result<String, GeneratorError> {
-        let mut buffer = String::new();
-        buffer.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
-
-        let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
-        serializer.indent(' ', 2);
-
-        serde::Serialize::serialize(knx, serializer)
-            .map_err(|e| GeneratorError::Serialization(e.to_string()))?;
-
-        Ok(buffer)
-    }
-}
-
-/// Errors that can occur during MTXML generation.
-#[derive(Debug)]
-pub enum GeneratorError {
-    /// Error during XML serialization
-    Serialization(String),
-    /// Missing reference error - a RefId was used but no matching definition exists
-    MissingReference {
-        /// Type of reference (ParameterRef, ComObjectRef, ParameterType, etc.)
-        ref_type: String,
-        /// The RefId that was used but not found
-        ref_id: String,
-        /// Where the reference was used (e.g., "Dynamic/Choose" or "ParameterRefRef")
-        context: String,
-    },
-}
-
-impl std::fmt::Display for GeneratorError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            GeneratorError::Serialization(msg) => write!(f, "Serialization error: {}", msg),
-            GeneratorError::MissingReference { ref_type, ref_id, context } => {
-                write!(f, "Missing {ref_type} reference: '{ref_id}' referenced in {context}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for GeneratorError {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_format_app_id() {
-        let device = DeviceDescriptor {
-            mask_version: 0x57B0,
-            manufacturer_id: 0x00FA,
-            hardware_type: [0; 6],
-            application_id: 0x0200,
-            application_version: 0x01,
-            max_address_table_entries: 16,
-            max_association_table_entries: 16,
-            max_com_objects: 8,
-        };
-        let config = ApplicationProgramConfig {
-            name: "TestDevice",
-            device: &device,
-            schema_version: None,
-            params: &[],
-            virtual_params: None,
-            param_defaults: &[],
-            comm_objects: &[],
-            comm_object_refs: &[],
-            union_fields: None,
-            channel_name: "General",
-            absolute_segment_address: None,
-            system7_layout: None,
-            application_hash: None,
-            non_reg_relevant_data_version: None,
-            replaces_versions: None,
-            application_data_hash: None,
-            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x01],
-            hardware_version: 1,
-            hardware_name: "Test Hardware",
-            product_name: "Test Product",
-            order_number: "TEST-001",
-            is_rail_mounted: false,
-            catalog_section: "Test Section",
-            page_layout: None,
-            modules: None,
-            baggages: None,
-        };
-
-        let app_id = MtxmlGenerator::format_app_id(&config);
-        assert_eq!(app_id, "M-00FA_A-0200-01-0000");
-    }
-
-    #[test]
-    fn test_generate_empty_system_b() {
-        let config = ApplicationProgramConfig {
-            name: "TestDevice",
-            device: &DeviceDescriptor {
-                mask_version: 0x57B0,
-                manufacturer_id: 0x00FA,
-                hardware_type: [0; 6],
-                application_id: 0x0200,
-                application_version: 0x01,
-                max_address_table_entries: 16,
-                max_association_table_entries: 16,
-                max_com_objects: 8,
-            },
-            schema_version: None,
-            params: &[],
-            virtual_params: None,
-            param_defaults: &[],
-            comm_objects: &[],
-            comm_object_refs: &[],
-            union_fields: None,
-            channel_name: "General",
-            absolute_segment_address: None,
-            system7_layout: None,
-            application_hash: None,
-            non_reg_relevant_data_version: None,
-            replaces_versions: None,
-            application_data_hash: None,
-            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x01],
-            hardware_version: 1,
-            hardware_name: "Test Hardware",
-            product_name: "Test Product",
-            order_number: "TEST-001",
-            is_rail_mounted: false,
-            catalog_section: "Test Section",
-            page_layout: None,
-            modules: None,
-            baggages: None,
-        };
-
-        let xml = MtxmlGenerator::generate(&config).unwrap();
-        assert!(xml.contains("<?xml version=\"1.0\""));
-        assert!(xml.contains("TestDevice"));
-        assert!(xml.contains("MV-57B0"));
-        assert!(xml.contains("M-00FA_A-0200-01-0000"));
-        assert!(xml.contains("MergedProcedure")); // System B uses MergedProcedure
-        assert!(xml.contains("RelativeSegment")); // System B uses relative segments
-    }
-
-    #[test]
-    fn test_generate_empty_system_7() {
-        let config = ApplicationProgramConfig {
-            name: "System7Device",
-            device: &DeviceDescriptor {
-                mask_version: 0x0705,
-                manufacturer_id: 0x00FA,
-                hardware_type: [0; 6],
-                application_id: 0x0100,
-                application_version: 0x01,
-                max_address_table_entries: 16,
-                max_association_table_entries: 16,
-                max_com_objects: 8,
-            },
-            schema_version: None,
-            params: &[],
-            virtual_params: None,
-            param_defaults: &[],
-            comm_objects: &[],
-            comm_object_refs: &[],
-            union_fields: None,
-            channel_name: "General",
-            absolute_segment_address: Some(0x4000),
-            system7_layout: None,
-            application_hash: None,
-            non_reg_relevant_data_version: None,
-            replaces_versions: None,
-            application_data_hash: None,
-            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x02],
-            hardware_version: 1,
-            hardware_name: "System 7 Hardware",
-            product_name: "System 7 Product",
-            order_number: "SYS7-001",
-            is_rail_mounted: true,
-            catalog_section: "Test Section",
-            page_layout: None,
-            modules: None,
-            baggages: None,
-        };
-
-        let xml = MtxmlGenerator::generate(&config).unwrap();
-        assert!(xml.contains("<?xml version=\"1.0\""));
-        assert!(xml.contains("System7Device"));
-        assert!(xml.contains("MV-0705"));
-        assert!(xml.contains("ProductProcedure")); // System 7 uses ProductProcedure
-        assert!(xml.contains("AbsoluteSegment")); // System 7 uses absolute segments
-    }
-
-    #[test]
-    fn test_mask_family_detection() {
-        assert_eq!(MaskFamily::from_mask_version(0x57B0), MaskFamily::SystemB);
-        assert_eq!(MaskFamily::from_mask_version(0x07B0), MaskFamily::SystemB);
-        assert_eq!(MaskFamily::from_mask_version(0x0705), MaskFamily::System7);
-        assert_eq!(MaskFamily::from_mask_version(0x0701), MaskFamily::System7);
-        assert_eq!(MaskFamily::from_mask_version(0x0912), MaskFamily::Bim);
-        assert_eq!(MaskFamily::from_mask_version(0x0920), MaskFamily::BimM);
-    }
-
-    #[test]
-    fn test_generate_with_modules() {
-        use crate::module::{KnxModule, ModuleArgDef, ModuleArgValue, ModuleCollection, ModuleInstanceBuilder};
-
-        // Define a simple test module
-        struct TestDimmerModule;
-
-        impl KnxModule for TestDimmerModule {
-            const NAME: &'static str = "DimmerChannel";
-            const ARGUMENTS: &'static [ModuleArgDef] = &[
-                ModuleArgDef::param_offset("ParamBase"),
-                ModuleArgDef::object_number("ObjBase"),
-                ModuleArgDef::display("ChNo", 1),
-            ];
-            type Params = ();
-            type Objects = ();
-        }
-
-        // Create module instances
-        let mut modules = ModuleCollection::new();
-        let instances = ModuleInstanceBuilder::<TestDimmerModule>::new()
-            .for_range(1..=4, |ch| {
-                vec![
-                    ModuleArgValue::numeric(100 + (ch - 1) * 8),
-                    ModuleArgValue::numeric(10 + (ch - 1) * 3),
-                    ModuleArgValue::numeric(ch),
-                ]
-            })
-            .build();
-        modules.add_instances(instances);
-
-        let config = ApplicationProgramConfig {
-            name: "ModuleTestDevice",
-            device: &DeviceDescriptor {
-                mask_version: 0x57B0,
-                manufacturer_id: 0x00FA,
-                hardware_type: [0; 6],
-                application_id: 0x0300,
-                application_version: 0x01,
-                max_address_table_entries: 16,
-                max_association_table_entries: 16,
-                max_com_objects: 16,
-            },
-            schema_version: None,
-            params: &[],
-            virtual_params: None,
-            param_defaults: &[],
-            comm_objects: &[],
-            comm_object_refs: &[],
-            union_fields: None,
-            channel_name: "General",
-            absolute_segment_address: None,
-            system7_layout: None,
-            application_hash: None,
-            non_reg_relevant_data_version: None,
-            replaces_versions: None,
-            application_data_hash: None,
-            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x03],
-            hardware_version: 1,
-            hardware_name: "Test Hardware",
-            product_name: "Test Product",
-            order_number: "TEST-MOD",
-            is_rail_mounted: false,
-            catalog_section: "Test Section",
-            page_layout: None,
-            modules: Some(modules),
-            baggages: None,
-        };
-
-        let xml = MtxmlGenerator::generate(&config).unwrap();
-
-        // Verify ModuleDefs was generated
-        assert!(xml.contains("ModuleDefs"), "XML should contain ModuleDefs section");
-        assert!(xml.contains("ModuleDef"), "XML should contain ModuleDef elements");
-        assert!(xml.contains("DimmerChannel"), "XML should contain module name");
-        assert!(xml.contains("Arguments"), "XML should contain Arguments section");
-        assert!(xml.contains("Argument"), "XML should contain Argument elements");
-        assert!(xml.contains("ParamBase"), "XML should contain ParamBase argument");
-        assert!(xml.contains("ObjBase"), "XML should contain ObjBase argument");
-        assert!(xml.contains("ChNo"), "XML should contain ChNo argument");
-        // Allocates is computed from actual Params/Objects types, which are () here (size 0)
-        // Only ChNo has a fixed allocates value from display() constructor
-        assert!(xml.contains("Allocates=\"0\""), "XML should have allocates 0 for empty params/objects");
-        assert!(xml.contains("Allocates=\"1\""), "XML should have correct ChNo allocates");
-    }
-
-    #[test]
-    fn test_generate_module_instances_in_dynamic() {
-        use crate::module::{KnxModule, ModuleArgDef, ModuleArgValue, ModuleCollection, ModuleInstanceBuilder};
-        use crate::page_layout::{PageStructure, PageElement, PageBlock, PageItem};
-
-        // Define a simple test module
-        struct TestChannelModule;
-
-        impl KnxModule for TestChannelModule {
-            const NAME: &'static str = "ChannelModule";
-            const ARGUMENTS: &'static [ModuleArgDef] = &[
-                ModuleArgDef::param_offset("ParamBase"),
-                ModuleArgDef::object_number("ObjBase"),
-                ModuleArgDef::display("ChNo", 1),
-            ];
-            type Params = ();
-            type Objects = ();
-        }
-
-        // Create module instances
-        let mut modules = ModuleCollection::new();
-        let instances = ModuleInstanceBuilder::<TestChannelModule>::new()
-            .for_range(1..=2, |ch| {
-                vec![
-                    ModuleArgValue::numeric(100 + (ch - 1) * 4),  // ParamBase
-                    ModuleArgValue::numeric(10 + (ch - 1) * 2),   // ObjBase
-                    ModuleArgValue::numeric(ch),                   // ChNo
-                ]
-            })
-            .build();
-        modules.add_instances(instances);
-
-        // Create a page layout that includes module instances directly in a block
-        // This tests that PageItem::Module generates the proper XML in ParameterBlock
-        let page_layout = PageStructure {
-            device_settings: vec![
-                PageElement::Block(PageBlock {
-                    name: "modules",
-                    text: "Channel Modules",
-                    items: vec![
-                        // Module instances directly in the block (simpler test case)
-                        PageItem::Module {
-                            module_name: "ChannelModule",
-                            instance_index: 0,
-                        },
-                        PageItem::Module {
-                            module_name: "ChannelModule",
-                            instance_index: 1,
-                        },
-                    ],
-                }),
-            ],
-            channels: vec![],
-        };
-
-        let config = ApplicationProgramConfig {
-            name: "ModuleInstanceDevice",
-            device: &DeviceDescriptor {
-                mask_version: 0x57B0,
-                manufacturer_id: 0x00FA,
-                hardware_type: [0; 6],
-                application_id: 0x0400,
-                application_version: 0x01,
-                max_address_table_entries: 16,
-                max_association_table_entries: 16,
-                max_com_objects: 16,
-            },
-            schema_version: None,
-            params: &[],
-            virtual_params: None,
-            param_defaults: &[],
-            comm_objects: &[],
-            comm_object_refs: &[],
-            union_fields: None,
-            channel_name: "General",
-            absolute_segment_address: None,
-            system7_layout: None,
-            application_hash: None,
-            non_reg_relevant_data_version: None,
-            replaces_versions: None,
-            application_data_hash: None,
-            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x04],
-            hardware_version: 1,
-            hardware_name: "Test Hardware",
-            product_name: "Module Instance Test",
-            order_number: "TEST-MOD-INST",
-            is_rail_mounted: false,
-            catalog_section: "Test Section",
-            page_layout: Some(page_layout),
-            modules: Some(modules),
-            baggages: None,
-        };
-
-        let xml = MtxmlGenerator::generate(&config).unwrap();
-
-        // Verify ModuleDefs was generated
-        assert!(xml.contains("ModuleDefs"), "XML should contain ModuleDefs section");
-        assert!(xml.contains("ChannelModule"), "XML should contain module name");
-
-        // Verify Module instances appear in Dynamic section
-        assert!(xml.contains("<Dynamic>"), "XML should have Dynamic section");
-
-        // The Module instances should appear inside choose/when blocks
-        // Check for Module element with proper attributes
-        assert!(xml.contains("<Module "), "XML should contain Module elements");
-        assert!(xml.contains("RefId="), "Module should have RefId referencing the ModuleDef");
-
-        // Check for NumericArg elements with values
-        assert!(xml.contains("<NumericArg "), "XML should contain NumericArg elements");
-        assert!(xml.contains("Value=\"100\""), "First instance ParamBase should be 100");
-        assert!(xml.contains("Value=\"104\""), "Second instance ParamBase should be 104");
-        assert!(xml.contains("Value=\"10\""), "First instance ObjBase should be 10");
-        assert!(xml.contains("Value=\"12\""), "Second instance ObjBase should be 12");
-        assert!(xml.contains("Value=\"1\""), "First instance ChNo should be 1");
-        assert!(xml.contains("Value=\"2\""), "Second instance ChNo should be 2");
-    }
-}

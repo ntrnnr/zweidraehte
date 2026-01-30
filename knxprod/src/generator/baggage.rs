@@ -22,16 +22,18 @@
 //!
 //! # Example
 //!
-//! ```rust
-//! use knxprod::baggage_generator::{encode_baggage_filename, make_baggage_id};
+//! ```rust,ignore
+//! use knxprod::generator::baggage::{encode_baggage_filename, make_baggage_id};
 //!
 //! assert_eq!(encode_baggage_filename("licht.png"), "licht.2Epng");
 //! assert_eq!(encode_baggage_filename("socket_on.png"), "socket.5Fon.2Epng");
 //! assert_eq!(make_baggage_id(0x0083, "licht.png"), "M-0083_BG--licht.2Epng");
 //! ```
 
-use crate::schema::{BaggageContent, BaggageDef, BaggageRef};
 use crate::signing::KnxSchemaVersion;
+
+// Re-export for external use
+pub use crate::schema::{BaggageContent, BaggageDef, BaggageRef};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -60,7 +62,7 @@ fn format_knx_timestamp(dt: DateTime<Utc>) -> String {
 /// # Example
 ///
 /// ```rust
-/// use knxprod::baggage_generator::encode_baggage_filename;
+/// use knxprod::generator::baggage::encode_baggage_filename;
 ///
 /// assert_eq!(encode_baggage_filename("licht.png"), "licht.2Epng");
 /// assert_eq!(encode_baggage_filename("socket_on.png"), "socket.5Fon.2Epng");
@@ -98,7 +100,7 @@ pub fn encode_baggage_filename(name: &str) -> String {
 /// # Example
 ///
 /// ```rust
-/// use knxprod::baggage_generator::make_baggage_id;
+/// use knxprod::generator::baggage::make_baggage_id;
 ///
 /// assert_eq!(make_baggage_id(0x0083, "licht.png"), "M-0083_BG--licht.2Epng");
 /// assert_eq!(make_baggage_id(0x00FA, "icon.png"), "M-00FA_BG--icon.2Epng");

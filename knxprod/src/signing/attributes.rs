@@ -101,11 +101,6 @@ pub const HARDWARE2PROGRAM_ATTRS: &[AttrDef] = &[
     AttrDef::new("LoadedImage", "L", AttrType::String, None),
 ];
 
-/// ApplicationProgramRef element attributes.
-pub const APPLICATION_PROGRAM_REF_ATTRS: &[AttrDef] = &[
-    AttrDef::new("RefId", "R", AttrType::ApplProgId, None),
-];
-
 /// ApplicationProgram element attributes (sorted alphabetically by xml_name).
 pub const APPLICATION_PROGRAM_ATTRS: &[AttrDef] = &[
     AttrDef::new("AdditionalAddressesCount", "AAC", AttrType::Int32, Some("0")),

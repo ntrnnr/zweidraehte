@@ -44,36 +44,82 @@
 //!
 //! - [`schema`] - XML schema types for serialization
 //! - [`generator`] - MTXML generation engine
-//! - [`page_layout`] - ETS page layout definition DSL
-//! - [`module`] - KNX module definition DSL for reusable templates
+//! - [`definition`] - Device definition DSL (modules, page layouts)
+//! - [`runtime`] - Parsing and runtime support for MTXML files
 
-mod schema;
+// Core modules
 mod generator;
-pub mod page_layout;
-pub mod parser;
-pub mod model;
-pub mod module;
-pub mod master_data;
-pub mod device_info;
-pub mod baggage;
-pub mod baggage_generator;
-pub mod device;
+mod schema;
 pub mod signing;
 
-pub use schema::*;
+// Definition DSL (for creating devices in Rust)
+pub mod definition;
+
+// Runtime support (for parsing and working with MTXML)
+pub mod runtime;
+
+// Re-export definition types at crate root for convenience
+pub use definition::module::{
+    ConditionalModuleInstance, KnxModule, ModuleArgDef, ModuleArgRole, ModuleArgType,
+    ModuleArgValue, ModuleCollection, ModuleInstance, ModuleInstanceBuilder, StoredModuleDef,
+    StoredModuleInstance,
+};
+pub use definition::page_layout::{
+    ChannelDef, Condition, ConditionalElement, ConditionalItem, ElementCase, EtsPageLayout,
+    ItemCase, PageBlock, PageElement, PageItem, PageStructure,
+};
+
+// Re-export runtime types at crate root for convenience
+pub use runtime::device::Device;
+pub use runtime::model::{
+    ConditionEvaluator, DynamicVisitor, VisibilityVisitor, VisitorModuleContext, walk_dynamic,
+};
+
+// Re-export generator types
 pub use generator::*;
-pub use page_layout::{
-    EtsPageLayout, PageStructure, ChannelDef, PageElement, PageBlock, PageItem,
-    ConditionalElement, ElementCase, ConditionalItem, ItemCase, Condition,
-};
-pub use module::{
-    KnxModule, ModuleArgDef, ModuleArgType, ModuleArgValue, ModuleInstance,
-    ModuleInstanceBuilder, ConditionalModuleInstance, ModuleCollection,
-    StoredModuleDef, StoredModuleInstance,
-};
-pub use device::Device;
-pub use model::{
-    DynamicVisitor, ConditionEvaluator, VisitorModuleContext, VisibilityVisitor, walk_dynamic,
+
+// Re-export schema types
+pub use schema::*;
+
+// Legacy module aliases for backwards compatibility
+pub mod baggage {
+    //! Baggage file loading utilities (re-exported from [`crate::runtime::baggage`])
+    pub use crate::runtime::baggage::*;
+}
+pub mod device {
+    //! Device runtime state (re-exported from [`crate::runtime::device`])
+    pub use crate::runtime::device::*;
+}
+pub mod device_info {
+    //! Device programming information (re-exported from [`crate::runtime::device_info`])
+    pub use crate::runtime::device_info::*;
+}
+pub mod master_data {
+    //! KNX master data parsing (re-exported from [`crate::runtime::master_data`])
+    pub use crate::runtime::master_data::*;
+}
+pub mod model {
+    //! Runtime model and visitor pattern (re-exported from [`crate::runtime::model`])
+    pub use crate::runtime::model::*;
+}
+pub mod module {
+    //! Module definition DSL (re-exported from [`crate::definition::module`])
+    pub use crate::definition::module::*;
+}
+pub mod page_layout {
+    //! Page layout DSL (re-exported from [`crate::definition::page_layout`])
+    pub use crate::definition::page_layout::*;
+}
+pub mod parser {
+    //! XML parsing (re-exported from [`crate::runtime::parser`])
+    pub use crate::runtime::parser::*;
+}
+
+// Re-export baggage generation utilities
+pub use generator::baggage::{
+    baggages_to_refs, encode_baggage_filename, generate_baggages_xml,
+    get_baggage_files_for_signing, make_baggage_id, make_baggage_id_with_path,
+    write_baggage_files,
 };
 
 // Re-export paste for use by macros

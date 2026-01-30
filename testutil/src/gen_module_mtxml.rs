@@ -12,7 +12,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use knxprod::baggage_generator::{generate_baggages_xml, get_baggage_files_for_signing, write_baggage_files};
+use knxprod::{generate_baggages_xml, get_baggage_files_for_signing, write_baggage_files};
 use knxprod::signing::{KnxSchemaVersion, MasterDataSource, SigningConfig, create_knxprod};
 use testutil::devices::module_test_device::{
     BAGGAGES, DEVICE_DESCRIPTOR, DEVICE_VIRTUAL_PARAMS, DeviceParams, ModuleTestDevice, SERIAL_NUMBER,

@@ -45,11 +45,6 @@ pub fn parse_bool(s: &str) -> bool {
     matches!(s.to_lowercase().as_str(), "true" | "1")
 }
 
-/// Write a bool from string value as .NET BinaryWriter.Write(bool).
-pub fn write_dotnet_bool_str<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
-    write_dotnet_bool(writer, parse_bool(value))
-}
-
 /// Write uint32 as .NET BinaryWriter.Write(uint) - 4 bytes little-endian.
 pub fn write_dotnet_uint32<W: Write>(writer: &mut W, value: u32) -> io::Result<()> {
     writer.write_all(&value.to_le_bytes())
