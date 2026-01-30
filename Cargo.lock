@@ -2497,6 +2497,7 @@ name = "knxprod"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "const-default",
  "directories",
  "icu",

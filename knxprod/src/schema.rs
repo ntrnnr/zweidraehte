@@ -272,6 +272,76 @@ pub struct BaggageRef {
     pub ref_id: String,
 }
 
+// ============================================================================
+// Baggage Definition Types (for generation)
+// ============================================================================
+
+/// Definition of a baggage file for generation.
+///
+/// Baggages are resource files (typically images) that are:
+/// 1. Listed in the ApplicationProgram's Extension/Baggage refs
+/// 2. Indexed in a separate Baggages.xml manifest
+/// 3. Stored in a Baggages/ subdirectory
+/// 4. Included in signed .knxprod packages
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use knxprod::{BaggageDef, BaggageContent};
+///
+/// const BAGGAGES: &[BaggageDef] = &[
+///     BaggageDef {
+///         name: "light.png",
+///         target_path: "",
+///         content: BaggageContent::Embedded(include_bytes!("icons/light.png")),
+///     },
+/// ];
+/// ```
+#[derive(Debug, Clone)]
+pub struct BaggageDef<'a> {
+    /// Filename (e.g., "licht.png")
+    pub name: &'a str,
+    /// Optional subdirectory within Baggages/ (usually empty string)
+    pub target_path: &'a str,
+    /// File contents - either embedded or loaded at generation time
+    pub content: BaggageContent<'a>,
+}
+
+/// Content source for a baggage file.
+#[derive(Debug, Clone)]
+pub enum BaggageContent<'a> {
+    /// Embed file bytes at compile time using `include_bytes!`
+    Embedded(&'a [u8]),
+    /// Load from a file path at generation time
+    External(&'a str),
+}
+
+impl<'a> BaggageDef<'a> {
+    /// Create a new baggage definition with embedded content.
+    pub const fn embedded(name: &'a str, content: &'a [u8]) -> Self {
+        Self {
+            name,
+            target_path: "",
+            content: BaggageContent::Embedded(content),
+        }
+    }
+
+    /// Create a new baggage definition with external file path.
+    pub const fn external(name: &'a str, path: &'a str) -> Self {
+        Self {
+            name,
+            target_path: "",
+            content: BaggageContent::External(path),
+        }
+    }
+
+    /// Create a new baggage definition with a target subdirectory.
+    pub const fn with_target_path(mut self, target_path: &'a str) -> Self {
+        self.target_path = target_path;
+        self
+    }
+}
+
 /// Container for messages used in error handling, etc.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Messages {

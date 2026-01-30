@@ -149,6 +149,12 @@ pub enum ModuleLayoutItem {
     Param(&'static str),
     /// A communication object reference by name
     Obj(&'static str),
+    /// A picture/image from baggages, displayed as an icon in ETS.
+    ///
+    /// The string is the baggage name (e.g., "icon.png") which will be converted
+    /// to a full baggage ID during generation. Pictures are implemented as virtual
+    /// parameters with TypePicture that don't consume device memory.
+    Picture(&'static str),
     /// Visual separator with optional text
     Separator(Option<&'static str>),
     /// Nested conditional within a block
@@ -215,6 +221,22 @@ pub enum PageItem {
     Param(&'static str),
     /// A communication object reference by name (field name from EtsComObjects struct)
     Obj(&'static str),
+    /// A picture/image from baggages, displayed as an icon in ETS.
+    ///
+    /// The string is the baggage name (e.g., "licht.png") which will be converted
+    /// to a full baggage ID during generation. Pictures are implemented as virtual
+    /// parameters with TypePicture that don't consume device memory.
+    ///
+    /// # Example
+    ///
+    /// In a page layout:
+    /// ```ignore
+    /// block "Channel" {
+    ///     picture "light_icon.png",  // Displays the light icon
+    ///     param mode,
+    /// }
+    /// ```
+    Picture(&'static str),
     /// Visual separator with optional text
     Separator(Option<&'static str>),
     /// Nested conditional within a block
@@ -960,6 +982,13 @@ macro_rules! ets_pages {
         items
     }};
 
+    // Parse picture item (baggage reference by name)
+    (@items picture $name:literal $($rest:tt)*) => {{
+        let mut items = vec![$crate::page_layout::PageItem::Picture($name)];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
     // Parse module instance with inline arguments
     // Syntax: module ModuleName { ArgName: value, ArgName2: value2, ... }
     // Example: module DimmerChannel { ParamBase: 5, ObjBase: 0, ChNo: 1 }
@@ -1254,6 +1283,13 @@ macro_rules! ets_module_pages {
     // Parse obj item
     (@items obj $name:ident $($rest:tt)*) => {{
         let mut items = vec![$crate::page_layout::ModuleLayoutItem::Obj(stringify!($name))];
+        items.extend($crate::ets_module_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse picture item (baggage reference by name)
+    (@items picture $name:literal $($rest:tt)*) => {{
+        let mut items = vec![$crate::page_layout::ModuleLayoutItem::Picture($name)];
         items.extend($crate::ets_module_pages!(@items $($rest)*));
         items
     }};

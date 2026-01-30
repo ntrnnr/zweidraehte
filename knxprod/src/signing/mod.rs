@@ -151,6 +151,13 @@ impl KnxSchemaVersion {
             self.as_str()
         )
     }
+
+    /// Get the tool version string for the generated XML files.
+    ///
+    /// Uses the knxprod crate version.
+    pub fn tool_version(&self) -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
 }
 
 /// Source for KNX master data (knx_master.xml).

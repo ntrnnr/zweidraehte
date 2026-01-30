@@ -10,13 +10,15 @@
 
 use std::env;
 use std::fs;
+use std::path::PathBuf;
 
 use const_default::ConstDefault;
 
+use knxprod::signing::KnxSchemaVersion;
 use knxprod::signing::{MasterDataSource, SigningConfig, create_knxprod};
-use testutil::devices::{DEVICE_DESCRIPTOR, DemoParams, SERIAL_NUMBER, comm_objs, DemoStack};
-use testutil::mtxml_gen::{ApplicationProgramConfig, MtxmlGenerator, HardwareGenerator, CatalogGenerator};
+use testutil::devices::{DEVICE_DESCRIPTOR, DemoParams, DemoStack, SERIAL_NUMBER, comm_objs};
 use testutil::mtxml_gen::page_layout::EtsPageLayout;
+use testutil::mtxml_gen::{ApplicationProgramConfig, CatalogGenerator, HardwareGenerator, MtxmlGenerator};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -24,16 +26,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get default parameter values as bytes
     let defaults = DemoParams::DEFAULT;
     let param_bytes = unsafe {
-        core::slice::from_raw_parts(
-            &defaults as *const DemoParams as *const u8,
-            core::mem::size_of::<DemoParams>(),
-        )
+        core::slice::from_raw_parts(&defaults as *const DemoParams as *const u8, core::mem::size_of::<DemoParams>())
     };
 
     let config = ApplicationProgramConfig {
         name: "DerGeraet",
         device: &DEVICE_DESCRIPTOR,
-        schema_version: None, // Use default V20
+        schema_version: Some(KnxSchemaVersion::V20),
         params: DemoParams::ETS_PARAMS_EXT,
         virtual_params: None,
         param_defaults: param_bytes,
@@ -42,8 +41,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         union_fields: Some(DemoParams::ETS_UNIONS),
         channel_name: "General",
         absolute_segment_address: None, // System B uses relative segments
-        system7_layout: None, // System B doesn't use System 7 layout
-        application_hash: None, // Use default 0000
+        system7_layout: None,           // System B doesn't use System 7 layout
+        application_hash: None,         // Use default 0000
         non_reg_relevant_data_version: None,
         replaces_versions: None,
         application_data_hash: None,
@@ -60,25 +59,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Use the page layout from DemoStack
         page_layout: Some(DemoStack::page_layout()),
         modules: None,
+        baggages: None,
     };
+
+    // Create output directory structure: out/<device>/M-XXXX/
+    let manufacturer_id = format!("{:04X}", DEVICE_DESCRIPTOR.manufacturer_id);
+    let out_dir: PathBuf = ["out", config.name, &format!("M-{}", manufacturer_id)].iter().collect();
+    fs::create_dir_all(&out_dir)?;
+    println!("Output directory: {}", out_dir.display());
 
     // Generate ApplicationProgram MTXML
     let app_xml = MtxmlGenerator::generate(&config)?;
-    let app_path = "ApplicationProgram1.mtxml";
-    fs::write(app_path, &app_xml)?;
-    println!("Generated: {}", app_path);
+    let app_path = out_dir.join("ApplicationProgram1.mtxml");
+    fs::write(&app_path, &app_xml)?;
+    println!("Generated: {}", app_path.display());
 
     // Generate Hardware MTXML
     let hw_xml = HardwareGenerator::generate(&config)?;
-    let hw_path = "Hardware1.mtxml";
-    fs::write(hw_path, &hw_xml)?;
-    println!("Generated: {}", hw_path);
+    let hw_path = out_dir.join("Hardware1.mtxml");
+    fs::write(&hw_path, &hw_xml)?;
+    println!("Generated: {}", hw_path.display());
 
     // Generate Catalog MTXML
     let cat_xml = CatalogGenerator::generate(&config)?;
-    let cat_path = "Catalog1.mtxml";
-    fs::write(cat_path, &cat_xml)?;
-    println!("Generated: {}", cat_path);
+    let cat_path = out_dir.join("Catalog1.mtxml");
+    fs::write(&cat_path, &cat_xml)?;
+    println!("Generated: {}", cat_path.display());
 
     println!("\nAll MTXML files generated successfully!");
 
@@ -89,13 +95,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("\nGenerating signed .knxprod package...");
 
         // Build the application program ID from the device descriptor
-        let manufacturer_id = format!("{:04X}", DEVICE_DESCRIPTOR.manufacturer_id);
         let app_number = format!("{:04X}", DEVICE_DESCRIPTOR.application_id);
         let app_version = format!("{:02X}", DEVICE_DESCRIPTOR.application_version);
-        let application_program_id = format!(
-            "M-{}_A-{}-{}-0000",
-            manufacturer_id, app_number, app_version
-        );
+        let application_program_id = format!("M-{}_A-{}-{}-0000", manufacturer_id, app_number, app_version);
 
         let signing_config = SigningConfig {
             manufacturer_id: manufacturer_id.clone(),
@@ -107,9 +109,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let knxprod_bytes = create_knxprod(&signing_config, MasterDataSource::Download)?;
-        let output_path = format!("{}.knxprod", config.name);
+        // Write knxprod to out/<device>/<name>.knxprod
+        let device_out_dir: PathBuf = ["out", config.name].iter().collect();
+        let output_path = device_out_dir.join(format!("{}.knxprod", config.name));
         fs::write(&output_path, &knxprod_bytes)?;
-        println!("Generated: {} ({} bytes)", output_path, knxprod_bytes.len());
+        println!("Generated: {} ({} bytes)", output_path.display(), knxprod_bytes.len());
         println!("\nVerify with: python3 manuf_tool_data/knx_verifier.py all .");
     } else {
         println!("\nTip: Use --knxprod flag to also generate a signed .knxprod package");

@@ -571,6 +571,16 @@ impl EtsPageLayout for MyDevice {
 | `param union::Variant.field` | Union field parameter | `<ParameterRefRef />` (with computed name) |
 | `selector union_field` | Union selector (shows selector + choose/when) | Selector param + choose block |
 
+#### Visual Keywords
+
+| Keyword | Purpose | XML Output |
+|---------|---------|------------|
+| `sep` | Visual separator (no text) | `<ParameterSeparator />` |
+| `sep "text"` | Visual separator with label | `<ParameterSeparator Text="text" />` |
+| `picture "file.png"` | Display baggage image | `<ParameterRefRef />` for TypePicture param |
+
+Pictures reference baggage files and are displayed as icons in ETS. They're implemented as virtual parameters with `TypePicture` that don't consume device memory.
+
 #### Object Keywords
 
 | Keyword | Purpose | Syntax |
@@ -681,6 +691,59 @@ The expression is evaluated at runtime and the resulting `PageItem` is included 
 |---------|---------|--------|
 | `sep` | Visual separator | `sep` |
 | `sep "text"` | Separator with label | `sep "Advanced Settings"` |
+| `picture "file.png"` | Display baggage image | `picture "icon.png"` |
+
+#### Conditional Pictures
+
+Pictures can be conditionally displayed based on parameter values. The selector parameter is stored on the device and controls which picture ETS shows:
+
+```rust
+// Define the icon selection enum with a default variant
+#[derive(EtsEnum, Default)]
+#[repr(u8)]
+pub enum IconSelection {
+    #[default]  // This variant's value (1) becomes the parameter default
+    #[ets(display = "Christmas")]
+    Christmas = 1,
+    #[ets(display = "Night")]
+    Night = 2,
+}
+
+// In the page layout
+block "Settings" => "Channel Settings" {
+    param icon_selection
+    // Show different picture based on icon_selection value
+    when @icon_selection {
+        [1] => {
+            picture "xmas.png"
+        }
+        [2] => {
+            picture "night.png"
+        }
+    }
+}
+```
+
+This generates a `choose/when` XML structure:
+```xml
+<ParameterRefRef RefId="...icon_selection_R-1"/>
+<choose ParamRefId="...icon_selection_R-1">
+  <when test="1">
+    <ParameterRefRef RefId="...xmas_png_R-2"/>
+  </when>
+  <when test="2">
+    <ParameterRefRef RefId="...night_png_R-3"/>
+  </when>
+</choose>
+```
+
+Pictures must be defined in your baggages:
+```rust
+pub const BAGGAGES: &[BaggageDef<'static>] = &[
+    BaggageDef::embedded("xmas.png", include_bytes!("baggages/xmas.png")),
+    BaggageDef::embedded("night.png", include_bytes!("baggages/night.png")),
+];
+```
 
 ---
 
@@ -750,6 +813,9 @@ knxprod::define_module! {
 
         // Regular parameters - stored in device memory
         params {
+            #[ets(display = "Icon", ets_enum)]
+            icon_selection: IconSelection,
+
             #[ets(display = "Minimum brightness", suffix = "%")]
             min_brightness: u8,
 
@@ -760,10 +826,21 @@ knxprod::define_module! {
         // Reference the comm objects type defined above
         objects: DimmerChannelObjects,
 
-        // Optional ETS page layout
+        // Optional ETS page layout with conditional pictures
         layout {
             block "DimmerChannel" => "{{ChNo}}: {{0}}" {
                 param channel_name
+                param icon_selection
+                // Conditional picture based on icon_selection value
+                when @icon_selection {
+                    [1] => {
+                        picture "xmas.png"
+                    }
+                    [2] => {
+                        picture "night.png"
+                    }
+                }
+                sep "Dimming Settings"
                 param min_brightness
                 obj switch
             }

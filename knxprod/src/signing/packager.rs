@@ -504,24 +504,24 @@ pub fn create_knxprod(
     let mut zip_buffer = Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut zip_buffer);
-        let options = SimpleFileOptions::default()
+        let file_options = SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .compression_level(Some(6));
 
         // Add knx_master.xml at root
-        zip.start_file("knx_master.xml", options)?;
+        zip.start_file("knx_master.xml", file_options)?;
         zip.write_all(master_xml.as_bytes())?;
 
-        // Add manufacturer directory files
+        // Add manufacturer directory files (no explicit directory entries - matches working knxprod format)
         for (filename, content) in &dir_files {
             let path = format!("{}/{}", manuf_dir, filename);
-            zip.start_file(&path, options)?;
+            zip.start_file(&path, file_options)?;
             zip.write_all(content)?;
         }
 
         // Add directory signature file (with UTF-8 BOM)
         let sig_filename = format!("{}.signature", manuf_dir);
-        zip.start_file(&sig_filename, options)?;
+        zip.start_file(&sig_filename, file_options)?;
         // Write UTF-8 BOM
         zip.write_all(&[0xEF, 0xBB, 0xBF])?;
         zip.write_all(dir_signature.as_bytes())?;

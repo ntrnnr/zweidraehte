@@ -71,16 +71,43 @@
 //!         // Reference the comm objects type defined above
 //!         objects: DimmerChannelObjects,
 //!
-//!         // Optional ETS page layout
+//!         // Optional ETS page layout with conditional pictures
 //!         layout {
 //!             block "DimmerChannel" => "{{ChNo}}: {{0}}" {
 //!                 param channel_name
+//!                 param icon_selection
+//!                 // Conditional picture based on parameter value
+//!                 when @icon_selection {
+//!                     [1] => {
+//!                         picture "xmas.png"
+//!                     }
+//!                     [2] => {
+//!                         picture "night.png"
+//!                     }
+//!                 }
 //!                 param min_brightness
 //!                 obj switch
 //!             }
 //!         }
 //!     }
 //! }
+//! ```
+//!
+//! ## Conditional Pictures
+//!
+//! Pictures can be conditionally displayed based on parameter values using `when` blocks.
+//! The selector parameter (e.g., `icon_selection`) is stored on the device and controls
+//! which picture is shown in ETS. This generates a `choose/when` XML structure:
+//!
+//! ```xml
+//! <choose ParamRefId="...icon_selection_R-2">
+//!   <when test="1">
+//!     <ParameterRefRef RefId="...xmas_png_R-7"/>
+//!   </when>
+//!   <when test="2">
+//!     <ParameterRefRef RefId="...night_png_R-8"/>
+//!   </when>
+//! </choose>
 //! ```
 //!
 //! The macro generates:
@@ -142,12 +169,12 @@
 //! Offset 0-4:   Global params (5 bytes)
 //!   - enable_ch1, enable_ch2, enable_ch3, enable_ch4, global_dim_speed
 //!
-//! Offset 5-8:   Channel 1 DimmerChannelModuleParams (4 bytes)
-//! Offset 9-12:  Channel 2 DimmerChannelModuleParams (4 bytes)
-//! Offset 13-16: Channel 3 DimmerChannelModuleParams (4 bytes)
-//! Offset 17-20: Channel 4 DimmerChannelModuleParams (4 bytes)
+//! Offset 5-9:   Channel 1 DimmerChannelModuleParams (5 bytes)
+//! Offset 10-14: Channel 2 DimmerChannelModuleParams (5 bytes)
+//! Offset 15-19: Channel 3 DimmerChannelModuleParams (5 bytes)
+//! Offset 20-24: Channel 4 DimmerChannelModuleParams (5 bytes)
 //!
-//! Total: 21 bytes (5 global + 4 channels × 4 bytes)
+//! Total: 25 bytes (5 global + 4 channels × 5 bytes)
 //! ```
 //!
 //! ## Communication Object Layout
@@ -205,9 +232,21 @@ use serde::{Deserialize, Serialize};
 use zweidraehte::dpt::{DPT_Scaling, DPT_State, DPT_Switch};
 use zweidraehte::ets::{EtsComObjects, EtsEnum, EtsParams};
 
+use knxprod::BaggageDef;
 use knxprod::ets_pages;
 use knxprod::module::ModuleCollection;
 use knxprod::page_layout::EtsPageLayout;
+
+// ============================================================================
+// Baggages
+// ============================================================================
+
+/// Baggage definitions for the module test device.
+/// These are image files that can be displayed in ETS UI.
+pub const BAGGAGES: &[BaggageDef<'static>] = &[
+    BaggageDef::embedded("xmas.png", include_bytes!("baggages/xmas.png")),
+    BaggageDef::embedded("night.png", include_bytes!("baggages/night.png")),
+];
 
 // ============================================================================
 // Device Descriptor
@@ -261,6 +300,18 @@ pub enum ChannelEnable {
     Disabled = 0,
     #[ets(display = "Enabled")]
     Enabled = 1,
+}
+
+/// Icon selection enum - stored on device to select which icon to display in ETS.
+/// The default variant (Christmas = 1) is automatically used as the parameter default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum IconSelection {
+    #[default]
+    #[ets(display = "Christmas")]
+    Christmas = 1,
+    #[ets(display = "Night")]
+    Night = 2,
 }
 
 /// Complete device parameters including global settings and all channel modules.
@@ -414,6 +465,10 @@ knxprod::define_module! {
         }
 
         params {
+            /// Icon selection - stored on device, controls which icon is shown in ETS
+            #[ets(display = "Icon", ets_enum)]
+            icon_selection: IconSelection,
+
             /// Minimum brightness level (0-100%)
             #[ets(display = "Minimum brightness", suffix = "%")]
             min_brightness: u8,
@@ -437,6 +492,16 @@ knxprod::define_module! {
         layout {
             block "DimmerChannel" => "{{ChNo}}: {{0}}" {
                 param channel_name
+                param icon_selection
+                // Conditional picture display based on icon_selection parameter
+                when @icon_selection {
+                    [1] => {
+                        picture "xmas.png"
+                    }
+                    [2] => {
+                        picture "night.png"
+                    }
+                }
                 sep "Dimming Settings"
                 param min_brightness
                 param max_brightness
@@ -501,6 +566,7 @@ impl EtsPageLayout for ModuleTestDevice {
         ets_pages! {
             device {
                 block "general" => "General Settings" {
+                    picture "night.png"
                     param global_dim_speed
                 }
             }
@@ -543,9 +609,9 @@ mod tests {
 
     #[test]
     fn test_param_size() {
-        // Global: 5 bytes, Channels: 4 * 4 = 16 bytes, Total: 21 bytes
+        // Global: 5 bytes, Channels: 4 * 5 = 20 bytes, Total: 25 bytes
         // (channel_name is a virtual-only param, not in struct)
-        assert_eq!(core::mem::size_of::<DeviceParams>(), 21);
+        assert_eq!(core::mem::size_of::<DeviceParams>(), 25);
     }
 
     // ========================================================================
@@ -555,14 +621,14 @@ mod tests {
     #[test]
     fn test_all_device_params_layout() {
         // Rust struct sizes (NO virtual channel_name - it's ETS-only metadata):
-        // DeviceParams = 5 global bytes + 4 * 4 channel bytes = 21 bytes
-        // DimmerChannelModuleParams = 4 bytes (min_brightness, max_brightness, dim_speed, power_on_level)
+        // DeviceParams = 5 global bytes + 4 * 5 channel bytes = 25 bytes
+        // DimmerChannelModuleParams = 5 bytes (icon_selection, min_brightness, max_brightness, dim_speed, power_on_level)
         //
         // The Rust struct layout now exactly matches device memory layout.
         // Virtual parameters like channel_name exist only in ETS metadata
         // (see DIMMER_CHANNEL_VIRTUAL_PARAMS).
-        assert_eq!(core::mem::size_of::<DeviceParams>(), 21);
-        assert_eq!(core::mem::size_of::<DimmerChannelModuleParams>(), 4);
+        assert_eq!(core::mem::size_of::<DeviceParams>(), 25);
+        assert_eq!(core::mem::size_of::<DimmerChannelModuleParams>(), 5);
     }
 
     #[test]
@@ -600,7 +666,7 @@ mod tests {
     fn test_all_device_params_memory_representation() {
         // Create params with known values
         // Write raw bytes directly to test memory layout
-        // DeviceParams is now 21 bytes: 5 global + 4 * 4 channel
+        // DeviceParams is now 25 bytes: 5 global + 4 * 5 channel
         let mut raw_bytes = [0u8; core::mem::size_of::<DeviceParams>()];
 
         // Set global params (using valid enum values for ChannelEnable)
@@ -611,15 +677,17 @@ mod tests {
         raw_bytes[4] = 0x55; // global_dim_speed
 
         // Set channel 1 data (starts at offset 5)
-        // DimmerChannelModuleParams is 4 bytes: min_brightness, max_brightness, dim_speed, power_on_level
-        raw_bytes[5] = 0xA1; // ch1.min_brightness
-        raw_bytes[6] = 0xA2; // ch1.max_brightness
-        raw_bytes[7] = 0xA3; // ch1.dim_speed
-        raw_bytes[8] = 0xA4; // ch1.power_on_level
+        // DimmerChannelModuleParams is 5 bytes: icon_selection, min_brightness, max_brightness, dim_speed, power_on_level
+        raw_bytes[5] = 0x01; // ch1.icon_selection = Christmas (1)
+        raw_bytes[6] = 0xA1; // ch1.min_brightness
+        raw_bytes[7] = 0xA2; // ch1.max_brightness
+        raw_bytes[8] = 0xA3; // ch1.dim_speed
+        raw_bytes[9] = 0xA4; // ch1.power_on_level
 
-        // Set channel 2 data (starts at offset 5 + 4 = 9)
-        raw_bytes[9] = 0xB1; // ch2.min_brightness
-        raw_bytes[10] = 0xB2; // ch2.max_brightness
+        // Set channel 2 data (starts at offset 5 + 5 = 10)
+        raw_bytes[10] = 0x02; // ch2.icon_selection = Night (2)
+        raw_bytes[11] = 0xB1; // ch2.min_brightness
+        raw_bytes[12] = 0xB2; // ch2.max_brightness
 
         // Interpret as DeviceParams
         let params: &DeviceParams = unsafe { &*(raw_bytes.as_ptr() as *const DeviceParams) };
@@ -631,11 +699,13 @@ mod tests {
         assert_eq!(params.enable_ch4, ChannelEnable::Disabled);
         assert_eq!(params.global_dim_speed, 0x55);
 
-        // Verify channel data (now without channel_name)
+        // Verify channel data
+        assert_eq!(params.channels[0].icon_selection, IconSelection::Christmas);
         assert_eq!(params.channels[0].min_brightness, 0xA1);
         assert_eq!(params.channels[0].max_brightness, 0xA2);
         assert_eq!(params.channels[0].dim_speed, 0xA3);
         assert_eq!(params.channels[0].power_on_level, 0xA4);
+        assert_eq!(params.channels[1].icon_selection, IconSelection::Night);
         assert_eq!(params.channels[1].min_brightness, 0xB1);
         assert_eq!(params.channels[1].max_brightness, 0xB2);
     }
@@ -648,11 +718,11 @@ mod tests {
         assert_eq!(DeviceParams::CHANNELS_COUNT, 4);
 
         // Test channel_param_offset (1-indexed)
-        // Global params are 5 bytes, DimmerChannelModuleParams is 4 bytes each
+        // Global params are 5 bytes, DimmerChannelModuleParams is 5 bytes each
         assert_eq!(DeviceParams::channel_param_offset(1), 5);
-        assert_eq!(DeviceParams::channel_param_offset(2), 5 + 4);
-        assert_eq!(DeviceParams::channel_param_offset(3), 5 + 2 * 4);
-        assert_eq!(DeviceParams::channel_param_offset(4), 5 + 3 * 4);
+        assert_eq!(DeviceParams::channel_param_offset(2), 5 + 5);
+        assert_eq!(DeviceParams::channel_param_offset(3), 5 + 2 * 5);
+        assert_eq!(DeviceParams::channel_param_offset(4), 5 + 3 * 5);
 
         // Test channel_object_base (1-indexed)
         assert_eq!(DeviceParams::channel_object_base(1), 0);
@@ -779,15 +849,34 @@ mod tests {
             enable_ch4: ChannelEnable::Disabled, // Channel 4 disabled
             global_dim_speed: 50,
             channels: [
-                DimmerChannelModuleParams { min_brightness: 0, max_brightness: 100, dim_speed: 30, power_on_level: 50 },
-                DimmerChannelModuleParams { min_brightness: 10, max_brightness: 90, dim_speed: 40, power_on_level: 60 },
                 DimmerChannelModuleParams {
-                    min_brightness: 20, // Channel 3 has 20% minimum
-                    max_brightness: 80, // and 80% maximum
+                    icon_selection: IconSelection::Christmas,
+                    min_brightness: 0,
+                    max_brightness: 100,
+                    dim_speed: 30,
+                    power_on_level: 50,
+                },
+                DimmerChannelModuleParams {
+                    icon_selection: IconSelection::Christmas,
+                    min_brightness: 10,
+                    max_brightness: 90,
+                    dim_speed: 40,
+                    power_on_level: 60,
+                },
+                DimmerChannelModuleParams {
+                    icon_selection: IconSelection::Night,
+                    min_brightness: 20,
+                    max_brightness: 80,
                     dim_speed: 50,
                     power_on_level: 70,
                 },
-                DimmerChannelModuleParams { min_brightness: 0, max_brightness: 100, dim_speed: 60, power_on_level: 80 },
+                DimmerChannelModuleParams {
+                    icon_selection: IconSelection::Christmas,
+                    min_brightness: 0,
+                    max_brightness: 100,
+                    dim_speed: 60,
+                    power_on_level: 80,
+                },
             ],
         };
 
@@ -997,10 +1086,34 @@ mod tests {
             enable_ch4: ChannelEnable::Disabled,
             global_dim_speed: 50,
             channels: [
-                DimmerChannelModuleParams { min_brightness: 0, max_brightness: 100, dim_speed: 30, power_on_level: 50 },
-                DimmerChannelModuleParams { min_brightness: 10, max_brightness: 90, dim_speed: 40, power_on_level: 60 },
-                DimmerChannelModuleParams { min_brightness: 20, max_brightness: 80, dim_speed: 50, power_on_level: 70 },
-                DimmerChannelModuleParams { min_brightness: 0, max_brightness: 100, dim_speed: 60, power_on_level: 80 },
+                DimmerChannelModuleParams {
+                    icon_selection: IconSelection::Christmas,
+                    min_brightness: 0,
+                    max_brightness: 100,
+                    dim_speed: 30,
+                    power_on_level: 50,
+                },
+                DimmerChannelModuleParams {
+                    icon_selection: IconSelection::Christmas,
+                    min_brightness: 10,
+                    max_brightness: 90,
+                    dim_speed: 40,
+                    power_on_level: 60,
+                },
+                DimmerChannelModuleParams {
+                    icon_selection: IconSelection::Night,
+                    min_brightness: 20,
+                    max_brightness: 80,
+                    dim_speed: 50,
+                    power_on_level: 70,
+                },
+                DimmerChannelModuleParams {
+                    icon_selection: IconSelection::Christmas,
+                    min_brightness: 0,
+                    max_brightness: 100,
+                    dim_speed: 60,
+                    power_on_level: 80,
+                },
             ],
         };
 

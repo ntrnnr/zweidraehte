@@ -384,10 +384,13 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 const #const_name: &[zweidraehte::ets::EtsEnumVariant] = #field_type::ETS_VARIANTS;
             });
 
+            // For ets_enum fields, use explicit default if provided, otherwise use the enum's
+            // ConstDefault::DEFAULT value. This ensures the XML default matches the Rust default.
             let default_value_expr = if let Some(val) = attrs.default_value {
                 quote!(Some(#val))
             } else {
-                quote!(None)
+                // Use the enum's ConstDefault to get its default discriminant value
+                quote!(Some(<#field_type as const_default::ConstDefault>::DEFAULT as i64))
             };
 
             param_ext_defs.push(quote! {

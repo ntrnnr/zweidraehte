@@ -14,6 +14,155 @@ use super::page_layout::{
 };
 use super::module::{ModuleArgRole, ModuleArgType, ModuleCollection, StoredModuleDef};
 use super::schema::*;
+use super::baggage_generator::{baggages_to_refs, make_baggage_id};
+
+/// Information about a picture collected from page layouts.
+/// Pictures are implemented as virtual parameters with TypePicture.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PictureInfo {
+    /// The baggage filename (e.g., "xmas.png")
+    baggage_name: String,
+}
+
+/// Collects all pictures from page layouts (device-level and module-level).
+fn collect_pictures_from_layout(config: &ApplicationProgramConfig) -> Vec<PictureInfo> {
+    let mut pictures = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Collect from device page layout
+    if let Some(layout) = &config.page_layout {
+        collect_pictures_from_page_structure(layout, &mut pictures, &mut seen);
+    }
+
+    // Collect from module layouts
+    if let Some(modules) = &config.modules {
+        for def in modules.definitions() {
+            if let Some(module_layout) = &def.page_layout {
+                collect_pictures_from_module_layout(module_layout, &mut pictures, &mut seen);
+            }
+        }
+    }
+
+    pictures
+}
+
+fn collect_pictures_from_page_structure(
+    layout: &PageStructure,
+    pictures: &mut Vec<PictureInfo>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    // Collect from device settings
+    for elem in &layout.device_settings {
+        collect_pictures_from_page_element(elem, pictures, seen);
+    }
+
+    // Collect from channels
+    for channel in &layout.channels {
+        for elem in &channel.elements {
+            collect_pictures_from_page_element(elem, pictures, seen);
+        }
+    }
+}
+
+fn collect_pictures_from_page_element(
+    elem: &PageElement,
+    pictures: &mut Vec<PictureInfo>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match elem {
+        PageElement::Block(block) => {
+            for item in &block.items {
+                collect_pictures_from_page_item(item, pictures, seen);
+            }
+        }
+        PageElement::When(cond) => {
+            for case in &cond.cases {
+                for elem in &case.elements {
+                    collect_pictures_from_page_element(elem, pictures, seen);
+                }
+            }
+        }
+    }
+}
+
+fn collect_pictures_from_page_item(
+    item: &PageItem,
+    pictures: &mut Vec<PictureInfo>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match item {
+        PageItem::Picture(baggage_name) => {
+            if !seen.contains(*baggage_name) {
+                seen.insert(baggage_name.to_string());
+                pictures.push(PictureInfo {
+                    baggage_name: baggage_name.to_string(),
+                });
+            }
+        }
+        PageItem::When(cond) => {
+            for case in &cond.cases {
+                for item in &case.items {
+                    collect_pictures_from_page_item(item, pictures, seen);
+                }
+            }
+        }
+        // Other items don't contain pictures
+        _ => {}
+    }
+}
+
+fn collect_pictures_from_module_layout(
+    layout: &crate::page_layout::ModulePageLayout,
+    pictures: &mut Vec<PictureInfo>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    use crate::page_layout::{ModuleLayoutElement, ModuleLayoutItem};
+
+    for elem in &layout.elements {
+        match elem {
+            ModuleLayoutElement::Block(block) => {
+                for item in &block.items {
+                    collect_pictures_from_module_item(item, pictures, seen);
+                }
+            }
+            ModuleLayoutElement::When(when_elem) => {
+                for case in &when_elem.cases {
+                    for item in &case.items {
+                        collect_pictures_from_module_item(item, pictures, seen);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_pictures_from_module_item(
+    item: &crate::page_layout::ModuleLayoutItem,
+    pictures: &mut Vec<PictureInfo>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    use crate::page_layout::ModuleLayoutItem;
+
+    match item {
+        ModuleLayoutItem::Picture(baggage_name) => {
+            if !seen.contains(*baggage_name) {
+                seen.insert(baggage_name.to_string());
+                pictures.push(PictureInfo {
+                    baggage_name: baggage_name.to_string(),
+                });
+            }
+        }
+        ModuleLayoutItem::When(when_elem) => {
+            for case in &when_elem.cases {
+                for item in &case.items {
+                    collect_pictures_from_module_item(item, pictures, seen);
+                }
+            }
+        }
+        // Other items don't contain pictures
+        _ => {}
+    }
+}
 
 /// Tracks active conditions when generating nested XML structures.
 /// This allows us to avoid redundant choose/when nesting when an object's
@@ -437,6 +586,11 @@ pub struct ApplicationProgramConfig<'a> {
     /// Optional module collection. If provided, ModuleDefs and Module instances
     /// will be generated in the output XML.
     pub modules: Option<ModuleCollection>,
+    /// Optional baggage definitions. If provided, these files (images, etc.) will be:
+    /// - Referenced in the Extension section of ApplicationProgram
+    /// - Listed in a generated Baggages.xml manifest
+    /// - Included in the signed .knxprod package
+    pub baggages: Option<&'a [BaggageDef<'a>]>,
 }
 
 impl<'a> ApplicationProgramConfig<'a> {
@@ -556,9 +710,10 @@ impl MtxmlGenerator {
         let app_id = Self::format_app_id(config);
 
         let mut knx = Knx::default();
-        // Set schema version namespace if specified
+        // Set schema version namespace and tool version if specified
         if let Some(version) = config.schema_version {
             knx.xmlns = version.namespace_url();
+            knx.tool_version = version.tool_version().to_string();
         }
         knx.manufacturer_data.manufacturer.ref_id =
             format!("M-{:04X}", config.device.manufacturer_id);
@@ -723,7 +878,11 @@ impl MtxmlGenerator {
                     Some(procs)
                 }
             },
-            extension: Some(Extension { baggages: Vec::new() }),
+            extension: Some(Extension {
+                baggages: config.baggages.map_or(Vec::new(), |b| {
+                    baggages_to_refs(config.device.manufacturer_id, b)
+                }),
+            }),
             messages: None,
             options: Some(Options {
                 comparable: Some(true),
@@ -802,8 +961,8 @@ impl MtxmlGenerator {
                 format!("{}_A-{}", module_id, idx + 1)
             });
 
-            // Build module-internal parameters if provided
-            let (module_params, module_param_refs) = Self::build_module_parameters(
+            // Build module-internal parameters if provided (including picture params)
+            let (module_params, module_param_refs, picture_param_map) = Self::build_module_parameters(
                 config,
                 app_id,
                 &module_id,
@@ -843,7 +1002,7 @@ impl MtxmlGenerator {
             );
 
             // Build module Dynamic section with a ParameterBlock containing all parameter refs
-            let module_dynamic = Self::build_module_dynamic(&module_id, def, text_param_ref_id.as_deref());
+            let module_dynamic = Self::build_module_dynamic(&module_id, def, text_param_ref_id.as_deref(), &picture_param_map);
 
             module_defs.push(ModuleDef {
                 id: module_id,
@@ -868,6 +1027,9 @@ impl MtxmlGenerator {
     /// Creates the Parameters and ParameterRefs elements for the module's Static section.
     /// Parameters use `BaseOffset` to reference the module's parameter base argument,
     /// and `BaseValue` to reference the module's value base argument for relative values.
+    ///
+    /// Returns (Parameters, ParameterRefs, picture_param_map) where picture_param_map
+    /// maps baggage names to their assigned param numbers for use in layout generation.
     #[allow(unused_variables)]
     fn build_module_parameters(
         config: &ApplicationProgramConfig,
@@ -876,14 +1038,21 @@ impl MtxmlGenerator {
         def: &StoredModuleDef,
         base_offset_arg_id: Option<&str>,
         base_value_arg_id: Option<&str>,
-    ) -> (Option<Parameters>, Option<ParameterRefs>) {
+    ) -> (Option<Parameters>, Option<ParameterRefs>, HashMap<String, usize>) {
         // Combine virtual params (first) and regular params
         // Virtual params come first so that text_source param gets the right index for {{0}}
         let virtual_params = def.virtual_params.unwrap_or(&[]);
         let regular_params = def.params.unwrap_or(&[]);
 
-        if virtual_params.is_empty() && regular_params.is_empty() {
-            return (None, None);
+        // Collect pictures from the module's layout
+        let mut pictures = Vec::new();
+        let mut seen_pictures = std::collections::HashSet::new();
+        if let Some(ref layout) = def.page_layout {
+            collect_pictures_from_module_layout(layout, &mut pictures, &mut seen_pictures);
+        }
+
+        if virtual_params.is_empty() && regular_params.is_empty() && pictures.is_empty() {
+            return (None, None, HashMap::new());
         }
 
         let code_segment_id = format!("{}_RS-04-00000", app_id);
@@ -952,9 +1121,53 @@ impl MtxmlGenerator {
             });
         }
 
+        // Track picture param numbers for layout generation
+        let mut picture_param_map = HashMap::new();
+
+        // Add picture parameters after regular params
+        let base_param_count = all_params.len();
+        for (pic_idx, pic) in pictures.iter().enumerate() {
+            let param_num = base_param_count + pic_idx + 1;
+            let param_id = format!("{}_P-{}", module_id, param_num);
+
+            // Create the picture type name and ID (reuse app-level type)
+            let type_name = format!("tPIC_{}", pic.baggage_name.replace('.', "_"));
+            let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
+
+            // Picture parameter - no memory, no value
+            parameters.items.push(ParameterItem::Parameter(Parameter {
+                id: param_id.clone(),
+                name: format!("Pic_{}", pic.baggage_name.replace('.', "_")),
+                parameter_type: type_id,
+                text: String::new(),
+                value: String::new(),
+                suffix_text: None,
+                access: None,
+                base_value: None,
+                memory: None, // Pictures are virtual - no device memory
+                internal_description: None,
+            }));
+
+            // Generate parameter reference for the picture
+            let ref_id = format!("{}_R-{}", param_id, param_num);
+            parameter_refs.refs.push(ParameterRef {
+                id: ref_id,
+                ref_id: param_id,
+                text: None,
+                internal_description: None,
+                access: None,
+                value: None,
+                base_value: None,
+            });
+
+            // Track the param number for this picture
+            picture_param_map.insert(pic.baggage_name.clone(), param_num);
+        }
+
         (
             Some(parameters),
             if parameter_refs.refs.is_empty() { None } else { Some(parameter_refs) },
+            picture_param_map,
         )
     }
 
@@ -1057,10 +1270,11 @@ impl MtxmlGenerator {
         module_id: &str,
         def: &StoredModuleDef,
         text_param_ref_id: Option<&str>,
+        picture_param_map: &HashMap<String, usize>,
     ) -> Option<ModuleDefDynamic> {
         // If a custom page_layout is provided, use it
         if let Some(ref layout) = def.page_layout {
-            return Self::build_module_dynamic_from_layout(module_id, def, layout, text_param_ref_id);
+            return Self::build_module_dynamic_from_layout(module_id, def, layout, text_param_ref_id, picture_param_map);
         }
 
         // Otherwise, auto-generate a simple layout
@@ -1073,6 +1287,7 @@ impl MtxmlGenerator {
         def: &StoredModuleDef,
         layout: &crate::page_layout::ModulePageLayout,
         text_param_ref_id: Option<&str>,
+        picture_param_map: &HashMap<String, usize>,
     ) -> Option<ModuleDefDynamic> {
         use crate::page_layout::ModuleLayoutElement;
 
@@ -1089,7 +1304,7 @@ impl MtxmlGenerator {
                     block_counter += 1;
                     let block_id = format!("{}_PB-{}", module_id, block_counter);
                     let block_items = Self::convert_module_layout_items(
-                        module_id, def, obj_base_arg_idx, &block.items, &mut sep_counter
+                        module_id, def, obj_base_arg_idx, &block.items, &mut sep_counter, picture_param_map
                     );
                     // Only set text_parameter_ref_id if the text contains {{0}}
                     let block_text_ref = if block.text.contains("{{0}}") {
@@ -1111,7 +1326,7 @@ impl MtxmlGenerator {
                 }
                 ModuleLayoutElement::When(when_elem) => {
                     if let Some(choose) = Self::convert_module_layout_when_to_choose(
-                        module_id, def, obj_base_arg_idx, when_elem, &mut sep_counter
+                        module_id, def, obj_base_arg_idx, when_elem, &mut sep_counter, picture_param_map
                     ) {
                         dynamic_items.push(ModuleDefDynamicItem::Choose(choose));
                     }
@@ -1133,6 +1348,7 @@ impl MtxmlGenerator {
         obj_base_arg_idx: usize,
         items: &[crate::page_layout::ModuleLayoutItem],
         sep_counter: &mut u32,
+        picture_param_map: &HashMap<String, usize>,
     ) -> Vec<ParameterBlockItem> {
         use crate::page_layout::ModuleLayoutItem;
 
@@ -1172,9 +1388,25 @@ impl MtxmlGenerator {
                 }
                 ModuleLayoutItem::When(when_item) => {
                     if let Some(choose) = Self::convert_module_layout_when_to_choose(
-                        module_id, def, obj_base_arg_idx, when_item, sep_counter
+                        module_id, def, obj_base_arg_idx, when_item, sep_counter, picture_param_map
                     ) {
                         result.push(ParameterBlockItem::Choose(choose));
+                    }
+                }
+                ModuleLayoutItem::Picture(baggage_name) => {
+                    // Look up the picture param number from the map
+                    if let Some(&param_num) = picture_param_map.get(*baggage_name) {
+                        let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+                        result.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
+                            ref_id,
+                            text: None,
+                            internal_description: None,
+                        }));
+                    } else {
+                        log::warn!(
+                            "Picture '{}' not found in picture_param_map for module",
+                            baggage_name
+                        );
                     }
                 }
             }
@@ -1189,6 +1421,7 @@ impl MtxmlGenerator {
         obj_base_arg_idx: usize,
         items: &[crate::page_layout::ModuleLayoutItem],
         sep_counter: &mut u32,
+        picture_param_map: &HashMap<String, usize>,
     ) -> Vec<WhenItem> {
         use crate::page_layout::ModuleLayoutItem;
 
@@ -1228,9 +1461,25 @@ impl MtxmlGenerator {
                 }
                 ModuleLayoutItem::When(when_item) => {
                     if let Some(choose) = Self::convert_module_layout_when_to_choose(
-                        module_id, def, obj_base_arg_idx, when_item, sep_counter
+                        module_id, def, obj_base_arg_idx, when_item, sep_counter, picture_param_map
                     ) {
                         result.push(WhenItem::Choose(choose));
+                    }
+                }
+                ModuleLayoutItem::Picture(baggage_name) => {
+                    // Look up the picture param number from the map
+                    if let Some(&param_num) = picture_param_map.get(*baggage_name) {
+                        let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
+                        result.push(WhenItem::ParameterRefRef(ParameterRefRef {
+                            ref_id,
+                            text: None,
+                            internal_description: None,
+                        }));
+                    } else {
+                        log::warn!(
+                            "Picture '{}' not found in picture_param_map for module",
+                            baggage_name
+                        );
                     }
                 }
             }
@@ -1245,6 +1494,7 @@ impl MtxmlGenerator {
         obj_base_arg_idx: usize,
         when_elem: &crate::page_layout::ModuleLayoutWhen,
         sep_counter: &mut u32,
+        picture_param_map: &HashMap<String, usize>,
     ) -> Option<Choose> {
         // Look up selector param number by name (searches both virtual_params and params)
         let param_num = def.find_param_num_by_name(&when_elem.selector)?;
@@ -1255,7 +1505,7 @@ impl MtxmlGenerator {
             let test_str = case.condition.to_test_string();
             let is_default = case.condition.is_default();
             let converted = Self::convert_module_layout_items_to_when(
-                module_id, def, obj_base_arg_idx, &case.items, sep_counter
+                module_id, def, obj_base_arg_idx, &case.items, sep_counter, picture_param_map
             );
             when_items.push(When {
                 test: test_str,
@@ -1514,6 +1764,25 @@ impl MtxmlGenerator {
             }
         }
 
+        // Add types for picture parameters (TypePicture)
+        let pictures = collect_pictures_from_layout(config);
+        for pic in &pictures {
+            let type_name = format!("tPIC_{}", pic.baggage_name.replace('.', "_"));
+            if !seen_types.contains(&type_name) {
+                seen_types.insert(type_name.clone());
+                let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
+                let baggage_id = make_baggage_id(config.device.manufacturer_id, &pic.baggage_name);
+                types.types.push(ParameterType {
+                    id: type_id,
+                    name: type_name,
+                    internal_description: None,
+                    type_def: ParameterTypeDef::TypePicture(TypePicture {
+                        ref_id: baggage_id,
+                    }),
+                });
+            }
+        }
+
         types
     }
 
@@ -1744,6 +2013,29 @@ impl MtxmlGenerator {
             param_counter += 1;
         }
 
+        // Picture parameters (virtual - no Memory, displayed as images in ETS)
+        let pictures = collect_pictures_from_layout(config);
+        for pic in &pictures {
+            let param_id = format!("{}_P-{}", app_id, param_counter);
+            let type_name = format!("tPIC_{}", pic.baggage_name.replace('.', "_"));
+            let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
+
+            params.items.push(ParameterItem::Parameter(Parameter {
+                id: param_id,
+                name: format!("Pic_{}", pic.baggage_name.replace('.', "_")),
+                parameter_type: type_id,
+                text: String::new(), // Pictures typically have no text label
+                suffix_text: None,
+                access: None,
+                value: String::new(), // Pictures don't have a value
+                base_value: None,
+                internal_description: None,
+                memory: None, // Pictures are virtual - no device memory
+            }));
+
+            param_counter += 1;
+        }
+
         // Union parameters - start counting from 1
         if let Some(union_fields) = config.union_fields {
             let mut up_counter = 1u32;
@@ -1913,6 +2205,29 @@ impl MtxmlGenerator {
                 next_ref_num += 1;
             }
 
+            param_counter += 1;
+        }
+
+        // Picture parameter refs (one ref per picture)
+        let pictures = collect_pictures_from_layout(config);
+        for pic in &pictures {
+            let param_id = format!("{}_P-{}", app_id, param_counter);
+            let ref_id = format!("{}_R-{}", param_id, next_ref_num);
+
+            // Track the ref number for this picture (for layout processing)
+            let pic_param_name = format!("Pic_{}", pic.baggage_name.replace('.', "_"));
+            param_ref_nums.insert(pic_param_name, next_ref_num);
+
+            refs.refs.push(ParameterRef {
+                id: ref_id,
+                ref_id: param_id,
+                text: None,
+                internal_description: None,
+                access: None,
+                value: None,
+                base_value: None,
+            });
+            next_ref_num += 1;
             param_counter += 1;
         }
 
@@ -2827,6 +3142,19 @@ impl MtxmlGenerator {
                 multi.insert(param_name, refs);
             }
 
+            param_counter += 1;
+        }
+
+        // Map picture params (one ref per picture)
+        let pictures = collect_pictures_from_layout(config);
+        for pic in &pictures {
+            let param_id = format!("{}_P-{}", app_id, param_counter);
+            let pic_param_name = format!("Pic_{}", pic.baggage_name.replace('.', "_"));
+            let ref_id = format!("{}_R-{}", param_id, next_ref_num);
+
+            primary.insert(pic_param_name.clone(), ref_id);
+            param_ref_nums.insert(pic_param_name, next_ref_num);
+            next_ref_num += 1;
             param_counter += 1;
         }
 
@@ -4067,6 +4395,20 @@ impl MtxmlGenerator {
                         }
                     }
                 }
+                PageItem::Picture(baggage_name) => {
+                    // Pictures are virtual parameters with TypePicture.
+                    // Look up the ParameterRefRef for this picture.
+                    let pic_param_name = format!("Pic_{}", baggage_name.replace('.', "_"));
+                    if let Some(ref_id) = param_ref_map.get_primary(&pic_param_name) {
+                        items.push(ParameterBlockItem::ParameterRefRef(ParameterRefRef {
+                            ref_id: ref_id.clone(),
+                            text: None,
+                            internal_description: None,
+                        }));
+                    } else {
+                        log::warn!("Picture param ref not found for: {}", baggage_name);
+                    }
+                }
             }
         }
 
@@ -4482,9 +4824,10 @@ impl HardwareGenerator {
         let product_id = format!("{}_P-{}", hardware_id, MtxmlGenerator::encode_id(config.order_number));
 
         let mut knx = HardwareKnx::default();
-        // Set schema version namespace if specified
+        // Set schema version namespace and tool version if specified
         if let Some(version) = config.schema_version {
             knx.xmlns = version.namespace_url();
+            knx.tool_version = version.tool_version().to_string();
         }
         knx.manufacturer_data.manufacturer.ref_id = manufacturer_id;
         knx.manufacturer_data.manufacturer.hardware.hardware = Hardware {
@@ -4576,9 +4919,10 @@ impl CatalogGenerator {
         let catalog_item_id = format!("{}_CI-{}-1", h2p_id, MtxmlGenerator::encode_id(config.order_number));
 
         let mut knx = CatalogKnx::default();
-        // Set schema version namespace if specified
+        // Set schema version namespace and tool version if specified
         if let Some(version) = config.schema_version {
             knx.xmlns = version.namespace_url();
+            knx.tool_version = version.tool_version().to_string();
         }
         knx.manufacturer_data.manufacturer.ref_id = manufacturer_id;
         knx.manufacturer_data.manufacturer.catalog.catalog_section = CatalogSection {
@@ -4685,6 +5029,7 @@ mod tests {
             catalog_section: "Test Section",
             page_layout: None,
             modules: None,
+            baggages: None,
         };
 
         let app_id = MtxmlGenerator::format_app_id(&config);
@@ -4728,6 +5073,7 @@ mod tests {
             catalog_section: "Test Section",
             page_layout: None,
             modules: None,
+            baggages: None,
         };
 
         let xml = MtxmlGenerator::generate(&config).unwrap();
@@ -4776,6 +5122,7 @@ mod tests {
             catalog_section: "Test Section",
             page_layout: None,
             modules: None,
+            baggages: None,
         };
 
         let xml = MtxmlGenerator::generate(&config).unwrap();
@@ -4862,6 +5209,7 @@ mod tests {
             catalog_section: "Test Section",
             page_layout: None,
             modules: Some(modules),
+            baggages: None,
         };
 
         let xml = MtxmlGenerator::generate(&config).unwrap();
@@ -4971,6 +5319,7 @@ mod tests {
             catalog_section: "Test Section",
             page_layout: Some(page_layout),
             modules: Some(modules),
+            baggages: None,
         };
 
         let xml = MtxmlGenerator::generate(&config).unwrap();
