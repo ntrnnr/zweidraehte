@@ -22,7 +22,7 @@ use env_logger::Env;
 use platform::address::EthernetAddress;
 use static_cell::StaticCell;
 use zweidraehte::{
-    IpPlatform, Runner, StackDefinition, StackResources, StackState,
+    IpPlatform, Runner, Stack, StackDefinition, StackResources, StackState,
     address::IndividualAddress,
     bcus::system_b::{
         DeviceStorage, IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, PersistedState,
@@ -34,6 +34,7 @@ use zweidraehte::{
     objects::comm::ComObjects,
     objects::interface::HasDeviceObject,
     objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadEvent, RunEvent},
+    restart::{EraseCode, RestartResponse},
 };
 
 // Import storage from the library module
@@ -216,6 +217,92 @@ async fn run_stack(runner: Runner<'static, MySystemBStack>) {
     runner.run().await;
 }
 
+/// Restart handler task - handles A_Restart requests from the stack.
+///
+/// This demonstrates how to handle restart requests:
+/// 1. Receive the request from the stack
+/// 2. Execute the appropriate reset based on erase code
+/// 3. Flush storage
+/// 4. Send response back to the stack
+/// 5. Trigger platform restart (in production code)
+#[embassy_executor::task]
+async fn handle_restarts(stack: Stack<'static, MySystemBStack>) {
+    println!("Restart handler task started");
+
+    loop {
+        // Wait for a restart request from the application layer
+        let request = stack.receive_restart_request().await;
+        let req = request.get();
+
+        println!("\n********************************************");
+        println!("*** RESTART REQUEST RECEIVED ***");
+        println!("*** Erase Code: {} ***", req.erase_code);
+        println!("*** Channel: {} ***", req.channel);
+        println!("*** Access Level: {} ***", req.access_level);
+        println!("*** Needs Response: {} ***", req.needs_response);
+        println!("********************************************\n");
+
+        // In a real implementation, we would:
+        // 1. Get mutable access to device state
+        // 2. Execute the appropriate reset via RestartHandler::execute_reset
+        // 3. Flush storage
+        // 4. Send the response
+
+        // For this demo, we just simulate the response
+        let response = match req.erase_code {
+            EraseCode::Basic | EraseCode::Confirmed => {
+                // Just restart, no data reset needed
+                println!("Performing basic restart (no data reset)...");
+                RestartResponse::success()
+            }
+            EraseCode::FactoryReset => {
+                println!("Performing FACTORY RESET - all data will be cleared!");
+                // In production: device_state.factory_reset();
+                RestartResponse::success()
+            }
+            EraseCode::ResetIA => {
+                println!("Resetting Individual Address to 15.15.255...");
+                // In production: device_state.reset_individual_address();
+                RestartResponse::success()
+            }
+            EraseCode::ResetAP => {
+                println!("Resetting Application Program...");
+                // In production: device_state.reset_application();
+                RestartResponse::success()
+            }
+            EraseCode::ResetParam => {
+                println!("Resetting Parameters to defaults...");
+                // In production: device_state.reset_parameters();
+                RestartResponse::success()
+            }
+            EraseCode::ResetLinks => {
+                println!("Resetting Address and Association tables...");
+                // In production: device_state.reset_address_table(); device_state.reset_association_table();
+                RestartResponse::success()
+            }
+            EraseCode::FactoryResetKeepIA => {
+                println!("Performing Factory Reset (keeping Individual Address)...");
+                // In production: device_state.factory_reset_keep_ia();
+                RestartResponse::success()
+            }
+            EraseCode::Other(code) => {
+                println!("Unsupported erase code: 0x{:02X}", code);
+                RestartResponse::error(zweidraehte::restart::RestartError::UnsupportedEraseCode)
+            }
+        };
+
+        // Send the response back to the stack
+        request.reply(response).await;
+
+        // In production code, after sending the response, trigger platform restart:
+        // embassy_time::Timer::after(Duration::from_millis(100)).await;
+        // unsafe { libc::reboot(libc::RB_AUTOBOOT); }
+        // Or for embedded: cortex_m::peripheral::SCB::sys_reset();
+
+        println!("Restart response sent. In production, device would restart now.\n");
+    }
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
@@ -311,6 +398,7 @@ async fn main(spawner: Spawner) {
     );
 
     spawner.spawn(run_stack(runner)).unwrap();
+    spawner.spawn(handle_restarts(stack)).unwrap();
 
     println!("=== Stack Running ===");
     println!("Listening for KNX messages...");

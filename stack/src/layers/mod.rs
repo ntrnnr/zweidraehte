@@ -190,7 +190,12 @@ pub trait ActorRequest<M, R> {
     async fn request(&self, message: M) -> R;
 }
 
-impl<M, R> ActorRequest<M, R> for DynamicSender<'static, Request<M, R>> {
+/// ActorRequest implementation for Request channels with any lifetime.
+///
+/// This supports both `'static` and non-`'static` channel references,
+/// needed for layers that don't have `'static` references to their channels,
+/// such as the application layer's restart_sender.
+impl<'a, M, R> ActorRequest<M, R> for DynamicSender<'a, Request<M, R>> {
     async fn request(&self, message: M) -> R {
         let channel: Channel<NoopRawMutex, R, 1> = Channel::new();
         let sender: DynamicSender<'_, R> = channel.sender().into();

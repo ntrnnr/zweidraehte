@@ -28,6 +28,7 @@ use embassy_sync::{
 use super::{ActorRequest, Inbox, Layer, LayerOp, Request};
 
 use crate::{
+    restart::{EraseCode, RestartError, RestartRequest, RestartResponse},
     StackDefinition, StackState,
     address::GroupAddress,
     memory::{HasApplication, HasAssociationTable, HasCommunicationObjectTable},
@@ -98,6 +99,8 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
 
     // --- Communication channels ---
     app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+    /// Channel for sending restart requests to user code
+    restart_sender: DynamicSender<'a, Request<RestartRequest, RestartResponse>>,
     transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
 }
 
@@ -123,6 +126,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         interface_objects: &'a D::InterfaceObjects<'static>,
         memory_map: &'a D::Mem,
         app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+        restart_sender: DynamicSender<'a, Request<RestartRequest, RestartResponse>>,
         transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     ) -> Self {
         Self {
@@ -134,6 +138,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             interface_objects,
             memory_map,
             app_request_receiver,
+            restart_sender,
             transport_layer,
         }
     }
@@ -225,7 +230,9 @@ where
                                 ApciCode::KeyWrite => {
                                     self.handle_key_write(&ind).await;
                                 }
-                                // ApciCode::Restart => { ... }
+                                ApciCode::Restart => {
+                                    self.handle_restart(&ind).await;
+                                }
                                 _ => {
                                     warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
                                 }
@@ -2107,6 +2114,137 @@ where
 
         let confirmation = self.transport_layer.request(msg).await;
         trace!("AL Key_Response confirmation: {:?}", confirmation.service_type());
+    }
+
+    /// Handle `A_Restart.ind`
+    ///
+    /// Handles both basic A_Restart (software restart) and extended A_Restart (master reset)
+    /// with various erase codes for different reset behaviors.
+    ///
+    /// Message formats:
+    /// - Basic restart: APDU[0-1] = APCI (0x0380)
+    /// - Master reset: APDU[0-1] = APCI (0x0381), APDU[2] = erase_code, APDU[3] = channel
+    ///
+    /// Response (for master reset): APDU[0-1] = APCI (0x03A1), APDU[2] = error, APDU[3-4] = process_time
+    async fn handle_restart(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+        let buf = ind.buf();
+        let len = ind.len();
+
+        // Determine restart type from APCI low bits
+        // Basic restart: 0x0380 (bit 0 = 0)
+        // Master reset:  0x0381 (bit 0 = 1)
+        let is_master_reset = (len > offsets::MSG_APCI + 1) && (buf[offsets::MSG_APCI + 1] & 0x01) == 1;
+
+        let (erase_code, channel, needs_response) = if is_master_reset {
+            // Master reset: APCI[0-1] + EraseCode + Channel = at least 4 bytes from APCI
+            if len < offsets::MSG_APCI + 4 {
+                warn!("AL Restart (master reset) message too short: {}", len);
+                return;
+            }
+            let code = EraseCode::from(buf[offsets::MSG_APCI + 2]);
+            let ch = buf[offsets::MSG_APCI + 3];
+            (code, ch, true)
+        } else {
+            // Basic restart: no payload, no response
+            (EraseCode::Basic, 0, false)
+        };
+
+        debug!(
+            "AL Restart: erase_code={}, channel={}, needs_response={}, access_level={}",
+            erase_code,
+            channel,
+            needs_response,
+            ind.access_level()
+        );
+
+        // Check for unknown erase code (Other variant from create_protocol_enum!)
+        if matches!(erase_code, EraseCode::Other(_)) {
+            warn!("AL Restart: unsupported erase code {:?}", erase_code);
+            if needs_response {
+                self.send_restart_response(ind, RestartError::UnsupportedEraseCode, 0).await;
+            }
+            return;
+        }
+
+        // For master reset operations (not basic/confirmed), check access level
+        // Basic and Confirmed restart can be done by anyone, but other erase codes
+        // typically require higher access (level 0)
+        let required_level = match erase_code {
+            EraseCode::Basic | EraseCode::Confirmed => 3, // Anyone
+            _ => 0, // System access required for other erase codes
+        };
+
+        let current_level = ind.access_level();
+        if current_level > required_level {
+            warn!(
+                "AL Restart: access denied (current={}, required={})",
+                current_level, required_level
+            );
+            if needs_response {
+                self.send_restart_response(ind, RestartError::AccessDenied, 0).await;
+            }
+            return;
+        }
+
+        // Send restart request to user code and await response
+        let request = RestartRequest {
+            erase_code,
+            channel,
+            access_level: current_level,
+            needs_response,
+        };
+
+        debug!("AL Restart: sending request to user code");
+        let response: RestartResponse = self.restart_sender.request(request).await;
+        debug!("AL Restart: received response: error={}, process_time={}", response.error, response.process_time_100ms);
+
+        // Send A_Restart_Response if needed (master reset)
+        if needs_response {
+            self.send_restart_response(ind, response.error, response.process_time_100ms).await;
+        }
+
+        // Note: The actual platform restart is triggered by user code after sending the response
+    }
+
+    /// Send A_Restart_Response message
+    async fn send_restart_response(
+        &mut self,
+        ind: &IndicationMessage<Buffer<'static>>,
+        error: RestartError,
+        process_time_100ms: u16,
+    ) {
+        use crate::messages::builder::IndicationExt;
+
+        // Determine transport service based on incoming service type
+        let transport_service = match ind.service_type() {
+            ServiceType::T_Data_Ind => ServiceType::T_Data_Req, // Connection-oriented
+            _ => ServiceType::T_Broadcast_Req,                  // Connectionless
+        };
+
+        // Response: APCI(2) + Error(1) + ProcessTime(2) = 5 bytes total APDU
+        const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
+        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+
+        // Build response using Restart APCI as base, then modify the APCI bytes in with_data
+        // to set the correct A_Restart_Response format: 0x03 0xA1
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::Restart, transport_service)
+            .with_data(|data| {
+                // Manually set APCI bytes for A_Restart_Response: 0x03 0xA1
+                // The first byte (0x03) encodes the APCI high bits
+                // The second byte (0xA1) encodes: bit 7=1 (response), bits 0-5 = channel info
+                data[offsets::MSG_APDU] = 0x03;
+                data[offsets::MSG_APCI + 1] = 0xA1;
+                data[offsets::MSG_APCI + 2] = error.into();
+                data[offsets::MSG_APCI + 3] = (process_time_100ms >> 8) as u8;
+                data[offsets::MSG_APCI + 4] = process_time_100ms as u8;
+            });
+
+        debug!("AL sending Restart_Response: error={}, process_time={}ms", error, process_time_100ms as u32 * 100);
+
+        let confirmation = self.transport_layer.request(msg).await;
+        trace!("AL Restart_Response confirmation: {:?}", confirmation.service_type());
     }
 }
 

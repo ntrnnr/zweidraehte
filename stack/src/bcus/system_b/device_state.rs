@@ -260,6 +260,151 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     pub fn is_running(&self) -> bool {
         self.app.borrow().is_running()
     }
+
+    // ========================================================================
+    // Reset Methods (for RestartHandler)
+    // ========================================================================
+
+    /// Reset individual address to factory default (15.15.255).
+    pub fn reset_individual_address(&self) {
+        self.individual_address.set(IndividualAddress::new(15, 15, 255));
+        self.mark_dirty();
+    }
+
+    /// Reset address table to unloaded state.
+    pub fn reset_address_table(&self) {
+        *self.adt.borrow_mut() = Table::new();
+        self.mark_dirty();
+    }
+
+    /// Reset association table to unloaded state.
+    pub fn reset_association_table(&self) {
+        *self.ast.borrow_mut() = Table::new();
+        self.mark_dirty();
+    }
+
+    /// Reset group object table to unloaded state.
+    pub fn reset_group_object_table(&self) {
+        *self.cot.borrow_mut() = Table::new();
+        self.mark_dirty();
+    }
+
+    /// Reset application program to unloaded state.
+    pub fn reset_application(&self) {
+        *self.app.borrow_mut() = Application::new();
+        *self.program_version.borrow_mut() = [0; 5];
+        self.mark_dirty();
+    }
+
+    /// Reset parameters to defaults.
+    ///
+    /// Resets the application parameters to their default values while keeping
+    /// the load state of the application program intact.
+    pub fn reset_parameters(&self) {
+        // Reset application parameters but keep program load state
+        let mut app = self.app.borrow_mut();
+        *app.params_mut() = P::DEFAULT;
+        self.mark_dirty();
+    }
+
+    /// Reset all tables (ADT, AST, COT) to unloaded state.
+    pub fn reset_all_tables(&self) {
+        self.reset_address_table();
+        self.reset_association_table();
+        self.reset_group_object_table();
+    }
+
+    /// Reset auth keys to factory default (all 0xFF).
+    pub fn reset_auth_keys(&self) {
+        *self.auth_keys.borrow_mut() = [[0xFF; 4]; NUM_AUTH_KEYS];
+        self.mark_dirty();
+    }
+
+    /// Perform a full factory reset (everything except serial number).
+    pub fn factory_reset(&self) {
+        self.reset_individual_address();
+        self.reset_all_tables();
+        self.reset_application();
+        self.reset_auth_keys();
+        self.routing_count.set(6); // Default routing count
+        *self.pei.borrow_mut() = PeiApplication::new();
+        *self.pei_program_version.borrow_mut() = [0; 5];
+        self.mark_dirty();
+    }
+
+    /// Perform factory reset but keep the individual address.
+    pub fn factory_reset_keep_ia(&self) {
+        let ia = self.individual_address.get();
+        self.factory_reset();
+        self.individual_address.set(ia);
+    }
+}
+
+// ============================================================================
+// RestartHandler Implementation
+// ============================================================================
+
+use crate::restart::{EraseCode, RestartError, RestartHandler};
+
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: SystemBDevice>
+    RestartHandler for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D>
+{
+    fn supports_erase_code(&self, code: EraseCode) -> bool {
+        // System B devices support all standard erase codes
+        matches!(
+            code,
+            EraseCode::Basic
+                | EraseCode::Confirmed
+                | EraseCode::FactoryReset
+                | EraseCode::ResetIA
+                | EraseCode::ResetAP
+                | EraseCode::ResetParam
+                | EraseCode::ResetLinks
+                | EraseCode::FactoryResetKeepIA
+        )
+    }
+
+    fn execute_reset(&mut self, code: EraseCode, _channel: u8) -> Result<u16, RestartError> {
+        match code {
+            EraseCode::Basic | EraseCode::Confirmed => {
+                // Just restart, no data reset needed
+                Ok(0)
+            }
+            EraseCode::FactoryReset => {
+                self.factory_reset();
+                Ok(0)
+            }
+            EraseCode::ResetIA => {
+                self.reset_individual_address();
+                Ok(0)
+            }
+            EraseCode::ResetAP => {
+                self.reset_application();
+                Ok(0)
+            }
+            EraseCode::ResetParam => {
+                self.reset_parameters();
+                Ok(0)
+            }
+            EraseCode::ResetLinks => {
+                self.reset_address_table();
+                self.reset_association_table();
+                Ok(0)
+            }
+            EraseCode::FactoryResetKeepIA => {
+                self.factory_reset_keep_ia();
+                Ok(0)
+            }
+            EraseCode::Other(_) => Err(RestartError::UnsupportedEraseCode),
+        }
+    }
+
+    fn flush_storage(&mut self) -> Result<(), RestartError> {
+        // Storage flushing is handled by the storage backend
+        // The mark_dirty() calls above ensure the dirty flag is set
+        // User code should call the storage's flush method
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -535,6 +680,25 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     pub fn is_running(&self) -> bool {
         self.base.is_running()
     }
+
+    // ========================================================================
+    // Reset Methods (for RestartHandler)
+    // ========================================================================
+
+    /// Reset IP configuration to factory defaults.
+    pub fn reset_ip_config(&self) {
+        let defaults = PersistedIpConfig::default();
+        *self.friendly_name.borrow_mut() = defaults.friendly_name;
+        self.friendly_name_len.set(defaults.friendly_name_len as usize);
+        self.configured_ip.set(Ipv4Addr::from(defaults.configured_ip));
+        self.configured_subnet.set(Ipv4Addr::from(defaults.configured_subnet));
+        self.configured_gateway.set(Ipv4Addr::from(defaults.configured_gateway));
+        self.ip_assignment_method.set(defaults.ip_assignment_method);
+        self.routing_multicast.set(Ipv4Addr::from(defaults.routing_multicast));
+        self.ttl.set(defaults.ttl);
+        self.project_installation_id.set(defaults.project_installation_id);
+        self.mark_dirty();
+    }
 }
 
 // Delegate StackState to base
@@ -747,5 +911,72 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 {
     fn routing_count(&self) -> u8 {
         self.base.routing_count()
+    }
+}
+
+// ============================================================================
+// RestartHandler Implementation for IP Devices
+// ============================================================================
+
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: KnxIpDevice>
+    RestartHandler for IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D>
+{
+    fn supports_erase_code(&self, code: EraseCode) -> bool {
+        // IP devices support all standard erase codes
+        matches!(
+            code,
+            EraseCode::Basic
+                | EraseCode::Confirmed
+                | EraseCode::FactoryReset
+                | EraseCode::ResetIA
+                | EraseCode::ResetAP
+                | EraseCode::ResetParam
+                | EraseCode::ResetLinks
+                | EraseCode::FactoryResetKeepIA
+        )
+    }
+
+    fn execute_reset(&mut self, code: EraseCode, _channel: u8) -> Result<u16, RestartError> {
+        match code {
+            EraseCode::Basic | EraseCode::Confirmed => {
+                // Just restart, no data reset needed
+                Ok(0)
+            }
+            EraseCode::FactoryReset => {
+                // Full factory reset including IP configuration
+                self.base.factory_reset();
+                self.reset_ip_config();
+                Ok(0)
+            }
+            EraseCode::ResetIA => {
+                self.base.reset_individual_address();
+                Ok(0)
+            }
+            EraseCode::ResetAP => {
+                self.base.reset_application();
+                Ok(0)
+            }
+            EraseCode::ResetParam => {
+                self.base.reset_parameters();
+                Ok(0)
+            }
+            EraseCode::ResetLinks => {
+                self.base.reset_address_table();
+                self.base.reset_association_table();
+                Ok(0)
+            }
+            EraseCode::FactoryResetKeepIA => {
+                // Factory reset but keep IA - also resets IP config
+                self.base.factory_reset_keep_ia();
+                self.reset_ip_config();
+                Ok(0)
+            }
+            EraseCode::Other(_) => Err(RestartError::UnsupportedEraseCode),
+        }
+    }
+
+    fn flush_storage(&mut self) -> Result<(), RestartError> {
+        // Delegate to base - storage flushing is handled by the storage backend
+        Ok(())
     }
 }

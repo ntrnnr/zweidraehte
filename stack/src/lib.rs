@@ -27,6 +27,7 @@ pub mod layers;
 pub mod memory;
 pub mod messages;
 pub mod objects;
+pub mod restart;
 pub mod util;
 
 #[cfg(any(test, feature = "test-util"))]
@@ -997,6 +998,7 @@ pub struct Runner<'d, D: StackDefinition> {
     stack: Stack<'d, D>,
     interface_objects: &'d D::InterfaceObjects<'static>,
     app_request_receiver: DynamicReceiver<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+    restart_sender: DynamicSender<'static, Request<restart::RestartRequest, restart::RestartResponse>>,
     link_layer_builder: D::LLB,
     link_layer_resources: &'d mut <D::LLB as LinkLayerBuilder>::Resources,
 }
@@ -1044,6 +1046,7 @@ pub struct Stack<'d, D: StackDefinition> {
     inner: &'d Inner<D>,
     interface_objects: &'d D::InterfaceObjects<'static>,
     app_request_sender: DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+    restart_receiver: DynamicReceiver<'static, Request<restart::RestartRequest, restart::RestartResponse>>,
 }
 
 impl<'d, D: StackDefinition> Copy for Stack<'d, D> {}
@@ -1061,6 +1064,9 @@ pub(crate) struct Inner<D: StackDefinition> {
     pub(crate) comm_objs: RefCell<D::CO>,
     pub(crate) event_channel:
         PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
+    /// Channel for A_Restart requests from application layer to user code
+    pub(crate) restart_channel:
+        Channel<NoopRawMutex, Request<restart::RestartRequest, restart::RestartResponse>, 1>,
     /// Unified device state containing runtime state, tables, and configuration
     pub(crate) state: D::State,
     /// Hook context for communication object hooks
@@ -1157,6 +1163,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         app_service_channel: Channel::new(),
         comm_objs: RefCell::new(comm_objs),
         event_channel: PubSubChannel::new(),
+        restart_channel: Channel::new(),
         state,
         hook_context,
         memory_map,
@@ -1179,14 +1186,25 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     let (app_request_sender, app_request_receiver) =
         create_request_response_pair::<NoopRawMutex, _, 1>(unsafe { core::mem::transmute(&inner.app_service_channel) });
 
+    // Create restart channel sender/receiver pair.
+    // The sender goes to the Runner (passed to ApplicationLayer), receiver goes to Stack (for user code).
+    let (restart_sender, restart_receiver) =
+        create_request_response_pair::<NoopRawMutex, _, 1>(unsafe { core::mem::transmute(&inner.restart_channel) });
+
     // Initialize link layer resources using the builder
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());
 
-    let stack = Stack { inner, interface_objects, app_request_sender: app_request_sender.into() };
+    let stack = Stack {
+        inner,
+        interface_objects,
+        app_request_sender: app_request_sender.into(),
+        restart_receiver: restart_receiver.into(),
+    };
     let runner = Runner {
         stack,
         interface_objects,
         app_request_receiver: app_request_receiver.into(),
+        restart_sender: restart_sender.into(),
         link_layer_builder,
         link_layer_resources,
     };
@@ -1247,6 +1265,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             self.interface_objects,
             &self.stack.inner.memory_map,
             self.app_request_receiver,
+            self.restart_sender,
             tl_channel.sender().into(),
         );
 
@@ -1656,6 +1675,56 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// structures like the COT.
     pub fn hook_context(&self) -> &<D::CO as ComObjects>::HookContext {
         &self.inner.hook_context
+    }
+
+    /// Receive the next restart request from the application layer.
+    ///
+    /// When the stack receives an A_Restart message from the KNX bus, it validates the request
+    /// and sends a [`restart::RestartRequest`] through this channel. User code should:
+    ///
+    /// 1. Call this method to receive the request
+    /// 2. Execute the appropriate reset based on [`restart::EraseCode`]
+    /// 3. Flush storage to persist any changes
+    /// 4. Call [`Self::reply_to_restart`] to send the response
+    /// 5. Trigger platform restart after the response is sent
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// # async fn handle_restart(stack: zweidraehte::Stack<'_, MyDevice>) {
+    /// use zweidraehte::restart::{RestartRequest, RestartResponse, RestartError, EraseCode};
+    ///
+    /// loop {
+    ///     let request = stack.receive_restart_request().await;
+    ///
+    ///     // Execute reset based on erase code
+    ///     let response = match request.erase_code {
+    ///         EraseCode::Basic | EraseCode::Confirmed => {
+    ///             RestartResponse::success()
+    ///         }
+    ///         EraseCode::FactoryReset => {
+    ///             // Perform factory reset
+    ///             device_state.factory_reset();
+    ///             RestartResponse::success()
+    ///         }
+    ///         _ => RestartResponse::error(RestartError::UnsupportedEraseCode),
+    ///     };
+    ///
+    ///     // Send response back to stack (this will send A_Restart_Response if needed)
+    ///     request.reply(response).await;
+    ///
+    ///     // Trigger platform restart
+    ///     if response.error == RestartError::NoError {
+    ///         // Give time for response to be sent
+    ///         embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
+    ///         // Platform-specific restart here
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub async fn receive_restart_request(
+        &self,
+    ) -> Request<restart::RestartRequest, restart::RestartResponse> {
+        self.restart_receiver.receive().await
     }
 }
 
