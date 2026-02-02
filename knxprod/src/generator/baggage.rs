@@ -1,9 +1,7 @@
 //! Baggage generation utilities.
 //!
-//! This module provides functions for:
-//! - Encoding filenames for baggage IDs
-//! - Generating baggage IDs from manufacturer ID and filename
-//! - Generating Baggages.xml manifest files
+//! This module provides the `BaggageGenerator` for creating Baggages.xml manifest files,
+//! as well as helper functions for baggage ID encoding and file handling.
 //!
 //! # Baggage ID Format
 //!
@@ -23,13 +21,16 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use knxprod::generator::baggage::{encode_baggage_filename, make_baggage_id};
+//! use knxprod::{BaggageGenerator, ApplicationProgramConfig};
+//! use knxprod::schema::BaggageDef;
 //!
-//! assert_eq!(encode_baggage_filename("licht.png"), "licht.2Epng");
-//! assert_eq!(encode_baggage_filename("socket_on.png"), "socket.5Fon.2Epng");
-//! assert_eq!(make_baggage_id(0x0083, "licht.png"), "M-0083_BG--licht.2Epng");
+//! let baggages = [BaggageDef::embedded("icon.png", &PNG_BYTES)];
+//! let config = ApplicationProgramConfig { /* ... */ baggages: Some(&baggages), /* ... */ };
+//!
+//! let xml = BaggageGenerator::generate(&config)?;
 //! ```
 
+use super::{ApplicationProgramConfig, GeneratorError};
 use crate::signing::KnxSchemaVersion;
 
 // Re-export for external use
@@ -38,109 +39,207 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::io::{self, Write};
 
-/// Format a timestamp in KNX standard format: ISO 8601 with 7 decimal places.
-/// Example: "2026-01-30T14:30:00.0000000Z"
-fn format_knx_timestamp(dt: DateTime<Utc>) -> String {
-    // KNX uses 7 decimal places for sub-second precision
-    let nanos = dt.timestamp_subsec_nanos();
-    let subsec = nanos / 100; // Convert to 100ns units (7 decimal places)
-    format!(
-        "{}.{:07}Z",
-        dt.format("%Y-%m-%dT%H:%M:%S"),
-        subsec
-    )
-}
+// ============================================================================
+// BaggageGenerator
+// ============================================================================
 
-/// Encode a filename for use in a baggage ID.
+/// Generator for creating Baggages.xml manifest files.
 ///
-/// Special characters are encoded as `.XX` where XX is the hex value:
-/// - `.` (0x2E) becomes `.2E`
-/// - `_` (0x5F) becomes `.5F`
-/// - `/` (0x2F) becomes `.2F`
-/// - ` ` (0x20) becomes `.20`
+/// This follows the same pattern as `MtxmlGenerator`, `HardwareGenerator`, and `CatalogGenerator`.
 ///
 /// # Example
 ///
-/// ```rust
-/// use knxprod::generator::baggage::encode_baggage_filename;
+/// ```rust,ignore
+/// use knxprod::{BaggageGenerator, ApplicationProgramConfig};
 ///
-/// assert_eq!(encode_baggage_filename("licht.png"), "licht.2Epng");
-/// assert_eq!(encode_baggage_filename("socket_on.png"), "socket.5Fon.2Epng");
+/// let config = ApplicationProgramConfig { /* ... */ };
+/// let xml = BaggageGenerator::generate(&config)?;
 /// ```
-pub fn encode_baggage_filename(name: &str) -> String {
-    let mut result = String::with_capacity(name.len() * 2);
-    for c in name.chars() {
-        match c {
-            '.' => result.push_str(".2E"),
-            '_' => result.push_str(".5F"),
-            '/' => result.push_str(".2F"),
-            '\\' => result.push_str(".5C"),
-            ' ' => result.push_str(".20"),
-            '-' => result.push_str(".2D"),
-            // Pass through alphanumeric characters
-            c if c.is_ascii_alphanumeric() => result.push(c),
-            // Encode other characters
-            c => {
-                if c.is_ascii() {
-                    result.push_str(&format!(".{:02X}", c as u8));
-                } else {
-                    // For non-ASCII, just pass through (rare in baggage names)
-                    result.push(c);
-                }
-            }
+pub struct BaggageGenerator;
+
+impl BaggageGenerator {
+    /// Generate a complete Baggages.xml manifest from the configuration.
+    ///
+    /// Returns `Ok(None)` if no baggages are defined in the config.
+    /// Returns `Ok(Some(xml))` with the XML content if baggages are present.
+    ///
+    /// The `schema_version` parameter controls the xmlns namespace and tool version
+    /// in the generated XML. If `None`, defaults to V20.
+    pub fn generate(
+        config: &ApplicationProgramConfig,
+        schema_version: Option<KnxSchemaVersion>,
+    ) -> Result<Option<String>, GeneratorError> {
+        let Some(baggages) = config.baggages else {
+            return Ok(None);
+        };
+
+        if baggages.is_empty() {
+            return Ok(None);
         }
+
+        let version = schema_version.unwrap_or(KnxSchemaVersion::V20);
+        let xml = Self::generate_xml(config.device.manufacturer_id, baggages, version);
+        Ok(Some(xml))
     }
-    result
-}
 
-/// Generate a baggage ID from manufacturer ID and filename.
-///
-/// The ID format is: `M-{ManufId}_BG-{EncodedFilename}`
-///
-/// # Example
-///
-/// ```rust
-/// use knxprod::generator::baggage::make_baggage_id;
-///
-/// assert_eq!(make_baggage_id(0x0083, "licht.png"), "M-0083_BG--licht.2Epng");
-/// assert_eq!(make_baggage_id(0x00FA, "icon.png"), "M-00FA_BG--icon.2Epng");
-/// ```
-pub fn make_baggage_id(manufacturer_id: u16, filename: &str) -> String {
-    // Format: M-{manuf}_BG--{encoded_filename} (double hyphen for empty target path)
-    format!(
-        "M-{:04X}_BG--{}",
-        manufacturer_id,
-        encode_baggage_filename(filename)
-    )
-}
+    /// Generate Baggages.xml content from baggage definitions.
+    ///
+    /// This is a lower-level method for when you have the individual parameters
+    /// rather than an `ApplicationProgramConfig`.
+    ///
+    /// # Arguments
+    ///
+    /// * `manufacturer_id` - The KNX manufacturer ID (e.g., 0x0083)
+    /// * `baggages` - Slice of baggage definitions
+    /// * `schema_version` - The KNX schema version (determines namespace and tool version)
+    ///
+    /// # Returns
+    ///
+    /// The XML content as a String.
+    pub fn generate_xml(manufacturer_id: u16, baggages: &[BaggageDef<'_>], schema_version: KnxSchemaVersion) -> String {
+        let schema_namespace = schema_version.namespace_url();
+        let tool_version = schema_version.tool_version();
 
-/// Generate baggage ID including target path if present.
-///
-/// Format: `M-{manuf}_BG-{encoded_target_path}-{encoded_filename}`
-/// When target_path is empty: `M-{manuf}_BG--{encoded_filename}` (double hyphen)
-/// When target_path is "A0\30": `M-{manuf}_BG-A0.5C30-{encoded_filename}`
-pub fn make_baggage_id_with_path(manufacturer_id: u16, target_path: &str, filename: &str) -> String {
-    if target_path.is_empty() {
-        make_baggage_id(manufacturer_id, filename)
-    } else {
-        // Encode target path (backslash becomes .5C, etc.) and append filename with hyphen separator
-        format!(
-            "M-{:04X}_BG-{}-{}",
-            manufacturer_id,
-            encode_baggage_filename(target_path),
-            encode_baggage_filename(filename)
-        )
+        // Build baggage entries
+        let items: Vec<BaggageXmlEntry> = baggages
+            .iter()
+            .map(|b| {
+                let id = make_baggage_id_with_path(manufacturer_id, b.target_path, b.name);
+                BaggageXmlEntry {
+                    target_path: b.target_path.to_string(),
+                    name: b.name.to_string(),
+                    id,
+                    file_info: FileInfo {
+                        // Use current timestamp in KNX standard format: ISO 8601 with 7 decimal places
+                        time_info: format_knx_timestamp(Utc::now()),
+                    },
+                }
+            })
+            .collect();
+
+        let knx = BaggagesKnx {
+            xmlns_xsi: "http://www.w3.org/2001/XMLSchema-instance",
+            xmlns_xsd: "http://www.w3.org/2001/XMLSchema",
+            created_by: "zweidraehte",
+            tool_version,
+            xmlns: schema_namespace.to_string(),
+            manufacturer_data: BaggagesManufacturerData {
+                manufacturer: BaggagesManufacturer {
+                    ref_id: format!("M-{:04X}", manufacturer_id),
+                    baggages: BaggagesList { items },
+                },
+            },
+        };
+
+        // Serialize to XML with XML declaration and proper indentation
+        let mut buffer = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+
+        // Use quick_xml serializer with indentation
+        let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
+        serializer.indent(' ', 2);
+
+        if let Err(e) = serde::Serialize::serialize(&knx, serializer) {
+            log::error!("Failed to serialize Baggages.xml: {}", e);
+        }
+
+        buffer
     }
-}
 
-/// Convert a slice of BaggageDefs to BaggageRefs for the Extension section.
-pub fn baggages_to_refs(manufacturer_id: u16, baggages: &[BaggageDef<'_>]) -> Vec<BaggageRef> {
-    baggages
-        .iter()
-        .map(|b| BaggageRef {
-            ref_id: make_baggage_id_with_path(manufacturer_id, b.target_path, b.name),
-        })
-        .collect()
+    /// Write baggage files to a directory.
+    ///
+    /// This writes the actual baggage file contents to the Baggages/ subdirectory.
+    ///
+    /// # Arguments
+    ///
+    /// * `base_dir` - The output directory (e.g., "M-0083/")
+    /// * `config` - The application program configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
+    pub fn write_files(base_dir: &std::path::Path, config: &ApplicationProgramConfig) -> io::Result<()> {
+        let Some(baggages) = config.baggages else {
+            return Ok(());
+        };
+
+        let baggages_dir = base_dir.join("Baggages");
+        std::fs::create_dir_all(&baggages_dir)?;
+
+        for baggage in baggages {
+            let target_dir = if baggage.target_path.is_empty() {
+                baggages_dir.clone()
+            } else {
+                let dir = baggages_dir.join(baggage.target_path);
+                std::fs::create_dir_all(&dir)?;
+                dir
+            };
+
+            let file_path = target_dir.join(baggage.name);
+            let content = match &baggage.content {
+                BaggageContent::Embedded(bytes) => bytes.to_vec(),
+                BaggageContent::External(path) => std::fs::read(path)?,
+            };
+
+            let mut file = std::fs::File::create(&file_path)?;
+            file.write_all(&content)?;
+        }
+
+        Ok(())
+    }
+
+    /// Get baggage file contents for signing.
+    ///
+    /// Returns a Vec of (path, content) pairs for inclusion in a .knxprod package.
+    /// The paths are relative to the manufacturer directory (e.g., "Baggages/licht.png").
+    /// This includes both the baggage files themselves and the Baggages.xml manifest.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The application program configuration
+    /// * `schema_version` - The KNX schema version (if None, defaults to V20)
+    ///
+    /// # Returns
+    ///
+    /// A vector of (relative_path, file_content) pairs.
+    pub fn get_files_for_signing(
+        config: &ApplicationProgramConfig,
+        schema_version: Option<KnxSchemaVersion>,
+    ) -> io::Result<Vec<(String, Vec<u8>)>> {
+        let Some(baggages) = config.baggages else {
+            return Ok(Vec::new());
+        };
+
+        if baggages.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let version = schema_version.unwrap_or(KnxSchemaVersion::V20);
+        let manufacturer_id = config.device.manufacturer_id;
+
+        let mut files = Vec::with_capacity(baggages.len() + 1);
+
+        // Add Baggages.xml manifest (note: .xml not .mtxml in the knxprod package)
+        let baggages_xml = Self::generate_xml(manufacturer_id, baggages, version);
+        files.push(("Baggages.xml".to_string(), baggages_xml.into_bytes()));
+
+        // Add individual baggage files
+        for baggage in baggages {
+            let path = if baggage.target_path.is_empty() {
+                format!("Baggages/{}", baggage.name)
+            } else {
+                format!("Baggages/{}/{}", baggage.target_path, baggage.name)
+            };
+
+            let content = match &baggage.content {
+                BaggageContent::Embedded(bytes) => bytes.to_vec(),
+                BaggageContent::External(file_path) => std::fs::read(file_path)?,
+            };
+
+            files.push((path, content));
+        }
+
+        Ok(files)
+    }
 }
 
 // ============================================================================
@@ -207,156 +306,102 @@ struct FileInfo {
 }
 
 // ============================================================================
-// Generator function
+// Helper functions
 // ============================================================================
 
-/// Generate Baggages.xml content from baggage definitions.
+/// Format a timestamp in KNX standard format: ISO 8601 with 7 decimal places.
+/// Example: "2026-01-30T14:30:00.0000000Z"
+fn format_knx_timestamp(dt: DateTime<Utc>) -> String {
+    // KNX uses 7 decimal places for sub-second precision
+    let nanos = dt.timestamp_subsec_nanos();
+    let subsec = nanos / 100; // Convert to 100ns units (7 decimal places)
+    format!("{}.{:07}Z", dt.format("%Y-%m-%dT%H:%M:%S"), subsec)
+}
+
+/// Encode a filename for use in a baggage ID.
 ///
-/// # Arguments
+/// Special characters are encoded as `.XX` where XX is the hex value:
+/// - `.` (0x2E) becomes `.2E`
+/// - `_` (0x5F) becomes `.5F`
+/// - `/` (0x2F) becomes `.2F`
+/// - ` ` (0x20) becomes `.20`
 ///
-/// * `manufacturer_id` - The KNX manufacturer ID (e.g., 0x0083)
-/// * `baggages` - Slice of baggage definitions
-/// * `schema_version` - The KNX schema version (determines namespace and tool version)
+/// # Example
 ///
-/// # Returns
+/// ```rust
+/// use knxprod::encode_baggage_filename;
 ///
-/// The XML content as a String.
-pub fn generate_baggages_xml(
-    manufacturer_id: u16,
-    baggages: &[BaggageDef<'_>],
-    schema_version: KnxSchemaVersion,
-) -> String {
-    let schema_namespace = schema_version.namespace_url();
-    let tool_version = schema_version.tool_version();
-    // Build baggage entries
-    let items: Vec<BaggageXmlEntry> = baggages
-        .iter()
-        .map(|b| {
-            let id = make_baggage_id_with_path(manufacturer_id, b.target_path, b.name);
-            BaggageXmlEntry {
-                target_path: b.target_path.to_string(),
-                name: b.name.to_string(),
-                id,
-                file_info: FileInfo {
-                    // Use current timestamp in KNX standard format: ISO 8601 with 7 decimal places
-                    time_info: format_knx_timestamp(Utc::now()),
-                },
+/// assert_eq!(encode_baggage_filename("licht.png"), "licht.2Epng");
+/// assert_eq!(encode_baggage_filename("socket_on.png"), "socket.5Fon.2Epng");
+/// ```
+pub fn encode_baggage_filename(name: &str) -> String {
+    let mut result = String::with_capacity(name.len() * 2);
+    for c in name.chars() {
+        match c {
+            '.' => result.push_str(".2E"),
+            '_' => result.push_str(".5F"),
+            '/' => result.push_str(".2F"),
+            '\\' => result.push_str(".5C"),
+            ' ' => result.push_str(".20"),
+            '-' => result.push_str(".2D"),
+            // Pass through alphanumeric characters
+            c if c.is_ascii_alphanumeric() => result.push(c),
+            // Encode other characters
+            c => {
+                if c.is_ascii() {
+                    result.push_str(&format!(".{:02X}", c as u8));
+                } else {
+                    // For non-ASCII, just pass through (rare in baggage names)
+                    result.push(c);
+                }
             }
-        })
-        .collect();
-
-    let knx = BaggagesKnx {
-        xmlns_xsi: "http://www.w3.org/2001/XMLSchema-instance",
-        xmlns_xsd: "http://www.w3.org/2001/XMLSchema",
-        created_by: "zweidraehte",
-        tool_version,
-        xmlns: schema_namespace.to_string(),
-        manufacturer_data: BaggagesManufacturerData {
-            manufacturer: BaggagesManufacturer {
-                ref_id: format!("M-{:04X}", manufacturer_id),
-                baggages: BaggagesList { items },
-            },
-        },
-    };
-
-    // Serialize to XML with XML declaration and proper indentation
-    let mut buffer = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
-
-    // Use quick_xml serializer with indentation
-    let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
-    serializer.indent(' ', 2);
-
-    if let Err(e) = serde::Serialize::serialize(&knx, serializer) {
-        log::error!("Failed to serialize Baggages.xml: {}", e);
+        }
     }
-
-    buffer
+    result
 }
 
-/// Write baggage files to a directory.
+/// Generate a baggage ID from manufacturer ID and filename.
 ///
-/// This writes the actual baggage file contents to the Baggages/ subdirectory.
+/// The ID format is: `M-{ManufId}_BG-{EncodedFilename}`
 ///
-/// # Arguments
+/// # Example
 ///
-/// * `base_dir` - The output directory (e.g., "M-0083/")
-/// * `baggages` - Slice of baggage definitions
+/// ```rust
+/// use knxprod::make_baggage_id;
 ///
-/// # Errors
-///
-/// Returns an error if file operations fail.
-pub fn write_baggage_files(
-    base_dir: &std::path::Path,
-    baggages: &[BaggageDef<'_>],
-) -> io::Result<()> {
-    let baggages_dir = base_dir.join("Baggages");
-    std::fs::create_dir_all(&baggages_dir)?;
-
-    for baggage in baggages {
-        let target_dir = if baggage.target_path.is_empty() {
-            baggages_dir.clone()
-        } else {
-            let dir = baggages_dir.join(baggage.target_path);
-            std::fs::create_dir_all(&dir)?;
-            dir
-        };
-
-        let file_path = target_dir.join(baggage.name);
-        let content = match &baggage.content {
-            BaggageContent::Embedded(bytes) => bytes.to_vec(),
-            BaggageContent::External(path) => std::fs::read(path)?,
-        };
-
-        let mut file = std::fs::File::create(&file_path)?;
-        file.write_all(&content)?;
-    }
-
-    Ok(())
+/// assert_eq!(make_baggage_id(0x0083, "licht.png"), "M-0083_BG--licht.2Epng");
+/// assert_eq!(make_baggage_id(0x00FA, "icon.png"), "M-00FA_BG--icon.2Epng");
+/// ```
+pub fn make_baggage_id(manufacturer_id: u16, filename: &str) -> String {
+    // Format: M-{manuf}_BG--{encoded_filename} (double hyphen for empty target path)
+    format!("M-{:04X}_BG--{}", manufacturer_id, encode_baggage_filename(filename))
 }
 
-/// Get baggage file contents for signing.
+/// Generate baggage ID including target path if present.
 ///
-/// Returns a Vec of (path, content) pairs for inclusion in a .knxprod package.
-/// The paths are relative to the manufacturer directory (e.g., "Baggages/licht.png").
-/// This includes both the baggage files themselves and the Baggages.xml manifest.
-///
-/// # Arguments
-///
-/// * `manufacturer_id` - The KNX manufacturer ID (e.g., 0x0083)
-/// * `baggages` - Slice of baggage definitions
-/// * `schema_version` - The KNX schema version (determines namespace and tool version)
-pub fn get_baggage_files_for_signing(
-    manufacturer_id: u16,
-    baggages: &[BaggageDef<'_>],
-    schema_version: KnxSchemaVersion,
-) -> io::Result<Vec<(String, Vec<u8>)>> {
-    if baggages.is_empty() {
-        return Ok(Vec::new());
+/// Format: `M-{manuf}_BG-{encoded_target_path}-{encoded_filename}`
+/// When target_path is empty: `M-{manuf}_BG--{encoded_filename}` (double hyphen)
+/// When target_path is "A0\30": `M-{manuf}_BG-A0.5C30-{encoded_filename}`
+pub fn make_baggage_id_with_path(manufacturer_id: u16, target_path: &str, filename: &str) -> String {
+    if target_path.is_empty() {
+        make_baggage_id(manufacturer_id, filename)
+    } else {
+        // Encode target path (backslash becomes .5C, etc.) and append filename with hyphen separator
+        format!(
+            "M-{:04X}_BG-{}-{}",
+            manufacturer_id,
+            encode_baggage_filename(target_path),
+            encode_baggage_filename(filename)
+        )
     }
+}
 
-    let mut files = Vec::with_capacity(baggages.len() + 1);
-
-    // Add Baggages.xml manifest (note: .xml not .mtxml in the knxprod package)
-    let baggages_xml = generate_baggages_xml(manufacturer_id, baggages, schema_version);
-    files.push(("Baggages.xml".to_string(), baggages_xml.into_bytes()));
-
-    // Add individual baggage files
-    for baggage in baggages {
-        let path = if baggage.target_path.is_empty() {
-            format!("Baggages/{}", baggage.name)
-        } else {
-            format!("Baggages/{}/{}", baggage.target_path, baggage.name)
-        };
-
-        let content = match &baggage.content {
-            BaggageContent::Embedded(bytes) => bytes.to_vec(),
-            BaggageContent::External(file_path) => std::fs::read(file_path)?,
-        };
-
-        files.push((path, content));
-    }
-
-    Ok(files)
+/// Convert a slice of BaggageDefs to BaggageRefs for the Extension section.
+pub fn baggages_to_refs(manufacturer_id: u16, baggages: &[BaggageDef<'_>]) -> Vec<BaggageRef> {
+    baggages
+        .iter()
+        .map(|b| BaggageRef { ref_id: make_baggage_id_with_path(manufacturer_id, b.target_path, b.name) })
+        .collect()
 }
 
 #[cfg(test)]
@@ -380,52 +425,34 @@ mod tests {
 
     #[test]
     fn test_encode_complex_name() {
-        assert_eq!(
-            encode_baggage_filename("lock_closed_green.png"),
-            "lock.5Fclosed.5Fgreen.2Epng"
-        );
+        assert_eq!(encode_baggage_filename("lock_closed_green.png"), "lock.5Fclosed.5Fgreen.2Epng");
     }
 
     #[test]
     fn test_make_baggage_id() {
         // Double hyphen for empty target path
-        assert_eq!(
-            make_baggage_id(0x0083, "licht.png"),
-            "M-0083_BG--licht.2Epng"
-        );
+        assert_eq!(make_baggage_id(0x0083, "licht.png"), "M-0083_BG--licht.2Epng");
     }
 
     #[test]
     fn test_make_baggage_id_different_manufacturer() {
-        assert_eq!(
-            make_baggage_id(0x00FA, "icon.png"),
-            "M-00FA_BG--icon.2Epng"
-        );
+        assert_eq!(make_baggage_id(0x00FA, "icon.png"), "M-00FA_BG--icon.2Epng");
     }
 
     #[test]
     fn test_make_baggage_id_with_underscore() {
-        assert_eq!(
-            make_baggage_id(0x0083, "socket_on.png"),
-            "M-0083_BG--socket.5Fon.2Epng"
-        );
+        assert_eq!(make_baggage_id(0x0083, "socket_on.png"), "M-0083_BG--socket.5Fon.2Epng");
     }
 
     #[test]
     fn test_make_baggage_id_with_path() {
         // Target path with backslash gets encoded
-        assert_eq!(
-            make_baggage_id_with_path(0x00FA, "A0\\30", "ets.png"),
-            "M-00FA_BG-A0.5C30-ets.2Epng"
-        );
+        assert_eq!(make_baggage_id_with_path(0x00FA, "A0\\30", "ets.png"), "M-00FA_BG-A0.5C30-ets.2Epng");
     }
 
     #[test]
     fn test_baggages_to_refs() {
-        let baggages = [
-            BaggageDef::embedded("light.png", &[]),
-            BaggageDef::embedded("heat.png", &[]),
-        ];
+        let baggages = [BaggageDef::embedded("light.png", &[]), BaggageDef::embedded("heat.png", &[])];
         let refs = baggages_to_refs(0x0083, &baggages);
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].ref_id, "M-0083_BG--light.2Epng");
@@ -435,7 +462,7 @@ mod tests {
     #[test]
     fn test_generate_baggages_xml() {
         let baggages = [BaggageDef::embedded("test.png", &[1, 2, 3])];
-        let xml = generate_baggages_xml(0x0083, &baggages, KnxSchemaVersion::V20);
+        let xml = BaggageGenerator::generate_xml(0x0083, &baggages, KnxSchemaVersion::V20);
 
         assert!(xml.contains("M-0083"));
         assert!(xml.contains("M-0083_BG--test.2Epng"));

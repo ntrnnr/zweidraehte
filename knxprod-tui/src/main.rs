@@ -11,20 +11,19 @@ use std::io;
 use std::path::PathBuf;
 
 use clap::Parser;
-use log::LevelFilter;
-use simplelog::{Config, WriteLogger};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use log::LevelFilter;
 use ratatui::{backend::CrosstermBackend, Terminal};
+use simplelog::{Config, WriteLogger};
 
 use app::{App, EditMode};
-use knxprod::baggage::BaggageIndex;
-use knxprod::master_data::MasterData;
-use knxprod::parser::{parse_application_program_from_file, ProgramSummary};
-use knxprod::Device;
+use knxprod::runtime::baggage::BaggageIndex;
+use knxprod::runtime::parser::ProgramSummary;
+use knxprod::{parse_application_program_from_file, Device, MasterData};
 
 /// KNX ApplicationProgram TUI Viewer
 #[derive(Parser, Debug)]
@@ -72,11 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Dynamic Section:");
             println!(
                 "  Channel-Independent Block: {}",
-                if summary.has_channel_independent_block {
-                    "yes"
-                } else {
-                    "no"
-                }
+                if summary.has_channel_independent_block { "yes" } else { "no" }
             );
             println!("  Channels: {}", summary.channel_count);
         } else {
@@ -131,14 +126,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("No application program found")?;
 
     // Load baggage index from the same directory as the MTXML file
-    let baggage_index = args.file.parent().and_then(|dir| {
-        match BaggageIndex::from_directory(dir) {
-            Ok(index) => {
-                eprintln!("Loaded {} baggage files from {:?}", index.len(), dir);
-                Some(index)
-            }
-            Err(_) => None,
+    let baggage_index = args.file.parent().and_then(|dir| match BaggageIndex::from_directory(dir) {
+        Ok(index) => {
+            eprintln!("Loaded {} baggage files from {:?}", index.len(), dir);
+            Some(index)
         }
+        Err(_) => None,
     });
 
     // Create unified Device
@@ -166,20 +159,13 @@ fn run_tui(mut app: App) -> io::Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
 
     result
 }
 
-fn run_app(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut App,
-) -> io::Result<()> {
+fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
     loop {
         terminal.draw(|frame| ui::render(frame, app))?;
 

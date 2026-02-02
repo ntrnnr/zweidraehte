@@ -14,14 +14,16 @@ use std::path::PathBuf;
 
 use const_default::ConstDefault;
 
-use knxprod::signing::KnxSchemaVersion;
-use knxprod::signing::{MasterDataSource, SigningConfig, create_knxprod};
+use knxprod::definition::page_layout::EtsPageLayout;
+use knxprod::signing::{KnxSchemaVersion, MasterDataSource, SigningConfig, create_knxprod};
+use knxprod::{ApplicationProgramConfig, CatalogGenerator, HardwareGenerator, MtxmlGenerator};
 use testutil::devices::{DEVICE_DESCRIPTOR, DemoParams, DemoStack, SERIAL_NUMBER, comm_objs};
-use testutil::mtxml_gen::page_layout::EtsPageLayout;
-use testutil::mtxml_gen::{ApplicationProgramConfig, CatalogGenerator, HardwareGenerator, MtxmlGenerator};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
+
+    // Schema version to use for generation
+    let schema_version = Some(KnxSchemaVersion::V20);
 
     // Get default parameter values as bytes
     let defaults = DemoParams::DEFAULT;
@@ -32,7 +34,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ApplicationProgramConfig {
         name: "DerGeraet",
         device: &DEVICE_DESCRIPTOR,
-        schema_version: Some(KnxSchemaVersion::V20),
         params: DemoParams::ETS_PARAMS_EXT,
         virtual_params: None,
         param_defaults: param_bytes,
@@ -60,6 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         page_layout: Some(DemoStack::page_layout()),
         modules: None,
         baggages: None,
+        translations: None,
     };
 
     // Create output directory structure: out/<device>/M-XXXX/
@@ -69,19 +71,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Output directory: {}", out_dir.display());
 
     // Generate ApplicationProgram MTXML
-    let app_xml = MtxmlGenerator::generate(&config)?;
+    let app_xml = MtxmlGenerator::generate(&config, schema_version)?;
     let app_path = out_dir.join("ApplicationProgram1.mtxml");
     fs::write(&app_path, &app_xml)?;
     println!("Generated: {}", app_path.display());
 
     // Generate Hardware MTXML
-    let hw_xml = HardwareGenerator::generate(&config)?;
+    let hw_xml = HardwareGenerator::generate(&config, schema_version)?;
     let hw_path = out_dir.join("Hardware1.mtxml");
     fs::write(&hw_path, &hw_xml)?;
     println!("Generated: {}", hw_path.display());
 
     // Generate Catalog MTXML
-    let cat_xml = CatalogGenerator::generate(&config)?;
+    let cat_xml = CatalogGenerator::generate(&config, schema_version)?;
     let cat_path = out_dir.join("Catalog1.mtxml");
     fs::write(&cat_path, &cat_xml)?;
     println!("Generated: {}", cat_path.display());

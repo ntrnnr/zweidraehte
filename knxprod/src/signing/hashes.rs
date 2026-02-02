@@ -10,8 +10,8 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use sha1::{Digest, Sha1};
 
 use super::attributes::{
-    normalize_appl_prog_id, serialize_element, AttributeProvider, APPLICATION_PROGRAM_ATTRS,
-    HARDWARE2PROGRAM_ATTRS, HARDWARE_ATTRS, PRODUCT_ATTRS,
+    normalize_appl_prog_id, serialize_element, AttributeProvider, APPLICATION_PROGRAM_ATTRS, HARDWARE2PROGRAM_ATTRS,
+    HARDWARE_ATTRS, PRODUCT_ATTRS,
 };
 use super::binary_writer::write_dotnet_string;
 
@@ -65,14 +65,11 @@ pub fn compute_product_hash(
 /// Compute the SHA1 hash bytes for an ApplicationProgram element.
 ///
 /// The hash is computed from the serialized ApplicationProgram element attributes.
-pub fn compute_application_program_hash_bytes(
-    app_program_attrs: &HashMap<String, String>,
-) -> Vec<u8> {
+pub fn compute_application_program_hash_bytes(app_program_attrs: &HashMap<String, String>) -> Vec<u8> {
     let mut data = Vec::new();
 
     let provider = MapAttributeProvider::new(app_program_attrs);
-    serialize_element(&mut data, &provider, APPLICATION_PROGRAM_ATTRS)
-        .expect("serialize application program");
+    serialize_element(&mut data, &provider, APPLICATION_PROGRAM_ATTRS).expect("serialize application program");
 
     let mut hasher = Sha1::new();
     hasher.update(&data);
@@ -80,9 +77,7 @@ pub fn compute_application_program_hash_bytes(
 }
 
 /// Compute the SHA1 hash for an ApplicationProgram element as base64 string.
-pub fn compute_application_program_hash(
-    app_program_attrs: &HashMap<String, String>,
-) -> String {
+pub fn compute_application_program_hash(app_program_attrs: &HashMap<String, String>) -> String {
     BASE64.encode(compute_application_program_hash_bytes(app_program_attrs))
 }
 
@@ -148,14 +143,8 @@ pub fn compute_hardware2program_hash(
     app_ref_ids: &[String],
     app_program_hashes: Option<&[String]>,
 ) -> String {
-    BASE64.encode(compute_hardware2program_hash_bytes(
-        hardware_attrs,
-        h2p_attrs,
-        app_ref_ids,
-        app_program_hashes,
-    ))
+    BASE64.encode(compute_hardware2program_hash_bytes(hardware_attrs, h2p_attrs, app_ref_ids, app_program_hashes))
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -7,9 +7,9 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
-use knxprod::{
-    ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem,
-    Choose, ParameterBlock, ParameterBlockItem, WhenItem,
+use knxprod::schema::{
+    ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, ParameterBlock,
+    ParameterBlockItem, WhenItem,
 };
 
 // ============================================================================
@@ -33,20 +33,11 @@ pub enum VisibilityConstraint {
         values: BTreeSet<i64>,
     },
     /// Visible when selector does NOT equal the specified value.
-    NotEquals {
-        selector: String,
-        value: i64,
-    },
+    NotEquals { selector: String, value: i64 },
     /// Visible when selector is greater than value.
-    GreaterThan {
-        selector: String,
-        value: i64,
-    },
+    GreaterThan { selector: String, value: i64 },
     /// Visible when selector is less than value.
-    LessThan {
-        selector: String,
-        value: i64,
-    },
+    LessThan { selector: String, value: i64 },
     /// Conjunction of constraints (all must be true).
     And(Vec<VisibilityConstraint>),
     /// Disjunction of constraints (at least one must be true).
@@ -56,10 +47,7 @@ pub enum VisibilityConstraint {
 impl VisibilityConstraint {
     /// Create an Equals constraint.
     pub fn equals(selector: impl Into<String>, values: impl IntoIterator<Item = i64>) -> Self {
-        VisibilityConstraint::Equals {
-            selector: selector.into(),
-            values: values.into_iter().collect(),
-        }
+        VisibilityConstraint::Equals { selector: selector.into(), values: values.into_iter().collect() }
     }
 
     /// Create an And constraint.
@@ -116,60 +104,39 @@ impl VisibilityConstraint {
         // Check for comparison operators
         if let Some(rest) = test.strip_prefix("!=") {
             if let Ok(val) = rest.trim().parse::<i64>() {
-                return VisibilityConstraint::NotEquals {
-                    selector: selector.to_string(),
-                    value: val,
-                };
+                return VisibilityConstraint::NotEquals { selector: selector.to_string(), value: val };
             }
         }
         if let Some(rest) = test.strip_prefix(">=") {
             if let Ok(val) = rest.trim().parse::<i64>() {
                 // >= is equivalent to > (val - 1)
-                return VisibilityConstraint::GreaterThan {
-                    selector: selector.to_string(),
-                    value: val - 1,
-                };
+                return VisibilityConstraint::GreaterThan { selector: selector.to_string(), value: val - 1 };
             }
         }
         if let Some(rest) = test.strip_prefix("<=") {
             if let Ok(val) = rest.trim().parse::<i64>() {
                 // <= is equivalent to < (val + 1)
-                return VisibilityConstraint::LessThan {
-                    selector: selector.to_string(),
-                    value: val + 1,
-                };
+                return VisibilityConstraint::LessThan { selector: selector.to_string(), value: val + 1 };
             }
         }
         if let Some(rest) = test.strip_prefix('>') {
             if let Ok(val) = rest.trim().parse::<i64>() {
-                return VisibilityConstraint::GreaterThan {
-                    selector: selector.to_string(),
-                    value: val,
-                };
+                return VisibilityConstraint::GreaterThan { selector: selector.to_string(), value: val };
             }
         }
         if let Some(rest) = test.strip_prefix('<') {
             if let Ok(val) = rest.trim().parse::<i64>() {
-                return VisibilityConstraint::LessThan {
-                    selector: selector.to_string(),
-                    value: val,
-                };
+                return VisibilityConstraint::LessThan { selector: selector.to_string(), value: val };
             }
         }
 
         // Space-separated OR values
-        let values: BTreeSet<i64> = test
-            .split_whitespace()
-            .filter_map(|s| s.parse::<i64>().ok())
-            .collect();
+        let values: BTreeSet<i64> = test.split_whitespace().filter_map(|s| s.parse::<i64>().ok()).collect();
 
         if values.is_empty() {
             VisibilityConstraint::Always
         } else {
-            VisibilityConstraint::Equals {
-                selector: selector.to_string(),
-                values,
-            }
+            VisibilityConstraint::Equals { selector: selector.to_string(), values }
         }
     }
 
@@ -190,12 +157,8 @@ impl VisibilityConstraint {
             VisibilityConstraint::LessThan { selector, value } => {
                 values.get(selector).map(|v| v < value).unwrap_or(false)
             }
-            VisibilityConstraint::And(constraints) => {
-                constraints.iter().all(|c| c.evaluate(values))
-            }
-            VisibilityConstraint::Or(constraints) => {
-                constraints.iter().any(|c| c.evaluate(values))
-            }
+            VisibilityConstraint::And(constraints) => constraints.iter().all(|c| c.evaluate(values)),
+            VisibilityConstraint::Or(constraints) => constraints.iter().any(|c| c.evaluate(values)),
         }
     }
 
@@ -311,20 +274,14 @@ impl VisibilityMap {
         }
     }
 
-    fn process_parameter_block(
-        &mut self,
-        block: &ParameterBlock,
-        parent_constraint: VisibilityConstraint,
-    ) {
+    fn process_parameter_block(&mut self, block: &ParameterBlock, parent_constraint: VisibilityConstraint) {
         for item in &block.items {
             match item {
                 ParameterBlockItem::ParameterRefRef(prr) => {
-                    self.param_ref_visibility
-                        .insert(prr.ref_id.clone(), parent_constraint.clone());
+                    self.param_ref_visibility.insert(prr.ref_id.clone(), parent_constraint.clone());
                 }
                 ParameterBlockItem::ComObjectRefRef(corr) => {
-                    self.com_object_ref_visibility
-                        .insert(corr.ref_id.clone(), parent_constraint.clone());
+                    self.com_object_ref_visibility.insert(corr.ref_id.clone(), parent_constraint.clone());
                 }
                 ParameterBlockItem::Choose(choose) => {
                     self.process_choose(choose, parent_constraint.clone());
@@ -361,10 +318,7 @@ impl VisibilityMap {
             };
 
             // Combine with parent constraint
-            let combined = VisibilityConstraint::and(vec![
-                parent_constraint.clone(),
-                when_constraint,
-            ]);
+            let combined = VisibilityConstraint::and(vec![parent_constraint.clone(), when_constraint]);
 
             // Process items in this when clause
             for item in &when.items {
@@ -376,12 +330,10 @@ impl VisibilityMap {
     fn process_when_item(&mut self, item: &WhenItem, constraint: VisibilityConstraint) {
         match item {
             WhenItem::ParameterRefRef(prr) => {
-                self.param_ref_visibility
-                    .insert(prr.ref_id.clone(), constraint);
+                self.param_ref_visibility.insert(prr.ref_id.clone(), constraint);
             }
             WhenItem::ComObjectRefRef(corr) => {
-                self.com_object_ref_visibility
-                    .insert(corr.ref_id.clone(), constraint);
+                self.com_object_ref_visibility.insert(corr.ref_id.clone(), constraint);
             }
             WhenItem::ParameterBlock(pb) => {
                 self.process_parameter_block(pb, constraint);
@@ -443,30 +395,16 @@ impl fmt::Display for VisibilityDiff {
 }
 
 /// Compare visibility maps for two programs.
-pub fn compare_visibility(
-    reference: &VisibilityMap,
-    generated: &VisibilityMap,
-) -> Vec<VisibilityDiff> {
+pub fn compare_visibility(reference: &VisibilityMap, generated: &VisibilityMap) -> Vec<VisibilityDiff> {
     let mut diffs = Vec::new();
 
     // Compare parameter ref visibility
-    let all_param_refs: HashSet<_> = reference
-        .param_ref_visibility
-        .keys()
-        .chain(generated.param_ref_visibility.keys())
-        .collect();
+    let all_param_refs: HashSet<_> =
+        reference.param_ref_visibility.keys().chain(generated.param_ref_visibility.keys()).collect();
 
     for ref_id in all_param_refs {
-        let ref_constraint = reference
-            .param_ref_visibility
-            .get(ref_id)
-            .cloned()
-            .unwrap_or(VisibilityConstraint::Never);
-        let gen_constraint = generated
-            .param_ref_visibility
-            .get(ref_id)
-            .cloned()
-            .unwrap_or(VisibilityConstraint::Never);
+        let ref_constraint = reference.param_ref_visibility.get(ref_id).cloned().unwrap_or(VisibilityConstraint::Never);
+        let gen_constraint = generated.param_ref_visibility.get(ref_id).cloned().unwrap_or(VisibilityConstraint::Never);
 
         if ref_constraint != gen_constraint {
             diffs.push(VisibilityDiff {
@@ -480,23 +418,14 @@ pub fn compare_visibility(
     }
 
     // Compare com object ref visibility
-    let all_com_refs: HashSet<_> = reference
-        .com_object_ref_visibility
-        .keys()
-        .chain(generated.com_object_ref_visibility.keys())
-        .collect();
+    let all_com_refs: HashSet<_> =
+        reference.com_object_ref_visibility.keys().chain(generated.com_object_ref_visibility.keys()).collect();
 
     for ref_id in all_com_refs {
-        let ref_constraint = reference
-            .com_object_ref_visibility
-            .get(ref_id)
-            .cloned()
-            .unwrap_or(VisibilityConstraint::Never);
-        let gen_constraint = generated
-            .com_object_ref_visibility
-            .get(ref_id)
-            .cloned()
-            .unwrap_or(VisibilityConstraint::Never);
+        let ref_constraint =
+            reference.com_object_ref_visibility.get(ref_id).cloned().unwrap_or(VisibilityConstraint::Never);
+        let gen_constraint =
+            generated.com_object_ref_visibility.get(ref_id).cloned().unwrap_or(VisibilityConstraint::Never);
 
         if ref_constraint != gen_constraint {
             diffs.push(VisibilityDiff {
@@ -519,49 +448,28 @@ mod tests {
     #[test]
     fn test_constraint_from_test_single_value() {
         let c = VisibilityConstraint::from_test("sel", "5");
-        assert_eq!(
-            c,
-            VisibilityConstraint::Equals {
-                selector: "sel".to_string(),
-                values: [5].into_iter().collect(),
-            }
-        );
+        assert_eq!(c, VisibilityConstraint::Equals { selector: "sel".to_string(), values: [5].into_iter().collect() });
     }
 
     #[test]
     fn test_constraint_from_test_multiple_values() {
         let c = VisibilityConstraint::from_test("sel", "1 2 3");
-        assert_eq!(
-            c,
-            VisibilityConstraint::Equals {
-                selector: "sel".to_string(),
-                values: [1, 2, 3].into_iter().collect(),
-            }
-        );
+        assert_eq!(c, VisibilityConstraint::Equals {
+            selector: "sel".to_string(),
+            values: [1, 2, 3].into_iter().collect(),
+        });
     }
 
     #[test]
     fn test_constraint_from_test_not_equals() {
         let c = VisibilityConstraint::from_test("sel", "!=0");
-        assert_eq!(
-            c,
-            VisibilityConstraint::NotEquals {
-                selector: "sel".to_string(),
-                value: 0,
-            }
-        );
+        assert_eq!(c, VisibilityConstraint::NotEquals { selector: "sel".to_string(), value: 0 });
     }
 
     #[test]
     fn test_constraint_from_test_greater_than() {
         let c = VisibilityConstraint::from_test("sel", ">5");
-        assert_eq!(
-            c,
-            VisibilityConstraint::GreaterThan {
-                selector: "sel".to_string(),
-                value: 5,
-            }
-        );
+        assert_eq!(c, VisibilityConstraint::GreaterThan { selector: "sel".to_string(), value: 5 });
     }
 
     #[test]
@@ -578,16 +486,10 @@ mod tests {
 
     #[test]
     fn test_constraint_and_simplify() {
-        let c = VisibilityConstraint::and(vec![
-            VisibilityConstraint::Always,
-            VisibilityConstraint::equals("sel", [1]),
-        ]);
+        let c = VisibilityConstraint::and(vec![VisibilityConstraint::Always, VisibilityConstraint::equals("sel", [1])]);
         assert_eq!(c, VisibilityConstraint::equals("sel", [1]));
 
-        let c2 = VisibilityConstraint::and(vec![
-            VisibilityConstraint::Never,
-            VisibilityConstraint::equals("sel", [1]),
-        ]);
+        let c2 = VisibilityConstraint::and(vec![VisibilityConstraint::Never, VisibilityConstraint::equals("sel", [1])]);
         assert_eq!(c2, VisibilityConstraint::Never);
     }
 

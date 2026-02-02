@@ -12,8 +12,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use knxprod::device::Device;
-//! use knxprod::parser::parse_application_program_from_file;
+//! use knxprod::{Device, parse_application_program_from_file};
 //!
 //! let knx = parse_application_program_from_file("device.mtxml")?;
 //! let program = knx.manufacturer_data.manufacturer.application_programs.programs.remove(0);
@@ -31,17 +30,17 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::baggage::BaggageIndex;
-use crate::device_info::DeviceInfo;
-use crate::master_data::MasterData;
-use crate::model::{
-    AssociationEntry, Condition, ExpandedModule, GroupAddress, GroupAddressBinding,
-    ModuleArgValue, ParameterInfo, ParameterValue,
+use crate::runtime::baggage::BaggageIndex;
+use crate::runtime::device_info::DeviceInfo;
+use crate::runtime::master_data::MasterData;
+use crate::runtime::model::{
+    AssociationEntry, Condition, ExpandedModule, GroupAddress, GroupAddressBinding, ModuleArgValue, ParameterInfo,
+    ParameterValue,
 };
 use crate::schema::{
-    ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem,
-    Choose, ComObject, ComObjectRef, Module, ModuleArg, ModuleDef, ModuleDefDynamicItem,
-    ParameterBlock, ParameterBlockItem, ParameterRef, ParameterType, WhenItem,
+    ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, ComObject,
+    ComObjectRef, Module, ModuleArg, ModuleDef, ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, ParameterRef,
+    ParameterType, WhenItem,
 };
 
 /// A complete KNX device instance with all state needed for configuration and programming.
@@ -242,23 +241,17 @@ impl Device {
 
     /// Iterate over visible parameter refs.
     pub fn visible_param_refs(&self) -> impl Iterator<Item = &ParameterRef> {
-        self.visible_param_refs
-            .iter()
-            .filter_map(|id| self.param_refs.get(id))
+        self.visible_param_refs.iter().filter_map(|id| self.param_refs.get(id))
     }
 
     /// Iterate over visible communication object refs.
     pub fn visible_com_object_refs(&self) -> impl Iterator<Item = &ComObjectRef> {
-        self.visible_com_object_refs
-            .iter()
-            .filter_map(|id| self.com_object_refs.get(id))
+        self.visible_com_object_refs.iter().filter_map(|id| self.com_object_refs.get(id))
     }
 
     /// Iterate over visible module instances.
     pub fn visible_modules(&self) -> impl Iterator<Item = &ExpandedModule> {
-        self.visible_modules
-            .iter()
-            .filter_map(|id| self.expanded_modules.get(id))
+        self.visible_modules.iter().filter_map(|id| self.expanded_modules.get(id))
     }
 
     // ========================================================================
@@ -281,22 +274,13 @@ impl Device {
     }
 
     /// Get a module parameter value.
-    pub fn get_module_parameter_value(
-        &self,
-        instance_id: &str,
-        param_id: &str,
-    ) -> Option<&ParameterValue> {
+    pub fn get_module_parameter_value(&self, instance_id: &str, param_id: &str) -> Option<&ParameterValue> {
         let composite_id = format!("{}::{}", instance_id, param_id);
         self.module_param_values.get(&composite_id)
     }
 
     /// Set a module parameter value and recompute visibility.
-    pub fn set_module_parameter_value(
-        &mut self,
-        instance_id: &str,
-        param_id: &str,
-        value: ParameterValue,
-    ) {
+    pub fn set_module_parameter_value(&mut self, instance_id: &str, param_id: &str, value: ParameterValue) {
         let composite_id = format!("{}::{}", instance_id, param_id);
         self.module_param_values.insert(composite_id, value);
         self.recompute_visibility();
@@ -317,10 +301,7 @@ impl Device {
 
         // First binding is the sending address
         let is_sending = bindings.is_empty();
-        bindings.push(GroupAddressBinding {
-            group_address: address,
-            is_sending,
-        });
+        bindings.push(GroupAddressBinding { group_address: address, is_sending });
     }
 
     /// Remove a group address binding from a communication object.
@@ -352,31 +333,21 @@ impl Device {
     /// Build association table entries for all bindings.
     pub fn build_association_entries(&self) -> Vec<AssociationEntry> {
         // Collect all unique group addresses and sort them
-        let mut all_addresses: Vec<GroupAddress> = self
-            .group_address_bindings
-            .values()
-            .flatten()
-            .map(|b| b.group_address)
-            .collect();
+        let mut all_addresses: Vec<GroupAddress> =
+            self.group_address_bindings.values().flatten().map(|b| b.group_address).collect();
         all_addresses.sort_by_key(|ga| ga.to_u16());
         all_addresses.dedup();
 
         // Build address table index (1-based)
-        let address_to_tsap: HashMap<GroupAddress, u16> = all_addresses
-            .iter()
-            .enumerate()
-            .map(|(i, ga)| (*ga, (i + 1) as u16))
-            .collect();
+        let address_to_tsap: HashMap<GroupAddress, u16> =
+            all_addresses.iter().enumerate().map(|(i, ga)| (*ga, (i + 1) as u16)).collect();
 
         // Build association entries
         let mut entries = Vec::new();
         for (obj_number, bindings) in &self.group_address_bindings {
             for binding in bindings {
                 if let Some(&tsap) = address_to_tsap.get(&binding.group_address) {
-                    entries.push(AssociationEntry {
-                        tsap,
-                        asap: *obj_number,
-                    });
+                    entries.push(AssociationEntry { tsap, asap: *obj_number });
                 }
             }
         }
@@ -392,20 +363,13 @@ impl Device {
     /// This is a convenience method that returns an empty slice instead of None
     /// when there are no bindings.
     pub fn get_group_addresses(&self, obj_number: u16) -> &[GroupAddressBinding] {
-        self.group_address_bindings
-            .get(&obj_number)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+        self.group_address_bindings.get(&obj_number).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Get all unique group addresses from all bindings, sorted.
     pub fn all_group_addresses(&self) -> Vec<GroupAddress> {
-        let mut addresses: Vec<GroupAddress> = self
-            .group_address_bindings
-            .values()
-            .flatten()
-            .map(|b| b.group_address)
-            .collect();
+        let mut addresses: Vec<GroupAddress> =
+            self.group_address_bindings.values().flatten().map(|b| b.group_address).collect();
         addresses.sort_by_key(|ga| ga.to_u16());
         addresses.dedup();
         addresses
@@ -452,21 +416,14 @@ impl Device {
     /// Get a module parameter value by composite ID (instance_id::param_id).
     ///
     /// This is a convenience method for when the composite ID is already formed.
-    pub fn get_module_parameter_value_by_composite_id(
-        &self,
-        composite_id: &str,
-    ) -> Option<&ParameterValue> {
+    pub fn get_module_parameter_value_by_composite_id(&self, composite_id: &str) -> Option<&ParameterValue> {
         self.module_param_values.get(composite_id)
     }
 
     /// Set a module parameter value by composite ID (instance_id::param_id).
     ///
     /// This is a convenience method for when the composite ID is already formed.
-    pub fn set_module_parameter_value_by_composite_id(
-        &mut self,
-        composite_id: &str,
-        value: ParameterValue,
-    ) {
+    pub fn set_module_parameter_value_by_composite_id(&mut self, composite_id: &str, value: ParameterValue) {
         self.module_param_values.insert(composite_id.to_string(), value);
         self.recompute_visibility();
     }
@@ -568,9 +525,7 @@ impl Device {
         if !text.contains("{{0}}") {
             return text.to_string();
         }
-        let value = text_param_ref_id
-            .and_then(|id| self.resolve_text_param_ref(id))
-            .unwrap_or_default();
+        let value = text_param_ref_id.and_then(|id| self.resolve_text_param_ref(id)).unwrap_or_default();
         text.replace("{{0}}", &value)
     }
 
@@ -665,11 +620,7 @@ impl Device {
         self.process_choose_with_module(choose, None);
     }
 
-    fn process_parameter_block_with_module(
-        &mut self,
-        pb: &ParameterBlock,
-        module_ctx: Option<&ModuleContext>,
-    ) {
+    fn process_parameter_block_with_module(&mut self, pb: &ParameterBlock, module_ctx: Option<&ModuleContext>) {
         for item in &pb.items {
             self.process_parameter_block_item_with_module(item, module_ctx);
         }
@@ -731,11 +682,7 @@ impl Device {
         }
     }
 
-    fn process_when_items_with_module(
-        &mut self,
-        items: &[WhenItem],
-        module_ctx: Option<&ModuleContext>,
-    ) {
+    fn process_when_items_with_module(&mut self, items: &[WhenItem], module_ctx: Option<&ModuleContext>) {
         for item in items {
             match item {
                 WhenItem::ParameterRefRef(prr) => {
@@ -759,11 +706,7 @@ impl Device {
         }
     }
 
-    fn get_selector_value_with_module(
-        &self,
-        param_ref_id: &str,
-        module_ctx: Option<&ModuleContext>,
-    ) -> Option<i64> {
+    fn get_selector_value_with_module(&self, param_ref_id: &str, module_ctx: Option<&ModuleContext>) -> Option<i64> {
         // First try module context if available
         if let Some(ctx) = module_ctx {
             if let Some(param_refs) = &ctx.module_def.static_section.parameter_refs {
@@ -789,10 +732,7 @@ impl Device {
 
         if let Some(module_def) = self.module_defs.get(&module.ref_id).cloned() {
             if let Some(dynamic) = &module_def.dynamic {
-                let module_ctx = ModuleContext {
-                    instance_id: module.id.clone(),
-                    module_def: module_def.clone(),
-                };
+                let module_ctx = ModuleContext { instance_id: module.id.clone(), module_def: module_def.clone() };
 
                 for item in &dynamic.items {
                     match item {
@@ -831,7 +771,7 @@ impl Device {
 // ConditionEvaluator Implementation
 // ============================================================================
 
-impl crate::model::ConditionEvaluator for Device {
+impl crate::runtime::model::ConditionEvaluator for Device {
     fn get_selector_value(&self, param_ref_id: &str) -> Option<i64> {
         // Delegate to Device's internal method
         Device::get_selector_value(self, param_ref_id)
@@ -840,7 +780,7 @@ impl crate::model::ConditionEvaluator for Device {
     fn get_selector_value_with_module(
         &self,
         param_ref_id: &str,
-        module_ctx: Option<&crate::model::VisitorModuleContext>,
+        module_ctx: Option<&crate::runtime::model::VisitorModuleContext>,
     ) -> Option<i64> {
         // If module context is provided, first try module parameter lookup
         if let Some(ctx) = module_ctx {
@@ -925,22 +865,11 @@ where
     K: std::hash::Hash + Eq,
     I: IntoIterator<Item = T>,
 {
-    items
-        .into_iter()
-        .flatten()
-        .map(|item| (key_fn(&item), val_fn(&item)))
-        .collect()
+    items.into_iter().flatten().map(|item| (key_fn(&item), val_fn(&item))).collect()
 }
 
 fn build_param_type_lookup(static_section: &StaticSection) -> HashMap<String, ParameterType> {
-    build_lookup(
-        static_section
-            .parameter_types
-            .as_ref()
-            .map(|pt| pt.types.iter()),
-        |t| t.id.clone(),
-        |t| (*t).clone(),
-    )
+    build_lookup(static_section.parameter_types.as_ref().map(|pt| pt.types.iter()), |t| t.id.clone(), |t| (*t).clone())
 }
 
 fn build_parameter_lookup(
@@ -1006,47 +935,23 @@ fn parse_default_value(value: &str) -> ParameterValue {
 }
 
 fn build_param_ref_lookup(static_section: &StaticSection) -> HashMap<String, ParameterRef> {
-    build_lookup(
-        static_section
-            .parameter_refs
-            .as_ref()
-            .map(|pr| pr.refs.iter()),
-        |r| r.id.clone(),
-        |r| (*r).clone(),
-    )
+    build_lookup(static_section.parameter_refs.as_ref().map(|pr| pr.refs.iter()), |r| r.id.clone(), |r| (*r).clone())
 }
 
 fn build_com_object_lookup(static_section: &StaticSection) -> HashMap<String, ComObject> {
     build_lookup(
-        static_section
-            .com_object_table
-            .as_ref()
-            .map(|cot| cot.objects.iter()),
+        static_section.com_object_table.as_ref().map(|cot| cot.objects.iter()),
         |o| o.id.clone(),
         |o| (*o).clone(),
     )
 }
 
 fn build_com_object_ref_lookup(static_section: &StaticSection) -> HashMap<String, ComObjectRef> {
-    build_lookup(
-        static_section
-            .com_object_refs
-            .as_ref()
-            .map(|cor| cor.refs.iter()),
-        |r| r.id.clone(),
-        |r| (*r).clone(),
-    )
+    build_lookup(static_section.com_object_refs.as_ref().map(|cor| cor.refs.iter()), |r| r.id.clone(), |r| (*r).clone())
 }
 
 fn build_module_def_lookup(program: &ApplicationProgram) -> HashMap<String, ModuleDef> {
-    build_lookup(
-        program
-            .module_defs
-            .as_ref()
-            .map(|md| md.module_defs.iter()),
-        |m| m.id.clone(),
-        |m| (*m).clone(),
-    )
+    build_lookup(program.module_defs.as_ref().map(|md| md.module_defs.iter()), |m| m.id.clone(), |m| (*m).clone())
 }
 
 fn build_module_param_values(
@@ -1187,10 +1092,7 @@ fn collect_modules_from_choose(
     }
 }
 
-fn expand_module(
-    module: &Module,
-    module_defs: &HashMap<String, ModuleDef>,
-) -> Option<ExpandedModule> {
+fn expand_module(module: &Module, module_defs: &HashMap<String, ModuleDef>) -> Option<ExpandedModule> {
     let module_def = module_defs.get(&module.ref_id)?;
 
     let mut args = HashMap::new();
@@ -1219,10 +1121,14 @@ fn expand_module(
                     module.id,
                     def_arg.name,
                     def_arg.id,
-                    module.args.iter().map(|a| match a {
-                        ModuleArg::NumericArg { ref_id, value } => format!("Num({}: {})", ref_id, value),
-                        ModuleArg::TextArg { ref_id, value, .. } => format!("Text({}: {})", ref_id, value),
-                    }).collect::<Vec<_>>()
+                    module
+                        .args
+                        .iter()
+                        .map(|a| match a {
+                            ModuleArg::NumericArg { ref_id, value } => format!("Num({}: {})", ref_id, value),
+                            ModuleArg::TextArg { ref_id, value, .. } => format!("Text({}: {})", ref_id, value),
+                        })
+                        .collect::<Vec<_>>()
                 );
             }
         }
@@ -1239,7 +1145,7 @@ fn expand_module(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse_application_program_from_file;
+    use crate::runtime::parser::parse_application_program_from_file;
     use std::path::Path;
 
     #[test]
@@ -1271,9 +1177,7 @@ mod tests {
         eprintln!("First module: {} -> {:?}", first.instance_id, first.args);
 
         // Find a module with ChNo=1
-        let m1 = modules.iter().find(|m| {
-            matches!(m.args.get("ChNo"), Some(ModuleArgValue::Numeric(1)))
-        });
+        let m1 = modules.iter().find(|m| matches!(m.args.get("ChNo"), Some(ModuleArgValue::Numeric(1))));
         assert!(m1.is_some(), "Should find module with ChNo=1");
         let m1 = m1.unwrap();
         eprintln!("Module with ChNo=1: {} -> {:?}", m1.instance_id, m1.args);
@@ -1287,13 +1191,8 @@ mod tests {
     #[test]
     fn test_interpolate_patterns() {
         // Simple pattern
-        let result = interpolate_patterns("Hello {{name}}", |p| {
-            if p == "name" {
-                Some("World".to_string())
-            } else {
-                None
-            }
-        });
+        let result =
+            interpolate_patterns("Hello {{name}}", |p| if p == "name" { Some("World".to_string()) } else { None });
         assert_eq!(result, "Hello World");
 
         // Pattern with default

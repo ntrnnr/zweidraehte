@@ -5,7 +5,9 @@
 //!
 //! - **Schema types** - Typed Rust structs matching the KNX project XSD schema
 //! - **Generator** - Builds ApplicationProgram, Hardware, and Catalog XML from device definitions
-//! - **Page layout DSL** - Declarative macro for defining ETS parameter page structure
+//! - **Builder** - Unified workflow for generating MTXML and .knxprod packages
+//! - **Definition DSL** - Declarative macros for defining device structure and ETS pages
+//! - **Runtime** - Parsing and working with existing MTXML files
 //!
 //! # Overview
 //!
@@ -15,25 +17,39 @@
 //! 1. Define device parameters using `#[derive(EtsParams)]` and `#[derive(EtsUnion)]`
 //! 2. Define communication objects using `#[derive(EtsComObjects)]`
 //! 3. Implement `EtsPageLayout` using the `ets_pages!` macro
-//! 4. Use `MtxmlGenerator`, `HardwareGenerator`, and `CatalogGenerator` to produce XML
+//! 4. Use `KnxprodBuilder` to generate all files and optionally create .knxprod packages
 //!
-//! # Example
+//! # Quick Start with KnxprodBuilder
 //!
 //! ```rust,ignore
-//! use knxprod::{MtxmlGenerator, HardwareGenerator, CatalogGenerator, ApplicationProgramConfig};
-//! use knxprod::page_layout::EtsPageLayout;
+//! use knxprod::{KnxprodBuilder, ApplicationProgramConfig};
+//! use knxprod::signing::MasterDataSource;
 //!
-//! let config = ApplicationProgramConfig {
-//!     name: "MyDevice",
-//!     device: &DEVICE_DESCRIPTOR,
-//!     params: MyParams::ETS_PARAMS_EXT,
-//!     param_defaults: &param_bytes,
-//!     comm_objects: &comm_objs::ETS_COMM_OBJECTS,
-//!     comm_object_refs: &comm_objs::ETS_COMM_OBJECT_REFS,
-//!     union_fields: Some(MyParams::ETS_UNIONS),
-//!     // ... other config
-//!     page_layout: Some(MyDevice::page_layout()),
-//! };
+//! let config = ApplicationProgramConfig { /* ... */ };
+//!
+//! // Generate all MTXML files
+//! let output = KnxprodBuilder::new(&config).generate_all()?;
+//!
+//! // Or write to disk
+//! KnxprodBuilder::new(&config)
+//!     .output_dir("out/MyDevice")
+//!     .file_prefix("My")
+//!     .write_mtxml()?;
+//!
+//! // Or create a signed .knxprod package
+//! let knxprod = KnxprodBuilder::new(&config)
+//!     .master_data(MasterDataSource::Download)
+//!     .build_knxprod()?;
+//! ```
+//!
+//! # Using Individual Generators
+//!
+//! For more control, you can use the individual generators directly:
+//!
+//! ```rust,ignore
+//! use knxprod::{ApplicationProgramConfig, MtxmlGenerator, HardwareGenerator, CatalogGenerator};
+//!
+//! let config = ApplicationProgramConfig { /* ... */ };
 //!
 //! let app_xml = MtxmlGenerator::generate(&config)?;
 //! let hw_xml = HardwareGenerator::generate(&config)?;
@@ -42,86 +58,73 @@
 //!
 //! # Modules
 //!
-//! - [`schema`] - XML schema types for serialization
-//! - [`generator`] - MTXML generation engine
+//! - [`schema`] - XML schema types for serialization (ApplicationProgram, Channel, etc.)
 //! - [`definition`] - Device definition DSL (modules, page layouts)
 //! - [`runtime`] - Parsing and runtime support for MTXML files
+//! - [`signing`] - Package signing utilities
 
-// Core modules
+// ============================================================================
+// Submodules
+// ============================================================================
+
 mod generator;
-mod schema;
+
+/// XML schema types matching the KNX project XSD.
+///
+/// Contains all the types needed for serialization/deserialization of MTXML files:
+/// - Root types: `Knx`, `ManufacturerData`, `ApplicationProgram`
+/// - Dynamic section: `Channel`, `Choose`, `When`, `ParameterBlock`
+/// - Static section: `Code`, `Extension`, `BaggageDef`
+/// - Parameters: `Parameter`, `ParameterType`, `ParameterRef`
+/// - Communication objects: `ComObject`, `ComObjectRef`
+/// - Hardware/Catalog: `Hardware2Programs`, `CatalogSection`
+pub mod schema;
+
+/// Package signing utilities for creating .knxprod files.
 pub mod signing;
 
-// Definition DSL (for creating devices in Rust)
+/// Device definition DSL for creating KNX devices in Rust.
+///
+/// Contains:
+/// - [`definition::module`] - Reusable module definitions (`KnxModule`, `ModuleCollection`)
+/// - [`definition::page_layout`] - ETS page structure (`EtsPageLayout`, `ets_pages!` macro)
 pub mod definition;
 
-// Runtime support (for parsing and working with MTXML)
+/// Runtime support for parsing and working with MTXML files.
+///
+/// Contains:
+/// - [`runtime::parser`] - XML parsing functions
+/// - [`runtime::device`] - Unified `Device` struct with runtime state
+/// - [`runtime::model`] - Visitor pattern and condition evaluation
+/// - [`runtime::baggage`] - Baggage file loading
+/// - [`runtime::master_data`] - knx_master.xml parsing
+/// - [`runtime::device_info`] - Device programming info extraction
 pub mod runtime;
 
-// Re-export definition types at crate root for convenience
-pub use definition::module::{
-    ConditionalModuleInstance, KnxModule, ModuleArgDef, ModuleArgRole, ModuleArgType,
-    ModuleArgValue, ModuleCollection, ModuleInstance, ModuleInstanceBuilder, StoredModuleDef,
-    StoredModuleInstance,
-};
-pub use definition::page_layout::{
-    ChannelDef, Condition, ConditionalElement, ConditionalItem, ElementCase, EtsPageLayout,
-    ItemCase, PageBlock, PageElement, PageItem, PageStructure,
+// ============================================================================
+// Primary API - Re-exports at crate root
+// ============================================================================
+
+// Generators - main API for creating MTXML
+pub use generator::{
+    ApplicationProgramConfig, BaggageGenerator, BuilderError, CatalogGenerator, GeneratorError, HardwareGenerator,
+    KnxprodBuilder, KnxprodOutput, MtxmlGenerator, System7MemoryLayout, System7Segment,
 };
 
-// Re-export runtime types at crate root for convenience
+// Parsing - main entry points
+pub use runtime::parser::{parse_application_program, parse_application_program_from_file, ParseError};
+
+// Key runtime types
 pub use runtime::device::Device;
-pub use runtime::model::{
-    ConditionEvaluator, DynamicVisitor, VisibilityVisitor, VisitorModuleContext, walk_dynamic,
-};
+pub use runtime::master_data::MasterData;
 
-// Re-export generator types
-pub use generator::*;
+// Baggage helper utilities (commonly used directly)
+pub use generator::baggage::{baggages_to_refs, encode_baggage_filename, make_baggage_id, make_baggage_id_with_path};
 
-// Re-export schema types
-pub use schema::*;
+// ============================================================================
+// Macro support
+// ============================================================================
 
-// Legacy module aliases for backwards compatibility
-pub mod baggage {
-    //! Baggage file loading utilities (re-exported from [`crate::runtime::baggage`])
-    pub use crate::runtime::baggage::*;
-}
-pub mod device {
-    //! Device runtime state (re-exported from [`crate::runtime::device`])
-    pub use crate::runtime::device::*;
-}
-pub mod device_info {
-    //! Device programming information (re-exported from [`crate::runtime::device_info`])
-    pub use crate::runtime::device_info::*;
-}
-pub mod master_data {
-    //! KNX master data parsing (re-exported from [`crate::runtime::master_data`])
-    pub use crate::runtime::master_data::*;
-}
-pub mod model {
-    //! Runtime model and visitor pattern (re-exported from [`crate::runtime::model`])
-    pub use crate::runtime::model::*;
-}
-pub mod module {
-    //! Module definition DSL (re-exported from [`crate::definition::module`])
-    pub use crate::definition::module::*;
-}
-pub mod page_layout {
-    //! Page layout DSL (re-exported from [`crate::definition::page_layout`])
-    pub use crate::definition::page_layout::*;
-}
-pub mod parser {
-    //! XML parsing (re-exported from [`crate::runtime::parser`])
-    pub use crate::runtime::parser::*;
-}
-
-// Re-export baggage generation utilities
-pub use generator::baggage::{
-    baggages_to_refs, encode_baggage_filename, generate_baggages_xml,
-    get_baggage_files_for_signing, make_baggage_id, make_baggage_id_with_path,
-    write_baggage_files,
-};
-
-// Re-export paste for use by macros
+/// Re-export paste for use by macros (internal use only)
 #[doc(hidden)]
 pub use paste;

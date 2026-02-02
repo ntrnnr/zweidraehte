@@ -7,9 +7,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::schema::{
-    Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem,
-    Choose, DynamicSection, Module, ModuleDef, ModuleDefDynamicItem,
-    ParameterBlock, ParameterBlockItem, WhenItem,
+    Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, DynamicSection, Module, ModuleDef,
+    ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, WhenItem,
 };
 
 /// Represents a KNX choose/when condition test.
@@ -65,10 +64,7 @@ impl Condition {
         }
 
         // Handle space-separated list of values (OR)
-        let values: Vec<i64> = test
-            .split_whitespace()
-            .filter_map(|s| s.parse().ok())
-            .collect();
+        let values: Vec<i64> = test.split_whitespace().filter_map(|s| s.parse().ok()).collect();
 
         if values.is_empty() {
             None
@@ -157,11 +153,7 @@ impl GroupAddress {
 
     /// Create from raw 16-bit value.
     pub const fn from_u16(val: u16) -> Self {
-        Self {
-            main: ((val >> 11) & 0x1f) as u8,
-            middle: ((val >> 8) & 0x07) as u8,
-            sub: (val & 0xff) as u8,
-        }
+        Self { main: ((val >> 11) & 0x1f) as u8, middle: ((val >> 8) & 0x07) as u8, sub: (val & 0xff) as u8 }
     }
 
     /// Check if this is a valid (non-zero) group address.
@@ -392,12 +384,8 @@ fn walk_channel_independent_block<V, E>(
     }
 }
 
-fn walk_channel<V, E>(
-    channel: &Channel,
-    visitor: &mut V,
-    evaluator: &E,
-    module_defs: &HashMap<String, ModuleDef>,
-) where
+fn walk_channel<V, E>(channel: &Channel, visitor: &mut V, evaluator: &E, module_defs: &HashMap<String, ModuleDef>)
+where
     V: DynamicVisitor,
     E: ConditionEvaluator,
 {
@@ -446,9 +434,7 @@ fn walk_parameter_block<V, E>(
                 visitor.visit_separator(Some(&sep.id), sep.text.as_deref());
             }
             // Button, Rows, Columns are UI elements that don't affect visibility
-            ParameterBlockItem::Button(_)
-            | ParameterBlockItem::Rows(_)
-            | ParameterBlockItem::Columns(_) => {}
+            ParameterBlockItem::Button(_) | ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {}
         }
     }
 
@@ -534,12 +520,8 @@ fn walk_when_items<V, E>(
     }
 }
 
-fn walk_module<V, E>(
-    module: &Module,
-    visitor: &mut V,
-    evaluator: &E,
-    module_defs: &HashMap<String, ModuleDef>,
-) where
+fn walk_module<V, E>(module: &Module, visitor: &mut V, evaluator: &E, module_defs: &HashMap<String, ModuleDef>)
+where
     V: DynamicVisitor,
     E: ConditionEvaluator,
 {
@@ -547,11 +529,7 @@ fn walk_module<V, E>(
 
     // If we have the module definition, walk its dynamic section too
     if let Some(module_def) = module_defs.get(&module.ref_id) {
-        let ctx = VisitorModuleContext {
-            instance_id: &module.id,
-            module_def,
-            module_instance: module,
-        };
+        let ctx = VisitorModuleContext { instance_id: &module.id, module_def, module_instance: module };
 
         if let Some(dynamic) = &module_def.dynamic {
             visitor.enter_module(module, &ctx);
@@ -665,26 +643,16 @@ impl VisibilityVisitor {
 
     /// Check if a module-scoped parameter ref is visible.
     pub fn is_module_param_ref_visible(&self, instance_id: &str, param_ref_id: &str) -> bool {
-        self.visible_module_param_refs
-            .contains(&format!("{}::{}", instance_id, param_ref_id))
+        self.visible_module_param_refs.contains(&format!("{}::{}", instance_id, param_ref_id))
     }
 
     /// Check if a module-scoped com object ref is visible.
     pub fn is_module_com_object_ref_visible(&self, instance_id: &str, com_obj_ref_id: &str) -> bool {
-        self.visible_module_com_object_refs
-            .contains(&format!("{}::{}", instance_id, com_obj_ref_id))
+        self.visible_module_com_object_refs.contains(&format!("{}::{}", instance_id, com_obj_ref_id))
     }
 
     /// Take ownership of collected visibility sets, consuming the visitor.
-    pub fn into_parts(
-        self,
-    ) -> (
-        HashSet<String>,
-        HashSet<String>,
-        HashSet<String>,
-        HashSet<String>,
-        HashSet<String>,
-    ) {
+    pub fn into_parts(self) -> (HashSet<String>, HashSet<String>, HashSet<String>, HashSet<String>, HashSet<String>) {
         (
             self.visible_param_refs,
             self.visible_com_object_refs,
@@ -698,8 +666,7 @@ impl VisibilityVisitor {
 impl DynamicVisitor for VisibilityVisitor {
     fn visit_param_ref(&mut self, ref_id: &str, module_ctx: Option<&VisitorModuleContext>) {
         if let Some(ctx) = module_ctx {
-            self.visible_module_param_refs
-                .insert(format!("{}::{}", ctx.instance_id, ref_id));
+            self.visible_module_param_refs.insert(format!("{}::{}", ctx.instance_id, ref_id));
         } else {
             self.visible_param_refs.insert(ref_id.to_string());
         }
@@ -707,8 +674,7 @@ impl DynamicVisitor for VisibilityVisitor {
 
     fn visit_com_object_ref(&mut self, ref_id: &str, module_ctx: Option<&VisitorModuleContext>) {
         if let Some(ctx) = module_ctx {
-            self.visible_module_com_object_refs
-                .insert(format!("{}::{}", ctx.instance_id, ref_id));
+            self.visible_module_com_object_refs.insert(format!("{}::{}", ctx.instance_id, ref_id));
         } else {
             self.visible_com_object_refs.insert(ref_id.to_string());
         }

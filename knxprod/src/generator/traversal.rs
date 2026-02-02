@@ -6,10 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::page_layout::{
-    ConditionalElement, ConditionalItem, ItemCase, ModuleLayoutBlock, ModuleLayoutCase,
-    ModuleLayoutElement, ModuleLayoutItem, ModuleLayoutWhen, ModulePageLayout, PageBlock,
-    PageElement, PageItem, PageStructure,
+use crate::definition::page_layout::{
+    ConditionalElement, ConditionalItem, ItemCase, ModuleLayoutBlock, ModuleLayoutCase, ModuleLayoutElement,
+    ModuleLayoutItem, ModuleLayoutWhen, ModulePageLayout, PageBlock, PageElement, PageItem, PageStructure,
 };
 
 use super::ApplicationProgramConfig;
@@ -45,22 +44,10 @@ pub(crate) trait PageLayoutVisitor {
     }
 
     /// Called when visiting a GroupedObjChoose item.
-    fn visit_grouped_obj_choose(
-        &mut self,
-        _selector_param: &str,
-        _hidden_params: &[&str],
-        _objects: &[(&str, &str)],
-    ) {
-    }
+    fn visit_grouped_obj_choose(&mut self, _selector_param: &str, _hidden_params: &[&str], _objects: &[(&str, &str)]) {}
 
     /// Called when visiting a UnionVariantDirect item.
-    fn visit_union_variant_direct(
-        &mut self,
-        _union_field: &str,
-        _variant_name: &str,
-        _text_override: Option<&str>,
-    ) {
-    }
+    fn visit_union_variant_direct(&mut self, _union_field: &str, _variant_name: &str, _text_override: Option<&str>) {}
 
     /// Called when visiting a UnionVariantWithChoose item.
     fn visit_union_variant_with_choose(
@@ -135,26 +122,10 @@ fn walk_page_item<V: PageLayoutVisitor>(item: &PageItem, visitor: &mut V) {
             walk_conditional_item(cond, visitor);
         }
         PageItem::UnionSelector(_) => {}
-        PageItem::ObjWithValue {
-            obj_name,
-            selector_param,
-            value_union,
-            extra_params,
-            sub_selectors,
-        } => {
-            visitor.visit_obj_with_value(
-                obj_name,
-                selector_param,
-                value_union,
-                extra_params,
-                sub_selectors,
-            );
+        PageItem::ObjWithValue { obj_name, selector_param, value_union, extra_params, sub_selectors } => {
+            visitor.visit_obj_with_value(obj_name, selector_param, value_union, extra_params, sub_selectors);
         }
-        PageItem::GroupedObjChoose {
-            selector_param,
-            hidden_params,
-            objects,
-        } => {
+        PageItem::GroupedObjChoose { selector_param, hidden_params, objects } => {
             visitor.visit_grouped_obj_choose(selector_param, hidden_params, objects);
         }
         PageItem::ObjDirect { obj_name, params } => {
@@ -179,43 +150,23 @@ fn walk_page_item<V: PageLayoutVisitor>(item: &PageItem, visitor: &mut V) {
             // We could add a separate callback for ref names if needed
             let _ = ref_names;
         }
-        PageItem::ObjWithFixedVariant {
-            obj_name,
-            hidden_params,
-            union_field,
-            variant_name,
-            text_override,
-            ..
-        } => {
+        PageItem::ObjWithFixedVariant { obj_name, hidden_params, union_field, variant_name, text_override, .. } => {
             visitor.visit_obj(obj_name);
             for p in *hidden_params {
                 visitor.visit_param(p);
             }
             visitor.visit_union_variant_direct(union_field, variant_name, *text_override);
         }
-        PageItem::UnionVariantDirect {
-            union_field,
-            variant_name,
-            text_override,
-        } => {
+        PageItem::UnionVariantDirect { union_field, variant_name, text_override } => {
             visitor.visit_union_variant_direct(union_field, variant_name, *text_override);
         }
-        PageItem::UnionVariantWithChoose {
-            union_field,
-            variant_name,
-            text_override,
-            cases,
-        } => {
+        PageItem::UnionVariantWithChoose { union_field, variant_name, text_override, cases } => {
             visitor.visit_union_variant_with_choose(union_field, variant_name, *text_override);
             for case in cases {
                 walk_item_case(case, visitor);
             }
         }
-        PageItem::ChooseOnUnionVariant {
-            union_field,
-            variant_name,
-            cases,
-        } => {
+        PageItem::ChooseOnUnionVariant { union_field, variant_name, cases } => {
             visitor.visit_choose_on_union_variant(union_field, variant_name);
             for case in cases {
                 walk_item_case(case, visitor);
@@ -246,10 +197,7 @@ fn walk_item_case<V: PageLayoutVisitor>(case: &ItemCase, visitor: &mut V) {
 }
 
 /// Walk a module page layout with a visitor.
-pub(crate) fn walk_module_layout<V: PageLayoutVisitor>(
-    layout: &ModulePageLayout,
-    visitor: &mut V,
-) {
+pub(crate) fn walk_module_layout<V: PageLayoutVisitor>(layout: &ModulePageLayout, visitor: &mut V) {
     for elem in &layout.elements {
         walk_module_element(elem, visitor);
     }
@@ -323,9 +271,7 @@ impl PageLayoutVisitor for PictureCollector<'_> {
     fn visit_picture(&mut self, baggage_name: &str) {
         if !self.seen.contains(baggage_name) {
             self.seen.insert(baggage_name.to_string());
-            self.pictures.push(PictureInfo {
-                baggage_name: baggage_name.to_string(),
-            });
+            self.pictures.push(PictureInfo { baggage_name: baggage_name.to_string() });
         }
     }
 }
@@ -337,10 +283,7 @@ pub(crate) fn collect_pictures_from_layout(config: &ApplicationProgramConfig) ->
 
     // Collect from device page layout
     if let Some(layout) = &config.page_layout {
-        let mut collector = PictureCollector {
-            pictures: &mut pictures,
-            seen: &mut seen,
-        };
+        let mut collector = PictureCollector { pictures: &mut pictures, seen: &mut seen };
         walk_page_structure(layout, &mut collector);
     }
 
@@ -348,10 +291,7 @@ pub(crate) fn collect_pictures_from_layout(config: &ApplicationProgramConfig) ->
     if let Some(modules) = &config.modules {
         for def in modules.definitions() {
             if let Some(module_layout) = &def.page_layout {
-                let mut collector = PictureCollector {
-                    pictures: &mut pictures,
-                    seen: &mut seen,
-                };
+                let mut collector = PictureCollector { pictures: &mut pictures, seen: &mut seen };
                 walk_module_layout(module_layout, &mut collector);
             }
         }
@@ -380,12 +320,7 @@ struct TextCollector<'a> {
 }
 
 impl PageLayoutVisitor for TextCollector<'_> {
-    fn visit_union_variant_direct(
-        &mut self,
-        union_field: &str,
-        variant_name: &str,
-        text_override: Option<&str>,
-    ) {
+    fn visit_union_variant_direct(&mut self, union_field: &str, variant_name: &str, text_override: Option<&str>) {
         let key = (union_field.to_string(), variant_name.to_string());
         let text = text_override.map(|s| s.to_string());
         let entry = self.texts.entry(key).or_default();
@@ -394,12 +329,7 @@ impl PageLayoutVisitor for TextCollector<'_> {
         }
     }
 
-    fn visit_union_variant_with_choose(
-        &mut self,
-        union_field: &str,
-        variant_name: &str,
-        text_override: Option<&str>,
-    ) {
+    fn visit_union_variant_with_choose(&mut self, union_field: &str, variant_name: &str, text_override: Option<&str>) {
         let key = (union_field.to_string(), variant_name.to_string());
         let text = text_override.map(|s| s.to_string());
         let entry = self.texts.entry(key).or_default();
@@ -438,9 +368,7 @@ impl PageLayoutVisitor for TextCollector<'_> {
 }
 
 /// Collects union variant text overrides from the page layout.
-pub(crate) fn collect_union_variant_texts(
-    layout: &PageStructure,
-) -> HashMap<(String, String), Vec<Option<String>>> {
+pub(crate) fn collect_union_variant_texts(layout: &PageStructure) -> HashMap<(String, String), Vec<Option<String>>> {
     let mut texts: HashMap<(String, String), Vec<Option<String>>> = HashMap::new();
     let mut collector = TextCollector { texts: &mut texts };
     walk_page_structure(layout, &mut collector);
@@ -469,12 +397,7 @@ impl PageLayoutVisitor for SelectorCounter<'_> {
         *self.counts.entry(selector_param.to_string()).or_insert(0) += 1;
     }
 
-    fn visit_grouped_obj_choose(
-        &mut self,
-        selector_param: &str,
-        _hidden_params: &[&str],
-        _objects: &[(&str, &str)],
-    ) {
+    fn visit_grouped_obj_choose(&mut self, selector_param: &str, _hidden_params: &[&str], _objects: &[(&str, &str)]) {
         *self.counts.entry(selector_param.to_string()).or_insert(0) += 1;
     }
 
@@ -499,10 +422,7 @@ pub(crate) fn count_selector_usages_with_objects(
     comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
 ) -> HashMap<String, usize> {
     let mut counts: HashMap<String, usize> = HashMap::new();
-    let mut counter = SelectorCounter {
-        counts: &mut counts,
-        comm_obj_ref_map,
-    };
+    let mut counter = SelectorCounter { counts: &mut counts, comm_obj_ref_map };
     walk_page_structure(layout, &mut counter);
     counts
 }

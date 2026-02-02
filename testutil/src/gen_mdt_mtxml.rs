@@ -6,15 +6,13 @@
 //! Use --knxprod flag to also generate a signed .knxprod package.
 
 use std::env;
-use std::fs;
 use std::path::PathBuf;
 
-use knxprod::signing::KnxSchemaVersion;
-use knxprod::signing::{MasterDataSource, SigningConfig, create_knxprod};
-use testutil::devices::mdt_push_button_lite::{DEVICE_DESCRIPTOR, MdtParams, MdtStack, SERIAL_NUMBER, comm_objs};
-use testutil::mtxml_gen::page_layout::EtsPageLayout;
-use testutil::mtxml_gen::{
-    ApplicationProgramConfig, CatalogGenerator, HardwareGenerator, MtxmlGenerator, System7MemoryLayout, System7Segment,
+use knxprod::definition::page_layout::EtsPageLayout;
+use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
+use knxprod::{ApplicationProgramConfig, KnxprodBuilder, System7MemoryLayout, System7Segment};
+use testutil::devices::mdt_push_button_lite::{
+    DEVICE_DESCRIPTOR, MDT_TRANSLATIONS_DE, MdtParams, MdtStack, SERIAL_NUMBER, comm_objs,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -89,7 +87,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ApplicationProgramConfig {
         name: "Push Button Lite 55 1-fold Basic",
         device: &DEVICE_DESCRIPTOR,
-        schema_version: Some(KnxSchemaVersion::V20),
         params: MdtParams::ETS_PARAMS_EXT,
         virtual_params: None,
         param_defaults: param_bytes,
@@ -117,65 +114,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         page_layout: Some(MdtStack::page_layout()),
         modules: None,
         baggages: None,
+        translations: Some(MDT_TRANSLATIONS_DE),
     };
 
-    // Create output directory structure: out/<device>/M-XXXX/
-    let manufacturer_id = format!("{:04X}", DEVICE_DESCRIPTOR.manufacturer_id);
+    // Output directory: out/<device>/
     let device_name = "MdtPushButtonLite";
-    let out_dir: PathBuf = ["out", device_name, &format!("M-{}", manufacturer_id)].iter().collect();
-    fs::create_dir_all(&out_dir)?;
-    eprintln!("Output directory: {}", out_dir.display());
-
-    // Generate ApplicationProgram MTXML
-    let app_xml = MtxmlGenerator::generate(&config)?;
-    let app_path = out_dir.join("MdtApplicationProgram1.mtxml");
-    fs::write(&app_path, &app_xml)?;
-    eprintln!("Generated: {}", app_path.display());
-
-    // Generate Hardware MTXML
-    let hw_xml = HardwareGenerator::generate(&config)?;
-    let hw_path = out_dir.join("MdtHardware1.mtxml");
-    fs::write(&hw_path, &hw_xml)?;
-    eprintln!("Generated: {}", hw_path.display());
-
-    // Generate Catalog MTXML
-    let cat_xml = CatalogGenerator::generate(&config)?;
-    let cat_path = out_dir.join("MdtCatalog1.mtxml");
-    fs::write(&cat_path, &cat_xml)?;
-    eprintln!("Generated: {}", cat_path.display());
-
-    eprintln!("\nAll MDT MTXML files generated successfully!");
+    let out_dir: PathBuf = ["out", device_name].iter().collect();
 
     // Check if --knxprod flag is provided
     let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
 
     if generate_knxprod {
-        eprintln!("\nGenerating signed .knxprod package...");
+        // Use KnxprodBuilder to generate everything including signed package
+        let (output, knxprod_path) = KnxprodBuilder::new(&config)
+            .output_dir(&out_dir)
+            .file_prefix("Mdt")
+            .schema_version(KnxSchemaVersion::V20)
+            .master_data(MasterDataSource::Download)
+            .build_all()?;
 
-        // Build the application program ID from the device descriptor
-        // MDT uses a custom hash suffix (E59D) in their app IDs
-        let app_number = format!("{:04X}", DEVICE_DESCRIPTOR.application_id);
-        let app_version = format!("{:02X}", DEVICE_DESCRIPTOR.application_version);
-        let app_hash = config.application_hash.unwrap_or("0000");
-        let application_program_id = format!("M-{}_A-{}-{}-{}", manufacturer_id, app_number, app_version, app_hash);
-
-        let signing_config = SigningConfig {
-            manufacturer_id: manufacturer_id.clone(),
-            application_program: app_xml.clone(),
-            application_program_id,
-            hardware: hw_xml.clone(),
-            catalog: cat_xml.clone(),
-            baggage_files: vec![],
-        };
-
-        let knxprod_bytes = create_knxprod(&signing_config, MasterDataSource::Download)?;
-        // Write knxprod to out/<device>/<name>.knxprod
-        let device_out_dir: PathBuf = ["out", device_name].iter().collect();
-        let output_path = device_out_dir.join(format!("{}.knxprod", device_name));
-        fs::write(&output_path, &knxprod_bytes)?;
-        eprintln!("Generated: {} ({} bytes)", output_path.display(), knxprod_bytes.len());
+        // Print what was generated
+        let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
+        eprintln!("Output directory: {}", manuf_dir.display());
+        for (filename, _) in output.xml_files() {
+            eprintln!("Generated: {}", manuf_dir.join(filename).display());
+        }
+        eprintln!("\nGenerated: {} ({} bytes)", knxprod_path.display(), std::fs::metadata(&knxprod_path)?.len());
         eprintln!("\nVerify with: python3 manuf_tool_data/knx_verifier.py all .");
     } else {
+        // Just generate MTXML files
+        let (output, paths) = KnxprodBuilder::new(&config)
+            .output_dir(&out_dir)
+            .file_prefix("Mdt")
+            .schema_version(KnxSchemaVersion::V20)
+            .write_mtxml_with_paths()?;
+
+        let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
+        eprintln!("Output directory: {}", manuf_dir.display());
+        for path in &paths {
+            eprintln!("Generated: {}", path.display());
+        }
+
+        eprintln!("\nAll MDT MTXML files generated successfully!");
         eprintln!("\nTip: Use --knxprod flag to also generate a signed .knxprod package");
     }
 

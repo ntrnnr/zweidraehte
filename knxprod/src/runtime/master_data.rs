@@ -17,7 +17,8 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use knxprod::master_data::{MasterData, ResourceName};
+//! use knxprod::MasterData;
+//! use knxprod::runtime::master_data::ResourceName;
 //!
 //! let master = MasterData::from_file("knx_master.xml")?;
 //! let mv = master.get_mask_version("MV-07B0")?;
@@ -85,21 +86,17 @@ impl MasterData {
 
     /// Get a mask version by its ID (e.g., "MV-07B0").
     pub fn get_mask_version(&self, id: &str) -> Option<&MaskVersion> {
-        self.mask_versions()
-            .and_then(|mv| mv.versions.iter().find(|v| v.id == id))
+        self.mask_versions().and_then(|mv| mv.versions.iter().find(|v| v.id == id))
     }
 
     /// Get a mask version by its numeric version code (e.g., 1968 for MV-07B0).
     pub fn get_mask_version_by_code(&self, code: u16) -> Option<&MaskVersion> {
-        self.mask_versions()
-            .and_then(|mv| mv.versions.iter().find(|v| v.mask_version_code == code))
+        self.mask_versions().and_then(|mv| mv.versions.iter().find(|v| v.mask_version_code == code))
     }
 
     /// Get total number of mask versions.
     pub fn mask_version_count(&self) -> usize {
-        self.mask_versions()
-            .map(|mv| mv.versions.len())
-            .unwrap_or(0)
+        self.mask_versions().map(|mv| mv.versions.len()).unwrap_or(0)
     }
 }
 
@@ -177,18 +174,13 @@ impl MaskVersion {
 
     /// Get the first application object index for this mask version.
     pub fn first_app_object_idx(&self) -> u8 {
-        self.get_feature("FirstAppObjectIdx")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(5)
+        self.get_feature("FirstAppObjectIdx").and_then(|v| v.parse().ok()).unwrap_or(5)
     }
 
     /// Get a resource definition by name.
     pub fn get_resource(&self, name: ResourceName) -> Option<&Resource> {
-        self.hawk_config().and_then(|hc| {
-            hc.resources
-                .as_ref()
-                .and_then(|r| r.resources.iter().find(|res| res.name == name.as_str()))
-        })
+        self.hawk_config()
+            .and_then(|hc| hc.resources.as_ref().and_then(|r| r.resources.iter().find(|res| res.name == name.as_str())))
     }
 
     /// Get the address table resource definition.
@@ -343,26 +335,17 @@ pub struct Resource {
 impl Resource {
     /// Check if this resource uses relative memory (System B style).
     pub fn is_relative_memory(&self) -> bool {
-        self.location
-            .as_ref()
-            .map(|l| l.address_space == "RelativeMemory")
-            .unwrap_or(false)
+        self.location.as_ref().map(|l| l.address_space == "RelativeMemory").unwrap_or(false)
     }
 
     /// Check if this resource uses standard memory (fixed address).
     pub fn is_standard_memory(&self) -> bool {
-        self.location
-            .as_ref()
-            .map(|l| l.address_space == "StandardMemory")
-            .unwrap_or(false)
+        self.location.as_ref().map(|l| l.address_space == "StandardMemory").unwrap_or(false)
     }
 
     /// Check if this resource is a system property.
     pub fn is_system_property(&self) -> bool {
-        self.location
-            .as_ref()
-            .map(|l| l.address_space == "SystemProperty")
-            .unwrap_or(false)
+        self.location.as_ref().map(|l| l.address_space == "SystemProperty").unwrap_or(false)
     }
 
     /// Get the interface object reference if applicable.
@@ -423,9 +406,7 @@ impl Location {
     /// Parse into a structured address space location enum.
     pub fn to_address_space(&self) -> AddressSpaceLocation {
         match self.address_space.as_str() {
-            "StandardMemory" => AddressSpaceLocation::StandardMemory {
-                start_address: self.start_address.unwrap_or(0),
-            },
+            "StandardMemory" => AddressSpaceLocation::StandardMemory { start_address: self.start_address.unwrap_or(0) },
             "SystemProperty" => AddressSpaceLocation::SystemProperty {
                 interface_object_ref: self.interface_object_ref.unwrap_or(0),
                 property_id: self.property_id.unwrap_or(0),
@@ -436,19 +417,11 @@ impl Location {
                 property_id: self.property_id.unwrap_or(0),
                 start_address: self.start_address.unwrap_or(0),
             },
-            "Constant" => AddressSpaceLocation::Constant {
-                value: self.start_address.unwrap_or(0),
-            },
-            "Pointer" => AddressSpaceLocation::Pointer {
-                ptr_resource: self.ptr_resource.clone().unwrap_or_default(),
-            },
-            "ADC" => AddressSpaceLocation::Adc {
-                channel: self.start_address.unwrap_or(0),
-            },
+            "Constant" => AddressSpaceLocation::Constant { value: self.start_address.unwrap_or(0) },
+            "Pointer" => AddressSpaceLocation::Pointer { ptr_resource: self.ptr_resource.clone().unwrap_or_default() },
+            "ADC" => AddressSpaceLocation::Adc { channel: self.start_address.unwrap_or(0) },
             "None" | "" => AddressSpaceLocation::None,
-            _ => AddressSpaceLocation::Unknown {
-                address_space: self.address_space.clone(),
-            },
+            _ => AddressSpaceLocation::Unknown { address_space: self.address_space.clone() },
         }
     }
 }
@@ -460,18 +433,10 @@ pub enum AddressSpaceLocation {
     StandardMemory { start_address: u32 },
 
     /// System property on an interface object.
-    SystemProperty {
-        interface_object_ref: u8,
-        property_id: u8,
-        start_address: u32,
-    },
+    SystemProperty { interface_object_ref: u8, property_id: u8, start_address: u32 },
 
     /// Relative memory allocated via load state machine.
-    RelativeMemory {
-        interface_object_ref: u8,
-        property_id: u8,
-        start_address: u32,
-    },
+    RelativeMemory { interface_object_ref: u8, property_id: u8, start_address: u32 },
 
     /// Constant value (not a memory location).
     Constant { value: u32 },
@@ -586,8 +551,7 @@ impl TableFlavour {
             TableFlavour::AssociationTableSystemBSmall => 2,
 
             // SystemB and SystemBBig use 4-byte entries (u16 TSAP + u16 ASAP)
-            TableFlavour::AssociationTableSystemB
-            | TableFlavour::AssociationTableSystemBBig => 4,
+            TableFlavour::AssociationTableSystemB | TableFlavour::AssociationTableSystemBBig => 4,
 
             // Group object table: 2 bytes (type + flags)
             TableFlavour::GroupObjectTable => 2,
@@ -616,10 +580,7 @@ mod tests {
     #[ignore] // Run with: cargo test -p knxprod parse_master_data_file -- --ignored
     fn parse_master_data_file() {
         // Tests run from workspace root
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../manuf_tool_data/VC-EASY-03_MDT_KP_V35/knx_master.xml"
-        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../manuf_tool_data/VC-EASY-03_MDT_KP_V35/knx_master.xml");
         let master = MasterData::from_file(path).expect("Failed to parse master data");
 
         println!("Loaded {} mask versions", master.mask_version_count());
@@ -647,11 +608,15 @@ mod tests {
         assert_eq!(adt_0705.start_address(), Some(16384)); // 0x4000
 
         // Check flavours
-        let adt_flavour_0705 = adt_0705.resource_type.as_ref()
+        let adt_flavour_0705 = adt_0705
+            .resource_type
+            .as_ref()
             .and_then(|rt| rt.flavour.as_ref())
             .map(|f| TableFlavour::from_str(f))
             .unwrap_or(TableFlavour::Unknown);
-        let adt_flavour_07b0 = adt.resource_type.as_ref()
+        let adt_flavour_07b0 = adt
+            .resource_type
+            .as_ref()
             .and_then(|rt| rt.flavour.as_ref())
             .map(|f| TableFlavour::from_str(f))
             .unwrap_or(TableFlavour::Unknown);
@@ -674,22 +639,16 @@ mod tests {
         };
 
         let addr_space = loc.to_address_space();
-        assert!(matches!(
-            addr_space,
-            AddressSpaceLocation::RelativeMemory {
-                interface_object_ref: 1,
-                property_id: 7,
-                ..
-            }
-        ));
+        assert!(matches!(addr_space, AddressSpaceLocation::RelativeMemory {
+            interface_object_ref: 1,
+            property_id: 7,
+            ..
+        }));
     }
 
     #[test]
     fn test_table_flavour() {
-        assert_eq!(
-            TableFlavour::from_str("AddressTable_SystemB"),
-            TableFlavour::AddressTableSystemB
-        );
+        assert_eq!(TableFlavour::from_str("AddressTable_SystemB"), TableFlavour::AddressTableSystemB);
         assert_eq!(TableFlavour::AddressTableSystemB.count_size(), 2);
         assert_eq!(TableFlavour::AddressTableBcu1.count_size(), 1);
     }

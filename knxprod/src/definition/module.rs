@@ -19,7 +19,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use knxprod::module::{KnxModule, ModuleArgDef, ModuleInstance};
+//! use knxprod::definition::module::{KnxModule, ModuleArgDef, ModuleInstance};
 //! use zweidraehte::ets::{EtsParams, EtsComObjects};
 //!
 //! // Define parameters for a dimmer channel module
@@ -193,13 +193,7 @@ impl ModuleArgDef {
     /// * `name` - Argument name (e.g., "ChNo" for `{{ChNo}}`)
     /// * `allocates` - Number of values this argument consumes per instance
     pub const fn display(name: &'static str, allocates: u32) -> Self {
-        Self {
-            name,
-            allocates,
-            alignment: None,
-            arg_type: ModuleArgType::Numeric,
-            role: ModuleArgRole::Custom,
-        }
+        Self { name, allocates, alignment: None, arg_type: ModuleArgType::Numeric, role: ModuleArgRole::Custom }
     }
 
     /// Create a text argument for string substitution.
@@ -218,19 +212,8 @@ impl ModuleArgDef {
     }
 
     /// Create a custom argument with explicit settings.
-    pub const fn custom(
-        name: &'static str,
-        allocates: u32,
-        alignment: Option<u8>,
-        arg_type: ModuleArgType,
-    ) -> Self {
-        Self {
-            name,
-            allocates,
-            alignment,
-            arg_type,
-            role: ModuleArgRole::Custom,
-        }
+    pub const fn custom(name: &'static str, allocates: u32, alignment: Option<u8>, arg_type: ModuleArgType) -> Self {
+        Self { name, allocates, alignment, arg_type, role: ModuleArgRole::Custom }
     }
 
     /// Create a value base argument for relative parameter values.
@@ -383,7 +366,7 @@ pub trait KnxModule {
     ///     })
     /// }
     /// ```
-    fn module_layout() -> Option<crate::page_layout::ModulePageLayout> {
+    fn module_layout() -> Option<crate::definition::page_layout::ModulePageLayout> {
         None
     }
 
@@ -406,10 +389,7 @@ pub trait KnxModule {
             Self::NAME,
             args.len()
         );
-        ModuleInstance {
-            args: args.to_vec(),
-            _phantom: PhantomData,
-        }
+        ModuleInstance { args: args.to_vec(), _phantom: PhantomData }
     }
 
     /// Get the index of an argument by name.
@@ -501,7 +481,7 @@ pub trait HasChannelHelpers<M: KnxModule> {
 ///
 /// # Example
 /// ```ignore
-/// use knxprod::module::module_instances;
+/// use knxprod::definition::module::module_instances;
 ///
 /// // In your page layout:
 /// block "channels" => "Channel Configuration" {
@@ -509,7 +489,7 @@ pub trait HasChannelHelpers<M: KnxModule> {
 ///     items: module_instances::<DimmerChannelModule, DeviceParams>("enable_ch")
 /// }
 /// ```
-pub fn module_instances<M, P>(enable_prefix: &str) -> crate::page_layout::PageItem
+pub fn module_instances<M, P>(enable_prefix: &str) -> crate::definition::page_layout::PageItem
 where
     M: KnxModule,
     P: HasChannelHelpers<M>,
@@ -526,10 +506,7 @@ where
         instances.push((selector, args));
     }
 
-    crate::page_layout::PageItem::ModuleInstances {
-        module_name: M::NAME,
-        instances,
-    }
+    crate::definition::page_layout::PageItem::ModuleInstances { module_name: M::NAME, instances }
 }
 
 // ============================================================================
@@ -759,16 +736,8 @@ pub struct ConditionalModuleInstance<M: KnxModule> {
 
 impl<M: KnxModule> ConditionalModuleInstance<M> {
     /// Create a new conditional module instance.
-    pub fn new(
-        instance: ModuleInstance<M>,
-        selector_param: impl Into<String>,
-        selector_value: i64,
-    ) -> Self {
-        Self {
-            instance,
-            selector_param: selector_param.into(),
-            selector_values: vec![selector_value],
-        }
+    pub fn new(instance: ModuleInstance<M>, selector_param: impl Into<String>, selector_value: i64) -> Self {
+        Self { instance, selector_param: selector_param.into(), selector_values: vec![selector_value] }
     }
 
     /// Create a conditional instance that's visible for multiple selector values.
@@ -777,11 +746,7 @@ impl<M: KnxModule> ConditionalModuleInstance<M> {
         selector_param: impl Into<String>,
         selector_values: Vec<i64>,
     ) -> Self {
-        Self {
-            instance,
-            selector_param: selector_param.into(),
-            selector_values,
-        }
+        Self { instance, selector_param: selector_param.into(), selector_values }
     }
 }
 
@@ -821,7 +786,7 @@ pub struct StoredModuleDef {
     pub comm_objects: Option<&'static [zweidraehte::ets::EtsCommObjectDef]>,
     /// Module page layout (using ets_module_pages! macro).
     /// If None, a simple layout with all params and comm objects is auto-generated.
-    pub page_layout: Option<crate::page_layout::ModulePageLayout>,
+    pub page_layout: Option<crate::definition::page_layout::ModulePageLayout>,
 }
 
 impl StoredModuleDef {
@@ -879,19 +844,12 @@ impl ModuleCollection {
     pub fn add_instances<M: KnxModule>(&mut self, instances: Vec<ModuleInstance<M>>) {
         let def_index = self.ensure_definition::<M>();
         for instance in instances {
-            self.instances.push(StoredModuleInstance {
-                def_index,
-                args: instance.args,
-                condition: None,
-            });
+            self.instances.push(StoredModuleInstance { def_index, args: instance.args, condition: None });
         }
     }
 
     /// Add conditional module instances.
-    pub fn add_conditional_instances<M: KnxModule>(
-        &mut self,
-        instances: Vec<ConditionalModuleInstance<M>>,
-    ) {
+    pub fn add_conditional_instances<M: KnxModule>(&mut self, instances: Vec<ConditionalModuleInstance<M>>) {
         let def_index = self.ensure_definition::<M>();
         for cond_instance in instances {
             self.instances.push(StoredModuleInstance {
@@ -930,9 +888,7 @@ impl ModuleCollection {
 
     /// Get all module instances with their definitions.
     pub fn instances(&self) -> impl Iterator<Item = (&StoredModuleDef, &StoredModuleInstance)> {
-        self.instances
-            .iter()
-            .map(|inst| (&self.definitions[inst.def_index], inst))
+        self.instances.iter().map(|inst| (&self.definitions[inst.def_index], inst))
     }
 
     /// Get all module instances (raw).
@@ -1387,15 +1343,28 @@ macro_rules! __vp_def {
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __vp_param_type {
-    (String) => { ::zweidraehte::ets::EtsParamType::String };
-    (u8) => { ::zweidraehte::ets::EtsParamType::UnsignedInt };
-    (u16) => { ::zweidraehte::ets::EtsParamType::UnsignedInt };
-    (u32) => { ::zweidraehte::ets::EtsParamType::UnsignedInt };
-    (i8) => { ::zweidraehte::ets::EtsParamType::SignedInt };
-    (i16) => { ::zweidraehte::ets::EtsParamType::SignedInt };
-    (i32) => { ::zweidraehte::ets::EtsParamType::SignedInt };
+    (String) => {
+        ::zweidraehte::ets::EtsParamType::String
+    };
+    (u8) => {
+        ::zweidraehte::ets::EtsParamType::UnsignedInt
+    };
+    (u16) => {
+        ::zweidraehte::ets::EtsParamType::UnsignedInt
+    };
+    (u32) => {
+        ::zweidraehte::ets::EtsParamType::UnsignedInt
+    };
+    (i8) => {
+        ::zweidraehte::ets::EtsParamType::SignedInt
+    };
+    (i16) => {
+        ::zweidraehte::ets::EtsParamType::SignedInt
+    };
+    (i32) => {
+        ::zweidraehte::ets::EtsParamType::SignedInt
+    };
 }
-
 
 /// Generate the module struct and KnxModule impl
 #[macro_export]
@@ -1418,10 +1387,10 @@ macro_rules! __define_module_struct {
             $(#[$module_attr])*
             $vis struct $module_name;
 
-            impl $crate::module::KnxModule for $module_name {
+            impl $crate::definition::module::KnxModule for $module_name {
                 const NAME: &'static str = $name_str;
 
-                const ARGUMENTS: &'static [$crate::module::ModuleArgDef] = &[
+                const ARGUMENTS: &'static [$crate::definition::module::ModuleArgDef] = &[
                     $($crate::__module_arg_def!($arg_name : $arg_type $(($arg_alloc))?)),*
                 ];
 
@@ -1455,10 +1424,10 @@ macro_rules! __define_module_struct {
             $(#[$module_attr])*
             $vis struct $module_name;
 
-            impl $crate::module::KnxModule for $module_name {
+            impl $crate::definition::module::KnxModule for $module_name {
                 const NAME: &'static str = $name_str;
 
-                const ARGUMENTS: &'static [$crate::module::ModuleArgDef] = &[
+                const ARGUMENTS: &'static [$crate::definition::module::ModuleArgDef] = &[
                     $($crate::__module_arg_def!($arg_name : $arg_type $(($arg_alloc))?)),*
                 ];
 
@@ -1481,19 +1450,19 @@ macro_rules! __define_module_struct {
 #[doc(hidden)]
 macro_rules! __module_arg_def {
     ($name:ident : param_offset) => {
-        $crate::module::ModuleArgDef::param_offset(stringify!($name))
+        $crate::definition::module::ModuleArgDef::param_offset(stringify!($name))
     };
     ($name:ident : object_number) => {
-        $crate::module::ModuleArgDef::object_number(stringify!($name))
+        $crate::definition::module::ModuleArgDef::object_number(stringify!($name))
     };
     ($name:ident : display ($alloc:expr)) => {
-        $crate::module::ModuleArgDef::display(stringify!($name), $alloc)
+        $crate::definition::module::ModuleArgDef::display(stringify!($name), $alloc)
     };
     ($name:ident : value_base ($alloc:expr)) => {
-        $crate::module::ModuleArgDef::value_base(stringify!($name), $alloc)
+        $crate::definition::module::ModuleArgDef::value_base(stringify!($name), $alloc)
     };
     ($name:ident : text ($max_len:expr)) => {
-        $crate::module::ModuleArgDef::text(stringify!($name), $max_len)
+        $crate::definition::module::ModuleArgDef::text(stringify!($name), $max_len)
     };
 }
 
@@ -1510,7 +1479,6 @@ macro_rules! __module_params_type {
         }
     };
 }
-
 
 /// Generate INTERNAL_DESCRIPTION
 #[macro_export]
@@ -1541,7 +1509,7 @@ macro_rules! __module_virtual_params {
 macro_rules! __module_layout {
     ([]) => {};
     ([$layout_body:tt]) => {
-        fn module_layout() -> Option<$crate::page_layout::ModulePageLayout> {
+        fn module_layout() -> Option<$crate::definition::page_layout::ModulePageLayout> {
             Some($crate::ets_module_pages! $layout_body)
         }
     };
@@ -1633,7 +1601,7 @@ mod tests {
 
         // Check last instance
         assert_eq!(instances[3].numeric_arg(0), 124); // 100 + 3*8
-        assert_eq!(instances[3].numeric_arg(1), 19);  // 10 + 3*3
+        assert_eq!(instances[3].numeric_arg(1), 19); // 10 + 3*3
         assert_eq!(instances[3].numeric_arg(2), 4);
     }
 

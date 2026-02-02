@@ -17,8 +17,8 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use knxprod::device_info::DeviceInfo;
-//! use knxprod::master_data::MasterData;
+//! use knxprod::runtime::device_info::DeviceInfo;
+//! use knxprod::MasterData;
 //!
 //! let program = parser::parse_file("device.mtxml")?;
 //! let master = MasterData::from_file("knx_master.xml")?;
@@ -28,7 +28,7 @@
 //! println!("Mask: {} ({})", info.mask_version, info.mask_family);
 //! ```
 
-use crate::master_data::{MasterData, MaskVersion, ResourceName, TableFlavour};
+use crate::runtime::master_data::{MaskVersion, MasterData, ResourceName, TableFlavour};
 use crate::schema::{ApplicationProgram, LoadControl, MaskFamily};
 
 /// Complete device information needed for programming.
@@ -193,12 +193,7 @@ impl DeviceInfo {
         let mv = master_data.and_then(|md| md.get_mask_version(mask_version_id));
 
         // Extract manufacturer ID from program ID (format: "M-XXXX_...")
-        let manufacturer_id = program
-            .id
-            .strip_prefix("M-")
-            .and_then(|s| s.split('_').next())
-            .unwrap_or("")
-            .to_string();
+        let manufacturer_id = program.id.strip_prefix("M-").and_then(|s| s.split('_').next()).unwrap_or("").to_string();
 
         // Collect segments
         let segments = Self::collect_segments(program);
@@ -207,22 +202,16 @@ impl DeviceInfo {
         let total_param_size = segments.iter().map(|s| s.size).sum();
 
         // Count communication objects
-        let com_object_count = program
-            .static_section
-            .com_object_table
-            .as_ref()
-            .map(|cot| cot.objects.len() as u16)
-            .unwrap_or(0);
+        let com_object_count =
+            program.static_section.com_object_table.as_ref().map(|cot| cot.objects.len() as u16).unwrap_or(0);
 
         // Get first app object index
         let first_app_object_idx = mv.map(|m| m.first_app_object_idx()).unwrap_or(5);
 
         // Extract table info from master data
         let address_table = mv.and_then(|m| Self::extract_table_info(m, ResourceName::GroupAddressTable));
-        let association_table =
-            mv.and_then(|m| Self::extract_table_info(m, ResourceName::GroupAssociationTable));
-        let com_object_table =
-            mv.and_then(|m| Self::extract_table_info(m, ResourceName::GroupObjectTable));
+        let association_table = mv.and_then(|m| Self::extract_table_info(m, ResourceName::GroupAssociationTable));
+        let com_object_table = mv.and_then(|m| Self::extract_table_info(m, ResourceName::GroupObjectTable));
 
         // Extract load state machine info
         let load_state_machines = Self::extract_load_state_machines(program);
@@ -251,10 +240,7 @@ impl DeviceInfo {
 
     /// Parse mask version code from ID string (e.g., "MV-07B0" -> 0x07B0)
     fn parse_mask_version_code(mask_version_id: &str) -> u16 {
-        mask_version_id
-            .strip_prefix("MV-")
-            .and_then(|s| u16::from_str_radix(s, 16).ok())
-            .unwrap_or(0)
+        mask_version_id.strip_prefix("MV-").and_then(|s| u16::from_str_radix(s, 16).ok()).unwrap_or(0)
     }
 
     /// Collect all segments from the program's Code section.
@@ -320,20 +306,17 @@ impl DeviceInfo {
 
     /// Extract load state machine information from load procedures.
     fn extract_load_state_machines(program: &ApplicationProgram) -> Vec<LoadStateMachineInfo> {
-        let mut lsm_map: std::collections::HashMap<u8, LoadStateMachineInfo> =
-            std::collections::HashMap::new();
+        let mut lsm_map: std::collections::HashMap<u8, LoadStateMachineInfo> = std::collections::HashMap::new();
 
         if let Some(procedures) = &program.static_section.load_procedures {
             for proc in &procedures.procedures {
                 for control in &proc.controls {
                     if let LoadControl::LdCtrlRelSegment(rel_seg) = control {
-                        let entry = lsm_map.entry(rel_seg.lsm_idx).or_insert_with(|| {
-                            LoadStateMachineInfo {
-                                lsm_idx: rel_seg.lsm_idx,
-                                merge_id: proc.merge_id,
-                                segment_ids: Vec::new(),
-                                total_size: 0,
-                            }
+                        let entry = lsm_map.entry(rel_seg.lsm_idx).or_insert_with(|| LoadStateMachineInfo {
+                            lsm_idx: rel_seg.lsm_idx,
+                            merge_id: proc.merge_id,
+                            segment_ids: Vec::new(),
+                            total_size: 0,
                         });
 
                         // Extract segment ID from applies_to (format: "M-XXXX_..._RS-1")
@@ -356,28 +339,19 @@ impl DeviceInfo {
 
     /// Check if this device uses relative memory segments.
     pub fn uses_relative_segments(&self) -> bool {
-        self.segments
-            .iter()
-            .any(|s| s.segment_type == SegmentKind::Relative)
+        self.segments.iter().any(|s| s.segment_type == SegmentKind::Relative)
     }
 
     /// Get segments for a specific load state machine.
     pub fn segments_for_lsm(&self, lsm_idx: u8) -> Vec<&SegmentInfo> {
-        self.segments
-            .iter()
-            .filter(|s| s.load_state_machine == Some(lsm_idx))
-            .collect()
+        self.segments.iter().filter(|s| s.load_state_machine == Some(lsm_idx)).collect()
     }
 }
 
 impl std::fmt::Display for DeviceInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Device: {}", self.name)?;
-        writeln!(
-            f,
-            "  Application: {} v{}",
-            self.application_number, self.application_version
-        )?;
+        writeln!(f, "  Application: {} v{}", self.application_number, self.application_version)?;
         writeln!(f, "  Manufacturer: {}", self.manufacturer_id)?;
 
         if let Some(name) = &self.mask_name {
@@ -399,13 +373,7 @@ impl std::fmt::Display for DeviceInfo {
         if !self.load_state_machines.is_empty() {
             writeln!(f, "  Load State Machines:")?;
             for lsm in &self.load_state_machines {
-                writeln!(
-                    f,
-                    "    LSM {}: {} segments, {} bytes",
-                    lsm.lsm_idx,
-                    lsm.segment_ids.len(),
-                    lsm.total_size
-                )?;
+                writeln!(f, "    LSM {}: {} segments, {} bytes", lsm.lsm_idx, lsm.segment_ids.len(), lsm.total_size)?;
             }
         }
 
@@ -436,18 +404,9 @@ mod tests {
 
     #[test]
     fn test_mask_family_detection() {
-        assert!(matches!(
-            MaskFamily::from_mask_version(0x07B0),
-            MaskFamily::SystemB
-        ));
-        assert!(matches!(
-            MaskFamily::from_mask_version(0x0705),
-            MaskFamily::System7
-        ));
-        assert!(matches!(
-            MaskFamily::from_mask_version(0x0912),
-            MaskFamily::Bim
-        ));
+        assert!(matches!(MaskFamily::from_mask_version(0x07B0), MaskFamily::SystemB));
+        assert!(matches!(MaskFamily::from_mask_version(0x0705), MaskFamily::System7));
+        assert!(matches!(MaskFamily::from_mask_version(0x0912), MaskFamily::Bim));
     }
 
     #[test]
@@ -456,7 +415,7 @@ mod tests {
         let path = "manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml";
         let path = std::path::Path::new(path);
         if path.exists() {
-            let knx = crate::parser::parse_application_program_from_file(path).expect("Failed to parse MTXML");
+            let knx = crate::runtime::parser::parse_application_program_from_file(path).expect("Failed to parse MTXML");
             let program = knx.manufacturer_data.manufacturer.application_programs.programs.first().unwrap();
 
             let info = DeviceInfo::from_program(&program, None);
@@ -488,16 +447,13 @@ mod tests {
         let path = "manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml";
         let path = std::path::Path::new(path);
         if path.exists() {
-            let knx = crate::parser::parse_application_program_from_file(path).expect("Failed to parse MTXML");
+            let knx = crate::runtime::parser::parse_application_program_from_file(path).expect("Failed to parse MTXML");
             let program = knx.manufacturer_data.manufacturer.application_programs.programs.first().unwrap();
 
             // Also test with master data if available
             let master_path = "manuf_tool_data/knx_master.xml";
-            let master = if std::path::Path::new(master_path).exists() {
-                MasterData::from_file(master_path).ok()
-            } else {
-                None
-            };
+            let master =
+                if std::path::Path::new(master_path).exists() { MasterData::from_file(master_path).ok() } else { None };
 
             let info = DeviceInfo::from_program(&program, master.as_ref());
 

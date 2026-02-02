@@ -1,6 +1,7 @@
 //! Catalog MTXML Generator - Creates Catalog.mtxml files.
 
 use crate::schema::{CatalogItem, CatalogKnx, CatalogSection};
+use crate::signing::KnxSchemaVersion;
 
 use super::{ApplicationProgramConfig, GeneratorError};
 
@@ -9,25 +10,27 @@ pub struct CatalogGenerator;
 
 impl CatalogGenerator {
     /// Generate a complete Catalog MTXML document from the configuration.
-    pub fn generate(config: &ApplicationProgramConfig) -> Result<String, GeneratorError> {
-        let knx = Self::build_catalog_knx(config);
+    ///
+    /// The `schema_version` parameter controls the xmlns namespace and tool version
+    /// in the generated XML. If `None`, defaults to V20.
+    pub fn generate(
+        config: &ApplicationProgramConfig,
+        schema_version: Option<KnxSchemaVersion>,
+    ) -> Result<String, GeneratorError> {
+        let knx = Self::build_catalog_knx(config, schema_version);
         Self::serialize(&knx)
     }
 
     /// Build the complete Catalog KNX document structure.
-    fn build_catalog_knx(config: &ApplicationProgramConfig) -> CatalogKnx {
+    fn build_catalog_knx(
+        config: &ApplicationProgramConfig,
+        schema_version: Option<KnxSchemaVersion>,
+    ) -> CatalogKnx {
         let manufacturer_id = format!("M-{:04X}", config.device.manufacturer_id);
-        let serial_hex = config
-            .serial_number
-            .iter()
-            .map(|b| format!("{:02X}", b))
-            .collect::<String>();
+        let serial_hex = config.serial_number.iter().map(|b| format!("{:02X}", b)).collect::<String>();
 
         // Hardware ID: M-XXXX_H-<serial>-<version>
-        let hardware_id = format!(
-            "{}_H-{}-{}",
-            manufacturer_id, serial_hex, config.hardware_version
-        );
+        let hardware_id = format!("{}_H-{}-{}", manufacturer_id, serial_hex, config.hardware_version);
 
         // Application hash suffix (defaults to 0000)
         let app_hash = config.application_hash.unwrap_or("0000");
@@ -39,26 +42,19 @@ impl CatalogGenerator {
         );
 
         // Product ID - must be URL-encoded for ID convention compliance
-        let product_id = format!(
-            "{}_P-{}",
-            hardware_id,
-            super::mtxml::MtxmlGenerator::encode_id(config.order_number)
-        );
+        let product_id = format!("{}_P-{}", hardware_id, super::mtxml::MtxmlGenerator::encode_id(config.order_number));
 
         // Catalog Section ID
         let section_id = format!("{}_CS-1", manufacturer_id);
 
         // Catalog Item ID: <h2p_id>_CI-<order_number>-1
         // Order number must be URL-encoded for ID convention compliance
-        let catalog_item_id = format!(
-            "{}_CI-{}-1",
-            h2p_id,
-            super::mtxml::MtxmlGenerator::encode_id(config.order_number)
-        );
+        let catalog_item_id =
+            format!("{}_CI-{}-1", h2p_id, super::mtxml::MtxmlGenerator::encode_id(config.order_number));
 
         let mut knx = CatalogKnx::default();
         // Set schema version namespace and tool version if specified
-        if let Some(version) = config.schema_version {
+        if let Some(version) = schema_version {
             knx.xmlns = version.namespace_url();
             knx.tool_version = version.tool_version().to_string();
         }
@@ -89,8 +85,7 @@ impl CatalogGenerator {
         let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
         serializer.indent(' ', 2);
 
-        serde::Serialize::serialize(knx, serializer)
-            .map_err(|e| GeneratorError::Serialization(e.to_string()))?;
+        serde::Serialize::serialize(knx, serializer).map_err(|e| GeneratorError::Serialization(e.to_string()))?;
 
         Ok(buffer)
     }

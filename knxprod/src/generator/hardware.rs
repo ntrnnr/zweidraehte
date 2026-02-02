@@ -1,9 +1,9 @@
 //! Hardware MTXML Generator - Creates Hardware.mtxml files.
 
 use crate::schema::{
-    ApplicationProgramRef, Hardware, Hardware2Program, Hardware2Programs, HardwareKnx, Product,
-    Products,
+    ApplicationProgramRef, Hardware, Hardware2Program, Hardware2Programs, HardwareKnx, Product, Products,
 };
+use crate::signing::KnxSchemaVersion;
 
 use super::{medium_type_from_mask, ApplicationProgramConfig, GeneratorError};
 
@@ -12,25 +12,27 @@ pub struct HardwareGenerator;
 
 impl HardwareGenerator {
     /// Generate a complete Hardware MTXML document from the configuration.
-    pub fn generate(config: &ApplicationProgramConfig) -> Result<String, GeneratorError> {
-        let knx = Self::build_hardware_knx(config);
+    ///
+    /// The `schema_version` parameter controls the xmlns namespace and tool version
+    /// in the generated XML. If `None`, defaults to V20.
+    pub fn generate(
+        config: &ApplicationProgramConfig,
+        schema_version: Option<KnxSchemaVersion>,
+    ) -> Result<String, GeneratorError> {
+        let knx = Self::build_hardware_knx(config, schema_version);
         Self::serialize(&knx)
     }
 
     /// Build the complete Hardware KNX document structure.
-    fn build_hardware_knx(config: &ApplicationProgramConfig) -> HardwareKnx {
+    fn build_hardware_knx(
+        config: &ApplicationProgramConfig,
+        schema_version: Option<KnxSchemaVersion>,
+    ) -> HardwareKnx {
         let manufacturer_id = format!("M-{:04X}", config.device.manufacturer_id);
-        let serial_hex = config
-            .serial_number
-            .iter()
-            .map(|b| format!("{:02X}", b))
-            .collect::<String>();
+        let serial_hex = config.serial_number.iter().map(|b| format!("{:02X}", b)).collect::<String>();
 
         // Hardware ID: M-XXXX_H-<serial>-<version>
-        let hardware_id = format!(
-            "{}_H-{}-{}",
-            manufacturer_id, serial_hex, config.hardware_version
-        );
+        let hardware_id = format!("{}_H-{}-{}", manufacturer_id, serial_hex, config.hardware_version);
 
         // Application hash suffix (defaults to 0000)
         let app_hash = config.application_hash.unwrap_or("0000");
@@ -49,15 +51,11 @@ impl HardwareGenerator {
 
         // Product ID: <hardware_id>_P-<order_number>
         // Order number must be URL-encoded for ID convention compliance
-        let product_id = format!(
-            "{}_P-{}",
-            hardware_id,
-            super::mtxml::MtxmlGenerator::encode_id(config.order_number)
-        );
+        let product_id = format!("{}_P-{}", hardware_id, super::mtxml::MtxmlGenerator::encode_id(config.order_number));
 
         let mut knx = HardwareKnx::default();
         // Set schema version namespace and tool version if specified
-        if let Some(version) = config.schema_version {
+        if let Some(version) = schema_version {
             knx.xmlns = version.namespace_url();
             knx.tool_version = version.tool_version().to_string();
         }
@@ -98,8 +96,7 @@ impl HardwareGenerator {
         let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
         serializer.indent(' ', 2);
 
-        serde::Serialize::serialize(knx, serializer)
-            .map_err(|e| GeneratorError::Serialization(e.to_string()))?;
+        serde::Serialize::serialize(knx, serializer).map_err(|e| GeneratorError::Serialization(e.to_string()))?;
 
         Ok(buffer)
     }

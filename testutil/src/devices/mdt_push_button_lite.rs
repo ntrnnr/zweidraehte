@@ -13,8 +13,8 @@ use core::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::mtxml_gen::ets_pages;
-use crate::mtxml_gen::page_layout::{EtsPageLayout, PageStructure};
+use knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
+use knxprod::ets_pages;
 use zweidraehte::dpt::*;
 use zweidraehte::ets::{EtsComObjects, EtsEnum, EtsParams, EtsUnion, ets_range_enum};
 use zweidraehte::objects::comm::ComObject;
@@ -5947,5 +5947,50 @@ mod tests {
             };
             assert!(!description.is_empty());
         }
+    }
+}
+
+// ============================================================================
+// Translations
+// ============================================================================
+
+/// German translations for MDT Push Button Lite device.
+///
+/// This demonstrates the `ets_translations!` macro for defining translations
+/// separately from the enum/param definitions to keep code clean.
+zweidraehte::ets_translations! {
+    pub MDT_TRANSLATIONS_DE;
+
+    "de-DE" {
+        // GEboolEnableDisable translations
+        GEboolEnableDisable::NotActive => "nicht aktiv",
+        GEboolEnableDisable::Active => "aktiv",
+
+        // YesNo translations
+        YesNo::No => "nein",
+        YesNo::Yes => "ja",
+
+        // NoYes translations (slightly different variant names)
+        NoYes::No => "Nein",
+        NoYes::Yes => "Ja",
+
+        // GedptSwitch translations
+        GedptSwitch::Off => "AUS",
+        GedptSwitch::On => "EIN",
+
+        // ButtonFunction translations
+        ButtonFunction::NotActive => "nicht aktiv",
+        ButtonFunction::Switch => "Schalten",
+        ButtonFunction::Dimming => "Dimmen",
+        ButtonFunction::Blinds => "Jalousie",
+
+        // SwitchSubfunction translations
+        SwitchSubfunction::Switch => "Schalten",
+        SwitchSubfunction::Toggle => "Umschalten",
+
+        // ReactionTime translations
+        ReactionTime::Fast => "schnell",
+        ReactionTime::Medium => "mittel",
+        ReactionTime::Slow => "langsam",
     }
 }

@@ -15,29 +15,32 @@
 //! - [`dynamic`] - Dynamic section: channels, blocks, choose/when
 //! - [`hardware`] - Hardware MTXML types
 //! - [`catalog`] - Catalog MTXML types
+//! - [`languages`] - Language translations for multi-language support
 //! - [`helpers`] - Helper functions for conversions
 
-mod core;
-mod static_section;
-mod parameters;
-mod param_refs;
+mod catalog;
 mod com_objects;
-mod load_procedures;
-mod modules;
+mod core;
 mod dynamic;
 mod hardware;
-mod catalog;
 mod helpers;
+mod languages;
+mod load_procedures;
+mod modules;
+mod param_refs;
+mod parameters;
+mod static_section;
 
 // Re-export all public types for backwards compatibility
 pub use self::core::*;
-pub use static_section::*;
-pub use parameters::*;
-pub use param_refs::*;
+pub use catalog::*;
 pub use com_objects::*;
-pub use load_procedures::*;
-pub use modules::*;
 pub use dynamic::*;
 pub use hardware::*;
-pub use catalog::*;
 pub use helpers::*;
+pub use languages::*;
+pub use load_procedures::*;
+pub use modules::*;
+pub use param_refs::*;
+pub use parameters::*;
+pub use static_section::*;

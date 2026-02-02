@@ -24,7 +24,5 @@ pub use baggage::BaggageIndex;
 pub use device::Device;
 pub use device_info::DeviceInfo;
 pub use master_data::MasterData;
-pub use model::{
-    ConditionEvaluator, DynamicVisitor, VisibilityVisitor, VisitorModuleContext, walk_dynamic,
-};
+pub use model::{walk_dynamic, ConditionEvaluator, DynamicVisitor, VisibilityVisitor, VisitorModuleContext};
 pub use parser::{parse_application_program, parse_application_program_from_file, ParseError};

@@ -4,32 +4,34 @@
 //! - [`mtxml`] - Main MtxmlGenerator for ApplicationProgram XML
 //! - [`hardware`] - HardwareGenerator for Hardware XML
 //! - [`catalog`] - CatalogGenerator for Catalog XML
+//! - [`baggage`] - BaggageGenerator for Baggages XML
+//! - [`builder`] - KnxprodBuilder for unified generation workflow
 //! - [`traversal`] - Page layout traversal utilities (picture/text collection)
 
-mod mtxml;
-mod hardware;
-mod catalog;
-mod traversal;
-mod helpers;
 pub mod baggage;
+mod builder;
+mod catalog;
+mod hardware;
+mod helpers;
+mod mtxml;
+mod traversal;
 
 use std::collections::HashMap;
 
-use crate::page_layout::PageStructure;
-use crate::module::ModuleCollection;
+use crate::definition::module::ModuleCollection;
+use crate::definition::page_layout::PageStructure;
 use crate::schema::{BaggageDef, MaskFamily};
-use crate::signing::KnxSchemaVersion;
 
 use zweidraehte::ets::{
-    DeviceDescriptor, EtsCommObjectDef, EtsCommObjectRefDef, EtsParamDefExt,
-    EtsUnionFieldInfo,
+    DeviceDescriptor, EtsCommObjectDef, EtsCommObjectRefDef, EtsParamDefExt, EtsTranslation, EtsUnionFieldInfo,
 };
 
 // Re-export public types
-pub use mtxml::MtxmlGenerator;
-pub use hardware::HardwareGenerator;
+pub use baggage::BaggageGenerator;
+pub use builder::{BuilderError, KnxprodBuilder, KnxprodOutput};
 pub use catalog::CatalogGenerator;
-// Note: MaskFamily is already imported and re-exported via 'use crate::schema'
+pub use hardware::HardwareGenerator;
+pub use mtxml::MtxmlGenerator;
 
 // ============================================================================
 // Shared Types
@@ -62,10 +64,7 @@ impl ActiveConditions {
     /// Check if the given selector matches any active condition.
     /// Returns Some(values) if the selector matches an active condition.
     pub fn get_active_values(&self, selector: &str) -> Option<&Vec<i64>> {
-        self.conditions
-            .iter()
-            .find(|(sel, _)| sel == selector)
-            .map(|(_, vals)| vals)
+        self.conditions.iter().find(|(sel, _)| sel == selector).map(|(_, vals)| vals)
     }
 }
 
@@ -178,9 +177,6 @@ pub struct ApplicationProgramConfig<'a> {
     pub name: &'a str,
     /// Device descriptor with mask version, manufacturer ID, etc.
     pub device: &'a DeviceDescriptor,
-    /// KNX XML schema version to use. If None, defaults to V20.
-    /// This affects the xmlns namespace in generated XML files.
-    pub schema_version: Option<KnxSchemaVersion>,
     /// Extended parameter definitions with enum variants
     pub params: &'a [EtsParamDefExt],
     /// Virtual parameter definitions that exist only in ETS (not stored in device memory).
@@ -250,6 +246,10 @@ pub struct ApplicationProgramConfig<'a> {
     /// - Listed in a generated Baggages.xml manifest
     /// - Included in the signed .knxprod package
     pub baggages: Option<&'a [BaggageDef<'a>]>,
+    /// Optional translations for non-default languages.
+    /// Translations are generated into a `<Languages>` section in the ApplicationProgram XML.
+    /// Use the `ets_translations!` macro to define translations.
+    pub translations: Option<&'a [EtsTranslation]>,
 }
 
 impl<'a> ApplicationProgramConfig<'a> {
@@ -303,6 +303,15 @@ pub enum GeneratorError {
         /// Where the reference was used (e.g., "Dynamic/Choose" or "ParameterRefRef")
         context: String,
     },
+    /// Unknown translation target - a translation references a non-existent param, object, or enum variant
+    UnknownTranslation {
+        /// The language this translation is for
+        language: String,
+        /// The reference path that couldn't be resolved (e.g., "IconSelection::Nightasdasdads")
+        ref_path: String,
+        /// What kind of translation this was (enum, param, obj)
+        kind: String,
+    },
 }
 
 impl std::fmt::Display for GeneratorError {
@@ -311,6 +320,9 @@ impl std::fmt::Display for GeneratorError {
             GeneratorError::Serialization(msg) => write!(f, "Serialization error: {}", msg),
             GeneratorError::MissingReference { ref_type, ref_id, context } => {
                 write!(f, "Missing {ref_type} reference: '{ref_id}' referenced in {context}")
+            }
+            GeneratorError::UnknownTranslation { language, ref_path, kind } => {
+                write!(f, "Unknown {kind} in translation for {language}: '{ref_path}' does not exist")
             }
         }
     }
@@ -386,10 +398,10 @@ mod tests {
 
     #[test]
     fn test_mask_family_detection() {
-        assert_eq!(MaskFamily::from_mask_version(0x0701), MaskFamily::System7);  // 0701 is System7
+        assert_eq!(MaskFamily::from_mask_version(0x0701), MaskFamily::System7); // 0701 is System7
         assert_eq!(MaskFamily::from_mask_version(0x07B0), MaskFamily::SystemB);
-        assert_eq!(MaskFamily::from_mask_version(0x57B0), MaskFamily::SystemB);  // 57B0 maps to SystemB
-        assert_eq!(MaskFamily::from_mask_version(0x0912), MaskFamily::Bim);      // 0912 is Bim
+        assert_eq!(MaskFamily::from_mask_version(0x57B0), MaskFamily::SystemB); // 57B0 maps to SystemB
+        assert_eq!(MaskFamily::from_mask_version(0x0912), MaskFamily::Bim); // 0912 is Bim
     }
 
     #[test]

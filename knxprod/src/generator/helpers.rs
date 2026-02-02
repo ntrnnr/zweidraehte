@@ -1,8 +1,6 @@
 //! Helper functions for generator code to reduce duplication.
 
-use crate::schema::{
-    ComObjectRefRef, ParameterBlockItem, ParameterRefRef, WhenItem,
-};
+use crate::schema::{ComObjectRefRef, ParameterBlockItem, ParameterRefRef, WhenItem};
 
 // ============================================================================
 // Factory functions for creating common items
@@ -11,20 +9,13 @@ use crate::schema::{
 /// Create a ParameterRefRef with default text and description.
 #[inline]
 fn param_ref(ref_id: String) -> ParameterRefRef {
-    ParameterRefRef {
-        ref_id,
-        text: None,
-        internal_description: None,
-    }
+    ParameterRefRef { ref_id, text: None, internal_description: None }
 }
 
 /// Create a ComObjectRefRef with default description.
 #[inline]
 fn com_obj_ref(ref_id: String) -> ComObjectRefRef {
-    ComObjectRefRef {
-        ref_id,
-        internal_description: None,
-    }
+    ComObjectRefRef { ref_id, internal_description: None }
 }
 
 // ============================================================================

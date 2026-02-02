@@ -914,7 +914,7 @@ in block titles, comm object names, etc.
 For devices with multiple identical channels (e.g., 4-channel dimmer), use the `module_instances` helper with the `raw` keyword:
 
 ```rust
-use knxprod::module::module_instances;
+use knxprod::definition::module::module_instances;
 
 impl EtsPageLayout for MyDevice {
     fn page_layout() -> PageStructure {
@@ -1122,7 +1122,7 @@ See [testutil/src/devices/module_test_device.rs](../testutil/src/devices/module_
 ## Complete Example
 
 ```rust
-use knxprod::page_layout::{EtsPageLayout, PageStructure};
+use knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
 use ets_macros::{EtsParams, EtsEnum, EtsUnion, EtsComObjects};
 
 // Simple enum for dropdowns

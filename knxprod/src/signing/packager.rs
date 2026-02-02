@@ -16,12 +16,8 @@ use super::{KnxSchemaVersion, MasterDataSource, SigningConfig, SigningError};
 /// Get or download the KNX master data.
 pub fn get_master_data(source: &MasterDataSource) -> Result<String, SigningError> {
     match source {
-        MasterDataSource::Download => {
-            download_and_cache_master_data(KnxSchemaVersion::default())
-        }
-        MasterDataSource::DownloadVersion(version) => {
-            download_and_cache_master_data(*version)
-        }
+        MasterDataSource::Download => download_and_cache_master_data(KnxSchemaVersion::default()),
+        MasterDataSource::DownloadVersion(version) => download_and_cache_master_data(*version),
         MasterDataSource::File(path) => Ok(fs::read_to_string(path)?),
         MasterDataSource::Content(content) => Ok(content.clone()),
     }
@@ -65,8 +61,7 @@ fn download_and_cache_master_data(version: KnxSchemaVersion) -> Result<String, S
 
 /// Get the cache directory for KNX data.
 fn get_cache_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("org", "knx", "knxprod")
-        .map(|dirs| dirs.cache_dir().to_path_buf())
+    directories::ProjectDirs::from("org", "knx", "knxprod").map(|dirs| dirs.cache_dir().to_path_buf())
 }
 
 /// Sign Hardware.xml in-place (updates Hash and RegistrationInfo).
@@ -134,12 +129,14 @@ pub fn sign_hardware_xml(
                             for attr in e.attributes().flatten() {
                                 new_elem.push_attribute((
                                     std::str::from_utf8(attr.key.as_ref()).unwrap_or(""),
-                                    std::str::from_utf8(&attr.value).unwrap_or("")
+                                    std::str::from_utf8(&attr.value).unwrap_or(""),
                                 ));
                             }
                             new_elem.push_attribute(("Hash", hash.as_str()));
 
-                            writer.write_event(Event::Start(new_elem)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                            writer
+                                .write_event(Event::Start(new_elem))
+                                .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
                             pending_product_registration = Some((hash, signature));
                         } else {
                             writer.write_event(Event::Start(e)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
@@ -179,20 +176,26 @@ pub fn sign_hardware_xml(
                             for attr in e.attributes().flatten() {
                                 new_elem.push_attribute((
                                     std::str::from_utf8(attr.key.as_ref()).unwrap_or(""),
-                                    std::str::from_utf8(&attr.value).unwrap_or("")
+                                    std::str::from_utf8(&attr.value).unwrap_or(""),
                                 ));
                             }
                             new_elem.push_attribute(("Hash", hash.as_str()));
 
-                            writer.write_event(Event::Start(new_elem)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                            writer
+                                .write_event(Event::Start(new_elem))
+                                .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
 
                             // Add RegistrationInfo
                             let mut reg_elem = BytesStart::new("RegistrationInfo");
                             reg_elem.push_attribute(("RegistrationStatus", "Registered"));
                             reg_elem.push_attribute(("RegistrationSignature", signature.as_str()));
-                            writer.write_event(Event::Empty(reg_elem)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                            writer
+                                .write_event(Event::Empty(reg_elem))
+                                .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
 
-                            writer.write_event(Event::End(BytesEnd::new("Product"))).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                            writer
+                                .write_event(Event::End(BytesEnd::new("Product")))
+                                .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
                         } else {
                             writer.write_event(Event::Empty(e)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
                         }
@@ -242,17 +245,17 @@ pub fn sign_hardware_xml(
                             let mut reg_elem = BytesStart::new("RegistrationInfo");
                             reg_elem.push_attribute(("RegistrationStatus", "Registered"));
                             reg_elem.push_attribute(("RegistrationSignature", signature.as_str()));
-                            writer.write_event(Event::Empty(reg_elem)).map_err(|er| SigningError::XmlWrite(er.to_string()))?;
+                            writer
+                                .write_event(Event::Empty(reg_elem))
+                                .map_err(|er| SigningError::XmlWrite(er.to_string()))?;
                         }
                         writer.write_event(Event::End(e)).map_err(|er| SigningError::XmlWrite(er.to_string()))?;
                     }
                     "Hardware2Program" if in_hardware2programs => {
                         // Now we have all ApplicationProgramRefs, compute hash and write element with Hash
                         if let (Some(hw_attrs), Some(h2p_attrs)) = (&current_hardware_attrs, &current_h2p_attrs) {
-                            let h2p_app_hashes: Vec<String> = current_app_refs
-                                .iter()
-                                .filter_map(|r| app_program_hashes.get(r).cloned())
-                                .collect();
+                            let h2p_app_hashes: Vec<String> =
+                                current_app_refs.iter().filter_map(|r| app_program_hashes.get(r).cloned()).collect();
 
                             let hash_bytes = compute_hardware2program_hash_bytes(
                                 hw_attrs,
@@ -270,20 +273,26 @@ pub fn sign_hardware_xml(
                                 new_elem.push_attribute((key.as_str(), value.as_str()));
                             }
                             new_elem.push_attribute(("Hash", hash.as_str()));
-                            writer.write_event(Event::Start(new_elem)).map_err(|er| SigningError::XmlWrite(er.to_string()))?;
+                            writer
+                                .write_event(Event::Start(new_elem))
+                                .map_err(|er| SigningError::XmlWrite(er.to_string()))?;
 
                             // Write ApplicationProgramRef elements
                             for ref_id in &current_app_refs {
                                 let mut ref_elem = BytesStart::new("ApplicationProgramRef");
                                 ref_elem.push_attribute(("RefId", ref_id.as_str()));
-                                writer.write_event(Event::Empty(ref_elem)).map_err(|er| SigningError::XmlWrite(er.to_string()))?;
+                                writer
+                                    .write_event(Event::Empty(ref_elem))
+                                    .map_err(|er| SigningError::XmlWrite(er.to_string()))?;
                             }
 
                             // Add RegistrationInfo before closing
                             let mut reg_elem = BytesStart::new("RegistrationInfo");
                             reg_elem.push_attribute(("RegistrationStatus", "Registered"));
                             reg_elem.push_attribute(("RegistrationSignature", signature.as_str()));
-                            writer.write_event(Event::Empty(reg_elem)).map_err(|er| SigningError::XmlWrite(er.to_string()))?;
+                            writer
+                                .write_event(Event::Empty(reg_elem))
+                                .map_err(|er| SigningError::XmlWrite(er.to_string()))?;
                         }
 
                         in_h2p_element = false;
@@ -337,10 +346,7 @@ pub fn sign_hardware_xml(
 fn extract_attrs_from_event(e: &BytesStart) -> HashMap<String, String> {
     let mut attrs = HashMap::new();
     for attr in e.attributes().flatten() {
-        if let (Ok(key), Ok(value)) = (
-            std::str::from_utf8(attr.key.as_ref()),
-            std::str::from_utf8(&attr.value),
-        ) {
+        if let (Ok(key), Ok(value)) = (std::str::from_utf8(attr.key.as_ref()), std::str::from_utf8(&attr.value)) {
             attrs.insert(key.to_string(), value.to_string());
         }
     }
@@ -376,18 +382,13 @@ pub fn sign_application_program_xml(app_xml: &str) -> Result<String, SigningErro
                         let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
                         // Skip existing Hash attribute
                         if key != "Hash" {
-                            new_elem.push_attribute((
-                                key,
-                                std::str::from_utf8(&attr.value).unwrap_or("")
-                            ));
+                            new_elem.push_attribute((key, std::str::from_utf8(&attr.value).unwrap_or("")));
                         }
                     }
                     new_elem.push_attribute(("Hash", hash.as_str()));
-                    writer.write_event(Event::Start(new_elem))
-                        .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                    writer.write_event(Event::Start(new_elem)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
                 } else {
-                    writer.write_event(Event::Start(e))
-                        .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                    writer.write_event(Event::Start(e)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
                 }
             }
             Ok(Event::Empty(e)) => {
@@ -405,47 +406,35 @@ pub fn sign_application_program_xml(app_xml: &str) -> Result<String, SigningErro
                     for attr in e.attributes().flatten() {
                         let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
                         if key != "Hash" {
-                            new_elem.push_attribute((
-                                key,
-                                std::str::from_utf8(&attr.value).unwrap_or("")
-                            ));
+                            new_elem.push_attribute((key, std::str::from_utf8(&attr.value).unwrap_or("")));
                         }
                     }
                     new_elem.push_attribute(("Hash", hash.as_str()));
-                    writer.write_event(Event::Empty(new_elem))
-                        .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                    writer.write_event(Event::Empty(new_elem)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
                 } else {
-                    writer.write_event(Event::Empty(e))
-                        .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                    writer.write_event(Event::Empty(e)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
                 }
             }
             Ok(Event::End(e)) => {
-                writer.write_event(Event::End(e))
-                    .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                writer.write_event(Event::End(e)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
             }
             Ok(Event::Text(e)) => {
-                writer.write_event(Event::Text(e))
-                    .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                writer.write_event(Event::Text(e)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
             }
             Ok(Event::Comment(e)) => {
-                writer.write_event(Event::Comment(e))
-                    .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                writer.write_event(Event::Comment(e)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
             }
             Ok(Event::CData(e)) => {
-                writer.write_event(Event::CData(e))
-                    .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                writer.write_event(Event::CData(e)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
             }
             Ok(Event::Decl(e)) => {
-                writer.write_event(Event::Decl(e))
-                    .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                writer.write_event(Event::Decl(e)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
             }
             Ok(Event::PI(e)) => {
-                writer.write_event(Event::PI(e))
-                    .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                writer.write_event(Event::PI(e)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
             }
             Ok(Event::DocType(e)) => {
-                writer.write_event(Event::DocType(e))
-                    .map_err(|e| SigningError::XmlWrite(e.to_string()))?;
+                writer.write_event(Event::DocType(e)).map_err(|e| SigningError::XmlWrite(e.to_string()))?;
             }
             Ok(Event::Eof) => break,
             Err(e) => return Err(SigningError::XmlWrite(format!("XML parse error: {}", e))),
@@ -457,10 +446,7 @@ pub fn sign_application_program_xml(app_xml: &str) -> Result<String, SigningErro
 }
 
 /// Create a signed .knxprod ZIP archive.
-pub fn create_knxprod(
-    config: &SigningConfig,
-    master_data: MasterDataSource,
-) -> Result<Vec<u8>, SigningError> {
+pub fn create_knxprod(config: &SigningConfig, master_data: MasterDataSource) -> Result<Vec<u8>, SigningError> {
     use super::signatures::sign_directory_contents;
 
     let manuf_dir = format!("M-{}", config.manufacturer_id);
@@ -479,10 +465,7 @@ pub fn create_knxprod(
 
     // Collect files for the manufacturer directory
     let mut dir_files: Vec<(String, Vec<u8>)> = vec![
-        (
-            format!("{}.xml", config.application_program_id),
-            signed_app_program.as_bytes().to_vec(),
-        ),
+        (format!("{}.xml", config.application_program_id), signed_app_program.as_bytes().to_vec()),
         ("Hardware.xml".to_string(), signed_hardware.as_bytes().to_vec()),
         ("Catalog.xml".to_string(), config.catalog.as_bytes().to_vec()),
     ];
@@ -494,10 +477,7 @@ pub fn create_knxprod(
 
     // Create directory signature
     let files_for_signing: Vec<(String, Vec<u8>)> = dir_files.clone();
-    let files_refs: Vec<(String, &[u8])> = files_for_signing
-        .iter()
-        .map(|(p, c)| (p.clone(), c.as_slice()))
-        .collect();
+    let files_refs: Vec<(String, &[u8])> = files_for_signing.iter().map(|(p, c)| (p.clone(), c.as_slice())).collect();
     let dir_signature = sign_directory_contents(&files_refs)?;
 
     // Create ZIP archive

@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 #[cfg(feature = "images")]
-use ratatui_image::{Resize, StatefulImage, protocol::StatefulProtocol};
+use ratatui_image::{protocol::StatefulProtocol, Resize, StatefulImage};
 
 use crate::app::{App, ContentItem, EditMode, Focus, MainTab, SegmentType, WidgetType};
 
@@ -35,13 +35,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_status(frame, main_chunks[2], app);
 
     // Render edit popup if in edit mode
-    if let EditMode::EnumDropdown {
-        options,
-        selected_idx,
-        scroll_offset,
-        ..
-    } = &app.edit_mode
-    {
+    if let EditMode::EnumDropdown { options, selected_idx, scroll_offset, .. } = &app.edit_mode {
         render_dropdown_popup(frame, options, *selected_idx, *scroll_offset);
     }
 }
@@ -66,13 +60,9 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
         let is_selected = *tab == app.current_tab;
         let style = if is_selected {
             if focused {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
             }
         } else {
             Style::default().fg(Color::DarkGray)
@@ -88,16 +78,10 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     // Build title with program name and mask version info
-    let title = format!(
-        " KNX Viewer - {} │ {} ",
-        app.device.program().name,
-        app.mask_version_display()
-    );
+    let title = format!(" KNX Viewer - {} │ {} ", app.device.program().name, app.mask_version_display());
 
-    let block = Block::default()
-        .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(title);
+    let block =
+        Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray)).title(title);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -123,11 +107,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     let focused = app.focus == Focus::Sidebar;
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(if focused {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        })
+        .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
         .title(" Pages ");
 
     let inner = block.inner(area);
@@ -192,11 +172,7 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focus == Focus::Content && app.current_tab == MainTab::Parameters;
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(if focused {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        })
+        .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
         .title(format!(" {} ", app.current_node_name()));
 
     let inner = block.inner(area);
@@ -250,12 +226,7 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
             y_offset += item_area.height;
         } else if let Some(line) = line {
             // Render regular item as single line
-            let item_area = Rect {
-                x: inner.x,
-                y: inner.y + y_offset,
-                width: inner.width,
-                height: 1,
-            };
+            let item_area = Rect { x: inner.x, y: inner.y + y_offset, width: inner.width, height: 1 };
 
             frame.render_widget(Paragraph::new(line), item_area);
             y_offset += 1;
@@ -264,36 +235,16 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// Create a Line for a content item (used for manual rendering).
-fn create_content_line<'a>(
-    item: &ContentItem,
-    is_selected: bool,
-    app: &App,
-    width: usize,
-) -> Line<'a> {
-    let bg = if is_selected {
-        Color::DarkGray
-    } else {
-        Color::Reset
-    };
+fn create_content_line<'a>(item: &ContentItem, is_selected: bool, app: &App, width: usize) -> Line<'a> {
+    let bg = if is_selected { Color::DarkGray } else { Color::Reset };
 
     match item {
-        ContentItem::Parameter {
-            text,
-            suffix,
-            widget,
-            param_id,
-        } => {
+        ContentItem::Parameter { text, suffix, widget, param_id } => {
             // Check if we're editing this parameter
             let editing = match &app.edit_mode {
-                EditMode::NumberInput {
-                    param_id: edit_id, ..
-                } => edit_id == param_id,
-                EditMode::TextInput {
-                    param_id: edit_id, ..
-                } => edit_id == param_id,
-                EditMode::EnumDropdown {
-                    param_id: edit_id, ..
-                } => edit_id == param_id,
+                EditMode::NumberInput { param_id: edit_id, .. } => edit_id == param_id,
+                EditMode::TextInput { param_id: edit_id, .. } => edit_id == param_id,
+                EditMode::EnumDropdown { param_id: edit_id, .. } => edit_id == param_id,
                 EditMode::GroupAddressInput { .. } | EditMode::None => false,
             };
 
@@ -330,16 +281,9 @@ fn create_content_line<'a>(
                 let remaining = width.saturating_sub(prefix.chars().count());
                 format!("{}{}", prefix, "─".repeat(remaining))
             };
-            Line::from(vec![Span::styled(
-                separator_line,
-                Style::default().fg(Color::DarkGray).bg(bg),
-            )])
+            Line::from(vec![Span::styled(separator_line, Style::default().fg(Color::DarkGray).bg(bg))])
         }
-        ContentItem::CommObject {
-            name,
-            function,
-            dpt,
-        } => {
+        ContentItem::CommObject { name, function, dpt } => {
             // Display comm object with distinctive styling
             let label_width = (width * 40 / 100).max(20).min(45);
             let label = if name.len() > label_width {
@@ -349,11 +293,7 @@ fn create_content_line<'a>(
             };
 
             // Show function and DPT in value area
-            let info = if dpt.is_empty() {
-                function.clone()
-            } else {
-                format!("{} [{}]", function, dpt)
-            };
+            let info = if dpt.is_empty() { function.clone() } else { format!("{} [{}]", function, dpt) };
 
             Line::from(vec![
                 Span::styled(label, Style::default().fg(Color::Cyan).bg(bg)),
@@ -376,11 +316,7 @@ fn render_picture_item(
     is_selected: bool,
     label_width: usize,
 ) {
-    let bg = if is_selected {
-        Color::DarkGray
-    } else {
-        Color::Reset
-    };
+    let bg = if is_selected { Color::DarkGray } else { Color::Reset };
 
     // Calculate value column area (skip the label column width)
     // Add 1 row padding top and bottom for breathing room
@@ -396,13 +332,12 @@ fn render_picture_item(
     #[cfg(feature = "images")]
     {
         if let Some(protocol) = app.load_image(ref_id) {
-            let image: StatefulImage<StatefulProtocol> = StatefulImage::default()
-                .resize(Resize::Fit(None));
+            let image: StatefulImage<StatefulProtocol> = StatefulImage::default().resize(Resize::Fit(None));
             frame.render_stateful_widget(image, value_area, protocol);
         } else {
             // Show placeholder if image not found
-            let placeholder = Paragraph::new(format!("[{}]", ref_id))
-                .style(Style::default().fg(Color::DarkGray).bg(bg));
+            let placeholder =
+                Paragraph::new(format!("[{}]", ref_id)).style(Style::default().fg(Color::DarkGray).bg(bg));
             frame.render_widget(placeholder, value_area);
         }
     }
@@ -410,29 +345,16 @@ fn render_picture_item(
     {
         // Without images feature, just show the ref_id as text
         let _ = app; // suppress unused warning
-        let placeholder = Paragraph::new(format!("[Image: {}]", ref_id))
-            .style(Style::default().fg(Color::Yellow).bg(bg));
+        let placeholder =
+            Paragraph::new(format!("[Image: {}]", ref_id)).style(Style::default().fg(Color::Yellow).bg(bg));
         frame.render_widget(placeholder, value_area);
     }
 }
 
-
-fn render_widget<'a>(
-    widget: &WidgetType,
-    editing: bool,
-    app: &App,
-    suffix: &str,
-    max_width: usize,
-) -> Vec<Span<'a>> {
+fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str, max_width: usize) -> Vec<Span<'a>> {
     match widget {
-        WidgetType::Dropdown {
-            options,
-            current_idx,
-        } => {
-            let value_text = options
-                .get(*current_idx)
-                .map(|(_, text)| text.as_str())
-                .unwrap_or("?");
+        WidgetType::Dropdown { options, current_idx } => {
+            let value_text = options.get(*current_idx).map(|(_, text)| text.as_str()).unwrap_or("?");
 
             // Truncate if needed
             let display = if value_text.len() > max_width.saturating_sub(5) {
@@ -444,12 +366,7 @@ fn render_widget<'a>(
             if editing {
                 vec![
                     Span::styled("[", Style::default().fg(Color::Yellow)),
-                    Span::styled(
-                        display,
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(display, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
                     Span::styled(" ▼]", Style::default().fg(Color::Yellow)),
                 ]
             } else {
@@ -476,12 +393,7 @@ fn render_widget<'a>(
             if editing {
                 vec![
                     Span::styled("[", Style::default().fg(Color::Yellow)),
-                    Span::styled(
-                        value_str,
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(value_str, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                     Span::styled("]", Style::default().fg(Color::Yellow)),
                     Span::styled(format!(" {}", suffix), Style::default().fg(Color::DarkGray)),
                     Span::styled(range_hint, Style::default().fg(Color::DarkGray)),
@@ -516,12 +428,7 @@ fn render_widget<'a>(
             if editing {
                 vec![
                     Span::styled("[", Style::default().fg(Color::Yellow)),
-                    Span::styled(
-                        display,
-                        Style::default()
-                            .fg(Color::Magenta)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(display, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
                     Span::styled("]", Style::default().fg(Color::Yellow)),
                 ]
             } else {
@@ -545,11 +452,7 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
     let focused = app.focus == Focus::Content && app.current_tab == MainTab::CommObjects;
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(if focused {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        })
+        .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
         .title(if app.comm_obj_scroll_offset > 0 || app.com_object_rows.len() > 20 {
             format!(
                 " Communication Objects ({}) [{}-{}] ",
@@ -558,43 +461,22 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
                 (app.comm_obj_scroll_offset + 20).min(app.com_object_rows.len())
             )
         } else {
-            format!(
-                " Communication Objects ({}) ",
-                app.com_object_rows.len()
-            )
+            format!(" Communication Objects ({}) ", app.com_object_rows.len())
         });
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     if app.com_object_rows.is_empty() {
-        let empty =
-            Paragraph::new("No communication objects").style(Style::default().fg(Color::DarkGray));
+        let empty = Paragraph::new("No communication objects").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty, inner);
         return;
     }
 
     // Build table header
-    let header = Row::new(vec![
-        "No",
-        "Name",
-        "Function",
-        "Group Addr",
-        "Size",
-        "DPT",
-        "Prio",
-        "C",
-        "R",
-        "W",
-        "T",
-        "U",
-    ])
-    .style(
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )
-    .bottom_margin(0);
+    let header = Row::new(vec!["No", "Name", "Function", "Group Addr", "Size", "DPT", "Prio", "C", "R", "W", "T", "U"])
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .bottom_margin(0);
 
     // Check if we're editing a group address
     let editing_object = match &app.edit_mode {
@@ -615,11 +497,8 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
         .map(|(i, row)| {
             let is_selected = i == app.selected_obj_idx && focused;
             let is_editing = editing_object.as_ref().map_or(false, |(n, _)| *n == row.number);
-            let style = if is_selected {
-                Style::default().bg(Color::DarkGray).fg(Color::White)
-            } else {
-                Style::default()
-            };
+            let style =
+                if is_selected { Style::default().bg(Color::DarkGray).fg(Color::White) } else { Style::default() };
 
             let flag = |b: bool| if b { "●" } else { "○" };
 
@@ -666,9 +545,7 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(2),  // U
     ];
 
-    let table = Table::new(rows, widths)
-        .header(header)
-        .row_highlight_style(Style::default().bg(Color::DarkGray));
+    let table = Table::new(rows, widths).header(header).row_highlight_style(Style::default().bg(Color::DarkGray));
 
     frame.render_widget(table, inner);
 }
@@ -699,11 +576,7 @@ fn render_segment_selector(frame: &mut Frame, area: Rect, app: &App) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(if focused {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        })
+        .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
         .title(format!(" Segments ({}) ", app.memory_segments.len()));
 
     let inner = block.inner(area);
@@ -734,21 +607,12 @@ fn render_segment_selector(frame: &mut Frame, area: Rect, app: &App) {
             };
 
             let mem_type = seg.memory_type.as_deref().unwrap_or("");
-            let lsm = seg
-                .load_state_machine
-                .map(|l| format!(" LSM:{}", l))
-                .unwrap_or_default();
+            let lsm = seg.load_state_machine.map(|l| format!(" LSM:{}", l)).unwrap_or_default();
 
-            let size_str = if seg.data.is_empty() {
-                format!("{}B (no data)", seg.size)
-            } else {
-                format!("{}B", seg.data.len())
-            };
+            let size_str =
+                if seg.data.is_empty() { format!("{}B (no data)", seg.size) } else { format!("{}B", seg.data.len()) };
 
-            let text = format!(
-                "[{}] {} {} {}{}",
-                type_char, addr_str, size_str, mem_type, lsm
-            );
+            let text = format!("[{}] {} {} {}{}", type_char, addr_str, size_str, mem_type, lsm);
 
             let style = if is_selected {
                 Style::default().bg(Color::DarkGray).fg(Color::White)
@@ -758,11 +622,8 @@ fn render_segment_selector(frame: &mut Frame, area: Rect, app: &App) {
 
             // Truncate if needed
             let max_len = inner.width.saturating_sub(2) as usize;
-            let display = if text.len() > max_len {
-                format!("{}…", &text[..max_len.saturating_sub(1)])
-            } else {
-                text
-            };
+            let display =
+                if text.len() > max_len { format!("{}…", &text[..max_len.saturating_sub(1)]) } else { text };
 
             ListItem::new(Line::from(Span::styled(display, style)))
         })
@@ -789,11 +650,7 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(if focused {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        })
+        .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
         .title(title);
 
     let inner = block.inner(area);
@@ -802,16 +659,14 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
     let segment = match segment {
         Some(s) => s,
         None => {
-            let empty =
-                Paragraph::new("No segment selected").style(Style::default().fg(Color::DarkGray));
+            let empty = Paragraph::new("No segment selected").style(Style::default().fg(Color::DarkGray));
             frame.render_widget(empty, inner);
             return;
         }
     };
 
     if segment.data.is_empty() {
-        let empty =
-            Paragraph::new("(no data in segment)").style(Style::default().fg(Color::DarkGray));
+        let empty = Paragraph::new("(no data in segment)").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty, inner);
         return;
     }
@@ -824,12 +679,10 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::with_capacity(visible_lines + 2);
 
     // Header line
-    lines.push(Line::from(vec![
-        Span::styled(
-            "Offset    00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  ASCII",
-            Style::default().fg(Color::Cyan),
-        ),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "Offset    00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  ASCII",
+        Style::default().fg(Color::Cyan),
+    )]));
 
     // Data lines
     for line_idx in 0..visible_lines {
@@ -842,10 +695,7 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
         let mut spans = Vec::new();
 
         // Offset column
-        spans.push(Span::styled(
-            format!("{:04X}:     ", offset),
-            Style::default().fg(Color::DarkGray),
-        ));
+        spans.push(Span::styled(format!("{:04X}:     ", offset), Style::default().fg(Color::DarkGray)));
 
         // Hex bytes
         for i in 0..16 {
@@ -858,10 +708,7 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
                 let is_annotated = app.get_annotation_at_offset(byte_offset).is_some();
 
                 let style = if is_selected {
-                    Style::default()
-                        .bg(Color::Yellow)
-                        .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD)
                 } else if is_annotated {
                     Style::default().fg(Color::Cyan)
                 } else {
@@ -886,18 +733,11 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
                 spans.push(Span::raw(" "));
             } else {
                 let byte = segment.data[byte_offset];
-                let ch = if byte.is_ascii_graphic() || byte == b' ' {
-                    byte as char
-                } else {
-                    '.'
-                };
+                let ch = if byte.is_ascii_graphic() || byte == b' ' { byte as char } else { '.' };
                 let is_selected = byte_offset == app.selected_byte_offset && focused;
 
                 let style = if is_selected {
-                    Style::default()
-                        .bg(Color::Yellow)
-                        .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::DarkGray)
                 };
@@ -911,10 +751,7 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
 
     // Info line at bottom showing annotation if cursor is on one
     let info_text = if let Some(ann) = app.get_annotation_at_offset(app.selected_byte_offset) {
-        format!(
-            "Parameter: {} (offset: {}, {} bits)",
-            ann.name, ann.offset, ann.size_bits
-        )
+        format!("Parameter: {} (offset: {}, {} bits)", ann.name, ann.offset, ann.size_bits)
     } else {
         let byte_val = segment.data.get(app.selected_byte_offset).copied();
         if let Some(b) = byte_val {
@@ -931,10 +768,7 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    lines.push(Line::from(Span::styled(
-        info_text,
-        Style::default().fg(Color::Cyan),
-    )));
+    lines.push(Line::from(Span::styled(info_text, Style::default().fg(Color::Cyan))));
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
@@ -943,30 +777,18 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
 /// Maximum visible items in dropdown (must match App::DROPDOWN_VISIBLE_ITEMS)
 const DROPDOWN_VISIBLE_ITEMS: usize = 12;
 
-fn render_dropdown_popup(
-    frame: &mut Frame,
-    options: &[(i64, String)],
-    selected_idx: usize,
-    scroll_offset: usize,
-) {
+fn render_dropdown_popup(frame: &mut Frame, options: &[(i64, String)], selected_idx: usize, scroll_offset: usize) {
     let max_width = options.iter().map(|(_, t)| t.len()).max().unwrap_or(10) + 8;
     let visible_count = options.len().min(DROPDOWN_VISIBLE_ITEMS);
     let height = (visible_count + 2) as u16;
     let width = (max_width as u16).min(50);
 
     let area = frame.area();
-    let popup_area = Rect {
-        x: area.width.saturating_sub(width) / 2,
-        y: area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    };
+    let popup_area =
+        Rect { x: area.width.saturating_sub(width) / 2, y: area.height.saturating_sub(height) / 2, width, height };
 
     // Clear background
-    frame.render_widget(
-        Block::default().style(Style::default().bg(Color::Black)),
-        popup_area,
-    );
+    frame.render_widget(Block::default().style(Style::default().bg(Color::Black)), popup_area);
 
     // Show scroll indicators in title
     let has_more_above = scroll_offset > 0;
@@ -978,37 +800,24 @@ fn render_dropdown_popup(
         (false, false) => " Select Value ",
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
-        .title(title);
+    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow)).title(title);
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
     // Only show items within the visible window
-    let visible_options = options
-        .iter()
-        .enumerate()
-        .skip(scroll_offset)
-        .take(visible_count);
+    let visible_options = options.iter().enumerate().skip(scroll_offset).take(visible_count);
 
     let items: Vec<ListItem> = visible_options
         .map(|(i, (_, text))| {
             let is_selected = i == selected_idx;
             let style = if is_selected {
-                Style::default()
-                    .bg(Color::Yellow)
-                    .fg(Color::Black)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
             let prefix = if is_selected { "● " } else { "  " };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, style),
-                Span::styled(text.clone(), style),
-            ]))
+            ListItem::new(Line::from(vec![Span::styled(prefix, style), Span::styled(text.clone(), style)]))
         })
         .collect();
 
@@ -1024,16 +833,12 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         (EditMode::EnumDropdown { .. }, _, _) => "↑/↓: Select | Enter: Confirm | Esc: Cancel",
         (EditMode::NumberInput { .. }, _, _) => "Type number | Enter: Confirm | Esc: Cancel",
         (EditMode::TextInput { .. }, _, _) => "Type text | Enter: Confirm | Esc: Cancel",
-        (EditMode::GroupAddressInput { .. }, _, _) => {
-            "Type group address (e.g., 1/2/3) | Enter: Confirm | Esc: Cancel"
-        }
+        (EditMode::GroupAddressInput { .. }, _, _) => "Type group address (e.g., 1/2/3) | Enter: Confirm | Esc: Cancel",
         (EditMode::None, _, Focus::Tabs) => "←/→: Switch tab | Tab/Enter: Focus content | q: Quit",
         (EditMode::None, MainTab::Parameters, Focus::Sidebar) => {
             "↑/↓: Navigate | Enter: Expand | Tab: Content | q: Quit"
         }
-        (EditMode::None, MainTab::Parameters, Focus::Content) => {
-            "↑/↓: Navigate | Enter: Edit | Tab: Tabs | q: Quit"
-        }
+        (EditMode::None, MainTab::Parameters, Focus::Content) => "↑/↓: Navigate | Enter: Edit | Tab: Tabs | q: Quit",
         (EditMode::None, MainTab::CommObjects, Focus::Content) => {
             "↑/↓: Navigate | Enter: Set Group Address | Tab: Tabs | q: Quit"
         }
@@ -1044,9 +849,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         (EditMode::None, MainTab::Memory, Focus::Sidebar) => {
             "↑/↓: Select segment | Enter: View | Tab: Hex view | q: Quit"
         }
-        (EditMode::None, MainTab::Memory, Focus::Content) => {
-            "↑/↓/←/→: Navigate bytes | Tab: Tabs | q: Quit"
-        }
+        (EditMode::None, MainTab::Memory, Focus::Content) => "↑/↓/←/→: Navigate bytes | Tab: Tabs | q: Quit",
     };
 
     // Build device info string from master data
@@ -1065,4 +868,3 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
 
     frame.render_widget(status, area);
 }
-

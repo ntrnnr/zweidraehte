@@ -6,8 +6,14 @@ impl MtxmlGenerator {
     /// This method builds the KNX document, validates all references, and then
     /// serializes to XML. If any references are invalid (e.g., a ParameterRefRef
     /// refers to a non-existent ParameterRef), an error is returned.
-    pub fn generate(config: &ApplicationProgramConfig) -> Result<String, GeneratorError> {
-        let knx = Self::build_knx(config)?;
+    ///
+    /// The `schema_version` parameter controls the xmlns namespace and tool version
+    /// in the generated XML. If `None`, defaults to V20.
+    pub fn generate(
+        config: &ApplicationProgramConfig,
+        schema_version: Option<KnxSchemaVersion>,
+    ) -> Result<String, GeneratorError> {
+        let knx = Self::build_knx(config, schema_version)?;
 
         // Validate all references before serialization
         Self::validate(&knx)?;
@@ -16,17 +22,19 @@ impl MtxmlGenerator {
     }
 
     /// Build the complete KNX document structure.
-    fn build_knx(config: &ApplicationProgramConfig) -> Result<Knx, GeneratorError> {
+    fn build_knx(
+        config: &ApplicationProgramConfig,
+        schema_version: Option<KnxSchemaVersion>,
+    ) -> Result<Knx, GeneratorError> {
         let app_id = Self::format_app_id(config);
 
         let mut knx = Knx::default();
         // Set schema version namespace and tool version if specified
-        if let Some(version) = config.schema_version {
+        if let Some(version) = schema_version {
             knx.xmlns = version.namespace_url();
             knx.tool_version = version.tool_version().to_string();
         }
-        knx.manufacturer_data.manufacturer.ref_id =
-            format!("M-{:04X}", config.device.manufacturer_id);
+        knx.manufacturer_data.manufacturer.ref_id = format!("M-{:04X}", config.device.manufacturer_id);
         knx.manufacturer_data
             .manufacturer
             .application_programs
@@ -41,8 +49,7 @@ impl MtxmlGenerator {
         let hash = config.application_hash.unwrap_or("0000");
         format!(
             "M-{:04X}_A-{:04X}-{:02X}-{}",
-            config.device.manufacturer_id, config.device.application_id, config.device.application_version,
-            hash
+            config.device.manufacturer_id, config.device.application_id, config.device.application_version, hash
         )
     }
 
@@ -80,7 +87,290 @@ impl MtxmlGenerator {
         };
         app.dynamic = Some(dynamic);
 
+        // Build Languages section if translations are provided
+        if let Some(translations) = config.translations {
+            app.languages = Self::build_languages(config, app_id, translations)?;
+        }
+
         Ok(app)
+    }
+
+    /// Build the Languages section from translation definitions.
+    ///
+    /// Returns an error if any translation references an unknown parameter, enum variant,
+    /// or communication object.
+    fn build_languages(
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        translations: &[EtsTranslation],
+    ) -> Result<Option<Languages>, GeneratorError> {
+        if translations.is_empty() {
+            return Ok(None);
+        }
+
+        // Group translations by language
+        let mut by_language: HashMap<&str, Vec<&EtsTranslation>> = HashMap::new();
+        for trans in translations {
+            by_language.entry(trans.language).or_default().push(trans);
+        }
+
+        let mut languages = Languages::new();
+
+        for (lang_id, trans_list) in by_language {
+            let mut language = Language::new(lang_id);
+            let mut unit = TranslationUnit::new(app_id);
+
+            // Group translations by ref_path to create TranslationElements
+            let mut by_ref_path: HashMap<&str, Vec<&EtsTranslation>> = HashMap::new();
+            for trans in trans_list {
+                by_ref_path.entry(trans.ref_path).or_default().push(trans);
+            }
+
+            for (ref_path, trans_items) in by_ref_path {
+                // Convert ref_path to actual XML RefId, validating the reference exists
+                let ref_id = Self::translation_ref_path_to_id(config, app_id, ref_path, lang_id)?;
+
+                let mut element = TranslationElement::new(&ref_id);
+                for trans in trans_items {
+                    match trans.attribute {
+                        TranslationAttribute::Text => {
+                            element = element.with_text(trans.text);
+                        }
+                        TranslationAttribute::SuffixText => {
+                            element = element.with_suffix(trans.text);
+                        }
+                        TranslationAttribute::FunctionText => {
+                            element = element.with_function(trans.text);
+                        }
+                        TranslationAttribute::Name => {
+                            element = element.with_name(trans.text);
+                        }
+                    }
+                }
+                unit.add_element(element);
+            }
+
+            language.add_unit(unit);
+            languages.add_language(language);
+        }
+
+        Ok(Some(languages))
+    }
+
+    /// Convert a translation ref_path to an actual XML RefId.
+    ///
+    /// Ref paths have formats:
+    /// - `"EnumType::Variant"` -> `"{app_id}_PT-{EnumType}_EN-{variant_value}"`
+    /// - `"param::field_name"` -> `"{app_id}_P-{param_num}"`
+    /// - `"obj::object_name"` -> `"{app_id}_O-{object_index}"`
+    ///
+    /// Returns an error if the reference cannot be resolved to an existing entity.
+    fn translation_ref_path_to_id(
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        ref_path: &str,
+        language: &str,
+    ) -> Result<String, GeneratorError> {
+        if let Some(obj_name) = ref_path.strip_prefix("obj::") {
+            // Find comm object by name - check device-level objects
+            if let Some(obj) = config.comm_objects.iter().find(|o| o.name == obj_name) {
+                return Ok(format!("{}_O-{}", app_id, obj.index));
+            }
+            // Check module objects if modules are defined
+            if let Some(ref modules) = config.modules {
+                for module_def in modules.definitions() {
+                    if let Some(objs) = module_def.comm_objects {
+                        if objs.iter().any(|o| o.name == obj_name) {
+                            // Module comm object - use name-based ref
+                            return Ok(format!("{}_O-{}", app_id, obj_name));
+                        }
+                    }
+                }
+            }
+            // Object not found
+            return Err(GeneratorError::UnknownTranslation {
+                language: language.to_string(),
+                ref_path: ref_path.to_string(),
+                kind: "communication object".to_string(),
+            });
+        }
+
+        if let Some(param_name) = ref_path.strip_prefix("param::") {
+            // Find parameter number by name in device-level params
+            if let Some(num) = config.find_param_num_by_name(param_name) {
+                return Ok(format!("{}_P-{}", app_id, num));
+            }
+            // Check module params if modules are defined
+            if let Some(ref modules) = config.modules {
+                for module_def in modules.definitions() {
+                    // Check module params
+                    if let Some(params) = module_def.params {
+                        if params.iter().any(|p: &_| p.base.name == param_name) {
+                            // Module param - use name-based ref
+                            return Ok(format!("{}_P-{}", app_id, param_name));
+                        }
+                    }
+                    // Check module virtual params
+                    if let Some(vparams) = module_def.virtual_params {
+                        if vparams.iter().any(|p: &_| p.base.name == param_name) {
+                            return Ok(format!("{}_P-{}", app_id, param_name));
+                        }
+                    }
+                }
+            }
+            // Parameter not found
+            return Err(GeneratorError::UnknownTranslation {
+                language: language.to_string(),
+                ref_path: ref_path.to_string(),
+                kind: "parameter".to_string(),
+            });
+        }
+
+        // Enum variant format: "EnumType::Variant"
+        if ref_path.contains("::") {
+            let parts: Vec<&str> = ref_path.split("::").collect();
+            if parts.len() == 2 {
+                let enum_type = parts[0];
+                let variant = parts[1];
+
+                // For enum translations, we need to find the variant value
+                // The ref_id format is {app_id}_PT-{EnumType}_EN-{value}
+                // We search through all params to find enum variants with this type/variant name
+                if let Some(value) = Self::find_enum_variant_value(config, enum_type, variant) {
+                    return Ok(format!("{}_PT-{}_EN-{}", app_id, enum_type, value));
+                }
+
+                // Enum variant not found
+                return Err(GeneratorError::UnknownTranslation {
+                    language: language.to_string(),
+                    ref_path: ref_path.to_string(),
+                    kind: "enum variant".to_string(),
+                });
+            }
+        }
+
+        // Unknown format
+        Err(GeneratorError::UnknownTranslation {
+            language: language.to_string(),
+            ref_path: ref_path.to_string(),
+            kind: "unknown".to_string(),
+        })
+    }
+
+    /// Find an enum variant value by searching through parameter definitions.
+    ///
+    /// The `variant_name` is the Rust identifier (e.g., "Fast", "NotActive").
+    /// We match case-insensitively against the display text (e.g., "fast", "not active")
+    /// since that's more likely to match.
+    ///
+    /// The `enum_type` is the Rust type name from the translation macro.
+    /// We try to match it against the type_name (may differ due to #[ets(type_name = "...")])
+    /// or just search by variant text if type matching fails.
+    fn find_enum_variant_value(config: &ApplicationProgramConfig, enum_type: &str, variant_name: &str) -> Option<i64> {
+        let variant_lower = variant_name.to_lowercase();
+        let type_lower = enum_type.to_lowercase();
+
+        // Helper to check if a type_name matches (case-insensitive, handles underscores)
+        let type_matches = |type_name: Option<&str>| -> bool {
+            if let Some(tn) = type_name {
+                let tn_lower = tn.to_lowercase();
+                // Direct match
+                if tn_lower == type_lower {
+                    return true;
+                }
+                // Match ignoring underscores (GEDPT_Switch vs GedptSwitch)
+                if tn_lower.replace('_', "") == type_lower.replace('_', "") {
+                    return true;
+                }
+            }
+            false
+        };
+
+        // Helper to check if variant matches
+        let variant_matches = |text: &str| -> bool {
+            let text_lower = text.to_lowercase();
+            // Direct match
+            if text_lower == variant_lower {
+                return true;
+            }
+            // Match removing spaces (NotActive -> notactive vs "not active")
+            let text_no_spaces = text_lower.replace(' ', "");
+            if text_no_spaces == variant_lower {
+                return true;
+            }
+            false
+        };
+
+        // Collect all enum variants from all sources
+        let mut all_variants: Vec<(&Option<&str>, &[zweidraehte::ets::EtsEnumVariant])> = Vec::new();
+
+        // Device-level params
+        for param in config.all_params() {
+            if let Some(variants) = param.enum_variants {
+                all_variants.push((&param.base.type_name, variants));
+            }
+        }
+
+        // Module params
+        if let Some(ref modules) = config.modules {
+            for module_def in modules.definitions() {
+                if let Some(params) = module_def.params {
+                    for param in params.iter() {
+                        if let Some(variants) = param.enum_variants {
+                            all_variants.push((&param.base.type_name, variants));
+                        }
+                    }
+                }
+            }
+        }
+
+        // First pass: try to match by both type AND variant text
+        for (param_type_name, variants) in all_variants.iter() {
+            if type_matches(**param_type_name) {
+                for variant in variants.iter() {
+                    if variant_matches(variant.text) {
+                        return Some(variant.value);
+                    }
+                }
+            }
+        }
+
+        // Second pass: try to match by variant text only (type_name may be None)
+        // This is useful when enum fields don't have explicit type_name set
+        for (_param_type_name, variants) in all_variants.iter() {
+            for variant in variants.iter() {
+                if variant_matches(variant.text) {
+                    return Some(variant.value);
+                }
+            }
+        }
+
+        // Also check union fields
+        if let Some(union_fields) = config.union_fields {
+            for union_field in union_fields.iter() {
+                // Check selector variants (the union's discriminant enum)
+                for variant in union_field.selector_variants.iter() {
+                    if variant_matches(variant.text) {
+                        return Some(variant.value);
+                    }
+                }
+
+                // Check variant params (nested enums within union variants)
+                for variant_param in union_field.union_info.variant_params.iter() {
+                    if let Some(variants) = variant_param.enum_variants {
+                        if type_matches(variant_param.param.type_name) {
+                            for variant in variants.iter() {
+                                if variant_matches(variant.text) {
+                                    return Some(variant.value);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Build the Static section with all components.
@@ -100,7 +390,9 @@ impl MtxmlGenerator {
                 // For System 7 with full layout, use the first EEPROM segment
                 if let Some(ref layout) = config.system7_layout {
                     // Find the EEPROM segment (usually the parameter segment)
-                    let eeprom_seg = layout.segments.iter()
+                    let eeprom_seg = layout
+                        .segments
+                        .iter()
                         .find(|s| s.memory_type == Some("EEPROM") && s.data.is_some())
                         .or_else(|| layout.segments.first());
                     if let Some(seg) = eeprom_seg {
@@ -153,12 +445,8 @@ impl MtxmlGenerator {
         };
 
         // Build ParameterRefs first to get the param_name -> ref_num mapping for text param refs
-        let (parameter_refs, param_ref_nums) = Self::build_parameter_refs(
-            config,
-            app_id,
-            selector_usage_counts.as_ref(),
-            union_variant_texts.as_ref(),
-        );
+        let (parameter_refs, param_ref_nums) =
+            Self::build_parameter_refs(config, app_id, selector_usage_counts.as_ref(), union_variant_texts.as_ref());
 
         // Build ComObject table only for masks that support it
         let (com_object_table, com_object_refs) = if mask_family.has_com_object_table() {
@@ -189,23 +477,15 @@ impl MtxmlGenerator {
                 }
             },
             extension: Some(Extension {
-                baggages: config.baggages.map_or(Vec::new(), |b| {
-                    baggages_to_refs(config.device.manufacturer_id, b)
-                }),
+                baggages: config.baggages.map_or(Vec::new(), |b| baggages_to_refs(config.device.manufacturer_id, b)),
             }),
             messages: None,
-            options: Some(Options {
-                comparable: Some(true),
-                reconstructable: Some(true),
-            }),
+            options: Some(Options { comparable: Some(true), reconstructable: Some(true) }),
         })
     }
 
     /// Build ModuleDefs from the module collection if present.
-    fn build_module_defs(
-        config: &ApplicationProgramConfig,
-        app_id: &str,
-    ) -> Option<ModuleDefs> {
+    fn build_module_defs(config: &ApplicationProgramConfig, app_id: &str) -> Option<ModuleDefs> {
         let modules = config.modules.as_ref()?;
         if modules.is_empty() {
             return None;
@@ -217,12 +497,15 @@ impl MtxmlGenerator {
             let module_id = format!("{}_MD-{}", app_id, def_idx + 1);
 
             // Compute allocates values from params/objects for role-based arguments
-            let param_size: u32 = def.params
-                .map(|p| p.iter()
-                    // Exclude no_memory (virtual) parameters - they don't occupy device memory
-                    .filter(|param| !param.base.no_memory)
-                    .map(|param| (param.base.size_bits as u32 + 7) / 8)
-                    .sum())
+            let param_size: u32 = def
+                .params
+                .map(|p| {
+                    p.iter()
+                        // Exclude no_memory (virtual) parameters - they don't occupy device memory
+                        .filter(|param| !param.base.no_memory)
+                        .map(|param| (param.base.size_bits as u32 + 7) / 8)
+                        .sum()
+                })
                 .unwrap_or(0);
             let object_count: u32 = def.comm_objects.map(|o| o.len() as u32).unwrap_or(0);
 
@@ -257,19 +540,16 @@ impl MtxmlGenerator {
             };
 
             // Build the BaseOffset argument ID using role-based lookup
-            let base_offset_arg_id = def.arg_index_by_role(ModuleArgRole::ParamOffset).map(|idx| {
-                format!("{}_A-{}", module_id, idx + 1)
-            });
+            let base_offset_arg_id =
+                def.arg_index_by_role(ModuleArgRole::ParamOffset).map(|idx| format!("{}_A-{}", module_id, idx + 1));
 
             // Build the BaseNumber argument ID using role-based lookup
-            let base_number_arg_id = def.arg_index_by_role(ModuleArgRole::ObjectNumber).map(|idx| {
-                format!("{}_A-{}", module_id, idx + 1)
-            });
+            let base_number_arg_id =
+                def.arg_index_by_role(ModuleArgRole::ObjectNumber).map(|idx| format!("{}_A-{}", module_id, idx + 1));
 
             // Build the BaseValue argument ID using role-based lookup
-            let base_value_arg_id = def.arg_index_by_role(ModuleArgRole::ValueBase).map(|idx| {
-                format!("{}_A-{}", module_id, idx + 1)
-            });
+            let base_value_arg_id =
+                def.arg_index_by_role(ModuleArgRole::ValueBase).map(|idx| format!("{}_A-{}", module_id, idx + 1));
 
             // Build module-internal parameters if provided (including picture params)
             let (module_params, module_param_refs, picture_param_map) = Self::build_module_parameters(
@@ -290,7 +570,7 @@ impl MtxmlGenerator {
 
             // First check virtual params for text_source
             let text_param_num = zweidraehte::ets::EtsParamDefExt::find_text_source_index(virtual_params)
-                .map(|idx| idx + 1)  // 1-based param number
+                .map(|idx| idx + 1) // 1-based param number
                 .or_else(|| {
                     // Then check regular params (offset by virtual_params length)
                     zweidraehte::ets::EtsParamDefExt::find_text_source_index(regular_params)
@@ -312,7 +592,8 @@ impl MtxmlGenerator {
             );
 
             // Build module Dynamic section with a ParameterBlock containing all parameter refs
-            let module_dynamic = Self::build_module_dynamic(&module_id, def, text_param_ref_id.as_deref(), &picture_param_map);
+            let module_dynamic =
+                Self::build_module_dynamic(&module_id, def, text_param_ref_id.as_deref(), &picture_param_map);
 
             module_defs.push(ModuleDef {
                 id: module_id,
@@ -474,11 +755,7 @@ impl MtxmlGenerator {
             picture_param_map.insert(pic.baggage_name.clone(), param_num);
         }
 
-        (
-            Some(parameters),
-            if parameter_refs.refs.is_empty() { None } else { Some(parameter_refs) },
-            picture_param_map,
-        )
+        (Some(parameters), if parameter_refs.refs.is_empty() { None } else { Some(parameter_refs) }, picture_param_map)
     }
 
     /// Build communication objects for a module definition.
@@ -500,9 +777,7 @@ impl MtxmlGenerator {
             _ => return (None, None),
         };
 
-        let mut module_com_objects = ModuleComObjects {
-            objects: Vec::new(),
-        };
+        let mut module_com_objects = ModuleComObjects { objects: Vec::new() };
         let mut com_object_refs = ComObjectRefs::default();
 
         for obj_def in objects.iter() {
@@ -541,9 +816,7 @@ impl MtxmlGenerator {
             let ref_id = format!("{}_R-{}", obj_id, obj_def.index + 1);
 
             // Use text_template if provided, otherwise use display_name
-            let text = obj_def.text_template
-                .map(|t| t.to_string())
-                .unwrap_or_else(|| obj_def.display_name.to_string());
+            let text = obj_def.text_template.map(|t| t.to_string()).unwrap_or_else(|| obj_def.display_name.to_string());
 
             // Only set TextParameterRefId if we have a text template containing {{0}}
             let text_parameter_ref_id = if obj_def.text_template.map(|t| t.contains("{{0}}")).unwrap_or(false) {
@@ -565,10 +838,7 @@ impl MtxmlGenerator {
             });
         }
 
-        (
-            Some(module_com_objects),
-            if com_object_refs.refs.is_empty() { None } else { Some(com_object_refs) },
-        )
+        (Some(module_com_objects), if com_object_refs.refs.is_empty() { None } else { Some(com_object_refs) })
     }
 
     /// Build the Dynamic section for a module definition.
@@ -584,7 +854,13 @@ impl MtxmlGenerator {
     ) -> Option<ModuleDefDynamic> {
         // If a custom page_layout is provided, use it
         if let Some(ref layout) = def.page_layout {
-            return Self::build_module_dynamic_from_layout(module_id, def, layout, text_param_ref_id, picture_param_map);
+            return Self::build_module_dynamic_from_layout(
+                module_id,
+                def,
+                layout,
+                text_param_ref_id,
+                picture_param_map,
+            );
         }
 
         // Otherwise, auto-generate a simple layout
@@ -595,14 +871,14 @@ impl MtxmlGenerator {
     fn build_module_dynamic_from_layout(
         module_id: &str,
         def: &StoredModuleDef,
-        layout: &crate::page_layout::ModulePageLayout,
+        layout: &crate::definition::page_layout::ModulePageLayout,
         text_param_ref_id: Option<&str>,
         picture_param_map: &HashMap<String, usize>,
     ) -> Option<ModuleDefDynamic> {
-        use crate::page_layout::ModuleLayoutElement;
+        use crate::definition::page_layout::ModuleLayoutElement;
 
-        let obj_base_arg_idx = def.arg_index_by_role(crate::module::ModuleArgRole::ObjectNumber)
-            .unwrap_or(1);
+        let obj_base_arg_idx =
+            def.arg_index_by_role(crate::definition::module::ModuleArgRole::ObjectNumber).unwrap_or(1);
 
         let mut block_counter = 0u32;
         let mut sep_counter = 0u32;
@@ -614,14 +890,16 @@ impl MtxmlGenerator {
                     block_counter += 1;
                     let block_id = format!("{}_PB-{}", module_id, block_counter);
                     let block_items = Self::convert_module_layout_items(
-                        module_id, def, obj_base_arg_idx, &block.items, &mut sep_counter, picture_param_map
+                        module_id,
+                        def,
+                        obj_base_arg_idx,
+                        &block.items,
+                        &mut sep_counter,
+                        picture_param_map,
                     );
                     // Only set text_parameter_ref_id if the text contains {{0}}
-                    let block_text_ref = if block.text.contains("{{0}}") {
-                        text_param_ref_id.map(|s| s.to_string())
-                    } else {
-                        None
-                    };
+                    let block_text_ref =
+                        if block.text.contains("{{0}}") { text_param_ref_id.map(|s| s.to_string()) } else { None };
                     dynamic_items.push(ModuleDefDynamicItem::ParameterBlock(ParameterBlock {
                         id: block_id,
                         name: Some(block.name.to_string()),
@@ -636,7 +914,12 @@ impl MtxmlGenerator {
                 }
                 ModuleLayoutElement::When(when_elem) => {
                     if let Some(choose) = Self::convert_module_layout_when_to_choose(
-                        module_id, def, obj_base_arg_idx, when_elem, &mut sep_counter, picture_param_map
+                        module_id,
+                        def,
+                        obj_base_arg_idx,
+                        when_elem,
+                        &mut sep_counter,
+                        picture_param_map,
                     ) {
                         dynamic_items.push(ModuleDefDynamicItem::Choose(choose));
                     }
@@ -656,11 +939,11 @@ impl MtxmlGenerator {
         module_id: &str,
         def: &StoredModuleDef,
         obj_base_arg_idx: usize,
-        items: &[crate::page_layout::ModuleLayoutItem],
+        items: &[crate::definition::page_layout::ModuleLayoutItem],
         sep_counter: &mut u32,
         picture_param_map: &HashMap<String, usize>,
     ) -> Vec<ParameterBlockItem> {
-        use crate::page_layout::ModuleLayoutItem;
+        use crate::definition::page_layout::ModuleLayoutItem;
 
         let mut result = Vec::new();
         for item in items {
@@ -691,7 +974,12 @@ impl MtxmlGenerator {
                 }
                 ModuleLayoutItem::When(when_item) => {
                     if let Some(choose) = Self::convert_module_layout_when_to_choose(
-                        module_id, def, obj_base_arg_idx, when_item, sep_counter, picture_param_map
+                        module_id,
+                        def,
+                        obj_base_arg_idx,
+                        when_item,
+                        sep_counter,
+                        picture_param_map,
                     ) {
                         result.push(ParameterBlockItem::Choose(choose));
                     }
@@ -702,10 +990,7 @@ impl MtxmlGenerator {
                         let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
                         result.push(block_param_ref(ref_id));
                     } else {
-                        log::warn!(
-                            "Picture '{}' not found in picture_param_map for module",
-                            baggage_name
-                        );
+                        log::warn!("Picture '{}' not found in picture_param_map for module", baggage_name);
                     }
                 }
             }
@@ -718,11 +1003,11 @@ impl MtxmlGenerator {
         module_id: &str,
         def: &StoredModuleDef,
         obj_base_arg_idx: usize,
-        items: &[crate::page_layout::ModuleLayoutItem],
+        items: &[crate::definition::page_layout::ModuleLayoutItem],
         sep_counter: &mut u32,
         picture_param_map: &HashMap<String, usize>,
     ) -> Vec<WhenItem> {
-        use crate::page_layout::ModuleLayoutItem;
+        use crate::definition::page_layout::ModuleLayoutItem;
 
         let mut result = Vec::new();
         for item in items {
@@ -753,7 +1038,12 @@ impl MtxmlGenerator {
                 }
                 ModuleLayoutItem::When(when_item) => {
                     if let Some(choose) = Self::convert_module_layout_when_to_choose(
-                        module_id, def, obj_base_arg_idx, when_item, sep_counter, picture_param_map
+                        module_id,
+                        def,
+                        obj_base_arg_idx,
+                        when_item,
+                        sep_counter,
+                        picture_param_map,
                     ) {
                         result.push(WhenItem::Choose(choose));
                     }
@@ -764,10 +1054,7 @@ impl MtxmlGenerator {
                         let ref_id = format!("{}_P-{}_R-{}", module_id, param_num, param_num);
                         result.push(when_param_ref(ref_id));
                     } else {
-                        log::warn!(
-                            "Picture '{}' not found in picture_param_map for module",
-                            baggage_name
-                        );
+                        log::warn!("Picture '{}' not found in picture_param_map for module", baggage_name);
                     }
                 }
             }
@@ -780,7 +1067,7 @@ impl MtxmlGenerator {
         module_id: &str,
         def: &StoredModuleDef,
         obj_base_arg_idx: usize,
-        when_elem: &crate::page_layout::ModuleLayoutWhen,
+        when_elem: &crate::definition::page_layout::ModuleLayoutWhen,
         sep_counter: &mut u32,
         picture_param_map: &HashMap<String, usize>,
     ) -> Option<Choose> {
@@ -793,7 +1080,12 @@ impl MtxmlGenerator {
             let test_str = case.condition.to_test_string();
             let is_default = case.condition.is_default();
             let converted = Self::convert_module_layout_items_to_when(
-                module_id, def, obj_base_arg_idx, &case.items, sep_counter, picture_param_map
+                module_id,
+                def,
+                obj_base_arg_idx,
+                &case.items,
+                sep_counter,
+                picture_param_map,
             );
             when_items.push(When {
                 test: test_str,
@@ -803,10 +1095,7 @@ impl MtxmlGenerator {
             });
         }
 
-        Some(Choose {
-            param_ref_id,
-            whens: when_items,
-        })
+        Some(Choose { param_ref_id, whens: when_items })
     }
 
     /// Build default module dynamic layout (all params and comm objects in one block).
@@ -838,7 +1127,7 @@ impl MtxmlGenerator {
         // This makes the comm objects visible in ETS when the module is instantiated
         if let Some(comm_objs) = def.comm_objects {
             // Find the ObjBase argument index (argument with ObjectNumber role)
-            let obj_base_arg_idx = def.arg_index_by_role(crate::module::ModuleArgRole::ObjectNumber);
+            let obj_base_arg_idx = def.arg_index_by_role(crate::definition::module::ModuleArgRole::ObjectNumber);
             let obj_base_arg_idx = obj_base_arg_idx.unwrap_or(1); // Default to second argument
 
             for (idx, _obj) in comm_objs.iter().enumerate() {
@@ -864,18 +1153,11 @@ impl MtxmlGenerator {
             items,
         };
 
-        Some(ModuleDefDynamic {
-            items: vec![ModuleDefDynamicItem::ParameterBlock(block)],
-        })
+        Some(ModuleDefDynamic { items: vec![ModuleDefDynamicItem::ParameterBlock(block)] })
     }
 
     /// Build the Code section with appropriate segment type for the mask.
-    fn build_code(
-        config: &ApplicationProgramConfig,
-        app_id: &str,
-        size: u32,
-        mask_family: MaskFamily,
-    ) -> Code {
+    fn build_code(config: &ApplicationProgramConfig, app_id: &str, size: u32, mask_family: MaskFamily) -> Code {
         // Strip no_memory (virtual) parameters' bytes from the raw defaults
         let stripped_defaults = strip_no_memory_bytes(config.param_defaults, config.params);
         let data = base64::engine::general_purpose::STANDARD.encode(&stripped_defaults);
@@ -936,10 +1218,7 @@ impl MtxmlGenerator {
             });
         }
 
-        Code {
-            absolute_segments: segments,
-            relative_segments: vec![],
-        }
+        Code { absolute_segments: segments, relative_segments: vec![] }
     }
 
     /// Build parameter type definitions.
@@ -959,12 +1238,7 @@ impl MtxmlGenerator {
             let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
             let type_def = Self::build_type_def(&param.base, param.enum_variants, &type_id);
 
-            types.types.push(ParameterType {
-                id: type_id,
-                name: type_name,
-                internal_description: None,
-                type_def,
-            });
+            types.types.push(ParameterType { id: type_id, name: type_name, internal_description: None, type_def });
         }
 
         // Add types for union parameters if any
@@ -1001,7 +1275,8 @@ impl MtxmlGenerator {
                     // For union variant params with enum types and custom enum_variants,
                     // include the variant name in the type name to make it unique.
                     // This ensures ForcibleControl's value gets a different type than Switch's value.
-                    let type_name = Self::union_variant_param_type_name(&param.param, param.variant_name, param.enum_variants);
+                    let type_name =
+                        Self::union_variant_param_type_name(&param.param, param.variant_name, param.enum_variants);
                     if !seen_types.contains(&type_name) {
                         seen_types.insert(type_name.clone());
                         let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
@@ -1057,9 +1332,7 @@ impl MtxmlGenerator {
                     id: type_id,
                     name: type_name,
                     internal_description: None,
-                    type_def: ParameterTypeDef::TypePicture(TypePicture {
-                        ref_id: baggage_id,
-                    }),
+                    type_def: ParameterTypeDef::TypePicture(TypePicture { ref_id: baggage_id }),
                 });
             }
         }
@@ -1085,7 +1358,7 @@ impl MtxmlGenerator {
                     if pattern.contains("TypeColor:RGB") {
                         "RGBColor".to_string()
                     } else if pattern.contains("TypeColor:HSV") {
-                        "HSV-Werte".to_string()  // MDT uses hyphen in display name
+                        "HSV-Werte".to_string() // MDT uses hyphen in display name
                     } else {
                         format!("tTEXT{}", param.size_bits)
                     }
@@ -1126,9 +1399,7 @@ impl MtxmlGenerator {
     /// - Slashes become .2F
     /// This applies to all user-defined names that appear in IDs
     pub fn encode_id(name: &str) -> String {
-        name.replace('_', ".5F")
-            .replace('-', ".2D")
-            .replace('/', ".2F")
+        name.replace('_', ".5F").replace('-', ".2D").replace('/', ".2F")
     }
 
     /// Build a type definition for a parameter.
@@ -1188,21 +1459,14 @@ impl MtxmlGenerator {
                 } else {
                     (param.size_bits as u32, None)
                 };
-                ParameterTypeDef::TypeText(TypeText {
-                    size_in_bit: size,
-                    pattern,
-                })
+                ParameterTypeDef::TypeText(TypeText { size_in_bit: size, pattern })
             }
             EtsParamType::None => ParameterTypeDef::TypeNone(TypeNone {}),
         }
     }
 
     /// Build parameters section.
-    fn build_parameters(
-        config: &ApplicationProgramConfig,
-        app_id: &str,
-        code_segment_id: &str,
-    ) -> Parameters {
+    fn build_parameters(config: &ApplicationProgramConfig, app_id: &str, code_segment_id: &str) -> Parameters {
         let mut params = Parameters::default();
         let mut param_counter = 1u32;
 
@@ -1210,12 +1474,7 @@ impl MtxmlGenerator {
         // (they are generated inside the Union element, not as separate Parameters)
         let union_selector_names: std::collections::HashSet<String> = config
             .union_fields
-            .map(|fields| {
-                fields
-                    .iter()
-                    .map(|f| format!("{}_selector", f.field_name))
-                    .collect()
-            })
+            .map(|fields| fields.iter().map(|f| format!("{}_selector", f.field_name)).collect())
             .unwrap_or_default();
 
         // Process all parameters (virtual first, then regular)
@@ -1323,17 +1582,11 @@ impl MtxmlGenerator {
             for field in union_fields {
                 // Look up the selector's explicit default from EtsParamDefExt
                 let selector_name = format!("{}_selector", field.field_name);
-                let selector_default = config.all_params()
-                    .find(|p| p.base.name == selector_name)
-                    .and_then(|p| p.default_value);
+                let selector_default =
+                    config.all_params().find(|p| p.base.name == selector_name).and_then(|p| p.default_value);
 
-                let (union_elem, next_counter) = Self::build_union(
-                    field,
-                    app_id,
-                    code_segment_id,
-                    up_counter,
-                    selector_default,
-                );
+                let (union_elem, next_counter) =
+                    Self::build_union(field, app_id, code_segment_id, up_counter, selector_default);
                 params.items.push(ParameterItem::Union(union_elem));
                 up_counter = next_counter;
             }
@@ -1408,17 +1661,20 @@ impl MtxmlGenerator {
             counter += 1;
         }
 
-        (Union {
-            size_in_bit: total_size_bits,
-            internal_description: None,
-            memory: UnionMemory {
-                code_segment: code_segment_id.to_string(),
-                offset: field.offset as u32,
-                bit_offset: 0,
-                base_offset: None,
+        (
+            Union {
+                size_in_bit: total_size_bits,
+                internal_description: None,
+                memory: UnionMemory {
+                    code_segment: code_segment_id.to_string(),
+                    offset: field.offset as u32,
+                    bit_offset: 0,
+                    base_offset: None,
+                },
+                parameters,
             },
-            parameters,
-        }, counter)
+            counter,
+        )
     }
 
     /// Build parameter references.
@@ -1440,12 +1696,7 @@ impl MtxmlGenerator {
         // Build a set of union selector names to skip them in regular params
         let union_selector_names: std::collections::HashSet<String> = config
             .union_fields
-            .map(|fields| {
-                fields
-                    .iter()
-                    .map(|f| format!("{}_selector", f.field_name))
-                    .collect()
-            })
+            .map(|fields| fields.iter().map(|f| format!("{}_selector", f.field_name)).collect())
             .unwrap_or_default();
 
         // Use a single sequential counter for all ref numbers (matching build_multi_param_ref_map)
@@ -1462,11 +1713,8 @@ impl MtxmlGenerator {
             let param_id = format!("{}_P-{}", app_id, param_counter);
 
             // Determine how many refs to create for this parameter
-            let num_refs = selector_usage_counts
-                .and_then(|counts| counts.get(param.base.name))
-                .copied()
-                .unwrap_or(0)
-                .max(1); // At least 1 ref
+            let num_refs =
+                selector_usage_counts.and_then(|counts| counts.get(param.base.name)).copied().unwrap_or(0).max(1); // At least 1 ref
 
             // Track the first ref number for this param (for text param ref resolution)
             param_ref_nums.insert(param.base.name.to_string(), next_ref_num);
@@ -1522,11 +1770,8 @@ impl MtxmlGenerator {
                 let selector_name = format!("{}_selector", field.field_name);
 
                 // How many refs for the selector?
-                let num_refs = selector_usage_counts
-                    .and_then(|counts| counts.get(&selector_name))
-                    .copied()
-                    .unwrap_or(0)
-                    .max(1);
+                let num_refs =
+                    selector_usage_counts.and_then(|counts| counts.get(&selector_name)).copied().unwrap_or(0).max(1);
 
                 for _ in 0..num_refs {
                     refs.refs.push(ParameterRef {
@@ -1549,10 +1794,8 @@ impl MtxmlGenerator {
 
                     // Look up text overrides for this variant
                     let key = (field.field_name.to_string(), param.variant_name.to_string());
-                    let text_overrides = union_variant_texts
-                        .and_then(|texts| texts.get(&key))
-                        .cloned()
-                        .unwrap_or_else(|| vec![None]); // At least one ref with no text
+                    let text_overrides =
+                        union_variant_texts.and_then(|texts| texts.get(&key)).cloned().unwrap_or_else(|| vec![None]); // At least one ref with no text
 
                     // Create a ref for each unique text override
                     for text in text_overrides {
@@ -1626,11 +1869,7 @@ impl MtxmlGenerator {
         } else {
             None
         };
-        let mut table = ComObjectTable {
-            code_segment,
-            offset: Some(0),
-            ..ComObjectTable::default()
-        };
+        let mut table = ComObjectTable { code_segment, offset: Some(0), ..ComObjectTable::default() };
         let start_index = mask_family.com_object_start_index();
 
         // Build a map of object_index -> (ref_count, max_size_bits)
@@ -1655,12 +1894,14 @@ impl MtxmlGenerator {
             // For single-ref objects: include DPT and use object's size
             // object_size_override takes precedence if specified
             let (datapoint_type, object_size) = if is_multi_ref {
-                let size = co.object_size_override
+                let size = co
+                    .object_size_override
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| object_size_to_string(max_size).to_string());
                 (None, size)
             } else {
-                let size = co.object_size_override
+                let size = co
+                    .object_size_override
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| object_size_to_string(co.size_bits).to_string());
                 (Some(dpt_to_string(co.dpt_main, co.dpt_sub)), size)
@@ -1798,22 +2039,10 @@ impl MtxmlGenerator {
                 LoadProcedure {
                     merge_id: Some(7),
                     controls: vec![
-                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp {
-                            obj_idx: 1,
-                            prop_id: 27,
-                        }),
-                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp {
-                            obj_idx: 2,
-                            prop_id: 27,
-                        }),
-                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp {
-                            obj_idx: 3,
-                            prop_id: 27,
-                        }),
-                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp {
-                            obj_idx: 4,
-                            prop_id: 27,
-                        }),
+                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp { obj_idx: 1, prop_id: 27 }),
+                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp { obj_idx: 2, prop_id: 27 }),
+                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp { obj_idx: 3, prop_id: 27 }),
+                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp { obj_idx: 4, prop_id: 27 }),
                     ],
                 },
             ],
@@ -1846,9 +2075,7 @@ impl MtxmlGenerator {
 
         // 2. Compare device serial number (PID_SERIAL_NUMBER = 78, ObjIdx = 0 for Device Object)
         // The InlineData is the expected serial number as hex
-        let serial_hex = config.serial_number.iter()
-            .map(|b| format!("{:02X}", b))
-            .collect::<String>();
+        let serial_hex = config.serial_number.iter().map(|b| format!("{:02X}", b)).collect::<String>();
         // Pad to 10 bytes (20 hex chars) like MDT does
         let serial_padded = format!("{:0<20}", serial_hex);
         controls.push(LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
@@ -1872,14 +2099,12 @@ impl MtxmlGenerator {
                 seg_type: 0,
                 address: seg.address as u16,
                 size: seg.size as u16,
-                access: 255,       // Full access
-                mem_type: 3,       // EEPROM
-                seg_flags: 128,    // Standard flags
+                access: 255,    // Full access
+                mem_type: 3,    // EEPROM
+                seg_flags: 128, // Standard flags
             }));
-            controls.push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment {
-                lsm_idx: 1,
-                address: seg.address as u16,
-            }));
+            controls
+                .push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment { lsm_idx: 1, address: seg.address as u16 }));
         }
         controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: 1 }));
 
@@ -1895,10 +2120,8 @@ impl MtxmlGenerator {
                 mem_type: 3,
                 seg_flags: 128,
             }));
-            controls.push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment {
-                lsm_idx: 2,
-                address: seg.address as u16,
-            }));
+            controls
+                .push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment { lsm_idx: 2, address: seg.address as u16 }));
         }
         controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: 2 }));
 
@@ -1914,8 +2137,8 @@ impl MtxmlGenerator {
                     seg_type,
                     address: seg.address as u16,
                     size: seg.size as u16,
-                    access: 0,     // No external access for RAM
-                    mem_type: 2,   // RAM
+                    access: 0,   // No external access for RAM
+                    mem_type: 2, // RAM
                     seg_flags: 0,
                 }));
             }
@@ -1933,7 +2156,7 @@ impl MtxmlGenerator {
                     address: seg.address as u16,
                     size: seg.size as u16,
                     access: 255,
-                    mem_type: 3,   // EEPROM
+                    mem_type: 3, // EEPROM
                     seg_flags: 128,
                 }));
             }
@@ -1942,17 +2165,18 @@ impl MtxmlGenerator {
         // Task segment points to COT (17408 = 0x4400)
         // Find the COT segment (typically the one that's not address table, assoc table, RAM, or param EEPROM)
         // For simplicity, use address 17408 (0x4400) which is standard for COT
-        let cot_address = layout.segments.iter()
-            .find(|s| s.name != layout.address_table_segment
-                && s.name != layout.association_table_segment
-                && s.memory_type != Some("RAM")
-                && s.memory_type != Some("EEPROM"))
+        let cot_address = layout
+            .segments
+            .iter()
+            .find(|s| {
+                s.name != layout.address_table_segment
+                    && s.name != layout.association_table_segment
+                    && s.memory_type != Some("RAM")
+                    && s.memory_type != Some("EEPROM")
+            })
             .map(|s| s.address as u16)
             .unwrap_or(17408);
-        controls.push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment {
-            lsm_idx: 3,
-            address: cot_address,
-        }));
+        controls.push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment { lsm_idx: 3, address: cot_address }));
         controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: 3 }));
 
         // 7. Restart and disconnect
@@ -1985,12 +2209,7 @@ impl MtxmlGenerator {
         // Build a set of union selector names to skip them in regular params
         let union_selector_names: std::collections::HashSet<String> = config
             .union_fields
-            .map(|fields| {
-                fields
-                    .iter()
-                    .map(|f| format!("{}_selector", f.field_name))
-                    .collect()
-            })
+            .map(|fields| fields.iter().map(|f| format!("{}_selector", f.field_name)).collect())
             .unwrap_or_default();
 
         // Add ParameterRefRefs for all parameters (virtual first, then regular)
@@ -2012,10 +2231,8 @@ impl MtxmlGenerator {
         // Add union fields with choose/when for conditional visibility
         if let Some(union_fields) = config.union_fields {
             // Count non-selector params for ref_counter
-            let non_selector_param_count = config
-                .all_params()
-                .filter(|p| !union_selector_names.contains(p.base.name))
-                .count();
+            let non_selector_param_count =
+                config.all_params().filter(|p| !union_selector_names.contains(p.base.name)).count();
             let mut ref_counter = non_selector_param_count + 1;
             let mut up_counter = 1u32; // Sequential UP- counter matching build_union and build_parameter_refs
 
@@ -2061,12 +2278,8 @@ impl MtxmlGenerator {
 
                 for (discriminant, (_display_name, param_ref_ids)) in sorted_variants {
                     // Create when clause for this variant
-                    let when_items: Vec<WhenItem> = param_ref_ids
-                        .into_iter()
-                        .map(|ref_id| {
-                            when_param_ref(ref_id)
-                        })
-                        .collect();
+                    let when_items: Vec<WhenItem> =
+                        param_ref_ids.into_iter().map(|ref_id| when_param_ref(ref_id)).collect();
 
                     whens.push(When {
                         test: Some(discriminant.to_string()),
@@ -2076,10 +2289,7 @@ impl MtxmlGenerator {
                     });
                 }
 
-                items.push(ParameterBlockItem::Choose(Choose {
-                    param_ref_id: selector_ref_id,
-                    whens,
-                }));
+                items.push(ParameterBlockItem::Choose(Choose { param_ref_id: selector_ref_id, whens }));
             }
         }
 
@@ -2091,8 +2301,8 @@ impl MtxmlGenerator {
 
         // First, build a map: selector_param -> (object_index -> [(ref_index, selector_value)])
         let mut selector_groups: std::collections::HashMap<
-            &str, // selector_param name
-            std::collections::HashMap<u16, Vec<(usize, i64)>> // object_index -> [(ref_index, selector_value)]
+            &str,                                              // selector_param name
+            std::collections::HashMap<u16, Vec<(usize, i64)>>, // object_index -> [(ref_index, selector_value)]
         > = std::collections::HashMap::new();
 
         // Also track which refs need choose/when (have selector_param)
@@ -2100,12 +2310,7 @@ impl MtxmlGenerator {
 
         for (i, ref_def) in config.comm_object_refs.iter().enumerate() {
             if let (Some(param), Some(value)) = (ref_def.selector_param, ref_def.selector_value) {
-                selector_groups
-                    .entry(param)
-                    .or_default()
-                    .entry(ref_def.object_index)
-                    .or_default()
-                    .push((i, value));
+                selector_groups.entry(param).or_default().entry(ref_def.object_index).or_default().push((i, value));
                 refs_in_choose.insert(i);
             }
         }
@@ -2131,8 +2336,7 @@ impl MtxmlGenerator {
             let param_ref_id = Self::find_param_ref_id(config, app_id, selector_param);
 
             // Build when clauses - group by selector_value across all objects
-            let mut value_to_refs: std::collections::HashMap<i64, Vec<String>> =
-                std::collections::HashMap::new();
+            let mut value_to_refs: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
 
             for (object_index, ref_list) in objects {
                 for (ref_index, selector_value) in ref_list {
@@ -2150,12 +2354,8 @@ impl MtxmlGenerator {
             let whens: Vec<When> = sorted_values
                 .into_iter()
                 .map(|(selector_value, ref_ids)| {
-                    let when_items: Vec<WhenItem> = ref_ids
-                        .into_iter()
-                        .map(|ref_id| {
-                            when_com_obj_ref(ref_id)
-                        })
-                        .collect();
+                    let when_items: Vec<WhenItem> =
+                        ref_ids.into_iter().map(|ref_id| when_com_obj_ref(ref_id)).collect();
 
                     When {
                         test: Some(selector_value.to_string()),
@@ -2166,10 +2366,7 @@ impl MtxmlGenerator {
                 })
                 .collect();
 
-            items.push(ParameterBlockItem::Choose(Choose {
-                param_ref_id,
-                whens,
-            }));
+            items.push(ParameterBlockItem::Choose(Choose { param_ref_id, whens }));
         }
 
         Ok(DynamicSection {
@@ -2204,12 +2401,7 @@ impl MtxmlGenerator {
         // Build a set of union selector names that are handled specially
         let union_selector_names: std::collections::HashSet<String> = config
             .union_fields
-            .map(|fields| {
-                fields
-                    .iter()
-                    .map(|f| format!("{}_selector", f.field_name))
-                    .collect()
-            })
+            .map(|fields| fields.iter().map(|f| format!("{}_selector", f.field_name)).collect())
             .unwrap_or_default();
 
         // Search through all params (virtual first, then regular)
@@ -2231,10 +2423,8 @@ impl MtxmlGenerator {
         // Search through union selectors
         if let Some(union_fields) = config.union_fields {
             // Count non-selector params for ref_counter
-            let non_selector_param_count = config
-                .all_params()
-                .filter(|p| !union_selector_names.contains(p.base.name))
-                .count();
+            let non_selector_param_count =
+                config.all_params().filter(|p| !union_selector_names.contains(p.base.name)).count();
             let mut ref_counter = non_selector_param_count + 1;
             let mut up_counter = 1u32;
 
@@ -2280,7 +2470,8 @@ impl MtxmlGenerator {
         let union_variant_texts = collect_union_variant_texts(layout);
 
         // Build multi-ref parameter map (supports multiple refs per selector param)
-        let param_ref_map = Self::build_multi_param_ref_map(config, app_id, &selector_usage_counts, Some(&union_variant_texts));
+        let param_ref_map =
+            Self::build_multi_param_ref_map(config, app_id, &selector_usage_counts, Some(&union_variant_texts));
 
         // Generate block and separator counters
         let mut block_counter = 1u32;
@@ -2340,10 +2531,7 @@ impl MtxmlGenerator {
             })
             .collect::<Result<Vec<_>, GeneratorError>>()?;
 
-        Ok(DynamicSection {
-            channel_independent_block,
-            channels,
-        })
+        Ok(DynamicSection { channel_independent_block, channels })
     }
     /// Build a multi-ref parameter map that supports multiple refs per parameter.
     /// Parameters that are used as selectors in ObjWithValue/GroupedObjChoose
@@ -2362,12 +2550,7 @@ impl MtxmlGenerator {
         // Build a set of union selector names
         let union_selector_names: std::collections::HashSet<String> = config
             .union_fields
-            .map(|fields| {
-                fields
-                    .iter()
-                    .map(|f| format!("{}_selector", f.field_name))
-                    .collect()
-            })
+            .map(|fields| fields.iter().map(|f| format!("{}_selector", f.field_name)).collect())
             .unwrap_or_default();
 
         // Track ref numbering - we need unique numbers for all refs
@@ -2456,14 +2639,13 @@ impl MtxmlGenerator {
                 // Variant params - create refs for each unique text override
                 for variant_param in field.union_info.variant_params {
                     let param_id = format!("{}_UP-{}", app_id, up_counter);
-                    let full_param_name = format!("{}_{}_{}", field.field_name, variant_param.variant_name, variant_param.param.name);
+                    let full_param_name =
+                        format!("{}_{}_{}", field.field_name, variant_param.variant_name, variant_param.param.name);
 
                     // Look up text overrides for this variant
                     let key = (field.field_name.to_string(), variant_param.variant_name.to_string());
-                    let text_overrides = union_variant_texts
-                        .and_then(|texts| texts.get(&key))
-                        .cloned()
-                        .unwrap_or_else(|| vec![None]); // At least one ref with no text
+                    let text_overrides =
+                        union_variant_texts.and_then(|texts| texts.get(&key)).cloned().unwrap_or_else(|| vec![None]); // At least one ref with no text
 
                     // Create a ref for each unique text override
                     for (i, text) in text_overrides.iter().enumerate() {
@@ -2505,13 +2687,11 @@ impl MtxmlGenerator {
             let ref_id = format!("{}_R-{}", co_id, i + 1);
 
             // Use the ref_name as the key (this is the field name from the struct)
-            map.entry(ref_def.ref_name.to_string())
-                .or_default()
-                .push((
-                    ref_id,
-                    ref_def.selector_param.map(|s| s.to_string()),
-                    ref_def.selector_value,
-                ));
+            map.entry(ref_def.ref_name.to_string()).or_default().push((
+                ref_id,
+                ref_def.selector_param.map(|s| s.to_string()),
+                ref_def.selector_value,
+            ));
         }
 
         map
@@ -2700,12 +2880,12 @@ impl MtxmlGenerator {
                     // Look up comm object refs by field name
                     if let Some(refs) = comm_obj_ref_map.get(*name) {
                         // Group refs by selector_param
-                        let refs_with_selector: Vec<&(String, Option<String>, Option<i64>)> = refs.iter()
+                        let refs_with_selector: Vec<&(String, Option<String>, Option<i64>)> = refs
+                            .iter()
                             .filter(|(_, sel_param, sel_val)| sel_param.is_some() && sel_val.is_some())
                             .collect();
-                        let refs_without_selector: Vec<&(String, Option<String>, Option<i64>)> = refs.iter()
-                            .filter(|(_, sel_param, _)| sel_param.is_none())
-                            .collect();
+                        let refs_without_selector: Vec<&(String, Option<String>, Option<i64>)> =
+                            refs.iter().filter(|(_, sel_param, _)| sel_param.is_none()).collect();
 
                         // If there are no selector-based refs, just emit the unconditional ref
                         if refs_with_selector.is_empty() {
@@ -2760,7 +2940,8 @@ impl MtxmlGenerator {
                                     }
 
                                     // Build when clauses - one per unique selector value
-                                    let mut whens: Vec<When> = value_to_ref.iter()
+                                    let mut whens: Vec<When> = value_to_ref
+                                        .iter()
                                         .map(|(val, ref_id)| When {
                                             default: None,
                                             test: Some(val.to_string()),
@@ -2864,10 +3045,7 @@ impl MtxmlGenerator {
 
                             // Only add choose if we have when clauses
                             if !whens.is_empty() {
-                                items.push(ParameterBlockItem::Choose(Choose {
-                                    param_ref_id: selector_ref_id,
-                                    whens,
-                                }));
+                                items.push(ParameterBlockItem::Choose(Choose { param_ref_id: selector_ref_id, whens }));
                             }
                         }
                     }
@@ -2897,14 +3075,12 @@ impl MtxmlGenerator {
                     let obj_refs = comm_obj_ref_map.get(*obj_name);
 
                     // Get union field info for value params
-                    let union_info = config.union_fields.and_then(|fields| {
-                        fields.iter().find(|u| u.field_name == *value_union)
-                    });
+                    let union_info =
+                        config.union_fields.and_then(|fields| fields.iter().find(|u| u.field_name == *value_union));
 
                     // Build a map of variant_value -> sub_selector info for quick lookup
-                    let sub_selector_map: std::collections::HashMap<i64, _> = sub_selectors.iter()
-                        .map(|(val, param, variants)| (*val, (*param, *variants)))
-                        .collect();
+                    let sub_selector_map: std::collections::HashMap<i64, _> =
+                        sub_selectors.iter().map(|(val, param, variants)| (*val, (*param, *variants))).collect();
 
                     if let (Some(refs), Some(union_info)) = (obj_refs, union_info) {
                         // Group object refs by selector value
@@ -3001,13 +3177,19 @@ impl MtxmlGenerator {
                                 // Add value param refs for this variant
                                 // We need the variant NAME (like "ForcibleControl"), not display text (like "Forcible control")
                                 // Look it up from variant_params using the selector value
-                                let variant_name = union_info.union_info.variant_params.iter()
+                                let variant_name = union_info
+                                    .union_info
+                                    .variant_params
+                                    .iter()
                                     .find(|vp| vp.variant_value == selector_value)
                                     .map(|vp| vp.variant_name)
                                     .unwrap_or("");
                                 let variant_prefix = format!("{}_{}_{}", value_union, variant_name, "");
                                 for (param_name, ref_id) in param_ref_map.primary.iter() {
-                                    if !variant_name.is_empty() && param_name.starts_with(&variant_prefix.trim_end_matches('_')) && param_name.len() > variant_prefix.len() - 1 {
+                                    if !variant_name.is_empty()
+                                        && param_name.starts_with(&variant_prefix.trim_end_matches('_'))
+                                        && param_name.len() > variant_prefix.len() - 1
+                                    {
                                         when_items.push(when_param_ref(ref_id.clone()));
                                     }
                                 }
@@ -3032,10 +3214,7 @@ impl MtxmlGenerator {
                         });
 
                         if !whens.is_empty() {
-                            items.push(ParameterBlockItem::Choose(Choose {
-                                param_ref_id: selector_ref_id,
-                                whens,
-                            }));
+                            items.push(ParameterBlockItem::Choose(Choose { param_ref_id: selector_ref_id, whens }));
                         }
                     }
                 }
@@ -3056,9 +3235,9 @@ impl MtxmlGenerator {
                     // All objects in the group should use the same selector (object_type param)
                     // so we can use any value_union to get the variant list
                     let union_info = if let Some((_, first_value_union)) = objects.first() {
-                        config.union_fields.and_then(|fields| {
-                            fields.iter().find(|u| u.field_name == *first_value_union)
-                        })
+                        config
+                            .union_fields
+                            .and_then(|fields| fields.iter().find(|u| u.field_name == *first_value_union))
                     } else {
                         None
                     };
@@ -3138,10 +3317,7 @@ impl MtxmlGenerator {
                         });
 
                         if !whens.is_empty() {
-                            items.push(ParameterBlockItem::Choose(Choose {
-                                param_ref_id: selector_ref_id,
-                                whens,
-                            }));
+                            items.push(ParameterBlockItem::Choose(Choose { param_ref_id: selector_ref_id, whens }));
                         }
                     }
                 }
@@ -3152,9 +3328,8 @@ impl MtxmlGenerator {
                     // Get object refs for this object - use the unconditional ref or first ref
                     if let Some(refs) = comm_obj_ref_map.get(*obj_name) {
                         // Prefer the unconditional ref (no selector), otherwise use first available
-                        let ref_to_use = refs.iter()
-                            .find(|(_, sel_param, _)| sel_param.is_none())
-                            .or_else(|| refs.first());
+                        let ref_to_use =
+                            refs.iter().find(|(_, sel_param, _)| sel_param.is_none()).or_else(|| refs.first());
 
                         if let Some((ref_id, _, _)) = ref_to_use {
                             items.push(block_com_obj_ref(ref_id.clone()));
@@ -3176,9 +3351,8 @@ impl MtxmlGenerator {
                     for obj_name in *obj_names {
                         if let Some(refs) = comm_obj_ref_map.get(*obj_name) {
                             // Prefer the unconditional ref (no selector), otherwise use first available
-                            let ref_to_use = refs.iter()
-                                .find(|(_, sel_param, _)| sel_param.is_none())
-                                .or_else(|| refs.first());
+                            let ref_to_use =
+                                refs.iter().find(|(_, sel_param, _)| sel_param.is_none()).or_else(|| refs.first());
 
                             if let Some((ref_id, _, _)) = ref_to_use {
                                 items.push(block_com_obj_ref(ref_id.clone()));
@@ -3214,7 +3388,14 @@ impl MtxmlGenerator {
                         }
                     }
                 }
-                PageItem::ObjWithFixedVariant { obj_name, hidden_params, union_field, variant_name, selector_value, text_override } => {
+                PageItem::ObjWithFixedVariant {
+                    obj_name,
+                    hidden_params,
+                    union_field,
+                    variant_name,
+                    selector_value,
+                    text_override,
+                } => {
                     // ObjWithFixedVariant outputs object + hidden params + specific union variant
                     // Used in switch mode where object type is fixed (always Switch/1Bit)
                     // No choose block - outputs directly
@@ -3222,7 +3403,8 @@ impl MtxmlGenerator {
 
                     // Get object ref matching the specified selector_value
                     if let Some(refs) = comm_obj_ref_map.get(*obj_name) {
-                        let ref_to_use = refs.iter()
+                        let ref_to_use = refs
+                            .iter()
                             .find(|(_, _, sel_val)| sel_val.as_ref() == Some(selector_value))
                             .or_else(|| refs.first());
 
@@ -3245,7 +3427,8 @@ impl MtxmlGenerator {
                     for (param_name, _) in param_ref_map.primary.iter() {
                         if param_name.starts_with(&variant_prefix) {
                             // Look up ref by text - the ParameterRef already has the Text attribute
-                            let ref_id = param_ref_map.get_by_text(param_name, *text_override)
+                            let ref_id = param_ref_map
+                                .get_by_text(param_name, *text_override)
                                 .or_else(|| param_ref_map.get_primary(param_name));
                             if let Some(ref_id) = ref_id {
                                 items.push(block_param_ref(ref_id.clone()));
@@ -3265,7 +3448,8 @@ impl MtxmlGenerator {
                     for (param_name, _) in param_ref_map.primary.iter() {
                         if param_name.starts_with(&variant_prefix) {
                             // Look up ref by text - the ParameterRef already has the Text attribute
-                            let ref_id = param_ref_map.get_by_text(param_name, *text_override)
+                            let ref_id = param_ref_map
+                                .get_by_text(param_name, *text_override)
                                 .or_else(|| param_ref_map.get_primary(param_name));
                             if let Some(ref_id) = ref_id {
                                 items.push(block_param_ref(ref_id.clone()));
@@ -3289,7 +3473,8 @@ impl MtxmlGenerator {
                     for (param_name, _) in param_ref_map.primary.iter() {
                         if param_name.starts_with(&variant_prefix) {
                             // Look up ref by text - the ParameterRef already has the Text attribute
-                            let ref_id = param_ref_map.get_by_text(param_name, *text_override)
+                            let ref_id = param_ref_map
+                                .get_by_text(param_name, *text_override)
                                 .or_else(|| param_ref_map.get_primary(param_name));
                             if let Some(ref_id) = ref_id {
                                 items.push(block_param_ref(ref_id.clone()));
@@ -3325,10 +3510,7 @@ impl MtxmlGenerator {
                             });
                         }
                         if !whens.is_empty() {
-                            items.push(ParameterBlockItem::Choose(Choose {
-                                param_ref_id: ref_id,
-                                whens,
-                            }));
+                            items.push(ParameterBlockItem::Choose(Choose { param_ref_id: ref_id, whens }));
                         }
                     }
                 }
@@ -3375,10 +3557,7 @@ impl MtxmlGenerator {
                             });
                         }
                         if !whens.is_empty() {
-                            items.push(ParameterBlockItem::Choose(Choose {
-                                param_ref_id: ref_id,
-                                whens,
-                            }));
+                            items.push(ParameterBlockItem::Choose(Choose { param_ref_id: ref_id, whens }));
                         }
                     }
                 }
@@ -3390,7 +3569,8 @@ impl MtxmlGenerator {
                         let def = modules.definitions().iter().enumerate().find(|(_, d)| d.name == *module_name);
                         if let Some((def_idx, def)) = def {
                             // Find the specific instance
-                            let instances_for_def: Vec<_> = modules.raw_instances()
+                            let instances_for_def: Vec<_> = modules
+                                .raw_instances()
                                 .iter()
                                 .enumerate()
                                 .filter(|(_, inst)| inst.def_index == def_idx)
@@ -3402,16 +3582,15 @@ impl MtxmlGenerator {
                                 let module_instance_id = format!("{}_M-{}", module_def_id, global_idx + 1);
 
                                 let mut args = Vec::new();
-                                for (arg_idx, (_arg_def, arg_val)) in def.arguments.iter().zip(instance.args.iter()).enumerate() {
+                                for (arg_idx, (_arg_def, arg_val)) in
+                                    def.arguments.iter().zip(instance.args.iter()).enumerate()
+                                {
                                     let arg_ref_id = format!("{}_A-{}", module_def_id, arg_idx + 1);
                                     match arg_val {
-                                        crate::module::ModuleArgValue::Numeric(v) => {
-                                            args.push(ModuleArg::NumericArg {
-                                                ref_id: arg_ref_id,
-                                                value: *v,
-                                            });
+                                        crate::definition::module::ModuleArgValue::Numeric(v) => {
+                                            args.push(ModuleArg::NumericArg { ref_id: arg_ref_id, value: *v });
                                         }
-                                        crate::module::ModuleArgValue::Text(v) => {
+                                        crate::definition::module::ModuleArgValue::Text(v) => {
                                             args.push(ModuleArg::TextArg {
                                                 ref_id: arg_ref_id,
                                                 id: format!("{}_TA-{}", module_instance_id, arg_idx + 1),
@@ -3442,9 +3621,8 @@ impl MtxmlGenerator {
                             // Count how many inline instances we've seen for this module
                             // to generate unique instance IDs
                             // We use a simple approach: hash the inline args to create a unique suffix
-                            let args_hash: i64 = inline_args.iter()
-                                .map(|(name, val)| name.len() as i64 * 31 + val)
-                                .sum();
+                            let args_hash: i64 =
+                                inline_args.iter().map(|(name, val)| name.len() as i64 * 31 + val).sum();
                             let instance_suffix = (args_hash.abs() % 10000) + 1;
 
                             let module_def_id = format!("{}_MD-{}", app_id, def_idx + 1);
@@ -3456,16 +3634,10 @@ impl MtxmlGenerator {
                                 let arg_ref_id = format!("{}_A-{}", module_def_id, arg_idx + 1);
                                 // Find the inline arg value by name
                                 if let Some((_, value)) = inline_args.iter().find(|(name, _)| *name == arg_def.name) {
-                                    schema_args.push(ModuleArg::NumericArg {
-                                        ref_id: arg_ref_id,
-                                        value: *value,
-                                    });
+                                    schema_args.push(ModuleArg::NumericArg { ref_id: arg_ref_id, value: *value });
                                 } else {
                                     // Argument not found in inline args - use 0 as default
-                                    schema_args.push(ModuleArg::NumericArg {
-                                        ref_id: arg_ref_id,
-                                        value: 0,
-                                    });
+                                    schema_args.push(ModuleArg::NumericArg { ref_id: arg_ref_id, value: 0 });
                                 }
                             }
 
@@ -3499,16 +3671,13 @@ impl MtxmlGenerator {
                                     let mut schema_args = Vec::new();
                                     for (arg_idx, arg_def) in def.arguments.iter().enumerate() {
                                         let arg_ref_id = format!("{}_A-{}", module_def_id, arg_idx + 1);
-                                        if let Some((_, value)) = inline_args.iter().find(|(name, _)| *name == arg_def.name) {
-                                            schema_args.push(ModuleArg::NumericArg {
-                                                ref_id: arg_ref_id,
-                                                value: *value,
-                                            });
+                                        if let Some((_, value)) =
+                                            inline_args.iter().find(|(name, _)| *name == arg_def.name)
+                                        {
+                                            schema_args
+                                                .push(ModuleArg::NumericArg { ref_id: arg_ref_id, value: *value });
                                         } else {
-                                            schema_args.push(ModuleArg::NumericArg {
-                                                ref_id: arg_ref_id,
-                                                value: 0,
-                                            });
+                                            schema_args.push(ModuleArg::NumericArg { ref_id: arg_ref_id, value: 0 });
                                         }
                                     }
 
@@ -3573,8 +3742,7 @@ impl MtxmlGenerator {
         let mut whens = Vec::new();
         for case in &cond.cases {
             // Create new active conditions with this case's selector and values
-            let case_active_conditions = active_conditions
-                .with_condition(cond.selector, case.condition.to_values());
+            let case_active_conditions = active_conditions.with_condition(cond.selector, case.condition.to_values());
 
             let mut when_items: Vec<WhenItem> = Vec::new();
             for elem in &case.elements {
@@ -3622,10 +3790,7 @@ impl MtxmlGenerator {
             });
         }
 
-        Ok(Choose {
-            param_ref_id: selector_ref_id,
-            whens,
-        })
+        Ok(Choose { param_ref_id: selector_ref_id, whens })
     }
 
     /// Build a Choose element for item-level conditionals (within a ParameterBlock).
@@ -3648,8 +3813,7 @@ impl MtxmlGenerator {
         let mut whens = Vec::new();
         for case in &cond.cases {
             // Create new active conditions with this case's selector and values
-            let case_active_conditions = active_conditions
-                .with_condition(cond.selector, case.condition.to_values());
+            let case_active_conditions = active_conditions.with_condition(cond.selector, case.condition.to_values());
             let items = Self::build_block_items(
                 &case.items,
                 config,
@@ -3684,10 +3848,7 @@ impl MtxmlGenerator {
             });
         }
 
-        Ok(Choose {
-            param_ref_id: selector_ref_id,
-            whens,
-        })
+        Ok(Choose { param_ref_id: selector_ref_id, whens })
     }
 
     /// Serialize the KNX document to XML string.
@@ -3698,8 +3859,7 @@ impl MtxmlGenerator {
         let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
         serializer.indent(' ', 2);
 
-        serde::Serialize::serialize(knx, serializer)
-            .map_err(|e| GeneratorError::Serialization(e.to_string()))?;
+        serde::Serialize::serialize(knx, serializer).map_err(|e| GeneratorError::Serialization(e.to_string()))?;
 
         Ok(buffer)
     }
@@ -3918,4 +4078,3 @@ impl MtxmlGenerator {
 // ============================================================================
 // Hardware MTXML Generator
 // ============================================================================
-

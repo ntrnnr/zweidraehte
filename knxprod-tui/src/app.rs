@@ -1,19 +1,20 @@
 //! Application state and logic for the KNX TUI viewer.
 
-use knxprod::master_data::{MasterData, MaskVersion, TableFlavour};
-use knxprod::model::{DynamicVisitor, ParameterValue, walk_dynamic};
-use knxprod::Device;
-use knxprod::{
-    Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose,
-    ComObjectPriority, EnableFlag, Module, ParameterBlock, ParameterBlockItem, ParameterTypeDef, WhenItem,
+use knxprod::runtime::master_data::{MaskVersion, TableFlavour};
+use knxprod::runtime::model::{walk_dynamic, DynamicVisitor, ParameterValue};
+use knxprod::schema::{
+    Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, ComObject, ComObjectPriority,
+    ComObjectRef, DynamicSection, EnableFlag, Module, ModuleDef, ModuleDefDynamicItem, Parameter, ParameterBlock,
+    ParameterBlockItem, ParameterItem, ParameterTypeDef, UnionParameter, WhenItem,
 };
+use knxprod::{Device, MasterData};
 
-#[cfg(feature = "images")]
-use std::collections::HashMap;
 #[cfg(feature = "images")]
 use ratatui_image::picker::Picker;
 #[cfg(feature = "images")]
 use ratatui_image::protocol::StatefulProtocol;
+#[cfg(feature = "images")]
+use std::collections::HashMap;
 
 /// Compute the actual object number for a module comm object.
 ///
@@ -21,11 +22,11 @@ use ratatui_image::protocol::StatefulProtocol;
 /// argument reference. The actual object number is `base_number_value + local_number`.
 /// If no BaseNumber is specified, the local number is used as-is.
 fn compute_module_object_number(
-    obj: &knxprod::ComObject,
-    expanded: &knxprod::model::ExpandedModule,
-    module_def: &knxprod::ModuleDef,
+    obj: &ComObject,
+    expanded: &knxprod::runtime::model::ExpandedModule,
+    module_def: &ModuleDef,
 ) -> u16 {
-    use knxprod::model::ModuleArgValue;
+    use knxprod::runtime::model::ModuleArgValue;
 
     let local_number = obj.number;
 
@@ -267,14 +268,11 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
 
     fn enter_channel(&mut self, channel: &Channel) {
         // Determine channel index by counting existing channel nodes
-        let channel_idx = self.root_nodes.iter().filter(|n| {
-            matches!(n.node_type, VisibleNodeType::Channel { .. })
-        }).count();
+        let channel_idx =
+            self.root_nodes.iter().filter(|n| matches!(n.node_type, VisibleNodeType::Channel { .. })).count();
 
         // Also count the CIB node that may have been added
-        let has_cib = self.root_nodes.iter().any(|n| {
-            matches!(n.node_type, VisibleNodeType::DeviceSettings)
-        });
+        let has_cib = self.root_nodes.iter().any(|n| matches!(n.node_type, VisibleNodeType::DeviceSettings));
 
         // The actual channel index in the dynamic section
         let actual_idx = if has_cib { channel_idx } else { channel_idx };
@@ -321,9 +319,7 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
         let child_node = VisibleTreeNode {
             id,
             raw_name: raw_text,
-            node_type: VisibleNodeType::ParameterBlock {
-                block_name: block_name.clone(),
-            },
+            node_type: VisibleNodeType::ParameterBlock { block_name: block_name.clone() },
             children: Vec::new(),
         };
 
@@ -355,9 +351,7 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
         let child_node = VisibleTreeNode {
             id,
             raw_name,
-            node_type: VisibleNodeType::Module {
-                instance_id: module.id.clone(),
-            },
+            node_type: VisibleNodeType::Module { instance_id: module.id.clone() },
             children: Vec::new(),
         };
 
@@ -367,12 +361,12 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
         }
     }
 
-    fn enter_module(&mut self, _module: &Module, _ctx: &knxprod::model::VisitorModuleContext) {
+    fn enter_module(&mut self, _module: &Module, _ctx: &knxprod::runtime::model::VisitorModuleContext) {
         // Mark that we're inside a module - skip internal ParameterBlocks from tree
         self.in_module = true;
     }
 
-    fn leave_module(&mut self, _module: &Module, _ctx: &knxprod::model::VisitorModuleContext) {
+    fn leave_module(&mut self, _module: &Module, _ctx: &knxprod::runtime::model::VisitorModuleContext) {
         self.in_module = false;
     }
 }
@@ -402,16 +396,9 @@ pub enum EditMode {
         scroll_offset: usize,
     },
     /// Editing a number parameter
-    NumberInput {
-        param_id: String,
-        buffer: String,
-    },
+    NumberInput { param_id: String, buffer: String },
     /// Editing a text parameter
-    TextInput {
-        param_id: String,
-        buffer: String,
-        cursor: usize,
-    },
+    TextInput { param_id: String, buffer: String, cursor: usize },
     /// Editing a group address for a communication object
     GroupAddressInput {
         /// The communication object number (ASAP)
@@ -425,16 +412,9 @@ pub enum EditMode {
 #[derive(Debug, Clone)]
 pub enum WidgetType {
     /// Dropdown/enum selector
-    Dropdown {
-        options: Vec<(i64, String)>,
-        current_idx: usize,
-    },
+    Dropdown { options: Vec<(i64, String)>, current_idx: usize },
     /// Numeric spinner/input
-    Number {
-        value: i64,
-        min: Option<i64>,
-        max: Option<i64>,
-    },
+    Number { value: i64, min: Option<i64>, max: Option<i64> },
     /// Text input field
     Text { value: String },
     /// Read-only display
@@ -445,20 +425,11 @@ pub enum WidgetType {
 #[derive(Debug, Clone)]
 pub enum ContentItem {
     /// A parameter with its widget
-    Parameter {
-        param_id: String,
-        text: String,
-        suffix: Option<String>,
-        widget: WidgetType,
-    },
+    Parameter { param_id: String, text: String, suffix: Option<String>, widget: WidgetType },
     /// A separator
     Separator { text: Option<String> },
     /// A communication object (displayed inline in module content)
-    CommObject {
-        name: String,
-        function: String,
-        dpt: String,
-    },
+    CommObject { name: String, function: String, dpt: String },
     /// A picture/image reference
     Picture {
         /// Baggage reference ID
@@ -667,11 +638,7 @@ impl App {
     ///
     /// This traverses the collected visible tree and creates TreeNode entries,
     /// respecting expansion state to determine which children to include.
-    fn flatten_visible_tree(
-        &mut self,
-        visible_tree: &[VisibleTreeNode],
-        dynamic: &knxprod::DynamicSection,
-    ) {
+    fn flatten_visible_tree(&mut self, visible_tree: &[VisibleTreeNode], dynamic: &DynamicSection) {
         for node in visible_tree {
             let is_expanded = self.expanded_nodes.contains(&node.id);
 
@@ -681,17 +648,12 @@ impl App {
                 VisibleNodeType::Channel { index } => {
                     // For channels, interpolate {{0}} with TextParameterRefId
                     if let Some(channel) = dynamic.channels.get(*index) {
-                        self.device.interpolate_channel_text(
-                            &node.raw_name,
-                            channel.text_parameter_ref_id.as_deref(),
-                        )
+                        self.device.interpolate_channel_text(&node.raw_name, channel.text_parameter_ref_id.as_deref())
                     } else {
                         self.device.interpolate_text(&node.raw_name)
                     }
                 }
-                VisibleNodeType::ParameterBlock { .. } => {
-                    self.device.interpolate_text(&node.raw_name)
-                }
+                VisibleNodeType::ParameterBlock { .. } => self.device.interpolate_text(&node.raw_name),
                 VisibleNodeType::Module { instance_id } => {
                     // For modules, get the expanded module and interpolate with its args
                     self.interpolate_module_name(instance_id, &node.raw_name)
@@ -706,32 +668,20 @@ impl App {
                     // Determine parent from node id
                     let parent = if node.id.starts_with("channel_") {
                         // Extract channel index from id like "channel_0_block_foo"
-                        node.id
-                            .strip_prefix("channel_")
-                            .and_then(|s| s.split('_').next())
-                            .and_then(|s| s.parse().ok())
+                        node.id.strip_prefix("channel_").and_then(|s| s.split('_').next()).and_then(|s| s.parse().ok())
                     } else {
                         None
                     };
-                    NodeType::ParameterBlock {
-                        parent,
-                        block_name: block_name.clone(),
-                    }
+                    NodeType::ParameterBlock { parent, block_name: block_name.clone() }
                 }
                 VisibleNodeType::Module { instance_id } => {
                     // Determine parent from node id
                     let parent = if node.id.starts_with("channel_") {
-                        node.id
-                            .strip_prefix("channel_")
-                            .and_then(|s| s.split('_').next())
-                            .and_then(|s| s.parse().ok())
+                        node.id.strip_prefix("channel_").and_then(|s| s.split('_').next()).and_then(|s| s.parse().ok())
                     } else {
                         None
                     };
-                    NodeType::ModuleInstance {
-                        instance_id: instance_id.clone(),
-                        parent,
-                    }
+                    NodeType::ModuleInstance { instance_id: instance_id.clone(), parent }
                 }
             };
 
@@ -752,55 +702,32 @@ impl App {
     }
 
     /// Flatten children of a visible tree node at a given depth.
-    fn flatten_children(
-        &mut self,
-        children: &[VisibleTreeNode],
-        depth: usize,
-        dynamic: &knxprod::DynamicSection,
-    ) {
+    fn flatten_children(&mut self, children: &[VisibleTreeNode], depth: usize, dynamic: &DynamicSection) {
         for child in children {
             let is_expanded = self.expanded_nodes.contains(&child.id);
 
             let name = match &child.node_type {
-                VisibleNodeType::ParameterBlock { .. } => {
-                    self.device.interpolate_text(&child.raw_name)
-                }
-                VisibleNodeType::Module { instance_id } => {
-                    self.interpolate_module_name(instance_id, &child.raw_name)
-                }
+                VisibleNodeType::ParameterBlock { .. } => self.device.interpolate_text(&child.raw_name),
+                VisibleNodeType::Module { instance_id } => self.interpolate_module_name(instance_id, &child.raw_name),
                 _ => child.raw_name.clone(),
             };
 
             let node_type = match &child.node_type {
                 VisibleNodeType::ParameterBlock { block_name } => {
                     let parent = if child.id.starts_with("channel_") {
-                        child
-                            .id
-                            .strip_prefix("channel_")
-                            .and_then(|s| s.split('_').next())
-                            .and_then(|s| s.parse().ok())
+                        child.id.strip_prefix("channel_").and_then(|s| s.split('_').next()).and_then(|s| s.parse().ok())
                     } else {
                         None
                     };
-                    NodeType::ParameterBlock {
-                        parent,
-                        block_name: block_name.clone(),
-                    }
+                    NodeType::ParameterBlock { parent, block_name: block_name.clone() }
                 }
                 VisibleNodeType::Module { instance_id } => {
                     let parent = if child.id.starts_with("channel_") {
-                        child
-                            .id
-                            .strip_prefix("channel_")
-                            .and_then(|s| s.split('_').next())
-                            .and_then(|s| s.parse().ok())
+                        child.id.strip_prefix("channel_").and_then(|s| s.split('_').next()).and_then(|s| s.parse().ok())
                     } else {
                         None
                     };
-                    NodeType::ModuleInstance {
-                        instance_id: instance_id.clone(),
-                        parent,
-                    }
+                    NodeType::ModuleInstance { instance_id: instance_id.clone(), parent }
                 }
                 _ => continue, // Skip unexpected types at child level
             };
@@ -832,7 +759,7 @@ impl App {
                     .as_ref()
                     .and_then(|dyn_sec| {
                         dyn_sec.items.iter().find_map(|item| {
-                            if let knxprod::ModuleDefDynamicItem::ParameterBlock(pb) = item {
+                            if let ModuleDefDynamicItem::ParameterBlock(pb) = item {
                                 Some((pb.text.clone(), pb.text_parameter_ref_id.clone()))
                             } else {
                                 None
@@ -851,14 +778,12 @@ impl App {
 
                     param_ref.and_then(|pr| {
                         let composite_id = format!("{}::{}", expanded.instance_id, pr.ref_id);
-                        self.device
-                            .get_module_parameter_value_by_composite_id(&composite_id)
-                            .and_then(|v| match v {
-                                // Only return actual text values for {{0}} substitution
-                                // Integer 0 should NOT be converted to "0" - that's not meaningful text
-                                ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
-                                _ => None,
-                            })
+                        self.device.get_module_parameter_value_by_composite_id(&composite_id).and_then(|v| match v {
+                            // Only return actual text values for {{0}} substitution
+                            // Integer 0 should NOT be converted to "0" - that's not meaningful text
+                            ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
+                            _ => None,
+                        })
                     })
                 });
 
@@ -872,9 +797,7 @@ impl App {
                     return self.device.interpolate_module_text(instance_name, expanded);
                 } else {
                     // Fallback: use module name with channel number
-                    if let Some(knxprod::model::ModuleArgValue::Numeric(ch)) =
-                        expanded.args.get("ChNo")
-                    {
+                    if let Some(knxprod::runtime::model::ModuleArgValue::Numeric(ch)) = expanded.args.get("ChNo") {
                         return format!("{} {}", module_def.name, ch);
                     }
                     return module_def.name.clone();
@@ -905,11 +828,7 @@ impl App {
     }
 
     /// Collect all visible parameter blocks from a channel, including those nested in Choose blocks.
-    fn collect_visible_channel_blocks<'a>(
-        &self,
-        channel: &'a Channel,
-        blocks: &mut Vec<&'a ParameterBlock>,
-    ) {
+    fn collect_visible_channel_blocks<'a>(&self, channel: &'a Channel, blocks: &mut Vec<&'a ParameterBlock>) {
         for item in &channel.items {
             match item {
                 ChannelItem::ParameterBlock(pb) => {
@@ -928,11 +847,7 @@ impl App {
     }
 
     /// Collect all visible module instances from a channel.
-    fn collect_visible_channel_modules<'a>(
-        &self,
-        channel: &'a Channel,
-        modules: &mut Vec<&'a knxprod::Module>,
-    ) {
+    fn collect_visible_channel_modules<'a>(&self, channel: &'a Channel, modules: &mut Vec<&'a Module>) {
         for item in &channel.items {
             match item {
                 ChannelItem::Module(module) => {
@@ -952,11 +867,7 @@ impl App {
     }
 
     /// Collect modules from parameter block items.
-    fn collect_modules_from_pb<'a>(
-        &self,
-        items: &'a [ParameterBlockItem],
-        modules: &mut Vec<&'a knxprod::Module>,
-    ) {
+    fn collect_modules_from_pb<'a>(&self, items: &'a [ParameterBlockItem], modules: &mut Vec<&'a Module>) {
         for item in items {
             match item {
                 ParameterBlockItem::Module(module) => {
@@ -973,11 +884,7 @@ impl App {
     }
 
     /// Collect modules from Choose blocks.
-    fn collect_modules_from_choose<'a>(
-        &self,
-        choose: &'a Choose,
-        modules: &mut Vec<&'a knxprod::Module>,
-    ) {
+    fn collect_modules_from_choose<'a>(&self, choose: &'a Choose, modules: &mut Vec<&'a Module>) {
         let selector_value = self.get_selector_value(&choose.param_ref_id);
 
         let mut any_matched = false;
@@ -1004,11 +911,7 @@ impl App {
     }
 
     /// Collect modules from when items.
-    fn collect_modules_from_when<'a>(
-        &self,
-        items: &'a [WhenItem],
-        modules: &mut Vec<&'a knxprod::Module>,
-    ) {
+    fn collect_modules_from_when<'a>(&self, items: &'a [WhenItem], modules: &mut Vec<&'a Module>) {
         for item in items {
             match item {
                 WhenItem::Module(module) => {
@@ -1026,11 +929,7 @@ impl App {
 
     /// Collect parameter blocks from a Choose structure based on current parameter values.
     /// Note: Multiple when clauses can match the same value in KNX choose blocks.
-    fn collect_blocks_from_choose<'a>(
-        &self,
-        choose: &'a Choose,
-        blocks: &mut Vec<&'a ParameterBlock>,
-    ) {
+    fn collect_blocks_from_choose<'a>(&self, choose: &'a Choose, blocks: &mut Vec<&'a ParameterBlock>) {
         // Get the selector parameter value
         let selector_value = self.get_selector_value(&choose.param_ref_id);
 
@@ -1152,20 +1051,13 @@ impl App {
                 depth,
                 expanded: false,
                 has_children: false,
-                node_type: NodeType::ParameterBlock {
-                    parent: None,
-                    block_name,
-                },
+                node_type: NodeType::ParameterBlock { parent: None, block_name },
             });
         }
     }
 
     /// Collect all visible parameter blocks from CIB, including those nested in Choose blocks.
-    fn collect_visible_cib_blocks<'a>(
-        &self,
-        cib: &'a ChannelIndependentBlock,
-        blocks: &mut Vec<&'a ParameterBlock>,
-    ) {
+    fn collect_visible_cib_blocks<'a>(&self, cib: &'a ChannelIndependentBlock, blocks: &mut Vec<&'a ParameterBlock>) {
         for item in &cib.items {
             match item {
                 ChannelIndependentItem::ParameterBlock(pb) => {
@@ -1197,10 +1089,7 @@ impl App {
                 depth,
                 expanded: false,
                 has_children: false,
-                node_type: NodeType::ParameterBlock {
-                    parent: Some(channel_idx),
-                    block_name,
-                },
+                node_type: NodeType::ParameterBlock { parent: Some(channel_idx), block_name },
             });
         }
 
@@ -1220,7 +1109,7 @@ impl App {
                         .as_ref()
                         .and_then(|dyn_sec| {
                             dyn_sec.items.iter().find_map(|item| {
-                                if let knxprod::ModuleDefDynamicItem::ParameterBlock(pb) = item {
+                                if let ModuleDefDynamicItem::ParameterBlock(pb) = item {
                                     Some((pb.text.clone(), pb.text_parameter_ref_id.clone()))
                                 } else {
                                     None
@@ -1241,30 +1130,24 @@ impl App {
                         param_ref.and_then(|pr| {
                             // Build composite ID and look up value
                             let composite_id = format!("{}::{}", exp.instance_id, pr.ref_id);
-                            self.device
-                                .get_module_parameter_value_by_composite_id(&composite_id)
-                                .and_then(|v| match v {
+                            self.device.get_module_parameter_value_by_composite_id(&composite_id).and_then(
+                                |v| match v {
                                     ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
                                     ParameterValue::Integer(i) => Some(i.to_string()),
                                     _ => None,
-                                })
+                                },
+                            )
                         })
                     });
 
                     if let Some(text) = block_text {
                         // Interpolate {{ChNo}} and {{0}} in the text
-                        self.device.interpolate_module_text_with_param(
-                            &text,
-                            exp,
-                            text_param_value.as_deref(),
-                        )
+                        self.device.interpolate_module_text_with_param(&text, exp, text_param_value.as_deref())
                     } else if let Some(instance_name) = &exp.name {
                         self.device.interpolate_module_text(instance_name, exp)
                     } else {
                         // Fallback: use module name with channel number
-                        if let Some(knxprod::model::ModuleArgValue::Numeric(ch)) =
-                            exp.args.get("ChNo")
-                        {
+                        if let Some(knxprod::runtime::model::ModuleArgValue::Numeric(ch)) = exp.args.get("ChNo") {
                             format!("{} {}", module_def.name, ch)
                         } else {
                             module_def.name.clone()
@@ -1287,10 +1170,7 @@ impl App {
                 depth,
                 expanded: false,
                 has_children: false,
-                node_type: NodeType::ModuleInstance {
-                    instance_id: module.id.clone(),
-                    parent: Some(channel_idx),
-                },
+                node_type: NodeType::ModuleInstance { instance_id: module.id.clone(), parent: Some(channel_idx) },
             });
         }
     }
@@ -1340,10 +1220,7 @@ impl App {
         self.content_items.clear();
 
         // Clone node_type to avoid borrow conflict
-        let node_type = self
-            .tree_nodes
-            .get(self.selected_tree_idx)
-            .map(|n| n.node_type.clone());
+        let node_type = self.tree_nodes.get(self.selected_tree_idx).map(|n| n.node_type.clone());
 
         if let Some(node_type) = node_type {
             match &node_type {
@@ -1364,10 +1241,7 @@ impl App {
     }
 
     fn build_device_settings_content(&mut self) {
-        let cib = self
-            .device
-            .dynamic_section()
-            .and_then(|d| d.channel_independent_block.clone());
+        let cib = self.device.dynamic_section().and_then(|d| d.channel_independent_block.clone());
 
         if let Some(cib) = cib {
             for item in &cib.items {
@@ -1385,10 +1259,7 @@ impl App {
     }
 
     fn build_channel_content(&mut self, channel_idx: usize) {
-        let channel = self
-            .device
-            .dynamic_section()
-            .and_then(|d| d.channels.get(channel_idx).cloned());
+        let channel = self.device.dynamic_section().and_then(|d| d.channels.get(channel_idx).cloned());
 
         if let Some(channel) = channel {
             for item in &channel.items {
@@ -1434,7 +1305,6 @@ impl App {
 
     /// Build content for a module instance.
     fn build_module_content(&mut self, instance_id: &str) {
-
         // Get the expanded module and its definition
         let expanded = self.device.get_expanded_module(instance_id).cloned();
         let expanded = match expanded {
@@ -1444,7 +1314,6 @@ impl App {
                 return;
             }
         };
-
 
         let module_def = self.device.get_module_def(&expanded.module_def_id).cloned();
         let module_def = match module_def {
@@ -1459,10 +1328,10 @@ impl App {
         if let Some(dynamic) = &module_def.dynamic {
             for item in &dynamic.items {
                 match item {
-                    knxprod::ModuleDefDynamicItem::ParameterBlock(pb) => {
+                    ModuleDefDynamicItem::ParameterBlock(pb) => {
                         self.add_module_block_items(&pb.items, &expanded);
                     }
-                    knxprod::ModuleDefDynamicItem::Choose(choose) => {
+                    ModuleDefDynamicItem::Choose(choose) => {
                         self.add_module_choose_items(choose, &expanded);
                     }
                 }
@@ -1471,10 +1340,7 @@ impl App {
             // Fall back to rendering params from Static section
             // For now, just show a placeholder message
             self.content_items.push(ContentItem::Separator {
-                text: Some(format!(
-                    "Module: {}",
-                    expanded.name.as_deref().unwrap_or(&expanded.instance_id)
-                )),
+                text: Some(format!("Module: {}", expanded.name.as_deref().unwrap_or(&expanded.instance_id))),
             });
         }
     }
@@ -1483,7 +1349,7 @@ impl App {
     fn add_module_block_items(
         &mut self,
         items: &[ParameterBlockItem],
-        expanded: &knxprod::model::ExpandedModule,
+        expanded: &knxprod::runtime::model::ExpandedModule,
     ) {
         for item in items {
             match item {
@@ -1515,17 +1381,11 @@ impl App {
     }
 
     /// Add choose items for a module.
-    fn add_module_choose_items(
-        &mut self,
-        choose: &Choose,
-        expanded: &knxprod::model::ExpandedModule,
-    ) {
-
+    fn add_module_choose_items(&mut self, choose: &Choose, expanded: &knxprod::runtime::model::ExpandedModule) {
         // Try module-internal lookup first, fall back to device-level
         let module_val = self.get_module_selector_value(&choose.param_ref_id, expanded);
         let device_val = self.get_selector_value(&choose.param_ref_id);
         let selector_value = module_val.or(device_val);
-
 
         let mut any_matched = false;
         for when in &choose.whens {
@@ -1549,32 +1409,22 @@ impl App {
                 }
             }
         }
-
     }
 
     /// Get the selector value for a module-internal parameter ref.
     fn get_module_selector_value(
         &self,
         param_ref_id: &str,
-        expanded: &knxprod::model::ExpandedModule,
+        expanded: &knxprod::runtime::model::ExpandedModule,
     ) -> Option<i64> {
-
         // Get the module definition
         let module_def = self.device.get_module_def(&expanded.module_def_id)?;
 
         // Find the ParameterRef in the module's static section
-        let param_ref = module_def
-            .static_section
-            .parameter_refs
-            .as_ref()?
-            .refs
-            .iter()
-            .find(|pr| pr.id == param_ref_id);
+        let param_ref = module_def.static_section.parameter_refs.as_ref()?.refs.iter().find(|pr| pr.id == param_ref_id);
 
         let param_ref = match param_ref {
-            Some(pr) => {
-                pr
-            }
+            Some(pr) => pr,
             None => {
                 return None;
             }
@@ -1587,24 +1437,14 @@ impl App {
         let param_value = self.device.get_module_parameter_value_by_composite_id(&composite_id);
 
         match param_value {
-            Some(ParameterValue::Integer(v)) => {
-                Some(*v)
-            }
-            Some(ParameterValue::Float(v)) => {
-                Some(*v as i64)
-            }
-            _ => {
-                None
-            }
+            Some(ParameterValue::Integer(v)) => Some(*v),
+            Some(ParameterValue::Float(v)) => Some(*v as i64),
+            _ => None,
         }
     }
 
     /// Add when items for a module.
-    fn add_module_when_items(
-        &mut self,
-        items: &[WhenItem],
-        expanded: &knxprod::model::ExpandedModule,
-    ) {
+    fn add_module_when_items(&mut self, items: &[WhenItem], expanded: &knxprod::runtime::model::ExpandedModule) {
         for item in items {
             match item {
                 WhenItem::ParameterRefRef(prr) => {
@@ -1624,21 +1464,14 @@ impl App {
                     let text = raw_text.map(|t| self.device.interpolate_module_text(&t, expanded));
                     self.content_items.push(ContentItem::Separator { text });
                 }
-                WhenItem::Assign(_) => {
-                }
-                WhenItem::Module(_) => {
-                }
+                WhenItem::Assign(_) => {}
+                WhenItem::Module(_) => {}
             }
         }
     }
 
     /// Add a module parameter ref to content items.
-    fn add_module_param_ref(
-        &mut self,
-        ref_id: &str,
-        expanded: &knxprod::model::ExpandedModule,
-    ) {
-
+    fn add_module_param_ref(&mut self, ref_id: &str, expanded: &knxprod::runtime::model::ExpandedModule) {
         // Look up the ModuleDef to access its static section
         let module_def = match self.device.get_module_def(&expanded.module_def_id) {
             Some(def) => def.clone(),
@@ -1655,9 +1488,7 @@ impl App {
             .and_then(|refs| refs.refs.iter().find(|pr| pr.id == ref_id));
 
         let param_ref = match param_ref {
-            Some(pr) => {
-                pr.clone()
-            }
+            Some(pr) => pr.clone(),
             None => {
                 return;
             }
@@ -1665,43 +1496,37 @@ impl App {
 
         // Find the Parameter using the RefId - check both regular parameters and union parameters
         enum FoundParameter {
-            Regular(knxprod::Parameter),
-            Union(knxprod::UnionParameter),
+            Regular(Parameter),
+            Union(UnionParameter),
         }
 
-        let found_param: Option<FoundParameter> = module_def
-            .static_section
-            .parameters
-            .as_ref()
-            .and_then(|params| {
-                for item in &params.items {
-                    match item {
-                        knxprod::ParameterItem::Parameter(p) if p.id == param_ref.ref_id => {
-                            return Some(FoundParameter::Regular(p.clone()));
-                        }
-                        knxprod::ParameterItem::Union(u) => {
-                            // Search inside union parameters
-                            if let Some(up) = u.parameters.iter().find(|up| up.id == param_ref.ref_id) {
-                                return Some(FoundParameter::Union(up.clone()));
-                            }
-                        }
-                        _ => {}
+        let found_param: Option<FoundParameter> = module_def.static_section.parameters.as_ref().and_then(|params| {
+            for item in &params.items {
+                match item {
+                    ParameterItem::Parameter(p) if p.id == param_ref.ref_id => {
+                        return Some(FoundParameter::Regular(p.clone()));
                     }
+                    ParameterItem::Union(u) => {
+                        // Search inside union parameters
+                        if let Some(up) = u.parameters.iter().find(|up| up.id == param_ref.ref_id) {
+                            return Some(FoundParameter::Union(up.clone()));
+                        }
+                    }
+                    _ => {}
                 }
-                None
-            });
+            }
+            None
+        });
 
         // Extract common fields based on parameter type
         let (param_id_str, param_text, param_suffix, param_type, is_hidden) = match &found_param {
-            Some(FoundParameter::Regular(p)) => {
-                (
-                    p.id.clone(),
-                    p.text.clone(),
-                    p.suffix_text.clone(),
-                    p.parameter_type.clone(),
-                    p.access.as_deref() == Some("None"),
-                )
-            }
+            Some(FoundParameter::Regular(p)) => (
+                p.id.clone(),
+                p.text.clone(),
+                p.suffix_text.clone(),
+                p.parameter_type.clone(),
+                p.access.as_deref() == Some("None"),
+            ),
             Some(FoundParameter::Union(up)) => {
                 (
                     up.id.clone(),
@@ -1728,7 +1553,6 @@ impl App {
             return;
         }
 
-
         let text = self.device.interpolate_module_text(&raw_text, expanded);
 
         // Use a unique ID that includes the module instance
@@ -1745,22 +1569,17 @@ impl App {
         // Build widget based on parameter type
         let widget = self.build_widget_for_module_param_by_type(&param_type, &param_id);
 
-        self.content_items.push(ContentItem::Parameter {
-            param_id,
-            text,
-            suffix: param_suffix,
-            widget,
-        });
+        self.content_items.push(ContentItem::Parameter { param_id, text, suffix: param_suffix, widget });
     }
 
     /// Build a widget for a module parameter.
     fn build_widget_for_module_param(
         &self,
-        parameter: &knxprod::Parameter,
-        _module_def: &knxprod::ModuleDef,
+        parameter: &Parameter,
+        _module_def: &ModuleDef,
         composite_param_id: &str,
     ) -> WidgetType {
-        use knxprod::ParameterTypeDef;
+        use ParameterTypeDef;
 
         // Get the current value from module parameter storage
         let current_value = self.device.get_module_parameter_value_by_composite_id(composite_param_id);
@@ -1771,26 +1590,17 @@ impl App {
         match param_type.map(|pt| &pt.type_def) {
             Some(ParameterTypeDef::TypeRestriction(tr)) => {
                 // Build dropdown options from enumerations
-                let options: Vec<(i64, String)> = tr
-                    .enumerations
-                    .iter()
-                    .map(|e| (e.value as i64, e.text.clone()))
-                    .collect();
+                let options: Vec<(i64, String)> =
+                    tr.enumerations.iter().map(|e| (e.value as i64, e.text.clone())).collect();
 
                 let current_val = match current_value {
                     Some(&ParameterValue::Integer(v)) => v,
                     _ => parameter.value.parse().unwrap_or(0),
                 };
 
-                let current_idx = options
-                    .iter()
-                    .position(|(v, _)| *v == current_val)
-                    .unwrap_or(0);
+                let current_idx = options.iter().position(|(v, _)| *v == current_val).unwrap_or(0);
 
-                WidgetType::Dropdown {
-                    options,
-                    current_idx,
-                }
+                WidgetType::Dropdown { options, current_idx }
             }
             Some(ParameterTypeDef::TypeNumber(tn)) => {
                 let current_val = match current_value {
@@ -1798,11 +1608,7 @@ impl App {
                     _ => parameter.value.parse().unwrap_or(0),
                 };
 
-                WidgetType::Number {
-                    value: current_val,
-                    min: Some(tn.min_inclusive),
-                    max: Some(tn.max_inclusive),
-                }
+                WidgetType::Number { value: current_val, min: Some(tn.min_inclusive), max: Some(tn.max_inclusive) }
             }
             Some(ParameterTypeDef::TypeText(_)) => {
                 let val = match current_value {
@@ -1841,12 +1647,8 @@ impl App {
 
     /// Build a widget for a module parameter using only the type ID.
     /// Used when we have extracted parameter info (e.g., from union parameters).
-    fn build_widget_for_module_param_by_type(
-        &self,
-        type_id: &str,
-        composite_param_id: &str,
-    ) -> WidgetType {
-        use knxprod::ParameterTypeDef;
+    fn build_widget_for_module_param_by_type(&self, type_id: &str, composite_param_id: &str) -> WidgetType {
+        use ParameterTypeDef;
 
         // Get the current value from module parameter storage
         let current_value = self.device.get_module_parameter_value_by_composite_id(composite_param_id);
@@ -1857,26 +1659,17 @@ impl App {
         match param_type.map(|pt| &pt.type_def) {
             Some(ParameterTypeDef::TypeRestriction(tr)) => {
                 // Build dropdown options from enumerations
-                let options: Vec<(i64, String)> = tr
-                    .enumerations
-                    .iter()
-                    .map(|e| (e.value as i64, e.text.clone()))
-                    .collect();
+                let options: Vec<(i64, String)> =
+                    tr.enumerations.iter().map(|e| (e.value as i64, e.text.clone())).collect();
 
                 let current_val = match current_value {
                     Some(&ParameterValue::Integer(v)) => v,
                     _ => 0,
                 };
 
-                let current_idx = options
-                    .iter()
-                    .position(|(v, _)| *v == current_val)
-                    .unwrap_or(0);
+                let current_idx = options.iter().position(|(v, _)| *v == current_val).unwrap_or(0);
 
-                WidgetType::Dropdown {
-                    options,
-                    current_idx,
-                }
+                WidgetType::Dropdown { options, current_idx }
             }
             Some(ParameterTypeDef::TypeNumber(tn)) => {
                 let current_val = match current_value {
@@ -1884,11 +1677,7 @@ impl App {
                     _ => 0,
                 };
 
-                WidgetType::Number {
-                    value: current_val,
-                    min: Some(tn.min_inclusive),
-                    max: Some(tn.max_inclusive),
-                }
+                WidgetType::Number { value: current_val, min: Some(tn.min_inclusive), max: Some(tn.max_inclusive) }
             }
             Some(ParameterTypeDef::TypeText(_)) => {
                 let val = match current_value {
@@ -1926,11 +1715,7 @@ impl App {
     }
 
     /// Add a module comm object ref to content items.
-    fn add_module_com_obj_ref(
-        &mut self,
-        ref_id: &str,
-        expanded: &knxprod::model::ExpandedModule,
-    ) {
+    fn add_module_com_obj_ref(&mut self, ref_id: &str, expanded: &knxprod::runtime::model::ExpandedModule) {
         // Look up the ModuleDef to access its static section
         let module_def = match self.device.get_module_def(&expanded.module_def_id) {
             Some(def) => def.clone(),
@@ -1962,34 +1747,20 @@ impl App {
         };
 
         // Build display text with interpolation
-        let raw_text = com_obj_ref
-            .text
-            .clone()
-            .unwrap_or_else(|| com_object.text.clone());
+        let raw_text = com_obj_ref.text.clone().unwrap_or_else(|| com_object.text.clone());
 
         let text = self.device.interpolate_module_text(&raw_text, expanded);
 
         // Add as a comm object display item
         self.content_items.push(ContentItem::CommObject {
             name: text,
-            function: com_obj_ref
-                .function_text
-                .clone()
-                .unwrap_or_else(|| com_object.function_text.clone()),
-            dpt: com_obj_ref
-                .datapoint_type
-                .clone()
-                .or_else(|| com_object.datapoint_type.clone())
-                .unwrap_or_default(),
+            function: com_obj_ref.function_text.clone().unwrap_or_else(|| com_object.function_text.clone()),
+            dpt: com_obj_ref.datapoint_type.clone().or_else(|| com_object.datapoint_type.clone()).unwrap_or_default(),
         });
     }
 
     /// Find a parameter block by name in a CIB, including inside Choose blocks.
-    fn find_block_in_cib<'a>(
-        &self,
-        cib: &'a ChannelIndependentBlock,
-        block_name: &str,
-    ) -> Option<&'a ParameterBlock> {
+    fn find_block_in_cib<'a>(&self, cib: &'a ChannelIndependentBlock, block_name: &str) -> Option<&'a ParameterBlock> {
         for item in &cib.items {
             match item {
                 ChannelIndependentItem::ParameterBlock(pb) => {
@@ -2008,11 +1779,7 @@ impl App {
     }
 
     /// Find a parameter block by name in a channel, including inside Choose blocks.
-    fn find_block_in_channel<'a>(
-        &self,
-        channel: &'a Channel,
-        block_name: &str,
-    ) -> Option<&'a ParameterBlock> {
+    fn find_block_in_channel<'a>(&self, channel: &'a Channel, block_name: &str) -> Option<&'a ParameterBlock> {
         for item in &channel.items {
             match item {
                 ChannelItem::ParameterBlock(pb) => {
@@ -2035,11 +1802,7 @@ impl App {
 
     /// Find a parameter block by name inside a Choose structure.
     /// Note: Multiple when clauses can match the same value in KNX choose blocks.
-    fn find_block_in_choose<'a>(
-        &self,
-        choose: &'a Choose,
-        block_name: &str,
-    ) -> Option<&'a ParameterBlock> {
+    fn find_block_in_choose<'a>(&self, choose: &'a Choose, block_name: &str) -> Option<&'a ParameterBlock> {
         let selector_value = self.get_selector_value(&choose.param_ref_id);
 
         // First pass: search in all matching non-default whens
@@ -2071,11 +1834,7 @@ impl App {
     }
 
     /// Helper to find a block in when items.
-    fn find_block_in_when_items<'a>(
-        &self,
-        items: &'a [WhenItem],
-        block_name: &str,
-    ) -> Option<&'a ParameterBlock> {
+    fn find_block_in_when_items<'a>(&self, items: &'a [WhenItem], block_name: &str) -> Option<&'a ParameterBlock> {
         for item in items {
             match item {
                 WhenItem::ParameterBlock(pb) => {
@@ -2120,16 +1879,12 @@ impl App {
                                 }
                             }
 
-                            let raw_text = prr
-                                .text
-                                .clone()
-                                .or_else(|| pref.text.clone())
-                                .unwrap_or_else(|| {
-                                    self.device
-                                        .get_parameter_info(&param_id)
-                                        .map(|p| p.text.clone())
-                                        .unwrap_or_else(|| param_id.clone())
-                                });
+                            let raw_text = prr.text.clone().or_else(|| pref.text.clone()).unwrap_or_else(|| {
+                                self.device
+                                    .get_parameter_info(&param_id)
+                                    .map(|p| p.text.clone())
+                                    .unwrap_or_else(|| param_id.clone())
+                            });
 
                             // Skip if the final text is empty
                             if raw_text.is_empty() {
@@ -2138,19 +1893,11 @@ impl App {
 
                             let text = self.device.interpolate_text(&raw_text);
 
-                            let suffix = self
-                                .device
-                                .get_parameter_info(&param_id)
-                                .and_then(|p| p.suffix.clone());
+                            let suffix = self.device.get_parameter_info(&param_id).and_then(|p| p.suffix.clone());
 
                             let widget = self.build_widget_for_param(&param_id);
 
-                            self.content_items.push(ContentItem::Parameter {
-                                param_id,
-                                text,
-                                suffix,
-                                widget,
-                            });
+                            self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
                         }
                     }
                 }
@@ -2235,16 +1982,12 @@ impl App {
                                 }
                             }
 
-                            let raw_text = prr
-                                .text
-                                .clone()
-                                .or_else(|| pref.text.clone())
-                                .unwrap_or_else(|| {
-                                    self.device
-                                        .get_parameter_info(&param_id)
-                                        .map(|p| p.text.clone())
-                                        .unwrap_or_else(|| param_id.clone())
-                                });
+                            let raw_text = prr.text.clone().or_else(|| pref.text.clone()).unwrap_or_else(|| {
+                                self.device
+                                    .get_parameter_info(&param_id)
+                                    .map(|p| p.text.clone())
+                                    .unwrap_or_else(|| param_id.clone())
+                            });
 
                             // Skip if the final text is empty
                             if raw_text.is_empty() {
@@ -2253,19 +1996,11 @@ impl App {
 
                             let text = self.device.interpolate_text(&raw_text);
 
-                            let suffix = self
-                                .device
-                                .get_parameter_info(&param_id)
-                                .and_then(|p| p.suffix.clone());
+                            let suffix = self.device.get_parameter_info(&param_id).and_then(|p| p.suffix.clone());
 
                             let widget = self.build_widget_for_param(&param_id);
 
-                            self.content_items.push(ContentItem::Parameter {
-                                param_id,
-                                text,
-                                suffix,
-                                widget,
-                            });
+                            self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
                         }
                     }
                 }
@@ -2289,11 +2024,7 @@ impl App {
     fn build_widget_for_param(&self, param_id: &str) -> WidgetType {
         let info = match self.device.get_parameter_info(param_id) {
             Some(i) => i,
-            None => {
-                return WidgetType::ReadOnly {
-                    value: "?".to_string(),
-                }
-            }
+            None => return WidgetType::ReadOnly { value: "?".to_string() },
         };
 
         let ptype = self.device.get_parameter_type(&info.type_id);
@@ -2305,31 +2036,18 @@ impl App {
                     Some(ParameterValue::Integer(v)) => *v,
                     _ => 0,
                 };
-                let options: Vec<(i64, String)> = tr
-                    .enumerations
-                    .iter()
-                    .map(|e| (e.value as i64, e.text.clone()))
-                    .collect();
-                let current_idx = options
-                    .iter()
-                    .position(|(v, _)| *v == current_val)
-                    .unwrap_or(0);
+                let options: Vec<(i64, String)> =
+                    tr.enumerations.iter().map(|e| (e.value as i64, e.text.clone())).collect();
+                let current_idx = options.iter().position(|(v, _)| *v == current_val).unwrap_or(0);
 
-                WidgetType::Dropdown {
-                    options,
-                    current_idx,
-                }
+                WidgetType::Dropdown { options, current_idx }
             }
             Some(ParameterTypeDef::TypeNumber(tn)) => {
                 let val = match value {
                     Some(ParameterValue::Integer(v)) => *v,
                     _ => 0,
                 };
-                WidgetType::Number {
-                    value: val,
-                    min: Some(tn.min_inclusive),
-                    max: Some(tn.max_inclusive),
-                }
+                WidgetType::Number { value: val, min: Some(tn.min_inclusive), max: Some(tn.max_inclusive) }
             }
             Some(ParameterTypeDef::TypeFloat(_)) => {
                 let val = match value {
@@ -2346,15 +2064,11 @@ impl App {
                 };
                 WidgetType::Text { value: val }
             }
-            Some(ParameterTypeDef::TypeNone(_))
-            | Some(ParameterTypeDef::TypeIpAddress(_))
-            | None => WidgetType::ReadOnly {
-                value: "—".to_string(),
-            },
+            Some(ParameterTypeDef::TypeNone(_)) | Some(ParameterTypeDef::TypeIpAddress(_)) | None => {
+                WidgetType::ReadOnly { value: "—".to_string() }
+            }
             // TypePicture should be handled separately - shouldn't reach here
-            Some(ParameterTypeDef::TypePicture(_)) => WidgetType::ReadOnly {
-                value: "[picture]".to_string(),
-            },
+            Some(ParameterTypeDef::TypePicture(_)) => WidgetType::ReadOnly { value: "[picture]".to_string() },
         }
     }
 
@@ -2370,7 +2084,7 @@ impl App {
     }
 
     /// Check if a module parameter is a TypePicture and return its ref_id if so.
-    fn get_module_picture_ref_id(&self, parameter: &knxprod::Parameter) -> Option<String> {
+    fn get_module_picture_ref_id(&self, parameter: &Parameter) -> Option<String> {
         let ptype = self.device.get_parameter_type(&parameter.parameter_type)?;
         if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def {
             Some(tp.ref_id.clone())
@@ -2390,25 +2104,13 @@ impl App {
             if let Some(obj) = self.device.get_com_object(&oref.ref_id) {
                 let raw_name = oref.text.clone().unwrap_or_else(|| obj.text.clone());
                 let name = self.device.interpolate_text(&raw_name);
-                let raw_function = oref
-                    .function_text
-                    .clone()
-                    .unwrap_or_else(|| obj.function_text.clone());
+                let raw_function = oref.function_text.clone().unwrap_or_else(|| obj.function_text.clone());
                 let function = self.device.interpolate_text(&raw_function);
 
                 // Get effective values (ref overrides base object)
-                let size = oref
-                    .object_size
-                    .clone()
-                    .unwrap_or_else(|| obj.object_size.clone());
-                let dpt = oref
-                    .datapoint_type
-                    .clone()
-                    .or_else(|| obj.datapoint_type.clone())
-                    .unwrap_or_default();
-                let priority = oref.priority.unwrap_or(
-                    obj.priority.unwrap_or(ComObjectPriority::Low),
-                );
+                let size = oref.object_size.clone().unwrap_or_else(|| obj.object_size.clone());
+                let dpt = oref.datapoint_type.clone().or_else(|| obj.datapoint_type.clone()).unwrap_or_default();
+                let priority = oref.priority.unwrap_or(obj.priority.unwrap_or(ComObjectPriority::Low));
                 let priority_str = match priority {
                     ComObjectPriority::Low => "Low",
                     ComObjectPriority::High => "High",
@@ -2416,20 +2118,11 @@ impl App {
                 };
 
                 // Flags (ref overrides base)
-                let flag_c = oref
-                    .communication_flag
-                    .unwrap_or(obj.communication_flag)
-                    == EnableFlag::Enabled;
-                let flag_r =
-                    oref.read_flag.unwrap_or(obj.read_flag) == EnableFlag::Enabled;
-                let flag_w =
-                    oref.write_flag.unwrap_or(obj.write_flag) == EnableFlag::Enabled;
-                let flag_t = oref
-                    .transmit_flag
-                    .unwrap_or(obj.transmit_flag)
-                    == EnableFlag::Enabled;
-                let flag_u =
-                    oref.update_flag.unwrap_or(obj.update_flag) == EnableFlag::Enabled;
+                let flag_c = oref.communication_flag.unwrap_or(obj.communication_flag) == EnableFlag::Enabled;
+                let flag_r = oref.read_flag.unwrap_or(obj.read_flag) == EnableFlag::Enabled;
+                let flag_w = oref.write_flag.unwrap_or(obj.write_flag) == EnableFlag::Enabled;
+                let flag_t = oref.transmit_flag.unwrap_or(obj.transmit_flag) == EnableFlag::Enabled;
+                let flag_u = oref.update_flag.unwrap_or(obj.update_flag) == EnableFlag::Enabled;
 
                 // Get group address binding if any
                 let group_address = self.format_group_address(obj.number);
@@ -2509,38 +2202,24 @@ impl App {
                     param_ref.and_then(|pr| {
                         // Build composite ID and look up value
                         let composite_id = format!("{}::{}", expanded.instance_id, pr.ref_id);
-                        self.device
-                            .get_module_parameter_value_by_composite_id(&composite_id)
-                            .and_then(|v| match v {
-                                ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
-                                ParameterValue::Integer(i) => Some(i.to_string()),
-                                _ => None,
-                            })
+                        self.device.get_module_parameter_value_by_composite_id(&composite_id).and_then(|v| match v {
+                            ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
+                            ParameterValue::Integer(i) => Some(i.to_string()),
+                            _ => None,
+                        })
                     })
                 });
 
                 let raw_name = oref.text.clone().unwrap_or_else(|| obj.text.clone());
                 let name =
                     self.device.interpolate_module_text_with_param(&raw_name, &expanded, text_param_value.as_deref());
-                let raw_function = oref
-                    .function_text
-                    .clone()
-                    .unwrap_or_else(|| obj.function_text.clone());
+                let raw_function = oref.function_text.clone().unwrap_or_else(|| obj.function_text.clone());
                 let function = self.device.interpolate_module_text(&raw_function, &expanded);
 
                 // Get effective values (ref overrides base object)
-                let size = oref
-                    .object_size
-                    .clone()
-                    .unwrap_or_else(|| obj.object_size.clone());
-                let dpt = oref
-                    .datapoint_type
-                    .clone()
-                    .or_else(|| obj.datapoint_type.clone())
-                    .unwrap_or_default();
-                let priority = oref.priority.unwrap_or(
-                    obj.priority.unwrap_or(ComObjectPriority::Low),
-                );
+                let size = oref.object_size.clone().unwrap_or_else(|| obj.object_size.clone());
+                let dpt = oref.datapoint_type.clone().or_else(|| obj.datapoint_type.clone()).unwrap_or_default();
+                let priority = oref.priority.unwrap_or(obj.priority.unwrap_or(ComObjectPriority::Low));
                 let priority_str = match priority {
                     ComObjectPriority::Low => "Low",
                     ComObjectPriority::High => "High",
@@ -2548,20 +2227,11 @@ impl App {
                 };
 
                 // Flags (ref overrides base)
-                let flag_c = oref
-                    .communication_flag
-                    .unwrap_or(obj.communication_flag)
-                    == EnableFlag::Enabled;
-                let flag_r =
-                    oref.read_flag.unwrap_or(obj.read_flag) == EnableFlag::Enabled;
-                let flag_w =
-                    oref.write_flag.unwrap_or(obj.write_flag) == EnableFlag::Enabled;
-                let flag_t = oref
-                    .transmit_flag
-                    .unwrap_or(obj.transmit_flag)
-                    == EnableFlag::Enabled;
-                let flag_u =
-                    oref.update_flag.unwrap_or(obj.update_flag) == EnableFlag::Enabled;
+                let flag_c = oref.communication_flag.unwrap_or(obj.communication_flag) == EnableFlag::Enabled;
+                let flag_r = oref.read_flag.unwrap_or(obj.read_flag) == EnableFlag::Enabled;
+                let flag_w = oref.write_flag.unwrap_or(obj.write_flag) == EnableFlag::Enabled;
+                let flag_t = oref.transmit_flag.unwrap_or(obj.transmit_flag) == EnableFlag::Enabled;
+                let flag_u = oref.update_flag.unwrap_or(obj.update_flag) == EnableFlag::Enabled;
 
                 // Get group address binding if any - use actual computed number
                 let group_address = self.format_group_address(actual_number);
@@ -2595,10 +2265,7 @@ impl App {
         }
 
         // Format all bindings, sending address first
-        let mut addresses: Vec<String> = bindings
-            .iter()
-            .map(|b| b.group_address.to_string())
-            .collect();
+        let mut addresses: Vec<String> = bindings.iter().map(|b| b.group_address.to_string()).collect();
 
         if addresses.len() == 1 {
             addresses.pop().unwrap()
@@ -2609,9 +2276,7 @@ impl App {
 
     /// Get the MaskVersion info for this device, if master data is available.
     pub fn get_mask_version(&self) -> Option<&MaskVersion> {
-        self.master_data
-            .as_ref()
-            .and_then(|md| md.get_mask_version(self.device.mask_version()))
+        self.master_data.as_ref().and_then(|md| md.get_mask_version(self.device.mask_version()))
     }
 
     /// Get a human-readable mask version display string.
@@ -2632,9 +2297,8 @@ impl App {
 
     /// Get the first application object index from mask version.
     pub fn first_app_object_idx(&self) -> u8 {
-        self.get_mask_version()
-            .map(|mv| mv.first_app_object_idx())
-            .unwrap_or(5) // Default BCU1-style
+        self.get_mask_version().map(|mv| mv.first_app_object_idx()).unwrap_or(5)
+        // Default BCU1-style
     }
 
     /// Get max APDU length from master data resources.
@@ -2773,11 +2437,7 @@ impl App {
         // Check if this table references an existing code segment
         // If so, add annotations to that segment instead of creating a new one
         if let Some(code_segment) = &at.code_segment {
-            if let Some(seg_idx) = self
-                .memory_segments
-                .iter()
-                .position(|s| s.id == *code_segment)
-            {
+            if let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment) {
                 // Add annotations to existing segment
                 let annotations = self.build_address_table_annotations(offset, &flavour);
                 self.memory_segments[seg_idx].annotations.extend(annotations);
@@ -2823,11 +2483,7 @@ impl App {
     }
 
     /// Build annotations for Address Table entries.
-    fn build_address_table_annotations(
-        &self,
-        base_offset: u32,
-        flavour: &TableFlavour,
-    ) -> Vec<MemoryAnnotation> {
+    fn build_address_table_annotations(&self, base_offset: u32, flavour: &TableFlavour) -> Vec<MemoryAnnotation> {
         let mut annotations = Vec::new();
         let count_size = flavour.count_size() as u32;
         let entry_size = flavour.entry_size() as u32;
@@ -2885,11 +2541,7 @@ impl App {
 
         // Check if this table references an existing code segment
         if let Some(code_segment) = &at.code_segment {
-            if let Some(seg_idx) = self
-                .memory_segments
-                .iter()
-                .position(|s| s.id == *code_segment)
-            {
+            if let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment) {
                 // Add annotations to existing segment
                 let annotations = self.build_association_table_annotations(offset, &flavour);
                 self.memory_segments[seg_idx].annotations.extend(annotations);
@@ -2942,11 +2594,7 @@ impl App {
     }
 
     /// Build annotations for Association Table entries.
-    fn build_association_table_annotations(
-        &self,
-        base_offset: u32,
-        flavour: &TableFlavour,
-    ) -> Vec<MemoryAnnotation> {
+    fn build_association_table_annotations(&self, base_offset: u32, flavour: &TableFlavour) -> Vec<MemoryAnnotation> {
         let mut annotations = Vec::new();
         let count_size = flavour.count_size() as u32;
         let entry_size = flavour.entry_size() as u32;
@@ -3016,11 +2664,7 @@ impl App {
         // Check if this table references an existing code segment
         if let Some(cot) = cot_config {
             if let Some(code_segment) = &cot.code_segment {
-                if let Some(seg_idx) = self
-                    .memory_segments
-                    .iter()
-                    .position(|s| s.id == *code_segment)
-                {
+                if let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment) {
                     // Add annotations to existing segment
                     let annotations = self.build_com_object_table_annotations(offset);
                     self.memory_segments[seg_idx].annotations.extend(annotations);
@@ -3069,12 +2713,7 @@ impl App {
         let static_section = &self.device.static_section();
 
         // Get ComObjectTable config for looking up base objects
-        let com_objects = static_section
-            .com_object_table
-            .as_ref()
-            .map(|t| &t.objects)
-            .cloned()
-            .unwrap_or_default();
+        let com_objects = static_section.com_object_table.as_ref().map(|t| &t.objects).cloned().unwrap_or_default();
 
         // Add main device comm objects
         for com_obj_ref in self.device.visible_com_object_refs() {
@@ -3123,10 +2762,7 @@ impl App {
                 // Compute actual object number using BaseNumber argument
                 let actual_number = compute_module_object_number(obj, expanded, &module_def);
 
-                let size_str = oref
-                    .object_size
-                    .clone()
-                    .unwrap_or_else(|| obj.object_size.clone());
+                let size_str = oref.object_size.clone().unwrap_or_else(|| obj.object_size.clone());
 
                 let type_byte = self.object_size_to_type_byte(&size_str);
                 let flags = self.build_module_com_object_flags(oref, obj);
@@ -3139,19 +2775,11 @@ impl App {
     }
 
     /// Build flags byte for a module comm object.
-    fn build_module_com_object_flags(
-        &self,
-        oref: &knxprod::ComObjectRef,
-        obj: &knxprod::ComObject,
-    ) -> u8 {
+    fn build_module_com_object_flags(&self, oref: &ComObjectRef, obj: &ComObject) -> u8 {
         let mut flags: u8 = 0;
 
         // Communication flag (bit 2)
-        if oref
-            .communication_flag
-            .unwrap_or(obj.communication_flag)
-            == EnableFlag::Enabled
-        {
+        if oref.communication_flag.unwrap_or(obj.communication_flag) == EnableFlag::Enabled {
             flags |= 0x04;
         }
 
@@ -3176,11 +2804,7 @@ impl App {
         }
 
         // Read on init flag (bit 7)
-        if oref
-            .read_on_init_flag
-            .unwrap_or(obj.read_on_init_flag)
-            == EnableFlag::Enabled
-        {
+        if oref.read_on_init_flag.unwrap_or(obj.read_on_init_flag) == EnableFlag::Enabled {
             flags |= 0x80;
         }
 
@@ -3207,20 +2831,13 @@ impl App {
             // The RAM pointer indicates where the object's value is stored at runtime
             let mut idx: u32 = 0;
             for com_obj_ref in self.device.visible_com_object_refs() {
-                let name = com_obj_ref
-                    .text
-                    .clone()
-                    .unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
+                let name = com_obj_ref.text.clone().unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
 
                 // Include assigned group address in annotation if present
                 let ga_info = self.format_group_address(idx as u16);
 
                 // Get object size for display
-                let size_str = com_obj_ref
-                    .object_size
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or("?");
+                let size_str = com_obj_ref.object_size.as_ref().map(|s| s.as_str()).unwrap_or("?");
 
                 let full_name = if ga_info.is_empty() {
                     format!("CO[{}] {} ({})", idx, name, size_str)
@@ -3250,20 +2867,13 @@ impl App {
 
             let mut idx: u32 = 0;
             for com_obj_ref in self.device.visible_com_object_refs() {
-                let name = com_obj_ref
-                    .text
-                    .clone()
-                    .unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
+                let name = com_obj_ref.text.clone().unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
 
                 // Include assigned group address in annotation if present
                 let ga_info = self.format_group_address(idx as u16);
 
                 // Get object size for display
-                let size_str = com_obj_ref
-                    .object_size
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or("?");
+                let size_str = com_obj_ref.object_size.as_ref().map(|s| s.as_str()).unwrap_or("?");
 
                 let full_name = if ga_info.is_empty() {
                     format!("CO[{}] {} ({})", idx, name, size_str)
@@ -3308,65 +2918,43 @@ impl App {
     }
 
     /// Build flags byte from ComObjectRef and base ComObject.
-    fn build_com_object_flags(
-        &self,
-        obj_ref: &knxprod::ComObjectRef,
-        base_obj: Option<&knxprod::ComObject>,
-    ) -> u8 {
-        use knxprod::EnableFlag;
-
+    fn build_com_object_flags(&self, obj_ref: &ComObjectRef, base_obj: Option<&ComObject>) -> u8 {
         let mut flags: u8 = 0;
 
         // Communication flag (bit 2)
-        let comm = obj_ref
-            .communication_flag
-            .or(base_obj.map(|o| o.communication_flag))
-            .unwrap_or(EnableFlag::Disabled);
+        let comm =
+            obj_ref.communication_flag.or(base_obj.map(|o| o.communication_flag)).unwrap_or(EnableFlag::Disabled);
         if comm == EnableFlag::Enabled {
             flags |= 0x04;
         }
 
         // Read flag (bit 3)
-        let read = obj_ref
-            .read_flag
-            .or(base_obj.map(|o| o.read_flag))
-            .unwrap_or(EnableFlag::Disabled);
+        let read = obj_ref.read_flag.or(base_obj.map(|o| o.read_flag)).unwrap_or(EnableFlag::Disabled);
         if read == EnableFlag::Enabled {
             flags |= 0x08;
         }
 
         // Write flag (bit 4)
-        let write = obj_ref
-            .write_flag
-            .or(base_obj.map(|o| o.write_flag))
-            .unwrap_or(EnableFlag::Disabled);
+        let write = obj_ref.write_flag.or(base_obj.map(|o| o.write_flag)).unwrap_or(EnableFlag::Disabled);
         if write == EnableFlag::Enabled {
             flags |= 0x10;
         }
 
         // Transmit flag (bit 5)
-        let transmit = obj_ref
-            .transmit_flag
-            .or(base_obj.map(|o| o.transmit_flag))
-            .unwrap_or(EnableFlag::Disabled);
+        let transmit = obj_ref.transmit_flag.or(base_obj.map(|o| o.transmit_flag)).unwrap_or(EnableFlag::Disabled);
         if transmit == EnableFlag::Enabled {
             flags |= 0x20;
         }
 
         // Update flag (bit 6)
-        let update = obj_ref
-            .update_flag
-            .or(base_obj.map(|o| o.update_flag))
-            .unwrap_or(EnableFlag::Disabled);
+        let update = obj_ref.update_flag.or(base_obj.map(|o| o.update_flag)).unwrap_or(EnableFlag::Disabled);
         if update == EnableFlag::Enabled {
             flags |= 0x40;
         }
 
         // Read on init flag (bit 7)
-        let read_init = obj_ref
-            .read_on_init_flag
-            .or(base_obj.map(|o| o.read_on_init_flag))
-            .unwrap_or(EnableFlag::Disabled);
+        let read_init =
+            obj_ref.read_on_init_flag.or(base_obj.map(|o| o.read_on_init_flag)).unwrap_or(EnableFlag::Disabled);
         if read_init == EnableFlag::Enabled {
             flags |= 0x80;
         }
@@ -3402,13 +2990,13 @@ impl App {
     /// Apply parameters from a Parameters items list to a memory segment.
     fn apply_params_to_segment(
         &self,
-        items: &[knxprod::ParameterItem],
+        items: &[ParameterItem],
         segment_id: &str,
         data: &mut [u8],
         base_offset_info: Option<(u32, &str)>,
     ) {
         for item in items {
-            if let knxprod::ParameterItem::Parameter(param) = item {
+            if let ParameterItem::Parameter(param) = item {
                 if let Some(memory) = &param.memory {
                     if memory.code_segment != segment_id {
                         continue;
@@ -3435,16 +3023,10 @@ impl App {
 
                     if let Some(value) = value {
                         let size_bits = self.get_parameter_size_bits(&param.parameter_type);
-                        self.write_value_to_memory(
-                            data,
-                            actual_offset as usize,
-                            memory.bit_offset,
-                            size_bits,
-                            value,
-                        );
+                        self.write_value_to_memory(data, actual_offset as usize, memory.bit_offset, size_bits, value);
                     }
                 }
-            } else if let knxprod::ParameterItem::Union(union) = item {
+            } else if let ParameterItem::Union(union) = item {
                 let memory = &union.memory;
                 if memory.code_segment != segment_id {
                     continue;
@@ -3473,13 +3055,7 @@ impl App {
                         let size_bits = self.get_parameter_size_bits(&param.parameter_type);
                         let offset = union_base_offset + param.offset as u32;
                         let bit_offset = memory.bit_offset + param.bit_offset;
-                        self.write_value_to_memory(
-                            data,
-                            offset as usize,
-                            bit_offset,
-                            size_bits,
-                            value,
-                        );
+                        self.write_value_to_memory(data, offset as usize, bit_offset, size_bits, value);
                     }
                 }
             }
@@ -3493,7 +3069,7 @@ impl App {
         byte_offset: usize,
         bit_offset: u8,
         size_bits: u16,
-        value: &knxprod::model::ParameterValue,
+        value: &knxprod::runtime::model::ParameterValue,
     ) {
         // Skip if no bits to write (e.g., picture types)
         if size_bits == 0 {
@@ -3502,13 +3078,13 @@ impl App {
 
         // Convert value to integer (most parameters are integer-based)
         let int_value: u64 = match value {
-            knxprod::model::ParameterValue::Integer(v) => *v as u64,
-            knxprod::model::ParameterValue::Float(v) => {
+            knxprod::runtime::model::ParameterValue::Integer(v) => *v as u64,
+            knxprod::runtime::model::ParameterValue::Float(v) => {
                 // For float, assume DPT9 encoding (2 bytes)
                 // Simplified: just cast to u64 for now
                 (*v as i64) as u64
             }
-            knxprod::model::ParameterValue::Text(s) => {
+            knxprod::runtime::model::ParameterValue::Text(s) => {
                 // For text, write raw bytes
                 let bytes = s.as_bytes();
                 let max_bytes = (size_bits as usize + 7) / 8;
@@ -3519,7 +3095,7 @@ impl App {
                 }
                 return;
             }
-            knxprod::model::ParameterValue::Bytes(bytes) => {
+            knxprod::runtime::model::ParameterValue::Bytes(bytes) => {
                 // For raw bytes, write directly
                 for (i, &b) in bytes.iter().enumerate() {
                     if byte_offset + i < data.len() {
@@ -3571,9 +3147,7 @@ impl App {
     }
 
     /// Collect parameter memory mappings: (segment_id, offset, bit_offset, name, size_bits, param_id)
-    fn collect_parameter_memory_mappings(
-        &self,
-    ) -> Vec<(String, u32, u8, String, u16, String)> {
+    fn collect_parameter_memory_mappings(&self) -> Vec<(String, u32, u8, String, u16, String)> {
         let mut mappings = Vec::new();
 
         // Get parameters from main static section
@@ -3612,8 +3186,8 @@ impl App {
     /// searches for such an argument and returns its resolved value.
     fn get_module_param_offset_base(
         &self,
-        expanded: &knxprod::model::ExpandedModule,
-        module_def: &knxprod::ModuleDef,
+        expanded: &knxprod::runtime::model::ExpandedModule,
+        module_def: &ModuleDef,
     ) -> Option<u32> {
         // Find the parameter base offset argument definition
         // Common names: ParamBase, ParamOffsBase, ParameterBase, etc.
@@ -3624,8 +3198,7 @@ impl App {
         })?;
 
         // Get the resolved value from the expanded module
-        if let Some(knxprod::model::ModuleArgValue::Numeric(val)) = expanded.args.get(&arg_def.name)
-        {
+        if let Some(knxprod::runtime::model::ModuleArgValue::Numeric(val)) = expanded.args.get(&arg_def.name) {
             Some(*val as u32)
         } else {
             None
@@ -3637,22 +3210,19 @@ impl App {
     /// Falls back to the module definition name if no identifier is found.
     fn build_module_instance_label(
         &self,
-        expanded: &knxprod::model::ExpandedModule,
-        module_def: &knxprod::ModuleDef,
+        expanded: &knxprod::runtime::model::ExpandedModule,
+        module_def: &ModuleDef,
     ) -> String {
         // Try to find a channel/instance number argument (commonly named ChNo, Channel, ChannelNo, etc.)
-        let channel_arg = module_def
-            .arguments
-            .as_ref()
-            .and_then(|args| {
-                args.arguments.iter().find(|a| {
-                    let name_lower = a.name.to_lowercase();
-                    name_lower.contains("ch") || name_lower.contains("channel") || name_lower.contains("instance")
-                })
-            });
+        let channel_arg = module_def.arguments.as_ref().and_then(|args| {
+            args.arguments.iter().find(|a| {
+                let name_lower = a.name.to_lowercase();
+                name_lower.contains("ch") || name_lower.contains("channel") || name_lower.contains("instance")
+            })
+        });
 
         if let Some(arg_def) = channel_arg {
-            if let Some(knxprod::model::ModuleArgValue::Numeric(val)) = expanded.args.get(&arg_def.name) {
+            if let Some(knxprod::runtime::model::ModuleArgValue::Numeric(val)) = expanded.args.get(&arg_def.name) {
                 // Use module name with channel number, e.g., "Ch1" or "DimmerChannel 1"
                 return format!("Ch{}", val);
             }
@@ -3675,12 +3245,12 @@ impl App {
     /// If base_offset_info is provided (base_value, instance_id, instance_label), apply it to parameters with BaseOffset.
     fn collect_params_from_items(
         &self,
-        items: &[knxprod::ParameterItem],
+        items: &[ParameterItem],
         mappings: &mut Vec<(String, u32, u8, String, u16, String)>,
         base_offset_info: Option<(u32, &str, &str)>,
     ) {
         for item in items {
-            if let knxprod::ParameterItem::Parameter(param) = item {
+            if let ParameterItem::Parameter(param) = item {
                 if let Some(memory) = &param.memory {
                     let size_bits = self.get_parameter_size_bits(&param.parameter_type);
 
@@ -3719,7 +3289,7 @@ impl App {
                         param_id,
                     ));
                 }
-            } else if let knxprod::ParameterItem::Union(union) = item {
+            } else if let ParameterItem::Union(union) = item {
                 let memory = &union.memory;
 
                 // Calculate actual base offset for union
@@ -3765,13 +3335,13 @@ impl App {
     fn get_parameter_size_bits(&self, type_id: &str) -> u16 {
         if let Some(pt) = self.device.get_parameter_type(type_id) {
             match &pt.type_def {
-                knxprod::ParameterTypeDef::TypeNumber(tn) => tn.size_in_bit as u16,
-                knxprod::ParameterTypeDef::TypeRestriction(tr) => tr.size_in_bit as u16,
-                knxprod::ParameterTypeDef::TypeText(tt) => (tt.size_in_bit) as u16,
-                knxprod::ParameterTypeDef::TypeFloat(_) => 16, // DPT9 is typically 16 bits
-                knxprod::ParameterTypeDef::TypeNone(_) => 8,
-                knxprod::ParameterTypeDef::TypePicture(_) => 0, // Picture types don't occupy memory
-                knxprod::ParameterTypeDef::TypeIpAddress(_) => 32, // IPv4 address is 4 bytes
+                ParameterTypeDef::TypeNumber(tn) => tn.size_in_bit as u16,
+                ParameterTypeDef::TypeRestriction(tr) => tr.size_in_bit as u16,
+                ParameterTypeDef::TypeText(tt) => (tt.size_in_bit) as u16,
+                ParameterTypeDef::TypeFloat(_) => 16, // DPT9 is typically 16 bits
+                ParameterTypeDef::TypeNone(_) => 8,
+                ParameterTypeDef::TypePicture(_) => 0, // Picture types don't occupy memory
+                ParameterTypeDef::TypeIpAddress(_) => 32, // IPv4 address is 4 bytes
             }
         } else {
             8 // Default to 1 byte
@@ -3951,11 +3521,7 @@ impl App {
     /// Move selection up.
     pub fn move_up(&mut self) {
         match &mut self.edit_mode {
-            EditMode::EnumDropdown {
-                selected_idx,
-                scroll_offset,
-                ..
-            } => {
+            EditMode::EnumDropdown { selected_idx, scroll_offset, .. } => {
                 if *selected_idx > 0 {
                     *selected_idx -= 1;
                     // Adjust scroll if selection went above visible area
@@ -4009,12 +3575,7 @@ impl App {
     /// Move selection down.
     pub fn move_down(&mut self) {
         match &mut self.edit_mode {
-            EditMode::EnumDropdown {
-                selected_idx,
-                options,
-                scroll_offset,
-                ..
-            } => {
+            EditMode::EnumDropdown { selected_idx, options, scroll_offset, .. } => {
                 if *selected_idx < options.len().saturating_sub(1) {
                     *selected_idx += 1;
                     // Adjust scroll if selection went below visible area
@@ -4197,12 +3758,7 @@ impl App {
     /// Toggle expand/collapse on sidebar or enter edit mode on content.
     pub fn activate(&mut self) {
         match &self.edit_mode {
-            EditMode::EnumDropdown {
-                param_id,
-                options,
-                selected_idx,
-                ..
-            } => {
+            EditMode::EnumDropdown { param_id, options, selected_idx, .. } => {
                 // Commit the selection
                 let param_id = param_id.clone();
                 let new_value = options[*selected_idx].0;
@@ -4237,10 +3793,7 @@ impl App {
                 self.rebuild_com_objects();
                 self.rebuild_memory_segments();
             }
-            EditMode::GroupAddressInput {
-                object_number,
-                buffer,
-            } => {
+            EditMode::GroupAddressInput { object_number, buffer } => {
                 // Parse and assign the group address
                 let object_number = *object_number;
                 let buffer = buffer.clone();
@@ -4250,7 +3803,7 @@ impl App {
 
                 // If buffer is non-empty, parse and assign the new address
                 if !buffer.is_empty() {
-                    if let Some(addr) = knxprod::model::GroupAddress::parse(&buffer) {
+                    if let Some(addr) = knxprod::runtime::model::GroupAddress::parse(&buffer) {
                         // First assigned address becomes the sending address
                         self.device.assign_group_address(object_number, addr);
                     }
@@ -4298,15 +3851,11 @@ impl App {
     }
 
     fn enter_edit_mode(&mut self) {
-        if let Some(ContentItem::Parameter { param_id, widget, .. }) =
-            self.content_items.get(self.selected_content_idx)
+        if let Some(ContentItem::Parameter { param_id, widget, .. }) = self.content_items.get(self.selected_content_idx)
         {
             let param_id = param_id.clone();
             match widget {
-                WidgetType::Dropdown {
-                    options,
-                    current_idx,
-                } => {
+                WidgetType::Dropdown { options, current_idx } => {
                     // Calculate initial scroll offset to center the selected item if possible
                     let visible = Self::DROPDOWN_VISIBLE_ITEMS;
                     let scroll_offset = if options.len() <= visible {
@@ -4326,18 +3875,11 @@ impl App {
                     };
                 }
                 WidgetType::Number { value, .. } => {
-                    self.edit_mode = EditMode::NumberInput {
-                        param_id,
-                        buffer: value.to_string(),
-                    };
+                    self.edit_mode = EditMode::NumberInput { param_id, buffer: value.to_string() };
                 }
                 WidgetType::Text { value } => {
                     let len = value.len();
-                    self.edit_mode = EditMode::TextInput {
-                        param_id,
-                        buffer: value.clone(),
-                        cursor: len,
-                    };
+                    self.edit_mode = EditMode::TextInput { param_id, buffer: value.clone(), cursor: len };
                 }
                 WidgetType::ReadOnly { .. } => {
                     // Can't edit read-only
@@ -4351,10 +3893,7 @@ impl App {
         if let Some(row) = self.com_object_rows.get(self.selected_obj_idx) {
             // Get existing group address as initial buffer value
             let existing = self.format_group_address(row.number);
-            self.edit_mode = EditMode::GroupAddressInput {
-                object_number: row.number,
-                buffer: existing,
-            };
+            self.edit_mode = EditMode::GroupAddressInput { object_number: row.number, buffer: existing };
         }
     }
 
@@ -4383,8 +3922,7 @@ impl App {
     /// Handle backspace for editing.
     pub fn handle_backspace(&mut self) {
         match &mut self.edit_mode {
-            EditMode::NumberInput { buffer, .. }
-            | EditMode::GroupAddressInput { buffer, .. } => {
+            EditMode::NumberInput { buffer, .. } | EditMode::GroupAddressInput { buffer, .. } => {
                 buffer.pop();
             }
             EditMode::TextInput { buffer, cursor, .. } => {

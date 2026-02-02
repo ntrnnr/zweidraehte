@@ -9,8 +9,8 @@ use core::net::Ipv4Addr;
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 
-use crate::mtxml_gen::ets_pages;
-use crate::mtxml_gen::page_layout::{EtsPageLayout, PageStructure};
+use knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
+use knxprod::ets_pages;
 /// Big-endian u16 for KNX parameter storage.
 ///
 /// KNX stores multi-byte parameters in big-endian format (network byte order).

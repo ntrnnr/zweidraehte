@@ -49,8 +49,7 @@ pub use attributes::normalize_appl_prog_id;
 pub use hashes::{compute_application_program_hash, compute_hardware2program_hash, compute_product_hash};
 pub use packager::{create_knxprod, sign_application_program_xml, sign_hardware_xml};
 pub use signatures::{
-    sign_directory_contents, verify_directory_signature, verify_hardware_xml,
-    verify_registration_signature,
+    sign_directory_contents, verify_directory_signature, verify_hardware_xml, verify_registration_signature,
 };
 
 /// Errors that can occur during signing operations.
@@ -146,10 +145,7 @@ impl KnxSchemaVersion {
 
     /// Get the download URL for this schema version's master data.
     pub fn master_data_url(&self) -> String {
-        format!(
-            "https://update.knx.org/data/XML/project-{}/knx_master.xml",
-            self.as_str()
-        )
+        format!("https://update.knx.org/data/XML/project-{}/knx_master.xml", self.as_str())
     }
 
     /// Get the tool version string for the generated XML files.
@@ -166,7 +162,7 @@ impl KnxSchemaVersion {
 /// KNX standard datapoint type definitions.
 #[derive(Debug, Clone)]
 pub enum MasterDataSource {
-    /// Download from update.knx.org using the default schema version (V20).
+    /// Download from update.knx.org using the default schema version (V23).
     /// Will be cached locally after first download.
     Download,
 

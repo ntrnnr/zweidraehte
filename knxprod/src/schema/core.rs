@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::dynamic::DynamicSection;
+use super::languages::Languages;
 use super::modules::ModuleDefs;
 use super::static_section::StaticSection;
 
@@ -203,6 +204,10 @@ pub struct ApplicationProgram {
     pub module_defs: Option<ModuleDefs>,
     #[serde(rename = "Dynamic", skip_serializing_if = "Option::is_none")]
     pub dynamic: Option<DynamicSection>,
+    /// Language translations for multi-language support.
+    /// Contains translations for parameter names, enum values, and comm object texts.
+    #[serde(rename = "Languages", skip_serializing_if = "Option::is_none")]
+    pub languages: Option<Languages>,
 }
 
 impl Default for ApplicationProgram {
@@ -226,6 +231,7 @@ impl Default for ApplicationProgram {
             static_section: StaticSection::default(),
             module_defs: None,
             dynamic: None,
+            languages: None,
         }
     }
 }

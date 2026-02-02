@@ -13,11 +13,10 @@ pub mod page_layout;
 
 // Re-export key types for convenience
 pub use module::{
-    ConditionalModuleInstance, KnxModule, ModuleArgDef, ModuleArgRole, ModuleArgType,
-    ModuleArgValue, ModuleCollection, ModuleInstance, ModuleInstanceBuilder, StoredModuleDef,
-    StoredModuleInstance,
+    ConditionalModuleInstance, KnxModule, ModuleArgDef, ModuleArgRole, ModuleArgType, ModuleArgValue, ModuleCollection,
+    ModuleInstance, ModuleInstanceBuilder, StoredModuleDef, StoredModuleInstance,
 };
 pub use page_layout::{
-    ChannelDef, Condition, ConditionalElement, ConditionalItem, ElementCase, EtsPageLayout,
-    ItemCase, ModulePageLayout, PageBlock, PageElement, PageItem, PageStructure,
+    ChannelDef, Condition, ConditionalElement, ConditionalItem, ElementCase, EtsPageLayout, ItemCase, ModulePageLayout,
+    PageBlock, PageElement, PageItem, PageStructure,
 };

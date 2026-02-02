@@ -157,13 +157,13 @@ Subdirectories:
   - `system_b_demo.rs` - Demo System B device
 - `storage/` - State persistence backends (JSON-based)
 - `util/` - Helper utilities (keyboard input polling)
-- `mtxml_gen/` - MTXML generation utilities
 
 Binaries (run with `cargo run --bin <name>`):
 - `stack_system_b` - System B device demo
 - `stack_knxip` - Full KNX/IP stack demo
 - `gen_mtxml` - Generate MTXML from device definitions
 - `gen_mdt_mtxml` - Generate MDT device MTXML
+- `gen_module_mtxml` - Generate module test device MTXML
 - `tpuart` - TPUART interface test
 - `knxip` - KNX/IP protocol test
 - `busmon` - Bus monitor utility
@@ -303,6 +303,12 @@ Generates MTXML files (ApplicationProgram1.mtxml, Hardware1.mtxml, Catalog1.mtxm
 cargo run --bin gen_mdt_mtxml
 ```
 Generates MTXML files from the MDT Push Button Lite device definition (`testutil/src/devices/mdt_push_button_lite.rs`). Used for comparing against the real MDT reference XML.
+
+**Generate Module Test Device MTXML**
+```bash
+cargo run --bin gen_module_mtxml
+```
+Generates MTXML files from the module test device definition (`testutil/src/devices/module_test_device.rs`). Demonstrates KNX module support with a 4-channel dimmer device.
 
 ### Device Demos & Testing
 

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
-use knxprod::parser::parse_application_program_from_file;
+use knxprod::parse_application_program_from_file;
 
 use super::canonical::{CanonicalProgram, ComObjectFlags, ParameterKey, TypeSignature};
 
@@ -45,11 +45,7 @@ impl Default for ComparisonConfig {
 impl ComparisonConfig {
     /// Create a strict configuration that also compares ordering and ID structure.
     pub fn strict() -> Self {
-        Self {
-            compare_ordering: true,
-            compare_id_structure: true,
-            ..Self::default()
-        }
+        Self { compare_ordering: true, compare_id_structure: true, ..Self::default() }
     }
 }
 
@@ -77,39 +73,15 @@ impl fmt::Display for Source {
 #[derive(Debug, Clone)]
 pub enum ParameterDiff {
     /// Parameter exists in one program but not the other.
-    Missing {
-        key: ParameterKey,
-        in_source: Source,
-        name: String,
-    },
+    Missing { key: ParameterKey, in_source: Source, name: String },
     /// Parameter type signatures differ.
-    TypeMismatch {
-        key: ParameterKey,
-        name: String,
-        ref_type: TypeSignature,
-        gen_type: TypeSignature,
-    },
+    TypeMismatch { key: ParameterKey, name: String, ref_type: TypeSignature, gen_type: TypeSignature },
     /// Default values differ.
-    DefaultMismatch {
-        key: ParameterKey,
-        name: String,
-        ref_default: String,
-        gen_default: String,
-    },
+    DefaultMismatch { key: ParameterKey, name: String, ref_default: String, gen_default: String },
     /// Display text differs (when compare_text is enabled).
-    TextMismatch {
-        key: ParameterKey,
-        name: String,
-        ref_text: String,
-        gen_text: String,
-    },
+    TextMismatch { key: ParameterKey, name: String, ref_text: String, gen_text: String },
     /// Hidden status differs.
-    HiddenMismatch {
-        key: ParameterKey,
-        name: String,
-        ref_hidden: bool,
-        gen_hidden: bool,
-    },
+    HiddenMismatch { key: ParameterKey, name: String, ref_hidden: bool, gen_hidden: bool },
 }
 
 impl fmt::Display for ParameterDiff {
@@ -118,53 +90,17 @@ impl fmt::Display for ParameterDiff {
             ParameterDiff::Missing { key, in_source, name } => {
                 write!(f, "Parameter {} ({}) missing in {}", key, name, in_source)
             }
-            ParameterDiff::TypeMismatch {
-                key,
-                name,
-                ref_type,
-                gen_type,
-            } => {
-                write!(
-                    f,
-                    "Parameter {} ({}) type mismatch: ref={:?}, gen={:?}",
-                    key, name, ref_type, gen_type
-                )
+            ParameterDiff::TypeMismatch { key, name, ref_type, gen_type } => {
+                write!(f, "Parameter {} ({}) type mismatch: ref={:?}, gen={:?}", key, name, ref_type, gen_type)
             }
-            ParameterDiff::DefaultMismatch {
-                key,
-                name,
-                ref_default,
-                gen_default,
-            } => {
-                write!(
-                    f,
-                    "Parameter {} ({}) default mismatch: ref='{}', gen='{}'",
-                    key, name, ref_default, gen_default
-                )
+            ParameterDiff::DefaultMismatch { key, name, ref_default, gen_default } => {
+                write!(f, "Parameter {} ({}) default mismatch: ref='{}', gen='{}'", key, name, ref_default, gen_default)
             }
-            ParameterDiff::TextMismatch {
-                key,
-                name,
-                ref_text,
-                gen_text,
-            } => {
-                write!(
-                    f,
-                    "Parameter {} ({}) text mismatch: ref='{}', gen='{}'",
-                    key, name, ref_text, gen_text
-                )
+            ParameterDiff::TextMismatch { key, name, ref_text, gen_text } => {
+                write!(f, "Parameter {} ({}) text mismatch: ref='{}', gen='{}'", key, name, ref_text, gen_text)
             }
-            ParameterDiff::HiddenMismatch {
-                key,
-                name,
-                ref_hidden,
-                gen_hidden,
-            } => {
-                write!(
-                    f,
-                    "Parameter {} ({}) hidden mismatch: ref={}, gen={}",
-                    key, name, ref_hidden, gen_hidden
-                )
+            ParameterDiff::HiddenMismatch { key, name, ref_hidden, gen_hidden } => {
+                write!(f, "Parameter {} ({}) hidden mismatch: ref={}, gen={}", key, name, ref_hidden, gen_hidden)
             }
         }
     }
@@ -174,93 +110,33 @@ impl fmt::Display for ParameterDiff {
 #[derive(Debug, Clone)]
 pub enum ComObjectDiff {
     /// Object exists in one program but not the other.
-    Missing {
-        number: u16,
-        in_source: Source,
-        name: String,
-    },
+    Missing { number: u16, in_source: Source, name: String },
     /// Object flags differ.
-    FlagsMismatch {
-        number: u16,
-        name: String,
-        ref_flags: ComObjectFlags,
-        gen_flags: ComObjectFlags,
-    },
+    FlagsMismatch { number: u16, name: String, ref_flags: ComObjectFlags, gen_flags: ComObjectFlags },
     /// Object size differs.
-    SizeMismatch {
-        number: u16,
-        name: String,
-        ref_size: String,
-        gen_size: String,
-    },
+    SizeMismatch { number: u16, name: String, ref_size: String, gen_size: String },
     /// Display text differs.
-    TextMismatch {
-        number: u16,
-        name: String,
-        ref_text: String,
-        gen_text: String,
-    },
+    TextMismatch { number: u16, name: String, ref_text: String, gen_text: String },
     /// Function text differs.
-    FunctionTextMismatch {
-        number: u16,
-        name: String,
-        ref_text: String,
-        gen_text: String,
-    },
+    FunctionTextMismatch { number: u16, name: String, ref_text: String, gen_text: String },
 }
 
 impl fmt::Display for ComObjectDiff {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ComObjectDiff::Missing {
-                number,
-                in_source,
-                name,
-            } => {
+            ComObjectDiff::Missing { number, in_source, name } => {
                 write!(f, "ComObject {} ({}) missing in {}", number, name, in_source)
             }
-            ComObjectDiff::FlagsMismatch {
-                number,
-                name,
-                ref_flags,
-                gen_flags,
-            } => {
-                write!(
-                    f,
-                    "ComObject {} ({}) flags mismatch: ref={:?}, gen={:?}",
-                    number, name, ref_flags, gen_flags
-                )
+            ComObjectDiff::FlagsMismatch { number, name, ref_flags, gen_flags } => {
+                write!(f, "ComObject {} ({}) flags mismatch: ref={:?}, gen={:?}", number, name, ref_flags, gen_flags)
             }
-            ComObjectDiff::SizeMismatch {
-                number,
-                name,
-                ref_size,
-                gen_size,
-            } => {
-                write!(
-                    f,
-                    "ComObject {} ({}) size mismatch: ref='{}', gen='{}'",
-                    number, name, ref_size, gen_size
-                )
+            ComObjectDiff::SizeMismatch { number, name, ref_size, gen_size } => {
+                write!(f, "ComObject {} ({}) size mismatch: ref='{}', gen='{}'", number, name, ref_size, gen_size)
             }
-            ComObjectDiff::TextMismatch {
-                number,
-                name,
-                ref_text,
-                gen_text,
-            } => {
-                write!(
-                    f,
-                    "ComObject {} ({}) text mismatch: ref='{}', gen='{}'",
-                    number, name, ref_text, gen_text
-                )
+            ComObjectDiff::TextMismatch { number, name, ref_text, gen_text } => {
+                write!(f, "ComObject {} ({}) text mismatch: ref='{}', gen='{}'", number, name, ref_text, gen_text)
             }
-            ComObjectDiff::FunctionTextMismatch {
-                number,
-                name,
-                ref_text,
-                gen_text,
-            } => {
+            ComObjectDiff::FunctionTextMismatch { number, name, ref_text, gen_text } => {
                 write!(
                     f,
                     "ComObject {} ({}) function text mismatch: ref='{}', gen='{}'",
@@ -275,50 +151,24 @@ impl fmt::Display for ComObjectDiff {
 #[derive(Debug, Clone)]
 pub enum OrderingDiff {
     /// Parameter order differs.
-    ParameterOrder {
-        expected: Vec<ParameterKey>,
-        actual: Vec<ParameterKey>,
-        first_diff_index: usize,
-    },
+    ParameterOrder { expected: Vec<ParameterKey>, actual: Vec<ParameterKey>, first_diff_index: usize },
     /// Parameter ref order differs.
-    ParamRefOrder {
-        expected_count: usize,
-        actual_count: usize,
-    },
+    ParamRefOrder { expected_count: usize, actual_count: usize },
     /// ComObject ref order differs.
-    ComObjectRefOrder {
-        expected_count: usize,
-        actual_count: usize,
-    },
+    ComObjectRefOrder { expected_count: usize, actual_count: usize },
 }
 
 impl fmt::Display for OrderingDiff {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            OrderingDiff::ParameterOrder {
-                first_diff_index, ..
-            } => {
+            OrderingDiff::ParameterOrder { first_diff_index, .. } => {
                 write!(f, "Parameter order differs at index {}", first_diff_index)
             }
-            OrderingDiff::ParamRefOrder {
-                expected_count,
-                actual_count,
-            } => {
-                write!(
-                    f,
-                    "Parameter ref count differs: expected {}, got {}",
-                    expected_count, actual_count
-                )
+            OrderingDiff::ParamRefOrder { expected_count, actual_count } => {
+                write!(f, "Parameter ref count differs: expected {}, got {}", expected_count, actual_count)
             }
-            OrderingDiff::ComObjectRefOrder {
-                expected_count,
-                actual_count,
-            } => {
-                write!(
-                    f,
-                    "ComObject ref count differs: expected {}, got {}",
-                    expected_count, actual_count
-                )
+            OrderingDiff::ComObjectRefOrder { expected_count, actual_count } => {
+                write!(f, "ComObject ref count differs: expected {}, got {}", expected_count, actual_count)
             }
         }
     }
@@ -355,9 +205,7 @@ pub struct ComparisonStats {
 impl ComparisonReport {
     /// Check if there are any differences.
     pub fn has_differences(&self) -> bool {
-        !self.parameter_diffs.is_empty()
-            || !self.com_object_diffs.is_empty()
-            || !self.ordering_diffs.is_empty()
+        !self.parameter_diffs.is_empty() || !self.com_object_diffs.is_empty() || !self.ordering_diffs.is_empty()
     }
 
     /// Get total number of differences.
@@ -373,11 +221,7 @@ impl fmt::Display for ComparisonReport {
 
         // Parameter comparison
         writeln!(f, "--- Parameter Comparison ---")?;
-        writeln!(
-            f,
-            "Compared: {}, Matched: {}",
-            self.stats.parameters_compared, self.stats.parameters_matched
-        )?;
+        writeln!(f, "Compared: {}, Matched: {}", self.stats.parameters_compared, self.stats.parameters_matched)?;
         if self.parameter_diffs.is_empty() {
             writeln!(f, "✓ All parameters matched")?;
         } else {
@@ -390,11 +234,7 @@ impl fmt::Display for ComparisonReport {
 
         // ComObject comparison
         writeln!(f, "--- Communication Object Comparison ---")?;
-        writeln!(
-            f,
-            "Compared: {}, Matched: {}",
-            self.stats.com_objects_compared, self.stats.com_objects_matched
-        )?;
+        writeln!(f, "Compared: {}, Matched: {}", self.stats.com_objects_compared, self.stats.com_objects_matched)?;
         if self.com_object_diffs.is_empty() {
             writeln!(f, "✓ All communication objects matched")?;
         } else {
@@ -442,17 +282,11 @@ pub struct EquivalenceChecker {
 impl EquivalenceChecker {
     /// Create a checker from two canonical programs.
     pub fn new(reference: CanonicalProgram, generated: CanonicalProgram) -> Self {
-        Self {
-            reference,
-            generated,
-        }
+        Self { reference, generated }
     }
 
     /// Create a checker from two XML files.
-    pub fn from_xml_files(
-        reference_path: &Path,
-        generated_path: &Path,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_xml_files(reference_path: &Path, generated_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let ref_knx = parse_application_program_from_file(reference_path)?;
         let gen_knx = parse_application_program_from_file(generated_path)?;
 
@@ -471,10 +305,7 @@ impl EquivalenceChecker {
             .first()
             .ok_or("Generated XML has no application program")?;
 
-        Ok(Self::new(
-            CanonicalProgram::from_parsed(ref_program),
-            CanonicalProgram::from_parsed(gen_program),
-        ))
+        Ok(Self::new(CanonicalProgram::from_parsed(ref_program), CanonicalProgram::from_parsed(gen_program)))
     }
 
     /// Run comparison with the given configuration.
@@ -635,14 +466,12 @@ impl EquivalenceChecker {
 
                     // Compare function text (if enabled)
                     if config.compare_text && ro.function_text != go.function_text {
-                        report
-                            .com_object_diffs
-                            .push(ComObjectDiff::FunctionTextMismatch {
-                                number: num,
-                                name: ro.name.clone(),
-                                ref_text: ro.function_text.clone(),
-                                gen_text: go.function_text.clone(),
-                            });
+                        report.com_object_diffs.push(ComObjectDiff::FunctionTextMismatch {
+                            number: num,
+                            name: ro.name.clone(),
+                            ref_text: ro.function_text.clone(),
+                            gen_text: go.function_text.clone(),
+                        });
                         matched = false;
                     }
 
@@ -683,12 +512,7 @@ impl EquivalenceChecker {
                 .iter()
                 .zip(self.generated.parameter_order.iter())
                 .position(|(a, b)| a != b)
-                .unwrap_or(
-                    self.reference
-                        .parameter_order
-                        .len()
-                        .min(self.generated.parameter_order.len()),
-                );
+                .unwrap_or(self.reference.parameter_order.len().min(self.generated.parameter_order.len()));
 
             report.ordering_diffs.push(OrderingDiff::ParameterOrder {
                 expected: self.reference.parameter_order.clone(),
@@ -707,12 +531,10 @@ impl EquivalenceChecker {
 
         // Compare com object ref counts
         if self.reference.com_object_refs.len() != self.generated.com_object_refs.len() {
-            report
-                .ordering_diffs
-                .push(OrderingDiff::ComObjectRefOrder {
-                    expected_count: self.reference.com_object_refs.len(),
-                    actual_count: self.generated.com_object_refs.len(),
-                });
+            report.ordering_diffs.push(OrderingDiff::ComObjectRefOrder {
+                expected_count: self.reference.com_object_refs.len(),
+                actual_count: self.generated.com_object_refs.len(),
+            });
         }
     }
 }

@@ -8,7 +8,6 @@
 //! - [`devices`] - Device definitions (parameters, comm objects, descriptors)
 //! - [`storage`] - Device state persistence backends
 //! - [`util`] - Shared utilities (keyboard input, etc.)
-//! - [`mtxml_gen`] - MTXML generation from Rust device definitions
 //! - [`equivalence`] - Application program equivalence testing
 //!
 //! # Binaries
@@ -30,7 +29,6 @@
 pub mod devices;
 pub mod storage;
 pub mod util;
-pub mod mtxml_gen;
 pub mod equivalence;
 
 // Re-export commonly used items for convenience

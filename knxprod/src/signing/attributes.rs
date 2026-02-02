@@ -6,8 +6,8 @@
 use std::io::{self, Write};
 
 use super::binary_writer::{
-    parse_bool, write_dotnet_bool, write_dotnet_byte_str, write_dotnet_int32_str,
-    write_dotnet_string, write_dotnet_uint16_str, write_dotnet_uint32_str,
+    parse_bool, write_dotnet_bool, write_dotnet_byte_str, write_dotnet_int32_str, write_dotnet_string,
+    write_dotnet_uint16_str, write_dotnet_uint32_str,
 };
 
 /// Type of an attribute value for serialization.
@@ -49,12 +49,7 @@ impl AttrDef {
         attr_type: AttrType,
         default: Option<&'static str>,
     ) -> Self {
-        Self {
-            xml_name,
-            short_name,
-            attr_type,
-            default,
-        }
+        Self { xml_name, short_name, attr_type, default }
     }
 }
 
@@ -81,10 +76,8 @@ pub const HARDWARE_ATTRS: &[AttrDef] = &[
 ];
 
 /// Product element attributes (sorted alphabetically by xml_name).
-pub const PRODUCT_ATTRS: &[AttrDef] = &[
-    AttrDef::new("Id", "I", AttrType::String, None),
-    AttrDef::new("OrderNumber", "O", AttrType::String, None),
-];
+pub const PRODUCT_ATTRS: &[AttrDef] =
+    &[AttrDef::new("Id", "I", AttrType::String, None), AttrDef::new("OrderNumber", "O", AttrType::String, None)];
 
 /// RegistrationInfo element attributes (sorted alphabetically by xml_name).
 pub const REGISTRATION_INFO_ATTRS: &[AttrDef] = &[
@@ -114,36 +107,11 @@ pub const APPLICATION_PROGRAM_ATTRS: &[AttrDef] = &[
     AttrDef::new("Linkable", "L", AttrType::Bool, None),
     AttrDef::new("LoadProcedureStyle", "LPS", AttrType::String, None),
     AttrDef::new("MaskVersion", "MV", AttrType::String, None),
-    AttrDef::new(
-        "MaxSecurityGroupKeyTableEntries",
-        "MSGK",
-        AttrType::UInt16,
-        Some("0"),
-    ),
-    AttrDef::new(
-        "MaxSecurityIndividualAddressEntries",
-        "MSIAE",
-        AttrType::UInt16,
-        Some("0"),
-    ),
-    AttrDef::new(
-        "MaxSecurityP2PKeyTableEntries",
-        "MSP2",
-        AttrType::UInt16,
-        Some("0"),
-    ),
-    AttrDef::new(
-        "MaxSecurityProxyGroupKeyTableEntries",
-        "MSPGK",
-        AttrType::UInt16,
-        Some("0"),
-    ),
-    AttrDef::new(
-        "MaxSecurityProxyIndividualAddressTableEntries",
-        "MSPIA",
-        AttrType::UInt16,
-        Some("0"),
-    ),
+    AttrDef::new("MaxSecurityGroupKeyTableEntries", "MSGK", AttrType::UInt16, Some("0")),
+    AttrDef::new("MaxSecurityIndividualAddressEntries", "MSIAE", AttrType::UInt16, Some("0")),
+    AttrDef::new("MaxSecurityP2PKeyTableEntries", "MSP2", AttrType::UInt16, Some("0")),
+    AttrDef::new("MaxSecurityProxyGroupKeyTableEntries", "MSPGK", AttrType::UInt16, Some("0")),
+    AttrDef::new("MaxSecurityProxyIndividualAddressTableEntries", "MSPIA", AttrType::UInt16, Some("0")),
     AttrDef::new("MaxTunnelingUserEntries", "MTUE", AttrType::UInt16, Some("0")),
     AttrDef::new("MaxUserEntries", "MUE", AttrType::UInt16, Some("0")),
     AttrDef::new("OriginalManufacturer", "OEM", AttrType::String, None),
@@ -170,11 +138,7 @@ pub fn normalize_appl_prog_id(id: &str) -> String {
 /// Write a single attribute in .NET BinaryWriter format.
 ///
 /// Format: short_name + value (type-dependent encoding)
-pub fn write_attribute<W: Write>(
-    writer: &mut W,
-    attr: &AttrDef,
-    value: Option<&str>,
-) -> io::Result<()> {
+pub fn write_attribute<W: Write>(writer: &mut W, attr: &AttrDef, value: Option<&str>) -> io::Result<()> {
     // Write short name
     write_dotnet_string(writer, Some(attr.short_name))?;
 
@@ -259,14 +223,8 @@ mod tests {
 
     #[test]
     fn test_normalize_appl_prog_id() {
-        assert_eq!(
-            normalize_appl_prog_id("M-00FA_A-1000-01-7957"),
-            "M-00FA_A-1000-01"
-        );
-        assert_eq!(
-            normalize_appl_prog_id("M-0083_A-009B-14-E59D"),
-            "M-0083_A-009B-14"
-        );
+        assert_eq!(normalize_appl_prog_id("M-00FA_A-1000-01-7957"), "M-00FA_A-1000-01");
+        assert_eq!(normalize_appl_prog_id("M-0083_A-009B-14-E59D"), "M-0083_A-009B-14");
         // Short IDs are returned as-is
         assert_eq!(normalize_appl_prog_id("M-00FA_A-1000-01"), "M-00FA_A-1000-01");
         assert_eq!(normalize_appl_prog_id("short"), "short");
@@ -277,12 +235,7 @@ mod tests {
         // Verify attributes are sorted alphabetically
         let mut prev = "";
         for attr in HARDWARE_ATTRS {
-            assert!(
-                attr.xml_name > prev,
-                "HARDWARE_ATTRS not sorted: {} should come before {}",
-                prev,
-                attr.xml_name
-            );
+            assert!(attr.xml_name > prev, "HARDWARE_ATTRS not sorted: {} should come before {}", prev, attr.xml_name);
             prev = attr.xml_name;
         }
     }
@@ -291,12 +244,7 @@ mod tests {
     fn test_product_attrs_sorted() {
         let mut prev = "";
         for attr in PRODUCT_ATTRS {
-            assert!(
-                attr.xml_name > prev,
-                "PRODUCT_ATTRS not sorted: {} should come before {}",
-                prev,
-                attr.xml_name
-            );
+            assert!(attr.xml_name > prev, "PRODUCT_ATTRS not sorted: {} should come before {}", prev, attr.xml_name);
             prev = attr.xml_name;
         }
     }

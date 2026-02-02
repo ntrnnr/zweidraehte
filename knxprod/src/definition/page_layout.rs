@@ -284,16 +284,10 @@ pub enum PageItem {
     /// Used in switch mode where object type is fixed (always 1Bit Switch)
     /// Format: object_name, followed by param names to include
     /// This outputs: ComObjectRefRef, then ParameterRefRefs for each param
-    ObjDirect {
-        obj_name: &'static str,
-        params: &'static [&'static str],
-    },
+    ObjDirect { obj_name: &'static str, params: &'static [&'static str] },
     /// Multiple objects output directly with params - no choose block
     /// Used in toggle mode where both O-0 and O-1 appear together
-    ObjsDirectWithParams {
-        obj_names: &'static [&'static str],
-        params: &'static [&'static str],
-    },
+    ObjsDirectWithParams { obj_names: &'static [&'static str], params: &'static [&'static str] },
     /// Multiple objects output directly selecting refs by their ref_name
     /// Used when objects have named refs for different modes (e.g., "dimming", "blinds")
     /// The ref_names array must have the same length as obj_names
@@ -312,7 +306,7 @@ pub enum PageItem {
         hidden_params: &'static [&'static str],
         union_field: &'static str,
         variant_name: &'static str, // e.g., "Switch" to get button1_value_00_Switch_value
-        selector_value: i64, // e.g., 10 for ObjectType::Switch
+        selector_value: i64,        // e.g., 10 for ObjectType::Switch
         text_override: Option<&'static str>, // Optional Text attribute override for ParameterRefRef
     },
     /// Union variant params direct output - outputs specific variant's params without a choose block
@@ -354,11 +348,7 @@ pub enum PageItem {
     ///       </choose>
     ///     </when>
     ///   </choose>
-    ChooseOnUnionVariant {
-        union_field: &'static str,
-        variant_name: &'static str,
-        cases: Vec<ItemCase>,
-    },
+    ChooseOnUnionVariant { union_field: &'static str, variant_name: &'static str, cases: Vec<ItemCase> },
     /// A module instance reference by index.
     ///
     /// This represents a module instantiation within the page layout. The module definition
@@ -375,10 +365,7 @@ pub enum PageItem {
     /// Fields:
     /// - `module_name`: The name of the module definition (matches KnxModule::NAME)
     /// - `instance_index`: Index into the module instances (0-based)
-    Module {
-        module_name: &'static str,
-        instance_index: usize,
-    },
+    Module { module_name: &'static str, instance_index: usize },
     /// A module instance with inline argument values.
     ///
     /// This allows defining module instances directly in the page layout DSL without
@@ -404,10 +391,7 @@ pub enum PageItem {
     /// Fields:
     /// - `module_name`: The name of the module definition (matches KnxModule::NAME)
     /// - `args`: Vec of (argument_name, value) pairs - supports expressions
-    ModuleInline {
-        module_name: &'static str,
-        args: Vec<(&'static str, i64)>,
-    },
+    ModuleInline { module_name: &'static str, args: Vec<(&'static str, i64)> },
     /// Multiple module instances with visibility conditions.
     ///
     /// This is a convenience variant that generates multiple `When` blocks containing
@@ -485,9 +469,7 @@ impl Condition {
     /// Convert condition to ETS test string format.
     pub fn to_test_string(&self) -> Option<String> {
         match self {
-            Condition::Values(vals) => {
-                Some(vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" "))
-            }
+            Condition::Values(vals) => Some(vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" ")),
             Condition::Default => None,
         }
     }
@@ -589,7 +571,7 @@ impl Condition {
 macro_rules! ets_pages {
     // Entry point: device block only
     (device { $($device_content:tt)* }) => {
-        $crate::page_layout::PageStructure {
+        $crate::definition::page_layout::PageStructure {
             device_settings: $crate::ets_pages!(@elements $($device_content)*),
             channels: vec![],
         }
@@ -600,7 +582,7 @@ macro_rules! ets_pages {
         device { $($device_content:tt)* }
         $($rest:tt)+
     ) => {
-        $crate::page_layout::PageStructure {
+        $crate::definition::page_layout::PageStructure {
             device_settings: $crate::ets_pages!(@elements $($device_content)*),
             channels: $crate::ets_pages!(@channels $($rest)+),
         }
@@ -611,7 +593,7 @@ macro_rules! ets_pages {
         channel $ch_name:literal => $ch_text:literal $(( $ch_num:expr ))? { $($ch_content:tt)* }
         $($rest:tt)*
     ) => {
-        $crate::page_layout::PageStructure {
+        $crate::definition::page_layout::PageStructure {
             device_settings: vec![],
             channels: $crate::ets_pages!(@channels channel $ch_name => $ch_text $(( $ch_num ))? { $($ch_content)* } $($rest)*),
         }
@@ -619,7 +601,7 @@ macro_rules! ets_pages {
 
     // Entry point: empty
     () => {
-        $crate::page_layout::PageStructure {
+        $crate::definition::page_layout::PageStructure {
             device_settings: vec![],
             channels: vec![],
         }
@@ -631,7 +613,7 @@ macro_rules! ets_pages {
     };
 
     (@channels channel $ch_name:literal => $ch_text:literal ( $ch_num:expr ) { $($ch_content:tt)* } $($rest:tt)*) => {{
-        let mut chans = vec![$crate::page_layout::ChannelDef {
+        let mut chans = vec![$crate::definition::page_layout::ChannelDef {
             name: $ch_name,
             text: $ch_text,
             number: Some($ch_num),
@@ -642,7 +624,7 @@ macro_rules! ets_pages {
     }};
 
     (@channels channel $ch_name:literal => $ch_text:literal { $($ch_content:tt)* } $($rest:tt)*) => {{
-        let mut chans = vec![$crate::page_layout::ChannelDef {
+        let mut chans = vec![$crate::definition::page_layout::ChannelDef {
             name: $ch_name,
             text: $ch_text,
             number: None,
@@ -659,8 +641,8 @@ macro_rules! ets_pages {
 
     // Parse a block element
     (@elements block $name:literal => $text:literal { $($items:tt)* } $($rest:tt)*) => {{
-        let mut elems = vec![$crate::page_layout::PageElement::Block(
-            $crate::page_layout::PageBlock {
+        let mut elems = vec![$crate::definition::page_layout::PageElement::Block(
+            $crate::definition::page_layout::PageBlock {
                 name: $name,
                 text: $text,
                 items: $crate::ets_pages!(@items $($items)*),
@@ -674,8 +656,8 @@ macro_rules! ets_pages {
     // The @ prefix means use the parameter name directly without appending _selector
     // Example: when @eingang_type { ... } → selector = "eingang_type"
     (@elements when @ $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut elems = vec![$crate::page_layout::PageElement::When(
-            $crate::page_layout::ConditionalElement {
+        let mut elems = vec![$crate::definition::page_layout::PageElement::When(
+            $crate::definition::page_layout::ConditionalElement {
                 selector: stringify!($param),
                 cases: $crate::ets_pages!(@element_cases $($cases)*),
             }
@@ -688,8 +670,8 @@ macro_rules! ets_pages {
     // The selector is the union field name - we append _selector automatically
     // Example: when channel_a_config { ... } → selector = "channel_a_config_selector"
     (@elements when $selector:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut elems = vec![$crate::page_layout::PageElement::When(
-            $crate::page_layout::ConditionalElement {
+        let mut elems = vec![$crate::definition::page_layout::PageElement::When(
+            $crate::definition::page_layout::ConditionalElement {
                 selector: concat!(stringify!($selector), "_selector"),
                 cases: $crate::ets_pages!(@element_cases $($cases)*),
             }
@@ -706,8 +688,8 @@ macro_rules! ets_pages {
     // Parse element case with enum path expressions (e.g., EnumType::Variant)
     // Must come before the simple ident rule to match first
     (@element_cases [$($enum_type:ident :: $variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::page_layout::ElementCase {
-            condition: $crate::page_layout::Condition::values(&[
+        let mut cases = vec![$crate::definition::page_layout::ElementCase {
+            condition: $crate::definition::page_layout::Condition::values(&[
                 $($enum_type::$variant as i64),+
             ]),
             elements: $crate::ets_pages!(@elements $($content)*),
@@ -718,8 +700,8 @@ macro_rules! ets_pages {
 
     // Parse element case with simple enum variants (cast directly to i64 since they're repr(isize))
     (@element_cases [$($variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::page_layout::ElementCase {
-            condition: $crate::page_layout::Condition::values(&[
+        let mut cases = vec![$crate::definition::page_layout::ElementCase {
+            condition: $crate::definition::page_layout::Condition::values(&[
                 $($variant as i64),+
             ]),
             elements: $crate::ets_pages!(@elements $($content)*),
@@ -730,8 +712,8 @@ macro_rules! ets_pages {
 
     // Parse element case with integer literals
     (@element_cases [$($val:literal),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::page_layout::ElementCase {
-            condition: $crate::page_layout::Condition::values(&[$($val as i64),+]),
+        let mut cases = vec![$crate::definition::page_layout::ElementCase {
+            condition: $crate::definition::page_layout::Condition::values(&[$($val as i64),+]),
             elements: $crate::ets_pages!(@elements $($content)*),
         }];
         cases.extend($crate::ets_pages!(@element_cases $($rest)*));
@@ -740,8 +722,8 @@ macro_rules! ets_pages {
 
     // Parse element case with default (_)
     (@element_cases _ => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::page_layout::ElementCase {
-            condition: $crate::page_layout::Condition::Default,
+        let mut cases = vec![$crate::definition::page_layout::ElementCase {
+            condition: $crate::definition::page_layout::Condition::Default,
             elements: $crate::ets_pages!(@elements $($content)*),
         }];
         cases.extend($crate::ets_pages!(@element_cases $($rest)*));
@@ -756,7 +738,7 @@ macro_rules! ets_pages {
     // Parse param with ::Variant.field path syntax (must come before simple param)
     // Example: param channel_a_config::Dimmer.min_level → "channel_a_config_Dimmer_min_level"
     (@items param $union:ident :: $variant:ident . $field:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::Param(
+        let mut items = vec![$crate::definition::page_layout::PageItem::Param(
             concat!(stringify!($union), "_", stringify!($variant), "_", stringify!($field))
         )];
         items.extend($crate::ets_pages!(@items $($rest)*));
@@ -766,7 +748,7 @@ macro_rules! ets_pages {
     // Parse simple param item (single identifier)
     // Example: param send_cycle_time → "send_cycle_time"
     (@items param $name:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::Param(stringify!($name))];
+        let mut items = vec![$crate::definition::page_layout::PageItem::Param(stringify!($name))];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
@@ -775,7 +757,7 @@ macro_rules! ets_pages {
     // Example: params [field1, field2, field3] → three Param items
     (@items params [ $($name:ident),* $(,)? ] $($rest:tt)*) => {{
         let mut items = vec![
-            $($crate::page_layout::PageItem::Param(stringify!($name))),*
+            $($crate::definition::page_layout::PageItem::Param(stringify!($name))),*
         ];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
@@ -787,7 +769,7 @@ macro_rules! ets_pages {
     // 1. The selector parameter itself
     // 2. A choose/when block for each variant's parameters
     (@items selector $field:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::UnionSelector(
+        let mut items = vec![$crate::definition::page_layout::PageItem::UnionSelector(
             stringify!($field)
         )];
         items.extend($crate::ets_pages!(@items $($rest)*));
@@ -796,7 +778,7 @@ macro_rules! ets_pages {
 
     // Parse obj item (communication object reference)
     (@items obj $name:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::Obj(stringify!($name))];
+        let mut items = vec![$crate::definition::page_layout::PageItem::Obj(stringify!($name))];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
@@ -805,7 +787,7 @@ macro_rules! ets_pages {
     // Example: objs [obj1, obj2, obj3] → three Obj items
     (@items objs [ $($name:ident),* $(,)? ] $($rest:tt)*) => {{
         let mut items = vec![
-            $($crate::page_layout::PageItem::Obj(stringify!($name))),*
+            $($crate::definition::page_layout::PageItem::Obj(stringify!($name))),*
         ];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
@@ -816,7 +798,7 @@ macro_rules! ets_pages {
     //         sub_select { variant_value => sub_param [ (sub_value, ref_name, variant_name), ... ], ... }
     // The with [...] params are included unconditionally; their visibility is controlled by #[ets(hidden)]
     (@items obj_with_value $obj:ident by $selector:ident => $value:ident with [$($extra:ident),* $(,)?] sub_select { $($variant_val:literal => $sub_param:ident [ $(($sub_val:literal, $ref_name:ident, $var_name:ident)),+ $(,)? ]),+ $(,)? } $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::ObjWithValue {
+        let mut items = vec![$crate::definition::page_layout::PageItem::ObjWithValue {
             obj_name: stringify!($obj),
             selector_param: stringify!($selector),
             value_union: stringify!($value),
@@ -835,7 +817,7 @@ macro_rules! ets_pages {
     // Syntax: obj_with_value obj_name by selector_param => value_union with [param1, param2]
     // The with [...] params are included unconditionally; their visibility is controlled by #[ets(hidden)]
     (@items obj_with_value $obj:ident by $selector:ident => $value:ident with [$($extra:ident),* $(,)?] $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::ObjWithValue {
+        let mut items = vec![$crate::definition::page_layout::PageItem::ObjWithValue {
             obj_name: stringify!($obj),
             selector_param: stringify!($selector),
             value_union: stringify!($value),
@@ -849,7 +831,7 @@ macro_rules! ets_pages {
     // Parse obj_with_value - basic form without extra params
     // Syntax: obj_with_value obj_name by selector_param => value_union
     (@items obj_with_value $obj:ident by $selector:ident => $value:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::ObjWithValue {
+        let mut items = vec![$crate::definition::page_layout::PageItem::ObjWithValue {
             obj_name: stringify!($obj),
             selector_param: stringify!($selector),
             value_union: stringify!($value),
@@ -864,7 +846,7 @@ macro_rules! ets_pages {
     // Syntax: grouped_obj_choose selector_param with [hidden1, hidden2] => [(obj1, union1), (obj2, union2)]
     // This creates a single choose block containing all objects, reducing the number of choose elements
     (@items grouped_obj_choose $selector:ident with [$($hidden:ident),* $(,)?] => [$(($obj:ident, $union:ident)),+ $(,)?] $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::GroupedObjChoose {
+        let mut items = vec![$crate::definition::page_layout::PageItem::GroupedObjChoose {
             selector_param: stringify!($selector),
             hidden_params: &[$(stringify!($hidden)),*],
             objects: &[$((stringify!($obj), stringify!($union))),+],
@@ -877,7 +859,7 @@ macro_rules! ets_pages {
     // Syntax: obj_direct obj_name with [param1, param2]
     // Used in switch mode where object type is fixed
     (@items obj_direct $obj:ident with [$($param:ident),* $(,)?] $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::ObjDirect {
+        let mut items = vec![$crate::definition::page_layout::PageItem::ObjDirect {
             obj_name: stringify!($obj),
             params: &[$(stringify!($param)),*],
         }];
@@ -889,7 +871,7 @@ macro_rules! ets_pages {
     // Syntax: objs_direct [obj1, obj2] with [param1, param2]
     // Used in toggle mode where O-0 and O-1 appear together
     (@items objs_direct [$($obj:ident),+ $(,)?] with [$($param:ident),* $(,)?] $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::ObjsDirectWithParams {
+        let mut items = vec![$crate::definition::page_layout::PageItem::ObjsDirectWithParams {
             obj_names: &[$(stringify!($obj)),+],
             params: &[$(stringify!($param)),*],
         }];
@@ -901,7 +883,7 @@ macro_rules! ets_pages {
     // Syntax: objs_by_ref_name ["ref1", "ref2", "ref3"] with [param1, param2]
     // Used when objects have named refs for different modes (e.g., dimming, blinds)
     (@items objs_by_ref_name [$($ref_name:literal),+ $(,)?] with [$($param:ident),* $(,)?] $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::ObjsByRefName {
+        let mut items = vec![$crate::definition::page_layout::PageItem::ObjsByRefName {
             ref_names: &[$($ref_name),+],
             params: &[$(stringify!($param)),*],
         }];
@@ -913,7 +895,7 @@ macro_rules! ets_pages {
     // Syntax: obj_fixed_variant obj_name with [hidden1, hidden2] => union_field::VariantName @ selector_value text "Custom text"
     // Used in switch mode where object type is fixed (always Switch/1Bit) with custom label
     (@items obj_fixed_variant $obj:ident with [$($hidden:ident),* $(,)?] => $union:ident :: $variant:ident @ $selector_val:literal text $text:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::ObjWithFixedVariant {
+        let mut items = vec![$crate::definition::page_layout::PageItem::ObjWithFixedVariant {
             obj_name: stringify!($obj),
             hidden_params: &[$(stringify!($hidden)),*],
             union_field: stringify!($union),
@@ -930,7 +912,7 @@ macro_rules! ets_pages {
     // Used in switch mode where object type is fixed (always Switch/1Bit)
     // The selector_value (e.g., 10) specifies which object ref to use
     (@items obj_fixed_variant $obj:ident with [$($hidden:ident),* $(,)?] => $union:ident :: $variant:ident @ $selector_val:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::ObjWithFixedVariant {
+        let mut items = vec![$crate::definition::page_layout::PageItem::ObjWithFixedVariant {
             obj_name: stringify!($obj),
             hidden_params: &[$(stringify!($hidden)),*],
             union_field: stringify!($union),
@@ -946,7 +928,7 @@ macro_rules! ets_pages {
     // Syntax: union_variant union_field::VariantName text "Custom text"
     // Used when variant is already determined by outer context with custom label
     (@items union_variant $union:ident :: $variant:ident text $text:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::UnionVariantDirect {
+        let mut items = vec![$crate::definition::page_layout::PageItem::UnionVariantDirect {
             union_field: stringify!($union),
             variant_name: stringify!($variant),
             text_override: Some($text),
@@ -959,7 +941,7 @@ macro_rules! ets_pages {
     // Syntax: union_variant union_field::VariantName
     // Used when variant is already determined by outer context (e.g., inside switch mode)
     (@items union_variant $union:ident :: $variant:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::UnionVariantDirect {
+        let mut items = vec![$crate::definition::page_layout::PageItem::UnionVariantDirect {
             union_field: stringify!($union),
             variant_name: stringify!($variant),
             text_override: None,
@@ -970,21 +952,21 @@ macro_rules! ets_pages {
 
     // Parse separator with text (must come before the version without text)
     (@items sep $text:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::Separator(Some($text))];
+        let mut items = vec![$crate::definition::page_layout::PageItem::Separator(Some($text))];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
 
     // Parse separator without text
     (@items sep $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::Separator(None)];
+        let mut items = vec![$crate::definition::page_layout::PageItem::Separator(None)];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
 
     // Parse picture item (baggage reference by name)
     (@items picture $name:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::Picture($name)];
+        let mut items = vec![$crate::definition::page_layout::PageItem::Picture($name)];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
@@ -998,12 +980,12 @@ macro_rules! ets_pages {
     // Values can be expressions (e.g., DeviceParams::channel_param_offset(1)).
     (@items module $module_name:ident { $($arg_name:ident : $arg_value:expr),* $(,)? } $($rest:tt)*) => {{
         // Compile-time validation: check argument names match module definition
-        const _: () = $crate::module::validate_module_args(
-            <$module_name as $crate::module::KnxModule>::ARGUMENTS,
+        const _: () = $crate::definition::module::validate_module_args(
+            <$module_name as $crate::definition::module::KnxModule>::ARGUMENTS,
             &[$(stringify!($arg_name)),*]
         );
-        let mut items = vec![$crate::page_layout::PageItem::ModuleInline {
-            module_name: <$module_name as $crate::module::KnxModule>::NAME,
+        let mut items = vec![$crate::definition::page_layout::PageItem::ModuleInline {
+            module_name: <$module_name as $crate::definition::module::KnxModule>::NAME,
             args: vec![
                 $((stringify!($arg_name), $arg_value as i64)),*
             ],
@@ -1030,8 +1012,8 @@ macro_rules! ets_pages {
     // The @ prefix means use the parameter name directly without appending _selector
     // Example: when @button1_function { ... } → selector = "button1_function"
     (@items when @ $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::When(
-            $crate::page_layout::ConditionalItem {
+        let mut items = vec![$crate::definition::page_layout::PageItem::When(
+            $crate::definition::page_layout::ConditionalItem {
                 selector: stringify!($param),
                 cases: $crate::ets_pages!(@item_cases $($cases)*),
             }
@@ -1044,8 +1026,8 @@ macro_rules! ets_pages {
     // The selector is the union field name - we append _selector automatically
     // Example: when channel_a_config { ... } → selector = "channel_a_config_selector"
     (@items when $selector:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::When(
-            $crate::page_layout::ConditionalItem {
+        let mut items = vec![$crate::definition::page_layout::PageItem::When(
+            $crate::definition::page_layout::ConditionalItem {
                 selector: concat!(stringify!($selector), "_selector"),
                 cases: $crate::ets_pages!(@item_cases $($cases)*),
             }
@@ -1058,7 +1040,7 @@ macro_rules! ets_pages {
     // Syntax: when_union_variant union_field::VariantName text "Label" { [values] => { ... } }
     // This matches MDT's pattern: output ParameterRefRef, then choose ParamRefId referencing it
     (@items when_union_variant $union:ident :: $variant:ident text $text:literal { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::UnionVariantWithChoose {
+        let mut items = vec![$crate::definition::page_layout::PageItem::UnionVariantWithChoose {
             union_field: stringify!($union),
             variant_name: stringify!($variant),
             text_override: Some($text),
@@ -1071,7 +1053,7 @@ macro_rules! ets_pages {
     // Parse when_union_variant without text override - outputs union variant param FIRST, then choose block
     // Syntax: when_union_variant union_field::VariantName { [values] => { ... } }
     (@items when_union_variant $union:ident :: $variant:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::UnionVariantWithChoose {
+        let mut items = vec![$crate::definition::page_layout::PageItem::UnionVariantWithChoose {
             union_field: stringify!($union),
             variant_name: stringify!($variant),
             text_override: None,
@@ -1085,7 +1067,7 @@ macro_rules! ets_pages {
     // Use union_variant first to output the param, then this to create choose blocks
     // Syntax: choose_on_union_variant union_field::VariantName { [values] => { ... } }
     (@items choose_on_union_variant $union:ident :: $variant:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::PageItem::ChooseOnUnionVariant {
+        let mut items = vec![$crate::definition::page_layout::PageItem::ChooseOnUnionVariant {
             union_field: stringify!($union),
             variant_name: stringify!($variant),
             cases: $crate::ets_pages!(@item_cases $($cases)*),
@@ -1102,8 +1084,8 @@ macro_rules! ets_pages {
     // Parse item case with enum path expressions (e.g., EnumType::Variant)
     // Must come before the simple ident rule to match first
     (@item_cases [$($enum_type:ident :: $variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::page_layout::ItemCase {
-            condition: $crate::page_layout::Condition::values(&[
+        let mut cases = vec![$crate::definition::page_layout::ItemCase {
+            condition: $crate::definition::page_layout::Condition::values(&[
                 $($enum_type::$variant as i64),+
             ]),
             items: $crate::ets_pages!(@items $($content)*),
@@ -1114,8 +1096,8 @@ macro_rules! ets_pages {
 
     // Parse item case with simple enum variants (cast directly to i64 since they're repr(isize))
     (@item_cases [$($variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::page_layout::ItemCase {
-            condition: $crate::page_layout::Condition::values(&[
+        let mut cases = vec![$crate::definition::page_layout::ItemCase {
+            condition: $crate::definition::page_layout::Condition::values(&[
                 $($variant as i64),+
             ]),
             items: $crate::ets_pages!(@items $($content)*),
@@ -1126,8 +1108,8 @@ macro_rules! ets_pages {
 
     // Parse item case with integer literals
     (@item_cases [$($val:literal),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::page_layout::ItemCase {
-            condition: $crate::page_layout::Condition::values(&[$($val as i64),+]),
+        let mut cases = vec![$crate::definition::page_layout::ItemCase {
+            condition: $crate::definition::page_layout::Condition::values(&[$($val as i64),+]),
             items: $crate::ets_pages!(@items $($content)*),
         }];
         cases.extend($crate::ets_pages!(@item_cases $($rest)*));
@@ -1136,8 +1118,8 @@ macro_rules! ets_pages {
 
     // Parse item case with default (_)
     (@item_cases _ => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::page_layout::ItemCase {
-            condition: $crate::page_layout::Condition::Default,
+        let mut cases = vec![$crate::definition::page_layout::ItemCase {
+            condition: $crate::definition::page_layout::Condition::Default,
             items: $crate::ets_pages!(@items $($content)*),
         }];
         cases.extend($crate::ets_pages!(@item_cases $($rest)*));
@@ -1208,8 +1190,8 @@ macro_rules! ets_module_pages {
 
     // Parse a block element
     (@elements block $name:literal => $text:literal { $($items:tt)* } $($rest:tt)*) => {{
-        let mut elems = vec![$crate::page_layout::ModuleLayoutElement::Block(
-            $crate::page_layout::ModuleLayoutBlock {
+        let mut elems = vec![$crate::definition::page_layout::ModuleLayoutElement::Block(
+            $crate::definition::page_layout::ModuleLayoutBlock {
                 name: $name,
                 text: $text,
                 items: $crate::ets_module_pages!(@items $($items)*),
@@ -1221,8 +1203,8 @@ macro_rules! ets_module_pages {
 
     // Parse a when element with @ prefix (for regular parameter names)
     (@elements when @ $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut elems = vec![$crate::page_layout::ModuleLayoutElement::When(
-            $crate::page_layout::ModuleLayoutWhen {
+        let mut elems = vec![$crate::definition::page_layout::ModuleLayoutElement::When(
+            $crate::definition::page_layout::ModuleLayoutWhen {
                 selector: stringify!($param),
                 cases: $crate::ets_module_pages!(@cases $($cases)*),
             }
@@ -1238,8 +1220,8 @@ macro_rules! ets_module_pages {
 
     // Parse case with integer literals
     (@cases [$($val:literal),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::page_layout::ModuleLayoutCase {
-            condition: $crate::page_layout::Condition::values(&[$($val as i64),+]),
+        let mut cases = vec![$crate::definition::page_layout::ModuleLayoutCase {
+            condition: $crate::definition::page_layout::Condition::values(&[$($val as i64),+]),
             items: $crate::ets_module_pages!(@items $($content)*),
         }];
         cases.extend($crate::ets_module_pages!(@cases $($rest)*));
@@ -1248,8 +1230,8 @@ macro_rules! ets_module_pages {
 
     // Parse case with enum variants
     (@cases [$($variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::page_layout::ModuleLayoutCase {
-            condition: $crate::page_layout::Condition::values(&[
+        let mut cases = vec![$crate::definition::page_layout::ModuleLayoutCase {
+            condition: $crate::definition::page_layout::Condition::values(&[
                 $($variant as i64),+
             ]),
             items: $crate::ets_module_pages!(@items $($content)*),
@@ -1260,8 +1242,8 @@ macro_rules! ets_module_pages {
 
     // Parse default case (_)
     (@cases _ => { $($content:tt)* } $($rest:tt)*) => {{
-        let mut cases = vec![$crate::page_layout::ModuleLayoutCase {
-            condition: $crate::page_layout::Condition::Default,
+        let mut cases = vec![$crate::definition::page_layout::ModuleLayoutCase {
+            condition: $crate::definition::page_layout::Condition::Default,
             items: $crate::ets_module_pages!(@items $($content)*),
         }];
         cases.extend($crate::ets_module_pages!(@cases $($rest)*));
@@ -1275,43 +1257,43 @@ macro_rules! ets_module_pages {
 
     // Parse param item
     (@items param $name:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::ModuleLayoutItem::Param(stringify!($name))];
+        let mut items = vec![$crate::definition::page_layout::ModuleLayoutItem::Param(stringify!($name))];
         items.extend($crate::ets_module_pages!(@items $($rest)*));
         items
     }};
 
     // Parse obj item
     (@items obj $name:ident $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::ModuleLayoutItem::Obj(stringify!($name))];
+        let mut items = vec![$crate::definition::page_layout::ModuleLayoutItem::Obj(stringify!($name))];
         items.extend($crate::ets_module_pages!(@items $($rest)*));
         items
     }};
 
     // Parse picture item (baggage reference by name)
     (@items picture $name:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::ModuleLayoutItem::Picture($name)];
+        let mut items = vec![$crate::definition::page_layout::ModuleLayoutItem::Picture($name)];
         items.extend($crate::ets_module_pages!(@items $($rest)*));
         items
     }};
 
     // Parse separator with text
     (@items sep $text:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::ModuleLayoutItem::Separator(Some($text))];
+        let mut items = vec![$crate::definition::page_layout::ModuleLayoutItem::Separator(Some($text))];
         items.extend($crate::ets_module_pages!(@items $($rest)*));
         items
     }};
 
     // Parse separator without text
     (@items sep $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::ModuleLayoutItem::Separator(None)];
+        let mut items = vec![$crate::definition::page_layout::ModuleLayoutItem::Separator(None)];
         items.extend($crate::ets_module_pages!(@items $($rest)*));
         items
     }};
 
     // Parse nested when with @ prefix
     (@items when @ $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
-        let mut items = vec![$crate::page_layout::ModuleLayoutItem::When(
-            $crate::page_layout::ModuleLayoutWhen {
+        let mut items = vec![$crate::definition::page_layout::ModuleLayoutItem::When(
+            $crate::definition::page_layout::ModuleLayoutWhen {
                 selector: stringify!($param),
                 cases: $crate::ets_module_pages!(@cases $($cases)*),
             }
@@ -1322,7 +1304,7 @@ macro_rules! ets_module_pages {
 
     // Entry point: parse top-level content (must be last to avoid matching internal @ rules)
     ( $($content:tt)* ) => {
-        $crate::page_layout::ModulePageLayout {
+        $crate::definition::page_layout::ModulePageLayout {
             elements: $crate::ets_module_pages!(@elements $($content)*),
         }
     };

@@ -22,7 +22,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use knxprod::baggage::BaggageIndex;
+//! use knxprod::runtime::baggage::BaggageIndex;
 //! use std::path::Path;
 //!
 //! let index = BaggageIndex::from_directory(Path::new("M-0083/"))?;
@@ -79,22 +79,17 @@ impl BaggageIndex {
     pub fn from_directory(dir: &Path) -> Result<Self, BaggageError> {
         let baggages_xml = dir.join("Baggages.xml");
         if !baggages_xml.exists() {
-            return Ok(Self {
-                base_dir: dir.to_path_buf(),
-                entries: HashMap::new(),
-            });
+            return Ok(Self { base_dir: dir.to_path_buf(), entries: HashMap::new() });
         }
 
-        let content = std::fs::read_to_string(&baggages_xml)
-            .map_err(|e| BaggageError::Io(e, baggages_xml.clone()))?;
+        let content = std::fs::read_to_string(&baggages_xml).map_err(|e| BaggageError::Io(e, baggages_xml.clone()))?;
 
         Self::from_xml(&content, dir)
     }
 
     /// Parse baggage index from XML content.
     fn from_xml(xml: &str, base_dir: &Path) -> Result<Self, BaggageError> {
-        let knx: BaggagesKnx = quick_xml::de::from_str(xml)
-            .map_err(|e| BaggageError::Parse(e.to_string()))?;
+        let knx: BaggagesKnx = quick_xml::de::from_str(xml).map_err(|e| BaggageError::Parse(e.to_string()))?;
 
         let baggages_dir = base_dir.join("Baggages");
         let mut entries = HashMap::new();
@@ -107,22 +102,16 @@ impl BaggageIndex {
                     baggages_dir.join(&baggage.target_path).join(&baggage.name)
                 };
 
-                entries.insert(
-                    baggage.id.clone(),
-                    BaggageEntry {
-                        id: baggage.id,
-                        name: baggage.name,
-                        target_path: baggage.target_path,
-                        file_path,
-                    },
-                );
+                entries.insert(baggage.id.clone(), BaggageEntry {
+                    id: baggage.id,
+                    name: baggage.name,
+                    target_path: baggage.target_path,
+                    file_path,
+                });
             }
         }
 
-        Ok(Self {
-            base_dir: base_dir.to_path_buf(),
-            entries,
-        })
+        Ok(Self { base_dir: base_dir.to_path_buf(), entries })
     }
 
     /// Get a baggage entry by ID.

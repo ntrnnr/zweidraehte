@@ -106,10 +106,10 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
-    parse_macro_input, Data, DeriveInput, Fields, Type, Attribute,
-    Lit, Expr, Token,
     parse::{Parse, ParseStream},
+    parse_macro_input,
     punctuated::Punctuated,
+    Attribute, Data, DeriveInput, Expr, Fields, Lit, Token, Type,
 };
 
 /// A single enum variant: "Name" => value
@@ -123,10 +123,7 @@ impl Parse for EnumVariantDef {
         let text: syn::LitStr = input.parse()?;
         input.parse::<Token![=>]>()?;
         let value: syn::LitInt = input.parse()?;
-        Ok(EnumVariantDef {
-            text: text.value(),
-            value: value.base10_parse()?,
-        })
+        Ok(EnumVariantDef { text: text.value(), value: value.base10_parse()? })
     }
 }
 
@@ -139,9 +136,7 @@ impl Parse for EnumVariantList {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let variants: Punctuated<EnumVariantDef, Token![,]> =
             input.parse_terminated(EnumVariantDef::parse, Token![,])?;
-        Ok(EnumVariantList {
-            variants: variants.into_iter().collect(),
-        })
+        Ok(EnumVariantList { variants: variants.into_iter().collect() })
     }
 }
 
@@ -166,15 +161,14 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
             Fields::Named(fields) => &fields.named,
-            _ => return Err(syn::Error::new_spanned(
-                input,
-                "EtsParams can only be derived for structs with named fields"
-            )),
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "EtsParams can only be derived for structs with named fields",
+                ))
+            }
         },
-        _ => return Err(syn::Error::new_spanned(
-            input,
-            "EtsParams can only be derived for structs"
-        )),
+        _ => return Err(syn::Error::new_spanned(input, "EtsParams can only be derived for structs")),
     };
 
     // Generate parameter definitions using core::mem::offset_of! for accurate offsets.
@@ -230,18 +224,15 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         // The module field is just for runtime access to the combined struct
         if let Some(module_type) = attrs.module_type {
             // Extract array length if this is an array type
-            let array_len = if let syn::Type::Array(array) = field_type {
-                Some(array.len.clone())
-            } else {
-                None
-            };
+            let array_len = if let syn::Type::Array(array) = field_type { Some(array.len.clone()) } else { None };
             module_fields.push((field_name.clone(), field_type.clone(), module_type, array_len));
             continue;
         }
 
         let display_name = attrs.display.clone().unwrap_or_else(|| {
             // Convert snake_case to Title Case
-            field_name.to_string()
+            field_name
+                .to_string()
                 .split('_')
                 .map(|word| {
                     let mut chars = word.chars();
@@ -297,11 +288,8 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             });
 
             // For union selector, use the default_value if specified (overrides the union's default variant)
-            let selector_default_expr = if let Some(val) = attrs.default_value {
-                quote!(Some(#val))
-            } else {
-                quote!(None)
-            };
+            let selector_default_expr =
+                if let Some(val) = attrs.default_value { quote!(Some(#val)) } else { quote!(None) };
 
             param_ext_defs.push(quote! {
                 zweidraehte::ets::EtsParamDefExt {
@@ -344,18 +332,10 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             let bit_offset = attrs.bit_offset.unwrap_or(0);
 
             // Generate suffix expression
-            let suffix_expr = if let Some(s) = &attrs.suffix {
-                quote!(Some(#s))
-            } else {
-                quote!(None)
-            };
+            let suffix_expr = if let Some(s) = &attrs.suffix { quote!(Some(#s)) } else { quote!(None) };
 
             let hidden = attrs.hidden;
-            let type_name_expr = if let Some(ref tn) = attrs.type_name {
-                quote!(Some(#tn))
-            } else {
-                quote!(None)
-            };
+            let type_name_expr = if let Some(ref tn) = attrs.type_name { quote!(Some(#tn)) } else { quote!(None) };
 
             param_defs.push(quote! {
                 zweidraehte::ets::EtsParamDef {
@@ -375,10 +355,8 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             });
 
             // Generate a const for the enum variants that references the type's ETS_VARIANTS
-            let const_name = syn::Ident::new(
-                &format!("{}_VARIANTS", field_name.to_string().to_uppercase()),
-                field_name.span(),
-            );
+            let const_name =
+                syn::Ident::new(&format!("{}_VARIANTS", field_name.to_string().to_uppercase()), field_name.span());
 
             enum_variant_consts.push(quote! {
                 const #const_name: &[zweidraehte::ets::EtsEnumVariant] = #field_type::ETS_VARIANTS;
@@ -434,20 +412,12 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         };
 
         // Generate suffix expression
-        let suffix_expr = if let Some(s) = &attrs.suffix {
-            quote!(Some(#s))
-        } else {
-            quote!(None)
-        };
+        let suffix_expr = if let Some(s) = &attrs.suffix { quote!(Some(#s)) } else { quote!(None) };
 
         // Generate basic ETS_PARAMS entry
         let hidden = attrs.hidden;
         let is_text_source = attrs.text_source;
-        let type_name_expr = if let Some(ref tn) = attrs.type_name {
-            quote!(Some(#tn))
-        } else {
-            quote!(None)
-        };
+        let type_name_expr = if let Some(ref tn) = attrs.type_name { quote!(Some(#tn)) } else { quote!(None) };
         param_defs.push(quote! {
             zweidraehte::ets::EtsParamDef {
                 name: #name_str,
@@ -468,18 +438,19 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         // Generate ETS_PARAMS_EXT entry with enum variants
         let enum_variants_expr = if let Some(variants) = &attrs.enum_variants {
             // Generate a const for the enum variants
-            let const_name = syn::Ident::new(
-                &format!("{}_VARIANTS", field_name.to_string().to_uppercase()),
-                field_name.span(),
-            );
+            let const_name =
+                syn::Ident::new(&format!("{}_VARIANTS", field_name.to_string().to_uppercase()), field_name.span());
 
-            let variant_defs: Vec<_> = variants.iter().map(|v| {
-                let text = &v.text;
-                let value = v.value;
-                quote! {
-                    zweidraehte::ets::EtsEnumVariant { text: #text, value: #value }
-                }
-            }).collect();
+            let variant_defs: Vec<_> = variants
+                .iter()
+                .map(|v| {
+                    let text = &v.text;
+                    let value = v.value;
+                    quote! {
+                        zweidraehte::ets::EtsEnumVariant { text: #text, value: #value }
+                    }
+                })
+                .collect();
 
             enum_variant_consts.push(quote! {
                 const #const_name: &[zweidraehte::ets::EtsEnumVariant] = &[
@@ -492,11 +463,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             quote!(None)
         };
 
-        let default_value_expr = if let Some(val) = attrs.default_value {
-            quote!(Some(#val))
-        } else {
-            quote!(None)
-        };
+        let default_value_expr = if let Some(val) = attrs.default_value { quote!(Some(#val)) } else { quote!(None) };
 
         param_ext_defs.push(quote! {
             zweidraehte::ets::EtsParamDefExt {
@@ -598,7 +565,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 /// This matches the `ParamBase` argument value used in module instantiation.
                 pub const fn #param_offset_fn(instance: usize) -> usize {
                     core::mem::offset_of!(Self, #field_name)
-                        + (instance - 1) * core::mem::size_of::<<#module_type as knxprod::module::KnxModule>::Params>()
+                        + (instance - 1) * core::mem::size_of::<<#module_type as knxprod::definition::module::KnxModule>::Params>()
                 }
 
                 /// Compute first object index for module instance N (1-indexed).
@@ -606,7 +573,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 /// This matches the `ObjBase` argument value used in module instantiation.
                 pub const fn #object_base_fn(instance: usize) -> usize {
                     // Get the number of objects from the module's comm object definitions
-                    const OBJECT_COUNT: usize = match <#module_type as knxprod::module::KnxModule>::MODULE_COMM_OBJECTS {
+                    const OBJECT_COUNT: usize = match <#module_type as knxprod::definition::module::KnxModule>::MODULE_COMM_OBJECTS {
                         Some(objs) => objs.len(),
                         None => 0,
                     };
@@ -625,47 +592,50 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }).collect();
 
         // Generate HasChannelHelpers implementations for each module field
-        let has_channel_helpers_impls: Vec<_> = module_fields.iter().map(|(field_name, _field_type, module_type, array_len)| {
-            let field_name_str = field_name.to_string();
+        let has_channel_helpers_impls: Vec<_> = module_fields
+            .iter()
+            .map(|(field_name, _field_type, module_type, array_len)| {
+                let field_name_str = field_name.to_string();
 
-            // Generate singular name for method names
-            let singular_name = if field_name_str.ends_with("es") && field_name_str.len() > 2 {
-                let stripped = &field_name_str[..field_name_str.len()-2];
-                if stripped.ends_with("ch") || stripped.ends_with("sh") || stripped.ends_with("ss") {
-                    stripped.to_string()
-                } else {
+                // Generate singular name for method names
+                let singular_name = if field_name_str.ends_with("es") && field_name_str.len() > 2 {
+                    let stripped = &field_name_str[..field_name_str.len() - 2];
+                    if stripped.ends_with("ch") || stripped.ends_with("sh") || stripped.ends_with("ss") {
+                        stripped.to_string()
+                    } else {
+                        field_name_str.trim_end_matches('s').to_string()
+                    }
+                } else if field_name_str.ends_with('s') {
                     field_name_str.trim_end_matches('s').to_string()
-                }
-            } else if field_name_str.ends_with('s') {
-                field_name_str.trim_end_matches('s').to_string()
-            } else {
-                field_name_str.clone()
-            };
+                } else {
+                    field_name_str.clone()
+                };
 
-            let param_offset_fn = syn::Ident::new(&format!("{}_param_offset", singular_name), field_name.span());
-            let object_base_fn = syn::Ident::new(&format!("{}_object_base", singular_name), field_name.span());
+                let param_offset_fn = syn::Ident::new(&format!("{}_param_offset", singular_name), field_name.span());
+                let object_base_fn = syn::Ident::new(&format!("{}_object_base", singular_name), field_name.span());
 
-            // Get the array length for COUNT
-            let count_expr = if let Some(len) = array_len {
-                quote! { #len }
-            } else {
-                quote! { 1 }
-            };
+                // Get the array length for COUNT
+                let count_expr = if let Some(len) = array_len {
+                    quote! { #len }
+                } else {
+                    quote! { 1 }
+                };
 
-            quote! {
-                impl knxprod::module::HasChannelHelpers<#module_type> for #struct_name {
-                    const COUNT: usize = #count_expr;
+                quote! {
+                    impl knxprod::definition::module::HasChannelHelpers<#module_type> for #struct_name {
+                        const COUNT: usize = #count_expr;
 
-                    fn param_offset(instance: usize) -> usize {
-                        Self::#param_offset_fn(instance)
-                    }
+                        fn param_offset(instance: usize) -> usize {
+                            Self::#param_offset_fn(instance)
+                        }
 
-                    fn object_base(instance: usize) -> usize {
-                        Self::#object_base_fn(instance)
+                        fn object_base(instance: usize) -> usize {
+                            Self::#object_base_fn(instance)
+                        }
                     }
                 }
-            }
-        }).collect();
+            })
+            .collect();
 
         quote! {
             impl #struct_name {
@@ -864,8 +834,8 @@ struct TypeInfo {
 fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
     match ty {
         Type::Path(type_path) => {
-            let segment = type_path.path.segments.last()
-                .ok_or_else(|| syn::Error::new_spanned(ty, "Empty type path"))?;
+            let segment =
+                type_path.path.segments.last().ok_or_else(|| syn::Error::new_spanned(ty, "Empty type path"))?;
 
             let ident_str = segment.ident.to_string();
 
@@ -944,7 +914,7 @@ fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
                     // Could be a custom enum or struct
                     Err(syn::Error::new_spanned(
                         ty,
-                        format!("Unsupported type '{}'. Use u8, u16, u32, i8, i16, i32, bool, or [u8; N]", ident_str)
+                        format!("Unsupported type '{}'. Use u8, u16, u32, i8, i16, i32, bool, or [u8; N]", ident_str),
                     ))
                 }
             }
@@ -981,8 +951,7 @@ fn get_const_zero_expr(ty: &Type) -> TokenStream2 {
             if let Some(segment) = type_path.path.segments.last() {
                 let ident_str = segment.ident.to_string();
                 match ident_str.as_str() {
-                    "u8" | "u16" | "u32" | "u64" | "usize" |
-                    "i8" | "i16" | "i32" | "i64" | "isize" => quote!(0),
+                    "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize" => quote!(0),
                     "bool" => quote!(false),
                     // For unknown types (custom structs/enums), try ConstDefault
                     _ => quote!(<#ty as const_default::ConstDefault>::DEFAULT),
@@ -1053,18 +1022,12 @@ pub fn derive_ets_union(input: TokenStream) -> TokenStream {
 
 fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let enum_name = &input.ident;
-    let discriminant_enum_name = syn::Ident::new(
-        &format!("{}Discriminant", enum_name),
-        enum_name.span(),
-    );
+    let discriminant_enum_name = syn::Ident::new(&format!("{}Discriminant", enum_name), enum_name.span());
 
     // Verify it's an enum
     let variants = match &input.data {
         Data::Enum(data) => &data.variants,
-        _ => return Err(syn::Error::new_spanned(
-            input,
-            "EtsUnion can only be derived for enums"
-        )),
+        _ => return Err(syn::Error::new_spanned(input, "EtsUnion can only be derived for enums")),
     };
 
     // Verify #[repr(C, u8)] or similar
@@ -1085,7 +1048,7 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     if !has_repr_c {
         return Err(syn::Error::new_spanned(
             input,
-            "EtsUnion requires #[repr(C, u8)] or #[repr(u8)] for predictable memory layout"
+            "EtsUnion requires #[repr(C, u8)] or #[repr(u8)] for predictable memory layout",
         ));
     }
 
@@ -1170,9 +1133,7 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         if variant_attrs.is_default {
             let fields: Vec<(syn::Ident, Type)> = match &variant.fields {
                 syn::Fields::Named(fields) => {
-                    fields.named.iter()
-                        .filter_map(|f| f.ident.clone().map(|name| (name, f.ty.clone())))
-                        .collect()
+                    fields.named.iter().filter_map(|f| f.ident.clone().map(|name| (name, f.ty.clone()))).collect()
                 }
                 syn::Fields::Unit => Vec::new(),
                 syn::Fields::Unnamed(_) => Vec::new(),
@@ -1229,7 +1190,8 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         }
 
                         let field_display = field_attrs.display.unwrap_or_else(|| {
-                            field_name.to_string()
+                            field_name
+                                .to_string()
                                 .split('_')
                                 .map(|word| {
                                     let mut chars = word.chars();
@@ -1248,11 +1210,8 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         let bit_offset = field_attrs.bit_offset.unwrap_or(0);
 
                         // For ets_enum fields, use default_value if specified
-                        let default_value_expr = if let Some(val) = field_attrs.default_value {
-                            quote!(Some(#val))
-                        } else {
-                            quote!(None)
-                        };
+                        let default_value_expr =
+                            if let Some(val) = field_attrs.default_value { quote!(Some(#val)) } else { quote!(None) };
 
                         // Generate suffix expression for ets_enum fields
                         let suffix_expr = if let Some(ref suffix) = field_attrs.suffix {
@@ -1306,7 +1265,8 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     }
 
                     let field_display = field_attrs.display.unwrap_or_else(|| {
-                        field_name.to_string()
+                        field_name
+                            .to_string()
                             .split('_')
                             .map(|word| {
                                 let mut chars = word.chars();
@@ -1339,26 +1299,26 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
                     // Generate enum_variants expression
                     let enum_variants_expr = if let Some(variants) = &field_attrs.enum_variants {
-                        let variant_defs: Vec<_> = variants.iter().map(|v| {
-                            let text = &v.text;
-                            let value = v.value;
-                            quote! {
-                                zweidraehte::ets::EtsEnumVariant {
-                                    text: #text,
-                                    value: #value,
+                        let variant_defs: Vec<_> = variants
+                            .iter()
+                            .map(|v| {
+                                let text = &v.text;
+                                let value = v.value;
+                                quote! {
+                                    zweidraehte::ets::EtsEnumVariant {
+                                        text: #text,
+                                        value: #value,
+                                    }
                                 }
-                            }
-                        }).collect();
+                            })
+                            .collect();
                         quote!(Some(&[#(#variant_defs),*]))
                     } else {
                         quote!(None)
                     };
 
-                    let default_value_expr = if let Some(val) = field_attrs.default_value {
-                        quote!(Some(#val))
-                    } else {
-                        quote!(None)
-                    };
+                    let default_value_expr =
+                        if let Some(val) = field_attrs.default_value { quote!(Some(#val)) } else { quote!(None) };
 
                     // Generate text_pattern expression
                     let text_pattern_expr = if let Some(ref pattern) = field_attrs.text_pattern {
@@ -1368,11 +1328,8 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     };
 
                     // Generate suffix expression for non-ets_enum fields
-                    let suffix_expr = if let Some(ref suffix) = field_attrs.suffix {
-                        quote!(Some(#suffix))
-                    } else {
-                        quote!(None)
-                    };
+                    let suffix_expr =
+                        if let Some(ref suffix) = field_attrs.suffix { quote!(Some(#suffix)) } else { quote!(None) };
 
                     union_params.push(quote! {
                         zweidraehte::ets::EtsUnionVariantParam {
@@ -1427,9 +1384,12 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // correct memory mapping in ETS export.
 
     // Generate discriminant enum variants
-    let discriminant_enum_variants: Vec<_> = discriminant_variants.iter().map(|(name, value)| {
-        quote! { #name = #value as isize }
-    }).collect();
+    let discriminant_enum_variants: Vec<_> = discriminant_variants
+        .iter()
+        .map(|(name, value)| {
+            quote! { #name = #value as isize }
+        })
+        .collect();
 
     let base_impl = quote! {
         /// Discriminant-only enum for use in ComObjectRef `when` clauses.
@@ -1486,17 +1446,20 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         // For EtsUnion fields, we use ConstDefault::DEFAULT which properly handles
         // EtsEnum types and nested unions. Fields starting with _ are assumed to be
         // padding and use get_const_zero_expr.
-        let field_defaults: Vec<TokenStream2> = fields.iter().map(|(name, ty)| {
-            let name_str = name.to_string();
-            if name_str.starts_with('_') {
-                // Padding fields - use zero
-                let zero_expr = get_const_zero_expr(ty);
-                quote! { #name: #zero_expr }
-            } else {
-                // Regular fields - use ConstDefault::DEFAULT
-                quote! { #name: <#ty as const_default::ConstDefault>::DEFAULT }
-            }
-        }).collect();
+        let field_defaults: Vec<TokenStream2> = fields
+            .iter()
+            .map(|(name, ty)| {
+                let name_str = name.to_string();
+                if name_str.starts_with('_') {
+                    // Padding fields - use zero
+                    let zero_expr = get_const_zero_expr(ty);
+                    quote! { #name: #zero_expr }
+                } else {
+                    // Regular fields - use ConstDefault::DEFAULT
+                    quote! { #name: <#ty as const_default::ConstDefault>::DEFAULT }
+                }
+            })
+            .collect();
 
         let default_expr = if field_defaults.is_empty() {
             quote! { #enum_name::#default_variant_name }
@@ -1633,10 +1596,7 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // Must be an enum
     let variants = match &input.data {
         Data::Enum(data) => &data.variants,
-        _ => return Err(syn::Error::new_spanned(
-            input,
-            "EtsEnum can only be derived for enums"
-        )),
+        _ => return Err(syn::Error::new_spanned(input, "EtsEnum can only be derived for enums")),
     };
 
     // Check for #[repr(u8)] or #[repr(u16)]
@@ -1655,7 +1615,7 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     if repr_size == 0 {
         return Err(syn::Error::new_spanned(
             input,
-            "EtsEnum requires #[repr(u8)] or #[repr(u16)] for predictable memory layout"
+            "EtsEnum requires #[repr(u8)] or #[repr(u16)] for predictable memory layout",
         ));
     }
 
@@ -1670,7 +1630,7 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         if !matches!(&variant.fields, syn::Fields::Unit) {
             return Err(syn::Error::new_spanned(
                 variant,
-                "EtsEnum only supports unit variants (no data fields). Use EtsUnion for variants with data."
+                "EtsEnum only supports unit variants (no data fields). Use EtsUnion for variants with data.",
             ));
         }
 
@@ -1925,10 +1885,7 @@ struct ComObjectRefAttrs {
 }
 
 fn parse_com_objects_struct_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectsStructAttrs> {
-    let mut result = ComObjectsStructAttrs {
-        manual_impl: false,
-        selector_enum: None,
-    };
+    let mut result = ComObjectsStructAttrs { manual_impl: false, selector_enum: None };
 
     for attr in attrs {
         if !attr.path().is_ident("ets") {
@@ -2032,16 +1989,16 @@ fn parse_com_object_field_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectFie
 /// Resolve a comm object flag identifier to its u8 value.
 fn resolve_flag_ident(ident: &str) -> Option<u8> {
     match ident {
-        "C" | "CE" => Some(0x04),       // Communication Enable
-        "R" | "RE" => Some(0x08),       // Read Enable
-        "W" | "WE" => Some(0x10),       // Write Enable
-        "ROI" => Some(0x20),            // Read on Init
-        "T" | "TE" => Some(0x40),       // Transmission Enable
-        "U" | "UE" => Some(0x80),       // Update Enable
-        "LOW" => Some(0x03),            // Priority Low
-        "HIGH" => Some(0x01),           // Priority High
-        "ALARM" => Some(0x02),          // Priority Alarm
-        "SYSTEM" => Some(0x00),         // Priority System
+        "C" | "CE" => Some(0x04), // Communication Enable
+        "R" | "RE" => Some(0x08), // Read Enable
+        "W" | "WE" => Some(0x10), // Write Enable
+        "ROI" => Some(0x20),      // Read on Init
+        "T" | "TE" => Some(0x40), // Transmission Enable
+        "U" | "UE" => Some(0x80), // Update Enable
+        "LOW" => Some(0x03),      // Priority Low
+        "HIGH" => Some(0x01),     // Priority High
+        "ALARM" => Some(0x02),    // Priority Alarm
+        "SYSTEM" => Some(0x00),   // Priority System
         _ => None,
     }
 }
@@ -2060,10 +2017,15 @@ fn parse_flags_expr(input: ParseStream) -> syn::Result<u8> {
         let ident_str = ident.to_string();
         match resolve_flag_ident(&ident_str) {
             Some(val) => flags |= val,
-            None => return Err(syn::Error::new_spanned(
-                &ident,
-                format!("unknown flag `{}`. Expected: C/CE, R/RE, W/WE, T/TE, U/UE, ROI, LOW, HIGH, ALARM, SYSTEM", ident_str),
-            )),
+            None => {
+                return Err(syn::Error::new_spanned(
+                    &ident,
+                    format!(
+                        "unknown flag `{}`. Expected: C/CE, R/RE, W/WE, T/TE, U/UE, ROI, LOW, HIGH, ALARM, SYSTEM",
+                        ident_str
+                    ),
+                ))
+            }
         }
         // If next token is `|`, consume it and continue; otherwise stop
         if input.peek(Token![|]) {
@@ -2260,15 +2222,14 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
             Fields::Named(fields) => &fields.named,
-            _ => return Err(syn::Error::new_spanned(
-                input,
-                "EtsComObjects can only be derived for structs with named fields"
-            )),
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "EtsComObjects can only be derived for structs with named fields",
+                ))
+            }
         },
-        _ => return Err(syn::Error::new_spanned(
-            input,
-            "EtsComObjects can only be derived for structs"
-        )),
+        _ => return Err(syn::Error::new_spanned(input, "EtsComObjects can only be derived for structs")),
     };
 
     // Parse all fields, separating regular fields from module fields
@@ -2283,18 +2244,11 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
         // Check if this is a module field
         if let Some(module_type) = attrs.module_type {
             // Module field - extract array info
-            let (element_type, instance_count) = extract_array_info(&field_ty)
-                .ok_or_else(|| syn::Error::new_spanned(
-                    &field_ty,
-                    "Module fields must be arrays, e.g., [ModuleObjects; 4]"
-                ))?;
+            let (element_type, instance_count) = extract_array_info(&field_ty).ok_or_else(|| {
+                syn::Error::new_spanned(&field_ty, "Module fields must be arrays, e.g., [ModuleObjects; 4]")
+            })?;
 
-            module_fields.push(ModuleFieldInfo {
-                ident: field_ident,
-                module_type,
-                instance_count,
-                element_type,
-            });
+            module_fields.push(ModuleFieldInfo { ident: field_ident, module_type, instance_count, element_type });
             continue;
         }
 
@@ -2305,7 +2259,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
         if attrs.index.is_none() {
             return Err(syn::Error::new_spanned(
                 field,
-                "EtsComObjects fields must have #[ets(index = N)] or #[ets(module = ...)]"
+                "EtsComObjects fields must have #[ets(index = N)] or #[ets(module = ...)]",
             ));
         }
 
@@ -2326,10 +2280,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
 
     // For now, we support at most one module field
     if module_fields.len() > 1 {
-        return Err(syn::Error::new_spanned(
-            input,
-            "Only one module field is currently supported per struct"
-        ));
+        return Err(syn::Error::new_spanned(input, "Only one module field is currently supported per struct"));
     }
 
     // If we have a module field, generate module-based implementation
@@ -2338,126 +2289,136 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
     }
 
     // Generate the Index enum
-    let index_variants: Vec<_> = com_objects.iter().map(|obj| {
-        let name = to_camel_case(&obj.ident.to_string());
-        let variant_ident = syn::Ident::new(&name, obj.ident.span());
-        let index = obj.attrs.index.unwrap();
-        quote! { #variant_ident = #index }
-    }).collect();
+    let index_variants: Vec<_> = com_objects
+        .iter()
+        .map(|obj| {
+            let name = to_camel_case(&obj.ident.to_string());
+            let variant_ident = syn::Ident::new(&name, obj.ident.span());
+            let index = obj.attrs.index.unwrap();
+            quote! { #variant_ident = #index }
+        })
+        .collect();
 
-    let index_from_arms: Vec<_> = com_objects.iter().map(|obj| {
-        let name = to_camel_case(&obj.ident.to_string());
-        let variant_ident = syn::Ident::new(&name, obj.ident.span());
-        let index = obj.attrs.index.unwrap();
-        quote! { #index => Some(Self::#variant_ident) }
-    }).collect();
+    let index_from_arms: Vec<_> = com_objects
+        .iter()
+        .map(|obj| {
+            let name = to_camel_case(&obj.ident.to_string());
+            let variant_ident = syn::Ident::new(&name, obj.ident.span());
+            let index = obj.attrs.index.unwrap();
+            quote! { #index => Some(Self::#variant_ident) }
+        })
+        .collect();
 
     // Generate info() match arms
-    let info_arms: Vec<_> = com_objects.iter().map(|obj| {
-        let name = to_camel_case(&obj.ident.to_string());
-        let variant_ident = syn::Ident::new(&name, obj.ident.span());
-        let field_ident = &obj.ident;
-        quote! {
-            Index::#variant_ident => zweidraehte::objects::comm::ComObjectInfo {
-                status: &self.#field_ident.status,
-                value: self.#field_ident.value.as_ref(),
+    let info_arms: Vec<_> = com_objects
+        .iter()
+        .map(|obj| {
+            let name = to_camel_case(&obj.ident.to_string());
+            let variant_ident = syn::Ident::new(&name, obj.ident.span());
+            let field_ident = &obj.ident;
+            quote! {
+                Index::#variant_ident => zweidraehte::objects::comm::ComObjectInfo {
+                    status: &self.#field_ident.status,
+                    value: self.#field_ident.value.as_ref(),
+                }
             }
-        }
-    }).collect();
+        })
+        .collect();
 
     // Generate info_mut() match arms
-    let info_mut_arms: Vec<_> = com_objects.iter().map(|obj| {
-        let name = to_camel_case(&obj.ident.to_string());
-        let variant_ident = syn::Ident::new(&name, obj.ident.span());
-        let field_ident = &obj.ident;
-        quote! {
-            Index::#variant_ident => zweidraehte::objects::comm::ComObjectInfoMut {
-                status: &mut self.#field_ident.status,
-                value: self.#field_ident.value.as_mut(),
+    let info_mut_arms: Vec<_> = com_objects
+        .iter()
+        .map(|obj| {
+            let name = to_camel_case(&obj.ident.to_string());
+            let variant_ident = syn::Ident::new(&name, obj.ident.span());
+            let field_ident = &obj.ident;
+            quote! {
+                Index::#variant_ident => zweidraehte::objects::comm::ComObjectInfoMut {
+                    status: &mut self.#field_ident.status,
+                    value: self.#field_ident.value.as_mut(),
+                }
             }
-        }
-    }).collect();
+        })
+        .collect();
 
     // Generate new() field initializers
-    let new_fields: Vec<_> = com_objects.iter().map(|obj| {
-        let ident = &obj.ident;
-        if obj.is_multi_dpt {
-            // Multi-DPT objects use ComObjectStorage for runtime type selection
-            quote! {
-                #ident: zweidraehte::objects::comm::ComObject::new(
-                    zweidraehte::objects::comm::ComObjectStorage::new()
-                )
+    let new_fields: Vec<_> = com_objects
+        .iter()
+        .map(|obj| {
+            let ident = &obj.ident;
+            if obj.is_multi_dpt {
+                // Multi-DPT objects use ComObjectStorage for runtime type selection
+                quote! {
+                    #ident: zweidraehte::objects::comm::ComObject::new(
+                        zweidraehte::objects::comm::ComObjectStorage::new()
+                    )
+                }
+            } else {
+                // Single-DPT objects (including same-DPT multi-ref) use the declared inner type
+                let inner_ty = &obj.inner_ty;
+                quote! {
+                    #ident: zweidraehte::objects::comm::ComObject::new(<#inner_ty>::default())
+                }
             }
-        } else {
-            // Single-DPT objects (including same-DPT multi-ref) use the declared inner type
-            let inner_ty = &obj.inner_ty;
-            quote! {
-                #ident: zweidraehte::objects::comm::ComObject::new(<#inner_ty>::default())
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
     // Generate ETS_COMM_OBJECTS const array
-    let ets_comm_objects: Vec<_> = com_objects.iter().map(|obj| {
-        let index = obj.attrs.index.unwrap();
-        // Use name override if provided, otherwise use field ident
-        let name = obj.attrs.name.clone().unwrap_or_else(|| obj.ident.to_string());
-        let display_name = obj.attrs.display.clone().unwrap_or_else(|| {
-            to_title_case(&obj.ident.to_string())
-        });
-        let function_text = obj.attrs.function.clone().unwrap_or_default();
-        let default_flags = obj.attrs.flags.unwrap_or(0xDF);
+    let ets_comm_objects: Vec<_> = com_objects
+        .iter()
+        .map(|obj| {
+            let index = obj.attrs.index.unwrap();
+            // Use name override if provided, otherwise use field ident
+            let name = obj.attrs.name.clone().unwrap_or_else(|| obj.ident.to_string());
+            let display_name = obj.attrs.display.clone().unwrap_or_else(|| to_title_case(&obj.ident.to_string()));
+            let function_text = obj.attrs.function.clone().unwrap_or_default();
+            let default_flags = obj.attrs.flags.unwrap_or(0xDF);
 
-        // Generate object_size_override expression
-        let object_size_override_expr = if let Some(ref size) = obj.attrs.object_size {
-            quote!(Some(#size))
-        } else {
-            quote!(None)
-        };
+            // Generate object_size_override expression
+            let object_size_override_expr =
+                if let Some(ref size) = obj.attrs.object_size { quote!(Some(#size)) } else { quote!(None) };
 
-        // Generate text_template expression
-        let text_template_expr = if let Some(ref template) = obj.attrs.text_template {
-            quote!(Some(#template))
-        } else {
-            quote!(None)
-        };
+            // Generate text_template expression
+            let text_template_expr =
+                if let Some(ref template) = obj.attrs.text_template { quote!(Some(#template)) } else { quote!(None) };
 
-        if obj.has_refs {
-            // For objects with refs, use first ref's DPT info as base
-            let first_ref_dpt = &obj.refs[0].dpt;
-            quote! {
-                zweidraehte::ets::EtsCommObjectDef {
-                    index: #index,
-                    name: #name,
-                    display_name: #display_name,
-                    function_text: #function_text,
-                    dpt_main: <#first_ref_dpt as zweidraehte::ets::HasDptInfo>::DPT_MAIN,
-                    dpt_sub: <#first_ref_dpt as zweidraehte::ets::HasDptInfo>::DPT_SUB,
-                    size_bits: <#first_ref_dpt as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
-                    default_flags: #default_flags,
-                    object_size_override: #object_size_override_expr,
-                    text_template: #text_template_expr,
+            if obj.has_refs {
+                // For objects with refs, use first ref's DPT info as base
+                let first_ref_dpt = &obj.refs[0].dpt;
+                quote! {
+                    zweidraehte::ets::EtsCommObjectDef {
+                        index: #index,
+                        name: #name,
+                        display_name: #display_name,
+                        function_text: #function_text,
+                        dpt_main: <#first_ref_dpt as zweidraehte::ets::HasDptInfo>::DPT_MAIN,
+                        dpt_sub: <#first_ref_dpt as zweidraehte::ets::HasDptInfo>::DPT_SUB,
+                        size_bits: <#first_ref_dpt as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
+                        default_flags: #default_flags,
+                        object_size_override: #object_size_override_expr,
+                        text_template: #text_template_expr,
+                    }
+                }
+            } else {
+                // Use inner_ty to extract DPT info (handles both ComObject<T> and bare T)
+                let inner_ty = &obj.inner_ty;
+                quote! {
+                    zweidraehte::ets::EtsCommObjectDef {
+                        index: #index,
+                        name: #name,
+                        display_name: #display_name,
+                        function_text: #function_text,
+                        dpt_main: <#inner_ty as zweidraehte::ets::HasDptInfo>::DPT_MAIN,
+                        dpt_sub: <#inner_ty as zweidraehte::ets::HasDptInfo>::DPT_SUB,
+                        size_bits: <#inner_ty as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
+                        default_flags: #default_flags,
+                        object_size_override: #object_size_override_expr,
+                        text_template: #text_template_expr,
+                    }
                 }
             }
-        } else {
-            // Use inner_ty to extract DPT info (handles both ComObject<T> and bare T)
-            let inner_ty = &obj.inner_ty;
-            quote! {
-                zweidraehte::ets::EtsCommObjectDef {
-                    index: #index,
-                    name: #name,
-                    display_name: #display_name,
-                    function_text: #function_text,
-                    dpt_main: <#inner_ty as zweidraehte::ets::HasDptInfo>::DPT_MAIN,
-                    dpt_sub: <#inner_ty as zweidraehte::ets::HasDptInfo>::DPT_SUB,
-                    size_bits: <#inner_ty as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
-                    default_flags: #default_flags,
-                    object_size_override: #object_size_override_expr,
-                    text_template: #text_template_expr,
-                }
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
     // Generate ETS_COMM_OBJECT_REFS const array
     let mut ets_comm_object_refs: Vec<TokenStream2> = Vec::new();
@@ -2480,11 +2441,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                 // This allows direct referencing of specific refs by name in page layout
                 let ref_name = ref_attr.ref_name.clone().unwrap_or_else(|| field_name.clone());
                 let function_text = ref_attr.function.clone().unwrap_or(base_function.clone());
-                let text_tokens = if let Some(ref text) = ref_attr.text {
-                    quote!(Some(#text))
-                } else {
-                    quote!(None)
-                };
+                let text_tokens = if let Some(ref text) = ref_attr.text { quote!(Some(#text)) } else { quote!(None) };
                 // Only include selector info if the ref has a `when` attribute
                 // Refs without `when` are unconditional and should NOT have selector_param
                 let (selector_value, this_ref_selector_param) = match &ref_attr.when {
@@ -2492,9 +2449,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                         // Cast the enum variant to i64 to get the discriminant value
                         (quote!(Some(#path as i64)), selector_param_tokens.clone())
                     }
-                    Some(SelectorValue::Int(val)) => {
-                        (quote!(Some(#val as i64)), selector_param_tokens.clone())
-                    }
+                    Some(SelectorValue::Int(val)) => (quote!(Some(#val as i64)), selector_param_tokens.clone()),
                     None => {
                         // No `when` = unconditional ref, clear selector_param
                         (quote!(None), quote!(None))
@@ -2502,9 +2457,12 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                 };
 
                 // Generate flag overrides
-                let flag_overrides = if ref_attr.read.is_some() || ref_attr.write.is_some() ||
-                    ref_attr.communication.is_some() || ref_attr.transmit.is_some() ||
-                    ref_attr.update.is_some() || ref_attr.read_on_init.is_some()
+                let flag_overrides = if ref_attr.read.is_some()
+                    || ref_attr.write.is_some()
+                    || ref_attr.communication.is_some()
+                    || ref_attr.transmit.is_some()
+                    || ref_attr.update.is_some()
+                    || ref_attr.read_on_init.is_some()
                 {
                     let read = opt_bool_to_tokens(ref_attr.read);
                     let write = opt_bool_to_tokens(ref_attr.write);
@@ -2699,7 +2657,7 @@ fn generate_module_based_impl(
     // Get singular name for prefix (e.g., "channels" -> "Ch")
     let field_name_str = field_ident.to_string();
     let prefix = if field_name_str.ends_with("s") {
-        let s = &field_name_str[..field_name_str.len()-1];
+        let s = &field_name_str[..field_name_str.len() - 1];
         let mut chars = s.chars();
         match chars.next() {
             Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
@@ -2717,7 +2675,7 @@ fn generate_module_based_impl(
     // using the module's MODULE_COMM_OBJECTS constant
     let objects_per_instance = quote! {
         {
-            match <#module_type as knxprod::module::KnxModule>::MODULE_COMM_OBJECTS {
+            match <#module_type as knxprod::definition::module::KnxModule>::MODULE_COMM_OBJECTS {
                 Some(objs) => objs.len(),
                 None => 0,
             }
@@ -2826,7 +2784,8 @@ fn generate_module_based_impl(
     let helper_methods = {
         let prefix_lower = prefix.to_lowercase();
         let object_index_fn = syn::Ident::new(&format!("{}_object_index", prefix_lower), field_ident.span());
-        let instance_count_const = syn::Ident::new(&format!("{}_INSTANCE_COUNT", field_name_str.to_uppercase()), field_ident.span());
+        let instance_count_const =
+            syn::Ident::new(&format!("{}_INSTANCE_COUNT", field_name_str.to_uppercase()), field_ident.span());
 
         quote! {
             impl #struct_name {
@@ -2887,29 +2846,29 @@ fn generate_selector_impl(
 ) -> syn::Result<TokenStream2> {
     // Extract the enum name from the type
     let selector_name = match selector_enum {
-        syn::Type::Path(p) => p.path.segments.last()
+        syn::Type::Path(p) => p
+            .path
+            .segments
+            .last()
             .map(|s| s.ident.clone())
             .ok_or_else(|| syn::Error::new_spanned(selector_enum, "Invalid selector enum type"))?,
         _ => return Err(syn::Error::new_spanned(selector_enum, "Selector must be a path type")),
     };
 
-    let objs_enum_name = syn::Ident::new(
-        &format!("{}Objs", selector_name),
-        selector_name.span(),
-    );
+    let objs_enum_name = syn::Ident::new(&format!("{}Objs", selector_name), selector_name.span());
 
     // Find all fields that have refs with `when` clauses matching this selector
     let mut selector_fields: Vec<(&ComObjectField, Vec<&ComObjectRefAttrs>)> = Vec::new();
 
     for obj in com_objects {
-        let matching_refs: Vec<_> = obj.refs.iter()
+        let matching_refs: Vec<_> = obj
+            .refs
+            .iter()
             .filter(|r| {
                 match &r.when {
                     Some(SelectorValue::Path(path)) => {
                         // Check if the path starts with the selector enum name
-                        path.segments.first()
-                            .map(|s| s.ident == selector_name)
-                            .unwrap_or(false)
+                        path.segments.first().map(|s| s.ident == selector_name).unwrap_or(false)
                     }
                     // Integer values don't match a specific selector enum
                     _ => false,
@@ -2933,9 +2892,7 @@ fn generate_selector_impl(
     for (obj, refs) in &selector_fields {
         for ref_attr in refs {
             if let Some(SelectorValue::Path(path)) = &ref_attr.when {
-                let variant_name = path.segments.last()
-                    .map(|s| s.ident.to_string())
-                    .unwrap_or_default();
+                let variant_name = path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
                 variants_map.entry(variant_name).or_default().push((obj, ref_attr));
             }
         }
@@ -2943,56 +2900,66 @@ fn generate_selector_impl(
 
     // Generate enum variants - deduplicate fields by name within each variant
     // (same field may have multiple refs with same `when` but different functions)
-    let enum_variants: Vec<_> = variants_map.iter().map(|(variant_name, field_refs)| {
-        let variant_ident = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
+    let enum_variants: Vec<_> = variants_map
+        .iter()
+        .map(|(variant_name, field_refs)| {
+            let variant_ident = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
 
-        // Deduplicate by field name, keeping the first ref for each field
-        let mut seen_fields = std::collections::HashSet::new();
-        let field_defs: Vec<_> = field_refs.iter()
-            .filter(|(obj, _)| seen_fields.insert(obj.ident.to_string()))
-            .map(|(obj, ref_attr)| {
-                let field_ident = &obj.ident;
-                let dpt_type = &ref_attr.dpt;
-                let index = obj.attrs.index.unwrap();
-                quote! {
-                    #field_ident: zweidraehte::objects::comm::TypedComObj<'a, #dpt_type, #index>
+            // Deduplicate by field name, keeping the first ref for each field
+            let mut seen_fields = std::collections::HashSet::new();
+            let field_defs: Vec<_> = field_refs
+                .iter()
+                .filter(|(obj, _)| seen_fields.insert(obj.ident.to_string()))
+                .map(|(obj, ref_attr)| {
+                    let field_ident = &obj.ident;
+                    let dpt_type = &ref_attr.dpt;
+                    let index = obj.attrs.index.unwrap();
+                    quote! {
+                        #field_ident: zweidraehte::objects::comm::TypedComObj<'a, #dpt_type, #index>
+                    }
+                })
+                .collect();
+
+            quote! {
+                #variant_ident {
+                    #(#field_defs),*
                 }
-            }).collect();
-
-        quote! {
-            #variant_ident {
-                #(#field_defs),*
             }
-        }
-    }).collect();
+        })
+        .collect();
 
     // Generate match arms for the accessor method
-    let match_arms: Vec<_> = variants_map.iter().map(|(variant_name, field_refs)| {
-        let variant_ident = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
-        let selector_variant = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
+    let match_arms: Vec<_> = variants_map
+        .iter()
+        .map(|(variant_name, field_refs)| {
+            let variant_ident = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
+            let selector_variant = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
 
-        // Deduplicate by field name, keeping the first ref for each field
-        let mut seen_fields = std::collections::HashSet::new();
-        let field_inits: Vec<_> = field_refs.iter()
-            .filter(|(obj, _)| seen_fields.insert(obj.ident.to_string()))
-            .map(|(obj, _ref_attr)| {
-                let field_ident = &obj.ident;
-                quote! {
-                    #field_ident: unsafe {
-                        zweidraehte::objects::comm::TypedComObj::new(
-                            objs.#field_ident.value.as_mut(),
-                            &mut objs.#field_ident.status,
-                        )
+            // Deduplicate by field name, keeping the first ref for each field
+            let mut seen_fields = std::collections::HashSet::new();
+            let field_inits: Vec<_> = field_refs
+                .iter()
+                .filter(|(obj, _)| seen_fields.insert(obj.ident.to_string()))
+                .map(|(obj, _ref_attr)| {
+                    let field_ident = &obj.ident;
+                    quote! {
+                        #field_ident: unsafe {
+                            zweidraehte::objects::comm::TypedComObj::new(
+                                objs.#field_ident.value.as_mut(),
+                                &mut objs.#field_ident.status,
+                            )
+                        }
                     }
-                }
-            }).collect();
+                })
+                .collect();
 
-        quote! {
-            #selector_enum::#selector_variant => #objs_enum_name::#variant_ident {
-                #(#field_inits),*
+            quote! {
+                #selector_enum::#selector_variant => #objs_enum_name::#variant_ident {
+                    #(#field_inits),*
+                }
             }
-        }
-    }).collect();
+        })
+        .collect();
 
     Ok(quote! {
         /// Generated enum with typed comm object references for each selector variant
@@ -3189,7 +3156,12 @@ impl syn::parse::Parse for EtsRangeEnumInput {
             match formula_name.to_string().as_str() {
                 "percent_to_byte" => ValueFormula::PercentToByte,
                 "direct" => ValueFormula::Direct,
-                _ => return Err(syn::Error::new(formula_name.span(), "unknown formula, expected 'direct' or 'percent_to_byte'")),
+                _ => {
+                    return Err(syn::Error::new(
+                        formula_name.span(),
+                        "unknown formula, expected 'direct' or 'percent_to_byte'",
+                    ))
+                }
             }
         } else {
             ValueFormula::Direct
@@ -3249,9 +3221,7 @@ fn generate_range_enum(input: EtsRangeEnumInput) -> syn::Result<proc_macro2::Tok
     } = input;
 
     // Filter out #[ets(...)] attributes - they're for us, not the enum
-    let filtered_attrs: Vec<_> = attrs.iter()
-        .filter(|a| !a.path().is_ident("ets"))
-        .collect();
+    let filtered_attrs: Vec<_> = attrs.iter().filter(|a| !a.path().is_ident("ets")).collect();
 
     let type_name_str = type_name.unwrap_or_else(|| name.to_string());
 
@@ -3302,16 +3272,21 @@ fn generate_range_enum(input: EtsRangeEnumInput) -> syn::Result<proc_macro2::Tok
         });
     }
 
-    let default_variant = default_variant.ok_or_else(|| {
-        syn::Error::new(proc_macro2::Span::call_site(), "default index not within range")
-    })?;
+    let default_variant = default_variant
+        .ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "default index not within range"))?;
 
     let num_variants = (range_end - range_start) as usize;
-    let size_bits: u8 = if num_variants <= 2 { 1 }
-        else if num_variants <= 4 { 2 }
-        else if num_variants <= 16 { 4 }
-        else if num_variants <= 256 { 8 }
-        else { 16 };
+    let size_bits: u8 = if num_variants <= 2 {
+        1
+    } else if num_variants <= 4 {
+        2
+    } else if num_variants <= 16 {
+        4
+    } else if num_variants <= 256 {
+        8
+    } else {
+        16
+    };
 
     Ok(quote! {
         #(#filtered_attrs)*

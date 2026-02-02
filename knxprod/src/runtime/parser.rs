@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use knxprod::parser::{parse_application_program, parse_application_program_from_file};
+//! use knxprod::{parse_application_program, parse_application_program_from_file};
 //! use std::path::Path;
 //!
 //! // Parse from a string
@@ -136,41 +136,18 @@ impl ProgramSummary {
 
         let static_section = &program.static_section;
 
-        let parameter_type_count = static_section
-            .parameter_types
-            .as_ref()
-            .map(|pt| pt.types.len())
-            .unwrap_or(0);
+        let parameter_type_count = static_section.parameter_types.as_ref().map(|pt| pt.types.len()).unwrap_or(0);
 
-        let parameter_count = static_section
-            .parameters
-            .as_ref()
-            .map(|p| count_parameters(&p.items))
-            .unwrap_or(0);
+        let parameter_count = static_section.parameters.as_ref().map(|p| count_parameters(&p.items)).unwrap_or(0);
 
-        let parameter_ref_count = static_section
-            .parameter_refs
-            .as_ref()
-            .map(|pr| pr.refs.len())
-            .unwrap_or(0);
+        let parameter_ref_count = static_section.parameter_refs.as_ref().map(|pr| pr.refs.len()).unwrap_or(0);
 
-        let com_object_count = static_section
-            .com_object_table
-            .as_ref()
-            .map(|cot| cot.objects.len())
-            .unwrap_or(0);
+        let com_object_count = static_section.com_object_table.as_ref().map(|cot| cot.objects.len()).unwrap_or(0);
 
-        let com_object_ref_count = static_section
-            .com_object_refs
-            .as_ref()
-            .map(|cor| cor.refs.len())
-            .unwrap_or(0);
+        let com_object_ref_count = static_section.com_object_refs.as_ref().map(|cor| cor.refs.len()).unwrap_or(0);
 
-        let code_segment_count = static_section
-            .code
-            .as_ref()
-            .map(|c| c.absolute_segments.len() + c.relative_segments.len())
-            .unwrap_or(0);
+        let code_segment_count =
+            static_section.code.as_ref().map(|c| c.absolute_segments.len() + c.relative_segments.len()).unwrap_or(0);
 
         let (channel_count, has_channel_independent_block) = program
             .dynamic
@@ -315,10 +292,7 @@ mod tests {
         let program = &knx.manufacturer_data.manufacturer.application_programs.programs[0];
 
         // Verify ModuleDefs was parsed (at ApplicationProgram level, not in Static)
-        let module_defs = program
-            .module_defs
-            .as_ref()
-            .expect("ModuleDefs should be present");
+        let module_defs = program.module_defs.as_ref().expect("ModuleDefs should be present");
         assert_eq!(module_defs.module_defs.len(), 1);
 
         let module_def = &module_defs.module_defs[0];
@@ -372,15 +346,13 @@ mod tests {
             name: "TestModule".to_string(),
             internal_description: None,
             arguments: Some(ModuleDefArguments {
-                arguments: vec![
-                    ModuleDefArgument {
-                        id: "M-0001_MD-1_A-1".to_string(),
-                        name: "ParamBase".to_string(),
-                        allocates: 10,
-                        alignment: None,
-                        arg_type: None,
-                    },
-                ],
+                arguments: vec![ModuleDefArgument {
+                    id: "M-0001_MD-1_A-1".to_string(),
+                    name: "ParamBase".to_string(),
+                    allocates: 10,
+                    alignment: None,
+                    arg_type: None,
+                }],
             }),
             static_section: ModuleDefStatic {
                 parameters: None,

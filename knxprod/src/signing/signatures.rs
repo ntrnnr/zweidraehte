@@ -17,12 +17,10 @@ use super::hashes::{
     compute_hardware2program_hash, compute_hardware2program_hash_bytes, compute_product_hash,
     compute_product_hash_bytes, MapAttributeProvider,
 };
-use super::keys::{
-    get_converter_private_key, get_converter_public_key, get_knx_cert_public_key, KeyType,
-};
+use super::keys::{get_converter_private_key, get_converter_public_key, get_knx_cert_public_key, KeyType};
 use super::{
-    DirectorySignatureResult, Hardware2ProgramHashResult, HardwareVerificationResult,
-    ProductHashResult, RegistrationSignatureResult, SigningError,
+    DirectorySignatureResult, Hardware2ProgramHashResult, HardwareVerificationResult, ProductHashResult,
+    RegistrationSignatureResult, SigningError,
 };
 
 /// Sign data with RSA-PKCS1v15-SHA1.
@@ -40,25 +38,11 @@ fn sign_sha1(data: &[u8]) -> Result<Vec<u8>, SigningError> {
     // OID for SHA1: 1.3.14.3.2.26
     let digest_info: Vec<u8> = [
         // SEQUENCE tag + length
-        0x30,
-        0x21,
-        // AlgorithmIdentifier SEQUENCE
-        0x30,
-        0x09,
-        // OID tag + length + SHA1 OID
-        0x06,
-        0x05,
-        0x2b,
-        0x0e,
-        0x03,
-        0x02,
-        0x1a,
-        // NULL parameters
-        0x05,
-        0x00,
-        // OCTET STRING tag + length
-        0x04,
-        0x14,
+        0x30, 0x21, // AlgorithmIdentifier SEQUENCE
+        0x30, 0x09, // OID tag + length + SHA1 OID
+        0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, // NULL parameters
+        0x05, 0x00, // OCTET STRING tag + length
+        0x04, 0x14,
     ]
     .into_iter()
     .chain(hash.iter().copied())
@@ -104,12 +88,11 @@ fn verify_sha1(data: &[u8], signature: &[u8], key_type: KeyType) -> Result<bool,
     let hash = hasher.finalize();
 
     // Create DigestInfo
-    let digest_info: Vec<u8> = [
-        0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14,
-    ]
-    .into_iter()
-    .chain(hash.iter().copied())
-    .collect();
+    let digest_info: Vec<u8> =
+        [0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14]
+            .into_iter()
+            .chain(hash.iter().copied())
+            .collect();
 
     // Raw RSA verification
     use rsa::hazmat::rsa_encrypt;
@@ -146,18 +129,14 @@ pub fn create_registration_signature(
     registration_number: Option<&str>,
 ) -> Result<String, SigningError> {
     let mut reg_attrs = HashMap::new();
-    reg_attrs.insert(
-        "RegistrationStatus".to_string(),
-        registration_status.to_string(),
-    );
+    reg_attrs.insert("RegistrationStatus".to_string(), registration_status.to_string());
     if let Some(num) = registration_number {
         reg_attrs.insert("RegistrationNumber".to_string(), num.to_string());
     }
 
     let reg_provider = MapAttributeProvider::new(&reg_attrs);
     let mut message = Vec::new();
-    serialize_element(&mut message, &reg_provider, REGISTRATION_INFO_ATTRS)
-        .map_err(SigningError::Io)?;
+    serialize_element(&mut message, &reg_provider, REGISTRATION_INFO_ATTRS).map_err(SigningError::Io)?;
     message.extend_from_slice(parent_hash_bytes);
 
     let signature = sign_sha1(&message)?;
@@ -174,8 +153,7 @@ pub fn verify_registration_signature(
 
     let reg_provider = MapAttributeProvider::new(reg_attrs);
     let mut message = Vec::new();
-    serialize_element(&mut message, &reg_provider, REGISTRATION_INFO_ATTRS)
-        .map_err(SigningError::Io)?;
+    serialize_element(&mut message, &reg_provider, REGISTRATION_INFO_ATTRS).map_err(SigningError::Io)?;
     message.extend_from_slice(parent_hash_bytes);
 
     // Try KNX cert key first
@@ -188,9 +166,7 @@ pub fn verify_registration_signature(
         return Ok(KeyType::Converter);
     }
 
-    Err(SigningError::VerificationFailed(
-        "Signature verification failed with both keys".to_string(),
-    ))
+    Err(SigningError::VerificationFailed("Signature verification failed with both keys".to_string()))
 }
 
 /// Verify a directory signature.
@@ -256,11 +232,7 @@ fn build_digest_string(files: &[(String, &[u8])]) -> Result<String, SigningError
     file_hashes.sort_by(|a, b| collator.compare(&a.0, &b.0));
 
     // Build digest string
-    let digest = file_hashes
-        .iter()
-        .map(|(path, hash)| format!("{}:{}", path, hash))
-        .collect::<Vec<_>>()
-        .join(",");
+    let digest = file_hashes.iter().map(|(path, hash)| format!("{}:{}", path, hash)).collect::<Vec<_>>().join(",");
 
     Ok(digest)
 }
@@ -277,11 +249,8 @@ pub fn verify_hardware_xml(
     hardware_xml: &str,
     app_program_hashes: &HashMap<String, String>,
 ) -> Result<HardwareVerificationResult, SigningError> {
-    let mut result = HardwareVerificationResult {
-        products: vec![],
-        hardware2programs: vec![],
-        registration_signatures: vec![],
-    };
+    let mut result =
+        HardwareVerificationResult { products: vec![], hardware2programs: vec![], registration_signatures: vec![] };
 
     // Parse XML
     let mut reader = Reader::from_str(hardware_xml);
@@ -336,16 +305,10 @@ pub fn verify_hardware_xml(
                             // Determine parent type and verify
                             if let Some(ref prod_attrs) = current_product_attrs {
                                 if let Some(ref hw_attrs) = current_hardware_attrs {
-                                    let parent_hash =
-                                        compute_product_hash_bytes(hw_attrs, prod_attrs);
-                                    let parent_id =
-                                        prod_attrs.get("Id").cloned().unwrap_or_default();
+                                    let parent_hash = compute_product_hash_bytes(hw_attrs, prod_attrs);
+                                    let parent_id = prod_attrs.get("Id").cloned().unwrap_or_default();
 
-                                    let sig_result = match verify_registration_signature(
-                                        &attrs,
-                                        &parent_hash,
-                                        sig,
-                                    ) {
+                                    let sig_result = match verify_registration_signature(&attrs, &parent_hash, sig) {
                                         Ok(key) => RegistrationSignatureResult {
                                             parent_id,
                                             parent_type: "Product".to_string(),
@@ -380,20 +343,11 @@ pub fn verify_hardware_xml(
                                         hw_attrs,
                                         h2p_attrs,
                                         &current_app_refs,
-                                        if h2p_app_hashes.is_empty() {
-                                            None
-                                        } else {
-                                            Some(&h2p_app_hashes)
-                                        },
+                                        if h2p_app_hashes.is_empty() { None } else { Some(&h2p_app_hashes) },
                                     );
-                                    let parent_id =
-                                        h2p_attrs.get("Id").cloned().unwrap_or_default();
+                                    let parent_id = h2p_attrs.get("Id").cloned().unwrap_or_default();
 
-                                    let sig_result = match verify_registration_signature(
-                                        &attrs,
-                                        &parent_hash,
-                                        sig,
-                                    ) {
+                                    let sig_result = match verify_registration_signature(&attrs, &parent_hash, sig) {
                                         Ok(key) => RegistrationSignatureResult {
                                             parent_id,
                                             parent_type: "Hardware2Program".to_string(),
@@ -439,9 +393,7 @@ pub fn verify_hardware_xml(
                     }
                     "Product" => {
                         // Verify product hash if present
-                        if let (Some(hw_attrs), Some(prod_attrs)) =
-                            (&current_hardware_attrs, &current_product_attrs)
-                        {
+                        if let (Some(hw_attrs), Some(prod_attrs)) = (&current_hardware_attrs, &current_product_attrs) {
                             if let Some(expected_hash) = prod_attrs.get("Hash") {
                                 let computed_hash = compute_product_hash(hw_attrs, prod_attrs);
                                 let id = prod_attrs.get("Id").cloned().unwrap_or_default();
@@ -459,9 +411,7 @@ pub fn verify_hardware_xml(
                     }
                     "Hardware2Program" => {
                         // Verify H2P hash if present
-                        if let (Some(hw_attrs), Some(h2p_attrs)) =
-                            (&current_hardware_attrs, &current_h2p_attrs)
-                        {
+                        if let (Some(hw_attrs), Some(h2p_attrs)) = (&current_hardware_attrs, &current_h2p_attrs) {
                             if let Some(expected_hash) = h2p_attrs.get("Hash") {
                                 let h2p_app_hashes: Vec<String> = current_app_refs
                                     .iter()
@@ -472,11 +422,7 @@ pub fn verify_hardware_xml(
                                     hw_attrs,
                                     h2p_attrs,
                                     &current_app_refs,
-                                    if h2p_app_hashes.is_empty() {
-                                        None
-                                    } else {
-                                        Some(&h2p_app_hashes)
-                                    },
+                                    if h2p_app_hashes.is_empty() { None } else { Some(&h2p_app_hashes) },
                                 );
 
                                 let id = h2p_attrs.get("Id").cloned().unwrap_or_default();
@@ -511,10 +457,7 @@ pub fn verify_hardware_xml(
 fn extract_attrs(e: &BytesStart) -> HashMap<String, String> {
     let mut attrs = HashMap::new();
     for attr in e.attributes().flatten() {
-        if let (Ok(key), Ok(value)) = (
-            std::str::from_utf8(attr.key.as_ref()),
-            std::str::from_utf8(&attr.value),
-        ) {
+        if let (Ok(key), Ok(value)) = (std::str::from_utf8(attr.key.as_ref()), std::str::from_utf8(&attr.value)) {
             attrs.insert(key.to_string(), value.to_string());
         }
     }
@@ -529,8 +472,7 @@ mod tests {
     fn test_sign_and_verify_registration() {
         let parent_hash = vec![0u8; 20]; // Dummy hash
 
-        let signature =
-            create_registration_signature(&parent_hash, "Registered", None).expect("sign");
+        let signature = create_registration_signature(&parent_hash, "Registered", None).expect("sign");
 
         // The signature should be valid base64
         assert!(BASE64.decode(&signature).is_ok());
@@ -539,8 +481,7 @@ mod tests {
         let mut reg_attrs = HashMap::new();
         reg_attrs.insert("RegistrationStatus".to_string(), "Registered".to_string());
 
-        let key =
-            verify_registration_signature(&reg_attrs, &parent_hash, &signature).expect("verify");
+        let key = verify_registration_signature(&reg_attrs, &parent_hash, &signature).expect("verify");
         assert_eq!(key, KeyType::Converter);
     }
 

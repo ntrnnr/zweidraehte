@@ -232,10 +232,88 @@ use serde::{Deserialize, Serialize};
 use zweidraehte::dpt::{DPT_Scaling, DPT_State, DPT_Switch};
 use zweidraehte::ets::{EtsComObjects, EtsEnum, EtsParams};
 
-use knxprod::BaggageDef;
+use knxprod::definition::module::ModuleCollection;
+use knxprod::definition::page_layout::EtsPageLayout;
 use knxprod::ets_pages;
-use knxprod::module::ModuleCollection;
-use knxprod::page_layout::EtsPageLayout;
+use knxprod::schema::BaggageDef;
+
+// ============================================================================
+// Translations
+// ============================================================================
+
+// German translations for the dimmer module device
+zweidraehte::ets_translations! {
+    pub MODULE_TRANSLATIONS_DE;
+
+    "de-DE" {
+        // ========== Enum variants ==========
+        // ChannelEnable enum
+        ChannelEnable::Disabled => "Deaktiviert",
+        ChannelEnable::Enabled => "Aktiviert",
+
+        // IconSelection enum
+        IconSelection::Christmas => "Weihnachten",
+        IconSelection::Night => "Nacht",
+
+        // ========== Device-level parameters ==========
+        param device_name => "Gerätename",
+        param enable_ch1 => "Kanal 1 aktivieren",
+        param enable_ch2 => "Kanal 2 aktivieren",
+        param enable_ch3 => "Kanal 3 aktivieren",
+        param enable_ch4 => "Kanal 4 aktivieren",
+        param global_dim_speed => "Globale Dimmgeschwindigkeit",
+
+        // ========== Module parameters ==========
+        param channel_name => "Kanalname",
+        param icon_selection => "Symbol",
+        param min_brightness => "Minimale Helligkeit",
+        param max_brightness => "Maximale Helligkeit",
+        param dim_speed => "Dimmgeschwindigkeit",
+        param power_on_level => "Einschalthelligkeit",
+
+        // ========== Communication objects ==========
+        obj switch { text: "Schalten", function: "Ein/Aus schalten" },
+        obj dim_value { text: "Dimmwert", function: "Dimmwert %" },
+        obj status { text: "Status", function: "Statusrückmeldung" },
+    }
+}
+
+// English translations (for completeness / as reference)
+zweidraehte::ets_translations! {
+    pub MODULE_TRANSLATIONS_EN;
+
+    "en-US" {
+        // ========== Enum variants ==========
+        // ChannelEnable enum
+        ChannelEnable::Disabled => "Disabled",
+        ChannelEnable::Enabled => "Enabled",
+
+        // IconSelection enum
+        IconSelection::Christmas => "Christmas",
+        IconSelection::Night => "Night",
+
+        // ========== Device-level parameters ==========
+        param device_name => "Device name",
+        param enable_ch1 => "Enable channel 1",
+        param enable_ch2 => "Enable channel 2",
+        param enable_ch3 => "Enable channel 3",
+        param enable_ch4 => "Enable channel 4",
+        param global_dim_speed => "Global dimming speed",
+
+        // ========== Module parameters ==========
+        param channel_name => "Channel name",
+        param icon_selection => "Icon",
+        param min_brightness => "Minimum brightness",
+        param max_brightness => "Maximum brightness",
+        param dim_speed => "Dimming speed",
+        param power_on_level => "Power-on level",
+
+        // ========== Communication objects ==========
+        obj switch { text: "Switch", function: "Switch on/off" },
+        obj dim_value { text: "Dimming value", function: "Dimming value %" },
+        obj status { text: "Status", function: "Status feedback" },
+    }
+}
 
 // ============================================================================
 // Baggages
@@ -557,8 +635,8 @@ impl ModuleTestDevice {
 }
 
 impl EtsPageLayout for ModuleTestDevice {
-    fn page_layout() -> knxprod::page_layout::PageStructure {
-        use knxprod::module::module_instances;
+    fn page_layout() -> knxprod::definition::page_layout::PageStructure {
+        use knxprod::definition::module::module_instances;
 
         // Build entire page structure using the ets_pages! macro
         // - Device settings: global dimming speed only
@@ -742,7 +820,7 @@ mod tests {
     #[test]
     fn test_has_channel_helpers_trait() {
         // Verify the HasChannelHelpers trait is correctly implemented
-        use knxprod::module::HasChannelHelpers;
+        use knxprod::definition::module::HasChannelHelpers;
 
         // Test COUNT matches NUM_CHANNELS
         assert_eq!(<DeviceParams as HasChannelHelpers<DimmerChannelModule>>::COUNT, NUM_CHANNELS);

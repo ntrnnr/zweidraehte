@@ -9,16 +9,15 @@
 //! Use --knxprod flag to also generate a signed .knxprod package.
 
 use std::env;
-use std::fs;
 use std::path::PathBuf;
 
-use knxprod::{generate_baggages_xml, get_baggage_files_for_signing, write_baggage_files};
-use knxprod::signing::{KnxSchemaVersion, MasterDataSource, SigningConfig, create_knxprod};
+use knxprod::definition::page_layout::EtsPageLayout;
+use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
+use knxprod::{ApplicationProgramConfig, KnxprodBuilder};
 use testutil::devices::module_test_device::{
-    BAGGAGES, DEVICE_DESCRIPTOR, DEVICE_VIRTUAL_PARAMS, DeviceParams, ModuleTestDevice, SERIAL_NUMBER,
+    BAGGAGES, DEVICE_DESCRIPTOR, DEVICE_VIRTUAL_PARAMS, DeviceParams, MODULE_TRANSLATIONS_DE, MODULE_TRANSLATIONS_EN,
+    ModuleTestDevice, SERIAL_NUMBER,
 };
-use testutil::mtxml_gen::page_layout::EtsPageLayout;
-use testutil::mtxml_gen::{ApplicationProgramConfig, CatalogGenerator, HardwareGenerator, MtxmlGenerator};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -32,10 +31,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create module collection
     let modules = ModuleTestDevice::create_modules();
 
+    // Combine all translations (German + English)
+    let all_translations: Vec<_> =
+        MODULE_TRANSLATIONS_DE.iter().chain(MODULE_TRANSLATIONS_EN.iter()).copied().collect();
+
     let config = ApplicationProgramConfig {
         name: "ModuleDimmer4Ch",
         device: &DEVICE_DESCRIPTOR,
-        schema_version: Some(KnxSchemaVersion::V20),
         params: DeviceParams::ETS_PARAMS_EXT,
         // Device-level virtual params (ETS-only, not stored in device memory)
         virtual_params: Some(DEVICE_VIRTUAL_PARAMS),
@@ -64,77 +66,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         page_layout: Some(ModuleTestDevice::page_layout()),
         modules: Some(modules),
         baggages: Some(BAGGAGES),
+        // Combined German and English translations
+        translations: Some(&all_translations),
     };
 
-    // Create output directory structure: out/<device>/M-XXXX/
-    let manufacturer_id = format!("{:04X}", DEVICE_DESCRIPTOR.manufacturer_id);
-    let out_dir: PathBuf = ["out", config.name, &format!("M-{}", manufacturer_id)].iter().collect();
-    fs::create_dir_all(&out_dir)?;
-    println!("Output directory: {}", out_dir.display());
-
-    // Generate ApplicationProgram MTXML
-    let app_xml = MtxmlGenerator::generate(&config)?;
-    let app_path = out_dir.join("ModuleApplicationProgram1.mtxml");
-    fs::write(&app_path, &app_xml)?;
-    println!("Generated: {}", app_path.display());
-
-    // Generate Hardware MTXML
-    let hw_xml = HardwareGenerator::generate(&config)?;
-    let hw_path = out_dir.join("ModuleHardware1.mtxml");
-    fs::write(&hw_path, &hw_xml)?;
-    println!("Generated: {}", hw_path.display());
-
-    // Generate Catalog MTXML
-    let cat_xml = CatalogGenerator::generate(&config)?;
-    let cat_path = out_dir.join("ModuleCatalog1.mtxml");
-    fs::write(&cat_path, &cat_xml)?;
-    println!("Generated: {}", cat_path.display());
-
-    // Write baggage files and Baggages.mtxml for MT project
-    let schema_version = config.schema_version.unwrap_or_default();
-    write_baggage_files(&out_dir, BAGGAGES)?;
-    let baggages_xml = generate_baggages_xml(DEVICE_DESCRIPTOR.manufacturer_id, BAGGAGES, schema_version);
-    // MT project expects Baggages.mtxml
-    fs::write(out_dir.join("Baggages.mtxml"), &baggages_xml)?;
-    println!("Generated: Baggages.mtxml and Baggages/ directory with {} files", BAGGAGES.len());
-
-    println!("\nAll MTXML files generated successfully!");
+    // Output directory: out/<device>/
+    let out_dir: PathBuf = ["out", config.name].iter().collect();
 
     // Check if --knxprod flag is provided
     let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
 
     if generate_knxprod {
-        println!("\nGenerating signed .knxprod package...");
+        // Use KnxprodBuilder to generate everything including signed package
+        let (output, knxprod_path) = KnxprodBuilder::new(&config)
+            .output_dir(&out_dir)
+            .file_prefix("Module")
+            .schema_version(KnxSchemaVersion::V20)
+            .master_data(MasterDataSource::Download)
+            .build_all()?;
 
-        // Build the application program ID from the device descriptor
-        let app_number = format!("{:04X}", DEVICE_DESCRIPTOR.application_id);
-        let app_version = format!("{:02X}", DEVICE_DESCRIPTOR.application_version);
-        let application_program_id = format!("M-{}_A-{}-{}-0000", manufacturer_id, app_number, app_version);
-
-        // Get baggage files for signing (includes Baggages.xml manifest and all baggage files)
-        let baggage_files = get_baggage_files_for_signing(
-            DEVICE_DESCRIPTOR.manufacturer_id,
-            BAGGAGES,
-            schema_version,
-        )?;
-
-        let signing_config = SigningConfig {
-            manufacturer_id: manufacturer_id.clone(),
-            application_program: app_xml.clone(),
-            application_program_id,
-            hardware: hw_xml.clone(),
-            catalog: cat_xml.clone(),
-            baggage_files,
-        };
-
-        let knxprod_bytes = create_knxprod(&signing_config, MasterDataSource::DownloadVersion(schema_version))?;
-        // Write knxprod to out/<device>/<name>.knxprod
-        let device_out_dir: PathBuf = ["out", config.name].iter().collect();
-        let output_path = device_out_dir.join(format!("{}.knxprod", config.name));
-        fs::write(&output_path, &knxprod_bytes)?;
-        println!("Generated: {} ({} bytes)", output_path.display(), knxprod_bytes.len());
+        // Print what was generated
+        let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
+        println!("Output directory: {}", manuf_dir.display());
+        for (filename, _) in output.xml_files() {
+            println!("Generated: {}", manuf_dir.join(filename).display());
+        }
+        if !output.baggage_files.is_empty() {
+            println!("Generated: Baggages/ directory with {} files", output.baggage_files.len());
+        }
+        println!("\nGenerated: {} ({} bytes)", knxprod_path.display(), std::fs::metadata(&knxprod_path)?.len());
         println!("\nVerify with: python3 manuf_tool_data/knx_verifier.py all .");
     } else {
+        // Just generate MTXML files
+        let (output, paths) = KnxprodBuilder::new(&config)
+            .output_dir(&out_dir)
+            .file_prefix("Module")
+            .schema_version(KnxSchemaVersion::V20)
+            .write_mtxml_with_paths()?;
+
+        let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
+        println!("Output directory: {}", manuf_dir.display());
+        for path in &paths {
+            println!("Generated: {}", path.display());
+        }
+
+        println!("\nAll MTXML files generated successfully!");
         println!("\nTip: Use --knxprod flag to also generate a signed .knxprod package");
     }
 

@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use knxprod::{ApplicationProgram, ComObject, EnableFlag, ParameterItem, ParameterType, ParameterTypeDef};
+use knxprod::schema::{ApplicationProgram, ComObject, EnableFlag, ParameterItem, ParameterType, ParameterTypeDef};
 
 // ============================================================================
 // Semantic Keys

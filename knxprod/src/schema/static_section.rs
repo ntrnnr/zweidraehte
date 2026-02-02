@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::com_objects::{ComObjectRefs, ComObjectTable};
 use super::load_procedures::LoadProcedures;
 use super::param_refs::ParameterRefs;
-use super::parameters::{Parameters, ParameterTypes};
+use super::parameters::{ParameterTypes, Parameters};
 
 // ============================================================================
 // Static Section
@@ -101,20 +101,12 @@ pub enum BaggageContent<'a> {
 impl<'a> BaggageDef<'a> {
     /// Create a new baggage definition with embedded content.
     pub const fn embedded(name: &'a str, content: &'a [u8]) -> Self {
-        Self {
-            name,
-            target_path: "",
-            content: BaggageContent::Embedded(content),
-        }
+        Self { name, target_path: "", content: BaggageContent::Embedded(content) }
     }
 
     /// Create a new baggage definition with external file path.
     pub const fn external(name: &'a str, path: &'a str) -> Self {
-        Self {
-            name,
-            target_path: "",
-            content: BaggageContent::External(path),
-        }
+        Self { name, target_path: "", content: BaggageContent::External(path) }
     }
 
     /// Create a new baggage definition with a target subdirectory.
