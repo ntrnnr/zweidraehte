@@ -123,7 +123,8 @@ async fn main(spawner: Spawner) {
     // Create KNX/IP builder and add both servers
     // Discovery server listens on multicast (224.0.23.12:3671) and unicast (0.0.0.0:3671)
     // Routing server listens on multicast (224.0.23.12:3671) for routing messages
-    let kb = KnxNetIpBuilder::<2, 2>::new("knxdevbridgeif") // 2 sockets max, 2 servers
+    let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
+    let kb = KnxNetIpBuilder::<platform::LinuxIpTransport, 2, 2>::new("knxdevbridgeif", interface_addr) // 2 sockets max, 2 servers
         .add_server(ds, &[KNXnetIPServiceType::SearchRequest, KNXnetIPServiceType::DescriptionRequest], &[
             EndpointType::new_udp(core::net::Ipv4Addr::new(224, 0, 23, 12), 3671), // KNX multicast
             EndpointType::new_udp_any(3671),                                       // Unicast on 3671
@@ -152,7 +153,7 @@ async fn main(spawner: Spawner) {
 
     // Create resources for the link layer (2 sockets max, 1 server)
     use zweidraehte::layers::linklayers::knxip::KnxNetIpResources;
-    let ll_resources = Box::leak(Box::new(KnxNetIpResources::<2>::new()));
+    let ll_resources = Box::leak(Box::new(KnxNetIpResources::<platform::LinuxIpTransport, 2>::new()));
 
     // Build and run the link layer using the LinkLayerBuilder trait
     let link_layer_future = kb.build_and_run(ll_resources, &context, network_sender, link_receiver);

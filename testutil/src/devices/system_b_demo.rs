@@ -68,6 +68,7 @@ use zweidraehte::{
     },
     layers::linklayers::knxip::KnxNetIpBuilder,
 };
+use platform::LinuxIpTransport;
 
 use crate::storage::JsonStorage;
 
@@ -571,7 +572,7 @@ impl StackDefinition for DemoStack {
 
     type P = DemoParams;
     type CO = comm_objs::DemoComObjects;
-    type LLB = KnxNetIpBuilder<2, 2>;
+    type LLB = KnxNetIpBuilder<LinuxIpTransport, 2, 2>;
     type State = DemoState;
     type Mem = SystemBMemoryMap;
 

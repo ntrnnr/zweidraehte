@@ -711,7 +711,7 @@ impl StackDefinition for MyKnxStackWithKnxIp {
     const DEVICE: &'static zweidraehte::ets::DeviceDescriptor = &KNXIP_DEVICE_DESCRIPTOR;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
-    type LLB = KnxNetIpBuilder<2, 2>; // 2 sockets, 2 servers
+    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, 2, 2>; // 2 sockets, 2 servers
     type State = MyState;
     type Mem = zweidraehte::memory::NoMemoryMap;
 
@@ -773,7 +773,8 @@ async fn main(spawner: Spawner) {
     let routing_server = servers::RoutingServer::new(core::net::Ipv4Addr::new(224, 0, 23, 12), 3671);
 
     // Create KNX/IP link layer builder with both discovery and routing servers
-    let link_layer_builder = KnxNetIpBuilder::<2, 2>::new("knxdevbridgeif")
+    let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
+    let link_layer_builder = KnxNetIpBuilder::<platform::LinuxIpTransport, 2, 2>::new("knxdevbridgeif", interface_addr)
         .add_server(
             discovery_server,
             &[KNXnetIPServiceType::SearchRequest, KNXnetIPServiceType::DescriptionRequest],

@@ -13,7 +13,7 @@ use embassy_sync::{
 use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
 
-use platform::{AsyncUdpMulticastSocket, UdpMulticastSocketOptions, get_interface_address};
+use platform::{AsyncUdpSocket, IpTransport, UdpSocketOptions};
 
 use crate::{
     layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
@@ -285,15 +285,15 @@ impl SocketDescriptor {
 }
 
 /// Static resources for KNX/IP link layer
-pub struct KnxNetIpResources<const MAX_SOCKETS: usize> {
+pub struct KnxNetIpResources<T: IpTransport, const MAX_SOCKETS: usize> {
     /// Storage for UDP socket handles
-    sockets: MaybeUninit<[Option<AsyncUdpMulticastSocket>; MAX_SOCKETS]>,
+    sockets: MaybeUninit<[Option<T::UdpSocket>; MAX_SOCKETS]>,
 
     /// Response channel for queuing outbound messages
     response_channel: MaybeUninit<Channel<NoopRawMutex, PendingResponse, 16>>,
 }
 
-impl<const MAX_SOCKETS: usize> KnxNetIpResources<MAX_SOCKETS> {
+impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpResources<T, MAX_SOCKETS> {
     /// Create a new uninitialized resource container
     pub const fn new() -> Self {
         Self { sockets: MaybeUninit::uninit(), response_channel: MaybeUninit::uninit() }
@@ -308,23 +308,27 @@ struct ServerConfig {
 }
 
 /// Builder for KnxNetIp link layer
-pub struct KnxNetIpBuilder<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
+pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
     servers: Vec<servers::ServerHandler, MAX_SERVERS>,
     server_configs: Vec<ServerConfig, MAX_SERVERS>,
     interface_name: &'static str,
+    local_addr: Ipv4Addr,
+    _transport: core::marker::PhantomData<T>,
 }
 
-impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<MAX_SOCKETS, MAX_SERVERS> {
+impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<T, MAX_SOCKETS, MAX_SERVERS> {
     /// Create a new builder with the network interface to bind to
     ///
     /// # Arguments
     /// * `interface_name` - The name of the network interface (e.g., "eth0", "wlan0")
+    /// * `local_addr` - The local IP address of this interface (for multicast join and echo filtering)
     ///
     /// # Type Parameters
+    /// * `T` - The IP transport implementation providing socket types
     /// * `MAX_SOCKETS` - Maximum number of UDP sockets to create
     /// * `MAX_SERVERS` - Maximum number of servers to register
-    pub const fn new(interface_name: &'static str) -> Self {
-        Self { servers: Vec::new(), server_configs: Vec::new(), interface_name }
+    pub const fn new(interface_name: &'static str, local_addr: Ipv4Addr) -> Self {
+        Self { servers: Vec::new(), server_configs: Vec::new(), interface_name, local_addr, _transport: core::marker::PhantomData }
     }
 
     /// Add a server with its service types and endpoints
@@ -333,9 +337,9 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<MAX_SOC
     /// * `server` - The server implementation
     /// * `service_types` - Array of service types this server handles
     /// * `endpoints` - Array of endpoints this server listens on
-    pub fn add_server<S: Into<servers::ServerHandler>>(
+    pub fn add_server<H: Into<servers::ServerHandler>>(
         mut self,
-        server: S,
+        server: H,
         service_types: &[KNXnetIPServiceType],
         endpoints: &[EndpointType],
     ) -> Self {
@@ -366,11 +370,11 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<MAX_SOC
     /// 4. Creates the final KnxNetIp instance
     pub fn build<'res>(
         self,
-        resources: &'res mut KnxNetIpResources<MAX_SOCKETS>,
+        resources: &'res mut KnxNetIpResources<T, MAX_SOCKETS>,
         buffer_manager: &'res RefCell<DynBufferManager<'static>>,
         network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
         max_apdu_length: u16,
-    ) -> KnxNetIp<'res, MAX_SOCKETS, MAX_SERVERS> {
+    ) -> KnxNetIp<'res, T, MAX_SOCKETS, MAX_SERVERS> {
         // Initialize response channel
         let _response_channel = resources.response_channel.write(Channel::new());
 
@@ -411,34 +415,23 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<MAX_SOC
 
         info!("KnxNetIp builder: {} server(s) using {} unique socket(s)", self.servers.len(), socket_descriptors.len());
 
-        // Get interface address for multicast
-        let interface_addr = match get_interface_address(self.interface_name) {
-            Ok(addr) => {
-                info!("Using network interface '{}' with IP address {}", self.interface_name, addr);
-                addr
-            }
-            Err(e) => {
-                error!("Failed to get address for interface '{}': {:?}", self.interface_name, e);
-                error!("Falling back to UNSPECIFIED (0.0.0.0) - multicast may not work correctly");
-                Ipv4Addr::UNSPECIFIED
-            }
-        };
+        let interface_addr = self.local_addr;
 
         // Initialize socket array
-        let sockets_array = resources.sockets.write([const { None }; MAX_SOCKETS]);
+        let sockets_array = resources.sockets.write(core::array::from_fn(|_| None));
 
         // Create actual sockets
         for (i, desc) in socket_descriptors.iter().enumerate() {
             let port = desc.port();
 
-            let options = UdpMulticastSocketOptions {
+            let options = UdpSocketOptions {
                 address: Ipv4Addr::UNSPECIFIED,
                 port,
-                interface: Some(self.interface_name.into()),
+                interface: Some(self.interface_name),
                 ..Default::default()
             };
 
-            match AsyncUdpMulticastSocket::bind(options) {
+            match T::UdpSocket::bind(options) {
                 Ok(socket) => {
                     // Join multicast groups
                     for &mcast_addr in desc.multicast_groups() {
@@ -446,7 +439,7 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<MAX_SOC
                             "  Socket {}: Joining multicast group {} on interface {}",
                             i, mcast_addr, self.interface_name
                         );
-                        if let Err(e) = socket.join_multicast(mcast_addr.into(), interface_addr) {
+                        if let Err(e) = socket.join_multicast(mcast_addr, interface_addr) {
                             error!("Failed to join multicast group {}: {:?}", mcast_addr, e);
                         }
                     }
@@ -506,10 +499,10 @@ impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<MAX_SOC
 }
 
 /// Implement LinkLayerBuilder for KnxNetIpBuilder
-impl<const MAX_SOCKETS: usize, const MAX_SERVERS: usize> LinkLayerBuilder
-    for KnxNetIpBuilder<MAX_SOCKETS, MAX_SERVERS>
+impl<T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> LinkLayerBuilder
+    for KnxNetIpBuilder<T, MAX_SOCKETS, MAX_SERVERS>
 {
-    type Resources = KnxNetIpResources<MAX_SOCKETS>;
+    type Resources = KnxNetIpResources<T, MAX_SOCKETS>;
 
     fn create_resources(&self) -> Self::Resources {
         KnxNetIpResources::new()
@@ -551,9 +544,9 @@ const MAX_RETRY_QUEUE_SIZE: usize = 16;
 /// Maximum number of retry attempts before giving up
 const MAX_RETRY_ATTEMPTS: u8 = 5;
 
-pub struct KnxNetIp<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
+pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
     /// Reference to socket resources
-    resources: &'res KnxNetIpResources<MAX_SOCKETS>,
+    resources: &'res KnxNetIpResources<T, MAX_SOCKETS>,
     /// Socket descriptors (metadata about each socket)
     socket_descriptors: Vec<SocketDescriptor, MAX_SOCKETS>,
     /// Server instances
@@ -572,7 +565,7 @@ pub struct KnxNetIp<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
     max_apdu_length: u16,
 }
 
-impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MAX_SOCKETS, MAX_SERVERS> {
+impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, T, MAX_SOCKETS, MAX_SERVERS> {
     /// Process expired retry requests
     async fn process_retry_queue(&mut self, response_channel: &Channel<NoopRawMutex, PendingResponse, 16>) {
         let now = Instant::now();
@@ -711,8 +704,8 @@ impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, MA
     }
 }
 
-impl<'res, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
-    for KnxNetIp<'res, MAX_SOCKETS, MAX_SERVERS>
+impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
+    for KnxNetIp<'res, T, MAX_SOCKETS, MAX_SERVERS>
 {
     type Buffer = Buffer<'static>;
 

@@ -1,13 +1,18 @@
+#![feature(never_type)]
+#![allow(async_fn_in_trait)]
+
 pub mod address;
 pub mod serialport;
+pub mod traits;
+
+pub use traits::{AsyncUdpSocket, IpTransport, NetworkInfo, SystemControl, UdpSocketOptions};
 
 #[cfg(feature = "linux")]
 mod linux;
 
 #[cfg(feature = "linux")]
 pub use linux::{
-    AsyncSerialPort, AsyncUdpMulticastSocket, Error as LinuxError, Result as LinuxResult, UdpMulticastSocketOptions,
-    get_interface_address,
+    AsyncSerialPort, Error as LinuxError, LinuxIpTransport, LinuxSystem, get_interface_address,
 };
 
 #[derive(Debug)]

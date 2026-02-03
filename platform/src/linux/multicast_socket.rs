@@ -4,35 +4,10 @@ use std::os::unix::io::{AsRawFd, RawFd};
 
 use async_io::Async;
 use embassy_time::{Duration, with_timeout};
-use nix::sys::socket::MsgFlags;
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::Result;
-
-#[derive(Debug)]
-pub struct Options {
-    pub address: Ipv4Addr,
-    pub port: u16,
-    pub read_timeout: Option<Duration>,
-    pub write_timeout: Option<Duration>,
-    pub multicast_ttl: u32,
-    pub loopback: bool,
-    pub interface: Option<String>,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            address: Ipv4Addr::UNSPECIFIED,
-            port: 0,
-            read_timeout: None,
-            write_timeout: None,
-            multicast_ttl: 32,
-            loopback: true,
-            interface: None,
-        }
-    }
-}
+use crate::traits::{AsyncUdpSocket, UdpSocketOptions};
 
 #[derive(Debug)]
 pub struct UdpMulticastSocket {
@@ -40,7 +15,7 @@ pub struct UdpMulticastSocket {
 }
 
 impl UdpMulticastSocket {
-    pub fn bind(options: Options) -> Result<Self> {
+    pub fn bind(options: UdpSocketOptions) -> Result<Self> {
         let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
         s.set_reuse_address(true)?;
@@ -48,13 +23,13 @@ impl UdpMulticastSocket {
         s.set_multicast_loop_v4(options.loopback)?;
 
         // Bind to specific interface using SO_BINDTODEVICE if specified
-        if let Some(ref interface) = options.interface {
+        if let Some(interface) = options.interface {
             #[cfg(target_os = "linux")]
             {
                 use nix::sys::socket::{setsockopt, sockopt::BindToDevice};
                 use std::ffi::OsString;
 
-                let interface_os: OsString = interface.clone().into();
+                let interface_os: OsString = interface.into();
                 setsockopt(&s, BindToDevice, &interface_os)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             }
@@ -83,65 +58,6 @@ impl UdpMulticastSocket {
     pub fn local_endpoint(&self) -> SocketAddr {
         self.s.local_addr().unwrap()
     }
-
-    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) {
-        self.s
-            .set_read_timeout(timeout.map(|x| core::time::Duration::from_micros(x.as_micros())))
-            .expect("Unable to set the read timeout on UDP socket");
-    }
-
-    pub fn set_write_timeout(&mut self, timeout: Option<Duration>) {
-        self.s
-            .set_write_timeout(timeout.map(|x| core::time::Duration::from_micros(x.as_micros())))
-            .expect("Unable to set the write timeout on UDP socket");
-    }
-
-    fn get_next_packet_len(&self) -> Result<usize> {
-        nix::sys::socket::recv(self.s.as_raw_fd(), &mut [], MsgFlags::MSG_PEEK | MsgFlags::MSG_TRUNC)
-            .map_err(|e| std::io::Error::from(e).into())
-    }
-
-    pub fn connect(&self, endpoint: SocketAddr) -> Result<()> {
-        Ok(self.s.connect(endpoint)?)
-    }
-
-    pub fn recv(&self, buf: &mut [u8]) -> Result<usize> {
-        Ok(self.s.recv(buf)?)
-    }
-
-    pub fn recv_alloc(&self) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; self.get_next_packet_len()?];
-        let r = self.recv(buf.as_mut())?;
-
-        assert!(buf.len() == r);
-
-        Ok(buf)
-    }
-
-    pub fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddrV4)> {
-        let r = self.s.recv_from(buf)?;
-        match r {
-            (length, SocketAddr::V4(addr)) => Ok((length, addr)),
-            _ => panic!("UDP multicast socket doesn't support IPv6"),
-        }
-    }
-
-    pub fn recv_from_alloc(&self) -> Result<(Vec<u8>, SocketAddrV4)> {
-        let mut buf = vec![0u8; self.get_next_packet_len()?];
-        let (r, addr) = self.recv_from(buf.as_mut())?;
-
-        assert!(buf.len() == r);
-
-        Ok((buf, addr))
-    }
-
-    pub fn send(&self, buf: &[u8]) -> Result<usize> {
-        Ok(self.s.send(buf)?)
-    }
-
-    pub fn send_to(&self, buf: &[u8], addr: SocketAddrV4) -> Result<usize> {
-        Ok(self.s.send_to(buf, addr)?)
-    }
 }
 
 impl AsRawFd for UdpMulticastSocket {
@@ -164,15 +80,15 @@ pub struct AsyncUdpMulticastSocket {
 }
 
 impl AsyncUdpMulticastSocket {
-    pub fn bind(mut options: Options) -> Result<Self> {
+    pub fn bind(mut options: UdpSocketOptions) -> Result<Self> {
         let read_timeout = options.read_timeout.take();
         let write_timeout = options.write_timeout.take();
 
         match UdpMulticastSocket::bind(options) {
             Ok(socket) => {
-                return Ok(AsyncUdpMulticastSocket { watcher: Async::new(socket)?, read_timeout, write_timeout });
+                Ok(AsyncUdpMulticastSocket { watcher: Async::new(socket)?, read_timeout, write_timeout })
             }
-            Err(err) => return Err(err),
+            Err(err) => Err(err),
         }
     }
 
@@ -197,7 +113,8 @@ impl AsyncUdpMulticastSocket {
     }
 
     pub fn connect(&self, endpoint: SocketAddr) -> Result<()> {
-        self.watcher.get_ref().connect(endpoint)
+        self.watcher.get_ref().s.connect(endpoint)?;
+        Ok(())
     }
 
     pub async fn readable(&self) -> Result<()> {
@@ -250,5 +167,36 @@ impl AsyncUdpMulticastSocket {
             writer.await
         }
         .map_err(|e| e.into())
+    }
+}
+
+impl AsyncUdpSocket for AsyncUdpMulticastSocket {
+    type Error = crate::Error;
+
+    fn bind(options: UdpSocketOptions) -> core::result::Result<Self, crate::Error> {
+        AsyncUdpMulticastSocket::bind(options)
+    }
+
+    fn join_multicast(&self, group: Ipv4Addr, interface: Ipv4Addr) -> core::result::Result<(), crate::Error> {
+        self.watcher.get_ref().join_multicast(group, interface)
+    }
+
+    fn set_broadcast(&self, broadcast: bool) -> core::result::Result<(), crate::Error> {
+        self.watcher.get_ref().set_broadcast(broadcast)
+    }
+
+    fn local_endpoint(&self) -> SocketAddrV4 {
+        match AsyncUdpMulticastSocket::local_endpoint(self) {
+            SocketAddr::V4(addr) => addr,
+            _ => panic!("UDP multicast socket doesn't support IPv6"),
+        }
+    }
+
+    async fn recv_from(&self, buf: &mut [u8]) -> core::result::Result<(usize, SocketAddrV4), crate::Error> {
+        AsyncUdpMulticastSocket::recv_from(self, buf).await
+    }
+
+    async fn send_to(&self, buf: &[u8], addr: SocketAddrV4) -> core::result::Result<usize, crate::Error> {
+        AsyncUdpMulticastSocket::send_to(self, buf, addr).await
     }
 }

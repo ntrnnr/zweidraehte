@@ -26,6 +26,7 @@ use zweidraehte::{
     },
     layers::linklayers::knxip::KnxNetIpBuilder,
 };
+use platform::LinuxIpTransport;
 
 use crate::storage::JsonStorage;
 
@@ -3242,7 +3243,7 @@ impl StackDefinition for MdtStack {
 
     type P = MdtParams;
     type CO = comm_objs::MdtComObjects;
-    type LLB = KnxNetIpBuilder<2, 2>;
+    type LLB = KnxNetIpBuilder<LinuxIpTransport, 2, 2>;
     type State = MdtState;
     type Mem = SystemBMemoryMap;
 

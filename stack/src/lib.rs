@@ -577,32 +577,11 @@ pub struct BasicIpStackState<P: IpPlatform> {
     platform: P,
 }
 
-/// Platform trait for querying current network configuration.
+/// Re-export of [`platform::NetworkInfo`] for backwards compatibility.
 ///
 /// Implement this trait to provide platform-specific network information
 /// to [`BasicIpStackState`].
-pub trait IpPlatform {
-    /// Get the current IP address from the OS/network stack.
-    fn current_ip_address(&self) -> Ipv4Addr;
-
-    /// Get the current subnet mask from the OS/network stack.
-    fn current_subnet_mask(&self) -> Ipv4Addr;
-
-    /// Get the current default gateway from the OS/network stack.
-    fn current_default_gateway(&self) -> Ipv4Addr;
-
-    /// Get the MAC address of the network interface.
-    fn mac_address(&self) -> [u8; 6];
-
-    /// Get the current IP assignment method in use (manual, DHCP, etc.)
-    fn current_ip_assignment_method(&self) -> u8;
-
-    /// Get the IP capabilities supported by this platform.
-    fn ip_capabilities(&self) -> u8;
-
-    /// Get the KNXnet/IP device capabilities.
-    fn knxnetip_device_capabilities(&self) -> u16;
-}
+pub use platform::NetworkInfo as IpPlatform;
 
 impl<P: IpPlatform + Default> Default for BasicIpStackState<P> {
     fn default() -> Self {
@@ -1712,11 +1691,13 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     ///     // Send response back to stack (this will send A_Restart_Response if needed)
     ///     request.reply(response).await;
     ///
-    ///     // Trigger platform restart
+    ///     // Trigger platform restart via SystemControl trait
     ///     if response.error == RestartError::NoError {
-    ///         // Give time for response to be sent
     ///         embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
-    ///         // Platform-specific restart here
+    ///         use platform::SystemControl;
+    ///         let mut system = platform::LinuxSystem;
+    ///         let Err(e) = system.restart().await;
+    ///         log::error!("Failed to restart: {:?}", e);
     ///     }
     /// }
     /// # }

@@ -185,7 +185,7 @@ impl StackDefinition for MySystemBStack {
 
     type P = AppParams;
     type CO = comm_objs::DemoComObjects;
-    type LLB = KnxNetIpBuilder<2, 2>;
+    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, 2, 2>;
     type State = MyState;
     type Mem = SystemBMemoryMap;
 
@@ -294,12 +294,14 @@ async fn handle_restarts(stack: Stack<'static, MySystemBStack>) {
         // Send the response back to the stack
         request.reply(response).await;
 
-        // In production code, after sending the response, trigger platform restart:
-        // embassy_time::Timer::after(Duration::from_millis(100)).await;
-        // unsafe { libc::reboot(libc::RB_AUTOBOOT); }
-        // Or for embedded: cortex_m::peripheral::SCB::sys_reset();
+        // Give the stack a moment to send the response on the bus
+        embassy_time::Timer::after(Duration::from_millis(100)).await;
 
-        println!("Restart response sent. In production, device would restart now.\n");
+        // Trigger platform restart (re-exec the process)
+        use platform::SystemControl;
+        let mut system = platform::LinuxSystem;
+        let Err(e) = system.restart().await;
+        log::error!("Failed to restart: {:?}", e);
     }
 }
 
@@ -368,7 +370,8 @@ async fn main(spawner: Spawner) {
     let discovery_server = servers::DiscoveryServer::new(control_endpoint, device_info, supported_services);
     let routing_server = servers::RoutingServer::new(Ipv4Addr::new(224, 0, 23, 12), 3671);
 
-    let link_layer_builder = KnxNetIpBuilder::<2, 2>::new(INTERFACE_NAME)
+    let interface_addr = platform::get_interface_address(INTERFACE_NAME).expect("Failed to get interface address");
+    let link_layer_builder = KnxNetIpBuilder::<platform::LinuxIpTransport, 2, 2>::new(INTERFACE_NAME, interface_addr)
         .add_server(
             discovery_server,
             &[KNXnetIPServiceType::SearchRequest, KNXnetIPServiceType::DescriptionRequest],
