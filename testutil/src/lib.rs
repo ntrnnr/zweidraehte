@@ -32,6 +32,5 @@ pub mod util;
 pub mod equivalence;
 
 // Re-export commonly used items for convenience
-pub use devices::{DEVICE_DESCRIPTOR, DemoParams, comm_objs};
 pub use storage::JsonStorage;
 pub use util::poll_key;

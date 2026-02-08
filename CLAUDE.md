@@ -134,9 +134,10 @@ Key modules:
   - ApplicationProgram, Hardware, Catalog structures
   - All XML serialization types
 - `generator.rs` - Main MTXML generation engine
-  - MtxmlGenerator - Creates ApplicationProgram XML
-  - HardwareGenerator - Hardware definitions
-  - CatalogGenerator - Product catalog XML
+  - KnxprodBuilder - Unified builder API (preferred entry point)
+  - MtxmlGenerator - Creates ApplicationProgram XML (used internally by builder)
+  - HardwareGenerator - Hardware definitions (used internally by builder)
+  - CatalogGenerator - Product catalog XML (used internally by builder)
   - Parameter reference generation
   - Communication object mapping
 - `page_layout.rs` - ETS parameter page layout DSL
@@ -212,7 +213,7 @@ Communication Objects (EtsComObjects)
     ↓
 Page Layout Definition (EtsPageLayout)
     ↓
-XML Generation (MtxmlGenerator)
+XML Generation (KnxprodBuilder)
     ↓
 MTXML/KNXPROD Files
 ```
@@ -294,9 +295,9 @@ cargo run --bin compare_programs -- \
 
 **Generate Demo Device MTXML**
 ```bash
-cargo run --bin gen_mtxml
+cargo run --bin gen_mtxml [--knxprod]
 ```
-Generates MTXML files (ApplicationProgram1.mtxml, Hardware1.mtxml, Catalog1.mtxml) from the demo System B device definition.
+Generates MTXML files (ApplicationProgram1.mtxml, Hardware1.mtxml, Catalog1.mtxml) from the demo System B device definition. Use `--knxprod` to also generate a signed `.knxprod` package.
 
 **Generate MDT Push Button Lite MTXML**
 ```bash

@@ -23,37 +23,27 @@
 //!
 //! ```rust,ignore
 //! use knxprod::{KnxprodBuilder, ApplicationProgramConfig};
-//! use knxprod::signing::MasterDataSource;
+//! use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
 //!
 //! let config = ApplicationProgramConfig { /* ... */ };
 //!
 //! // Generate all MTXML files
-//! let output = KnxprodBuilder::new(&config).generate_all()?;
+//! let output = KnxprodBuilder::new(&config)
+//!     .schema_version(KnxSchemaVersion::V20)
+//!     .generate_all()?;
 //!
 //! // Or write to disk
 //! KnxprodBuilder::new(&config)
 //!     .output_dir("out/MyDevice")
 //!     .file_prefix("My")
+//!     .schema_version(KnxSchemaVersion::V20)
 //!     .write_mtxml()?;
 //!
 //! // Or create a signed .knxprod package
 //! let knxprod = KnxprodBuilder::new(&config)
+//!     .schema_version(KnxSchemaVersion::V20)
 //!     .master_data(MasterDataSource::Download)
 //!     .build_knxprod()?;
-//! ```
-//!
-//! # Using Individual Generators
-//!
-//! For more control, you can use the individual generators directly:
-//!
-//! ```rust,ignore
-//! use knxprod::{ApplicationProgramConfig, MtxmlGenerator, HardwareGenerator, CatalogGenerator};
-//!
-//! let config = ApplicationProgramConfig { /* ... */ };
-//!
-//! let app_xml = MtxmlGenerator::generate(&config)?;
-//! let hw_xml = HardwareGenerator::generate(&config)?;
-//! let cat_xml = CatalogGenerator::generate(&config)?;
 //! ```
 //!
 //! # Modules

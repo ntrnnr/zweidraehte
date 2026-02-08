@@ -111,17 +111,17 @@ pub struct SigningConfig {
 /// KNX XML schema version for master data downloads.
 ///
 /// Different ETS versions may require different schema versions.
-/// Version 23 is the current version used by ETS6.
+/// Version 20 is the default as it is the most widely compatible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KnxSchemaVersion {
-    /// Schema version 20
+    /// Schema version 20 (default, widely compatible)
+    #[default]
     V20,
     /// Schema version 21
     V21,
     /// Schema version 22
     V22,
-    /// Schema version 23 (current, used by ETS6)
-    #[default]
+    /// Schema version 23 (used by ETS6)
     V23,
 }
 
@@ -162,7 +162,7 @@ impl KnxSchemaVersion {
 /// KNX standard datapoint type definitions.
 #[derive(Debug, Clone)]
 pub enum MasterDataSource {
-    /// Download from update.knx.org using the default schema version (V23).
+    /// Download from update.knx.org using the default schema version (V20).
     /// Will be cached locally after first download.
     Download,
 

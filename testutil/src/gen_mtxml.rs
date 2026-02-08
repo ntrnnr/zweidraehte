@@ -9,21 +9,17 @@
 //! Use --knxprod flag to also generate a signed .knxprod package.
 
 use std::env;
-use std::fs;
 use std::path::PathBuf;
 
 use const_default::ConstDefault;
 
 use knxprod::definition::page_layout::EtsPageLayout;
-use knxprod::signing::{KnxSchemaVersion, MasterDataSource, SigningConfig, create_knxprod};
-use knxprod::{ApplicationProgramConfig, CatalogGenerator, HardwareGenerator, MtxmlGenerator};
-use testutil::devices::{DEVICE_DESCRIPTOR, DemoParams, DemoStack, SERIAL_NUMBER, comm_objs};
+use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
+use knxprod::{ApplicationProgramConfig, KnxprodBuilder};
+use testutil::devices::system_b_demo::{DEVICE_DESCRIPTOR, DemoParams, DemoStack, SERIAL_NUMBER, comm_objs};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
-
-    // Schema version to use for generation
-    let schema_version = Some(KnxSchemaVersion::V20);
 
     // Get default parameter values as bytes
     let defaults = DemoParams::DEFAULT;
@@ -64,62 +60,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         translations: None,
     };
 
-    // Create output directory structure: out/<device>/M-XXXX/
-    let manufacturer_id = format!("{:04X}", DEVICE_DESCRIPTOR.manufacturer_id);
-    let out_dir: PathBuf = ["out", config.name, &format!("M-{}", manufacturer_id)].iter().collect();
-    fs::create_dir_all(&out_dir)?;
-    println!("Output directory: {}", out_dir.display());
-
-    // Generate ApplicationProgram MTXML
-    let app_xml = MtxmlGenerator::generate(&config, schema_version)?;
-    let app_path = out_dir.join("ApplicationProgram1.mtxml");
-    fs::write(&app_path, &app_xml)?;
-    println!("Generated: {}", app_path.display());
-
-    // Generate Hardware MTXML
-    let hw_xml = HardwareGenerator::generate(&config, schema_version)?;
-    let hw_path = out_dir.join("Hardware1.mtxml");
-    fs::write(&hw_path, &hw_xml)?;
-    println!("Generated: {}", hw_path.display());
-
-    // Generate Catalog MTXML
-    let cat_xml = CatalogGenerator::generate(&config, schema_version)?;
-    let cat_path = out_dir.join("Catalog1.mtxml");
-    fs::write(&cat_path, &cat_xml)?;
-    println!("Generated: {}", cat_path.display());
-
-    println!("\nAll MTXML files generated successfully!");
+    // Output directory: out/<device>/
+    let out_dir: PathBuf = ["out", config.name].iter().collect();
 
     // Check if --knxprod flag is provided
     let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
 
     if generate_knxprod {
-        println!("\nGenerating signed .knxprod package...");
+        // Use KnxprodBuilder to generate everything including signed package
+        let (output, knxprod_path) = KnxprodBuilder::new(&config)
+            .output_dir(&out_dir)
+            .schema_version(KnxSchemaVersion::V20)
+            .master_data(MasterDataSource::Download)
+            .build_all()?;
 
-        // Build the application program ID from the device descriptor
-        let app_number = format!("{:04X}", DEVICE_DESCRIPTOR.application_id);
-        let app_version = format!("{:02X}", DEVICE_DESCRIPTOR.application_version);
-        let application_program_id = format!("M-{}_A-{}-{}-0000", manufacturer_id, app_number, app_version);
-
-        let signing_config = SigningConfig {
-            manufacturer_id: manufacturer_id.clone(),
-            application_program: app_xml.clone(),
-            application_program_id,
-            hardware: hw_xml.clone(),
-            catalog: cat_xml.clone(),
-            baggage_files: vec![],
-        };
-
-        let knxprod_bytes = create_knxprod(&signing_config, MasterDataSource::Download)?;
-        // Write knxprod to out/<device>/<name>.knxprod
-        let device_out_dir: PathBuf = ["out", config.name].iter().collect();
-        let output_path = device_out_dir.join(format!("{}.knxprod", config.name));
-        fs::write(&output_path, &knxprod_bytes)?;
-        println!("Generated: {} ({} bytes)", output_path.display(), knxprod_bytes.len());
+        // Print what was generated
+        let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
+        println!("Output directory: {}", manuf_dir.display());
+        for (filename, _) in output.xml_files() {
+            println!("Generated: {}", manuf_dir.join(filename).display());
+        }
+        println!("\nGenerated: {} ({} bytes)", knxprod_path.display(), std::fs::metadata(&knxprod_path)?.len());
         println!("\nVerify with: python3 manuf_tool_data/knx_verifier.py all .");
     } else {
+        // Just generate MTXML files
+        let (output, paths) = KnxprodBuilder::new(&config)
+            .output_dir(&out_dir)
+            .schema_version(KnxSchemaVersion::V20)
+            .write_mtxml_with_paths()?;
+
+        let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
+        println!("Output directory: {}", manuf_dir.display());
+        for path in &paths {
+            println!("Generated: {}", path.display());
+        }
+
+        println!("\nAll MTXML files generated successfully!");
         println!("\nTip: Use --knxprod flag to also generate a signed .knxprod package");
-        println!("\nApplicationProgram preview (first 1500 chars):\n{}", &app_xml[..app_xml.len().min(1500)]);
     }
 
     Ok(())

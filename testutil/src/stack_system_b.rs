@@ -45,18 +45,18 @@ use testutil::util::keyboard;
 // Communication Objects Definition - use demo device comm objects
 // ============================================================================
 
-pub use testutil::devices::OutputConfig;
-pub use testutil::devices::comm_objs;
+pub use testutil::devices::system_b_demo::OutputConfig;
+pub use testutil::devices::system_b_demo::comm_objs;
 
 // ============================================================================
 // Device Constants - use demo device definitions
 // ============================================================================
 
 /// Device descriptor - use from demo device
-pub const MY_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = testutil::devices::DEVICE_DESCRIPTOR;
+pub const MY_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = testutil::devices::system_b_demo::DEVICE_DESCRIPTOR;
 
 /// Serial number - use from demo device
-pub const MY_SERIAL_NUMBER: [u8; 6] = testutil::devices::SERIAL_NUMBER;
+pub const MY_SERIAL_NUMBER: [u8; 6] = testutil::devices::system_b_demo::SERIAL_NUMBER;
 
 /// Network interface name for KNX/IP communication.
 pub const INTERFACE_NAME: &'static str = "knxdevbridgeif";
@@ -123,7 +123,7 @@ impl IpPlatform for MockIpPlatform {
 // ============================================================================
 
 /// Type alias for application parameters - use DemoParams which matches the generated XML
-type AppParams = testutil::devices::DemoParams;
+type AppParams = testutil::devices::system_b_demo::DemoParams;
 
 // ============================================================================
 // State type alias using IpSystemBDeviceState
@@ -504,13 +504,13 @@ async fn main(spawner: Spawner) {
                 });
 
                 match &params.scene_config {
-                    testutil::devices::SceneConfig::Disabled => {
+                    testutil::devices::system_b_demo::SceneConfig::Disabled => {
                         println!("    Scene Config: Disabled");
                     }
-                    testutil::devices::SceneConfig::RecallOnly { scene_number } => {
+                    testutil::devices::system_b_demo::SceneConfig::RecallOnly { scene_number } => {
                         println!("    Scene Config: Recall Only (Scene: {})", scene_number);
                     }
-                    testutil::devices::SceneConfig::StoreAndRecall { scene_number, store_time } => {
+                    testutil::devices::system_b_demo::SceneConfig::StoreAndRecall { scene_number, store_time } => {
                         println!(
                             "    Scene Config: Store & Recall (Scene: {}, Store Time: {}00ms)",
                             scene_number, store_time

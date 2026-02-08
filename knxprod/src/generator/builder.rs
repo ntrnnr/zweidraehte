@@ -35,9 +35,11 @@
 //! # Example: Create Signed Package
 //!
 //! ```rust,ignore
-//! use knxprod::{KnxprodBuilder, MasterDataSource};
+//! use knxprod::KnxprodBuilder;
+//! use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
 //!
 //! let knxprod_bytes = KnxprodBuilder::new(&config)
+//!     .schema_version(KnxSchemaVersion::V20)
 //!     .master_data(MasterDataSource::Download)
 //!     .build_knxprod()?;
 //!
@@ -528,8 +530,6 @@ impl<'a> KnxprodBuilder<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Tests would go here, but require a valid ApplicationProgramConfig
     // which needs device descriptors, params, etc.
 }
