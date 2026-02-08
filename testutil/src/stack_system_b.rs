@@ -208,6 +208,25 @@ impl StackDefinition for MySystemBStack {
 }
 
 // ============================================================================
+// State Persistence
+// ============================================================================
+
+/// Save the current device state to JSON storage.
+///
+/// Serializes the full device state (tables, parameters, IP config) and writes
+/// it atomically to the state file. Clears the dirty flag on success.
+fn save_state(state: &MyState) {
+    let persisted = state.to_persisted();
+    match state.base().storage().borrow_mut().save(&persisted) {
+        Ok(()) => {
+            state.base().clear_dirty();
+            log::info!("State saved to {}", STATE_FILE_PATH);
+        }
+        Err(e) => log::error!("Failed to save state: {}", e),
+    }
+}
+
+// ============================================================================
 // Main Entry Point (when run as binary)
 // ============================================================================
 
@@ -217,22 +236,24 @@ async fn run_stack(runner: Runner<'static, MySystemBStack>) {
     runner.run().await;
 }
 
-/// Restart handler task - handles A_Restart requests from the stack.
+/// Restart handler task — executes resets, persists state, and triggers restart.
 ///
-/// This demonstrates how to handle restart requests:
-/// 1. Receive the request from the stack
-/// 2. Execute the appropriate reset based on erase code
-/// 3. Flush storage
-/// 4. Send response back to the stack
-/// 5. Trigger platform restart (in production code)
+/// When the stack receives an A_Restart message, this task:
+/// 1. Executes the appropriate reset based on the erase code
+/// 2. Saves the modified state to JSON
+/// 3. Sends the A_Restart_Response back to the stack
+/// 4. Waits briefly for the response to be sent on the bus
+/// 5. Re-execs the process via `LinuxSystem::restart()`
 #[embassy_executor::task]
 async fn handle_restarts(stack: Stack<'static, MySystemBStack>) {
+    use zweidraehte::restart::RestartError;
+
     println!("Restart handler task started");
 
     loop {
-        // Wait for a restart request from the application layer
         let request = stack.receive_restart_request().await;
         let req = request.get();
+        let state = stack.state();
 
         println!("\n********************************************");
         println!("*** RESTART REQUEST RECEIVED ***");
@@ -242,62 +263,65 @@ async fn handle_restarts(stack: Stack<'static, MySystemBStack>) {
         println!("*** Needs Response: {} ***", req.needs_response);
         println!("********************************************\n");
 
-        // In a real implementation, we would:
-        // 1. Get mutable access to device state
-        // 2. Execute the appropriate reset via RestartHandler::execute_reset
-        // 3. Flush storage
-        // 4. Send the response
-
-        // For this demo, we just simulate the response
+        // Execute the reset. All reset methods use interior mutability (&self)
+        // so we can call them directly through the shared Stack reference.
         let response = match req.erase_code {
             EraseCode::Basic | EraseCode::Confirmed => {
-                // Just restart, no data reset needed
                 println!("Performing basic restart (no data reset)...");
                 RestartResponse::success()
             }
             EraseCode::FactoryReset => {
-                println!("Performing FACTORY RESET - all data will be cleared!");
-                // In production: device_state.factory_reset();
+                println!("Performing FACTORY RESET — all data will be cleared!");
+                state.base().factory_reset();
+                state.reset_ip_config();
                 RestartResponse::success()
             }
             EraseCode::ResetIA => {
                 println!("Resetting Individual Address to 15.15.255...");
-                // In production: device_state.reset_individual_address();
+                state.base().reset_individual_address();
                 RestartResponse::success()
             }
             EraseCode::ResetAP => {
                 println!("Resetting Application Program...");
-                // In production: device_state.reset_application();
+                state.base().reset_application();
                 RestartResponse::success()
             }
             EraseCode::ResetParam => {
                 println!("Resetting Parameters to defaults...");
-                // In production: device_state.reset_parameters();
+                state.base().reset_parameters();
                 RestartResponse::success()
             }
             EraseCode::ResetLinks => {
-                println!("Resetting Address and Association tables...");
-                // In production: device_state.reset_address_table(); device_state.reset_association_table();
-                RestartResponse::success()
+                // TODO: Check KNX spec — ResetLinks may be E-Mode only and not
+                // applicable to System B IP devices.
+                println!("ResetLinks not supported on this device");
+                RestartResponse::error(RestartError::UnsupportedEraseCode)
             }
             EraseCode::FactoryResetKeepIA => {
                 println!("Performing Factory Reset (keeping Individual Address)...");
-                // In production: device_state.factory_reset_keep_ia();
+                state.base().factory_reset_keep_ia();
+                state.reset_ip_config();
                 RestartResponse::success()
             }
             EraseCode::Other(code) => {
                 println!("Unsupported erase code: 0x{:02X}", code);
-                RestartResponse::error(zweidraehte::restart::RestartError::UnsupportedEraseCode)
+                RestartResponse::error(RestartError::UnsupportedEraseCode)
             }
         };
 
-        // Send the response back to the stack
+        // Persist the post-reset state before restarting so it survives
+        // the process re-exec.
+        if state.is_dirty() {
+            save_state(state);
+        }
+
+        // Send the response back to the stack (which forwards it on the bus).
         request.reply(response).await;
 
-        // Give the stack a moment to send the response on the bus
+        // Give the stack a moment to send the response on the bus.
         embassy_time::Timer::after(Duration::from_millis(100)).await;
 
-        // Trigger platform restart (re-exec the process)
+        // Re-exec the process. This call does not return on success.
         use platform::SystemControl;
         let mut system = platform::LinuxSystem;
         let Err(e) = system.restart().await;
@@ -430,6 +454,9 @@ async fn main(spawner: Spawner) {
                 }
                 'q' | 'Q' => {
                     println!("\nShutting down...");
+                    if stack.state().is_dirty() {
+                        save_state(stack.state());
+                    }
                     break;
                 }
                 _ => {}
@@ -523,6 +550,12 @@ async fn main(spawner: Spawner) {
 
             println!("---------------------\n");
             last_print = embassy_time::Instant::now();
+
+            // Periodically persist any state changes from ETS programming
+            // (table writes, parameter changes, address changes, etc.).
+            if stack.state().is_dirty() {
+                save_state(stack.state());
+            }
         }
 
         match embassy_time::with_timeout(Duration::from_millis(100), events.next_message()).await {
