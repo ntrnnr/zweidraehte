@@ -1,13 +1,9 @@
 //! System B Device Test Utility
 //!
-//! This module provides both library definitions and a binary entry point
-//! for a System B KNX/IP device.
-//!
-//! ## As Library
-//!
-//! Used by `mtxml_modifier` and `ets_export` binaries for ETS export.
-//!
-//! ## As Binary
+//! Binary entry point for running the System B KNX/IP demo device.
+//! The device definition (parameters, comm objects, stack traits) lives in
+//! [`testutil::devices::system_b_demo`]; this file only contains the runtime
+//! logic: state persistence, restart handling, and the main event loop.
 //!
 //! Run with: `cargo run --bin stack_system_b`
 
@@ -22,200 +18,31 @@ use env_logger::Env;
 use platform::address::EthernetAddress;
 use static_cell::StaticCell;
 use zweidraehte::{
-    IpPlatform, Runner, Stack, StackDefinition, StackResources, StackState,
+    Runner, Stack, StackDefinition, StackResources, StackState,
     address::IndividualAddress,
-    bcus::system_b::{
-        DeviceStorage, IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, PersistedState,
-        SystemBDevice, SystemBMemoryMap, create_knxip_objects,
-    },
+    bcus::system_b::DeviceStorage,
     layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, servers},
     messages::knxip::KNXnetIPServiceType,
     messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium, ServiceFamily, SupportedService},
     objects::comm::ComObjects,
     objects::interface::HasDeviceObject,
-    objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadEvent, RunEvent},
+    objects::tables::{HasLoadStateMachine, HasRunStateMachine},
     restart::{EraseCode, RestartResponse},
 };
 
-// Import storage from the library module
+use testutil::devices::system_b_demo::*;
 use testutil::storage::JsonStorage;
 use testutil::util::keyboard;
 
-// ============================================================================
-// Communication Objects Definition - use demo device comm objects
-// ============================================================================
-
-pub use testutil::devices::system_b_demo::OutputConfig;
-pub use testutil::devices::system_b_demo::comm_objs;
-
-// ============================================================================
-// Device Constants - use demo device definitions
-// ============================================================================
-
-/// Device descriptor - use from demo device
-pub const MY_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = testutil::devices::system_b_demo::DEVICE_DESCRIPTOR;
-
-/// Serial number - use from demo device
-pub const MY_SERIAL_NUMBER: [u8; 6] = testutil::devices::system_b_demo::SERIAL_NUMBER;
-
-/// Network interface name for KNX/IP communication.
-pub const INTERFACE_NAME: &'static str = "knxdevbridgeif";
-
-// ============================================================================
-// Mock IP Platform
-// ============================================================================
-
-#[derive(Debug, Clone)]
-pub struct MockIpPlatform {
-    pub ip_address: Ipv4Addr,
-    pub subnet_mask: Ipv4Addr,
-    pub gateway: Ipv4Addr,
-    pub mac_address: [u8; 6],
-}
-
-impl Default for MockIpPlatform {
-    fn default() -> Self {
-        Self {
-            ip_address: Ipv4Addr::new(192, 168, 1, 200),
-            subnet_mask: Ipv4Addr::new(255, 255, 255, 0),
-            gateway: Ipv4Addr::new(192, 168, 1, 1),
-            mac_address: [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE],
-        }
-    }
-}
-
-impl IpPlatform for MockIpPlatform {
-    fn current_ip_address(&self) -> Ipv4Addr {
-        self.ip_address
-    }
-
-    fn current_subnet_mask(&self) -> Ipv4Addr {
-        self.subnet_mask
-    }
-
-    fn current_default_gateway(&self) -> Ipv4Addr {
-        self.gateway
-    }
-
-    fn mac_address(&self) -> [u8; 6] {
-        self.mac_address
-    }
-
-    fn current_ip_assignment_method(&self) -> u8 {
-        0x02 // Manual
-    }
-
-    fn ip_capabilities(&self) -> u8 {
-        0x07 // BootP, DHCP, Manual supported
-    }
-
-    fn knxnetip_device_capabilities(&self) -> u16 {
-        0x003F
-    }
-}
-
-// ============================================================================
-// Application Parameters with ETS Export
-// ============================================================================
-
-// ============================================================================
-// Application Parameters
-// ============================================================================
-
-/// Type alias for application parameters - use DemoParams which matches the generated XML
-type AppParams = testutil::devices::system_b_demo::DemoParams;
-
-// ============================================================================
-// State type alias using IpSystemBDeviceState
-// ============================================================================
-
-// Table sizes computed from DeviceDescriptor
-const ADT_SIZE: usize = MY_DEVICE_DESCRIPTOR.address_table_size();
-const AST_SIZE: usize = MY_DEVICE_DESCRIPTOR.association_table_size();
-const COT_SIZE: usize = MY_DEVICE_DESCRIPTOR.comm_object_table_size();
-const APP_DATA_SIZE: usize = core::mem::size_of::<AppParams>();
-
-/// Unified state type combining tables + runtime state.
-///
-/// The const generics are computed from the device descriptor's table capacities:
-/// - ADT_SIZE = 2 + max_address_table_entries * 2 = 34 bytes
-/// - AST_SIZE = 2 + max_association_table_entries * 4 = 66 bytes
-/// - COT_SIZE = 2 + max_com_objects * 2 = 18 bytes
-/// - AppParams = application parameter type (size determines app data area)
-pub type MyState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, AppParams, MySystemBStack>;
-
-/// Type alias for the persisted state with our device's table sizes.
-pub type MyPersistedState = PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE>;
-
 /// Default path for the device state JSON file.
 const STATE_FILE_PATH: &str = "system_b_device_state.json";
-
-/// Memory layout for our System B device.
-pub const MY_MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calculate(
-    SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-    MY_DEVICE_DESCRIPTOR.max_address_table_entries as usize,
-    MY_DEVICE_DESCRIPTOR.max_association_table_entries as usize,
-    MY_DEVICE_DESCRIPTOR.max_com_objects as usize,
-    APP_DATA_SIZE,
-);
-
-/// Memory map for our System B device.
-///
-/// Maps memory addresses to the device tables for A_Memory_Read/Write services.
-pub const MY_MEMORY_MAP: SystemBMemoryMap = SystemBMemoryMap::new(MY_MEMORY_LAYOUT);
-
-// ============================================================================
-// Stack Definition
-// ============================================================================
-
-#[derive(Debug, Clone, Copy)]
-pub struct MySystemBStack;
-
-impl SystemBDevice for MySystemBStack {
-    type Storage = JsonStorage;
-}
-
-impl KnxIpDevice for MySystemBStack {
-    const INTERFACE_NAME: &'static str = INTERFACE_NAME;
-    type Platform = MockIpPlatform;
-}
-
-impl StackDefinition for MySystemBStack {
-    const DEVICE: &'static zweidraehte::ets::DeviceDescriptor = &MY_DEVICE_DESCRIPTOR;
-
-    type P = AppParams;
-    type CO = comm_objs::DemoComObjects;
-    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, 2, 2>;
-    type State = MyState;
-    type Mem = SystemBMemoryMap;
-
-    type InterfaceObjects<'a> = KnxIpInterfaceObjects<
-        'a,
-        Self::State,
-        <Self::State as zweidraehte::memory::HasAddressTable>::ADT,
-        <Self::State as zweidraehte::memory::HasAssociationTable>::AST,
-        <Self::State as zweidraehte::memory::HasCommunicationObjectTable>::COT,
-        <Self::State as zweidraehte::memory::HasApplication>::APP,
-        <Self::State as zweidraehte::memory::HasPeiApplication>::PEI,
-    >;
-
-    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
-    where
-        Self::State: 'a,
-    {
-        create_knxip_objects::<MySystemBStack, _>(state, &MY_MEMORY_LAYOUT)
-    }
-}
 
 // ============================================================================
 // State Persistence
 // ============================================================================
 
 /// Save the current device state to JSON storage.
-///
-/// Serializes the full device state (tables, parameters, IP config) and writes
-/// it atomically to the state file. Clears the dirty flag on success.
-fn save_state(state: &MyState) {
+fn save_state(state: &DemoState) {
     let persisted = state.to_persisted();
     match state.base().storage().borrow_mut().save(&persisted) {
         Ok(()) => {
@@ -227,11 +54,11 @@ fn save_state(state: &MyState) {
 }
 
 // ============================================================================
-// Main Entry Point (when run as binary)
+// Main Entry Point
 // ============================================================================
 
 #[embassy_executor::task]
-async fn run_stack(runner: Runner<'static, MySystemBStack>) {
+async fn run_stack(runner: Runner<'static, DemoStack>) {
     println!("Running System B KNX/IP stack...");
     runner.run().await;
 }
@@ -245,7 +72,7 @@ async fn run_stack(runner: Runner<'static, MySystemBStack>) {
 /// 4. Waits briefly for the response to be sent on the bus
 /// 5. Re-execs the process via `LinuxSystem::restart()`
 #[embassy_executor::task]
-async fn handle_restarts(stack: Stack<'static, MySystemBStack>) {
+async fn handle_restarts(stack: Stack<'static, DemoStack>) {
     use zweidraehte::restart::RestartError;
 
     println!("Restart handler task started");
@@ -337,28 +164,27 @@ async fn main(spawner: Spawner) {
 
     // Print device information
     println!("Device Configuration:");
-    println!("  Mask Version: {:04X} (KNX/IP System B)", MY_DEVICE_DESCRIPTOR.mask_version);
-    println!("  Serial Number: {:02X?}", MY_SERIAL_NUMBER);
-    println!("  Manufacturer ID: {:04X}", MY_DEVICE_DESCRIPTOR.manufacturer_id);
+    println!("  Mask Version: {:04X} (KNX/IP System B)", DEVICE_DESCRIPTOR.mask_version);
+    println!("  Serial Number: {:02X?}", SERIAL_NUMBER);
+    println!("  Manufacturer ID: {:04X}", DEVICE_DESCRIPTOR.manufacturer_id);
     println!();
 
     // Create storage and try to load persisted state
     let mut storage = JsonStorage::new(STATE_FILE_PATH);
-    let device_state: MyState = match storage.load::<ADT_SIZE, AST_SIZE, COT_SIZE, AppParams>() {
+    let device_state: DemoState = match storage.load::<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams>() {
         Ok(Some(persisted)) => {
             println!("Loaded persisted state from {}", STATE_FILE_PATH);
-            MyState::from_persisted(
+            DemoState::from_persisted(
                 JsonStorage::new(STATE_FILE_PATH),
                 MockIpPlatform::default(),
-                MY_SERIAL_NUMBER,
+                SERIAL_NUMBER,
                 persisted,
             )
         }
         Ok(None) => {
-            println!("No persisted state found, using test configuration");
-            let state = MyState::new(JsonStorage::new(STATE_FILE_PATH), MockIpPlatform::default(), MY_SERIAL_NUMBER);
+            println!("No persisted state found, starting fresh");
+            let state = DemoState::new(JsonStorage::new(STATE_FILE_PATH), MockIpPlatform::default(), SERIAL_NUMBER);
             state.set_individual_address(IndividualAddress::new(1, 2, 3));
-            load_test_configuration(&state);
             if let Err(e) = storage.save(&state.to_persisted()) {
                 log::error!("Failed to save initial state: {}", e);
             }
@@ -366,10 +192,7 @@ async fn main(spawner: Spawner) {
         }
         Err(e) => {
             println!("Error loading persisted state: {}", e);
-            let state = MyState::new(JsonStorage::new(STATE_FILE_PATH), MockIpPlatform::default(), MY_SERIAL_NUMBER);
-            state.set_individual_address(IndividualAddress::new(1, 2, 3));
-            load_test_configuration(&state);
-            state
+            DemoState::new(JsonStorage::new(STATE_FILE_PATH), MockIpPlatform::default(), SERIAL_NUMBER)
         }
     };
 
@@ -380,7 +203,7 @@ async fn main(spawner: Spawner) {
         device_status: DeviceStatus::None,
         individual_address: device_state.individual_address(),
         project_installation_identifier: 0x5678,
-        knx_serial_number: MY_SERIAL_NUMBER,
+        knx_serial_number: SERIAL_NUMBER,
         routing_multicast_address: Ipv4Addr::new(224, 0, 23, 12),
         mac_address: EthernetAddress([0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE]),
         friendly_name: *b"System B Test\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
@@ -413,7 +236,7 @@ async fn main(spawner: Spawner) {
 
     // Create stack resources and initialize the stack
     static RESOURCES: StaticCell<
-        StackResources<MySystemBStack, { zweidraehte::config::buffer_size_for_apdu(MySystemBStack::MAX_APDU_LENGTH) }>,
+        StackResources<DemoStack, { zweidraehte::config::buffer_size_for_apdu(DemoStack::MAX_APDU_LENGTH) }>,
     > = StaticCell::new();
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
@@ -421,7 +244,7 @@ async fn main(spawner: Spawner) {
         (),
         link_layer_builder,
         device_state,
-        MY_MEMORY_MAP,
+        MEMORY_MAP,
     );
 
     spawner.spawn(run_stack(runner)).unwrap();
@@ -487,14 +310,12 @@ async fn main(spawner: Spawner) {
             // Print application parameters if loaded
             if app.is_loaded() {
                 let params = app.params();
-                // Print raw bytes to debug layout issues
                 let raw_bytes: &[u8] = unsafe {
                     core::slice::from_raw_parts(params as *const _ as *const u8, core::mem::size_of_val(params))
                 };
                 println!("  Application Parameters (raw {} bytes): {:02X?}", raw_bytes.len(), raw_bytes);
                 println!("  Application Parameters:");
 
-                // Channel A settings
                 print!("    Channel A Config: ");
                 match &params.channel_a_config {
                     OutputConfig::Disabled => println!("Disabled"),
@@ -507,7 +328,6 @@ async fn main(spawner: Spawner) {
                     }
                 }
 
-                // Channel B settings
                 print!("    Channel B Config: ");
                 match &params.channel_b_config {
                     OutputConfig::Disabled => println!("Disabled"),
@@ -520,7 +340,6 @@ async fn main(spawner: Spawner) {
                     }
                 }
 
-                // General settings
                 println!("    Send Cycle Time: {}s", params.send_cycle_time);
                 println!("    Lock Behavior: {}", match params.lock_behavior {
                     0 => "No Action",
@@ -531,13 +350,13 @@ async fn main(spawner: Spawner) {
                 });
 
                 match &params.scene_config {
-                    testutil::devices::system_b_demo::SceneConfig::Disabled => {
+                    SceneConfig::Disabled => {
                         println!("    Scene Config: Disabled");
                     }
-                    testutil::devices::system_b_demo::SceneConfig::RecallOnly { scene_number } => {
+                    SceneConfig::RecallOnly { scene_number } => {
                         println!("    Scene Config: Recall Only (Scene: {})", scene_number);
                     }
-                    testutil::devices::system_b_demo::SceneConfig::StoreAndRecall { scene_number, store_time } => {
+                    SceneConfig::StoreAndRecall { scene_number, store_time } => {
                         println!(
                             "    Scene Config: Store & Recall (Scene: {}, Store Time: {}00ms)",
                             scene_number, store_time
@@ -567,80 +386,4 @@ async fn main(spawner: Spawner) {
             Err(_) => {}
         }
     }
-}
-
-/// Load test configuration into the state's tables.
-fn load_test_configuration(state: &MyState) {
-    use zweidraehte::memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable};
-    use zweidraehte::objects::tables::TableMemory;
-
-    let layout = MY_MEMORY_MAP.layout();
-    let adt_addr = layout.adt_address() as u32;
-    let ast_addr = layout.ast_address() as u32;
-    let cot_addr = layout.cot_address() as u32;
-
-    // Load Address Table
-    {
-        let mut adt = state.adt().borrow_mut();
-        adt.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        adt.write_lsm(
-            &[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x0A, 0x01, 0xFF, 0x00, 0x00],
-            Some(adt_addr),
-        );
-        let table_data = adt.data_ref_mut();
-        table_data[0..2].copy_from_slice(&[0x00, 0x04]);
-        table_data[2..4].copy_from_slice(&[0x08, 0x01]);
-        table_data[4..6].copy_from_slice(&[0x08, 0x02]);
-        table_data[6..8].copy_from_slice(&[0x09, 0x01]);
-        table_data[8..10].copy_from_slice(&[0x09, 0x02]);
-        adt.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-    }
-
-    // Load Association Table
-    {
-        let mut ast = state.ast().borrow_mut();
-        ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        ast.write_lsm(
-            &[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x12, 0x01, 0xFF, 0x00, 0x00],
-            Some(ast_addr),
-        );
-        let table_data = ast.data_ref_mut();
-        table_data[0..2].copy_from_slice(&[0x00, 0x04]);
-        table_data[2..4].copy_from_slice(&[0x00, 0x01]);
-        table_data[4..6].copy_from_slice(&[0x00, 0x01]);
-        table_data[6..8].copy_from_slice(&[0x00, 0x02]);
-        table_data[8..10].copy_from_slice(&[0x00, 0x02]);
-        table_data[10..12].copy_from_slice(&[0x00, 0x03]);
-        table_data[12..14].copy_from_slice(&[0x00, 0x03]);
-        table_data[14..16].copy_from_slice(&[0x00, 0x04]);
-        table_data[16..18].copy_from_slice(&[0x00, 0x04]);
-        ast.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-    }
-
-    // Load Group Object Table
-    {
-        let mut cot = state.cot().borrow_mut();
-        cot.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        cot.write_lsm(
-            &[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x0A, 0x01, 0xFF, 0x00, 0x00],
-            Some(cot_addr),
-        );
-        let table_data = cot.data_ref_mut();
-        table_data[0..2].copy_from_slice(&[0x00, 0x04]);
-        table_data[2..4].copy_from_slice(&[0x00, 0xDF]);
-        table_data[4..6].copy_from_slice(&[0x00, 0x5F]);
-        table_data[6..8].copy_from_slice(&[0x00, 0xDF]);
-        table_data[8..10].copy_from_slice(&[0x00, 0x5F]);
-        cot.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-    }
-
-    // Load Application
-    {
-        let mut app = state.app().borrow_mut();
-        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        app.write_rsm(&[RunEvent::Restart.into()]);
-    }
-
-    println!("Test configuration loaded");
 }
