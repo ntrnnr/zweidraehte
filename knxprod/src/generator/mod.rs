@@ -383,7 +383,7 @@ pub(crate) fn medium_type_from_mask(mask_version: u16) -> &'static str {
         0 => "MT-0", // TP1 (Twisted Pair)
         1 => "MT-1", // PL110
         2 => "MT-2", // RF
-        5 => "MT-0", // IP (uses TP1 objects)
+        5 => "MT-5", // KNXnet/IP
         _ => "MT-0", // Default to TP1
     }
 }
@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn test_medium_type() {
         assert_eq!(medium_type_from_mask(0x07B0), "MT-0"); // TP1
-        assert_eq!(medium_type_from_mask(0x57B0), "MT-0"); // System 7 TP1
+        assert_eq!(medium_type_from_mask(0x57B0), "MT-5"); // KNXnet/IP
         assert_eq!(medium_type_from_mask(0x27B0), "MT-2"); // RF
     }
 }
