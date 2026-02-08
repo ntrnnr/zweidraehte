@@ -247,8 +247,8 @@ pub struct ApplicationProgramConfig<'a> {
     /// - Included in the signed .knxprod package
     pub baggages: Option<&'a [BaggageDef<'a>]>,
     /// Optional translations for non-default languages.
-    /// Translations are generated into a `<Languages>` section in the ApplicationProgram XML.
-    /// Use the `ets_translations!` macro to define translations.
+    /// Translations are generated into a `<Languages>` section at the Manufacturer level
+    /// in the ApplicationProgram MTXML file. Use the `ets_translations!` macro to define translations.
     pub translations: Option<&'a [EtsTranslation]>,
 }
 

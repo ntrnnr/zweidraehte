@@ -145,7 +145,13 @@ pub struct ManufacturerData {
     pub manufacturer: Manufacturer,
 }
 
-/// Manufacturer element containing application programs
+/// Manufacturer element containing application programs and language translations.
+///
+/// Per the XSD schema (`ManufacturerData_t`), the child element ordering is:
+/// Catalog, ApplicationPrograms, Baggages, Hardware, Languages.
+/// Since each MTXML file only contains one of these sections, only
+/// `ApplicationPrograms` and `Languages` appear here (in the ApplicationProgram
+/// MTXML file).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Manufacturer {
     #[serde(rename = "@RefId")]
@@ -153,6 +159,11 @@ pub struct Manufacturer {
 
     #[serde(rename = "ApplicationPrograms")]
     pub application_programs: ApplicationPrograms,
+
+    /// Language translations for multi-language support.
+    /// Must appear after ApplicationPrograms at the Manufacturer level per XSD.
+    #[serde(rename = "Languages", skip_serializing_if = "Option::is_none")]
+    pub languages: Option<Languages>,
 }
 
 /// Container for ApplicationProgram elements
@@ -204,10 +215,6 @@ pub struct ApplicationProgram {
     pub module_defs: Option<ModuleDefs>,
     #[serde(rename = "Dynamic", skip_serializing_if = "Option::is_none")]
     pub dynamic: Option<DynamicSection>,
-    /// Language translations for multi-language support.
-    /// Contains translations for parameter names, enum values, and comm object texts.
-    #[serde(rename = "Languages", skip_serializing_if = "Option::is_none")]
-    pub languages: Option<Languages>,
 }
 
 impl Default for ApplicationProgram {
@@ -231,7 +238,6 @@ impl Default for ApplicationProgram {
             static_section: StaticSection::default(),
             module_defs: None,
             dynamic: None,
-            languages: None,
         }
     }
 }

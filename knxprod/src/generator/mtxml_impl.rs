@@ -41,6 +41,13 @@ impl MtxmlGenerator {
             .programs
             .push(Self::build_application_program(config, &app_id)?);
 
+        // Build Languages at the Manufacturer level (not inside ApplicationProgram).
+        // Per XSD, Languages is a child of Manufacturer, after ApplicationPrograms.
+        if let Some(translations) = config.translations {
+            knx.manufacturer_data.manufacturer.languages =
+                Self::build_languages(config, &app_id, translations)?;
+        }
+
         Ok(knx)
     }
 
@@ -86,11 +93,6 @@ impl MtxmlGenerator {
             Self::build_dynamic_section(config, app_id, mask_family)?
         };
         app.dynamic = Some(dynamic);
-
-        // Build Languages section if translations are provided
-        if let Some(translations) = config.translations {
-            app.languages = Self::build_languages(config, app_id, translations)?;
-        }
 
         Ok(app)
     }

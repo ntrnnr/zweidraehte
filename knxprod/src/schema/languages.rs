@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 /// Container for all language translations.
 ///
-/// Appears at the end of the ApplicationProgram element.
+/// Appears at the Manufacturer level, after ApplicationPrograms (per XSD schema).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Languages {
     #[serde(rename = "Language", default, skip_serializing_if = "Vec::is_empty")]
