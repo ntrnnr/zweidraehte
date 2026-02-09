@@ -16,7 +16,7 @@ use env_logger::Env;
 
 use zweidraehte::{
     address::{GroupAddress, IndividualAddress},
-    context::{BufferManagerContext, PropertyServiceContext},
+    context::BufferManagerContext,
     layers::{
         ActorRequest, LayerOp, LinkLayerBuilder,
         linklayers::usb::{UsbLinkLayerBuilder, UsbLinkLayerResources},
@@ -130,12 +130,6 @@ impl BufferManagerContext for SimpleContext {
 
     fn set_max_apdu_length(&self, _length: u16) {
         // No-op for this simple test context
-    }
-}
-
-impl PropertyServiceContext for SimpleContext {
-    fn property_handler(&self) -> &dyn zweidraehte::objects::interface::PropertyServiceHandler {
-        &()
     }
 }
 

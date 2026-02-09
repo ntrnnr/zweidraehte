@@ -22,7 +22,7 @@ use env_logger::Env;
 
 use zweidraehte::{
     address::IndividualAddress,
-    context::{BufferManagerContext, PropertyServiceContext},
+    context::BufferManagerContext,
     encoding::tp1::tp1_to_knx_message_no_checksum,
     layers::{
         ActorRequest, LayerOp, LinkLayerBuilder,
@@ -146,12 +146,6 @@ impl BufferManagerContext for SimpleContext {
 
     fn set_max_apdu_length(&self, _length: u16) {
         // No-op for this simple test context
-    }
-}
-
-impl PropertyServiceContext for SimpleContext {
-    fn property_handler(&self) -> &dyn zweidraehte::objects::interface::PropertyServiceHandler {
-        &()
     }
 }
 

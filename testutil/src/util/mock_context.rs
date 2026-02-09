@@ -44,6 +44,8 @@ impl BufferManagerContext for &MockContext {
     }
 }
 
+// PropertyServiceContext is needed for link layers that require it (e.g., KNX/IP).
+// Link layers that don't need it (mock, USB) simply won't constrain on this trait.
 impl PropertyServiceContext for &MockContext {
     fn property_handler(&self) -> &dyn PropertyServiceHandler {
         &()

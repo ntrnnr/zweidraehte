@@ -7,7 +7,7 @@ use embassy_sync::{
 
 use crate::{
     encoding::tp1,
-    layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
+    layers::{Inbox, Layer, LayerOp, LinkLayerBuilder, LinkLayerBuilderBase},
     messages::{
         buffers::Buffer,
         builder::ConfirmationExt,
@@ -229,23 +229,22 @@ impl<const N: usize, const C: usize> MockLinkLayerBuilder<N, C> {
     }
 }
 
-impl<const N: usize, const C: usize> LinkLayerBuilder for MockLinkLayerBuilder<N, C> {
+impl<const N: usize, const C: usize> LinkLayerBuilderBase for MockLinkLayerBuilder<N, C> {
     type Resources = MockLinkLayerResources;
 
     fn create_resources(&self) -> Self::Resources {
         MockLinkLayerResources::new()
     }
+}
 
-    fn build_and_run<'a, CTX>(
+impl<CTX, const N: usize, const C: usize> LinkLayerBuilder<CTX> for MockLinkLayerBuilder<N, C> {
+    fn build_and_run<'a>(
         self,
         _resources: &'a mut Self::Resources,
         _context: &'a CTX,
         network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
         inbox: impl Inbox<LayerOp<KnxMessageBuffer<Buffer<'static>>>> + 'a,
-    ) -> impl core::future::Future<Output = !> + 'a
-    where
-        CTX: crate::context::BufferManagerContext + crate::context::PropertyServiceContext,
-    {
+    ) -> impl core::future::Future<Output = !> + 'a {
         let mut link_layer = if let Some(capture_channel) = self.capture_channel {
             MockLinkLayer::with_capture(network_layer, self.injection_channel.receiver(), capture_channel.sender())
         } else {

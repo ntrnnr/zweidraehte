@@ -48,7 +48,7 @@ use crate::{
     address::IndividualAddress,
     context::BufferManagerContext,
     layers::{
-        ActorRequest, Layer, LayerOp, LinkLayerBuilder, Request,
+        ActorRequest, Layer, LayerOp, LinkLayerBuilder, LinkLayerBuilderBase, Request,
         application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
         network::NetworkLayer,
         transport::TransportLayer,
@@ -874,7 +874,7 @@ pub trait StackDefinition: Copy {
 
     type P: ConstDefault;
     type CO: ComObjects;
-    type LLB: layers::LinkLayerBuilder;
+    type LLB: layers::LinkLayerBuilderBase + for<'a> layers::LinkLayerBuilder<StackContext<'a, Self>>;
 
     /// Unified device state containing both runtime state and tables.
     ///
@@ -969,7 +969,7 @@ pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUF
     inner: MaybeUninit<Inner<D>>,
     buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
     buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
-    link_layer_resources: MaybeUninit<<D::LLB as LinkLayerBuilder>::Resources>,
+    link_layer_resources: MaybeUninit<<D::LLB as LinkLayerBuilderBase>::Resources>,
     interface_objects: MaybeUninit<D::InterfaceObjects<'static>>,
 }
 
@@ -994,7 +994,7 @@ pub struct Runner<'d, D: StackDefinition> {
     app_request_receiver: DynamicReceiver<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     restart_sender: DynamicSender<'static, Request<restart::RestartRequest, restart::RestartResponse>>,
     link_layer_builder: D::LLB,
-    link_layer_resources: &'d mut <D::LLB as LinkLayerBuilder>::Resources,
+    link_layer_resources: &'d mut <D::LLB as LinkLayerBuilderBase>::Resources,
 }
 
 /// KNX stack handle for interacting with the KNX protocol stack.
@@ -1098,7 +1098,14 @@ impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
 /// Wraps references to the stack's internal state (for buffer management)
 /// and interface objects (for property service access). Created in
 /// [`Runner::run()`] where both are available.
-struct StackContext<'a, D: StackDefinition> {
+/// Runtime context passed to link layers during [`Runner::run()`].
+///
+/// This is an opaque wrapper combining buffer management and property service
+/// access. Link layers receive a `&StackContext` through
+/// [`LinkLayerBuilder::build_and_run`](layers::LinkLayerBuilder::build_and_run)
+/// and access its capabilities via the [`BufferManagerContext`] and
+/// [`PropertyServiceContext`](context::PropertyServiceContext) trait impls.
+pub struct StackContext<'a, D: StackDefinition> {
     inner: &'a Inner<D>,
     interface_objects: &'a D::InterfaceObjects<'static>,
 }

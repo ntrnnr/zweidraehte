@@ -41,15 +41,3 @@ pub trait PropertyServiceContext {
     fn property_handler(&self) -> &dyn PropertyServiceHandler;
 }
 
-/// Combined context for link layers, providing both buffer management
-/// and property service access.
-///
-/// This is the context type passed from [`Runner::run()`] to
-/// [`LinkLayerBuilder::build_and_run()`]. It wraps references to the
-/// stack's internal state (for buffer management) and interface objects
-/// (for property access).
-///
-/// Blanket-implemented for all types that satisfy both supertraits.
-pub trait LinkLayerContext: BufferManagerContext + PropertyServiceContext {}
-
-impl<T: BufferManagerContext + PropertyServiceContext> LinkLayerContext for T {}

@@ -60,49 +60,87 @@ pub trait Layer<'a>: Sized {
         M: Inbox<LayerOp<Self::Buffer>>;
 }
 
-/// Trait for building link layers
+/// Resource allocation for link layer builders.
 ///
-/// Link layer builders are responsible for constructing configured link layer
-/// instances that can be run in the KNX stack. Different link layer implementations
-/// (TPUART, KNX/IP, Mock, etc.) provide their own builders that implement this trait.
+/// Each link layer implementation defines its own `Resources` type containing
+/// all statically allocated resources it needs (e.g., sockets, channels, buffers).
+/// This enables flexible resource allocation for different link layer types
+/// (KNX/IP, USB, TPUART, etc.) while maintaining a no\_std, zero-allocation design.
 ///
-/// This trait uses a factory pattern where the builder is consumed to produce a link layer.
-/// The link layer must be able to run indefinitely using the `Layer` trait's process method.
+/// This trait is separated from [`LinkLayerBuilder`] so that `Resources` can be
+/// projected without binding to a specific context lifetime — the stack stores
+/// `<LLB as LinkLayerBuilderBase>::Resources` in its pre-allocated resource struct,
+/// where no runtime context exists yet.
 ///
-/// The builder accepts a generic context `CTX` that implements the required context traits
-/// (e.g., `BufferManagerContext`). This allows for easy mocking and testing of link layers
-/// without requiring the full stack infrastructure.
+/// # Implementing
 ///
-/// Each link layer implementation defines its own `Resources` type that contains all
-/// statically allocated resources needed by that link layer (e.g., sockets, channels).
-/// This enables flexible resource allocation for different link layer types (KNX/IP, KNX-RF, etc.)
-/// while maintaining a no_std, zero-allocation design.
-pub trait LinkLayerBuilder: Sized {
-    /// The resource type required by this link layer implementation
+/// Every link layer builder must implement this trait. The companion trait
+/// [`LinkLayerBuilder<CTX>`] adds the ability to build and run the link layer
+/// with a specific runtime context.
+///
+/// In [`StackDefinition`](crate::StackDefinition), the associated type `LLB`
+/// requires both:
+///
+/// ```rust,ignore
+/// type LLB: LinkLayerBuilderBase
+///         + for<'a> LinkLayerBuilder<StackContext<'a, Self>>;
+/// ```
+pub trait LinkLayerBuilderBase: Sized {
+    /// The resource type required by this link layer implementation.
+    ///
+    /// Examples: socket pools for KNX/IP, empty structs for mock link layers.
     type Resources: Sized + 'static;
 
-    /// Create the resources needed by this link layer
+    /// Create the resources needed by this link layer.
+    ///
+    /// Called once during stack initialization. The returned resources are stored
+    /// in [`StackResources`](crate::StackResources) and passed by mutable
+    /// reference to [`LinkLayerBuilder::build_and_run`] when the stack runs.
     fn create_resources(&self) -> Self::Resources;
+}
 
-    /// Build and return the configured link layer instance
+/// Build and run a link layer with a given runtime context.
+///
+/// This trait extends [`LinkLayerBuilderBase`] with the ability to consume the
+/// builder, producing a future that runs the link layer to completion (never
+/// returns).
+///
+/// # Per-implementation context bounds
+///
+/// The `CTX` type parameter is a trait-level generic so that each implementation
+/// declares only the context traits it actually needs:
+///
+/// | Link layer | Context bounds |
+/// |------------|---------------|
+/// | Mock | *(none — `impl<CTX> LinkLayerBuilder<CTX>`)* |
+/// | USB | [`BufferManagerContext`](crate::context::BufferManagerContext) |
+/// | KNX/IP | [`BufferManagerContext`](crate::context::BufferManagerContext) + [`PropertyServiceContext`](crate::context::PropertyServiceContext) |
+///
+/// At stack level the concrete context is [`StackContext`](crate::StackContext),
+/// which implements both `BufferManagerContext` and `PropertyServiceContext`,
+/// so it satisfies all implementations.
+pub trait LinkLayerBuilder<CTX>: LinkLayerBuilderBase {
+    /// Build the link layer and return a future that runs it indefinitely.
+    ///
+    /// The builder is consumed. The returned future drives the link layer's
+    /// receive/transmit loop and never returns (`-> !`).
     ///
     /// # Arguments
-    /// * `resources` - Mutable reference to the link layer's resources
-    /// * `context` - Reference to a context implementing required traits (e.g., BufferManagerContext)
-    /// * `network_layer` - Channel sender to communicate with the network layer
-    /// * `inbox` - Channel receiver for layer operations from the network layer
-    ///
-    /// # Returns
-    /// A future that when awaited, runs the link layer to completion (never returns)
-    fn build_and_run<'a, CTX>(
+    /// * `resources` - Mutable reference to the resources created by
+    ///   [`LinkLayerBuilderBase::create_resources`]
+    /// * `context` - Runtime context providing access to buffer management
+    ///   and (optionally) property services, depending on this impl's bounds
+    /// * `network_layer` - Channel sender for passing indications up to the
+    ///   network layer
+    /// * `inbox` - Channel receiver for layer operations (requests from the
+    ///   network layer, indications to forward)
+    fn build_and_run<'a>(
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
         network_layer: DynamicSender<'a, LayerOp<crate::messages::buffers::Buffer<'static>>>,
         inbox: impl Inbox<LayerOp<crate::messages::buffers::Buffer<'static>>> + 'a,
-    ) -> impl core::future::Future<Output = !> + 'a
-    where
-        CTX: crate::context::BufferManagerContext + crate::context::PropertyServiceContext;
+    ) -> impl core::future::Future<Output = !> + 'a;
 }
 
 // ############################################################################

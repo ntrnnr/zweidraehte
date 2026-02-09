@@ -16,7 +16,7 @@ use heapless::Vec;
 use platform::{AsyncUdpSocket, IpTransport, UdpSocketOptions};
 
 use crate::{
-    layers::{Inbox, Layer, LayerOp, LinkLayerBuilder},
+    layers::{Inbox, Layer, LayerOp, LinkLayerBuilder, LinkLayerBuilderBase},
     messages::{
         buffers::*,
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
@@ -545,8 +545,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
     }
 }
 
-/// Implement LinkLayerBuilder for KnxNetIpBuilder
-impl<T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> LinkLayerBuilder
+impl<T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> LinkLayerBuilderBase
     for KnxNetIpBuilder<T, MAX_SOCKETS, MAX_SERVERS>
 {
     type Resources = KnxNetIpResources<T, MAX_SOCKETS>;
@@ -554,17 +553,23 @@ impl<T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_SERVERS: usiz
     fn create_resources(&self) -> Self::Resources {
         KnxNetIpResources::new()
     }
+}
 
-    fn build_and_run<'a, CTX>(
+/// KNX/IP requires both buffer management and property service access.
+/// The property handler is used by the connection manager for Device
+/// Management connections (M_PropRead/M_PropWrite from ETS).
+impl<CTX, T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_SERVERS: usize>
+    LinkLayerBuilder<CTX> for KnxNetIpBuilder<T, MAX_SOCKETS, MAX_SERVERS>
+where
+    CTX: crate::context::BufferManagerContext + crate::context::PropertyServiceContext,
+{
+    fn build_and_run<'a>(
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
         network_layer: DynamicSender<'a, LayerOp<crate::messages::buffers::Buffer<'static>>>,
         inbox: impl Inbox<LayerOp<crate::messages::buffers::Buffer<'static>>> + 'a,
-    ) -> impl core::future::Future<Output = !> + 'a
-    where
-        CTX: crate::context::BufferManagerContext + crate::context::PropertyServiceContext,
-    {
+    ) -> impl core::future::Future<Output = !> + 'a {
         // Build the link layer instance, providing the property handler from the context
         let mut link_layer = self.build(
             resources,

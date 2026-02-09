@@ -31,7 +31,7 @@ use embassy_time::{Duration, Instant, Timer};
 use crate::address::IndividualAddress;
 use crate::context::BufferManagerContext;
 use crate::encoding::cemi::CemiMessageCode; // Still needed for RX path
-use crate::layers::{Inbox, Layer, LayerOp, LinkLayerBuilder};
+use crate::layers::{Inbox, Layer, LayerOp, LinkLayerBuilder, LinkLayerBuilderBase};
 use crate::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
 use crate::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage};
 use crate::messages::knx::{CemiFormat, Confirm, KnxMessageBuffer, ServiceType};
@@ -168,23 +168,22 @@ impl UsbLinkLayerBuilder {
     }
 }
 
-impl LinkLayerBuilder for UsbLinkLayerBuilder {
+impl LinkLayerBuilderBase for UsbLinkLayerBuilder {
     type Resources = UsbLinkLayerResources;
 
     fn create_resources(&self) -> Self::Resources {
         UsbLinkLayerResources::new()
     }
+}
 
-    fn build_and_run<'a, CTX>(
+impl<CTX: BufferManagerContext> LinkLayerBuilder<CTX> for UsbLinkLayerBuilder {
+    fn build_and_run<'a>(
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
         network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         inbox: impl Inbox<LayerOp<Buffer<'static>>> + 'a,
-    ) -> impl core::future::Future<Output = !> + 'a
-    where
-        CTX: BufferManagerContext + crate::context::PropertyServiceContext,
-    {
+    ) -> impl core::future::Future<Output = !> + 'a {
         async move {
             // Initialize transport resources
             let transport_resources = resources.transport.init();
