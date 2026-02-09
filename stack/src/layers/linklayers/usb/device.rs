@@ -308,7 +308,7 @@ impl UsbHidDevice for AsyncHidDevice {
 // Mock device for testing
 // ============================================================================
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 pub mod mock {
     use super::*;
     use alloc::string::ToString;

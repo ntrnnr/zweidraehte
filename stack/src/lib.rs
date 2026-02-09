@@ -30,9 +30,6 @@ pub mod objects;
 pub mod restart;
 pub mod util;
 
-#[cfg(any(test, feature = "test-util"))]
-pub mod test_util;
-
 use core::{
     cell::{Cell, RefCell},
     mem::MaybeUninit,

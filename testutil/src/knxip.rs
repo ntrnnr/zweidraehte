@@ -31,8 +31,9 @@ use zweidraehte::{
         buffers::{Buffer, BufferManager},
         knxip::substructs::{DeviceInformation, HPAI},
     },
-    test_util::MockContext,
 };
+
+use testutil::util::MockContext;
 
 // Network layer that just prints received messages
 struct FakeNetworkLayer {

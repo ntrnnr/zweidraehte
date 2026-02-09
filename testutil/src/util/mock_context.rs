@@ -1,13 +1,11 @@
-//! Testing utilities for layer testing
-//!
-//! This module provides test helpers for testing individual layers
-//! without requiring a full stack setup.
+//! Mock context for testing link layers in isolation.
 
 use core::cell::{Cell, RefCell};
 
-use crate::{context::BufferManagerContext, messages::buffers::DynBufferManager};
+use zweidraehte::context::BufferManagerContext;
+use zweidraehte::messages::buffers::DynBufferManager;
 
-/// Mock context for testing link layers
+/// Mock context for testing link layers.
 ///
 /// This provides a minimal implementation of the required context traits
 /// for testing link layers in isolation.
@@ -17,12 +15,15 @@ pub struct MockContext {
 }
 
 impl MockContext {
-    /// Create a new mock context with the provided buffer manager
+    /// Create a new mock context with the provided buffer manager.
     pub fn new(buffer_manager: DynBufferManager<'static>) -> Self {
-        Self { buffer_manager: RefCell::new(buffer_manager), max_apdu_length: Cell::new(crate::config::MAX_APDU_LENGTH_EXTENDED) }
+        Self {
+            buffer_manager: RefCell::new(buffer_manager),
+            max_apdu_length: Cell::new(zweidraehte::config::MAX_APDU_LENGTH_EXTENDED),
+        }
     }
 
-    /// Create a new mock context with a custom max APDU length
+    /// Create a new mock context with a custom max APDU length.
     pub fn with_max_apdu_length(buffer_manager: DynBufferManager<'static>, max_apdu_length: u16) -> Self {
         Self { buffer_manager: RefCell::new(buffer_manager), max_apdu_length: Cell::new(max_apdu_length) }
     }
@@ -55,10 +56,3 @@ impl BufferManagerContext for &mut MockContext {
         self.max_apdu_length.set(length);
     }
 }
-
-/// A dummy StackDefinition for testing link layers in isolation
-///
-/// This is a zero-sized type that satisfies the StackDefinition requirements
-/// but isn't actually used. It allows link layers to be tested without a full stack.
-#[derive(Debug, Clone, Copy)]
-pub struct DummyStackDef;

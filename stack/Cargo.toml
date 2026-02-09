@@ -30,7 +30,6 @@ test-case = { workspace = true }
 [features]
 defmt = ["dep:defmt"]
 log = ["dep:log"]
-test-util = []
 std = []
 usb = ["std", "dep:async-hid", "dep:futures-lite"]
 
