@@ -244,7 +244,7 @@ impl<const N: usize, const C: usize> LinkLayerBuilder for MockLinkLayerBuilder<N
         inbox: impl Inbox<LayerOp<KnxMessageBuffer<Buffer<'static>>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a
     where
-        CTX: crate::context::BufferManagerContext,
+        CTX: crate::context::BufferManagerContext + crate::context::PropertyServiceContext,
     {
         let mut link_layer = if let Some(capture_channel) = self.capture_channel {
             MockLinkLayer::with_capture(network_layer, self.injection_channel.receiver(), capture_channel.sender())

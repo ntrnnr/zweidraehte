@@ -1,7 +1,12 @@
+pub mod connection_manager;
 pub mod discovery;
 // pub mod remote_config;
 pub mod routing;
 
+pub use connection_manager::{
+    ConnectionManager, ConnectionTypeHandler,
+    ConnectionTypeHandlerEnum, DeviceMgmtConnectionHandler,
+};
 pub use discovery::DiscoveryServer;
 // pub use remote_config::RemoteConfigurationServer;
 pub use routing::RoutingServer;

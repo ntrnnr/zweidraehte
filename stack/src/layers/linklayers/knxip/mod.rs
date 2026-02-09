@@ -187,6 +187,9 @@ pub struct PendingResponse {
 
     /// The destination address
     pub destination: SocketAddrV4,
+
+    /// Which socket to send on (index into the socket array)
+    pub socket_idx: usize,
 }
 
 /// Context provided to servers for accessing stack resources
@@ -307,12 +310,18 @@ struct ServerConfig {
     endpoints: Vec<EndpointType, 4>,
 }
 
-/// Builder for KnxNetIp link layer
+/// Builder for KnxNetIp link layer.
+///
+/// Use [`enable_device_management()`](Self::enable_device_management) to enable
+/// connection-oriented Device Management support. The connection manager and its
+/// handlers are created internally during [`build()`](Self::build) using the
+/// property handler from the [`PropertyServiceContext`].
 pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
     servers: Vec<servers::ServerHandler, MAX_SERVERS>,
     server_configs: Vec<ServerConfig, MAX_SERVERS>,
     interface_name: &'static str,
     local_addr: Ipv4Addr,
+    enable_device_management: bool,
     _transport: core::marker::PhantomData<T>,
 }
 
@@ -328,7 +337,14 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
     /// * `MAX_SOCKETS` - Maximum number of UDP sockets to create
     /// * `MAX_SERVERS` - Maximum number of servers to register
     pub const fn new(interface_name: &'static str, local_addr: Ipv4Addr) -> Self {
-        Self { servers: Vec::new(), server_configs: Vec::new(), interface_name, local_addr, _transport: core::marker::PhantomData }
+        Self {
+            servers: Vec::new(),
+            server_configs: Vec::new(),
+            interface_name,
+            local_addr,
+            enable_device_management: false,
+            _transport: core::marker::PhantomData,
+        }
     }
 
     /// Add a server with its service types and endpoints
@@ -361,19 +377,38 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
         self
     }
 
+    /// Enable Device Management connections (ConnectionType 0x03).
+    ///
+    /// When enabled, the connection manager will accept Device Management
+    /// connections from ETS and other tools, using the property handler
+    /// from the stack context to serve M_PropRead/M_PropWrite requests.
+    ///
+    /// The connection manager is created during [`build()`](Self::build)
+    /// using the `&dyn PropertyServiceHandler` from the
+    /// [`PropertyServiceContext`](crate::context::PropertyServiceContext).
+    pub fn enable_device_management(mut self) -> Self {
+        self.enable_device_management = true;
+        self
+    }
+
     /// Build the KnxNetIp link layer
     ///
     /// This method:
     /// 1. Deduplicates sockets based on ports
     /// 2. Maps servers to socket indices
     /// 3. Initializes sockets with multicast groups and broadcast
-    /// 4. Creates the final KnxNetIp instance
+    /// 4. Creates the connection manager (if device management is enabled)
+    /// 5. Creates the final KnxNetIp instance
+    ///
+    /// The `property_handler` is used by the connection manager to service
+    /// Device Management property read/write requests from ETS.
     pub fn build<'res>(
         self,
         resources: &'res mut KnxNetIpResources<T, MAX_SOCKETS>,
         buffer_manager: &'res RefCell<DynBufferManager<'static>>,
         network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
         max_apdu_length: u16,
+        property_handler: &'res dyn crate::objects::interface::PropertyServiceHandler,
     ) -> KnxNetIp<'res, T, MAX_SOCKETS, MAX_SERVERS> {
         // Initialize response channel
         let _response_channel = resources.response_channel.write(Channel::new());
@@ -484,6 +519,17 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
             let _ = server_instances.push(instance);
         }
 
+        // Create connection manager and register handlers based on configuration
+        let mut connection_manager = servers::ConnectionManager::new();
+        if self.enable_device_management {
+            let handler = servers::DeviceMgmtConnectionHandler::new(property_handler);
+            connection_manager.add_handler(
+                crate::messages::knxip::substructs::ConnectionType::DeviceManagement,
+                servers::ConnectionTypeHandlerEnum::DeviceManagement(handler),
+            );
+            info!("  Connection manager: Device Management enabled");
+        }
+
         KnxNetIp {
             resources,
             socket_descriptors,
@@ -494,6 +540,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
             network_layer_tx,
             retry_queue: Vec::new(),
             max_apdu_length,
+            connection_manager,
         }
     }
 }
@@ -516,10 +563,16 @@ impl<T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_SERVERS: usiz
         inbox: impl Inbox<LayerOp<crate::messages::buffers::Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a
     where
-        CTX: crate::context::BufferManagerContext,
+        CTX: crate::context::BufferManagerContext + crate::context::PropertyServiceContext,
     {
-        // Build the link layer instance
-        let mut link_layer = self.build(resources, context.buffer_manager(), network_layer, context.max_apdu_length());
+        // Build the link layer instance, providing the property handler from the context
+        let mut link_layer = self.build(
+            resources,
+            context.buffer_manager(),
+            network_layer,
+            context.max_apdu_length(),
+            context.property_handler(),
+        );
 
         // Run the link layer's process loop
         async move { link_layer.process(inbox).await }
@@ -563,6 +616,9 @@ pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SE
     retry_queue: Vec<PendingRequest, MAX_RETRY_QUEUE_SIZE>,
     /// Maximum APDU length this device can handle (for filtering oversized frames)
     max_apdu_length: u16,
+    /// Connection manager for connection-oriented services.
+    /// Always present; without registered handlers it's a no-op.
+    connection_manager: servers::ConnectionManager<'res>,
 }
 
 impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, T, MAX_SOCKETS, MAX_SERVERS> {
@@ -727,12 +783,13 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> L
             // This is important because retry queue processing may need these buffers
             while let Ok(pending_response) = response_channel.try_receive() {
                 let destination = pending_response.destination;
+                let socket_idx = pending_response.socket_idx;
                 let data = &pending_response.buffer[..];
 
-                debug!("Sending {} byte response to {} (drain)", data.len(), destination);
+                debug!("Sending {} byte response to {} on socket {} (drain)", data.len(), destination, socket_idx);
 
                 if !self.socket_descriptors.is_empty() {
-                    let _ = self.send_on_socket(0, data, destination).await;
+                    let _ = self.send_on_socket(socket_idx, data, destination).await;
                 }
                 // pending_response is dropped here, freeing its buffer
             }
@@ -740,8 +797,13 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> L
             // Process any expired retry requests
             self.process_retry_queue(response_channel).await;
 
-            // Select between socket receives, inbox messages, pending responses, and retry timer
-            // Note: We create socket futures inline to avoid borrow checker issues
+            // Run connection manager heartbeat check if connections are active
+            if self.connection_manager.has_active_connections() {
+                self.connection_manager.on_tick();
+            }
+
+            // Select between socket receives, inbox messages, pending responses, and timer.
+            // The timer fires for both retry queue processing and heartbeat checks.
             let result = {
                 // Create futures for receiving from all sockets
                 let mut socket_futures = Vec::<_, MAX_SOCKETS>::new();
@@ -749,14 +811,28 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> L
                     let _ = socket_futures.push(self.recv_from_socket(i));
                 }
 
-                // Create timer future - either a scheduled timer or a never-completing future
-                match self.get_next_retry_time() {
-                    Some(next_retry) => {
+                // Compute the next timer: the earlier of retry time and heartbeat tick.
+                // Heartbeat runs every 10 seconds when connections are active.
+                let heartbeat_time = if self.connection_manager.has_active_connections() {
+                    Some(Instant::now() + Duration::from_secs(10))
+                } else {
+                    None
+                };
+
+                let next_timer = match (self.get_next_retry_time(), heartbeat_time) {
+                    (Some(a), Some(b)) => Some(if a < b { a } else { b }),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                };
+
+                match next_timer {
+                    Some(timer_at) => {
                         select4(
                             select_slice(socket_futures.as_mut_slice()),
                             inbox.next(),
                             response_channel.receive(),
-                            Timer::at(next_retry),
+                            Timer::at(timer_at),
                         )
                         .await
                     }
@@ -773,10 +849,10 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> L
             };
 
             match result {
-                // Retry timer expired
+                // Timer expired (retry queue or heartbeat)
                 Either4::Fourth(()) => {
-                    // Retry processing already happened at start of loop
-                    trace!("KNX/IP retry timer expired");
+                    // Both retry and heartbeat processing happen at start of loop
+                    trace!("KNX/IP timer expired");
                     continue;
                 }
                 // Socket received a packet
@@ -794,29 +870,57 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> L
                         Ok(service_type) => {
                             debug!("  Service type: {:?}", service_type);
 
-                            // Find all servers that handle this service type on this socket
-                            for server in &mut self.server_instances {
-                                if server.handles(service_type, socket_idx) {
-                                    // Create server context with buffer manager and network layer channel
-                                    let context = ServerContext::new(
-                                        self.buffer_manager,
-                                        self.network_layer_tx,
-                                        self.max_apdu_length,
-                                    );
+                            // Connection-oriented service types are routed directly to
+                            // the connection manager, bypassing the server dispatch.
+                            let is_connection_oriented = matches!(
+                                service_type,
+                                KNXnetIPServiceType::ConnectRequest
+                                | KNXnetIPServiceType::ConnectionstateRequest
+                                | KNXnetIPServiceType::DisconnectRequest
+                                | KNXnetIPServiceType::DeviceConfigurationRequest
+                                | KNXnetIPServiceType::DeviceConfigurationAck
+                                // Future: TunnelingRequest, TunnelingAck
+                            );
 
-                                    match server
-                                        .handler
-                                        .on_indication(service_type, &buffer[..], source, &context)
-                                        .await
-                                    {
-                                        Ok(responses) => {
-                                            for response in responses {
-                                                // Queue responses for sending
-                                                response_channel.send(response).await;
-                                            }
+                            if is_connection_oriented {
+                                match self.connection_manager.on_indication(
+                                    service_type, &buffer[..], source,
+                                    socket_idx, self.buffer_manager,
+                                ).await {
+                                    Ok(responses) => {
+                                        for response in responses {
+                                            response_channel.send(response).await;
                                         }
-                                        Err(e) => {
-                                            error!("Server error handling {:?}: {:?}", service_type, e);
+                                    }
+                                    Err(e) => {
+                                        debug!("Connection manager error for {:?}: {:?}", service_type, e);
+                                    }
+                                }
+                            } else {
+                                // Find all servers that handle this service type on this socket
+                                for server in &mut self.server_instances {
+                                    if server.handles(service_type, socket_idx) {
+                                        // Create server context with buffer manager and network layer channel
+                                        let context = ServerContext::new(
+                                            self.buffer_manager,
+                                            self.network_layer_tx,
+                                            self.max_apdu_length,
+                                        );
+
+                                        match server
+                                            .handler
+                                            .on_indication(service_type, &buffer[..], source, &context)
+                                            .await
+                                        {
+                                            Ok(responses) => {
+                                                for response in responses {
+                                                    // Queue responses for sending
+                                                    response_channel.send(response).await;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                error!("Server error handling {:?}: {:?}", service_type, e);
+                                            }
                                         }
                                     }
                                 }
@@ -932,13 +1036,13 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> L
                 // Response ready to send
                 Either4::Third(pending_response) => {
                     let destination = pending_response.destination;
+                    let socket_idx = pending_response.socket_idx;
                     let data = &pending_response.buffer[..];
 
-                    debug!("Sending {} byte response to {}", data.len(), destination);
+                    debug!("Sending {} byte response to {} on socket {}", data.len(), destination, socket_idx);
 
-                    // Find which socket to send on (use first socket for now - could be smarter)
                     if !self.socket_descriptors.is_empty() {
-                        let _ = self.send_on_socket(0, data, destination).await;
+                        let _ = self.send_on_socket(socket_idx, data, destination).await;
                     } else {
                         error!("No sockets available to send response");
                     }

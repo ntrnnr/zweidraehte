@@ -1093,6 +1093,36 @@ impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
     }
 }
 
+/// Combined context passed to [`LinkLayerBuilder::build_and_run()`].
+///
+/// Wraps references to the stack's internal state (for buffer management)
+/// and interface objects (for property service access). Created in
+/// [`Runner::run()`] where both are available.
+struct StackContext<'a, D: StackDefinition> {
+    inner: &'a Inner<D>,
+    interface_objects: &'a D::InterfaceObjects<'static>,
+}
+
+impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
+    fn buffer_manager(&self) -> &RefCell<DynBufferManager<'static>> {
+        &self.inner.buffer_manager
+    }
+
+    fn max_apdu_length(&self) -> u16 {
+        self.inner.state.max_apdu_length()
+    }
+
+    fn set_max_apdu_length(&self, length: u16) {
+        self.inner.state.set_max_apdu_length(length);
+    }
+}
+
+impl<D: StackDefinition> context::PropertyServiceContext for StackContext<'_, D> {
+    fn property_handler(&self) -> &dyn objects::interface::PropertyServiceHandler {
+        self.interface_objects
+    }
+}
+
 fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'a, D> {
     x
 }
@@ -1263,10 +1293,17 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             tl_channel.sender().into(),
         );
 
-        // Build and run the link layer using the provided builder
+        // Build and run the link layer using the provided builder.
+        // The StackContext provides both buffer management and property service
+        // access, allowing the link layer to handle connection-oriented protocols
+        // (e.g., KNX/IP Device Management) that need to read/write properties.
+        let stack_context = StackContext {
+            inner: self.stack.inner,
+            interface_objects: self.interface_objects,
+        };
         let ll_task = self.link_layer_builder.build_and_run(
             self.link_layer_resources,
-            &self.stack.inner,
+            &stack_context,
             nl_channel.sender().into(),
             ll_channel.receiver(),
         );

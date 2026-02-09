@@ -75,7 +75,7 @@ impl DiscoveryServer {
 
         let destination = SocketAddrV4::new(request.discovery_endpoint.address(), request.discovery_endpoint.port());
 
-        Ok(PendingResponse { buffer: response_buffer, destination })
+        Ok(PendingResponse { buffer: response_buffer, destination, socket_idx: 0 })
     }
 
     /// Handle a DescriptionRequest message
@@ -119,7 +119,7 @@ impl DiscoveryServer {
 
         let destination = SocketAddrV4::new(request.control_endpoint.address(), request.control_endpoint.port());
 
-        Ok(PendingResponse { buffer: response_buffer, destination })
+        Ok(PendingResponse { buffer: response_buffer, destination, socket_idx: 0 })
     }
 }
 

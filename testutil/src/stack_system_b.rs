@@ -209,10 +209,11 @@ async fn main(spawner: Spawner) {
         friendly_name: *b"System B Test\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
     };
 
-    let supported_services = &[SupportedService { family: ServiceFamily::Core, version: 1 }, SupportedService {
-        family: ServiceFamily::Routing,
-        version: 1,
-    }];
+    let supported_services = &[
+        SupportedService { family: ServiceFamily::Core, version: 1 },
+        SupportedService { family: ServiceFamily::DeviceManagement, version: 1 },
+        SupportedService { family: ServiceFamily::Routing, version: 1 },
+    ];
 
     let discovery_server = servers::DiscoveryServer::new(control_endpoint, device_info, supported_services);
     let routing_server = servers::RoutingServer::new(Ipv4Addr::new(224, 0, 23, 12), 3671);
@@ -232,7 +233,8 @@ async fn main(spawner: Spawner) {
                 KNXnetIPServiceType::RoutingLostMessage,
             ],
             &[EndpointType::new_udp(Ipv4Addr::new(224, 0, 23, 12), 3671)],
-        );
+        )
+        .enable_device_management();
 
     // Create stack resources and initialize the stack
     static RESOURCES: StaticCell<

@@ -20,6 +20,10 @@
 //! - `DisconnectRequest` / `DisconnectRequestBuilder` - Close a connection
 //! - `DisconnectResponse` / `DisconnectResponseBuilder` - Disconnect response
 //!
+//! ### Device Configuration
+//! - `DeviceConfigurationRequest` / `DeviceConfigurationRequestBuilder` - Send cEMI Local Management frame
+//! - `DeviceConfigurationAck` / `DeviceConfigurationAckBuilder` - Acknowledge device configuration request
+//!
 //! ### Tunneling
 //! - `TunnelingRequest` / `TunnelingRequestBuilder` - Send KNX data through tunnel
 //! - `TunnelingAck` / `TunnelingAckBuilder` - Acknowledge tunneling request
@@ -783,6 +787,187 @@ impl SerializablePacket for TunnelingAckBuilder {
 }
 
 // ============================================================================
+// DEVICE CONFIGURATION REQUEST
+// ============================================================================
+
+/// KNXnet/IP DEVICE_CONFIGURATION_REQUEST
+///
+/// Used to send cEMI Local Management frames over a Device Management connection.
+/// Wire format is identical to TunnelingRequest (same 4-byte connection header),
+/// but carries M_PropRead/M_PropWrite cEMI frames instead of L_Data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceConfigurationRequest {
+    pub communication_channel_id: u8,
+    pub sequence_counter: u8,
+}
+
+impl DeviceConfigurationRequest {
+    pub fn new(communication_channel_id: u8, sequence_counter: u8) -> Self {
+        Self { communication_channel_id, sequence_counter }
+    }
+}
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for DeviceConfigurationRequest {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
+        let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
+
+        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+            != KNXnetIPServiceType::DeviceConfigurationRequest
+        {
+            return Err(ParseError::Format);
+        }
+
+        let tun_header = buffer.take_obj_front::<raw::TunnelingHeader>().ok_or(ParseError::Format)?;
+
+        Ok(DeviceConfigurationRequest {
+            communication_channel_id: tun_header.communication_channel_id,
+            sequence_counter: tun_header.sequence_counter,
+        })
+    }
+}
+
+impl DeviceConfigurationRequest {
+    pub fn into_builder(self) -> DeviceConfigurationRequestBuilder {
+        DeviceConfigurationRequestBuilder {
+            communication_channel_id: self.communication_channel_id,
+            sequence_counter: self.sequence_counter,
+        }
+    }
+}
+
+/// Builder for DeviceConfigurationRequest message.
+///
+/// The cEMI Local Management payload is not part of this builder — it is
+/// appended separately after serializing the header, since the connection
+/// manager constructs it independently.
+pub struct DeviceConfigurationRequestBuilder {
+    pub communication_channel_id: u8,
+    pub sequence_counter: u8,
+}
+
+impl DeviceConfigurationRequestBuilder {
+    pub fn new(communication_channel_id: u8, sequence_counter: u8) -> Self {
+        Self { communication_channel_id, sequence_counter }
+    }
+}
+
+impl SerializablePacket for DeviceConfigurationRequestBuilder {
+    fn bytes_len(&self) -> usize {
+        mem::size_of::<KNXnetIPHeader>() + mem::size_of::<raw::TunnelingHeader>()
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        let header = KNXnetIPHeader {
+            header_size: mem::size_of::<KNXnetIPHeader>() as u8,
+            version: KNXnetIPVersion::Version10.into(),
+            service_type: U16::from(u16::from(KNXnetIPServiceType::DeviceConfigurationRequest)),
+            total_length: (self.bytes_len() as u16).into(),
+        };
+        bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
+
+        let tun_header = raw::TunnelingHeader {
+            structure_length: mem::size_of::<raw::TunnelingHeader>() as u8,
+            communication_channel_id: self.communication_channel_id,
+            sequence_counter: self.sequence_counter,
+            status_or_reserved: 0,
+        };
+        bv.write_obj_front(&tun_header).expect("too few bytes for connection header");
+    }
+}
+
+// ============================================================================
+// DEVICE CONFIGURATION ACK
+// ============================================================================
+
+/// KNXnet/IP DEVICE_CONFIGURATION_ACK
+///
+/// Acknowledgment for a DEVICE_CONFIGURATION_REQUEST.
+/// Wire format is identical to TunnelingAck (same 4-byte connection header).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceConfigurationAck {
+    pub communication_channel_id: u8,
+    pub sequence_counter: u8,
+    pub status: ConnectionStatus,
+}
+
+impl DeviceConfigurationAck {
+    pub fn new(communication_channel_id: u8, sequence_counter: u8, status: ConnectionStatus) -> Self {
+        Self { communication_channel_id, sequence_counter, status }
+    }
+}
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for DeviceConfigurationAck {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
+        let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
+
+        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+            != KNXnetIPServiceType::DeviceConfigurationAck
+        {
+            return Err(ParseError::Format);
+        }
+
+        let tun_header = buffer.take_obj_front::<raw::TunnelingHeader>().ok_or(ParseError::Format)?;
+
+        Ok(DeviceConfigurationAck {
+            communication_channel_id: tun_header.communication_channel_id,
+            sequence_counter: tun_header.sequence_counter,
+            status: tun_header.status_or_reserved.into(),
+        })
+    }
+}
+
+impl DeviceConfigurationAck {
+    pub fn into_builder(self) -> DeviceConfigurationAckBuilder {
+        DeviceConfigurationAckBuilder {
+            communication_channel_id: self.communication_channel_id,
+            sequence_counter: self.sequence_counter,
+            status: self.status,
+        }
+    }
+}
+
+/// Builder for DeviceConfigurationAck message
+pub struct DeviceConfigurationAckBuilder {
+    pub communication_channel_id: u8,
+    pub sequence_counter: u8,
+    pub status: ConnectionStatus,
+}
+
+impl DeviceConfigurationAckBuilder {
+    pub fn new(communication_channel_id: u8, sequence_counter: u8, status: ConnectionStatus) -> Self {
+        Self { communication_channel_id, sequence_counter, status }
+    }
+}
+
+impl SerializablePacket for DeviceConfigurationAckBuilder {
+    fn bytes_len(&self) -> usize {
+        mem::size_of::<KNXnetIPHeader>() + mem::size_of::<raw::TunnelingHeader>()
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        let header = KNXnetIPHeader {
+            header_size: mem::size_of::<KNXnetIPHeader>() as u8,
+            version: KNXnetIPVersion::Version10.into(),
+            service_type: U16::from(u16::from(KNXnetIPServiceType::DeviceConfigurationAck)),
+            total_length: (self.bytes_len() as u16).into(),
+        };
+        bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
+
+        let tun_header = raw::TunnelingHeader {
+            structure_length: mem::size_of::<raw::TunnelingHeader>() as u8,
+            communication_channel_id: self.communication_channel_id,
+            sequence_counter: self.sequence_counter,
+            status_or_reserved: self.status.into(),
+        };
+        bv.write_obj_front(&tun_header).expect("too few bytes for connection header");
+    }
+}
+
+// ============================================================================
 // TUNNELING FEATURE GET
 // ============================================================================
 
@@ -1134,6 +1319,43 @@ mod tests {
         // Verify
         assert_eq!(parsed.communication_channel_id, 20);
         assert_eq!(parsed.sequence_counter, 5);
+        assert_eq!(parsed.status, ConnectionStatus::NoError);
+    }
+
+    #[test]
+    fn test_device_configuration_request_round_trip() {
+        let builder = DeviceConfigurationRequestBuilder::new(30, 7);
+
+        // Serialize
+        let mut buffer = [0u8; 16];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+
+        // Parse
+        let mut parse_buf = written;
+        let parsed = parse_buf.parse::<DeviceConfigurationRequest>().unwrap();
+
+        // Verify
+        assert_eq!(parsed.communication_channel_id, 30);
+        assert_eq!(parsed.sequence_counter, 7);
+    }
+
+    #[test]
+    fn test_device_configuration_ack_round_trip() {
+        let builder = DeviceConfigurationAckBuilder::new(30, 7, ConnectionStatus::NoError);
+
+        // Serialize
+        let mut buffer = [0u8; 16];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+
+        // Parse
+        let mut parse_buf = written;
+        let parsed = parse_buf.parse::<DeviceConfigurationAck>().unwrap();
+
+        // Verify
+        assert_eq!(parsed.communication_channel_id, 30);
+        assert_eq!(parsed.sequence_counter, 7);
         assert_eq!(parsed.status, ConnectionStatus::NoError);
     }
 

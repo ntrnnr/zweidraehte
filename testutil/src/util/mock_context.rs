@@ -2,8 +2,9 @@
 
 use core::cell::{Cell, RefCell};
 
-use zweidraehte::context::BufferManagerContext;
+use zweidraehte::context::{BufferManagerContext, PropertyServiceContext};
 use zweidraehte::messages::buffers::DynBufferManager;
+use zweidraehte::objects::interface::PropertyServiceHandler;
 
 /// Mock context for testing link layers.
 ///
@@ -40,6 +41,18 @@ impl BufferManagerContext for &MockContext {
 
     fn set_max_apdu_length(&self, length: u16) {
         self.max_apdu_length.set(length);
+    }
+}
+
+impl PropertyServiceContext for &MockContext {
+    fn property_handler(&self) -> &dyn PropertyServiceHandler {
+        &()
+    }
+}
+
+impl PropertyServiceContext for &mut MockContext {
+    fn property_handler(&self) -> &dyn PropertyServiceHandler {
+        &()
     }
 }
 

@@ -380,7 +380,7 @@ impl RoutingServer {
         RoutingIndication::wrap_cemi(&mut output_buffer);
 
         let destination = SocketAddrV4::new(self.multicast_addr, self.port);
-        Ok(PendingResponse { buffer: output_buffer, destination })
+        Ok(PendingResponse { buffer: output_buffer, destination, socket_idx: 0 })
     }
 }
 

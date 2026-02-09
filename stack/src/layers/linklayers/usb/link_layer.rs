@@ -183,7 +183,7 @@ impl LinkLayerBuilder for UsbLinkLayerBuilder {
         inbox: impl Inbox<LayerOp<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a
     where
-        CTX: BufferManagerContext,
+        CTX: BufferManagerContext + crate::context::PropertyServiceContext,
     {
         async move {
             // Initialize transport resources

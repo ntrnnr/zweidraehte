@@ -7,6 +7,7 @@
 use core::cell::RefCell;
 
 use crate::messages::buffers::DynBufferManager;
+use crate::objects::interface::PropertyServiceHandler;
 
 /// Provides access to the buffer manager for allocating and freeing message buffers
 pub trait BufferManagerContext {
@@ -29,3 +30,26 @@ pub trait BufferManagerContext {
     /// The value should not exceed the compile-time `StackDefinition::MAX_APDU_LENGTH`.
     fn set_max_apdu_length(&self, length: u16);
 }
+
+/// Provides access to the device's property service handler.
+///
+/// This allows link layers that implement connection-oriented management
+/// protocols (e.g., KNX/IP Device Management) to read and write interface
+/// object properties on behalf of remote clients like ETS.
+pub trait PropertyServiceContext {
+    /// Get a reference to the property service handler.
+    fn property_handler(&self) -> &dyn PropertyServiceHandler;
+}
+
+/// Combined context for link layers, providing both buffer management
+/// and property service access.
+///
+/// This is the context type passed from [`Runner::run()`] to
+/// [`LinkLayerBuilder::build_and_run()`]. It wraps references to the
+/// stack's internal state (for buffer management) and interface objects
+/// (for property access).
+///
+/// Blanket-implemented for all types that satisfy both supertraits.
+pub trait LinkLayerContext: BufferManagerContext + PropertyServiceContext {}
+
+impl<T: BufferManagerContext + PropertyServiceContext> LinkLayerContext for T {}

@@ -102,7 +102,7 @@ pub trait LinkLayerBuilder: Sized {
         inbox: impl Inbox<LayerOp<crate::messages::buffers::Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a
     where
-        CTX: crate::context::BufferManagerContext;
+        CTX: crate::context::BufferManagerContext + crate::context::PropertyServiceContext;
 }
 
 // ############################################################################

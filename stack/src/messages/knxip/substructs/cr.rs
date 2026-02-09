@@ -243,3 +243,93 @@ impl SerializablePacket for TunnelingCRDBuilder {
         bv.write_obj_front(&self.individual_address).expect("too few bytes for individual address");
     }
 }
+
+// ============================================================================
+// DEVICE MANAGEMENT CRI (Connection Request Information)
+// ============================================================================
+
+/// Device Management Connection Request Information.
+///
+/// The simplest CRI — just the 2-byte header with connection type 0x03,
+/// no additional fields beyond that.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DeviceManagementCRI;
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for DeviceManagementCRI {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> ParseResult<Self> {
+        let header = buffer
+            .take_obj_front::<raw::Header>()
+            .ok_or_else(debug_err_fn!(ParseError::Format, "too few bytes for CRI header"))?;
+
+        if header.struct_type != ConnectionType::DeviceManagement.into() {
+            return debug_err!(Err(ParseError::NotExpected), "expected Device Management connection type");
+        }
+
+        Ok(DeviceManagementCRI)
+    }
+}
+
+/// Builder for Device Management CRI
+#[derive(Copy, Clone, Debug)]
+pub struct DeviceManagementCRIBuilder;
+
+impl SerializablePacket for DeviceManagementCRIBuilder {
+    fn bytes_len(&self) -> usize {
+        mem::size_of::<raw::Header>()
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        let header = raw::Header {
+            struct_len: mem::size_of::<raw::Header>() as u8,
+            struct_type: ConnectionType::DeviceManagement.into(),
+        };
+        bv.write_obj_front(&header).expect("too few bytes for CRI header");
+    }
+}
+
+// ============================================================================
+// DEVICE MANAGEMENT CRD (Connection Response Data)
+// ============================================================================
+
+/// Device Management Connection Response Data.
+///
+/// Like the CRI, this is just the 2-byte header with connection type 0x03.
+/// No additional fields.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DeviceManagementCRD;
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for DeviceManagementCRD {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> ParseResult<Self> {
+        let header = buffer
+            .take_obj_front::<raw::Header>()
+            .ok_or_else(debug_err_fn!(ParseError::Format, "too few bytes for CRD header"))?;
+
+        if header.struct_type != ConnectionType::DeviceManagement.into() {
+            return debug_err!(Err(ParseError::NotExpected), "expected Device Management connection type");
+        }
+
+        Ok(DeviceManagementCRD)
+    }
+}
+
+/// Builder for Device Management CRD
+#[derive(Copy, Clone, Debug)]
+pub struct DeviceManagementCRDBuilder;
+
+impl SerializablePacket for DeviceManagementCRDBuilder {
+    fn bytes_len(&self) -> usize {
+        mem::size_of::<raw::Header>()
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        let header = raw::Header {
+            struct_len: mem::size_of::<raw::Header>() as u8,
+            struct_type: ConnectionType::DeviceManagement.into(),
+        };
+        bv.write_obj_front(&header).expect("too few bytes for CRD header");
+    }
+}

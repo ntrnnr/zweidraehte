@@ -749,7 +749,7 @@ async fn main(spawner: Spawner) {
     // Create KNX/IP Discovery Server configuration
     const SUPPORTED_SERVICES: &[SupportedService] = &[
         SupportedService { family: ServiceFamily::Core, version: 1 },
-        //SupportedService { family: ServiceFamily::DeviceManagement, version: 1 },
+        SupportedService { family: ServiceFamily::DeviceManagement, version: 1 },
         //SupportedService { family: ServiceFamily::Tunneling, version: 1 },
         SupportedService { family: ServiceFamily::Routing, version: 1 },
     ];
@@ -793,7 +793,8 @@ async fn main(spawner: Spawner) {
             &[
                 EndpointType::new_udp(core::net::Ipv4Addr::new(224, 0, 23, 12), 3671), // KNX multicast
             ],
-        );
+        )
+        .enable_device_management();
 
     println!("KNX/IP Configuration:");
     println!("  - Interface: knxdevbridgeif");
