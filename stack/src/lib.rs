@@ -559,6 +559,9 @@ pub trait IpStackState: StackState {
 /// Default KNX multicast address: 224.0.23.12
 pub const DEFAULT_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
 
+/// Default KNX/IP port
+pub const KNX_PORT: u16 = 3671;
+
 /// A basic IP stack state implementation.
 ///
 /// This provides a reference implementation suitable for simple KNXnet/IP devices.

@@ -25,7 +25,7 @@ use env_logger::Env;
 use zweidraehte::{
     layers::{
         LayerOp, LinkLayerBuilder,
-        linklayers::knxip::{EndpointType, KnxNetIpBuilder, servers},
+        linklayers::knxip::KnxNetIpBuilder,
     },
     messages::{
         buffers::{Buffer, BufferManager},
@@ -88,21 +88,11 @@ async fn main(spawner: Spawner) {
     let _link_sender: DynamicSender<'_, LayerOp<Buffer<'static>>> = link_channel.sender().into();
     let link_receiver = link_channel.receiver();
 
-    // Create the KNXnet/IP link layer builder and use the LinkLayerBuilder trait
+    // Create the KNXnet/IP link layer builder
     use platform::address::EthernetAddress;
     use zweidraehte::address::IndividualAddress;
-    use zweidraehte::messages::knxip::KNXnetIPServiceType;
-    use zweidraehte::messages::knxip::substructs::{DeviceStatus, KNXMedium, ServiceFamily, SupportedService};
+    use zweidraehte::messages::knxip::substructs::{DeviceStatus, KNXMedium};
 
-    // Define supported services for the KNX/IP device
-    const SUPPORTED_SERVICES: &[SupportedService] = &[
-        SupportedService { family: ServiceFamily::Core, version: 1 },
-        //SupportedService { family: ServiceFamily::DeviceManagement, version: 1 },
-        //SupportedService { family: ServiceFamily::Tunneling, version: 1 },
-        SupportedService { family: ServiceFamily::Routing, version: 1 },
-    ];
-
-    // Create discovery server with device information
     let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.106.6".parse().unwrap(), port: 3671 };
 
     let device_info = DeviceInformation {
@@ -116,31 +106,10 @@ async fn main(spawner: Spawner) {
         friendly_name: *b"KNX Test Device\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
     };
 
-    let ds = servers::DiscoveryServer::new(control_endpoint, device_info, SUPPORTED_SERVICES);
-
-    // Create routing server for KNX/IP routing
-    let rs = servers::RoutingServer::new(core::net::Ipv4Addr::new(224, 0, 23, 12), 3671);
-
-    // Create KNX/IP builder and add both servers
-    // Discovery server listens on multicast (224.0.23.12:3671) and unicast (0.0.0.0:3671)
-    // Routing server listens on multicast (224.0.23.12:3671) for routing messages
     let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
-    let kb = KnxNetIpBuilder::<platform::LinuxIpTransport, 2, 2>::new("knxdevbridgeif", interface_addr) // 2 sockets max, 2 servers
-        .add_server(ds, &[KNXnetIPServiceType::SearchRequest, KNXnetIPServiceType::DescriptionRequest], &[
-            EndpointType::new_udp(core::net::Ipv4Addr::new(224, 0, 23, 12), 3671), // KNX multicast
-            EndpointType::new_udp_any(3671),                                       // Unicast on 3671
-        ])
-        .add_server(
-            rs,
-            &[
-                KNXnetIPServiceType::RoutingIndication,
-                KNXnetIPServiceType::RoutingBusy,
-                KNXnetIPServiceType::RoutingLostMessage,
-            ],
-            &[
-                EndpointType::new_udp(core::net::Ipv4Addr::new(224, 0, 23, 12), 3671), // KNX multicast
-            ],
-        );
+    let kb = KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new("knxdevbridgeif", interface_addr)
+        .enable_discovery_server(control_endpoint, device_info)
+        .enable_routing_server();
 
     println!("Starting KNXnet/IP link layer with Discovery and Routing Servers");
     println!("  - Discovery: multicast 224.0.23.12:3671 for SearchRequest");

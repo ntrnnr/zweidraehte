@@ -121,10 +121,9 @@ use zweidraehte::{
     address::IndividualAddress,
     dpt::DPT_Switch,
     ets::EtsComObjects,
-    layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, servers},
+    layers::linklayers::knxip::KnxNetIpBuilder,
     memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
-    messages::knxip::KNXnetIPServiceType,
-    messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium, ServiceFamily, SupportedService},
+    messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium},
     objects::comm::{ComObject, ComObjectIndex, ComObjects},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
@@ -711,7 +710,7 @@ impl StackDefinition for MyKnxStackWithKnxIp {
     const DEVICE: &'static zweidraehte::ets::DeviceDescriptor = &KNXIP_DEVICE_DESCRIPTOR;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
-    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, 2, 2>; // 2 sockets, 2 servers
+    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, 2>;
     type State = MyState;
     type Mem = zweidraehte::memory::NoMemoryMap;
 
@@ -746,14 +745,7 @@ async fn main(spawner: Spawner) {
     println!("  - Association Table: {} entries", (CONFIG.asso6_data().len() - 2) / 4); // 4 bytes per entry
     println!("  - Communication Objects: {} objects", (CONFIG.co7_data().len() - 2) / 2);
 
-    // Create KNX/IP Discovery Server configuration
-    const SUPPORTED_SERVICES: &[SupportedService] = &[
-        SupportedService { family: ServiceFamily::Core, version: 1 },
-        SupportedService { family: ServiceFamily::DeviceManagement, version: 1 },
-        //SupportedService { family: ServiceFamily::Tunneling, version: 1 },
-        SupportedService { family: ServiceFamily::Routing, version: 1 },
-    ];
-
+    // Create KNX/IP link layer
     let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.106.6".parse().unwrap(), port: 3671 };
 
     let device_info = DeviceInformation {
@@ -767,33 +759,10 @@ async fn main(spawner: Spawner) {
         friendly_name: *b"KNX Stack Test\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
     };
 
-    let discovery_server = servers::DiscoveryServer::new(control_endpoint, device_info, SUPPORTED_SERVICES);
-
-    // Create routing server for KNX/IP routing
-    let routing_server = servers::RoutingServer::new(core::net::Ipv4Addr::new(224, 0, 23, 12), 3671);
-
-    // Create KNX/IP link layer builder with both discovery and routing servers
     let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
-    let link_layer_builder = KnxNetIpBuilder::<platform::LinuxIpTransport, 2, 2>::new("knxdevbridgeif", interface_addr)
-        .add_server(
-            discovery_server,
-            &[KNXnetIPServiceType::SearchRequest, KNXnetIPServiceType::DescriptionRequest],
-            &[
-                EndpointType::new_udp(core::net::Ipv4Addr::new(224, 0, 23, 12), 3671), // KNX multicast
-                EndpointType::new_udp_any(3671),                                       // Unicast on 3671
-            ],
-        )
-        .add_server(
-            routing_server,
-            &[
-                KNXnetIPServiceType::RoutingIndication,
-                KNXnetIPServiceType::RoutingBusy,
-                KNXnetIPServiceType::RoutingLostMessage,
-            ],
-            &[
-                EndpointType::new_udp(core::net::Ipv4Addr::new(224, 0, 23, 12), 3671), // KNX multicast
-            ],
-        )
+    let link_layer_builder = KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new("knxdevbridgeif", interface_addr)
+        .enable_discovery_server(control_endpoint, device_info)
+        .enable_routing_server()
         .enable_device_management();
 
     println!("KNX/IP Configuration:");

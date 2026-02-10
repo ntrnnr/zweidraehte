@@ -21,9 +21,8 @@ use zweidraehte::{
     Runner, Stack, StackDefinition, StackResources, StackState,
     address::IndividualAddress,
     bcus::system_b::DeviceStorage,
-    layers::linklayers::knxip::{EndpointType, KnxNetIpBuilder, servers},
-    messages::knxip::KNXnetIPServiceType,
-    messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium, ServiceFamily, SupportedService},
+    layers::linklayers::knxip::KnxNetIpBuilder,
+    messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium},
     objects::comm::ComObjects,
     objects::interface::HasDeviceObject,
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
@@ -196,7 +195,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    // Create KNX/IP servers
+    // Create KNX/IP link layer
     let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.1.200".parse().unwrap(), port: 3671 };
     let device_info = DeviceInformation {
         medium: KNXMedium::KNXIP,
@@ -209,31 +208,10 @@ async fn main(spawner: Spawner) {
         friendly_name: *b"System B Test\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
     };
 
-    let supported_services = &[
-        SupportedService { family: ServiceFamily::Core, version: 1 },
-        SupportedService { family: ServiceFamily::DeviceManagement, version: 1 },
-        SupportedService { family: ServiceFamily::Routing, version: 1 },
-    ];
-
-    let discovery_server = servers::DiscoveryServer::new(control_endpoint, device_info, supported_services);
-    let routing_server = servers::RoutingServer::new(Ipv4Addr::new(224, 0, 23, 12), 3671);
-
     let interface_addr = platform::get_interface_address(INTERFACE_NAME).expect("Failed to get interface address");
-    let link_layer_builder = KnxNetIpBuilder::<platform::LinuxIpTransport, 2, 2>::new(INTERFACE_NAME, interface_addr)
-        .add_server(
-            discovery_server,
-            &[KNXnetIPServiceType::SearchRequest, KNXnetIPServiceType::DescriptionRequest],
-            &[EndpointType::new_udp(Ipv4Addr::new(224, 0, 23, 12), 3671), EndpointType::new_udp_any(3671)],
-        )
-        .add_server(
-            routing_server,
-            &[
-                KNXnetIPServiceType::RoutingIndication,
-                KNXnetIPServiceType::RoutingBusy,
-                KNXnetIPServiceType::RoutingLostMessage,
-            ],
-            &[EndpointType::new_udp(Ipv4Addr::new(224, 0, 23, 12), 3671)],
-        )
+    let link_layer_builder = KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new(INTERFACE_NAME, interface_addr)
+        .enable_discovery_server(control_endpoint, device_info)
+        .enable_routing_server()
         .enable_device_management();
 
     // Create stack resources and initialize the stack

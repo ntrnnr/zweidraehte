@@ -303,30 +303,44 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpResources<T, MAX_SOCKETS>
     }
 }
 
-/// Builder configuration for adding servers
-#[derive(Debug, Clone)]
-struct ServerConfig {
-    service_types: Vec<KNXnetIPServiceType, 4>,
-    endpoints: Vec<EndpointType, 4>,
+/// Maximum number of connectionless servers (discovery + routing)
+const MAX_SERVERS: usize = 2;
+
+/// Builder configuration for the discovery server
+struct DiscoveryConfig {
+    control_endpoint: substructs::HPAI,
+    device_info: substructs::DeviceInformation,
 }
 
 /// Builder for KnxNetIp link layer.
 ///
-/// Use [`enable_device_management()`](Self::enable_device_management) to enable
-/// connection-oriented Device Management support. The connection manager and its
-/// handlers are created internally during [`build()`](Self::build) using the
-/// property handler from the [`PropertyServiceContext`].
-pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
-    servers: Vec<servers::ServerHandler, MAX_SERVERS>,
-    server_configs: Vec<ServerConfig, MAX_SERVERS>,
+/// Configure which servers to enable using the purpose-specific builder methods:
+/// - [`enable_discovery_server()`](Self::enable_discovery_server) — Search/Description responses
+/// - [`enable_routing_server()`](Self::enable_routing_server) — KNX/IP routing multicast
+/// - [`enable_device_management()`](Self::enable_device_management) — Connection-oriented ETS access
+///
+/// The list of supported service families advertised in discovery responses
+/// is auto-derived from which servers are enabled.
+///
+/// # Example
+///
+/// ```ignore
+/// let builder = KnxNetIpBuilder::<LinuxIpTransport, 2>::new("eth0", interface_addr)
+///     .enable_discovery_server(control_endpoint, device_info)
+///     .enable_routing_server()
+///     .enable_device_management();
+/// ```
+pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize> {
     interface_name: &'static str,
     local_addr: Ipv4Addr,
+    discovery: Option<DiscoveryConfig>,
+    enable_routing: bool,
     enable_device_management: bool,
     _transport: core::marker::PhantomData<T>,
 }
 
-impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIpBuilder<T, MAX_SOCKETS, MAX_SERVERS> {
-    /// Create a new builder with the network interface to bind to
+impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
+    /// Create a new builder with the network interface to bind to.
     ///
     /// # Arguments
     /// * `interface_name` - The name of the network interface (e.g., "eth0", "wlan0")
@@ -335,45 +349,46 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
     /// # Type Parameters
     /// * `T` - The IP transport implementation providing socket types
     /// * `MAX_SOCKETS` - Maximum number of UDP sockets to create
-    /// * `MAX_SERVERS` - Maximum number of servers to register
     pub const fn new(interface_name: &'static str, local_addr: Ipv4Addr) -> Self {
         Self {
-            servers: Vec::new(),
-            server_configs: Vec::new(),
             interface_name,
             local_addr,
+            discovery: None,
+            enable_routing: false,
             enable_device_management: false,
             _transport: core::marker::PhantomData,
         }
     }
 
-    /// Add a server with its service types and endpoints
+    /// Enable the discovery server (SearchRequest / DescriptionRequest).
+    ///
+    /// The discovery server listens on the KNX system setup multicast address
+    /// (`224.0.23.12:3671`) for SearchRequest messages and on the unicast
+    /// control endpoint (`0.0.0.0:3671`) for DescriptionRequest messages.
+    ///
+    /// The `supported_services` list in discovery responses is auto-derived
+    /// from which servers are enabled on this builder — you don't need to
+    /// specify it manually.
     ///
     /// # Arguments
-    /// * `server` - The server implementation
-    /// * `service_types` - Array of service types this server handles
-    /// * `endpoints` - Array of endpoints this server listens on
-    pub fn add_server<H: Into<servers::ServerHandler>>(
+    /// * `control_endpoint` - The HPAI to advertise as this device's control endpoint
+    /// * `device_info` - Device information to include in discovery responses
+    pub fn enable_discovery_server(
         mut self,
-        server: H,
-        service_types: &[KNXnetIPServiceType],
-        endpoints: &[EndpointType],
+        control_endpoint: substructs::HPAI,
+        device_info: substructs::DeviceInformation,
     ) -> Self {
-        let handler = server.into();
+        self.discovery = Some(DiscoveryConfig { control_endpoint, device_info });
+        self
+    }
 
-        let mut st_vec = Vec::new();
-        for &st in service_types {
-            let _ = st_vec.push(st);
-        }
-
-        let mut ep_vec = Vec::new();
-        for &ep in endpoints {
-            let _ = ep_vec.push(ep);
-        }
-
-        let _ = self.servers.push(handler);
-        let _ = self.server_configs.push(ServerConfig { service_types: st_vec, endpoints: ep_vec });
-
+    /// Enable the routing server (RoutingIndication / RoutingBusy / RoutingLostMessage).
+    ///
+    /// The routing server listens on the default KNX multicast address
+    /// (`224.0.23.12:3671`) for routing messages and implements congestion
+    /// control per KNX Specification 3/8/2.
+    pub fn enable_routing_server(mut self) -> Self {
+        self.enable_routing = true;
         self
     }
 
@@ -391,14 +406,14 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
         self
     }
 
-    /// Build the KnxNetIp link layer
+    /// Build the KnxNetIp link layer.
     ///
     /// This method:
-    /// 1. Deduplicates sockets based on ports
-    /// 2. Maps servers to socket indices
-    /// 3. Initializes sockets with multicast groups and broadcast
+    /// 1. Auto-derives supported services from enabled features
+    /// 2. Creates server instances with the correct service types and endpoints
+    /// 3. Deduplicates and creates UDP sockets
     /// 4. Creates the connection manager (if device management is enabled)
-    /// 5. Creates the final KnxNetIp instance
+    /// 5. Returns the final KnxNetIp instance
     ///
     /// The `property_handler` is used by the connection manager to service
     /// Device Management property read/write requests from ETS.
@@ -409,22 +424,101 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
         network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
         max_apdu_length: u16,
         property_handler: &'res dyn crate::objects::interface::PropertyServiceHandler,
-    ) -> KnxNetIp<'res, T, MAX_SOCKETS, MAX_SERVERS> {
+    ) -> KnxNetIp<'res, T, MAX_SOCKETS> {
         // Initialize response channel
         let _response_channel = resources.response_channel.write(Channel::new());
 
-        // Deduplicate endpoints by port
+        // ====================================================================
+        // Auto-derive supported services from enabled features
+        // ====================================================================
+
+        let mut supported_services = Vec::<substructs::SupportedService, 4>::new();
+        let _ = supported_services.push(substructs::SupportedService {
+            family: substructs::ServiceFamily::Core,
+            version: 1,
+        });
+        if self.enable_device_management {
+            let _ = supported_services.push(substructs::SupportedService {
+                family: substructs::ServiceFamily::DeviceManagement,
+                version: 1,
+            });
+        }
+        if self.enable_routing {
+            let _ = supported_services.push(substructs::SupportedService {
+                family: substructs::ServiceFamily::Routing,
+                version: 1,
+            });
+        }
+
+        // ====================================================================
+        // Build server instances from enabled features
+        // ====================================================================
+
+        // Collect endpoints for socket deduplication. Each entry is
+        // (server_index, endpoint) where server_index matches the order
+        // servers are pushed into server_instances below.
+        let mut server_endpoints: Vec<(usize, Vec<EndpointType, 4>), MAX_SERVERS> = Vec::new();
+        let mut server_instances = Vec::<servers::ServerInstance, MAX_SERVERS>::new();
+        let mut server_idx = 0;
+
+        if let Some(discovery) = self.discovery {
+            let server = servers::DiscoveryServer::new(
+                discovery.control_endpoint,
+                discovery.device_info,
+                supported_services,
+            );
+
+            let mut service_types = Vec::new();
+            let _ = service_types.push(KNXnetIPServiceType::SearchRequest);
+            let _ = service_types.push(KNXnetIPServiceType::DescriptionRequest);
+
+            // Discovery listens on multicast (system setup) + unicast (any:3671)
+            let mut endpoints = Vec::new();
+            let _ = endpoints.push(EndpointType::new_udp(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));
+            let _ = endpoints.push(EndpointType::new_udp_any(crate::KNX_PORT));
+
+            let _ = server_instances.push(servers::ServerInstance {
+                service_types,
+                socket_indices: Vec::new(), // filled in below after socket dedup
+                handler: server.into(),
+            });
+            let _ = server_endpoints.push((server_idx, endpoints));
+            server_idx += 1;
+        }
+
+        if self.enable_routing {
+            let server = servers::RoutingServer::new(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT);
+
+            let mut service_types = Vec::new();
+            let _ = service_types.push(KNXnetIPServiceType::RoutingIndication);
+            let _ = service_types.push(KNXnetIPServiceType::RoutingBusy);
+            let _ = service_types.push(KNXnetIPServiceType::RoutingLostMessage);
+
+            let mut endpoints = Vec::new();
+            let _ = endpoints.push(EndpointType::new_udp(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));
+
+            let _ = server_instances.push(servers::ServerInstance {
+                service_types,
+                socket_indices: Vec::new(),
+                handler: server.into(),
+            });
+            let _ = server_endpoints.push((server_idx, endpoints));
+            #[allow(unused_assignments)]
+            { server_idx += 1; }
+        }
+
+        // ====================================================================
+        // Deduplicate endpoints into sockets
+        // ====================================================================
+
         let mut socket_descriptors = Vec::<SocketDescriptor, MAX_SOCKETS>::new();
 
-        for config in &self.server_configs {
-            for endpoint in &config.endpoints {
+        for (_srv_idx, endpoints) in &server_endpoints {
+            for endpoint in endpoints {
                 let port = endpoint.port();
-
-                // Check if we already have a socket for this port
                 let existing_idx = socket_descriptors.iter().position(|desc| desc.port() == port);
 
                 if let Some(idx) = existing_idx {
-                    // Socket exists - add multicast groups if needed
                     if endpoint.is_multicast() {
                         let _ = socket_descriptors[idx].add_multicast_group(endpoint.address());
                     }
@@ -432,7 +526,6 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
                         socket_descriptors[idx].enable_broadcast();
                     }
                 } else {
-                    // New socket needed
                     let bind_addr = EndpointType::new_udp(Ipv4Addr::UNSPECIFIED, port);
                     let mut desc = SocketDescriptor::new(bind_addr);
 
@@ -448,14 +541,29 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
             }
         }
 
-        info!("KnxNetIp builder: {} server(s) using {} unique socket(s)", self.servers.len(), socket_descriptors.len());
+        // Map each server to its socket indices
+        for (srv_idx, endpoints) in &server_endpoints {
+            for endpoint in endpoints {
+                let port = endpoint.port();
+                if let Some(sock_idx) = socket_descriptors.iter().position(|desc| desc.port() == port) {
+                    if !server_instances[*srv_idx].socket_indices.contains(&sock_idx) {
+                        let _ = server_instances[*srv_idx].socket_indices.push(sock_idx);
+                    }
+                }
+            }
+        }
+
+        info!("KnxNetIp builder: {} server(s) using {} unique socket(s)",
+              server_instances.len(), socket_descriptors.len());
 
         let interface_addr = self.local_addr;
 
-        // Initialize socket array
+        // ====================================================================
+        // Create actual UDP sockets
+        // ====================================================================
+
         let sockets_array = resources.sockets.write(core::array::from_fn(|_| None));
 
-        // Create actual sockets
         for (i, desc) in socket_descriptors.iter().enumerate() {
             let port = desc.port();
 
@@ -468,7 +576,6 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
 
             match T::UdpSocket::bind(options) {
                 Ok(socket) => {
-                    // Join multicast groups
                     for &mcast_addr in desc.multicast_groups() {
                         debug!(
                             "  Socket {}: Joining multicast group {} on interface {}",
@@ -479,14 +586,12 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
                         }
                     }
 
-                    // Enable broadcast if needed
                     if desc.is_broadcast_enabled() {
                         debug!("  Socket {}: Enabling SO_BROADCAST", i);
                         let _ = socket.set_broadcast(true);
                     }
 
                     info!("  Socket {}: Bound to 0.0.0.0:{} on interface {}", i, port, self.interface_name);
-
                     sockets_array[i] = Some(socket);
                 }
                 Err(e) => {
@@ -495,31 +600,14 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
             }
         }
 
-        // Build server instances with socket mappings
-        let mut server_instances = Vec::<servers::ServerInstance, MAX_SERVERS>::new();
-
-        for (idx, (handler, config)) in self.servers.into_iter().zip(self.server_configs.iter()).enumerate() {
-            let mut socket_indices = Vec::new();
-
-            // Find which sockets this server should listen on
-            for endpoint in &config.endpoints {
-                let port = endpoint.port();
-                if let Some(sock_idx) = socket_descriptors.iter().position(|desc| desc.port() == port) {
-                    if !socket_indices.contains(&sock_idx) {
-                        let _ = socket_indices.push(sock_idx);
-                    }
-                }
-            }
-
-            let instance =
-                servers::ServerInstance { service_types: config.service_types.clone(), socket_indices, handler };
-
+        for (idx, instance) in server_instances.iter().enumerate() {
             debug!("  Server {}: Handles {:?} on sockets {:?}", idx, instance.service_types, instance.socket_indices);
-
-            let _ = server_instances.push(instance);
         }
 
-        // Create connection manager and register handlers based on configuration
+        // ====================================================================
+        // Connection manager
+        // ====================================================================
+
         let mut connection_manager = servers::ConnectionManager::new();
         if self.enable_device_management {
             let handler = servers::DeviceMgmtConnectionHandler::new(property_handler);
@@ -545,8 +633,8 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetI
     }
 }
 
-impl<T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> LinkLayerBuilderBase
-    for KnxNetIpBuilder<T, MAX_SOCKETS, MAX_SERVERS>
+impl<T: IpTransport + 'static, const MAX_SOCKETS: usize> LinkLayerBuilderBase
+    for KnxNetIpBuilder<T, MAX_SOCKETS>
 {
     type Resources = KnxNetIpResources<T, MAX_SOCKETS>;
 
@@ -558,8 +646,8 @@ impl<T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_SERVERS: usiz
 /// KNX/IP requires both buffer management and property service access.
 /// The property handler is used by the connection manager for Device
 /// Management connections (M_PropRead/M_PropWrite from ETS).
-impl<CTX, T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_SERVERS: usize>
-    LinkLayerBuilder<CTX> for KnxNetIpBuilder<T, MAX_SOCKETS, MAX_SERVERS>
+impl<CTX, T: IpTransport + 'static, const MAX_SOCKETS: usize>
+    LinkLayerBuilder<CTX> for KnxNetIpBuilder<T, MAX_SOCKETS>
 where
     CTX: crate::context::BufferManagerContext + crate::context::PropertyServiceContext,
 {
@@ -602,7 +690,7 @@ const MAX_RETRY_QUEUE_SIZE: usize = 16;
 /// Maximum number of retry attempts before giving up
 const MAX_RETRY_ATTEMPTS: u8 = 5;
 
-pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> {
+pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize> {
     /// Reference to socket resources
     resources: &'res KnxNetIpResources<T, MAX_SOCKETS>,
     /// Socket descriptors (metadata about each socket)
@@ -626,7 +714,7 @@ pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SE
     connection_manager: servers::ConnectionManager<'res>,
 }
 
-impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> KnxNetIp<'res, T, MAX_SOCKETS, MAX_SERVERS> {
+impl<'res, T: IpTransport, const MAX_SOCKETS: usize> KnxNetIp<'res, T, MAX_SOCKETS> {
     /// Process expired retry requests
     async fn process_retry_queue(&mut self, response_channel: &Channel<NoopRawMutex, PendingResponse, 16>) {
         let now = Instant::now();
@@ -765,8 +853,8 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> K
     }
 }
 
-impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_SERVERS: usize> Layer<'res>
-    for KnxNetIp<'res, T, MAX_SOCKETS, MAX_SERVERS>
+impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res>
+    for KnxNetIp<'res, T, MAX_SOCKETS>
 {
     type Buffer = Buffer<'static>;
 

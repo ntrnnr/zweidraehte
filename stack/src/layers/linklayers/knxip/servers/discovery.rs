@@ -16,19 +16,26 @@ use super::{KnxNetIpServer, PendingResponse, ServerContext, ServerError};
 // FIXME: Strictly speaking, we should only have one server that does discovery on 224.0.23.12:3671 and
 //        then multiple servers that handle the control endpoints of other service containers
 
+/// Maximum number of supported service families a discovery server can advertise
+const MAX_SUPPORTED_SERVICES: usize = 4;
+
 #[derive(Debug)]
 pub struct DiscoveryServer {
     control_endpoint: HPAI,
     device_information: DeviceInformation,
-    supported_services: &'static [SupportedService],
+    supported_services: Vec<SupportedService, MAX_SUPPORTED_SERVICES>,
 }
 
 impl DiscoveryServer {
-    /// Create a new DiscoveryServer with the given configuration
+    /// Create a new DiscoveryServer with the given configuration.
+    ///
+    /// The `supported_services` list is typically auto-derived by
+    /// [`KnxNetIpBuilder`](super::super::KnxNetIpBuilder) from the
+    /// enabled features.
     pub fn new(
         control_endpoint: HPAI,
         device_information: DeviceInformation,
-        supported_services: &'static [SupportedService],
+        supported_services: Vec<SupportedService, MAX_SUPPORTED_SERVICES>,
     ) -> Self {
         DiscoveryServer { control_endpoint, device_information, supported_services }
     }
@@ -66,7 +73,7 @@ impl DiscoveryServer {
 
         // Build and serialize the SearchResponse
         let response_builder =
-            SearchResponseBuilder::new(self.control_endpoint, self.device_information, self.supported_services);
+            SearchResponseBuilder::new(self.control_endpoint, self.device_information, &self.supported_services);
 
         // Serialize directly into the buffer (automatically sets length)
         response_buffer.serialize(&response_builder);
@@ -110,7 +117,7 @@ impl DiscoveryServer {
         let mut response_buffer = context.alloc_buffer().await;
 
         // Build and serialize the DescriptionResponse
-        let response_builder = DescriptionResponseBuilder::new(self.device_information, self.supported_services);
+        let response_builder = DescriptionResponseBuilder::new(self.device_information, &self.supported_services);
 
         // Serialize directly into the buffer (automatically sets length)
         response_buffer.serialize(&response_builder);
