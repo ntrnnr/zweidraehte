@@ -31,7 +31,7 @@ pub mod restart;
 pub mod util;
 
 use core::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     mem::MaybeUninit,
 };
 
@@ -278,157 +278,6 @@ pub const MAX_ACCESS_LEVELS: usize = 4;
 /// Level 3 is "access for everyone" and has no key - it's what you get when auth fails.
 pub const NUM_AUTH_KEYS: usize = 3;
 
-/// A basic stack state implementation with individual address and programming mode.
-///
-/// This is a minimal implementation suitable for simple devices.
-/// For more complex devices, implement your own `StackState` type.
-///
-/// The default individual address is `1.0.1`.
-///
-/// ## Authorization
-///
-/// This state supports 4 access levels:
-/// - Level 0: Maximum access (system manufacturer)
-/// - Level 1: Device manufacturer access
-/// - Level 2: Configuration tool access (ETS)
-/// - Level 3: Minimum access ("access for everyone") - no key, always granted on auth failure
-///
-/// Only levels 0-2 have settable keys. Keys default to `0xFFFFFFFF`.
-/// When authorizing, the key table is walked from level 0 to find the first matching key.
-/// If no key matches, level 3 is returned.
-#[derive(Debug)]
-pub struct BasicStackState {
-    individual_address: RefCell<IndividualAddress>,
-    serial_number: [u8; 6],
-    /// Runtime maximum APDU length (may be constrained by link layer).
-    max_apdu_length: Cell<u16>,
-    /// Authorization key table for levels 0-2 only.
-    /// Level 3 has no key - it's the fallback when no key matches.
-    /// 0xFFFFFFFF means "default key" (matches if provided).
-    auth_keys: RefCell<[[u8; 4]; NUM_AUTH_KEYS]>,
-}
-
-impl Default for BasicStackState {
-    fn default() -> Self {
-        // Default key table: all keys set to 0xFFFFFFFF (the default key).
-        //
-        // With this configuration, authorize(0xFFFFFFFF) returns 0 (first match).
-        // However, new connections start at level 3 (see default_access_level()).
-        // To get higher access, you must explicitly send A_Authorize_Request.
-        //
-        // This matches both:
-        // - M-2.6: New connections have level 3, can't access protected memory
-        // - M-2.11: Authorizing with 0xFFFFFFFF gives level 0
-        Self {
-            individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
-            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00], // Default: manufacturer 0x00FA
-            max_apdu_length: Cell::new(config::MAX_APDU_LENGTH_EXTENDED),
-            auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]), // All keys = default key
-        }
-    }
-}
-
-impl BasicStackState {
-    /// Create a new `BasicStackState` with the given individual address.
-    pub fn with_individual_address(addr: IndividualAddress) -> Self {
-        Self {
-            individual_address: RefCell::new(addr),
-            serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x00],
-            max_apdu_length: Cell::new(config::MAX_APDU_LENGTH_EXTENDED),
-            auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
-        }
-    }
-
-    /// Create a new `BasicStackState` with the given individual address and serial number.
-    pub fn with_address_and_serial(addr: IndividualAddress, serial_number: [u8; 6]) -> Self {
-        Self {
-            individual_address: RefCell::new(addr),
-            serial_number,
-            max_apdu_length: Cell::new(config::MAX_APDU_LENGTH_EXTENDED),
-            auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
-        }
-    }
-
-    /// Set the authorization key for a specific level.
-    ///
-    /// This is useful for initializing the key table during test setup.
-    /// Only levels 0-2 are settable. Level 3 has no key (always granted on auth failure).
-    ///
-    /// A key of `0xFFFFFFFF` is treated as the "default key".
-    pub fn set_auth_key(&self, level: u8, key: [u8; 4]) {
-        if (level as usize) < NUM_AUTH_KEYS {
-            self.auth_keys.borrow_mut()[level as usize] = key;
-        }
-    }
-}
-
-impl StackState for BasicStackState {
-    fn individual_address(&self) -> IndividualAddress {
-        *self.individual_address.borrow()
-    }
-
-    fn set_individual_address(&self, addr: IndividualAddress) {
-        *self.individual_address.borrow_mut() = addr;
-    }
-
-    fn serial_number(&self) -> &[u8; 6] {
-        &self.serial_number
-    }
-
-    fn max_apdu_length(&self) -> u16 {
-        self.max_apdu_length.get()
-    }
-
-    fn set_max_apdu_length(&self, length: u16) {
-        self.max_apdu_length.set(length);
-    }
-
-    fn max_access_levels(&self) -> u8 {
-        MAX_ACCESS_LEVELS as u8
-    }
-
-    fn default_access_level(&self) -> u8 {
-        // New connections get the access level for the default key (0xFFFFFFFF).
-        // This matches Calimero's behavior: if all keys are default, you get level 0.
-        // If keys are configured, you get the first level with default key.
-        self.authorize(&[0xFF, 0xFF, 0xFF, 0xFF])
-    }
-
-    fn authorize(&self, key: &[u8; 4]) -> u8 {
-        let keys = self.auth_keys.borrow();
-
-        // Check if key matches any configured key (levels 0-2 only)
-        // Level 3 has no key - it's what you get when no key matches
-        for level in 0..NUM_AUTH_KEYS {
-            if &keys[level] == key {
-                return level as u8;
-            }
-        }
-
-        // Key not found in table - level 3 (minimum access, "access for everyone")
-        (MAX_ACCESS_LEVELS - 1) as u8
-    }
-
-    fn key_write(&self, level: u8, key: &[u8; 4], current_access_level: u8) -> u8 {
-        // Check if level is valid (only levels 0-2 are settable, level 3 has no key)
-        if level as usize >= NUM_AUTH_KEYS {
-            return 0xFF; // Invalid level (includes level 3)
-        }
-
-        // Check if current access level allows writing to this level
-        // Can only write to levels >= current level (lower or equal access)
-        if current_access_level > level {
-            return 0xFF; // Access denied
-        }
-
-        // Write the key
-        let mut keys = self.auth_keys.borrow_mut();
-        keys[level as usize] = *key;
-
-        level
-    }
-}
-
 // ============================================================================
 // IP Stack State Extension
 // ============================================================================
@@ -463,10 +312,7 @@ use core::net::Ipv4Addr;
 ///     // ...
 /// }
 /// ```
-// FIXME: I don't like that this requires delegating StackState methods manually.
-//        Need to find a better solution.
-//        Maybe the same as with the tables? One giant state composition object with StackState and IpStackState, then traits that access parts of it?
-pub trait IpStackState: StackState {
+pub trait IpStackState {
     // ========================================================================
     // Current values (read from platform/OS - typically read-only)
     // ========================================================================
@@ -582,240 +428,20 @@ pub const DEFAULT_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
 /// Default KNX/IP port
 pub const KNX_PORT: u16 = 3671;
 
-/// A basic IP stack state implementation.
-///
-/// This provides a reference implementation suitable for simple KNXnet/IP devices.
-/// It stores configured values in `RefCell`s and requires a platform reference
-/// for querying current network values.
-///
-/// For more complex devices or those with persistent storage, implement
-/// your own [`IpStackState`] type.
-///
-/// ## Authorization
-///
-/// Delegates to [`BasicStackState`] for authorization handling.
-/// See [`BasicStackState`] documentation for access level details.
-#[derive(Debug)]
-pub struct BasicIpStackState<P: IpPlatform> {
-    /// Base stack state (individual address, programming mode, auth, etc.)
-    base: BasicStackState,
-
-    // IP configured values
-    configured_ip: RefCell<Ipv4Addr>,
-    configured_subnet: RefCell<Ipv4Addr>,
-    configured_gateway: RefCell<Ipv4Addr>,
-    ip_assignment_method: RefCell<u8>,
-    routing_multicast: RefCell<Ipv4Addr>,
-    ttl: RefCell<u8>,
-    friendly_name: RefCell<[u8; 30]>,
-    friendly_name_len: RefCell<usize>,
-    project_installation_id: RefCell<u16>,
-
-    // Platform for current values
-    platform: P,
-}
-
-/// Re-export of [`platform::NetworkInfo`] for backwards compatibility.
+/// Platform abstraction for querying current network state.
 ///
 /// Implement this trait to provide platform-specific network information
-/// to [`BasicIpStackState`].
+/// (current IP address, MAC address, etc.) for KNX/IP devices.
 pub use platform::NetworkInfo as IpPlatform;
 
-impl<P: IpPlatform + Default> Default for BasicIpStackState<P> {
-    fn default() -> Self {
-        Self {
-            base: BasicStackState::default(),
-            configured_ip: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
-            configured_subnet: RefCell::new(Ipv4Addr::new(255, 255, 255, 0)),
-            configured_gateway: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
-            ip_assignment_method: RefCell::new(0x04), // DHCP by default
-            routing_multicast: RefCell::new(DEFAULT_MULTICAST_ADDR),
-            ttl: RefCell::new(16),
-            friendly_name: RefCell::new([0u8; 30]),
-            friendly_name_len: RefCell::new(0),
-            project_installation_id: RefCell::new(0),
-            platform: P::default(),
-        }
-    }
-}
-
-impl<P: IpPlatform> BasicIpStackState<P> {
-    /// Create a new `BasicIpStackState` with the given platform.
-    pub fn new(platform: P) -> Self
-    where
-        P: Default,
-    {
-        Self { platform, ..Default::default() }
-    }
-
-    /// Create a new `BasicIpStackState` with individual address and platform.
-    pub fn with_address(addr: IndividualAddress, platform: P) -> Self
-    where
-        P: Default,
-    {
-        Self { base: BasicStackState::with_individual_address(addr), platform, ..Default::default() }
-    }
-
-    /// Create a new `BasicIpStackState` with individual address, serial number, and platform.
-    pub fn with_address_and_serial(addr: IndividualAddress, serial_number: [u8; 6], platform: P) -> Self
-    where
-        P: Default,
-    {
-        Self { base: BasicStackState::with_address_and_serial(addr, serial_number), platform, ..Default::default() }
-    }
-
-    /// Set the authorization key for a specific level.
-    ///
-    /// This is useful for initializing the key table during test setup.
-    /// Level 0 = max access, level 3 = min access.
-    ///
-    /// A key of `0xFFFFFFFF` is treated as the "default key" (not set).
-    pub fn set_auth_key(&self, level: u8, key: [u8; 4]) {
-        self.base.set_auth_key(level, key);
-    }
-}
-
-impl<P: IpPlatform + Default> StackState for BasicIpStackState<P> {
-    fn individual_address(&self) -> IndividualAddress {
-        self.base.individual_address()
-    }
-
-    fn set_individual_address(&self, addr: IndividualAddress) {
-        self.base.set_individual_address(addr);
-    }
-
-    fn serial_number(&self) -> &[u8; 6] {
-        self.base.serial_number()
-    }
-
-    fn max_apdu_length(&self) -> u16 {
-        self.base.max_apdu_length()
-    }
-
-    fn set_max_apdu_length(&self, length: u16) {
-        self.base.set_max_apdu_length(length);
-    }
-
-    fn max_access_levels(&self) -> u8 {
-        self.base.max_access_levels()
-    }
-
-    fn default_access_level(&self) -> u8 {
-        self.base.default_access_level()
-    }
-
-    fn authorize(&self, key: &[u8; 4]) -> u8 {
-        self.base.authorize(key)
-    }
-
-    fn key_write(&self, level: u8, key: &[u8; 4], current_access_level: u8) -> u8 {
-        self.base.key_write(level, key, current_access_level)
-    }
-}
-
-impl<P: IpPlatform + Default> IpStackState for BasicIpStackState<P> {
-    fn current_ip_address(&self) -> Ipv4Addr {
-        self.platform.current_ip_address()
-    }
-
-    fn current_subnet_mask(&self) -> Ipv4Addr {
-        self.platform.current_subnet_mask()
-    }
-
-    fn current_default_gateway(&self) -> Ipv4Addr {
-        self.platform.current_default_gateway()
-    }
-
-    fn mac_address(&self) -> [u8; 6] {
-        self.platform.mac_address()
-    }
-
-    fn configured_ip_address(&self) -> Ipv4Addr {
-        *self.configured_ip.borrow()
-    }
-
-    fn set_configured_ip_address(&self, addr: Ipv4Addr) {
-        *self.configured_ip.borrow_mut() = addr;
-    }
-
-    fn configured_subnet_mask(&self) -> Ipv4Addr {
-        *self.configured_subnet.borrow()
-    }
-
-    fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
-        *self.configured_subnet.borrow_mut() = mask;
-    }
-
-    fn configured_default_gateway(&self) -> Ipv4Addr {
-        *self.configured_gateway.borrow()
-    }
-
-    fn set_configured_default_gateway(&self, gateway: Ipv4Addr) {
-        *self.configured_gateway.borrow_mut() = gateway;
-    }
-
-    fn ip_assignment_method(&self) -> u8 {
-        *self.ip_assignment_method.borrow()
-    }
-
-    fn set_ip_assignment_method(&self, method: u8) {
-        *self.ip_assignment_method.borrow_mut() = method;
-    }
-
-    fn current_ip_assignment_method(&self) -> u8 {
-        self.platform.current_ip_assignment_method()
-    }
-
-    fn ip_capabilities(&self) -> u8 {
-        self.platform.ip_capabilities()
-    }
-
-    fn routing_multicast_address(&self) -> Ipv4Addr {
-        *self.routing_multicast.borrow()
-    }
-
-    fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
-        *self.routing_multicast.borrow_mut() = addr;
-    }
-
-    fn ttl(&self) -> u8 {
-        *self.ttl.borrow()
-    }
-
-    fn set_ttl(&self, ttl: u8) {
-        *self.ttl.borrow_mut() = ttl;
-    }
-
-    fn friendly_name_len(&self) -> usize {
-        *self.friendly_name_len.borrow()
-    }
-
-    fn friendly_name(&self, buf: &mut [u8]) -> usize {
-        let fname = self.friendly_name.borrow();
-        let len = (*self.friendly_name_len.borrow()).min(buf.len());
-        buf[..len].copy_from_slice(&fname[..len]);
-        len
-    }
-
-    fn set_friendly_name(&self, name: &[u8]) {
-        let mut fname = self.friendly_name.borrow_mut();
-        let len = name.len().min(30);
-        fname[..len].copy_from_slice(&name[..len]);
-        *self.friendly_name_len.borrow_mut() = len;
-    }
-
-    fn knxnetip_device_capabilities(&self) -> u16 {
-        self.platform.knxnetip_device_capabilities()
-    }
-
-    fn project_installation_id(&self) -> u16 {
-        *self.project_installation_id.borrow()
-    }
-
-    fn set_project_installation_id(&self, id: u16) {
-        *self.project_installation_id.borrow_mut() = id;
-    }
-}
+/// Convenience trait alias for types that implement both [`StackState`] and
+/// [`IpStackState`].
+///
+/// This exists because `define_interface_object!` only accepts a single
+/// trait bound, so [`IpParameterObject`] uses `S: IpDevice` instead of
+/// `S: StackState + IpStackState`.
+pub trait IpDevice: StackState + IpStackState {}
+impl<T: StackState + IpStackState> IpDevice for T {}
 
 pub trait StackDefinition: Copy {
     /// Device descriptor containing all device identification and configuration.
@@ -1042,7 +668,7 @@ pub struct Runner<'d, D: StackDefinition> {
 ///     type COT = MyComObjectTable;    // implements CommunicationObjectTable
 ///     type P = MyParameters;          // implements ConstDefault
 ///     type CO = MyComObjects;         // implements ComObjects
-///     type State = BasicStackState;   // implements StackState (includes serial number)
+///     type State = SystemBDeviceState<..>;  // implements StackState
 /// }
 ///
 /// // Create stack resources and configuration

@@ -324,12 +324,12 @@ where
 ///
 /// The tuple's `PropertyServiceHandler` implementation automatically handles
 /// index offsetting - IpObjects receives index 0 for what is logically index 6.
-pub struct IpObjects<'a, S: IpStackState> {
+pub struct IpObjects<'a, S: StackState + IpStackState> {
     state: &'a S,
     ip_parameter: RefCell<IpParameterObject<'a, S>>,
 }
 
-impl<'a, S: IpStackState> IpObjects<'a, S> {
+impl<'a, S: StackState + IpStackState> IpObjects<'a, S> {
     /// Number of interface objects in this container.
     pub const OBJECT_COUNT: u16 = 1;
 
@@ -344,7 +344,7 @@ impl<'a, S: IpStackState> IpObjects<'a, S> {
     }
 }
 
-impl<'a, S: IpStackState> PropertyServiceHandler for IpObjects<'a, S> {
+impl<'a, S: StackState + IpStackState> PropertyServiceHandler for IpObjects<'a, S> {
     fn object_count(&self) -> u16 {
         Self::OBJECT_COUNT
     }
@@ -535,7 +535,8 @@ pub fn create_knxip_objects<'a, D, S>(
 ) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI>
 where
     D: StackDefinition + SystemBDevice,
-    S: IpStackState
+    S: StackState
+        + IpStackState
         + HasAddressTable
         + HasAssociationTable
         + HasCommunicationObjectTable

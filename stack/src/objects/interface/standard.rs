@@ -179,7 +179,7 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 
 use core::net::Ipv4Addr;
 
-use crate::IpStackState;
+use crate::IpDevice;
 use crate::dpt::{PDT_Bitset8, PDT_Bitset16};
 use crate::objects::interface::Ipv4Property;
 
@@ -214,7 +214,7 @@ crate::define_interface_object! {
     /// | 67 | TTL | PDT_UNSIGNED_CHAR | RW |
     /// | 68 | KNXnet/IP Device Capabilities | PDT_BITSET16 | RO |
     /// | 76 | Friendly Name | PDT_UNSIGNED_CHAR[30] | RW |
-    pub struct IpParameterObject<'a, S: IpStackState>: InterfaceObjectType::IPParameter
+    pub struct IpParameterObject<'a, S: IpDevice>: InterfaceObjectType::IPParameter
         with state: &'a S
     {
         // No static properties - all are state-backed for IP
@@ -266,7 +266,7 @@ crate::define_interface_object! {
     }
 }
 
-impl<'a, S: IpStackState> IpParameterObject<'a, S> {
+impl<'a, S: IpDevice> IpParameterObject<'a, S> {
     /// Create a new IP Parameter Object with a reference to the IP stack state.
     pub fn with_state(state: &'a S) -> Self {
         Self::new(state)

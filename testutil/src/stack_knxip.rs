@@ -116,7 +116,7 @@ use env_logger::Env;
 use static_cell::StaticCell;
 use std::net::Ipv4Addr;
 use zweidraehte::{
-    IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
+    IpPlatform, IpStackState, Runner, StackDefinition, StackResources, StackState,
     address::IndividualAddress,
     dpt::DPT_Switch,
     ets::EtsComObjects,
@@ -304,7 +304,7 @@ mod device_info {
 /// - Index 5: IP Parameter Object
 pub struct KnxIpInterfaceObjects<'a, S>
 where
-    S: IpStackState,
+    S: StackState + IpStackState,
 {
     state: &'a S,
     pub device: RefCell<DeviceObject<'a, S>>,
@@ -317,7 +317,8 @@ where
 
 impl<'a, S> KnxIpInterfaceObjects<'a, S>
 where
-    S: IpStackState
+    S: StackState
+        + IpStackState
         + HasAddressTable<ADT = stack_test_config::AddrTab>
         + HasAssociationTable<AST = stack_test_config::AssoTab>
         + HasCommunicationObjectTable<COT = stack_test_config::CoTab>
@@ -352,7 +353,7 @@ where
 
 impl<'a, S> PropertyServiceHandler for KnxIpInterfaceObjects<'a, S>
 where
-    S: IpStackState,
+    S: StackState + IpStackState,
 {
     fn object_count(&self) -> u16 {
         6 // Device, AddrTable, AssoTable, AppProgram, GroupObjectTable, IpParameter
@@ -453,7 +454,7 @@ where
 
 impl<'a, S> zweidraehte::objects::interface::HasDeviceObject for KnxIpInterfaceObjects<'a, S>
 where
-    S: IpStackState,
+    S: StackState + IpStackState,
 {
     fn device_control(&self) -> zweidraehte::dpt::DeviceControl {
         self.device.borrow().device_control
@@ -487,7 +488,8 @@ where
 /// Create KNX/IP interface objects for the stack.
 pub fn create_knxip_interface_objects<'a, S>(state: &'a S) -> KnxIpInterfaceObjects<'a, S>
 where
-    S: IpStackState
+    S: StackState
+        + IpStackState
         + HasAddressTable<ADT = stack_test_config::AddrTab>
         + HasAssociationTable<AST = stack_test_config::AssoTab>
         + HasCommunicationObjectTable<COT = stack_test_config::CoTab>
