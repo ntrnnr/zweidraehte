@@ -318,7 +318,7 @@ async fn main(spawner: Spawner) {
                     }
                 }
 
-                println!("    Send Cycle Time: {}s", params.send_cycle_time);
+                println!("    Send Cycle Time: {}s", params.send_cycle_time.get());
                 println!("    Lock Behavior: {}", match params.lock_behavior {
                     0 => "No Action",
                     1 => "Lock Off",

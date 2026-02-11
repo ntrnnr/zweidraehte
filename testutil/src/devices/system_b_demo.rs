@@ -476,7 +476,7 @@ pub struct DemoParams {
 
     /// Send cycle time in seconds (0 = disabled)
     #[ets(display = "Send Cycle Time", enum_variants("Disabled" => 0, "10s" => 10, "30s" => 30, "60s" => 60, "300s" => 300))]
-    pub send_cycle_time: u16,
+    pub send_cycle_time: BeU16,
 
     /// Lock behavior with enum variants
     #[ets(display = "Lock Behavior", enum_variants("No Action" => 0, "Lock Off" => 1, "Lock On" => 2, "Lock Toggle" => 3))]
