@@ -174,6 +174,26 @@ pub trait StackState {
     }
 
     // =========================================================================
+    // Programming Mode
+    // =========================================================================
+
+    /// Check if the device is in programming mode.
+    ///
+    /// Programming mode is a volatile runtime flag — it does not survive
+    /// restarts and is not persisted. When set, the device responds to
+    /// `A_IndividualAddress_Read` and accepts `A_IndividualAddress_Write`.
+    ///
+    /// Default implementation returns `false`.
+    fn is_programming_mode(&self) -> bool {
+        false
+    }
+
+    /// Set the programming mode flag.
+    ///
+    /// Default implementation does nothing.
+    fn set_programming_mode(&self, _enabled: bool) {}
+
+    // =========================================================================
     // Persistence
     // =========================================================================
 
@@ -1130,6 +1150,35 @@ impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
 impl<D: StackDefinition> context::PropertyServiceContext for StackContext<'_, D> {
     fn property_handler(&self) -> &dyn objects::interface::PropertyServiceHandler {
         self.interface_objects
+    }
+}
+
+impl<D: StackDefinition> context::DeviceInfoContext for StackContext<'_, D>
+where
+    D::State: IpStackState,
+{
+    fn device_information(&self) -> messages::knxip::substructs::DeviceInformation {
+        use messages::knxip::substructs::{DeviceInformation, DeviceStatus, KNXMedium};
+        use platform::address::EthernetAddress;
+
+        let state = &self.inner.state;
+        let mut friendly_name = [0u8; 30];
+        state.friendly_name(&mut friendly_name);
+
+        DeviceInformation {
+            medium: KNXMedium::KNXIP,
+            device_status: if state.is_programming_mode() {
+                DeviceStatus::ProgrammingMode
+            } else {
+                DeviceStatus::None
+            },
+            individual_address: state.individual_address(),
+            project_installation_identifier: state.project_installation_id(),
+            knx_serial_number: *state.serial_number(),
+            routing_multicast_address: state.routing_multicast_address(),
+            mac_address: EthernetAddress(state.mac_address()),
+            friendly_name,
+        }
     }
 }
 

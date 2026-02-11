@@ -42,7 +42,7 @@ use zweidraehte::{
         PropertyServiceHandler, WriteResponse,
     },
     objects::tables::{app::Application, HasLoadStateMachine},
-    IpPlatform, IpStackState, Runner, StackDefinition, StackResources,
+    IpPlatform, IpStackState, Runner, StackDefinition, StackResources, StackState,
 };
 
 use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle};
@@ -622,6 +622,7 @@ pub mod device_info {
 /// - Index 4: Group Object Table Object
 /// - Index 5: IP Parameter Object
 pub struct KnxIpInterfaceObjects<'a> {
+    state: &'a ConformanceState,
     pub device: RefCell<DeviceObject<'a, ConformanceState>>,
     pub addr_table: RefCell<AddressTableObject<'a, conformance_config::AddrTab>>,
     pub asso_table: RefCell<AssociationTableObject<'a, conformance_config::AssoTab>>,
@@ -652,6 +653,7 @@ impl<'a> KnxIpInterfaceObjects<'a> {
 
         // Use ConformanceMemoryMap addresses for tables
         Self {
+            state,
             device: RefCell::new(device),
             addr_table: RefCell::new(AddressTableObject::new(&state.adt, ConformanceMemoryMap::ADT_BASE as u32)),
             asso_table: RefCell::new(AssociationTableObject::new(&state.ast, ConformanceMemoryMap::AST_BASE as u32)),
@@ -773,11 +775,11 @@ impl<'a> zweidraehte::objects::interface::HasDeviceObject for KnxIpInterfaceObje
     }
 
     fn programming_mode(&self) -> zweidraehte::dpt::ProgrammingMode {
-        self.device.borrow().programming_mode
+        zweidraehte::dpt::ProgrammingMode::from(self.state.is_programming_mode())
     }
 
     fn set_programming_mode(&self, value: zweidraehte::dpt::ProgrammingMode) {
-        self.device.borrow_mut().programming_mode = value;
+        self.state.set_programming_mode(value.enabled());
     }
 
     fn routing_count(&self) -> zweidraehte::dpt::RoutingCount {
@@ -839,6 +841,7 @@ pub struct ConformanceState {
     // ========================================================================
     individual_address: core::cell::Cell<zweidraehte::address::IndividualAddress>,
     auth_keys: RefCell<[[u8; 4]; 3]>,
+    programming_mode: core::cell::Cell<bool>,
 
     // ========================================================================
     // IP State
@@ -892,6 +895,7 @@ impl ConformanceState {
         Self {
             individual_address: core::cell::Cell::new(zweidraehte::address::IndividualAddress::new(1, 0, 1)),
             auth_keys: RefCell::new([[0xFF; 4]; 3]),
+            programming_mode: core::cell::Cell::new(false),
             platform,
             configured_ip: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
             configured_subnet: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
@@ -969,6 +973,14 @@ impl zweidraehte::StackState for ConformanceState {
         }
         self.auth_keys.borrow_mut()[level as usize] = *key;
         level
+    }
+
+    fn is_programming_mode(&self) -> bool {
+        self.programming_mode.get()
+    }
+
+    fn set_programming_mode(&self, enabled: bool) {
+        self.programming_mode.set(enabled);
     }
 }
 

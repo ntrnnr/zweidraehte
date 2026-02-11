@@ -22,22 +22,25 @@ const MAX_SUPPORTED_SERVICES: usize = 4;
 #[derive(Debug)]
 pub struct DiscoveryServer {
     control_endpoint: HPAI,
-    device_information: DeviceInformation,
     supported_services: Vec<SupportedService, MAX_SUPPORTED_SERVICES>,
 }
 
 impl DiscoveryServer {
     /// Create a new DiscoveryServer with the given configuration.
     ///
+    /// Device information is not stored here — it is built on demand from
+    /// the [`ServerContext`]'s [`DeviceInfoProvider`](super::DeviceInfoProvider)
+    /// whenever a search or description request arrives, ensuring it always
+    /// reflects current device state (programming mode, individual address, etc.).
+    ///
     /// The `supported_services` list is typically auto-derived by
     /// [`KnxNetIpBuilder`](super::super::KnxNetIpBuilder) from the
     /// enabled features.
     pub fn new(
         control_endpoint: HPAI,
-        device_information: DeviceInformation,
         supported_services: Vec<SupportedService, MAX_SUPPORTED_SERVICES>,
     ) -> Self {
-        DiscoveryServer { control_endpoint, device_information, supported_services }
+        DiscoveryServer { control_endpoint, supported_services }
     }
 
     /// Handle a SearchRequest message
@@ -68,12 +71,15 @@ impl DiscoveryServer {
             request.discovery_endpoint.port()
         );
 
+        // Build current device information from state
+        let device_information = context.device_info().device_information();
+
         // Allocate a buffer for the response
         let mut response_buffer = context.alloc_buffer().await;
 
         // Build and serialize the SearchResponse
         let response_builder =
-            SearchResponseBuilder::new(self.control_endpoint, self.device_information, &self.supported_services);
+            SearchResponseBuilder::new(self.control_endpoint, device_information, &self.supported_services);
 
         // Serialize directly into the buffer (automatically sets length)
         response_buffer.serialize(&response_builder);
@@ -113,11 +119,14 @@ impl DiscoveryServer {
             request.control_endpoint.port()
         );
 
+        // Build current device information from state
+        let device_information = context.device_info().device_information();
+
         // Allocate a buffer for the response
         let mut response_buffer = context.alloc_buffer().await;
 
         // Build and serialize the DescriptionResponse
-        let response_builder = DescriptionResponseBuilder::new(self.device_information, &self.supported_services);
+        let response_builder = DescriptionResponseBuilder::new(device_information, &self.supported_services);
 
         // Serialize directly into the buffer (automatically sets length)
         response_buffer.serialize(&response_builder);

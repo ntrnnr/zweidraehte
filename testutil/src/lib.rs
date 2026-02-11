@@ -32,5 +32,5 @@ pub mod util;
 pub mod equivalence;
 
 // Re-export commonly used items for convenience
-pub use storage::JsonStorage;
+pub use storage::{FileIdentity, JsonStorage};
 pub use util::poll_key;

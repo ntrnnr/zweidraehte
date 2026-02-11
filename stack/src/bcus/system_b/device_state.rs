@@ -95,6 +95,9 @@ pub struct SystemBDeviceState<
     /// Routing count (hop count) for outgoing messages.
     routing_count: Cell<u8>,
 
+    /// Programming mode flag (volatile — does not survive restarts).
+    programming_mode: Cell<bool>,
+
     // ========================================================================
     // ETS-Loaded Tables
     // ========================================================================
@@ -161,6 +164,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
             serial_number: *identity.serial_number(),
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
             routing_count: Cell::new(6),
+            programming_mode: Cell::new(false),
             adt: RefCell::new(Table::new()),
             ast: RefCell::new(Table::new()),
             cot: RefCell::new(Table::new()),
@@ -215,6 +219,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
             serial_number: *identity.serial_number(),
             auth_keys: RefCell::new(auth_keys),
             routing_count: Cell::new(routing_count),
+            programming_mode: Cell::new(false),
             adt: RefCell::new(address_table),
             ast: RefCell::new(association_table),
             cot: RefCell::new(group_object_table),
@@ -378,6 +383,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
         self.reset_application();
         self.reset_auth_keys();
         self.routing_count.set(6); // Default routing count
+        self.programming_mode.set(false);
         *self.pei.borrow_mut() = PeiApplication::new();
         *self.pei_program_version.borrow_mut() = [0; 5];
         self.link_layer_state.factory_reset();
@@ -509,6 +515,14 @@ where
         self.auth_keys.borrow_mut()[level as usize] = *key;
         self.mark_dirty();
         level
+    }
+
+    fn is_programming_mode(&self) -> bool {
+        self.programming_mode.get()
+    }
+
+    fn set_programming_mode(&self, enabled: bool) {
+        self.programming_mode.set(enabled);
     }
 
     fn mark_dirty(&self) {

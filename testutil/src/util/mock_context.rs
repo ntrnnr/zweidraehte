@@ -2,8 +2,9 @@
 
 use core::cell::{Cell, RefCell};
 
-use zweidraehte::context::{BufferManagerContext, PropertyServiceContext};
+use zweidraehte::context::{BufferManagerContext, DeviceInfoContext, PropertyServiceContext};
 use zweidraehte::messages::buffers::DynBufferManager;
+use zweidraehte::messages::knxip::substructs::DeviceInformation;
 use zweidraehte::objects::interface::PropertyServiceHandler;
 
 /// Mock context for testing link layers.
@@ -13,6 +14,7 @@ use zweidraehte::objects::interface::PropertyServiceHandler;
 pub struct MockContext {
     buffer_manager: RefCell<DynBufferManager<'static>>,
     max_apdu_length: Cell<u16>,
+    device_info: Cell<Option<DeviceInformation>>,
 }
 
 impl MockContext {
@@ -21,12 +23,22 @@ impl MockContext {
         Self {
             buffer_manager: RefCell::new(buffer_manager),
             max_apdu_length: Cell::new(zweidraehte::config::MAX_APDU_LENGTH_EXTENDED),
+            device_info: Cell::new(None),
         }
     }
 
     /// Create a new mock context with a custom max APDU length.
     pub fn with_max_apdu_length(buffer_manager: DynBufferManager<'static>, max_apdu_length: u16) -> Self {
-        Self { buffer_manager: RefCell::new(buffer_manager), max_apdu_length: Cell::new(max_apdu_length) }
+        Self {
+            buffer_manager: RefCell::new(buffer_manager),
+            max_apdu_length: Cell::new(max_apdu_length),
+            device_info: Cell::new(None),
+        }
+    }
+
+    /// Set the device information returned by `DeviceInfoContext`.
+    pub fn set_device_info(&self, info: DeviceInformation) {
+        self.device_info.set(Some(info));
     }
 }
 
@@ -69,5 +81,17 @@ impl BufferManagerContext for &mut MockContext {
 
     fn set_max_apdu_length(&self, length: u16) {
         self.max_apdu_length.set(length);
+    }
+}
+
+impl DeviceInfoContext for &MockContext {
+    fn device_information(&self) -> DeviceInformation {
+        self.device_info.get().expect("MockContext: device_info not set")
+    }
+}
+
+impl DeviceInfoContext for &mut MockContext {
+    fn device_information(&self) -> DeviceInformation {
+        self.device_info.get().expect("MockContext: device_info not set")
     }
 }

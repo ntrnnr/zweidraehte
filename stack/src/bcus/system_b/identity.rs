@@ -6,7 +6,8 @@
 //!
 //! Different platforms provide identity data from different sources:
 //! - **Testing/demos**: [`StaticIdentity`] with a hardcoded serial number
-//! - **Linux production**: Read from a config file at startup
+//! - **Linux production**: `FileIdentity` (in the `testutil` crate) — reads
+//!   from a JSON file at startup, with provisioning support
 //! - **Embedded production**: Read from OTP (one-time programmable) memory
 //!   or a dedicated flash sector
 

@@ -292,11 +292,11 @@ where
     }
 
     fn programming_mode(&self) -> ProgrammingMode {
-        self.device.borrow().programming_mode
+        ProgrammingMode::from(self.state.is_programming_mode())
     }
 
     fn set_programming_mode(&self, value: ProgrammingMode) {
-        self.device.borrow_mut().programming_mode = value;
+        self.state.set_programming_mode(value.enabled());
     }
 
     fn routing_count(&self) -> RoutingCount {

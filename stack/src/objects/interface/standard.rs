@@ -79,11 +79,20 @@ crate::define_interface_object! {
         pid::HARDWARE_TYPE => hardware_type: PDT_Generic06, ReadOnly,
         pid::DEVICE_DESCRIPTOR => device_descriptor: PDT_UnsignedInt, ReadOnly,
         // These are now stored directly in the DeviceObject with semantic types
-        pid::ROUTING_COUNT => routing_count: RoutingCount, ReadWrite,
-        pid::PROGMODE => programming_mode: ProgrammingMode, ReadWrite
+        pid::ROUTING_COUNT => routing_count: RoutingCount, ReadWrite
     }
     state {
-        // State-backed properties (read/written via closures)
+        // Programming mode is backed by StackState so both the application
+        // layer (via property read/write) and the link layer (for discovery
+        // responses) see the same value.
+        pid::PROGMODE => {
+            read: |s| [if s.is_programming_mode() { 0x01 } else { 0x00 }],
+            write: |s, data| {
+                s.set_programming_mode(data[0] != 0);
+                Ok(())
+            }
+        }: ProgrammingMode, ReadWrite,
+
         // Serial number is read from StackState
         pid::SERIAL_NUMBER => {
             read: |s| *s.serial_number(),

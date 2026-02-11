@@ -1,6 +1,7 @@
 //! Device State Storage
 //!
-//! Provides storage backends for persisting device configuration.
+//! Provides storage backends for persisting device configuration and
+//! device identity.
 //!
 //! # Example
 //!
@@ -11,6 +12,9 @@
 //! let mut storage = JsonStorage::new("device_state.json");
 //! // Storage is automatically used when device state changes
 //! ```
+
+mod file_identity;
+pub use file_identity::{FileIdentity, FileIdentityError};
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};

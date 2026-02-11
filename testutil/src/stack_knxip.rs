@@ -113,7 +113,6 @@ use embassy_executor::Spawner;
 use embassy_sync::pubsub::WaitResult;
 use embassy_time::Duration;
 use env_logger::Env;
-use platform::address::EthernetAddress;
 use static_cell::StaticCell;
 use std::net::Ipv4Addr;
 use zweidraehte::{
@@ -123,7 +122,7 @@ use zweidraehte::{
     ets::EtsComObjects,
     layers::linklayers::knxip::KnxNetIpBuilder,
     memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
-    messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium},
+    messages::knxip::substructs::HPAI,
     objects::comm::{ComObject, ComObjectIndex, ComObjects},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
@@ -307,6 +306,7 @@ pub struct KnxIpInterfaceObjects<'a, S>
 where
     S: IpStackState,
 {
+    state: &'a S,
     pub device: RefCell<DeviceObject<'a, S>>,
     pub addr_table: RefCell<AddressTableObject<'a, stack_test_config::AddrTab>>,
     pub asso_table: RefCell<AssociationTableObject<'a, stack_test_config::AssoTab>>,
@@ -339,6 +339,7 @@ where
 
         // Using 0 for alloc addresses since NoMemoryMap is used (no memory-mapped access)
         Self {
+            state,
             device: RefCell::new(device),
             addr_table: RefCell::new(AddressTableObject::new(state.adt(), 0)),
             asso_table: RefCell::new(AssociationTableObject::new(state.ast(), 0)),
@@ -463,11 +464,11 @@ where
     }
 
     fn programming_mode(&self) -> zweidraehte::dpt::ProgrammingMode {
-        self.device.borrow().programming_mode
+        zweidraehte::dpt::ProgrammingMode::from(self.state.is_programming_mode())
     }
 
     fn set_programming_mode(&self, value: zweidraehte::dpt::ProgrammingMode) {
-        self.device.borrow_mut().programming_mode = value;
+        self.state.set_programming_mode(value.enabled());
     }
 
     fn routing_count(&self) -> zweidraehte::dpt::RoutingCount {
@@ -748,20 +749,9 @@ async fn main(spawner: Spawner) {
     // Create KNX/IP link layer
     let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.106.6".parse().unwrap(), port: 3671 };
 
-    let device_info = DeviceInformation {
-        medium: KNXMedium::KNXIP,
-        device_status: DeviceStatus::None,
-        individual_address: IndividualAddress::new(1, 1, 0),
-        project_installation_identifier: 0x1234,
-        knx_serial_number: [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78],
-        routing_multicast_address: core::net::Ipv4Addr::new(224, 0, 23, 12),
-        mac_address: EthernetAddress([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]),
-        friendly_name: *b"KNX Stack Test\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    };
-
     let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
     let link_layer_builder = KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new("knxdevbridgeif", interface_addr)
-        .enable_discovery_server(control_endpoint, device_info)
+        .enable_discovery_server(control_endpoint)
         .enable_routing_server()
         .enable_device_management();
 

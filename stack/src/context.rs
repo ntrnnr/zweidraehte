@@ -7,6 +7,7 @@
 use core::cell::RefCell;
 
 use crate::messages::buffers::DynBufferManager;
+use crate::messages::knxip::substructs::DeviceInformation;
 use crate::objects::interface::PropertyServiceHandler;
 
 /// Provides access to the buffer manager for allocating and freeing message buffers
@@ -39,5 +40,18 @@ pub trait BufferManagerContext {
 pub trait PropertyServiceContext {
     /// Get a reference to the property service handler.
     fn property_handler(&self) -> &dyn PropertyServiceHandler;
+}
+
+/// Provides access to dynamic device information for KNX/IP discovery.
+///
+/// Implemented by the stack's runtime context so the KNX/IP link layer
+/// can build fresh [`DeviceInformation`] on each discovery request,
+/// reflecting current programming mode, individual address, etc.
+///
+/// Only implemented when the device state is [`IpStackState`](crate::IpStackState),
+/// since discovery is a KNX/IP-only concept.
+pub trait DeviceInfoContext {
+    /// Build a [`DeviceInformation`] reflecting the current device state.
+    fn device_information(&self) -> DeviceInformation;
 }
 

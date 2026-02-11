@@ -9,20 +9,17 @@
 
 #![cfg_attr(not(test), feature(adt_const_params))]
 
-use core::net::Ipv4Addr;
-
 use embassy_executor::Spawner;
 use embassy_sync::pubsub::WaitResult;
 use embassy_time::Duration;
 use env_logger::Env;
-use platform::address::EthernetAddress;
 use static_cell::StaticCell;
 use zweidraehte::{
     Runner, Stack, StackDefinition, StackResources, StackState,
     address::IndividualAddress,
-    bcus::system_b::{DeviceStorage, PersistedIpConfig, StaticIdentity},
+    bcus::system_b::{DeviceIdentity, DeviceStorage, PersistedIpConfig},
     layers::linklayers::knxip::KnxNetIpBuilder,
-    messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium},
+    messages::knxip::substructs::HPAI,
     objects::comm::ComObjects,
     objects::interface::HasDeviceObject,
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
@@ -30,14 +27,18 @@ use zweidraehte::{
 };
 
 use testutil::devices::system_b_demo::*;
-use testutil::storage::JsonStorage;
+use testutil::storage::{FileIdentity, JsonStorage};
 use testutil::util::keyboard;
-
-/// Device identity for the demo device.
-const IDENTITY: StaticIdentity = StaticIdentity::new(SERIAL_NUMBER);
 
 /// Default path for the device state JSON file.
 const STATE_FILE_PATH: &str = "system_b_device_state.json";
+
+/// Default path for the device identity file.
+///
+/// Contains the factory-programmed serial number in JSON format.
+/// Created automatically on first run with the default serial from
+/// the device definition. See [`FileIdentity`] for details.
+const IDENTITY_FILE_PATH: &str = "device_identity.json";
 
 // ============================================================================
 // State Persistence
@@ -164,10 +165,14 @@ async fn main(spawner: Spawner) {
 
     println!("=== System B Device Test Utility ===\n");
 
+    // Load device identity from file (provisions with default serial on first run).
+    let identity =
+        FileIdentity::load_or_provision(IDENTITY_FILE_PATH, SERIAL_NUMBER).expect("load or provision device identity");
+
     // Print device information
     println!("Device Configuration:");
     println!("  Mask Version: {:04X} (KNX/IP System B)", DEVICE_DESCRIPTOR.mask_version);
-    println!("  Serial Number: {:02X?}", SERIAL_NUMBER);
+    println!("  Serial Number: {:02X?}", identity.serial_number());
     println!("  Manufacturer ID: {:04X}", DEVICE_DESCRIPTOR.manufacturer_id);
     println!();
 
@@ -176,11 +181,11 @@ async fn main(spawner: Spawner) {
     let device_state: DemoState = match storage.load::<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, PersistedIpConfig>() {
         Ok(Some(persisted)) => {
             println!("Loaded persisted state from {}", STATE_FILE_PATH);
-            DemoState::from_persisted(JsonStorage::new(STATE_FILE_PATH), &IDENTITY, persisted)
+            DemoState::from_persisted(JsonStorage::new(STATE_FILE_PATH), &identity, persisted)
         }
         Ok(None) => {
             println!("No persisted state found, starting fresh");
-            let state = DemoState::new(JsonStorage::new(STATE_FILE_PATH), &IDENTITY);
+            let state = DemoState::new(JsonStorage::new(STATE_FILE_PATH), &identity);
             state.set_individual_address(IndividualAddress::new(1, 2, 3));
             if let Err(e) = storage.save(&state.to_persisted()) {
                 log::error!("Failed to save initial state: {}", e);
@@ -189,26 +194,16 @@ async fn main(spawner: Spawner) {
         }
         Err(e) => {
             println!("Error loading persisted state: {}", e);
-            DemoState::new(JsonStorage::new(STATE_FILE_PATH), &IDENTITY)
+            DemoState::new(JsonStorage::new(STATE_FILE_PATH), &identity)
         }
     };
 
     // Create KNX/IP link layer
     let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.1.200".parse().unwrap(), port: 3671 };
-    let device_info = DeviceInformation {
-        medium: KNXMedium::KNXIP,
-        device_status: DeviceStatus::None,
-        individual_address: device_state.individual_address(),
-        project_installation_identifier: 0x5678,
-        knx_serial_number: SERIAL_NUMBER,
-        routing_multicast_address: Ipv4Addr::new(224, 0, 23, 12),
-        mac_address: EthernetAddress([0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE]),
-        friendly_name: *b"System B Test\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    };
 
     let interface_addr = platform::get_interface_address(INTERFACE_NAME).expect("Failed to get interface address");
     let link_layer_builder = KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new(INTERFACE_NAME, interface_addr)
-        .enable_discovery_server(control_endpoint, device_info)
+        .enable_discovery_server(control_endpoint)
         .enable_routing_server()
         .enable_device_management();
 

@@ -95,7 +95,9 @@ async fn main(spawner: Spawner) {
 
     let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.106.6".parse().unwrap(), port: 3671 };
 
-    let device_info = DeviceInformation {
+    // Set device info on the mock context — discovery responses will
+    // build DeviceInformation on demand from this.
+    context.set_device_info(DeviceInformation {
         medium: KNXMedium::KNXIP,
         device_status: DeviceStatus::None,
         individual_address: IndividualAddress::new(1, 1, 0),
@@ -104,11 +106,11 @@ async fn main(spawner: Spawner) {
         routing_multicast_address: core::net::Ipv4Addr::new(224, 0, 23, 12),
         mac_address: EthernetAddress([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]),
         friendly_name: *b"KNX Test Device\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    };
+    });
 
     let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
     let kb = KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new("knxdevbridgeif", interface_addr)
-        .enable_discovery_server(control_endpoint, device_info)
+        .enable_discovery_server(control_endpoint)
         .enable_routing_server();
 
     println!("Starting KNXnet/IP link layer with Discovery and Routing Servers");

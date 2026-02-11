@@ -27,6 +27,29 @@ use crate::{
 
 pub mod servers;
 
+use crate::messages::knxip::substructs::DeviceInformation;
+
+/// Trait object interface for building [`DeviceInformation`] on demand.
+///
+/// Erases the generic context type so [`KnxNetIp`] and all server types
+/// stay non-generic over the context. Servers that need device information
+/// (discovery, connection manager, etc.) obtain a reference to this
+/// through [`ServerContext`] and call it when they actually need it.
+pub trait DeviceInfoProvider {
+    /// Build a [`DeviceInformation`] reflecting the current device state.
+    fn device_information(&self) -> DeviceInformation;
+}
+
+/// Any type that implements [`DeviceInfoContext`] automatically satisfies
+/// [`DeviceInfoProvider`], since both traits expose the same operation.
+/// This lets `build_and_run` pass `context` directly as `&dyn DeviceInfoProvider`
+/// without an adapter struct.
+impl<T: crate::context::DeviceInfoContext> DeviceInfoProvider for T {
+    fn device_information(&self) -> DeviceInformation {
+        crate::context::DeviceInfoContext::device_information(self)
+    }
+}
+
 /// Protocol type for KNX/IP endpoints
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
@@ -192,7 +215,11 @@ pub struct PendingResponse {
     pub socket_idx: usize,
 }
 
-/// Context provided to servers for accessing stack resources
+/// Context provided to servers for accessing stack resources.
+///
+/// Constructed fresh on every server dispatch from [`KnxNetIp`]'s fields.
+/// Includes an optional [`DeviceInfoProvider`] so servers like the
+/// discovery server can build [`DeviceInformation`] on demand.
 pub struct ServerContext<'a> {
     /// Buffer manager for allocating message buffers
     buffer_manager: &'a RefCell<DynBufferManager<'static>>,
@@ -200,6 +227,8 @@ pub struct ServerContext<'a> {
     network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     /// Maximum APDU length this device can handle
     max_apdu_length: u16,
+    /// Device info provider for building `DeviceInformation` on demand.
+    device_info: &'a dyn DeviceInfoProvider,
 }
 
 impl<'a> ServerContext<'a> {
@@ -208,13 +237,21 @@ impl<'a> ServerContext<'a> {
         buffer_manager: &'a RefCell<DynBufferManager<'static>>,
         network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         max_apdu_length: u16,
+        device_info: &'a dyn DeviceInfoProvider,
     ) -> Self {
-        Self { buffer_manager, network_layer_tx, max_apdu_length }
+        Self { buffer_manager, network_layer_tx, max_apdu_length, device_info }
     }
 
     /// Get the maximum APDU length this device can handle
     pub fn max_apdu_length(&self) -> u16 {
         self.max_apdu_length
+    }
+
+    /// Get the device info provider. Servers can call
+    /// `device_info().device_information()` to build a fresh
+    /// [`DeviceInformation`] reflecting the current device state.
+    pub fn device_info(&self) -> &dyn DeviceInfoProvider {
+        self.device_info
     }
 
     /// Send an indication to the network layer (L_Data.ind)
@@ -309,7 +346,6 @@ const MAX_SERVERS: usize = 2;
 /// Builder configuration for the discovery server
 struct DiscoveryConfig {
     control_endpoint: substructs::HPAI,
-    device_info: substructs::DeviceInformation,
 }
 
 /// Builder for KnxNetIp link layer.
@@ -372,13 +408,11 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
     ///
     /// # Arguments
     /// * `control_endpoint` - The HPAI to advertise as this device's control endpoint
-    /// * `device_info` - Device information to include in discovery responses
     pub fn enable_discovery_server(
         mut self,
         control_endpoint: substructs::HPAI,
-        device_info: substructs::DeviceInformation,
     ) -> Self {
-        self.discovery = Some(DiscoveryConfig { control_endpoint, device_info });
+        self.discovery = Some(DiscoveryConfig { control_endpoint });
         self
     }
 
@@ -417,6 +451,10 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
     ///
     /// The `property_handler` is used by the connection manager to service
     /// Device Management property read/write requests from ETS.
+    ///
+    /// The `device_info_provider` is passed through to
+    /// [`ServerContext`] so discovery and other servers can build
+    /// [`DeviceInformation`] on demand from current device state.
     pub fn build<'res>(
         self,
         resources: &'res mut KnxNetIpResources<T, MAX_SOCKETS>,
@@ -424,6 +462,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
         max_apdu_length: u16,
         property_handler: &'res dyn crate::objects::interface::PropertyServiceHandler,
+        device_info_provider: &'res dyn DeviceInfoProvider,
     ) -> KnxNetIp<'res, T, MAX_SOCKETS> {
         // Initialize response channel
         let _response_channel = resources.response_channel.write(Channel::new());
@@ -464,7 +503,6 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         if let Some(discovery) = self.discovery {
             let server = servers::DiscoveryServer::new(
                 discovery.control_endpoint,
-                discovery.device_info,
                 supported_services,
             );
 
@@ -629,6 +667,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
             retry_queue: Vec::new(),
             max_apdu_length,
             connection_manager,
+            device_info_provider,
         }
     }
 }
@@ -643,13 +682,16 @@ impl<T: IpTransport + 'static, const MAX_SOCKETS: usize> LinkLayerBuilderBase
     }
 }
 
-/// KNX/IP requires both buffer management and property service access.
-/// The property handler is used by the connection manager for Device
-/// Management connections (M_PropRead/M_PropWrite from ETS).
+/// KNX/IP requires buffer management, property service access, and
+/// (optionally) device info for discovery responses. The property handler
+/// is used by the connection manager for Device Management connections
+/// (M_PropRead/M_PropWrite from ETS).
 impl<CTX, T: IpTransport + 'static, const MAX_SOCKETS: usize>
     LinkLayerBuilder<CTX> for KnxNetIpBuilder<T, MAX_SOCKETS>
 where
-    CTX: crate::context::BufferManagerContext + crate::context::PropertyServiceContext,
+    CTX: crate::context::BufferManagerContext
+        + crate::context::PropertyServiceContext
+        + crate::context::DeviceInfoContext,
 {
     fn build_and_run<'a>(
         self,
@@ -658,13 +700,16 @@ where
         network_layer: DynamicSender<'a, LayerOp<crate::messages::buffers::Buffer<'static>>>,
         inbox: impl Inbox<LayerOp<crate::messages::buffers::Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
-        // Build the link layer instance, providing the property handler from the context
+        // Build the link layer instance. The blanket impl
+        //   `impl<T: DeviceInfoContext> DeviceInfoProvider for T`
+        // lets us pass `context` directly as `&dyn DeviceInfoProvider`.
         let mut link_layer = self.build(
             resources,
             context.buffer_manager(),
             network_layer,
             context.max_apdu_length(),
             context.property_handler(),
+            context,
         );
 
         // Run the link layer's process loop
@@ -712,6 +757,8 @@ pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize> {
     /// Connection manager for connection-oriented services.
     /// Always present; without registered handlers it's a no-op.
     connection_manager: servers::ConnectionManager<'res>,
+    /// Device info provider for building `DeviceInformation` on demand.
+    device_info_provider: &'res dyn DeviceInfoProvider,
 }
 
 impl<'res, T: IpTransport, const MAX_SOCKETS: usize> KnxNetIp<'res, T, MAX_SOCKETS> {
@@ -736,7 +783,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> KnxNetIp<'res, T, MAX_SOCKE
                 for server in &mut self.server_instances {
                     if server.handler.supports_requests() {
                         let context =
-                            ServerContext::new(self.buffer_manager, self.network_layer_tx, self.max_apdu_length);
+                            ServerContext::new(self.buffer_manager, self.network_layer_tx, self.max_apdu_length, self.device_info_provider);
                         match server.handler.on_request(&*pending.message, &context).await {
                             Ok(responses) => {
                                 // Success! Send responses and confirmation
@@ -998,6 +1045,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res>
                                             self.buffer_manager,
                                             self.network_layer_tx,
                                             self.max_apdu_length,
+                                            self.device_info_provider,
                                         );
 
                                         match server
@@ -1060,6 +1108,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res>
                                                 self.buffer_manager,
                                                 self.network_layer_tx,
                                                 self.max_apdu_length,
+                                                self.device_info_provider,
                                             );
                                             match server
                                                 .handler
