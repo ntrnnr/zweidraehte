@@ -79,7 +79,7 @@ impl HardwareGenerator {
             hardware2programs: Hardware2Programs {
                 hardware2program: Hardware2Program {
                     id: h2p_id,
-                    medium_types: medium_type_from_mask(config.device.mask_version).to_string(),
+                    medium_types: medium_type_from_mask(config.device.mask_version.as_u16()).to_string(),
                     application_program_ref: ApplicationProgramRef { ref_id: app_id },
                 },
             },

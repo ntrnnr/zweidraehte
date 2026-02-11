@@ -1,4 +1,4 @@
-//! Core KNX schema types: MaskFamily, root elements, ApplicationProgram.
+//! Core KNX schema types: root elements, ApplicationProgram, MTXML generation helpers.
 
 use serde::{Deserialize, Serialize};
 
@@ -7,56 +7,35 @@ use super::languages::Languages;
 use super::modules::ModuleDefs;
 use super::static_section::StaticSection;
 
+// Re-export MaskFamily from the stack crate. The enum and
+// `from_mask_version()` live in `zweidraehte::messages::knx`;
+// generation-specific behaviour is added via `MaskFamilyExt` below.
+pub use zweidraehte::ets::MaskFamily;
+
 // ============================================================================
-// Mask Version Configuration
+// Mask Family — MTXML Generation Extensions
 // ============================================================================
 
-/// Configuration for different KNX mask versions.
+/// MTXML-generation-specific behaviour for [`MaskFamily`].
 ///
-/// Different masks have different memory models, load procedures, and features.
-/// This enum captures the mask-specific behavior needed for MTXML generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MaskFamily {
-    /// System 7 masks (0701, 0705, 2705, 5705)
-    /// - Absolute memory segments
-    /// - ProductProcedure load style
-    /// - ComObject indices start at 0
-    System7,
-    /// System B masks (07B0, 27B0, 57B0)
-    /// - Relative memory segments with load state machines
-    /// - MergedProcedure load style
-    /// - ComObject indices start at 1
-    /// - Generates address/association tables
-    SystemB,
-    /// BIM masks (0912, 091A)
-    /// - Absolute memory segments
-    /// - DefaultProcedure load style
-    /// - No ComObject table
-    Bim,
-    /// BIM M masks (0920, 2920)
-    /// - Absolute memory segments
-    /// - MergedProcedure load style
-    /// - No ComObject table
-    BimM,
+/// These methods encode knowledge about load procedures, memory segment
+/// types, and table generation that is only relevant when producing
+/// knxprod / MTXML output.
+pub trait MaskFamilyExt {
+    /// Get the load procedure style for this mask family.
+    fn load_procedure_style(&self) -> &'static str;
+    /// Get the data segment type for this mask family.
+    fn data_segment_type(&self) -> DataSegmentType;
+    /// Get the starting index for communication objects.
+    fn com_object_start_index(&self) -> u16;
+    /// Whether this mask family uses a ComObject table.
+    fn has_com_object_table(&self) -> bool;
+    /// Whether this mask family generates address/association tables.
+    fn generates_address_tables(&self) -> bool;
 }
 
-impl MaskFamily {
-    /// Determine mask family from mask version ID
-    pub fn from_mask_version(mask: u16) -> Self {
-        match mask {
-            0x0701 | 0x0705 | 0x2705 | 0x5705 | 0x0700 => MaskFamily::System7,
-            0x07B0 | 0x17B0 | 0x27B0 | 0x57B0 => MaskFamily::SystemB,
-            0x0912 | 0x091A => MaskFamily::Bim,
-            0x0920 | 0x2920 => MaskFamily::BimM,
-            // Default to SystemB for unknown masks with 'B0' suffix
-            m if (m & 0x00FF) == 0x00B0 => MaskFamily::SystemB,
-            // Default to System7 for other unknown masks
-            _ => MaskFamily::System7,
-        }
-    }
-
-    /// Get the load procedure style for this mask family
-    pub fn load_procedure_style(&self) -> &'static str {
+impl MaskFamilyExt for MaskFamily {
+    fn load_procedure_style(&self) -> &'static str {
         match self {
             MaskFamily::System7 => "ProductProcedure",
             MaskFamily::SystemB => "MergedProcedure",
@@ -65,35 +44,30 @@ impl MaskFamily {
         }
     }
 
-    /// Get the data segment type for this mask family
-    pub fn data_segment_type(&self) -> DataSegmentType {
+    fn data_segment_type(&self) -> DataSegmentType {
         match self {
             MaskFamily::System7 | MaskFamily::Bim | MaskFamily::BimM => DataSegmentType::Absolute,
             MaskFamily::SystemB => DataSegmentType::Relative,
         }
     }
 
-    /// Get the starting index for communication objects.
-    /// Always 0 - the index in the struct is the index in the XML.
-    pub fn com_object_start_index(&self) -> u16 {
+    fn com_object_start_index(&self) -> u16 {
         0
     }
 
-    /// Whether this mask family uses a ComObject table
-    pub fn has_com_object_table(&self) -> bool {
+    fn has_com_object_table(&self) -> bool {
         match self {
             MaskFamily::System7 | MaskFamily::SystemB => true,
             MaskFamily::Bim | MaskFamily::BimM => false,
         }
     }
 
-    /// Whether this mask family generates address/association tables
-    pub fn generates_address_tables(&self) -> bool {
+    fn generates_address_tables(&self) -> bool {
         matches!(self, MaskFamily::SystemB | MaskFamily::System7)
     }
 }
 
-/// Type of data segment used by the mask
+/// Type of data segment used by the mask.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataSegmentType {
     /// Absolute memory addresses (System 7, BIM)

@@ -4,13 +4,12 @@
 //! - Runtime state (individual address, auth keys)
 //! - ETS-loaded tables (ADT, AST, COT, APP)
 //! - Configuration (routing count)
-//! - Storage management (dirty tracking, persistence)
+//! - Dirty tracking (the binary owns storage separately)
 //! - Link-layer-specific persistent state (IP config for KNX/IP, `()` for TP1)
 //!
 //! This is the single source of truth for all device state.
 
 use core::cell::{Cell, RefCell};
-use core::marker::PhantomData;
 use core::net::Ipv4Addr;
 
 use const_default::ConstDefault;
@@ -25,7 +24,7 @@ use crate::{
     },
 };
 
-use super::{DeviceIdentity, DeviceStorage, KnxIpDevice, LinkLayerState, PersistedIpConfig, PersistedState, SystemBDevice};
+use super::{DeviceIdentity, LinkLayerState, PersistedIpConfig, PersistedState};
 
 // ============================================================================
 // Unified Device State
@@ -66,7 +65,6 @@ use super::{DeviceIdentity, DeviceStorage, KnxIpDevice, LinkLayerState, Persiste
 /// - `AST_SIZE`: Association table size in bytes (2 + MAX_ASSO * 4)
 /// - `COT_SIZE`: Group object table size in bytes (2 + MAX_CO * 2)
 /// - `P`: Application parameters type
-/// - `D`: Device type implementing [`SystemBDevice`]
 /// - `LS`: Link-layer-specific persistent runtime state (e.g.,
 ///   [`IpLinkLayerState`] for KNX/IP, `()` for TP1)
 pub struct SystemBDeviceState<
@@ -74,7 +72,6 @@ pub struct SystemBDeviceState<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault,
-    D: SystemBDevice,
     LS: LinkLayerState = (),
 > {
     // ========================================================================
@@ -132,19 +129,18 @@ pub struct SystemBDeviceState<
     link_layer_state: LS,
 
     // ========================================================================
-    // Storage Management
+    // Dirty Tracking
     // ========================================================================
-    /// Storage backend for persistence.
-    storage: RefCell<D::Storage>,
-
     /// Dirty flag indicating unsaved changes.
+    ///
+    /// Set by `mark_dirty()` whenever persistent state changes.
+    /// The binary is responsible for checking `is_dirty()` and saving
+    /// state via its own storage backend.
     dirty: Cell<bool>,
-
-    _phantom: PhantomData<D>,
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: SystemBDevice, LS: LinkLayerState>
-    SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
+    SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
 {
     /// Create new device state with factory defaults.
     ///
@@ -156,9 +152,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     ///
     /// # Arguments
     ///
-    /// - `storage`: Storage backend for persistence
     /// - `identity`: Factory-programmed device identity (serial number, etc.)
-    pub fn new(storage: D::Storage, identity: &impl DeviceIdentity) -> Self {
+    pub fn new(identity: &impl DeviceIdentity) -> Self {
         Self {
             individual_address: Cell::new(IndividualAddress::new(15, 15, 255)),
             serial_number: *identity.serial_number(),
@@ -173,9 +168,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
             program_version: RefCell::new([0; 5]),
             pei_program_version: RefCell::new([0; 5]),
             link_layer_state: LS::from_config(LS::Config::default()),
-            storage: RefCell::new(storage),
             dirty: Cell::new(false),
-            _phantom: PhantomData,
         }
     }
 
@@ -190,11 +183,9 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     ///
     /// # Arguments
     ///
-    /// - `storage`: Storage backend for persistence
     /// - `identity`: Factory-programmed device identity (serial number, etc.)
     /// - `persisted`: Previously persisted state to restore
     pub fn from_persisted(
-        storage: D::Storage,
         identity: &impl DeviceIdentity,
         persisted: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS::Config>,
     ) -> Self {
@@ -228,9 +219,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
             program_version: RefCell::new(program_version),
             pei_program_version: RefCell::new(pei_program_version),
             link_layer_state: LS::from_config(link_layer_config),
-            storage: RefCell::new(storage),
             dirty: Cell::new(false),
-            _phantom: PhantomData,
         }
     }
 
@@ -268,17 +257,11 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     /// Mark state as dirty (needs save).
     pub fn mark_dirty(&self) {
         self.dirty.set(true);
-        self.storage.borrow_mut().mark_dirty();
     }
 
     /// Clear the dirty flag.
     pub fn clear_dirty(&self) {
         self.dirty.set(false);
-    }
-
-    /// Get a reference to the storage backend.
-    pub fn storage(&self) -> &RefCell<D::Storage> {
-        &self.storage
     }
 
     /// Get the current individual address.
@@ -404,8 +387,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 
 use crate::restart::{EraseCode, RestartError, RestartHandler};
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: SystemBDevice, LS: LinkLayerState>
-    RestartHandler for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
+    RestartHandler for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
 {
     fn supports_erase_code(&self, code: EraseCode) -> bool {
         // System B devices support all standard erase codes
@@ -469,10 +452,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 // StackState Implementation
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: SystemBDevice, LS: LinkLayerState>
-    StackState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D, LS>
-where
-    D::Storage: Default,
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
+    StackState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
 {
     fn individual_address(&self) -> IndividualAddress {
         self.individual_address.get()
@@ -534,8 +515,8 @@ where
 // Table Accessor Trait Implementations
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: SystemBDevice, LS: LinkLayerState>
-    HasAddressTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
+    HasAddressTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
 {
     type ADT = Table<AddrTab7Impl<ADT_SIZE>>;
 
@@ -544,8 +525,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: SystemBDevice, LS: LinkLayerState>
-    HasAssociationTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
+    HasAssociationTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
 {
     type AST = Table<AssoTab6Impl<AST_SIZE>>;
 
@@ -554,8 +535,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: SystemBDevice, LS: LinkLayerState>
-    HasCommunicationObjectTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
+    HasCommunicationObjectTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
 {
     type COT = Table<CoTab7Impl<COT_SIZE>>;
 
@@ -564,8 +545,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: SystemBDevice, LS: LinkLayerState>
-    HasApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
+    HasApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
 {
     type APP = Application<P>;
 
@@ -574,8 +555,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: SystemBDevice, LS: LinkLayerState>
-    HasPeiApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
+    HasPeiApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
 {
     type PEI = PeiApplication;
 
@@ -584,8 +565,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: SystemBDevice, LS: LinkLayerState>
-    HasRoutingCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
+    HasRoutingCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
 {
     fn routing_count(&self) -> u8 {
         self.routing_count.get()
@@ -603,11 +584,11 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 /// It bridges the serializable [`PersistedIpConfig`] and the runtime
 /// representation with `Cell`/`RefCell` fields.
 ///
-/// The platform `D::Platform` is used to query current network state
+/// The platform `P` is used to query current network state
 /// (actual IP address, MAC address, etc.) from the operating system.
-pub struct IpLinkLayerState<D: KnxIpDevice> {
+pub struct IpLinkLayerState<P: IpPlatform> {
     /// Platform for querying current network values.
-    platform: D::Platform,
+    platform: P,
 
     // ========================================================================
     // Persistent IP configuration
@@ -623,9 +604,9 @@ pub struct IpLinkLayerState<D: KnxIpDevice> {
     project_installation_id: Cell<u16>,
 }
 
-impl<D: KnxIpDevice> IpLinkLayerState<D> {
+impl<P: IpPlatform> IpLinkLayerState<P> {
     /// Get the platform (for querying current network state).
-    pub fn platform(&self) -> &D::Platform {
+    pub fn platform(&self) -> &P {
         &self.platform
     }
 
@@ -645,12 +626,12 @@ impl<D: KnxIpDevice> IpLinkLayerState<D> {
     }
 }
 
-impl<D: KnxIpDevice> LinkLayerState for IpLinkLayerState<D> {
+impl<P: IpPlatform + Default> LinkLayerState for IpLinkLayerState<P> {
     type Config = PersistedIpConfig;
 
     fn from_config(config: PersistedIpConfig) -> Self {
         Self {
-            platform: D::Platform::default(),
+            platform: P::default(),
             friendly_name: RefCell::new(config.friendly_name),
             friendly_name_len: Cell::new(config.friendly_name_len as usize),
             configured_ip: Cell::new(Ipv4Addr::from(config.configured_ip)),
@@ -692,6 +673,12 @@ impl<D: KnxIpDevice> LinkLayerState for IpLinkLayerState<D> {
 /// IP-specific configuration accessible through the `link_layer_state()`
 /// method and the [`IpStackState`] trait implementation.
 ///
+/// # Generic Parameters
+///
+/// - `ADT_SIZE`, `AST_SIZE`, `COT_SIZE`: Table sizes (see [`SystemBDeviceState`])
+/// - `P`: Application parameters type
+/// - `Plat`: Platform type implementing [`IpPlatform`] for network queries
+///
 /// # Example
 ///
 /// ```rust,ignore
@@ -701,8 +688,8 @@ impl<D: KnxIpDevice> LinkLayerState for IpLinkLayerState<D> {
 ///
 /// const SERIAL: [u8; 6] = [0x00, 0xFA, 0xDE, 0xAD, 0xBE, 0xEF];
 /// let identity = StaticIdentity::new(SERIAL);
-/// let state: IpSystemBDeviceState<ADT, AST, COT, Params, MyDevice> =
-///     IpSystemBDeviceState::new(storage, &identity);
+/// let state: IpSystemBDeviceState<ADT, AST, COT, Params, MyPlatform> =
+///     IpSystemBDeviceState::new(&identity);
 ///
 /// // Access IP config through link_layer_state():
 /// let platform = state.link_layer_state().platform();
@@ -712,8 +699,8 @@ pub type IpSystemBDeviceState<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P,
-    D,
-> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D, IpLinkLayerState<D>>;
+    Plat,
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpLinkLayerState<Plat>>;
 
 // ============================================================================
 // IpStackState Implementation for IP Devices
@@ -726,11 +713,8 @@ pub type IpSystemBDeviceState<
 ///
 /// The `mark_dirty()` calls on setters ensure changes are tracked
 /// for persistence.
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, D: KnxIpDevice> IpStackState
-    for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, D, IpLinkLayerState<D>>
-where
-    D::Storage: Default,
-    D::Platform: Default,
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, Plat: IpPlatform + Default> IpStackState
+    for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpLinkLayerState<Plat>>
 {
     fn current_ip_address(&self) -> Ipv4Addr {
         self.link_layer_state.platform.current_ip_address()

@@ -1046,7 +1046,7 @@ where
                     data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4].copy_from_slice(&mask_version);
                 });
 
-            debug!("AL sending DeviceDescriptorResponse: mask_version={:04x}", D::DEVICE.mask_version);
+            debug!("AL sending DeviceDescriptorResponse: mask_version={}", D::DEVICE.mask_version);
 
             let confirmation = self.transport_layer.request(msg).await;
             trace!("AL DeviceDescriptorResponse confirmation: {:?}", confirmation.service_type());

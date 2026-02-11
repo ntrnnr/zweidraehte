@@ -255,7 +255,7 @@ pub struct ApplicationProgramConfig<'a> {
 impl<'a> ApplicationProgramConfig<'a> {
     /// Get the mask family for this configuration
     pub fn mask_family(&self) -> MaskFamily {
-        MaskFamily::from_mask_version(self.device.mask_version)
+        MaskFamily::from_mask_version(self.device.mask_version.as_u16())
     }
 
     /// Get the number of virtual params at the device level.

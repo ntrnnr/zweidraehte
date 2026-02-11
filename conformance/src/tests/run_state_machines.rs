@@ -9,7 +9,7 @@
 //! - PropertyValue_Write for run control (PID_RUN_STATE_CONTROL = 0x06)
 //! - Authorization requirements for run operations
 //!
-//! NOTE: Run state machine uses object index 03 (Application object) by default,
+//! NOTE: Run state machine uses object index 04 (Application Program object) by default,
 //! unlike Load state machine tests which use object index 02 (Association table).
 //!
 //! TODO: These tests currently FAIL because the stack does not implement a proper
@@ -27,13 +27,13 @@ use crate::{TestCase, TestSuite, TestVariable};
 /// Variables:
 /// - EDI: External Device Individual address (default: AF FE = 10.15.254)
 /// - BDUT: Basic Device Under Test (1.0.1 = 10 01)
-/// - TEST_OBJ_IDX: Object index under test (default: 03 = Application object)
+/// - TEST_OBJ_IDX: Object index under test (default: 04 = Application Program object)
 /// - LEV_0_KEY: Authorization key for level 0 (default: FF FF FF FF)
 pub fn create_test_variables() -> BTreeMap<String, TestVariable> {
     let mut vars = BTreeMap::new();
     vars.insert("EDI".to_string(), TestVariable::Bytes(vec![0xAF, 0xFE]));
     vars.insert("BDUT".to_string(), TestVariable::Bytes(vec![0x10, 0x01]));
-    vars.insert("TEST_OBJ_IDX".to_string(), TestVariable::Bytes(vec![0x03]));
+    vars.insert("TEST_OBJ_IDX".to_string(), TestVariable::Bytes(vec![0x04]));
     vars.insert("LEV_0_KEY".to_string(), TestVariable::Bytes(vec![0xFF, 0xFF, 0xFF, 0xFF]));
     vars
 }

@@ -332,7 +332,7 @@ pub const BAGGAGES: &[BaggageDef<'static>] = &[
 
 /// Device descriptor for 4-channel dimmer.
 pub const DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
-    mask_version: 0x57B0, // KNX/IP System B
+    mask_version: zweidraehte::ets::MaskVersion::SystemBKnxIp,
     manufacturer_id: 0x00FA,
     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x10],
     application_id: 0x1000,
@@ -340,6 +340,7 @@ pub const DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::e
     max_address_table_entries: 32,
     max_association_table_entries: 32,
     max_com_objects: 16, // 4 channels * 3 objects each + some extras
+    pei_type: 0,
 };
 
 /// Serial number for test device.

@@ -25,7 +25,7 @@
 //!
 //! const DEVICE: DeviceDescriptor = DeviceDescriptor {
 //!     // Hardware/firmware identification
-//!     mask_version: 0x07B0,
+//!     mask_version: MaskVersion::SystemBTp1,
 //!     manufacturer_id: 0x00FA,
 //!     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
 //!
@@ -37,6 +37,9 @@
 //!     max_address_table_entries: 64,
 //!     max_association_table_entries: 64,
 //!     max_com_objects: 32,
+//!
+//!     // PEI type (0 = no PEI)
+//!     pei_type: 0,
 //! };
 //! ```
 //!
@@ -75,6 +78,9 @@ pub use ets_macros::EtsParams;
 pub use ets_macros::EtsUnion;
 pub use ets_macros::ets_range_enum;
 
+pub use crate::messages::knx::{MaskFamily, MaskVersion};
+
+
 /// Device descriptor containing firmware/application-level metadata.
 ///
 /// This struct consolidates the **compile-time** information that identifies
@@ -96,7 +102,7 @@ pub use ets_macros::ets_range_enum;
 /// # Fields
 ///
 /// ## Hardware/Firmware Identification
-/// - `mask_version`: Device Descriptor Type 0 (e.g., 0x07B0 for System B TP1)
+/// - `mask_version`: Device Descriptor Type 0 (see [`MaskVersion`])
 /// - `manufacturer_id`: KNX manufacturer ID (assigned by KNX Association)
 /// - `hardware_type`: 6-byte hardware type identifier
 ///
@@ -115,11 +121,8 @@ pub struct DeviceDescriptor {
     // ========================================================================
     /// Device Descriptor Type 0 / Mask Version.
     ///
-    /// Common values:
-    /// - `0x07B0` - System B TP1 device
-    /// - `0x27B0` - System B TP1 device with extended frames
-    /// - `0x57B0` - System B KNX/IP device
-    pub mask_version: u16,
+    /// See [`MaskVersion`] for known variants.
+    pub mask_version: MaskVersion,
 
     /// KNX Manufacturer ID.
     ///
@@ -164,12 +167,18 @@ pub struct DeviceDescriptor {
     ///
     /// This should match the number of objects defined in the application.
     pub max_com_objects: u16,
+
+    /// PEI type (Physical External Interface).
+    ///
+    /// System B hardware concept. Most modern devices don't have a PEI,
+    /// so this is typically 0.
+    pub pei_type: u8,
 }
 
 impl DeviceDescriptor {
     /// Create a new device descriptor with the given values.
     pub const fn new(
-        mask_version: u16,
+        mask_version: MaskVersion,
         manufacturer_id: u16,
         hardware_type: [u8; 6],
         application_id: u16,
@@ -177,6 +186,7 @@ impl DeviceDescriptor {
         max_address_table_entries: u16,
         max_association_table_entries: u16,
         max_com_objects: u16,
+        pei_type: u8,
     ) -> Self {
         Self {
             mask_version,
@@ -187,6 +197,7 @@ impl DeviceDescriptor {
             max_address_table_entries,
             max_association_table_entries,
             max_com_objects,
+            pei_type,
         }
     }
 
@@ -215,17 +226,17 @@ impl DeviceDescriptor {
 
     /// Get the mask version as bytes (big-endian).
     pub const fn mask_version_bytes(&self) -> [u8; 2] {
-        [(self.mask_version >> 8) as u8, self.mask_version as u8]
+        self.mask_version.to_bytes()
     }
 
     /// Check if this is a KNX/IP device (mask version 57B0).
-    pub const fn is_knxip(&self) -> bool {
-        self.mask_version == 0x57B0
+    pub fn is_knxip(&self) -> bool {
+        self.mask_version.is_knxip()
     }
 
     /// Check if this is a TP1 device (mask version 07B0 or 27B0).
-    pub const fn is_tp1(&self) -> bool {
-        self.mask_version == 0x07B0 || self.mask_version == 0x27B0
+    pub fn is_tp1(&self) -> bool {
+        self.mask_version.is_tp1()
     }
 
     /// Get the address table size in bytes.

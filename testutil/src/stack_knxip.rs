@@ -277,15 +277,6 @@ mod device_info {
     /// Format: bytes 0-1 = manufacturer ID (0x00FA), bytes 2-5 = device-specific
     pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
 
-    /// Hardware type identifier (6 bytes)
-    pub const HARDWARE_TYPE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-
-    /// Application program version (5 bytes: manufacturer, app_id, version)
-    pub const PROGRAM_VERSION: [u8; 5] = [0x00, 0xFA, 0x01, 0x00, 0x01];
-
-    /// PEI type (0 = no PEI)
-    pub const PEI_TYPE: u8 = 0x00;
-
     /// Project Installation ID for KNXnet/IP
     pub const PROJECT_INSTALLATION_ID: u16 = 0x1234;
 }
@@ -299,9 +290,14 @@ mod device_info {
 /// - Index 0: Device Object
 /// - Index 1: Address Table Object
 /// - Index 2: Association Table Object
-/// - Index 3: Application Program Object
-/// - Index 4: Group Object Table Object
+/// - Index 3: Application Program Object  (TODO: should be GOT per spec)
+/// - Index 4: Group Object Table Object   (TODO: should be App per spec)
 /// - Index 5: IP Parameter Object
+///
+/// NOTE: Indices 3 and 4 are swapped compared to the standard System B
+/// ordering. This is a legacy issue — the conformance harness and
+/// `create_knxip_objects` use the correct ordering (GOT=3, App=4).
+/// Also missing: PEI Program Object (index 5 in standard ordering).
 pub struct KnxIpInterfaceObjects<'a, S>
 where
     S: StackState + IpStackState,
@@ -327,13 +323,13 @@ where
     /// Create new interface objects from unified state
     pub fn new(state: &'a S) -> Self {
         // Create Device Object with device information and state reference
-        let device = DeviceObject::with_values(state, device_info::HARDWARE_TYPE);
+        let device = DeviceObject::with_values(state, KNXIP_DEVICE_DESCRIPTOR.hardware_type);
 
         // Create Application Program Object wrapping the application table
         // Using 0 for alloc address since NoMemoryMap is used (no memory-mapped access)
         let mut app_program = ApplicationProgramObject::new(state.app(), 0);
-        app_program.set_program_version(device_info::PROGRAM_VERSION.into());
-        app_program.set_pei_type(device_info::PEI_TYPE.into());
+        app_program.set_program_version(KNXIP_DEVICE_DESCRIPTOR.program_version().into());
+        app_program.set_pei_type(KNXIP_DEVICE_DESCRIPTOR.pei_type.into());
 
         // Create IP Parameter Object
         let ip_parameter = IpParameterObject::with_state(state);
@@ -697,7 +693,7 @@ pub type MyState = KnxIpState<MockIpPlatform>;
 
 /// Device descriptor for KNX/IP test stack
 const KNXIP_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
-    mask_version: 0x57B0, // KNX/IP
+    mask_version: zweidraehte::ets::MaskVersion::SystemBKnxIp,
     manufacturer_id: 0x00FA,
     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
     application_id: 0x0100,
@@ -705,6 +701,7 @@ const KNXIP_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte:
     max_address_table_entries: 30,
     max_association_table_entries: 30,
     max_com_objects: 30,
+    pei_type: 0,
 };
 
 #[derive(Debug, Clone, Copy)]

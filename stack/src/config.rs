@@ -246,23 +246,25 @@ macro_rules! knx_stack_config {
             co7_data: [u8; Self::CO7_SIZE],
         }
 
-        // Type aliases for the table types using MAX_ENTRIES
-        // AddrTab7 and CoTab7: (MAX_ENTRIES + 1) * 2 bytes (2 bytes per entry)
-        // AssoTab6: (MAX_ENTRIES + 1) * 4 bytes (4 bytes per entry: TSAP + ASAP)
+        // Type aliases for the table types using MAX_ENTRIES.
+        // All tables use a 2-byte count header followed by entries:
+        //   AddrTab7: 2 + MAX_ENTRIES * 2 bytes (2 bytes per group address)
+        //   AssoTab6: 2 + MAX_ENTRIES * 4 bytes (4 bytes per entry: TSAP u16 + ASAP u16)
+        //   CoTab7:   2 + MAX_ENTRIES * 2 bytes (2 bytes per comm object)
         pub type AddrTab = $crate::objects::tables::addr7::AddrTab7<{ $name::NUM_GROUP_ADDRS }>;
         pub type AssoTab = $crate::objects::tables::asso6::AssoTab6<{ $name::NUM_ASSOCIATIONS }>;
         pub type CoTab = $crate::objects::tables::co7::CoTab7<{ $name::NUM_COMM_OBJECTS }>;
 
         impl $name {
             // Calculate sizes at compile time
-            const NUM_GROUP_ADDRS: usize = $crate::knx_stack_config!(@count $($tsap)*);
-            const NUM_COMM_OBJECTS: usize = $crate::knx_stack_config!(@count $($asap)*);
-            const NUM_ASSOCIATIONS: usize = $crate::knx_stack_config!(@count_assocs $($assoc_tsap => [$($assoc_asap)*])*);
+            pub const NUM_GROUP_ADDRS: usize = $crate::knx_stack_config!(@count $($tsap)*);
+            pub const NUM_COMM_OBJECTS: usize = $crate::knx_stack_config!(@count $($asap)*);
+            pub const NUM_ASSOCIATIONS: usize = $crate::knx_stack_config!(@count_assocs $($assoc_tsap => [$($assoc_asap)*])*);
 
 
-            const ADDR7_SIZE: usize = 2 + Self::NUM_GROUP_ADDRS * 2;
-            const ASSO6_SIZE: usize = 2 + Self::NUM_ASSOCIATIONS * 4;  // Each association is 4 bytes: TSAP (2) + ASAP (2)
-            const CO7_SIZE: usize = 2 + Self::NUM_COMM_OBJECTS * 2;
+            pub const ADDR7_SIZE: usize = 2 + Self::NUM_GROUP_ADDRS * 2;
+            pub const ASSO6_SIZE: usize = 2 + Self::NUM_ASSOCIATIONS * 4;  // Each association is 4 bytes: TSAP (2) + ASAP (2)
+            pub const CO7_SIZE: usize = 2 + Self::NUM_COMM_OBJECTS * 2;
 
             pub const fn new() -> Self {
                 // Parse individual address at compile time

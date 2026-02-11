@@ -36,11 +36,6 @@ use zweidraehte::{
     messages::buffers::{Buffer, BufferManager, DynBufferManager, MessageBuffer},
     messages::knx::{KnxMessageBuffer, ServiceType},
     objects::comm::{ComObjectStatus, ComObjects},
-    objects::interface::{
-        AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
-        GroupObjectTableObject, InterfaceObject, IpParameterObject, PropertyDescriptionResponse, PropertyError,
-        PropertyServiceHandler, WriteResponse,
-    },
     objects::tables::{app::Application, HasLoadStateMachine},
     IpPlatform, IpStackState, Runner, StackDefinition, StackResources, StackState,
 };
@@ -565,7 +560,7 @@ pub mod device_info {
     ///
     /// This is the single source of truth for all device/application metadata.
     pub const DEVICE: DeviceDescriptor = DeviceDescriptor {
-        mask_version: 0x57B0, // System B KNX/IP device
+        mask_version: zweidraehte::ets::MaskVersion::SystemBKnxIp,
         manufacturer_id: 0x00FA,
         hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
         application_id: 0x0100,
@@ -573,6 +568,7 @@ pub mod device_info {
         max_address_table_entries: 254,
         max_association_table_entries: 254,
         max_com_objects: 254,
+        pei_type: 0,
     };
 
     /// Device serial number (6 bytes)
@@ -580,24 +576,11 @@ pub mod device_info {
     /// NOTE: This is stored in runtime state, not the device descriptor
     pub const SERIAL_NUMBER: [u8; 6] = [0x30, 0x30, 0x30, 0x30, 0x30, 0x30];
 
-    /// Hardware type identifier (6 bytes)
-    pub const HARDWARE_TYPE: [u8; 6] = DEVICE.hardware_type;
-
-    /// Application program version (5 bytes: manufacturer, app_id, version)
-    pub const PROGRAM_VERSION: [u8; 5] = DEVICE.program_version();
-
-    /// PEI type (0 = no PEI)
-    pub const PEI_TYPE: u8 = 0x00;
-
     /// Maximum APDU length for this device.
     ///
     /// Uses the extended format (255 bytes) which is supported by KNX/IP
     /// and modern TP1 devices with Extended Frame Format.
     pub const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
-
-    /// Device descriptor (mask version)
-    /// 0x57B0 = System B KNX/IP device
-    pub const DEVICE_DESCRIPTOR: u16 = DEVICE.mask_version;
 
     /// Buffer size for message buffers.
     ///
@@ -606,199 +589,25 @@ pub mod device_info {
 }
 
 // ============================================================================
-// KNX/IP Interface Objects
+// Memory Layout
 // ============================================================================
 
-/// Interface Objects container for a KNXnet/IP device
+/// Memory layout for interface objects.
 ///
-/// This struct holds all the interface objects required for a standard
-/// KNXnet/IP device. It implements `PropertyServiceHandler` to dispatch
-/// property requests to the correct object by index:
-///
-/// - Index 0: Device Object
-/// - Index 1: Address Table Object
-/// - Index 2: Association Table Object
-/// - Index 3: Application Program Object
-/// - Index 4: Group Object Table Object
-/// - Index 5: IP Parameter Object
-pub struct KnxIpInterfaceObjects<'a> {
-    state: &'a ConformanceState,
-    pub device: RefCell<DeviceObject<'a, ConformanceState>>,
-    pub addr_table: RefCell<AddressTableObject<'a, conformance_config::AddrTab>>,
-    pub asso_table: RefCell<AssociationTableObject<'a, conformance_config::AssoTab>>,
-    pub app_program: RefCell<ApplicationProgramObject<'a, Application<()>>>,
-    pub group_object_table: RefCell<GroupObjectTableObject<'a, conformance_config::CoTab>>,
-    pub ip_parameter: RefCell<IpParameterObject<'a, ConformanceState>>,
-}
-
-impl<'a> KnxIpInterfaceObjects<'a> {
-    /// Create new interface objects wrapping the provided state
-    pub fn new(state: &'a ConformanceState) -> Self {
-        // Create Device Object with device information
-        let device = DeviceObject::with_info(state, &DeviceInfo {
-            order_info: [0; 10],
-            hardware_type: device_info::HARDWARE_TYPE,
-            version: [0x00, 0x01], // Version 0.0.1
-            device_descriptor: device_info::DEVICE_DESCRIPTOR,
-        });
-
-        // Create Application Program Object wrapping the application table
-        // APP doesn't have a fixed memory address in conformance tests
-        let mut app_program = ApplicationProgramObject::new(&state.app, 0);
-        app_program.set_program_version(device_info::PROGRAM_VERSION.into());
-        app_program.set_pei_type(device_info::PEI_TYPE.into());
-
-        // Create IP Parameter Object
-        let ip_parameter = IpParameterObject::with_state(state);
-
-        // Use ConformanceMemoryMap addresses for tables
-        Self {
-            state,
-            device: RefCell::new(device),
-            addr_table: RefCell::new(AddressTableObject::new(&state.adt, ConformanceMemoryMap::ADT_BASE as u32)),
-            asso_table: RefCell::new(AssociationTableObject::new(&state.ast, ConformanceMemoryMap::AST_BASE as u32)),
-            app_program: RefCell::new(app_program),
-            group_object_table: RefCell::new(GroupObjectTableObject::new(
-                &state.cot,
-                ConformanceMemoryMap::COT_BASE as u32,
-            )),
-            ip_parameter: RefCell::new(ip_parameter),
-        }
-    }
-}
-
-impl<'a> PropertyServiceHandler for KnxIpInterfaceObjects<'a> {
-    fn object_count(&self) -> u16 {
-        6 // Device, AddrTable, AssoTable, AppProgram, GroupObjectTable, IpParameter
-    }
-
-    fn property_description_read(
-        &self,
-        object_idx: u16,
-        prop_id: u8,
-        prop_idx: u8,
-    ) -> Result<PropertyDescriptionResponse, PropertyError> {
-        match object_idx {
-            0 => self.device.borrow().property_description(object_idx, prop_id, prop_idx),
-            1 => self.addr_table.borrow().property_description(object_idx, prop_id, prop_idx),
-            2 => self.asso_table.borrow().property_description(object_idx, prop_id, prop_idx),
-            3 => self.app_program.borrow().property_description(object_idx, prop_id, prop_idx),
-            4 => self.group_object_table.borrow().property_description(object_idx, prop_id, prop_idx),
-            5 => self.ip_parameter.borrow().property_description(object_idx, prop_id, prop_idx),
-            _ => Err(PropertyError::InvalidObjectIndex),
-        }
-    }
-
-    fn property_value_read(
-        &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        count: u16,
-        buf: &mut [u8],
-        access_level: u8,
-    ) -> Result<usize, PropertyError> {
-        // Check access level first (in separate scope to release borrow)
-        {
-            let desc = match object_idx {
-                0 => self.device.borrow().property_descriptor_by_id(prop_id),
-                1 => self.addr_table.borrow().property_descriptor_by_id(prop_id),
-                2 => self.asso_table.borrow().property_descriptor_by_id(prop_id),
-                3 => self.app_program.borrow().property_descriptor_by_id(prop_id),
-                4 => self.group_object_table.borrow().property_descriptor_by_id(prop_id),
-                5 => self.ip_parameter.borrow().property_descriptor_by_id(prop_id),
-                _ => return Err(PropertyError::InvalidObjectIndex),
-            };
-            if let Some((_, desc)) = desc {
-                if !desc.can_read(access_level) {
-                    return Err(PropertyError::AccessDenied);
-                }
-            }
-        }
-
-        match object_idx {
-            0 => self.device.borrow().read_property(prop_id, start_idx, count, buf),
-            1 => self.addr_table.borrow().read_property(prop_id, start_idx, count, buf),
-            2 => self.asso_table.borrow().read_property(prop_id, start_idx, count, buf),
-            3 => self.app_program.borrow().read_property(prop_id, start_idx, count, buf),
-            4 => self.group_object_table.borrow().read_property(prop_id, start_idx, count, buf),
-            5 => self.ip_parameter.borrow().read_property(prop_id, start_idx, count, buf),
-            _ => Err(PropertyError::InvalidObjectIndex),
-        }
-    }
-
-    fn property_value_write(
-        &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        data: &[u8],
-        access_level: u8,
-    ) -> Result<WriteResponse, PropertyError> {
-        // Check access level first (in separate scope to release borrow)
-        {
-            let desc = match object_idx {
-                0 => self.device.borrow().property_descriptor_by_id(prop_id),
-                1 => self.addr_table.borrow().property_descriptor_by_id(prop_id),
-                2 => self.asso_table.borrow().property_descriptor_by_id(prop_id),
-                3 => self.app_program.borrow().property_descriptor_by_id(prop_id),
-                4 => self.group_object_table.borrow().property_descriptor_by_id(prop_id),
-                5 => self.ip_parameter.borrow().property_descriptor_by_id(prop_id),
-                _ => return Err(PropertyError::InvalidObjectIndex),
-            };
-            if let Some((_, desc)) = desc {
-                if !desc.can_write(access_level) {
-                    return Err(PropertyError::AccessDenied);
-                }
-            }
-        }
-
-        match object_idx {
-            0 => self.device.borrow_mut().write_property(prop_id, start_idx, data),
-            1 => self.addr_table.borrow_mut().write_property(prop_id, start_idx, data),
-            2 => self.asso_table.borrow_mut().write_property(prop_id, start_idx, data),
-            3 => self.app_program.borrow_mut().write_property(prop_id, start_idx, data),
-            4 => self.group_object_table.borrow_mut().write_property(prop_id, start_idx, data),
-            5 => self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data),
-            _ => Err(PropertyError::InvalidObjectIndex),
-        }
-    }
-}
-
-impl<'a> zweidraehte::objects::interface::HasDeviceObject for KnxIpInterfaceObjects<'a> {
-    fn device_control(&self) -> zweidraehte::dpt::DeviceControl {
-        self.device.borrow().device_control
-    }
-
-    fn set_device_control(&self, value: zweidraehte::dpt::DeviceControl) {
-        self.device.borrow_mut().device_control = value;
-    }
-
-    fn programming_mode(&self) -> zweidraehte::dpt::ProgrammingMode {
-        zweidraehte::dpt::ProgrammingMode::from(self.state.is_programming_mode())
-    }
-
-    fn set_programming_mode(&self, value: zweidraehte::dpt::ProgrammingMode) {
-        self.state.set_programming_mode(value.enabled());
-    }
-
-    fn routing_count(&self) -> zweidraehte::dpt::RoutingCount {
-        self.device.borrow().routing_count
-    }
-
-    fn set_routing_count(&self, value: zweidraehte::dpt::RoutingCount) {
-        self.device.borrow_mut().routing_count = value;
-    }
-}
-
-// ============================================================================
-// Interface Objects Builder
-// ============================================================================
-
-/// Create KNX/IP interface objects for conformance testing.
-pub fn create_conformance_interface_objects<'a>(state: &'a ConformanceState) -> KnxIpInterfaceObjects<'a> {
-    KnxIpInterfaceObjects::new(state)
-}
+/// The conformance tests use a custom memory map with table addresses at
+/// fixed positions. This layout tells `create_knxip_objects` where the
+/// tables live in address space (for PID_TABLE_REFERENCE responses).
+const CONFORMANCE_MEMORY_LAYOUT: zweidraehte::bcus::system_b::MemoryLayout =
+    zweidraehte::bcus::system_b::MemoryLayout::calculate(
+        ConformanceMemoryMap::ADT_BASE,
+        // Use the conformance test's actual table entry counts.
+        conformance_config::ConformanceTestConfig::NUM_GROUP_ADDRS,
+        conformance_config::ConformanceTestConfig::NUM_ASSOCIATIONS,
+        conformance_config::ConformanceTestConfig::NUM_COMM_OBJECTS,
+        // Application data size — not meaningful for conformance tests
+        // since memory is accessed through the custom memory map.
+        0,
+    );
 
 // ============================================================================
 // Test Parameters
@@ -828,43 +637,41 @@ pub const LEVEL1_MEMORY_SIZE: usize = 256;
 /// Size of user memory region (0x7FF0-0x7FFF) - for A_UserMemory_Read/Write tests
 pub const USER_MEMORY_SIZE: usize = 16;
 
+/// Table sizes for `SystemBDeviceState` const generics.
+///
+/// These match both the `ASSO6_SIZE` / `ADDR7_SIZE` / `CO7_SIZE` constants
+/// from `knx_stack_config!` and the `Table<*Impl<SIZE>>` type aliases.
+mod table_sizes {
+    use super::conformance_config::ConformanceTestConfig;
+
+    pub const ADT: usize = ConformanceTestConfig::ADDR7_SIZE;
+    pub const AST: usize = ConformanceTestConfig::ASSO6_SIZE;
+    pub const COT: usize = ConformanceTestConfig::CO7_SIZE;
+}
+
+/// The inner device state type used by the conformance wrapper.
+///
+/// This is `IpSystemBDeviceState` parameterized with the conformance test's
+/// table sizes, `TestParameters`, and `MockIpPlatform`.
+type InnerState = zweidraehte::bcus::system_b::IpSystemBDeviceState<
+    { table_sizes::ADT },
+    { table_sizes::AST },
+    { table_sizes::COT },
+    TestParameters,
+    MockIpPlatform,
+>;
+
 /// Unified state for conformance tests.
 ///
-/// Combines runtime state (individual address, auth keys, IP config) with
-/// ETS-loaded tables (ADT, AST, COT, APP) and test memory regions.
+/// Wraps [`IpSystemBDeviceState`](zweidraehte::bcus::system_b::IpSystemBDeviceState)
+/// and adds test memory regions needed by the conformance memory map tests.
 ///
-/// This implements both `StackState`/`IpStackState` for runtime configuration
-/// and `Has*Table` traits for table access.
+/// All standard trait impls (`StackState`, `IpStackState`, `Has*Table`,
+/// `HasPeiApplication`, `HasRoutingCount`) are thin forwarding impls that
+/// delegate to the inner `IpSystemBDeviceState`.
 pub struct ConformanceState {
-    // ========================================================================
-    // Runtime State
-    // ========================================================================
-    individual_address: core::cell::Cell<zweidraehte::address::IndividualAddress>,
-    auth_keys: RefCell<[[u8; 4]; 3]>,
-    programming_mode: core::cell::Cell<bool>,
-
-    // ========================================================================
-    // IP State
-    // ========================================================================
-    platform: MockIpPlatform,
-    configured_ip: RefCell<Ipv4Addr>,
-    configured_subnet: RefCell<Ipv4Addr>,
-    configured_gateway: RefCell<Ipv4Addr>,
-    ip_assignment_method: RefCell<u8>,
-    routing_multicast: RefCell<Ipv4Addr>,
-    ttl: RefCell<u8>,
-    friendly_name: RefCell<[u8; 30]>,
-    friendly_name_len: RefCell<usize>,
-    project_installation_id: RefCell<u16>,
-
-    // ========================================================================
-    // Tables (ADT, AST, COT, APP)
-    // ========================================================================
-    pub adt: RefCell<conformance_config::AddrTab>,
-    pub ast: RefCell<conformance_config::AssoTab>,
-    pub cot: RefCell<conformance_config::CoTab>,
-    /// Application program table (holds both load and run state machines)
-    pub app: RefCell<Application<()>>,
+    /// Base device state (runtime + tables + IP config).
+    inner: InnerState,
 
     // ========================================================================
     // Test Memory Regions
@@ -884,62 +691,68 @@ pub struct ConformanceState {
 }
 
 impl ConformanceState {
-    /// Create new conformance state with test defaults.
+    /// Create new conformance state with pre-built tables.
     pub fn new(
         addr_tab: conformance_config::AddrTab,
         asso_tab: conformance_config::AssoTab,
         co_tab: conformance_config::CoTab,
-        app_table: Application<()>,
-        platform: MockIpPlatform,
+        app_table: Application<TestParameters>,
     ) -> Self {
+        use zweidraehte::bcus::system_b::StaticIdentity;
+
+        let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
+        let inner = InnerState::new(&identity);
+
+        // Set the conformance test individual address (1.0.1).
+        inner.set_individual_address(zweidraehte::address::IndividualAddress::new(1, 0, 1));
+
+        // Load the pre-built tables into the inner state.
+        *inner.adt.borrow_mut() = addr_tab;
+        *inner.ast.borrow_mut() = asso_tab;
+        *inner.cot.borrow_mut() = co_tab;
+        *inner.app.borrow_mut() = app_table;
+
         Self {
-            individual_address: core::cell::Cell::new(zweidraehte::address::IndividualAddress::new(1, 0, 1)),
-            auth_keys: RefCell::new([[0xFF; 4]; 3]),
-            programming_mode: core::cell::Cell::new(false),
-            platform,
-            configured_ip: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
-            configured_subnet: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
-            configured_gateway: RefCell::new(Ipv4Addr::new(0, 0, 0, 0)),
-            ip_assignment_method: RefCell::new(0x04), // DHCP
-            routing_multicast: RefCell::new(zweidraehte::DEFAULT_MULTICAST_ADDR),
-            ttl: RefCell::new(16),
-            friendly_name: RefCell::new([0; 30]),
-            friendly_name_len: RefCell::new(0),
-            project_installation_id: RefCell::new(0),
-            adt: RefCell::new(addr_tab),
-            ast: RefCell::new(asso_tab),
-            cot: RefCell::new(co_tab),
-            app: RefCell::new(app_table),
+            inner,
             linear_memory: RefCell::new([0x0F; LINEAR_MEMORY_SIZE]),
             level2_memory: RefCell::new([0xAA; LEVEL2_MEMORY_SIZE]),
             level1_memory: RefCell::new([0xFF; LEVEL1_MEMORY_SIZE]),
             user_memory: RefCell::new([0xFF; USER_MEMORY_SIZE]),
         }
     }
+
+    /// Access the inner device state directly.
+    pub fn inner(&self) -> &InnerState {
+        &self.inner
+    }
 }
 
 // ============================================================================
-// StackState Implementation for ConformanceState
+// Default Implementation
 // ============================================================================
 
 impl Default for ConformanceState {
     fn default() -> Self {
         use zweidraehte::objects::tables::Table;
-        Self::new(Table::new(), Table::new(), Table::new(), Application::new(), MockIpPlatform::new())
+        Self::new(Table::new(), Table::new(), Table::new(), Application::new())
     }
 }
 
+// ============================================================================
+// Trait Forwarding — StackState
+// ============================================================================
+
 impl zweidraehte::StackState for ConformanceState {
     fn individual_address(&self) -> zweidraehte::address::IndividualAddress {
-        self.individual_address.get()
+        self.inner.individual_address()
     }
 
     fn set_individual_address(&self, addr: zweidraehte::address::IndividualAddress) {
-        self.individual_address.set(addr);
+        self.inner.set_individual_address(addr);
     }
 
     fn serial_number(&self) -> &[u8; 6] {
-        &device_info::SERIAL_NUMBER
+        self.inner.serial_number()
     }
 
     fn max_apdu_length(&self) -> u16 {
@@ -947,185 +760,103 @@ impl zweidraehte::StackState for ConformanceState {
     }
 
     fn max_access_levels(&self) -> u8 {
-        4
+        self.inner.max_access_levels()
     }
 
     fn default_access_level(&self) -> u8 {
-        self.authorize(&[0xFF, 0xFF, 0xFF, 0xFF])
+        self.inner.default_access_level()
     }
 
     fn authorize(&self, key: &[u8; 4]) -> u8 {
-        let keys = self.auth_keys.borrow();
-        for level in 0..3 {
-            if &keys[level] == key {
-                return level as u8;
-            }
-        }
-        3 // Minimum access
+        self.inner.authorize(key)
     }
 
     fn key_write(&self, level: u8, key: &[u8; 4], current_access_level: u8) -> u8 {
-        if level >= 3 {
-            return 0xFF;
-        }
-        if current_access_level > level {
-            return 0xFF;
-        }
-        self.auth_keys.borrow_mut()[level as usize] = *key;
-        level
+        self.inner.key_write(level, key, current_access_level)
     }
 
     fn is_programming_mode(&self) -> bool {
-        self.programming_mode.get()
+        self.inner.is_programming_mode()
     }
 
     fn set_programming_mode(&self, enabled: bool) {
-        self.programming_mode.set(enabled);
-    }
-}
-
-impl IpStackState for ConformanceState {
-    fn current_ip_address(&self) -> Ipv4Addr {
-        self.platform.current_ip_address()
+        self.inner.set_programming_mode(enabled);
     }
 
-    fn current_subnet_mask(&self) -> Ipv4Addr {
-        self.platform.current_subnet_mask()
-    }
-
-    fn current_default_gateway(&self) -> Ipv4Addr {
-        self.platform.current_default_gateway()
-    }
-
-    fn mac_address(&self) -> [u8; 6] {
-        self.platform.mac_address()
-    }
-
-    fn current_ip_assignment_method(&self) -> u8 {
-        self.platform.current_ip_assignment_method()
-    }
-
-    fn ip_capabilities(&self) -> u8 {
-        self.platform.ip_capabilities()
-    }
-
-    fn knxnetip_device_capabilities(&self) -> u16 {
-        self.platform.knxnetip_device_capabilities()
-    }
-
-    fn configured_ip_address(&self) -> Ipv4Addr {
-        *self.configured_ip.borrow()
-    }
-
-    fn set_configured_ip_address(&self, addr: Ipv4Addr) {
-        *self.configured_ip.borrow_mut() = addr;
-    }
-
-    fn configured_subnet_mask(&self) -> Ipv4Addr {
-        *self.configured_subnet.borrow()
-    }
-
-    fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
-        *self.configured_subnet.borrow_mut() = mask;
-    }
-
-    fn configured_default_gateway(&self) -> Ipv4Addr {
-        *self.configured_gateway.borrow()
-    }
-
-    fn set_configured_default_gateway(&self, gateway: Ipv4Addr) {
-        *self.configured_gateway.borrow_mut() = gateway;
-    }
-
-    fn ip_assignment_method(&self) -> u8 {
-        *self.ip_assignment_method.borrow()
-    }
-
-    fn set_ip_assignment_method(&self, method: u8) {
-        *self.ip_assignment_method.borrow_mut() = method;
-    }
-
-    fn routing_multicast_address(&self) -> Ipv4Addr {
-        *self.routing_multicast.borrow()
-    }
-
-    fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
-        *self.routing_multicast.borrow_mut() = addr;
-    }
-
-    fn ttl(&self) -> u8 {
-        *self.ttl.borrow()
-    }
-
-    fn set_ttl(&self, ttl: u8) {
-        *self.ttl.borrow_mut() = ttl;
-    }
-
-    fn friendly_name_len(&self) -> usize {
-        *self.friendly_name_len.borrow()
-    }
-
-    fn friendly_name(&self, buf: &mut [u8]) -> usize {
-        let name = self.friendly_name.borrow();
-        let len = self.friendly_name_len().min(buf.len());
-        buf[..len].copy_from_slice(&name[..len]);
-        len
-    }
-
-    fn set_friendly_name(&self, name: &[u8]) {
-        let mut fname = self.friendly_name.borrow_mut();
-        let len = name.len().min(30);
-        fname[..len].copy_from_slice(&name[..len]);
-        fname[len..].fill(0);
-        *self.friendly_name_len.borrow_mut() = len;
-    }
-
-    fn project_installation_id(&self) -> u16 {
-        *self.project_installation_id.borrow()
-    }
-
-    fn set_project_installation_id(&self, id: u16) {
-        *self.project_installation_id.borrow_mut() = id;
+    fn mark_dirty(&self) {
+        self.inner.mark_dirty();
     }
 }
 
 // ============================================================================
-// Table Accessor Trait Implementations for ConformanceState
+// Trait Forwarding — IpStackState
+// ============================================================================
+
+impl IpStackState for ConformanceState {
+    fn current_ip_address(&self) -> Ipv4Addr { self.inner.current_ip_address() }
+    fn current_subnet_mask(&self) -> Ipv4Addr { self.inner.current_subnet_mask() }
+    fn current_default_gateway(&self) -> Ipv4Addr { self.inner.current_default_gateway() }
+    fn mac_address(&self) -> [u8; 6] { self.inner.mac_address() }
+    fn current_ip_assignment_method(&self) -> u8 { self.inner.current_ip_assignment_method() }
+    fn ip_capabilities(&self) -> u8 { self.inner.ip_capabilities() }
+    fn knxnetip_device_capabilities(&self) -> u16 { self.inner.knxnetip_device_capabilities() }
+    fn configured_ip_address(&self) -> Ipv4Addr { self.inner.configured_ip_address() }
+    fn set_configured_ip_address(&self, addr: Ipv4Addr) { self.inner.set_configured_ip_address(addr); }
+    fn configured_subnet_mask(&self) -> Ipv4Addr { self.inner.configured_subnet_mask() }
+    fn set_configured_subnet_mask(&self, mask: Ipv4Addr) { self.inner.set_configured_subnet_mask(mask); }
+    fn configured_default_gateway(&self) -> Ipv4Addr { self.inner.configured_default_gateway() }
+    fn set_configured_default_gateway(&self, gateway: Ipv4Addr) { self.inner.set_configured_default_gateway(gateway); }
+    fn ip_assignment_method(&self) -> u8 { self.inner.ip_assignment_method() }
+    fn set_ip_assignment_method(&self, method: u8) { self.inner.set_ip_assignment_method(method); }
+    fn routing_multicast_address(&self) -> Ipv4Addr { self.inner.routing_multicast_address() }
+    fn set_routing_multicast_address(&self, addr: Ipv4Addr) { self.inner.set_routing_multicast_address(addr); }
+    fn ttl(&self) -> u8 { self.inner.ttl() }
+    fn set_ttl(&self, ttl: u8) { self.inner.set_ttl(ttl); }
+    fn friendly_name_len(&self) -> usize { self.inner.friendly_name_len() }
+    fn friendly_name(&self, buf: &mut [u8]) -> usize { self.inner.friendly_name(buf) }
+    fn set_friendly_name(&self, name: &[u8]) { self.inner.set_friendly_name(name); }
+    fn project_installation_id(&self) -> u16 { self.inner.project_installation_id() }
+    fn set_project_installation_id(&self, id: u16) { self.inner.set_project_installation_id(id); }
+}
+
+// ============================================================================
+// Trait Forwarding — Table Accessors
 // ============================================================================
 
 impl HasAddressTable for ConformanceState {
-    type ADT = conformance_config::AddrTab;
-    fn adt(&self) -> &RefCell<Self::ADT> {
-        &self.adt
-    }
+    type ADT = <InnerState as HasAddressTable>::ADT;
+    fn adt(&self) -> &RefCell<Self::ADT> { self.inner.adt() }
 }
 
 impl HasAssociationTable for ConformanceState {
-    type AST = conformance_config::AssoTab;
-    fn ast(&self) -> &RefCell<Self::AST> {
-        &self.ast
-    }
+    type AST = <InnerState as HasAssociationTable>::AST;
+    fn ast(&self) -> &RefCell<Self::AST> { self.inner.ast() }
 }
 
 impl HasCommunicationObjectTable for ConformanceState {
-    type COT = conformance_config::CoTab;
-    fn cot(&self) -> &RefCell<Self::COT> {
-        &self.cot
-    }
+    type COT = <InnerState as HasCommunicationObjectTable>::COT;
+    fn cot(&self) -> &RefCell<Self::COT> { self.inner.cot() }
 }
 
 impl HasApplication for ConformanceState {
-    type APP = Application<()>;
-    fn app(&self) -> &RefCell<Self::APP> {
-        &self.app
-    }
+    type APP = <InnerState as HasApplication>::APP;
+    fn app(&self) -> &RefCell<Self::APP> { self.inner.app() }
+}
+
+impl zweidraehte::memory::HasPeiApplication for ConformanceState {
+    type PEI = <InnerState as zweidraehte::memory::HasPeiApplication>::PEI;
+    fn pei(&self) -> &RefCell<Self::PEI> { self.inner.pei() }
+}
+
+impl zweidraehte::memory::HasRoutingCount for ConformanceState {
+    fn routing_count(&self) -> u8 { self.inner.routing_count() }
 }
 
 /// Memory map for conformance tests.
 ///
 /// Memory layout:
 /// - 0x0100-0x0115: Address Table (ADT) - 22 bytes max (11 entries * 2 bytes)
-/// - 0x0116-0x014F: Association Table (AST) - 48 bytes max (11 entries * 4 bytes + 4 header)
+/// - 0x0116-0x014F: Association Table (AST) - 46 bytes max (2 header + 11 entries * 4 bytes)
 /// - 0x0150-0x019F: Communication Object Table (COT) - 24 bytes max (11 entries * 2 bytes + 2 header)
 /// - 0x0200-0x02FF: Linear memory (256 bytes) - freely accessible (no restriction)
 /// - 0x0300-0x03FF: Level 2 block (256 bytes) - requires access level <= 2
@@ -1168,7 +899,7 @@ impl zweidraehte::memory::MemoryMap<ConformanceState> for ConformanceMemoryMap {
         let end_address = address.saturating_add(data.len() as u16);
 
         // Address Table (ADT): 0x0100 - 0x0115
-        let adt = tables.adt.borrow();
+        let adt = tables.adt().borrow();
         let adt_data = adt.data_ref();
         let adt_end = Self::ADT_BASE + adt_data.len() as u16;
         if address >= Self::ADT_BASE && end_address <= adt_end {
@@ -1178,7 +909,7 @@ impl zweidraehte::memory::MemoryMap<ConformanceState> for ConformanceMemoryMap {
         }
 
         // Association Table (AST): 0x0116 - 0x014F
-        let ast = tables.ast.borrow();
+        let ast = tables.ast().borrow();
         let ast_data = ast.data_ref();
         let ast_end = Self::AST_BASE + ast_data.len() as u16;
         if address >= Self::AST_BASE && end_address <= ast_end {
@@ -1188,7 +919,7 @@ impl zweidraehte::memory::MemoryMap<ConformanceState> for ConformanceMemoryMap {
         }
 
         // Communication Object Table (COT): 0x0150 - 0x019F
-        let cot = tables.cot.borrow();
+        let cot = tables.cot().borrow();
         let cot_data = cot.data_ref();
         let cot_end = Self::COT_BASE + cot_data.len() as u16;
         if address >= Self::COT_BASE && end_address <= cot_end {
@@ -1261,11 +992,11 @@ impl zweidraehte::memory::MemoryMap<ConformanceState> for ConformanceMemoryMap {
 
         // Address Table (ADT): 0x0100 - 0x0115
         {
-            let adt = tables.adt.borrow();
+            let adt = tables.adt().borrow();
             let adt_end = Self::ADT_BASE + adt.data_ref().len() as u16;
             if address >= Self::ADT_BASE && end_address <= adt_end {
                 drop(adt);
-                let mut adt = tables.adt.borrow_mut();
+                let mut adt = tables.adt().borrow_mut();
                 let offset = (address - Self::ADT_BASE) as usize;
                 adt.data_ref_mut()[offset..offset + data.len()].copy_from_slice(data);
                 return Ok(data.len());
@@ -1274,11 +1005,11 @@ impl zweidraehte::memory::MemoryMap<ConformanceState> for ConformanceMemoryMap {
 
         // Association Table (AST): 0x0116 - 0x014F
         {
-            let ast = tables.ast.borrow();
+            let ast = tables.ast().borrow();
             let ast_end = Self::AST_BASE + ast.data_ref().len() as u16;
             if address >= Self::AST_BASE && end_address <= ast_end {
                 drop(ast);
-                let mut ast = tables.ast.borrow_mut();
+                let mut ast = tables.ast().borrow_mut();
                 let offset = (address - Self::AST_BASE) as usize;
                 ast.data_ref_mut()[offset..offset + data.len()].copy_from_slice(data);
                 return Ok(data.len());
@@ -1287,11 +1018,11 @@ impl zweidraehte::memory::MemoryMap<ConformanceState> for ConformanceMemoryMap {
 
         // Communication Object Table (COT): 0x0150 - 0x019F
         {
-            let cot = tables.cot.borrow();
+            let cot = tables.cot().borrow();
             let cot_end = Self::COT_BASE + cot.data_ref().len() as u16;
             if address >= Self::COT_BASE && end_address <= cot_end {
                 drop(cot);
-                let mut cot = tables.cot.borrow_mut();
+                let mut cot = tables.cot().borrow_mut();
                 let offset = (address - Self::COT_BASE) as usize;
                 cot.data_ref_mut()[offset..offset + data.len()].copy_from_slice(data);
                 return Ok(data.len());
@@ -1378,13 +1109,24 @@ impl StackDefinition for ConformanceTestStack {
     type State = ConformanceState;
     type Mem = ConformanceMemoryMap;
 
-    type InterfaceObjects<'a> = KnxIpInterfaceObjects<'a>;
+    type InterfaceObjects<'a> = zweidraehte::bcus::system_b::KnxIpInterfaceObjects<
+        'a,
+        ConformanceState,
+        <ConformanceState as HasAddressTable>::ADT,
+        <ConformanceState as HasAssociationTable>::AST,
+        <ConformanceState as HasCommunicationObjectTable>::COT,
+        <ConformanceState as HasApplication>::APP,
+        <ConformanceState as zweidraehte::memory::HasPeiApplication>::PEI,
+    >;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_conformance_interface_objects(state)
+        zweidraehte::bcus::system_b::create_knxip_objects::<ConformanceTestStack, _>(
+            state,
+            &CONFORMANCE_MEMORY_LAYOUT,
+        )
     }
 }
 
@@ -1452,7 +1194,7 @@ impl FullStackHarness {
 
         // Create application table - starts loaded and running for conformance tests
         use zweidraehte::objects::tables::LoadEvent;
-        let mut app_table = Application::<()>::new();
+        let mut app_table = Application::<TestParameters>::new();
         // Load the application (using None for alloc_address since these are
         // simple state transitions without RelativeData allocation)
         // The app automatically transitions HALTED -> READY -> RUNNING when loading completes
@@ -1460,7 +1202,7 @@ impl FullStackHarness {
         app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         // Create unified conformance state (combines tables + runtime state)
-        let state = ConformanceState::new(addr_tab, asso_tab, co_tab, app_table, MockIpPlatform::new());
+        let state = ConformanceState::new(addr_tab, asso_tab, co_tab, app_table);
 
         // Create stack resources
         let resources = STACK_RESOURCES.init(StackResources::new());

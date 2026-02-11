@@ -36,13 +36,14 @@
 //! | 2 | Association Table Object | TSAP ↔ ASAP mapping |
 //! | 3 | Group Object Table Object | Communication object config |
 //! | 4 | Application Program Object | Load + Run state machines |
-//! | 5 | IP Parameter Object | IP config (57B0 only) |
+//! | 5 | PEI Program Object | PEI Load + Run state machines |
+//! | 6 | IP Parameter Object | IP config (57B0 only) |
 //!
 //! # Example
 //!
 //! ```rust,ignore
 //! use zweidraehte::{
-//!     bcus::system_b::{SystemBDevice, KnxIpDevice, KnxIpDeviceBuilder},
+//!     bcus::system_b::KnxIpDevice,
 //!     dpt::DPT_Switch,
 //!     ets::EtsComObjects,
 //!     objects::comm::ComObject,
@@ -66,20 +67,6 @@
 //! #[derive(Copy, Clone)]
 //! pub struct MySwitchDevice;
 //!
-//! impl SystemBDevice for MySwitchDevice {
-//!     const MASK_VERSION: [u8; 2] = [0x57, 0xB0];
-//!     const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
-//!     const HARDWARE_TYPE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-//!     const PROGRAM_VERSION: [u8; 5] = [0x00, 0xFA, 0x01, 0x00, 0x01];
-//!
-//!     const MAX_ADDRESSES: usize = 16;
-//!     const MAX_ASSOCIATIONS: usize = 16;
-//!     const MAX_COM_OBJECTS: usize = 8;
-//!
-//!     type ComObjects = co::SwitchObjects;
-//!     type Storage = NoStorage;
-//! }
-//!
 //! impl KnxIpDevice for MySwitchDevice {
 //!     const INTERFACE_NAME: &'static str = "eth0";
 //!     type Platform = MyPlatform;
@@ -101,4 +88,4 @@ pub use objects::{
     IpObjects, KnxIpInterfaceObjects, SystemBObjects, create_knxip_objects, create_system_b_objects, device_info_from,
 };
 pub use storage::{DeviceStorage, LinkLayerConfig, LinkLayerState, NoStorage, PersistedIpConfig, PersistedState, table_sizes};
-pub use traits::{KnxIpDevice, SystemBDevice, TpDevice};
+pub use traits::{KnxIpDevice, TpDevice};

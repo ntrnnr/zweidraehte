@@ -71,7 +71,7 @@ impl MtxmlGenerator {
             id: app_id.to_string(),
             application_number: config.device.application_id,
             application_version: config.device.application_version,
-            mask_version: format!("MV-{:04X}", config.device.mask_version),
+            mask_version: format!("MV-{:04X}", config.device.mask_version.as_u16()),
             name: config.name.to_string(),
             load_procedure_style: mask_family.load_procedure_style().to_string(),
             non_reg_relevant_data_version: config.non_reg_relevant_data_version,

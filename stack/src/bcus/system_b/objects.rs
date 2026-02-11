@@ -39,7 +39,6 @@ use crate::{
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
 
-use super::SystemBDevice;
 use crate::StackDefinition;
 use crate::memory::{
     HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication,
@@ -450,7 +449,7 @@ pub fn device_info_from<D: StackDefinition>() -> DeviceInfo {
         order_info: [0; 10], // Manufacturer-specific, usually left empty
         hardware_type: D::DEVICE.hardware_type,
         version: [0x00, 0x01], // Default version 0.0.1
-        device_descriptor: D::DEVICE.mask_version,
+        device_descriptor: D::DEVICE.mask_version.as_u16(),
     }
 }
 
@@ -471,7 +470,7 @@ pub fn device_info_from_descriptor(desc: &crate::ets::DeviceDescriptor) -> Devic
         order_info: [0; 10], // Manufacturer-specific, usually left empty
         hardware_type: desc.hardware_type,
         version: [0x00, 0x01], // Default version 0.0.1
-        device_descriptor: desc.mask_version,
+        device_descriptor: desc.mask_version.as_u16(),
     }
 }
 
@@ -482,14 +481,14 @@ pub fn device_info_from_descriptor(desc: &crate::ets::DeviceDescriptor) -> Devic
 ///
 /// # Type Parameters
 ///
-/// - `D`: Stack definition implementing [`StackDefinition`] + [`SystemBDevice`]
+/// - `D`: Stack definition implementing [`StackDefinition`]
 /// - `S`: Unified state type implementing [`StackState`] and the required table traits
 pub fn create_system_b_objects<'a, D, S>(
     state: &'a S,
     layout: &super::memory_map::MemoryLayout,
 ) -> SystemBObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI>
 where
-    D: StackDefinition + SystemBDevice,
+    D: StackDefinition,
     S: StackState
         + HasAddressTable
         + HasAssociationTable
@@ -515,7 +514,7 @@ where
         state.pei(),
         D::DEVICE.program_version(),
         D::DEVICE.pei_program_version(),
-        D::PEI_TYPE,
+        D::DEVICE.pei_type,
         state.routing_count(),
     )
 }
@@ -527,14 +526,14 @@ where
 ///
 /// # Type Parameters
 ///
-/// - `D`: Stack definition implementing [`StackDefinition`] + [`SystemBDevice`]
+/// - `D`: Stack definition implementing [`StackDefinition`]
 /// - `S`: Unified state type implementing [`IpStackState`] and the required table traits
 pub fn create_knxip_objects<'a, D, S>(
     state: &'a S,
     layout: &super::memory_map::MemoryLayout,
 ) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI>
 where
-    D: StackDefinition + SystemBDevice,
+    D: StackDefinition,
     S: StackState
         + IpStackState
         + HasAddressTable

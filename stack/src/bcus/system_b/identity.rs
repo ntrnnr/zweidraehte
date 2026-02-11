@@ -43,7 +43,7 @@ pub trait DeviceIdentity {
 /// ```rust,ignore
 /// const SERIAL: [u8; 6] = [0x00, 0xFA, 0xDE, 0xAD, 0xBE, 0xEF];
 /// let identity = StaticIdentity::new(SERIAL);
-/// let state = SystemBDeviceState::new(storage, &identity);
+/// let state = SystemBDeviceState::new(&identity);
 /// ```
 pub struct StaticIdentity {
     serial_number: [u8; 6],

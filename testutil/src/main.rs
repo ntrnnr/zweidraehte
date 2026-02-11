@@ -146,7 +146,7 @@ impl HasApplication for MyState {
 
 /// Device descriptor for test utility
 const TEST_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
-    mask_version: 0x07B0,
+    mask_version: zweidraehte::ets::MaskVersion::SystemBTp1,
     manufacturer_id: 0x00FA,
     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
     application_id: 0x0100,
@@ -154,6 +154,7 @@ const TEST_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::
     max_address_table_entries: 30,
     max_association_table_entries: 15,
     max_com_objects: 30,
+    pei_type: 0,
 };
 
 #[derive(Debug, Clone, Copy)]

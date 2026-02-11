@@ -193,7 +193,7 @@ impl<const N: usize> TableMemory for AssoTab6Impl<N> {
 
 impl<const N: usize> AssociationTable for Table<AssoTab6Impl<N>> {
     fn max_entries(&self) -> usize {
-        (N / 2) - 1
+        (N - 2) / 4
     }
 
     fn entry_count(&self) -> u16 {
@@ -239,8 +239,8 @@ impl<const N: usize> AssociationTable for Table<AssoTab6Impl<N>> {
     }
 }
 
-// Each association entry is 4 bytes: TSAP (2 bytes) + ASAP (2 bytes)
-pub type AssoTab6<const MAX_ENTRIES: usize> = Table<AssoTab6Impl<{ (MAX_ENTRIES + 1) * 4 }>>;
+// GrOAT Type 6 Style 1: 2-byte count header + MAX_ENTRIES × 4-byte entries (TSAP u16 + ASAP u16)
+pub type AssoTab6<const MAX_ENTRIES: usize> = Table<AssoTab6Impl<{ 2 + MAX_ENTRIES * 4 }>>;
 
 #[cfg(test)]
 mod test {

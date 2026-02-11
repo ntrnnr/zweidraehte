@@ -45,9 +45,9 @@ const IDENTITY_FILE_PATH: &str = "device_identity.json";
 // ============================================================================
 
 /// Save the current device state to JSON storage.
-fn save_state(state: &DemoState) {
+fn save_state(state: &DemoState, storage: &mut JsonStorage) {
     let persisted = state.to_persisted();
-    match state.storage().borrow_mut().save(&persisted) {
+    match storage.save(&persisted) {
         Ok(()) => {
             state.clear_dirty();
             log::info!("State saved to {}", STATE_FILE_PATH);
@@ -142,7 +142,7 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
         // Persist the post-reset state before restarting so it survives
         // the process re-exec.
         if state.is_dirty() {
-            save_state(state);
+            save_state(state, &mut JsonStorage::new(STATE_FILE_PATH));
         }
 
         // Send the response back to the stack (which forwards it on the bus).
@@ -171,21 +171,22 @@ async fn main(spawner: Spawner) {
 
     // Print device information
     println!("Device Configuration:");
-    println!("  Mask Version: {:04X} (KNX/IP System B)", DEVICE_DESCRIPTOR.mask_version);
+    println!("  Mask Version: {}", DEVICE_DESCRIPTOR.mask_version);
     println!("  Serial Number: {:02X?}", identity.serial_number());
     println!("  Manufacturer ID: {:04X}", DEVICE_DESCRIPTOR.manufacturer_id);
     println!();
 
-    // Create storage and try to load persisted state
+    // Create storage and try to load persisted state.
+    // Storage lives here in the binary — the state struct only tracks dirtiness.
     let mut storage = JsonStorage::new(STATE_FILE_PATH);
     let device_state: DemoState = match storage.load::<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, PersistedIpConfig>() {
         Ok(Some(persisted)) => {
             println!("Loaded persisted state from {}", STATE_FILE_PATH);
-            DemoState::from_persisted(JsonStorage::new(STATE_FILE_PATH), &identity, persisted)
+            DemoState::from_persisted(&identity, persisted)
         }
         Ok(None) => {
             println!("No persisted state found, starting fresh");
-            let state = DemoState::new(JsonStorage::new(STATE_FILE_PATH), &identity);
+            let state = DemoState::new(&identity);
             state.set_individual_address(IndividualAddress::new(1, 2, 3));
             if let Err(e) = storage.save(&state.to_persisted()) {
                 log::error!("Failed to save initial state: {}", e);
@@ -194,7 +195,7 @@ async fn main(spawner: Spawner) {
         }
         Err(e) => {
             println!("Error loading persisted state: {}", e);
-            DemoState::new(JsonStorage::new(STATE_FILE_PATH), &identity)
+            DemoState::new(&identity)
         }
     };
 
@@ -251,7 +252,7 @@ async fn main(spawner: Spawner) {
                 'q' | 'Q' => {
                     println!("\nShutting down...");
                     if stack.state().is_dirty() {
-                        save_state(stack.state());
+                        save_state(stack.state(), &mut storage);
                     }
                     break;
                 }
@@ -346,7 +347,7 @@ async fn main(spawner: Spawner) {
             // Periodically persist any state changes from ETS programming
             // (table writes, parameter changes, address changes, etc.).
             if stack.state().is_dirty() {
-                save_state(stack.state());
+                save_state(stack.state(), &mut storage);
             }
         }
 

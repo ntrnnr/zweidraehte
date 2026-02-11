@@ -63,14 +63,12 @@ use zweidraehte::objects::comm::ComObject;
 use zweidraehte::{
     IpPlatform, StackDefinition,
     bcus::system_b::{
-        IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, SystemBDevice, SystemBMemoryMap,
+        IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, SystemBMemoryMap,
         create_knxip_objects,
     },
     layers::linklayers::knxip::KnxNetIpBuilder,
 };
 use platform::LinuxIpTransport;
-
-use crate::storage::JsonStorage;
 
 // ============================================================================
 // Device Descriptor
@@ -78,7 +76,7 @@ use crate::storage::JsonStorage;
 
 /// Device descriptor - single source of truth for device metadata.
 pub const DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
-    mask_version: 0x57B0, // KNX/IP System B
+    mask_version: zweidraehte::ets::MaskVersion::SystemBKnxIp,
     manufacturer_id: 0x00FA,
     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x02],
     application_id: 0x0200,
@@ -86,6 +84,7 @@ pub const DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::e
     max_address_table_entries: 16,
     max_association_table_entries: 16,
     max_com_objects: 8,
+    pei_type: 0,
 };
 
 /// Serial number for test device.
@@ -541,7 +540,7 @@ pub const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 pub const APP_DATA_SIZE: usize = core::mem::size_of::<DemoParams>();
 
 /// Unified state type
-pub type DemoState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, DemoStack>;
+pub type DemoState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, MockIpPlatform>;
 
 /// Memory layout for the device
 pub const MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calculate(
@@ -557,10 +556,6 @@ pub const MEMORY_MAP: SystemBMemoryMap = SystemBMemoryMap::new(MEMORY_LAYOUT);
 
 #[derive(Debug, Clone, Copy)]
 pub struct DemoStack;
-
-impl SystemBDevice for DemoStack {
-    type Storage = JsonStorage;
-}
 
 impl KnxIpDevice for DemoStack {
     const INTERFACE_NAME: &'static str = INTERFACE_NAME;

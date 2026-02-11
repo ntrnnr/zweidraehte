@@ -21,14 +21,12 @@ use zweidraehte::objects::comm::ComObject;
 use zweidraehte::{
     IpPlatform, StackDefinition,
     bcus::system_b::{
-        IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, SystemBDevice, SystemBMemoryMap,
+        IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, SystemBMemoryMap,
         create_knxip_objects,
     },
     layers::linklayers::knxip::KnxNetIpBuilder,
 };
 use platform::LinuxIpTransport;
-
-use crate::storage::JsonStorage;
 
 // ============================================================================
 // Device Descriptor
@@ -39,7 +37,7 @@ use crate::storage::JsonStorage;
 /// ApplicationVersion: 20 (0x14)
 /// MaskVersion: MV-0705 (System B TP BCU)
 pub const DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
-    mask_version: 0x0705,    // MV-0705 System B TP BCU
+    mask_version: zweidraehte::ets::MaskVersion::System7Tp1, // MV-0705
     manufacturer_id: 0x0083, // MDT
     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
     application_id: 0x009B,    // ApplicationNumber: 155
@@ -47,6 +45,7 @@ pub const DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::e
     max_address_table_entries: 255,
     max_association_table_entries: 255,
     max_com_objects: 88, // 87 objects + 1 for header
+    pei_type: 0,
 };
 
 /// Serial number for test device.
@@ -3212,7 +3211,7 @@ pub const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 pub const APP_DATA_SIZE: usize = core::mem::size_of::<MdtParams>();
 
 /// Unified state type
-pub type MdtState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MdtParams, MdtStack>;
+pub type MdtState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MdtParams, MockIpPlatform>;
 
 /// Memory layout for the device
 pub const MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calculate(
@@ -3228,10 +3227,6 @@ pub const MEMORY_MAP: SystemBMemoryMap = SystemBMemoryMap::new(MEMORY_LAYOUT);
 
 #[derive(Debug, Clone, Copy)]
 pub struct MdtStack;
-
-impl SystemBDevice for MdtStack {
-    type Storage = JsonStorage;
-}
 
 impl KnxIpDevice for MdtStack {
     const INTERFACE_NAME: &'static str = INTERFACE_NAME;

@@ -457,7 +457,7 @@ pub trait StackDefinition: Copy {
     /// use zweidraehte::ets::DeviceDescriptor;
     ///
     /// const MY_DEVICE: DeviceDescriptor = DeviceDescriptor {
-    ///     mask_version: 0x07B0,
+    ///     mask_version: MaskVersion::SystemBTp1,
     ///     manufacturer_id: 0x00FA,
     ///     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
     ///     application_id: 0xF023,
@@ -465,6 +465,7 @@ pub trait StackDefinition: Copy {
     ///     max_address_table_entries: 64,
     ///     max_association_table_entries: 64,
     ///     max_com_objects: 32,
+    ///     pei_type: 0,
     /// };
     ///
     /// impl StackDefinition for MyDevice {
@@ -835,8 +836,8 @@ fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
 /// - ETS-loaded tables (ADT, AST, COT, APP)
 ///
 /// Use the device state constructor to create it:
-/// - `SystemBDeviceState::new(storage, &identity)` for fresh state
-/// - `SystemBDeviceState::from_persisted(storage, &identity, persisted)` to restore
+/// - `SystemBDeviceState::new(&identity)` for fresh state
+/// - `SystemBDeviceState::from_persisted(&identity, persisted)` to restore
 ///
 /// The `memory_map` parameter defines how memory addresses are mapped to tables
 /// for A_Memory_Read/Write services. It must be configured with the same table
