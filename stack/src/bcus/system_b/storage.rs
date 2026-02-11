@@ -19,6 +19,64 @@ use crate::{
     },
 };
 
+// ============================================================================
+// Link-layer config abstraction
+// ============================================================================
+
+/// Trait for link-layer-specific persistent configuration.
+///
+/// Different link layers may need to persist different configuration data.
+/// TP1 devices use `()` (no link-layer config), while IP devices use
+/// [`PersistedIpConfig`].
+///
+/// # Bounds
+///
+/// Implementations must be serializable for persistence and provide
+/// factory defaults via `Default`.
+pub trait LinkLayerConfig: Default + Serialize + for<'de> Deserialize<'de> {}
+
+impl LinkLayerConfig for () {}
+
+/// Runtime state for link-layer-specific persistent configuration.
+///
+/// This trait bridges the serializable config ([`LinkLayerConfig`]) and
+/// the runtime representation with interior mutability (`Cell`/`RefCell`
+/// fields). The runtime form allows `&self` mutation through the
+/// `IpStackState` trait, while the config form is what gets serialized.
+///
+/// For IP devices, this is [`IpLinkLayerState`](super::IpLinkLayerState)
+/// with `Cell<Ipv4Addr>`, `Cell<u8>`, etc.
+/// For TP1 devices, this is `()`.
+pub trait LinkLayerState: Sized {
+    /// The serializable config type for this link-layer state.
+    type Config: LinkLayerConfig;
+
+    /// Create runtime state from a persisted config.
+    fn from_config(config: Self::Config) -> Self;
+
+    /// Export current runtime state to serializable config.
+    fn to_config(&self) -> Self::Config;
+
+    /// Reset to factory defaults.
+    fn factory_reset(&self);
+}
+
+impl LinkLayerState for () {
+    type Config = ();
+
+    fn from_config(_config: ()) -> Self {}
+
+    fn to_config(&self) {}
+
+    fn factory_reset(&self) {
+        // No link-layer state to reset.
+    }
+}
+
+// ============================================================================
+// Device storage trait
+// ============================================================================
+
 /// Trait for persisting device state to storage.
 ///
 /// Implementations can target various storage backends:
@@ -57,14 +115,16 @@ pub trait DeviceStorage: Sized {
     /// - `AST_SIZE`: Association table size in bytes (2 + MAX_ASSO * 4)
     /// - `COT_SIZE`: Group object table size in bytes (2 + MAX_CO * 2)
     /// - `P`: Application parameters type
+    /// - `L`: Link-layer-specific persistent config
     fn load<
         const ADT_SIZE: usize,
         const AST_SIZE: usize,
         const COT_SIZE: usize,
         P: ConstDefault + Serialize + for<'de> Deserialize<'de>,
+        L: LinkLayerConfig,
     >(
         &mut self,
-    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>>, Self::Error>;
+    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>>, Self::Error>;
 
     /// Save persistent state to storage.
     ///
@@ -75,9 +135,10 @@ pub trait DeviceStorage: Sized {
         const AST_SIZE: usize,
         const COT_SIZE: usize,
         P: ConstDefault + Serialize + for<'de> Deserialize<'de>,
+        L: LinkLayerConfig,
     >(
         &mut self,
-        state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>,
+        state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>,
     ) -> Result<(), Self::Error>;
 
     /// Mark state as dirty (needs save).
@@ -101,6 +162,10 @@ pub trait DeviceStorage: Sized {
     }
 }
 
+// ============================================================================
+// Persisted state
+// ============================================================================
+
 /// All state that must survive power cycles.
 ///
 /// This struct contains everything that ETS can configure and the device
@@ -113,10 +178,22 @@ pub trait DeviceStorage: Sized {
 /// - `AST_SIZE`: Association table size (typically 2 + MAX_ASSO * 4)
 /// - `COT_SIZE`: Group object table size (typically 2 + MAX_CO * 2)
 /// - `P`: Application parameters type
+/// - `L`: Link-layer-specific persistent config (e.g., [`PersistedIpConfig`]
+///   for KNX/IP devices, `()` for TP1 devices)
 ///
-/// Use [`table_sizes`] to calculate these from the max entry counts.
+/// Use [`table_sizes`] to calculate the const generics from max entry counts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedState<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault = ()> {
+#[serde(bound(
+    serialize = "P: Serialize",
+    deserialize = "P: Deserialize<'de>",
+))]
+pub struct PersistedState<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault = (),
+    L: LinkLayerConfig = (),
+> {
     /// Version of the persisted state format.
     ///
     /// Increment this when making breaking changes to allow migration.
@@ -155,14 +232,25 @@ pub struct PersistedState<const ADT_SIZE: usize, const AST_SIZE: usize, const CO
     /// PEI program version (set by ETS during programming).
     pub pei_program_version: [u8; 5],
 
-    /// IP-specific configuration (only for 57B0 devices).
+    /// Link-layer-specific persistent configuration.
     ///
-    /// Set to `None` for non-IP devices (07B0).
-    pub ip_config: Option<PersistedIpConfig>,
+    /// For KNX/IP devices this is [`PersistedIpConfig`] (friendly name,
+    /// configured IP addresses, routing multicast, etc.).
+    /// For TP1 devices this is `()`.
+    ///
+    /// The `serde(alias)` accepts the old field name `"ip_config"` for
+    /// backwards compatibility with existing JSON state files.
+    #[serde(alias = "ip_config")]
+    pub link_layer_config: L,
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault>
-    PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    L: LinkLayerConfig,
+> PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>
 {
     /// Current version of the persisted state format.
     pub const VERSION: u8 = 1;
@@ -181,13 +269,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
             pei_program: PeiApplication::new(),
             program_version: [0; 5],
             pei_program_version: [0; 5],
-            ip_config: None,
+            link_layer_config: L::default(),
         }
-    }
-
-    /// Create a new persisted state with factory defaults and IP config.
-    pub fn factory_default_ip() -> Self {
-        Self { ip_config: Some(PersistedIpConfig::default()), ..Self::factory_default() }
     }
 }
 
@@ -209,10 +292,15 @@ pub const fn table_sizes(max_addr: usize, max_asso: usize, max_co: usize) -> (us
     )
 }
 
-/// Persisted IP configuration (for 57B0 devices).
+// ============================================================================
+// IP-specific persistent config
+// ============================================================================
+
+/// Persisted IP configuration (for KNX/IP devices).
 ///
 /// All IP-specific settings that can be configured via ETS or
-/// the IP Parameter Object.
+/// the IP Parameter Object. Implements [`LinkLayerConfig`] so it
+/// can be used as the `L` parameter of [`PersistedState`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedIpConfig {
     /// Friendly name for discovery (up to 30 bytes).
@@ -259,6 +347,8 @@ impl Default for PersistedIpConfig {
     }
 }
 
+impl LinkLayerConfig for PersistedIpConfig {}
+
 impl PersistedIpConfig {
     /// Get the configured IP address as an Ipv4Addr.
     pub fn configured_ip_addr(&self) -> Ipv4Addr {
@@ -294,9 +384,10 @@ impl DeviceStorage for NoStorage {
         const AST_SIZE: usize,
         const COT_SIZE: usize,
         P: ConstDefault + Serialize + for<'de> Deserialize<'de>,
+        L: LinkLayerConfig,
     >(
         &mut self,
-    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>>, Self::Error> {
+    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>>, Self::Error> {
         Ok(None) // No saved state
     }
 
@@ -305,9 +396,10 @@ impl DeviceStorage for NoStorage {
         const AST_SIZE: usize,
         const COT_SIZE: usize,
         P: ConstDefault + Serialize + for<'de> Deserialize<'de>,
+        L: LinkLayerConfig,
     >(
         &mut self,
-        _state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>,
+        _state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>,
     ) -> Result<(), Self::Error> {
         Ok(()) // Silently discard
     }

@@ -20,7 +20,7 @@ use static_cell::StaticCell;
 use zweidraehte::{
     Runner, Stack, StackDefinition, StackResources, StackState,
     address::IndividualAddress,
-    bcus::system_b::DeviceStorage,
+    bcus::system_b::{DeviceStorage, PersistedIpConfig, StaticIdentity},
     layers::linklayers::knxip::KnxNetIpBuilder,
     messages::knxip::substructs::{DeviceInformation, DeviceStatus, HPAI, KNXMedium},
     objects::comm::ComObjects,
@@ -33,6 +33,9 @@ use testutil::devices::system_b_demo::*;
 use testutil::storage::JsonStorage;
 use testutil::util::keyboard;
 
+/// Device identity for the demo device.
+const IDENTITY: StaticIdentity = StaticIdentity::new(SERIAL_NUMBER);
+
 /// Default path for the device state JSON file.
 const STATE_FILE_PATH: &str = "system_b_device_state.json";
 
@@ -43,9 +46,9 @@ const STATE_FILE_PATH: &str = "system_b_device_state.json";
 /// Save the current device state to JSON storage.
 fn save_state(state: &DemoState) {
     let persisted = state.to_persisted();
-    match state.base().storage().borrow_mut().save(&persisted) {
+    match state.storage().borrow_mut().save(&persisted) {
         Ok(()) => {
-            state.base().clear_dirty();
+            state.clear_dirty();
             log::info!("State saved to {}", STATE_FILE_PATH);
         }
         Err(e) => log::error!("Failed to save state: {}", e),
@@ -91,6 +94,8 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
 
         // Execute the reset. All reset methods use interior mutability (&self)
         // so we can call them directly through the shared Stack reference.
+        // factory_reset() now handles both base state and link-layer state
+        // (IP config reset) in one call.
         let response = match req.erase_code {
             EraseCode::Basic | EraseCode::Confirmed => {
                 println!("Performing basic restart (no data reset)...");
@@ -98,23 +103,22 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
             }
             EraseCode::FactoryReset => {
                 println!("Performing FACTORY RESET — all data will be cleared!");
-                state.base().factory_reset();
-                state.reset_ip_config();
+                state.factory_reset();
                 RestartResponse::success()
             }
             EraseCode::ResetIA => {
                 println!("Resetting Individual Address to 15.15.255...");
-                state.base().reset_individual_address();
+                state.reset_individual_address();
                 RestartResponse::success()
             }
             EraseCode::ResetAP => {
                 println!("Resetting Application Program...");
-                state.base().reset_application();
+                state.reset_application();
                 RestartResponse::success()
             }
             EraseCode::ResetParam => {
                 println!("Resetting Parameters to defaults...");
-                state.base().reset_parameters();
+                state.reset_parameters();
                 RestartResponse::success()
             }
             EraseCode::ResetLinks => {
@@ -125,8 +129,7 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
             }
             EraseCode::FactoryResetKeepIA => {
                 println!("Performing Factory Reset (keeping Individual Address)...");
-                state.base().factory_reset_keep_ia();
-                state.reset_ip_config();
+                state.factory_reset_keep_ia();
                 RestartResponse::success()
             }
             EraseCode::Other(code) => {
@@ -170,19 +173,14 @@ async fn main(spawner: Spawner) {
 
     // Create storage and try to load persisted state
     let mut storage = JsonStorage::new(STATE_FILE_PATH);
-    let device_state: DemoState = match storage.load::<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams>() {
+    let device_state: DemoState = match storage.load::<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, PersistedIpConfig>() {
         Ok(Some(persisted)) => {
             println!("Loaded persisted state from {}", STATE_FILE_PATH);
-            DemoState::from_persisted(
-                JsonStorage::new(STATE_FILE_PATH),
-                MockIpPlatform::default(),
-                SERIAL_NUMBER,
-                persisted,
-            )
+            DemoState::from_persisted(JsonStorage::new(STATE_FILE_PATH), &IDENTITY, persisted)
         }
         Ok(None) => {
             println!("No persisted state found, starting fresh");
-            let state = DemoState::new(JsonStorage::new(STATE_FILE_PATH), MockIpPlatform::default(), SERIAL_NUMBER);
+            let state = DemoState::new(JsonStorage::new(STATE_FILE_PATH), &IDENTITY);
             state.set_individual_address(IndividualAddress::new(1, 2, 3));
             if let Err(e) = storage.save(&state.to_persisted()) {
                 log::error!("Failed to save initial state: {}", e);
@@ -191,7 +189,7 @@ async fn main(spawner: Spawner) {
         }
         Err(e) => {
             println!("Error loading persisted state: {}", e);
-            DemoState::new(JsonStorage::new(STATE_FILE_PATH), MockIpPlatform::default(), SERIAL_NUMBER)
+            DemoState::new(JsonStorage::new(STATE_FILE_PATH), &IDENTITY)
         }
     };
 

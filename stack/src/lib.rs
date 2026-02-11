@@ -1159,9 +1159,9 @@ fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
 /// - Individual address, authentication keys, and other runtime configuration
 /// - ETS-loaded tables (ADT, AST, COT, APP)
 ///
-/// Use the device-specific state type's constructor to create it:
-/// - `SystemBDeviceState::new()` or `SystemBDeviceState::from_persisted()` for TP devices
-/// - `IpSystemBDeviceState::new()` or `IpSystemBDeviceState::from_persisted()` for IP devices
+/// Use the device state constructor to create it:
+/// - `SystemBDeviceState::new(storage, &identity)` for fresh state
+/// - `SystemBDeviceState::from_persisted(storage, &identity, persisted)` to restore
 ///
 /// The `memory_map` parameter defines how memory addresses are mapped to tables
 /// for A_Memory_Read/Write services. It must be configured with the same table

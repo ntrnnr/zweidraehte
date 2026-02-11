@@ -62,16 +62,6 @@ pub trait KnxIpDevice: SystemBDevice {
     /// Network interface name (e.g., "eth0", "wlan0", "enp0s3").
     const INTERFACE_NAME: &'static str;
 
-    /// Number of UDP sockets needed.
-    ///
-    /// Default is 2 (one for discovery/unicast, one for routing multicast).
-    const NUM_SOCKETS: usize = 2;
-
-    /// Number of KNXnet/IP servers.
-    ///
-    /// Default is 2 (discovery server + routing server).
-    const NUM_SERVERS: usize = 2;
-
     /// Platform for querying current network state.
     ///
     /// This provides runtime network information like current IP address,

@@ -16,7 +16,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-use zweidraehte::bcus::system_b::{DeviceStorage, PersistedState};
+use zweidraehte::bcus::system_b::{DeviceStorage, LinkLayerConfig, PersistedState};
 
 /// JSON file-based storage for device state.
 ///
@@ -100,9 +100,10 @@ impl DeviceStorage for JsonStorage {
         const AST_SIZE: usize,
         const COT_SIZE: usize,
         P: const_default::ConstDefault + serde::Serialize + for<'de> serde::Deserialize<'de>,
+        L: LinkLayerConfig,
     >(
         &mut self,
-    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>>, Self::Error> {
+    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>>, Self::Error> {
         // Check if the file exists
         if !self.path.exists() {
             log::info!("No saved state at {:?}, using factory defaults", self.path);
@@ -115,7 +116,7 @@ impl DeviceStorage for JsonStorage {
         file.read_to_string(&mut contents)?;
 
         // Parse the JSON
-        let state: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P> = serde_json::from_str(&contents)?;
+        let state: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L> = serde_json::from_str(&contents)?;
 
         log::info!("Loaded device state from {:?}", self.path);
         Ok(Some(state))
@@ -126,9 +127,10 @@ impl DeviceStorage for JsonStorage {
         const AST_SIZE: usize,
         const COT_SIZE: usize,
         P: const_default::ConstDefault + serde::Serialize + for<'de> serde::Deserialize<'de>,
+        L: LinkLayerConfig,
     >(
         &mut self,
-        state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P>,
+        state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>,
     ) -> Result<(), Self::Error> {
         // Serialize to JSON with pretty printing for readability
         let json = serde_json::to_string_pretty(state)?;

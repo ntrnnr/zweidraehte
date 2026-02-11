@@ -87,16 +87,18 @@
 //! ```
 
 mod device_state;
+mod identity;
 mod memory_map;
 mod objects;
 mod storage;
 mod traits;
 
 pub use crate::memory::HasApplication;
-pub use device_state::{IpSystemBDeviceState, SystemBDeviceState};
+pub use device_state::{IpLinkLayerState, IpSystemBDeviceState, SystemBDeviceState};
+pub use identity::{DeviceIdentity, StaticIdentity};
 pub use memory_map::{MemoryLayout, SystemBMemoryMap};
 pub use objects::{
     IpObjects, KnxIpInterfaceObjects, SystemBObjects, create_knxip_objects, create_system_b_objects, device_info_from,
 };
-pub use storage::{DeviceStorage, NoStorage, PersistedIpConfig, PersistedState, table_sizes};
+pub use storage::{DeviceStorage, LinkLayerConfig, LinkLayerState, NoStorage, PersistedIpConfig, PersistedState, table_sizes};
 pub use traits::{KnxIpDevice, SystemBDevice, TpDevice};
