@@ -28,6 +28,7 @@ pub mod memory;
 pub mod messages;
 pub mod objects;
 pub mod restart;
+pub mod storage;
 pub mod util;
 
 use core::{

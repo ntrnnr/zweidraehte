@@ -17,13 +17,14 @@ use static_cell::StaticCell;
 use zweidraehte::{
     Runner, Stack, StackDefinition, StackResources, StackState,
     address::IndividualAddress,
-    bcus::system_b::{DeviceIdentity, DeviceStorage},
+    bcus::system_b::DeviceIdentity,
     layers::linklayers::knxip::KnxNetIpBuilder,
     messages::knxip::substructs::HPAI,
     objects::comm::ComObjects,
     objects::interface::HasDeviceObject,
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
     restart::{EraseCode, RestartResponse},
+    storage::DeviceStorage,
 };
 
 use testutil::devices::system_b_demo::*;

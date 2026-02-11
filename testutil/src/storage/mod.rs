@@ -7,7 +7,7 @@
 //!
 //! ```rust,ignore
 //! use testutil::storage::JsonStorage;
-//! use zweidraehte::bcus::system_b::DeviceStorage;
+//! use zweidraehte::storage::DeviceStorage;
 //!
 //! let mut storage = JsonStorage::<MyPersistedState>::new("device_state.json");
 //! let state = storage.load().unwrap(); // no turbofish needed
@@ -22,7 +22,7 @@ use std::marker::PhantomData;
 use std::path::PathBuf;
 
 use serde::{Serialize, de::DeserializeOwned};
-use zweidraehte::bcus::system_b::DeviceStorage;
+use zweidraehte::storage::DeviceStorage;
 
 /// JSON file-based storage for device state.
 ///
