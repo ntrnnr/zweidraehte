@@ -12,19 +12,14 @@ use knx_conformance::harness::mock::MockLinkLayerBuilder;
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
 use core::cell::RefCell;
+use zweidraehte::prelude::*;
 use zweidraehte::{
-    Runner, StackDefinition, StackResources, StackState,
-    address::IndividualAddress,
     dpt::DPT_Switch,
     ets::EtsComObjects,
-    memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
-    objects::{
-        comm::{ComObject, ComObjects},
-        tables::{
-            AddressTable, AssociationTable, CommunicationObjectTable,
-            addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7, app::Application,
-        },
+    objects::tables::{
+        AddressTable, AssociationTable, CommunicationObjectTable,
+        addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7, app::Application,
     },
 };
 
@@ -145,8 +140,8 @@ impl HasApplication for MyState {
 }
 
 /// Device descriptor for test utility
-const TEST_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
-    mask_version: zweidraehte::ets::MaskVersion::SystemBTp1,
+const TEST_DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
+    mask_version: MaskVersion::SystemBTp1,
     manufacturer_id: 0x00FA,
     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
     application_id: 0x0100,
@@ -160,12 +155,12 @@ const TEST_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::
 #[derive(Debug, Clone, Copy)]
 pub struct MyKnxStack;
 impl StackDefinition for MyKnxStack {
-    const DEVICE: &'static zweidraehte::ets::DeviceDescriptor = &TEST_DEVICE_DESCRIPTOR;
+    const DEVICE: &'static DeviceDescriptor = &TEST_DEVICE_DESCRIPTOR;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = MockLinkLayerBuilder<8>;
     type State = MyState;
-    type Mem = zweidraehte::memory::NoMemoryMap;
+    type Mem = NoMemoryMap;
 
     // Empty interface objects - this stack doesn't have interface objects
     type InterfaceObjects<'a> = ();
@@ -251,7 +246,7 @@ async fn main(spawner: Spawner) {
         (),  // hook_context
         link_layer_builder,
         state,
-        zweidraehte::memory::NoMemoryMap,
+        NoMemoryMap,
     );
 
     spawner.spawn(run_stack(runner)).unwrap();
@@ -293,10 +288,10 @@ async fn main(spawner: Spawner) {
 
                 match read_result {
                     Ok(()) => println!("Read object successful - response received!"),
-                    Err(zweidraehte::ReadObjectError::Timeout) => {
+                    Err(ReadObjectError::Timeout) => {
                         println!("Read object timed out - no response received")
                     }
-                    Err(zweidraehte::ReadObjectError::Busy) => {
+                    Err(ReadObjectError::Busy) => {
                         println!("Read object busy - already transmitting")
                     }
                 }

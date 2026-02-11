@@ -684,6 +684,15 @@ where
 
 use crate::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
 
+/// Trait for types that provide a routing count.
+///
+/// The routing count (hop count) determines how many routers a message
+/// can pass through. Value 0-7, default is 6 per KNX specification.
+pub trait HasRoutingCount {
+    /// Get the routing count.
+    fn routing_count(&self) -> u8;
+}
+
 /// Trait for containers that provide access to DeviceObject properties.
 ///
 /// This trait enables type-safe access to the DeviceObject's semantic properties

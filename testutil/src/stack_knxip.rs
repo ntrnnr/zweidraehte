@@ -115,21 +115,19 @@ use embassy_time::Duration;
 use env_logger::Env;
 use static_cell::StaticCell;
 use std::net::Ipv4Addr;
+use zweidraehte::prelude::*;
 use zweidraehte::{
-    IpPlatform, IpStackState, Runner, StackDefinition, StackResources, StackState,
-    address::IndividualAddress,
+    IpPlatform,
     dpt::DPT_Switch,
     ets::EtsComObjects,
     layers::linklayers::knxip::KnxNetIpBuilder,
-    memory::{HasAddressTable, HasAssociationTable, HasCommunicationObjectTable},
     messages::knxip::substructs::HPAI,
-    objects::comm::{ComObject, ComObjectIndex, ComObjects},
+    objects::comm::ComObject,
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
-        InterfaceObject, IpParameterObject, PropertyDescriptionResponse, PropertyError,
-        PropertyServiceHandler, WriteResponse,
+        IpParameterObject,
     },
-    objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadEvent, RunEvent, app::Application},
+    objects::tables::{LoadEvent, RunEvent, app::Application},
 };
 
 #[derive(Debug, ConstDefault)]
@@ -678,8 +676,6 @@ impl<P: IpPlatform> HasCommunicationObjectTable for KnxIpState<P> {
         &self.cot
     }
 }
-
-use zweidraehte::memory::HasApplication;
 
 impl<P: IpPlatform> HasApplication for KnxIpState<P> {
     type APP = Application<()>;

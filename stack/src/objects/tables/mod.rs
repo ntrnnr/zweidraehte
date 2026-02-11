@@ -1,3 +1,5 @@
+use core::cell::RefCell;
+
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 use zerocopy::{
@@ -11,6 +13,71 @@ use crate::{
     messages::knx::Priority,
     util::{crc::crc16_ccitt, packets::BufferView},
 };
+
+// ============================================================================
+// Table Accessor Traits
+// ============================================================================
+
+/// Trait for types that contain an Address Table.
+///
+/// Implement this trait on your device state type to enable group object
+/// communication in the stack.
+pub trait HasAddressTable {
+    /// The concrete address table type
+    type ADT: AddressTable;
+    /// Get a reference to the address table
+    fn adt(&self) -> &RefCell<Self::ADT>;
+}
+
+/// Trait for types that contain an Association Table.
+///
+/// Implement this trait on your device state type to enable group object
+/// communication in the stack.
+pub trait HasAssociationTable {
+    /// The concrete association table type
+    type AST: AssociationTable;
+    /// Get a reference to the association table
+    fn ast(&self) -> &RefCell<Self::AST>;
+}
+
+/// Trait for types that contain a Communication Object Table.
+///
+/// Implement this trait on your device state type to enable group object
+/// communication in the stack.
+pub trait HasCommunicationObjectTable {
+    /// The concrete communication object table type
+    type COT: CommunicationObjectTable;
+    /// Get a reference to the communication object table
+    fn cot(&self) -> &RefCell<Self::COT>;
+}
+
+/// Trait for types that contain an Application Program.
+///
+/// This is used by interface objects and the memory map to access
+/// the application's load and run state machines.
+pub trait HasApplication {
+    /// The concrete application type.
+    type APP: HasLoadStateMachine + HasRunStateMachine;
+
+    /// Get a reference to the application.
+    fn app(&self) -> &RefCell<Self::APP>;
+}
+
+/// Trait for types that contain a PEI (Platform Extension Interface) Program.
+///
+/// This is used by interface objects to access the PEI's load and run state machines.
+/// For System B devices (mask 57B0), the PEI Program Object is Interface Object 5.
+pub trait HasPeiApplication {
+    /// The concrete PEI application type.
+    type PEI: HasLoadStateMachine + HasRunStateMachine;
+
+    /// Get a reference to the PEI application.
+    fn pei(&self) -> &RefCell<Self::PEI>;
+}
+
+// ============================================================================
+// Table Traits
+// ============================================================================
 
 pub trait TableMemory: ConstDefault + Sized {
     fn max_size() -> usize;

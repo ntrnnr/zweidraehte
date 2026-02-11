@@ -27,6 +27,7 @@ pub mod layers;
 pub mod memory;
 pub mod messages;
 pub mod objects;
+pub mod prelude;
 pub mod restart;
 pub mod storage;
 pub mod util;
@@ -54,12 +55,12 @@ use crate::{
         network::NetworkLayer,
         transport::TransportLayer,
     },
-    memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, MemoryMap},
+    memory::MemoryMap,
     messages::buffers::{Buffer, BufferManager, DynBufferManager},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
         interface::{HasDeviceObject, PropertyServiceHandler},
-        tables::HasRunStateMachine,
+        tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine},
     },
 };
 
@@ -535,9 +536,9 @@ pub trait StackDefinition: Copy {
     ///
     /// Must implement [`StackState`] for runtime state access, and may implement
     /// table accessor traits for group object communication:
-    /// - [`HasAddressTable`](memory::HasAddressTable)
-    /// - [`HasAssociationTable`](memory::HasAssociationTable)
-    /// - [`HasCommunicationObjectTable`](memory::HasCommunicationObjectTable)
+    /// - [`HasAddressTable`](objects::tables::HasAddressTable)
+    /// - [`HasAssociationTable`](objects::tables::HasAssociationTable)
+    /// - [`HasCommunicationObjectTable`](objects::tables::HasCommunicationObjectTable)
     ///
     /// For System B devices, use [`SystemBDeviceState`](bcus::system_b::SystemBDeviceState)
     /// or [`IpSystemBDeviceState`](bcus::system_b::IpSystemBDeviceState).
@@ -1451,7 +1452,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
 // Table accessor methods - only available when State implements the appropriate traits
 impl<'d, D: StackDefinition> Stack<'d, D>
 where
-    D::State: memory::HasAddressTable,
+    D::State: HasAddressTable,
 {
     /// Get access to the address table.
     ///
@@ -1460,14 +1461,14 @@ where
     ///
     /// # Returns
     /// A reference to the `RefCell` containing the address table
-    pub fn address_table(&self) -> &RefCell<<D::State as memory::HasAddressTable>::ADT> {
+    pub fn address_table(&self) -> &RefCell<<D::State as HasAddressTable>::ADT> {
         self.inner.state.adt()
     }
 }
 
 impl<'d, D: StackDefinition> Stack<'d, D>
 where
-    D::State: memory::HasAssociationTable,
+    D::State: HasAssociationTable,
 {
     /// Get access to the association table.
     ///
@@ -1476,14 +1477,14 @@ where
     ///
     /// # Returns
     /// A reference to the `RefCell` containing the association table
-    pub fn association_table(&self) -> &RefCell<<D::State as memory::HasAssociationTable>::AST> {
+    pub fn association_table(&self) -> &RefCell<<D::State as HasAssociationTable>::AST> {
         self.inner.state.ast()
     }
 }
 
 impl<'d, D: StackDefinition> Stack<'d, D>
 where
-    D::State: memory::HasCommunicationObjectTable,
+    D::State: HasCommunicationObjectTable,
 {
     /// Get access to the communication object table.
     ///
@@ -1493,7 +1494,7 @@ where
     ///
     /// # Returns
     /// A reference to the `RefCell` containing the communication object table
-    pub fn communication_object_table(&self) -> &RefCell<<D::State as memory::HasCommunicationObjectTable>::COT> {
+    pub fn communication_object_table(&self) -> &RefCell<<D::State as HasCommunicationObjectTable>::COT> {
         self.inner.state.cot()
     }
 }

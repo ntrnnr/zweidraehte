@@ -17,7 +17,8 @@ use const_default::ConstDefault;
 use crate::{
     IpPlatform, IpStackState, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS, StackState,
     address::IndividualAddress,
-    memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication, HasRoutingCount},
+    objects::interface::HasRoutingCount,
+    objects::tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication},
     objects::tables::{
         HasLoadStateMachine, HasRunStateMachine, Table, addr7::AddrTab7Impl, app::{Application, PeiApplication}, asso6::AssoTab6Impl,
         co7::CoTab7Impl,

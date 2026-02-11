@@ -40,9 +40,9 @@ use crate::{
 };
 
 use crate::StackDefinition;
-use crate::memory::{
+use crate::objects::interface::HasRoutingCount;
+use crate::objects::tables::{
     HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication,
-    HasRoutingCount,
 };
 
 // ============================================================================

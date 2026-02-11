@@ -14,17 +14,12 @@ use embassy_sync::pubsub::WaitResult;
 use embassy_time::Duration;
 use env_logger::Env;
 use static_cell::StaticCell;
+use zweidraehte::prelude::*;
 use zweidraehte::{
-    Runner, Stack, StackDefinition, StackResources, StackState,
-    address::IndividualAddress,
     bcus::system_b::DeviceIdentity,
     layers::linklayers::knxip::KnxNetIpBuilder,
     messages::knxip::substructs::HPAI,
-    objects::comm::ComObjects,
-    objects::interface::HasDeviceObject,
-    objects::tables::{HasLoadStateMachine, HasRunStateMachine},
     restart::{EraseCode, RestartResponse},
-    storage::DeviceStorage,
 };
 
 use testutil::devices::system_b_demo::*;
@@ -262,8 +257,6 @@ async fn main(spawner: Spawner) {
         }
 
         if embassy_time::Instant::now().duration_since(last_print) > Duration::from_secs(10) {
-            use zweidraehte::memory::HasApplication;
-
             let objects = stack.objects();
             let co_borrow = objects.borrow();
             let interface_objects = stack.interface_objects();
@@ -354,7 +347,6 @@ async fn main(spawner: Spawner) {
 
         match embassy_time::with_timeout(Duration::from_millis(100), events.next_message()).await {
             Ok(WaitResult::Message((index, event))) => {
-                use zweidraehte::objects::comm::ComObjectIndex;
                 println!("Event: {:?} on CO {}", event, index.index());
             }
             Ok(WaitResult::Lagged(count)) => println!("Warning: Missed {} events", count),

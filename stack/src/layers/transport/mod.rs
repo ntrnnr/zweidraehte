@@ -46,13 +46,12 @@ use embassy_time::{Duration, Instant, Timer};
 use crate::{
     StackDefinition, StackState,
     address::IndividualAddress,
-    memory::HasAddressTable,
     messages::{
         buffers::Buffer,
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
         knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci, DEFAULT_MESSAGE_ACCESS_LEVEL},
     },
-    objects::tables::{AddressTable, HasLoadStateMachine},
+    objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
 };
 
 use super::{ActorRequest, Inbox, Layer, LayerOp};

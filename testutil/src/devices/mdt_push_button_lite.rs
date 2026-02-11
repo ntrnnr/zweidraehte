@@ -3245,11 +3245,11 @@ impl StackDefinition for MdtStack {
     type InterfaceObjects<'a> = KnxIpInterfaceObjects<
         'a,
         Self::State,
-        <Self::State as zweidraehte::memory::HasAddressTable>::ADT,
-        <Self::State as zweidraehte::memory::HasAssociationTable>::AST,
-        <Self::State as zweidraehte::memory::HasCommunicationObjectTable>::COT,
-        <Self::State as zweidraehte::memory::HasApplication>::APP,
-        <Self::State as zweidraehte::memory::HasPeiApplication>::PEI,
+        <Self::State as zweidraehte::objects::tables::HasAddressTable>::ADT,
+        <Self::State as zweidraehte::objects::tables::HasAssociationTable>::AST,
+        <Self::State as zweidraehte::objects::tables::HasCommunicationObjectTable>::COT,
+        <Self::State as zweidraehte::objects::tables::HasApplication>::APP,
+        <Self::State as zweidraehte::objects::tables::HasPeiApplication>::PEI,
     >;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>

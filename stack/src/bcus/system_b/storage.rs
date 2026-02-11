@@ -2,11 +2,10 @@
 //!
 //! This module provides System B-specific persistence types
 //! ([`PersistedState`], [`PersistedIpConfig`], [`LinkLayerConfig`],
-//! [`LinkLayerState`]) and re-exports the generic storage traits
-//! ([`DeviceStorage`], [`NoStorage`]) from [`crate::storage`].
-
-// Re-export generic storage traits from the crate root.
-pub use crate::storage::{DeviceStorage, NoStorage};
+//! [`LinkLayerState`]).
+//!
+//! The generic storage traits ([`DeviceStorage`](crate::storage::DeviceStorage),
+//! [`NoStorage`](crate::storage::NoStorage)) live in [`crate::storage`].
 
 use core::net::Ipv4Addr;
 

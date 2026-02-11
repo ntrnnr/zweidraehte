@@ -31,13 +31,13 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
 
+use zweidraehte::prelude::*;
 use zweidraehte::{
-    memory::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
+    IpPlatform,
     messages::buffers::{Buffer, BufferManager, DynBufferManager, MessageBuffer},
     messages::knx::{KnxMessageBuffer, ServiceType},
-    objects::comm::{ComObjectStatus, ComObjects},
-    objects::tables::{app::Application, HasLoadStateMachine},
-    IpPlatform, IpStackState, Runner, StackDefinition, StackResources, StackState,
+    objects::comm::ComObjectStatus,
+    objects::tables::app::Application,
 };
 
 use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle};
@@ -704,7 +704,7 @@ impl ConformanceState {
         let inner = InnerState::new(&identity);
 
         // Set the conformance test individual address (1.0.1).
-        inner.set_individual_address(zweidraehte::address::IndividualAddress::new(1, 0, 1));
+        inner.set_individual_address(IndividualAddress::new(1, 0, 1));
 
         // Load the pre-built tables into the inner state.
         *inner.adt.borrow_mut() = addr_tab;
@@ -743,11 +743,11 @@ impl Default for ConformanceState {
 // ============================================================================
 
 impl zweidraehte::StackState for ConformanceState {
-    fn individual_address(&self) -> zweidraehte::address::IndividualAddress {
+    fn individual_address(&self) -> IndividualAddress {
         self.inner.individual_address()
     }
 
-    fn set_individual_address(&self, addr: zweidraehte::address::IndividualAddress) {
+    fn set_individual_address(&self, addr: IndividualAddress) {
         self.inner.set_individual_address(addr);
     }
 
@@ -843,12 +843,12 @@ impl HasApplication for ConformanceState {
     fn app(&self) -> &RefCell<Self::APP> { self.inner.app() }
 }
 
-impl zweidraehte::memory::HasPeiApplication for ConformanceState {
-    type PEI = <InnerState as zweidraehte::memory::HasPeiApplication>::PEI;
+impl zweidraehte::objects::tables::HasPeiApplication for ConformanceState {
+    type PEI = <InnerState as zweidraehte::objects::tables::HasPeiApplication>::PEI;
     fn pei(&self) -> &RefCell<Self::PEI> { self.inner.pei() }
 }
 
-impl zweidraehte::memory::HasRoutingCount for ConformanceState {
+impl zweidraehte::objects::interface::HasRoutingCount for ConformanceState {
     fn routing_count(&self) -> u8 { self.inner.routing_count() }
 }
 
@@ -1116,7 +1116,7 @@ impl StackDefinition for ConformanceTestStack {
         <ConformanceState as HasAssociationTable>::AST,
         <ConformanceState as HasCommunicationObjectTable>::COT,
         <ConformanceState as HasApplication>::APP,
-        <ConformanceState as zweidraehte::memory::HasPeiApplication>::PEI,
+        <ConformanceState as zweidraehte::objects::tables::HasPeiApplication>::PEI,
     >;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>

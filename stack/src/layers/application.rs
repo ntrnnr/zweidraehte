@@ -31,7 +31,6 @@ use crate::{
     restart::{EraseCode, RestartError, RestartRequest, RestartResponse},
     StackDefinition, StackState,
     address::GroupAddress,
-    memory::{HasApplication, HasAssociationTable, HasCommunicationObjectTable},
     messages::{
         buffers::{Buffer, DynBufferManager},
         builder::{IndicationMessage, RequestMessage},
@@ -40,7 +39,10 @@ use crate::{
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
         interface::{HasDeviceObject, PropertyServiceHandler, pid},
-        tables::{AssociationTable, CommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine},
+        tables::{
+            AssociationTable, CommunicationObjectTable, HasApplication, HasAssociationTable,
+            HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine,
+        },
     },
 };
 
