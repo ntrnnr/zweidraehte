@@ -1531,6 +1531,7 @@ where
             match self.memory_map.write(self.state, address, data, access_level) {
                 Ok(bytes_written) => {
                     debug!("AL Memory_Write: wrote {} bytes to 0x{:04X}", bytes_written, address);
+                    self.state.mark_dirty();
                     bytes_written as u8
                 }
                 Err(e) => {
@@ -1894,6 +1895,7 @@ where
             match self.memory_map.write(self.state, address_low, data, access_level) {
                 Ok(bytes_written) => {
                     debug!("AL UserMemory_Write: wrote {} bytes to 0x{:05X}", bytes_written, full_address);
+                    self.state.mark_dirty();
                     bytes_written as u8
                 }
                 Err(e) => {

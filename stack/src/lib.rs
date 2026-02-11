@@ -174,6 +174,24 @@ pub trait StackState {
     }
 
     // =========================================================================
+    // Persistence
+    // =========================================================================
+
+    /// Mark the device state as dirty (needing persistence).
+    ///
+    /// Called by the stack whenever persistent state is modified through
+    /// property writes, memory writes, or other management operations.
+    /// Implementations that support persistence should set a dirty flag
+    /// so that state can be saved at the appropriate time (e.g., before
+    /// a restart or periodically).
+    ///
+    /// Default implementation does nothing (for state implementations
+    /// without persistence).
+    fn mark_dirty(&self) {
+        // Default: no-op for implementations without persistence
+    }
+
+    // =========================================================================
     // Authorization (A_Authorize_Request / A_Key_Write)
     // =========================================================================
 

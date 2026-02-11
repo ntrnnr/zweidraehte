@@ -458,6 +458,10 @@ where
         self.mark_dirty();
         level
     }
+
+    fn mark_dirty(&self) {
+        SystemBDeviceState::mark_dirty(self);
+    }
 }
 
 // ============================================================================
@@ -734,6 +738,10 @@ where
 
     fn key_write(&self, level: u8, key: &[u8; 4], current_access_level: u8) -> u8 {
         self.base.key_write(level, key, current_access_level)
+    }
+
+    fn mark_dirty(&self) {
+        IpSystemBDeviceState::mark_dirty(self);
     }
 }
 

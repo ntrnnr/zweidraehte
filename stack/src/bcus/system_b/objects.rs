@@ -85,6 +85,7 @@ where
     APP: HasLoadStateMachine + HasRunStateMachine,
     PEI: HasLoadStateMachine + HasRunStateMachine,
 {
+    state: &'a S,
     device: RefCell<DeviceObject<'a, S>>,
     address_table: RefCell<AddressTableObject<'a, ADT>>,
     association_table: RefCell<AssociationTableObject<'a, AST>>,
@@ -138,6 +139,7 @@ where
         let mut device = DeviceObject::with_info(state, device_info);
         device.routing_count = RoutingCount::from(routing_count);
         Self {
+            state,
             device: RefCell::new(device),
             address_table: RefCell::new(AddressTableObject::new(adt, layout.adt_address() as u32)),
             association_table: RefCell::new(AssociationTableObject::new(ast, layout.ast_address() as u32)),
@@ -252,7 +254,7 @@ where
         }
 
         // Dispatch to the appropriate object using borrow_mut for interior mutability
-        match object_idx {
+        let result = match object_idx {
             0 => self.device.borrow_mut().write_property(prop_id, start_idx, data),
             1 => self.address_table.borrow_mut().write_property(prop_id, start_idx, data),
             2 => self.association_table.borrow_mut().write_property(prop_id, start_idx, data),
@@ -260,7 +262,15 @@ where
             4 => self.application_program.borrow_mut().write_property(prop_id, start_idx, data),
             5 => self.pei_program.borrow_mut().write_property(prop_id, start_idx, data),
             _ => Err(PropertyError::InvalidObjectIndex),
+        };
+
+        // Mark state dirty on any successful property write so that
+        // the device state gets persisted before the next restart.
+        if result.is_ok() {
+            self.state.mark_dirty();
         }
+
+        result
     }
 }
 
@@ -315,6 +325,7 @@ where
 /// The tuple's `PropertyServiceHandler` implementation automatically handles
 /// index offsetting - IpObjects receives index 0 for what is logically index 6.
 pub struct IpObjects<'a, S: IpStackState> {
+    state: &'a S,
     ip_parameter: RefCell<IpParameterObject<'a, S>>,
 }
 
@@ -324,7 +335,7 @@ impl<'a, S: IpStackState> IpObjects<'a, S> {
 
     /// Create new IP objects.
     pub fn new(state: &'a S) -> Self {
-        Self { ip_parameter: RefCell::new(IpParameterObject::with_state(state)) }
+        Self { state, ip_parameter: RefCell::new(IpParameterObject::with_state(state)) }
     }
 
     /// Get a reference to the IP Parameter Object.
@@ -394,7 +405,11 @@ impl<'a, S: IpStackState> PropertyServiceHandler for IpObjects<'a, S> {
             } else {
                 return Err(PropertyError::InvalidPropertyId);
             }
-            self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data)
+            let result = self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data);
+            if result.is_ok() {
+                self.state.mark_dirty();
+            }
+            result
         } else {
             Err(PropertyError::InvalidObjectIndex)
         }
