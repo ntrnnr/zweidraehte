@@ -79,11 +79,10 @@ impl LinkLayerState for () {
 
 /// Trait for persisting device state to storage.
 ///
-/// Implementations can target various storage backends:
-/// - Flash memory (embedded)
-/// - EEPROM
-/// - Filesystem (std)
-/// - In-memory (testing)
+/// Each implementation is typed to a specific [`PersistedState`] via the
+/// `State` associated type. This eliminates the need for turbofish at
+/// call sites — the storage instance already knows what state type it
+/// handles.
 ///
 /// # Persistence Strategy
 ///
@@ -96,6 +95,9 @@ impl LinkLayerState for () {
 ///
 /// Call [`flush`](Self::flush) to force pending writes to storage.
 pub trait DeviceStorage: Sized {
+    /// The persisted state type this storage handles.
+    type State: Serialize + for<'de> Deserialize<'de>;
+
     /// Error type for storage operations.
     type Error;
 
@@ -108,38 +110,13 @@ pub trait DeviceStorage: Sized {
     ///
     /// On first boot or after factory reset, this should return `Ok(None)`.
     /// The device will then use factory defaults.
-    ///
-    /// # Type Parameters
-    ///
-    /// - `ADT_SIZE`: Address table size in bytes (2 + MAX_ADDR * 2)
-    /// - `AST_SIZE`: Association table size in bytes (2 + MAX_ASSO * 4)
-    /// - `COT_SIZE`: Group object table size in bytes (2 + MAX_CO * 2)
-    /// - `P`: Application parameters type
-    /// - `L`: Link-layer-specific persistent config
-    fn load<
-        const ADT_SIZE: usize,
-        const AST_SIZE: usize,
-        const COT_SIZE: usize,
-        P: ConstDefault + Serialize + for<'de> Deserialize<'de>,
-        L: LinkLayerConfig,
-    >(
-        &mut self,
-    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>>, Self::Error>;
+    fn load(&mut self) -> Result<Option<Self::State>, Self::Error>;
 
     /// Save persistent state to storage.
     ///
     /// This should atomically replace the previous state to prevent
     /// corruption on power loss during write.
-    fn save<
-        const ADT_SIZE: usize,
-        const AST_SIZE: usize,
-        const COT_SIZE: usize,
-        P: ConstDefault + Serialize + for<'de> Deserialize<'de>,
-        L: LinkLayerConfig,
-    >(
-        &mut self,
-        state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>,
-    ) -> Result<(), Self::Error>;
+    fn save(&mut self, state: &Self::State) -> Result<(), Self::Error>;
 
     /// Mark state as dirty (needs save).
     ///
@@ -373,34 +350,48 @@ impl PersistedIpConfig {
 /// - Devices with fixed configuration
 ///
 /// All state will be lost on power cycle.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoStorage;
+///
+/// The type parameter `S` is the [`PersistedState`] type. It is only
+/// used to satisfy the [`DeviceStorage::State`] associated type — no
+/// actual storage occurs.
+pub struct NoStorage<S>(core::marker::PhantomData<S>);
 
-impl DeviceStorage for NoStorage {
+impl<S> NoStorage<S> {
+    /// Create a new no-op storage instance.
+    pub fn new() -> Self {
+        Self(core::marker::PhantomData)
+    }
+}
+
+impl<S> Default for NoStorage<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S> Clone for NoStorage<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Copy for NoStorage<S> {}
+
+impl<S> core::fmt::Debug for NoStorage<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("NoStorage")
+    }
+}
+
+impl<S: Serialize + for<'de> Deserialize<'de>> DeviceStorage for NoStorage<S> {
+    type State = S;
     type Error = core::convert::Infallible;
 
-    fn load<
-        const ADT_SIZE: usize,
-        const AST_SIZE: usize,
-        const COT_SIZE: usize,
-        P: ConstDefault + Serialize + for<'de> Deserialize<'de>,
-        L: LinkLayerConfig,
-    >(
-        &mut self,
-    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>>, Self::Error> {
+    fn load(&mut self) -> Result<Option<S>, Self::Error> {
         Ok(None) // No saved state
     }
 
-    fn save<
-        const ADT_SIZE: usize,
-        const AST_SIZE: usize,
-        const COT_SIZE: usize,
-        P: ConstDefault + Serialize + for<'de> Deserialize<'de>,
-        L: LinkLayerConfig,
-    >(
-        &mut self,
-        _state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>,
-    ) -> Result<(), Self::Error> {
+    fn save(&mut self, _state: &S) -> Result<(), Self::Error> {
         Ok(()) // Silently discard
     }
 

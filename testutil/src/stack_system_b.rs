@@ -17,7 +17,7 @@ use static_cell::StaticCell;
 use zweidraehte::{
     Runner, Stack, StackDefinition, StackResources, StackState,
     address::IndividualAddress,
-    bcus::system_b::{DeviceIdentity, DeviceStorage, PersistedIpConfig},
+    bcus::system_b::{DeviceIdentity, DeviceStorage},
     layers::linklayers::knxip::KnxNetIpBuilder,
     messages::knxip::substructs::HPAI,
     objects::comm::ComObjects,
@@ -45,7 +45,7 @@ const IDENTITY_FILE_PATH: &str = "device_identity.json";
 // ============================================================================
 
 /// Save the current device state to JSON storage.
-fn save_state(state: &DemoState, storage: &mut JsonStorage) {
+fn save_state(state: &DemoState, storage: &mut JsonStorage<DemoPersistedState>) {
     let persisted = state.to_persisted();
     match storage.save(&persisted) {
         Ok(()) => {
@@ -142,7 +142,7 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
         // Persist the post-reset state before restarting so it survives
         // the process re-exec.
         if state.is_dirty() {
-            save_state(state, &mut JsonStorage::new(STATE_FILE_PATH));
+            save_state(state, &mut JsonStorage::<DemoPersistedState>::new(STATE_FILE_PATH));
         }
 
         // Send the response back to the stack (which forwards it on the bus).
@@ -178,8 +178,8 @@ async fn main(spawner: Spawner) {
 
     // Create storage and try to load persisted state.
     // Storage lives here in the binary — the state struct only tracks dirtiness.
-    let mut storage = JsonStorage::new(STATE_FILE_PATH);
-    let device_state: DemoState = match storage.load::<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, PersistedIpConfig>() {
+    let mut storage = JsonStorage::<DemoPersistedState>::new(STATE_FILE_PATH);
+    let device_state: DemoState = match storage.load() {
         Ok(Some(persisted)) => {
             println!("Loaded persisted state from {}", STATE_FILE_PATH);
             DemoState::from_persisted(&identity, persisted)

@@ -9,8 +9,8 @@
 //! use testutil::storage::JsonStorage;
 //! use zweidraehte::bcus::system_b::DeviceStorage;
 //!
-//! let mut storage = JsonStorage::new("device_state.json");
-//! // Storage is automatically used when device state changes
+//! let mut storage = JsonStorage::<MyPersistedState>::new("device_state.json");
+//! let state = storage.load().unwrap(); // no turbofish needed
 //! ```
 
 mod file_identity;
@@ -18,37 +18,40 @@ pub use file_identity::{FileIdentity, FileIdentityError};
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
+use std::marker::PhantomData;
 use std::path::PathBuf;
 
-use zweidraehte::bcus::system_b::{DeviceStorage, LinkLayerConfig, PersistedState};
+use serde::{Serialize, de::DeserializeOwned};
+use zweidraehte::bcus::system_b::DeviceStorage;
 
 /// JSON file-based storage for device state.
 ///
 /// Persists device configuration to a JSON file. Suitable for development
 /// and testing on systems with a filesystem.
 ///
+/// The type parameter `S` is the persisted state type (typically a
+/// [`PersistedState`](zweidraehte::bcus::system_b::PersistedState) with
+/// concrete table sizes, parameter type, and link-layer config).
+///
 /// # Usage
 ///
 /// ```rust,ignore
-/// let storage = JsonStorage::new("device_state.json");
+/// type MyState = PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams, PersistedIpConfig>;
+/// let mut storage = JsonStorage::<MyState>::new("device_state.json");
+/// let state = storage.load().unwrap(); // returns Option<MyState>
 /// ```
-pub struct JsonStorage {
+pub struct JsonStorage<S> {
     /// Path to the JSON file.
     path: PathBuf,
     /// Whether there are unsaved changes.
     dirty: bool,
+    _phantom: PhantomData<S>,
 }
 
-impl Default for JsonStorage {
-    fn default() -> Self {
-        Self::new("device_state.json")
-    }
-}
-
-impl JsonStorage {
+impl<S> JsonStorage<S> {
     /// Create a new JSON storage with the given file path.
     pub fn new<P: Into<PathBuf>>(path: P) -> Self {
-        Self { path: path.into(), dirty: false }
+        Self { path: path.into(), dirty: false, _phantom: PhantomData }
     }
 
     /// Get the path to the storage file.
@@ -96,18 +99,11 @@ impl std::error::Error for JsonStorageError {
     }
 }
 
-impl DeviceStorage for JsonStorage {
+impl<S: Serialize + DeserializeOwned> DeviceStorage for JsonStorage<S> {
+    type State = S;
     type Error = JsonStorageError;
 
-    fn load<
-        const ADT_SIZE: usize,
-        const AST_SIZE: usize,
-        const COT_SIZE: usize,
-        P: const_default::ConstDefault + serde::Serialize + for<'de> serde::Deserialize<'de>,
-        L: LinkLayerConfig,
-    >(
-        &mut self,
-    ) -> Result<Option<PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>>, Self::Error> {
+    fn load(&mut self) -> Result<Option<S>, Self::Error> {
         // Check if the file exists
         if !self.path.exists() {
             log::info!("No saved state at {:?}, using factory defaults", self.path);
@@ -120,22 +116,13 @@ impl DeviceStorage for JsonStorage {
         file.read_to_string(&mut contents)?;
 
         // Parse the JSON
-        let state: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L> = serde_json::from_str(&contents)?;
+        let state: S = serde_json::from_str(&contents)?;
 
         log::info!("Loaded device state from {:?}", self.path);
         Ok(Some(state))
     }
 
-    fn save<
-        const ADT_SIZE: usize,
-        const AST_SIZE: usize,
-        const COT_SIZE: usize,
-        P: const_default::ConstDefault + serde::Serialize + for<'de> serde::Deserialize<'de>,
-        L: LinkLayerConfig,
-    >(
-        &mut self,
-        state: &PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>,
-    ) -> Result<(), Self::Error> {
+    fn save(&mut self, state: &S) -> Result<(), Self::Error> {
         // Serialize to JSON with pretty printing for readability
         let json = serde_json::to_string_pretty(state)?;
 

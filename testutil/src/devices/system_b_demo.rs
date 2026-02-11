@@ -542,6 +542,15 @@ pub const APP_DATA_SIZE: usize = core::mem::size_of::<DemoParams>();
 /// Unified state type
 pub type DemoState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, MockIpPlatform>;
 
+/// Persisted (serializable) form of the demo device state.
+pub type DemoPersistedState = zweidraehte::bcus::system_b::PersistedState<
+    ADT_SIZE,
+    AST_SIZE,
+    COT_SIZE,
+    DemoParams,
+    zweidraehte::bcus::system_b::PersistedIpConfig,
+>;
+
 /// Memory layout for the device
 pub const MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calculate(
     SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
