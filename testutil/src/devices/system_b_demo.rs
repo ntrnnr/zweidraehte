@@ -57,26 +57,21 @@ impl core::fmt::Display for BeU16 {
         write!(f, "{}", self.get())
     }
 }
-use zweidraehte::dpt::*;
-use zweidraehte::ets::{EtsComObjects, EtsEnum, EtsParams, EtsUnion};
-use zweidraehte::objects::comm::ComObject;
-use zweidraehte::{
-    IpPlatform, StackDefinition,
-    bcus::system_b::{
-        IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, SystemBMemoryMap,
-        create_knxip_objects,
-    },
-    layers::linklayers::knxip::KnxNetIpBuilder,
-};
 use platform::LinuxIpTransport;
+use zweidraehte::bcus::system_b::{
+    IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, SystemBMemoryMap, create_knxip_objects,
+};
+use zweidraehte::dpt::*;
+use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
+use zweidraehte::prelude::*;
 
 // ============================================================================
 // Device Descriptor
 // ============================================================================
 
 /// Device descriptor - single source of truth for device metadata.
-pub const DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
-    mask_version: zweidraehte::ets::MaskVersion::SystemBKnxIp,
+pub const DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
+    mask_version: MaskVersion::SystemBKnxIp,
     manufacturer_id: 0x00FA,
     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x02],
     application_id: 0x0200,
@@ -572,7 +567,7 @@ impl KnxIpDevice for DemoStack {
 }
 
 impl StackDefinition for DemoStack {
-    const DEVICE: &'static zweidraehte::ets::DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
 
     type P = DemoParams;
     type CO = comm_objs::DemoComObjects;
@@ -583,11 +578,11 @@ impl StackDefinition for DemoStack {
     type InterfaceObjects<'a> = KnxIpInterfaceObjects<
         'a,
         Self::State,
-        <Self::State as zweidraehte::objects::tables::HasAddressTable>::ADT,
-        <Self::State as zweidraehte::objects::tables::HasAssociationTable>::AST,
-        <Self::State as zweidraehte::objects::tables::HasCommunicationObjectTable>::COT,
-        <Self::State as zweidraehte::objects::tables::HasApplication>::APP,
-        <Self::State as zweidraehte::objects::tables::HasPeiApplication>::PEI,
+        <Self::State as HasAddressTable>::ADT,
+        <Self::State as HasAssociationTable>::AST,
+        <Self::State as HasCommunicationObjectTable>::COT,
+        <Self::State as HasApplication>::APP,
+        <Self::State as HasPeiApplication>::PEI,
     >;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>

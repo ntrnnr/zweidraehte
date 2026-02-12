@@ -230,7 +230,7 @@
 use serde::{Deserialize, Serialize};
 
 use zweidraehte::dpt::{DPT_Scaling, DPT_State, DPT_Switch};
-use zweidraehte::ets::{EtsComObjects, EtsEnum, EtsParams};
+use zweidraehte::prelude::*;
 
 use knxprod::definition::module::ModuleCollection;
 use knxprod::definition::page_layout::EtsPageLayout;
@@ -331,8 +331,8 @@ pub const BAGGAGES: &[BaggageDef<'static>] = &[
 // ============================================================================
 
 /// Device descriptor for 4-channel dimmer.
-pub const DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
-    mask_version: zweidraehte::ets::MaskVersion::SystemBKnxIp,
+pub const DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
+    mask_version: MaskVersion::SystemBKnxIp,
     manufacturer_id: 0x00FA,
     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x10],
     application_id: 0x1000,
@@ -468,8 +468,6 @@ impl DeviceParams {
 //
 // Define the communication objects FIRST using #[derive(EtsComObjects)].
 // This single type provides BOTH ETS metadata AND runtime storage.
-
-use zweidraehte::objects::comm::{ComObject, ComObjectIndex};
 
 /// Communication objects for a dimmer channel.
 ///

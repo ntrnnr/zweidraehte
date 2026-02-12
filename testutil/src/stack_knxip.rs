@@ -117,17 +117,14 @@ use static_cell::StaticCell;
 use std::net::Ipv4Addr;
 use zweidraehte::prelude::*;
 use zweidraehte::{
-    IpPlatform,
     dpt::DPT_Switch,
-    ets::EtsComObjects,
     layers::linklayers::knxip::KnxNetIpBuilder,
     messages::knxip::substructs::HPAI,
-    objects::comm::ComObject,
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
         IpParameterObject,
     },
-    objects::tables::{LoadEvent, RunEvent, app::Application},
+    objects::tables::{Application, LoadEvent, RunEvent},
 };
 
 #[derive(Debug, ConstDefault)]
@@ -138,7 +135,7 @@ pub struct AppParameters {
 pub mod comm_objs {
     use super::*;
     #[allow(unused_imports)]
-    use zweidraehte::objects::comm::{ComObjectIndex, ComObjects, ComObjectInfo, ComObjectInfoMut};
+    use zweidraehte::objects::comm::{ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects};
 
     #[derive(EtsComObjects)]
     pub struct AppComObjects {
@@ -688,8 +685,8 @@ impl<P: IpPlatform> HasApplication for KnxIpState<P> {
 pub type MyState = KnxIpState<MockIpPlatform>;
 
 /// Device descriptor for KNX/IP test stack
-const KNXIP_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
-    mask_version: zweidraehte::ets::MaskVersion::SystemBKnxIp,
+const KNXIP_DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
+    mask_version: MaskVersion::SystemBKnxIp,
     manufacturer_id: 0x00FA,
     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
     application_id: 0x0100,
@@ -703,7 +700,7 @@ const KNXIP_DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte:
 #[derive(Debug, Clone, Copy)]
 pub struct MyKnxStackWithKnxIp;
 impl StackDefinition for MyKnxStackWithKnxIp {
-    const DEVICE: &'static zweidraehte::ets::DeviceDescriptor = &KNXIP_DEVICE_DESCRIPTOR;
+    const DEVICE: &'static DeviceDescriptor = &KNXIP_DEVICE_DESCRIPTOR;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, 2>;

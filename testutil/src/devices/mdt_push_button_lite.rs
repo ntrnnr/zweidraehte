@@ -15,18 +15,14 @@ use serde::{Deserialize, Serialize};
 
 use knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
 use knxprod::ets_pages;
-use zweidraehte::dpt::*;
-use zweidraehte::ets::{EtsComObjects, EtsEnum, EtsParams, EtsUnion, ets_range_enum};
-use zweidraehte::objects::comm::ComObject;
-use zweidraehte::{
-    IpPlatform, StackDefinition,
-    bcus::system_b::{
-        IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, SystemBMemoryMap,
-        create_knxip_objects,
-    },
-    layers::linklayers::knxip::KnxNetIpBuilder,
-};
 use platform::LinuxIpTransport;
+use zweidraehte::bcus::system_b::{
+    IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, SystemBMemoryMap, create_knxip_objects,
+};
+use zweidraehte::dpt::*;
+use zweidraehte::ets::ets_range_enum;
+use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
+use zweidraehte::prelude::*;
 
 // ============================================================================
 // Device Descriptor
@@ -36,9 +32,9 @@ use platform::LinuxIpTransport;
 /// ApplicationNumber: 155 (0x009B)
 /// ApplicationVersion: 20 (0x14)
 /// MaskVersion: MV-0705 (System B TP BCU)
-pub const DEVICE_DESCRIPTOR: zweidraehte::ets::DeviceDescriptor = zweidraehte::ets::DeviceDescriptor {
-    mask_version: zweidraehte::ets::MaskVersion::System7Tp1, // MV-0705
-    manufacturer_id: 0x0083, // MDT
+pub const DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
+    mask_version: MaskVersion::System7Tp1, // MV-0705
+    manufacturer_id: 0x0083,               // MDT
     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
     application_id: 0x009B,    // ApplicationNumber: 155
     application_version: 0x14, // ApplicationVersion: 20
@@ -3234,7 +3230,7 @@ impl KnxIpDevice for MdtStack {
 }
 
 impl StackDefinition for MdtStack {
-    const DEVICE: &'static zweidraehte::ets::DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
 
     type P = MdtParams;
     type CO = comm_objs::MdtComObjects;
@@ -3245,11 +3241,11 @@ impl StackDefinition for MdtStack {
     type InterfaceObjects<'a> = KnxIpInterfaceObjects<
         'a,
         Self::State,
-        <Self::State as zweidraehte::objects::tables::HasAddressTable>::ADT,
-        <Self::State as zweidraehte::objects::tables::HasAssociationTable>::AST,
-        <Self::State as zweidraehte::objects::tables::HasCommunicationObjectTable>::COT,
-        <Self::State as zweidraehte::objects::tables::HasApplication>::APP,
-        <Self::State as zweidraehte::objects::tables::HasPeiApplication>::PEI,
+        <Self::State as HasAddressTable>::ADT,
+        <Self::State as HasAssociationTable>::AST,
+        <Self::State as HasCommunicationObjectTable>::COT,
+        <Self::State as HasApplication>::APP,
+        <Self::State as HasPeiApplication>::PEI,
     >;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
@@ -5707,9 +5703,7 @@ mod tests {
         }
 
         // Set to Percent variant with 25%
-        params.button1_value_00 = ButtonValueUnion::Percent {
-            value: Select0to100Percent::P25,
-        };
+        params.button1_value_00 = ButtonValueUnion::Percent { value: Select0to100Percent::P25 };
         match params.button1_value_00 {
             ButtonValueUnion::Percent { value, .. } => {
                 assert_eq!(value as u8, 64); // 25% maps to byte value 64
@@ -5718,9 +5712,7 @@ mod tests {
         }
 
         // Set to ColourTemp variant
-        params.button1_value_00 = ButtonValueUnion::ColourTemp {
-            value: 2700,
-        };
+        params.button1_value_00 = ButtonValueUnion::ColourTemp { value: 2700 };
         match params.button1_value_00 {
             ButtonValueUnion::ColourTemp { value, .. } => {
                 assert_eq!(value, 2700);
@@ -5729,9 +5721,7 @@ mod tests {
         }
 
         // Set to RGB variant
-        params.button1_value_00 = ButtonValueUnion::Rgb {
-            value: [255, 128, 0],
-        };
+        params.button1_value_00 = ButtonValueUnion::Rgb { value: [255, 128, 0] };
         match params.button1_value_00 {
             ButtonValueUnion::Rgb { value, .. } => {
                 assert_eq!(value, [255, 128, 0]);
@@ -5748,9 +5738,7 @@ mod tests {
 
         // Configure button 1 for Percent mode with value 50%
         params.button1_object_type = ObjectType::Percent;
-        params.button1_value_00 = ButtonValueUnion::Percent {
-            value: Select0to100Percent::P50,
-        };
+        params.button1_value_00 = ButtonValueUnion::Percent { value: Select0to100Percent::P50 };
 
         // Simulate a comm object storage buffer (4 bytes for multi-DPT)
         let mut co_buffer = [0u8; 4];
@@ -5828,22 +5816,12 @@ mod tests {
         params.button1_object_type = ObjectType::Percent;
 
         // Configure 3 toggle values (all Percent variant)
-        params.button1_value_00 = ButtonValueUnion::Percent {
-            value: Select0to100Percent::P0,
-        };
-        params.button1_value_01 = ButtonValueUnion::Percent {
-            value: Select0to100Percent::P50,
-        };
-        params.button1_value_02 = ButtonValueUnion::Percent {
-            value: Select0to100Percent::P100,
-        };
+        params.button1_value_00 = ButtonValueUnion::Percent { value: Select0to100Percent::P0 };
+        params.button1_value_01 = ButtonValueUnion::Percent { value: Select0to100Percent::P50 };
+        params.button1_value_02 = ButtonValueUnion::Percent { value: Select0to100Percent::P100 };
 
         // Simulate toggle cycling
-        let values = [
-            &params.button1_value_00,
-            &params.button1_value_01,
-            &params.button1_value_02,
-        ];
+        let values = [&params.button1_value_00, &params.button1_value_01, &params.button1_value_02];
 
         let mut collected = Vec::new();
         for val in &values {
@@ -5873,9 +5851,7 @@ mod tests {
         }
 
         // Reconfigure to 1.0s long keypress time
-        params.button1_time_duration = TimeDurationUnion::LongKeypressTime {
-            value: TimeForLongKeypress::S1,
-        };
+        params.button1_time_duration = TimeDurationUnion::LongKeypressTime { value: TimeForLongKeypress::S1 };
         match params.button1_time_duration {
             TimeDurationUnion::LongKeypressTime { value, .. } => {
                 assert_eq!(value, TimeForLongKeypress::S1);

@@ -33,11 +33,10 @@ use static_cell::StaticCell;
 
 use zweidraehte::prelude::*;
 use zweidraehte::{
-    IpPlatform,
     messages::buffers::{Buffer, BufferManager, DynBufferManager, MessageBuffer},
     messages::knx::{KnxMessageBuffer, ServiceType},
     objects::comm::ComObjectStatus,
-    objects::tables::app::Application,
+    objects::tables::Application,
 };
 
 use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle};

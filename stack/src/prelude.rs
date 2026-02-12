@@ -7,15 +7,15 @@
 // Core stack
 pub use crate::{
     Stack, Runner, StackResources, StackDefinition,
-    StackState, IpStackState, IpDevice,
+    StackState, IpStackState, IpDevice, IpPlatform,
     ReadObjectError, UpdateObjectError,
 };
 
 // Addressing
 pub use crate::address::{IndividualAddress, GroupAddress};
 
-// Device identity
-pub use crate::ets::{DeviceDescriptor, MaskVersion};
+// Device identity and ETS derive macros
+pub use crate::ets::{DeviceDescriptor, MaskVersion, EtsComObjects, EtsEnum, EtsParams, EtsUnion};
 
 // Communication objects
 pub use crate::objects::comm::{
@@ -32,7 +32,7 @@ pub use crate::objects::interface::{
 // Table accessor traits
 pub use crate::objects::tables::{
     HasAddressTable, HasAssociationTable,
-    HasCommunicationObjectTable, HasApplication,
+    HasCommunicationObjectTable, HasApplication, HasPeiApplication,
     HasLoadStateMachine, HasRunStateMachine,
 };
 

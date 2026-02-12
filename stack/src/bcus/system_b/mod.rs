@@ -80,7 +80,6 @@ mod objects;
 mod storage;
 mod traits;
 
-pub use crate::objects::tables::HasApplication;
 pub use device_state::{IpLinkLayerState, IpSystemBDeviceState, SystemBDeviceState};
 pub use identity::{DeviceIdentity, StaticIdentity};
 pub use memory_map::{MemoryLayout, SystemBMemoryMap};

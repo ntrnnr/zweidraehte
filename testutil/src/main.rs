@@ -3,6 +3,7 @@
 use std::fs::File;
 
 use const_default::ConstDefault;
+use core::cell::RefCell;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, pubsub::WaitResult};
@@ -11,15 +12,12 @@ use env_logger::Env;
 use knx_conformance::harness::mock::MockLinkLayerBuilder;
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
-use core::cell::RefCell;
 use zweidraehte::prelude::*;
 use zweidraehte::{
     dpt::DPT_Switch,
-    ets::EtsComObjects,
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::tables::{
-        AddressTable, AssociationTable, CommunicationObjectTable,
-        addr7::AddrTab7, asso6::AssoTab6, co7::CoTab7, app::Application,
+        AddrTab7, AddressTable, Application, AssoTab6, AssociationTable, CoTab7, CommunicationObjectTable,
     },
 };
 
@@ -31,7 +29,7 @@ pub struct AppParameters {
 pub mod comm_objs {
     use super::*;
     #[allow(unused_imports)]
-    use zweidraehte::objects::comm::{ComObjectIndex, ComObjects, ComObjectInfo, ComObjectInfoMut};
+    use zweidraehte::objects::comm::{ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects};
 
     #[derive(EtsComObjects)]
     pub struct AppComObjects {
@@ -222,7 +220,9 @@ async fn main(spawner: Spawner) {
         println!("{i}: {:?}", stored_data.co_tab.get_object(i));
     }
 
-    static RESOURCES: StaticCell<StackResources<MyKnxStack, { zweidraehte::config::buffer_size_for_apdu(MyKnxStack::MAX_APDU_LENGTH) }>> = StaticCell::new();
+    static RESOURCES: StaticCell<
+        StackResources<MyKnxStack, { zweidraehte::config::buffer_size_for_apdu(MyKnxStack::MAX_APDU_LENGTH) }>,
+    > = StaticCell::new();
 
     // Create a channel for the mock link layer to receive injected messages
     static INJECTION_CHANNEL: StaticCell<Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, 8>> =
@@ -234,16 +234,12 @@ async fn main(spawner: Spawner) {
     let (link_layer_builder, mock_ll_handle) = MockLinkLayerBuilder::new(injection_channel);
 
     // Create the unified state (tables + runtime state)
-    let state = MyState::new(
-        stored_data.addr_tab,
-        stored_data.asso_tab,
-        stored_data.co_tab,
-    );
+    let state = MyState::new(stored_data.addr_tab, stored_data.asso_tab, stored_data.co_tab);
 
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
         comm_objs::AppComObjects::new(),
-        (),  // hook_context
+        (), // hook_context
         link_layer_builder,
         state,
         NoMemoryMap,

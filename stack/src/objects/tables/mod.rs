@@ -1222,3 +1222,10 @@ pub mod addr7;
 pub mod app;
 pub mod asso6;
 pub mod co7;
+
+// Re-export commonly-used concrete table types so consumers can write
+// `objects::tables::AddrTab7` instead of `objects::tables::addr7::AddrTab7`.
+pub use addr7::{AddrTab7, AddrTab7Impl};
+pub use app::{Application, PeiApplication};
+pub use asso6::{AssoTab6, AssoTab6Impl};
+pub use co7::{CoTab7, CoTab7Impl};
