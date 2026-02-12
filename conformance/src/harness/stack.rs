@@ -33,9 +33,12 @@ use static_cell::StaticCell;
 
 use zweidraehte::prelude::*;
 use zweidraehte::{
+    bcus::system_b::{
+        IpSystemBDeviceState, KnxIpInterfaceObjects, MemoryLayout,
+        StaticIdentity, create_knxip_objects,
+    },
     messages::buffers::{Buffer, BufferManager, DynBufferManager, MessageBuffer},
     messages::knx::{KnxMessageBuffer, ServiceType},
-    objects::comm::ComObjectStatus,
     objects::tables::Application,
 };
 
@@ -61,8 +64,6 @@ pub mod comm_objs {
     use zweidraehte::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
     use zweidraehte::ets::EtsComObjects;
     use zweidraehte::objects::comm::ComObject;
-    #[allow(unused_imports)]
-    use zweidraehte::objects::comm::{ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects};
 
     // Use #[ets(manual_impl)] to provide our own ComObjects implementation with hooks
     #[derive(EtsComObjects)]
@@ -140,8 +141,8 @@ pub mod comm_objs {
 use comm_objs::{ConformanceComObjects, Index as CoIndex};
 use core::cell::UnsafeCell;
 use zweidraehte::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
-use zweidraehte::objects::comm::{ComObject, ComObjectIndex, ComObjectInfo, ComObjectInfoMut};
-use zweidraehte::objects::tables::{ComObjectFlags, CommunicationObjectTable};
+use zweidraehte::objects::comm::{ComObjectInfo, ComObjectInfoMut};
+use zweidraehte::objects::tables::CommunicationObjectTable;
 
 /// Hook context for conformance tests that provides access to the COT.
 ///
@@ -552,14 +553,14 @@ impl IpPlatform for MockIpPlatform {
 
 /// Device-specific constants for Interface Objects
 pub mod device_info {
+    use super::*;
     use zweidraehte::config::{buffer_size_for_apdu, MAX_APDU_LENGTH_EXTENDED};
-    use zweidraehte::ets::DeviceDescriptor;
 
     /// The device descriptor for conformance testing.
     ///
     /// This is the single source of truth for all device/application metadata.
     pub const DEVICE: DeviceDescriptor = DeviceDescriptor {
-        mask_version: zweidraehte::ets::MaskVersion::SystemBKnxIp,
+        mask_version: MaskVersion::SystemBKnxIp,
         manufacturer_id: 0x00FA,
         hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
         application_id: 0x0100,
@@ -596,8 +597,8 @@ pub mod device_info {
 /// The conformance tests use a custom memory map with table addresses at
 /// fixed positions. This layout tells `create_knxip_objects` where the
 /// tables live in address space (for PID_TABLE_REFERENCE responses).
-const CONFORMANCE_MEMORY_LAYOUT: zweidraehte::bcus::system_b::MemoryLayout =
-    zweidraehte::bcus::system_b::MemoryLayout::calculate(
+const CONFORMANCE_MEMORY_LAYOUT: MemoryLayout =
+    MemoryLayout::calculate(
         ConformanceMemoryMap::ADT_BASE,
         // Use the conformance test's actual table entry counts.
         conformance_config::ConformanceTestConfig::NUM_GROUP_ADDRS,
@@ -652,7 +653,7 @@ mod table_sizes {
 ///
 /// This is `IpSystemBDeviceState` parameterized with the conformance test's
 /// table sizes, `TestParameters`, and `MockIpPlatform`.
-type InnerState = zweidraehte::bcus::system_b::IpSystemBDeviceState<
+type InnerState = IpSystemBDeviceState<
     { table_sizes::ADT },
     { table_sizes::AST },
     { table_sizes::COT },
@@ -662,7 +663,7 @@ type InnerState = zweidraehte::bcus::system_b::IpSystemBDeviceState<
 
 /// Unified state for conformance tests.
 ///
-/// Wraps [`IpSystemBDeviceState`](zweidraehte::bcus::system_b::IpSystemBDeviceState)
+/// Wraps [`IpSystemBDeviceState`](IpSystemBDeviceState)
 /// and adds test memory regions needed by the conformance memory map tests.
 ///
 /// All standard trait impls (`StackState`, `IpStackState`, `Has*Table`,
@@ -697,7 +698,7 @@ impl ConformanceState {
         co_tab: conformance_config::CoTab,
         app_table: Application<TestParameters>,
     ) -> Self {
-        use zweidraehte::bcus::system_b::StaticIdentity;
+
 
         let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
         let inner = InnerState::new(&identity);
@@ -732,7 +733,7 @@ impl ConformanceState {
 
 impl Default for ConformanceState {
     fn default() -> Self {
-        use zweidraehte::objects::tables::Table;
+
         Self::new(Table::new(), Table::new(), Table::new(), Application::new())
     }
 }
@@ -741,7 +742,7 @@ impl Default for ConformanceState {
 // Trait Forwarding — StackState
 // ============================================================================
 
-impl zweidraehte::StackState for ConformanceState {
+impl StackState for ConformanceState {
     fn individual_address(&self) -> IndividualAddress {
         self.inner.individual_address()
     }
@@ -842,12 +843,12 @@ impl HasApplication for ConformanceState {
     fn app(&self) -> &RefCell<Self::APP> { self.inner.app() }
 }
 
-impl zweidraehte::objects::tables::HasPeiApplication for ConformanceState {
-    type PEI = <InnerState as zweidraehte::objects::tables::HasPeiApplication>::PEI;
+impl HasPeiApplication for ConformanceState {
+    type PEI = <InnerState as HasPeiApplication>::PEI;
     fn pei(&self) -> &RefCell<Self::PEI> { self.inner.pei() }
 }
 
-impl zweidraehte::objects::interface::HasRoutingCount for ConformanceState {
+impl HasRoutingCount for ConformanceState {
     fn routing_count(&self) -> u8 { self.inner.routing_count() }
 }
 
@@ -884,16 +885,16 @@ impl ConformanceMemoryMap {
     pub const USER_MEMORY_BASE: u16 = 0x7FF0;
 }
 
-impl zweidraehte::memory::MemoryMap<ConformanceState> for ConformanceMemoryMap {
+impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
     fn read(
         &self,
         tables: &ConformanceState,
         address: u16,
         data: &mut [u8],
         access_level: u8,
-    ) -> Result<usize, zweidraehte::memory::MemoryError> {
-        use zweidraehte::memory::MemoryError;
-        use zweidraehte::objects::tables::TableMemory;
+    ) -> Result<usize, MemoryError> {
+
+
 
         let end_address = address.saturating_add(data.len() as u16);
 
@@ -983,9 +984,9 @@ impl zweidraehte::memory::MemoryMap<ConformanceState> for ConformanceMemoryMap {
         address: u16,
         data: &[u8],
         access_level: u8,
-    ) -> Result<usize, zweidraehte::memory::MemoryError> {
-        use zweidraehte::memory::MemoryError;
-        use zweidraehte::objects::tables::TableMemory;
+    ) -> Result<usize, MemoryError> {
+
+
 
         let end_address = address.saturating_add(data.len() as u16);
 
@@ -1098,7 +1099,7 @@ pub const CONFORMANCE_DD2: [u8; 14] =
 pub const CONFORMANCE_USER_MANUFACTURER_INFO: [u8; 3] = [0x00, 0x00, 0x00];
 
 impl StackDefinition for ConformanceTestStack {
-    const DEVICE: &'static zweidraehte::ets::DeviceDescriptor = &device_info::DEVICE;
+    const DEVICE: &'static DeviceDescriptor = &device_info::DEVICE;
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
@@ -1108,21 +1109,21 @@ impl StackDefinition for ConformanceTestStack {
     type State = ConformanceState;
     type Mem = ConformanceMemoryMap;
 
-    type InterfaceObjects<'a> = zweidraehte::bcus::system_b::KnxIpInterfaceObjects<
+    type InterfaceObjects<'a> = KnxIpInterfaceObjects<
         'a,
         ConformanceState,
         <ConformanceState as HasAddressTable>::ADT,
         <ConformanceState as HasAssociationTable>::AST,
         <ConformanceState as HasCommunicationObjectTable>::COT,
         <ConformanceState as HasApplication>::APP,
-        <ConformanceState as zweidraehte::objects::tables::HasPeiApplication>::PEI,
+        <ConformanceState as HasPeiApplication>::PEI,
     >;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        zweidraehte::bcus::system_b::create_knxip_objects::<ConformanceTestStack, _>(
+        create_knxip_objects::<ConformanceTestStack, _>(
             state,
             &CONFORMANCE_MEMORY_LAYOUT,
         )
@@ -1160,7 +1161,7 @@ static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<16>> = StaticCell::new
 pub struct FullStackHarness {
     handle: MockLinkLayerHandle<16, 16>,
     buffer_manager: DynBufferManager<'static>,
-    stack: zweidraehte::Stack<'static, ConformanceTestStack>,
+    stack: Stack<'static, ConformanceTestStack>,
 }
 
 impl FullStackHarness {
@@ -1192,7 +1193,7 @@ impl FullStackHarness {
         );
 
         // Create application table - starts loaded and running for conformance tests
-        use zweidraehte::objects::tables::LoadEvent;
+
         let mut app_table = Application::<TestParameters>::new();
         // Load the application (using None for alloc_address since these are
         // simple state transitions without RelativeData allocation)
@@ -1256,7 +1257,7 @@ impl FullStackHarness {
     ///
     /// When enabled, the device responds to A_IndividualAddress_Read broadcasts.
     pub fn set_programming_mode(&self, enabled: bool) {
-        use zweidraehte::objects::interface::HasDeviceObject;
+
         self.stack.interface_objects().set_programming_mode_enabled(enabled);
     }
 
@@ -1269,7 +1270,7 @@ impl FullStackHarness {
     }
 
     /// Get access to the stack for direct manipulation
-    pub fn stack(&self) -> &zweidraehte::Stack<'static, ConformanceTestStack> {
+    pub fn stack(&self) -> &Stack<'static, ConformanceTestStack> {
         &self.stack
     }
 }

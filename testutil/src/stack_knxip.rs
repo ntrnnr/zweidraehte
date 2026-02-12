@@ -124,7 +124,7 @@ use zweidraehte::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
         IpParameterObject,
     },
-    objects::tables::{Application, LoadEvent, RunEvent},
+    objects::tables::Application,
 };
 
 #[derive(Debug, ConstDefault)]
@@ -134,9 +134,6 @@ pub struct AppParameters {
 
 pub mod comm_objs {
     use super::*;
-    #[allow(unused_imports)]
-    use zweidraehte::objects::comm::{ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects};
-
     #[derive(EtsComObjects)]
     pub struct AppComObjects {
         #[ets(index = 1)]
@@ -443,31 +440,33 @@ where
     }
 }
 
-impl<'a, S> zweidraehte::objects::interface::HasDeviceObject for KnxIpInterfaceObjects<'a, S>
+use zweidraehte::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
+
+impl<'a, S> HasDeviceObject for KnxIpInterfaceObjects<'a, S>
 where
     S: StackState + IpStackState,
 {
-    fn device_control(&self) -> zweidraehte::dpt::DeviceControl {
+    fn device_control(&self) -> DeviceControl {
         self.device.borrow().device_control
     }
 
-    fn set_device_control(&self, value: zweidraehte::dpt::DeviceControl) {
+    fn set_device_control(&self, value: DeviceControl) {
         self.device.borrow_mut().device_control = value;
     }
 
-    fn programming_mode(&self) -> zweidraehte::dpt::ProgrammingMode {
-        zweidraehte::dpt::ProgrammingMode::from(self.state.is_programming_mode())
+    fn programming_mode(&self) -> ProgrammingMode {
+        ProgrammingMode::from(self.state.is_programming_mode())
     }
 
-    fn set_programming_mode(&self, value: zweidraehte::dpt::ProgrammingMode) {
+    fn set_programming_mode(&self, value: ProgrammingMode) {
         self.state.set_programming_mode(value.enabled());
     }
 
-    fn routing_count(&self) -> zweidraehte::dpt::RoutingCount {
+    fn routing_count(&self) -> RoutingCount {
         self.device.borrow().routing_count
     }
 
-    fn set_routing_count(&self, value: zweidraehte::dpt::RoutingCount) {
+    fn set_routing_count(&self, value: RoutingCount) {
         self.device.borrow_mut().routing_count = value;
     }
 }
@@ -541,7 +540,7 @@ impl<P: IpPlatform + Default> Default for KnxIpState<P> {
     }
 }
 
-impl<P: IpPlatform + Default> zweidraehte::StackState for KnxIpState<P> {
+impl<P: IpPlatform + Default> StackState for KnxIpState<P> {
     fn individual_address(&self) -> IndividualAddress {
         self.individual_address.get()
     }
@@ -705,7 +704,7 @@ impl StackDefinition for MyKnxStackWithKnxIp {
     type CO = comm_objs::AppComObjects;
     type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, 2>;
     type State = MyState;
-    type Mem = zweidraehte::memory::NoMemoryMap;
+    type Mem = NoMemoryMap;
 
     type InterfaceObjects<'a> = KnxIpInterfaceObjects<'a, Self::State>;
 
@@ -795,7 +794,7 @@ async fn main(spawner: Spawner) {
         (), // hook_context
         link_layer_builder,
         state,
-        zweidraehte::memory::NoMemoryMap,
+        NoMemoryMap,
     );
 
     // The interface objects are now stored inside the stack (in StackResources)
@@ -863,7 +862,6 @@ async fn main(spawner: Spawner) {
                 println!("Event: {:?} on CO {:?}", event, index);
 
                 // Example: Toggle output when input changes
-                use zweidraehte::objects::comm::ComObjectEvent;
                 if let ComObjectEvent::Updated = event {
                     let idx = index.index();
                     if idx >= 1 && idx <= 4 {

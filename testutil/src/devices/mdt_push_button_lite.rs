@@ -1141,8 +1141,7 @@ pub mod comm_objs {
     use super::*;
     // Import the ObjectType enum for selector values
     use super::ObjectType;
-    #[allow(unused_imports)]
-    use zweidraehte::objects::comm::{ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjectStorage, ComObjects};
+    use zweidraehte::objects::comm::ComObjectStorage;
 
     /// MDT Push Button Lite communication objects.
     /// Total: 87 objects (many are dummy placeholders)

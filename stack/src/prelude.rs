@@ -25,7 +25,7 @@ pub use crate::objects::comm::{
 
 // Interface objects (traits + response/error types)
 pub use crate::objects::interface::{
-    InterfaceObject, PropertyServiceHandler, HasDeviceObject,
+    InterfaceObject, PropertyServiceHandler, HasDeviceObject, HasRoutingCount,
     PropertyError, WriteResponse, PropertyDescriptionResponse,
 };
 
@@ -36,8 +36,11 @@ pub use crate::objects::tables::{
     HasLoadStateMachine, HasRunStateMachine,
 };
 
+// Table events and memory types (used in StackDefinition impls and memory maps)
+pub use crate::objects::tables::{LoadEvent, RunEvent, Table, TableMemory, ComObjectFlags};
+
 // Storage
 pub use crate::storage::{DeviceStorage, NoStorage};
 
 // Memory
-pub use crate::memory::{MemoryMap, NoMemoryMap};
+pub use crate::memory::{MemoryMap, MemoryError, NoMemoryMap};

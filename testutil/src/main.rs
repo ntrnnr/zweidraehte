@@ -28,9 +28,6 @@ pub struct AppParameters {
 
 pub mod comm_objs {
     use super::*;
-    #[allow(unused_imports)]
-    use zweidraehte::objects::comm::{ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects};
-
     #[derive(EtsComObjects)]
     pub struct AppComObjects {
         #[ets(index = 1)]
