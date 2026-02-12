@@ -20,7 +20,12 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 use embassy_time::{Duration, Instant};
 use heapless::Vec;
 
-use crate::messages::buffers::{DynBufferManager, MessageBuffer};
+use embassy_sync::channel::DynamicSender;
+
+use crate::layers::LayerOp;
+use crate::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
+use crate::messages::builder::IndicationMessage;
+use crate::messages::knx::{CemiFormat, KnxMessageBuffer};
 use crate::messages::knxip::{
     ConnectionStatus, ConnectionstateRequest, ConnectionstateResponseBuilder,
     DeviceConfigurationAck, DeviceConfigurationAckBuilder, DeviceConfigurationRequest,
@@ -44,11 +49,36 @@ pub struct AcceptedConnection {
     pub crd_bytes: Vec<u8, 16>,
 }
 
+/// What the connection manager should do after a handler processes a data frame.
+pub enum DataFrameAction {
+    /// Send response frames to the client (ACK + optional data response).
+    /// Used by device management: ACK + M_PropRead.con / M_PropWrite.con.
+    Responses(Vec<PendingResponse, 4>),
+    /// ACK the client and inject a cEMI frame into the KNX stack.
+    /// Used by tunneling: ACK + L_Data forwarded to network layer.
+    /// The `Buffer` contains raw cEMI data (allocated by the handler from
+    /// the buffer manager). The connection manager converts it via
+    /// `KnxMessageBuffer::from_cemi().into_internal()` before sending to
+    /// the network layer.
+    AckAndInject {
+        ack: PendingResponse,
+        cemi_buffer: Buffer<'static>,
+    },
+    /// Just ACK (e.g., retransmission that was already processed).
+    AckOnly(PendingResponse),
+}
+
 /// Trait for connection-type-specific logic.
 ///
 /// Each connection type (Device Management, Tunneling, etc.) implements this
-/// trait. The connection manager delegates type-specific decisions (accept/reject,
-/// data frame processing) through this interface.
+/// trait. The connection manager delegates connection acceptance and data
+/// frame processing through this interface.
+///
+/// Handlers own their service-type-specific protocol framing: they parse
+/// their own request messages (e.g., `DeviceConfigurationRequest`), validate
+/// sequence counters, build ACK responses, and process the payload. The
+/// connection manager only handles connection lifecycle (connect, disconnect,
+/// connectionstate) and executes the [`DataFrameAction`] returned by handlers.
 ///
 /// Intentionally has **no generic parameters** — concrete handlers hold their
 /// own resources (e.g., a reference to a `dyn PropertyServiceHandler`) internally.
@@ -66,16 +96,32 @@ pub trait ConnectionTypeHandler {
     /// Called when a connection is closed (disconnect or heartbeat timeout).
     fn close_connection(&mut self, channel_id: u8);
 
-    /// Called when a data frame arrives on this connection.
+    /// Handle an incoming data frame for this connection type.
     ///
-    /// The handler processes the cEMI payload and optionally returns a
-    /// response cEMI frame. For Device Management, this is
-    /// M_PropRead.req → M_PropRead.con or M_PropWrite.req → M_PropWrite.con.
-    fn on_data_frame(
+    /// Receives the full KNX/IP packet (including header), the mutable
+    /// connection context (for reading/updating sequence counters and
+    /// endpoints), and the buffer manager for allocating response buffers.
+    ///
+    /// Returns a [`DataFrameAction`] telling the connection manager what
+    /// to do: send responses, inject into the stack, or just ACK.
+    async fn on_data_frame(
         &mut self,
         channel_id: u8,
-        cemi_payload: &[u8],
-    ) -> Result<Option<Vec<u8, 64>>, ConnectionStatus>;
+        data: &[u8],
+        conn: &mut ConnectionContext,
+        buffer_manager: &RefCell<DynBufferManager<'static>>,
+    ) -> Result<DataFrameAction, ServerError>;
+
+    /// Handle an incoming ACK for a frame we sent to the client.
+    fn on_data_ack(
+        &mut self,
+        channel_id: u8,
+        data: &[u8],
+        conn: &mut ConnectionContext,
+    ) -> Result<(), ServerError>;
+
+    /// Which service types this handler processes (both requests and ACKs).
+    fn handled_service_types(&self) -> &[KNXnetIPServiceType];
 }
 
 // ============================================================================
@@ -144,6 +190,25 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
                 debug!("Unsupported cEMI Local Management message code: 0x{:02x}", message_code);
                 Err(ConnectionStatus::DataConnectionError)
             }
+        }
+    }
+
+    /// Build a DeviceConfigurationAck as a `PendingResponse`.
+    async fn build_ack(
+        &self,
+        channel_id: u8,
+        sequence_counter: u8,
+        status: ConnectionStatus,
+        conn: &ConnectionContext,
+        buffer_manager: &RefCell<DynBufferManager<'static>>,
+    ) -> PendingResponse {
+        let builder = DeviceConfigurationAckBuilder::new(channel_id, sequence_counter, status);
+        let mut buffer = buffer_manager.borrow().alloc().await;
+        buffer.serialize(&builder);
+        PendingResponse {
+            buffer,
+            destination: conn.data_endpoint,
+            socket_idx: conn.socket_idx,
         }
     }
 
@@ -255,13 +320,143 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         // No per-connection resources to release for device management
     }
 
-    fn on_data_frame(
+    async fn on_data_frame(
         &mut self,
         _channel_id: u8,
-        cemi_payload: &[u8],
-    ) -> Result<Option<Vec<u8, 64>>, ConnectionStatus> {
-        let response = self.process_cemi_frame(cemi_payload)?;
-        Ok(Some(response))
+        data: &[u8],
+        conn: &mut ConnectionContext,
+        buffer_manager: &RefCell<DynBufferManager<'static>>,
+    ) -> Result<DataFrameAction, ServerError> {
+        // Parse the DeviceConfigurationRequest header
+        let mut buf = &data[..];
+        let request = match buf.parse::<DeviceConfigurationRequest>() {
+            Ok(req) => req,
+            Err(_) => return Err(ServerError::ParseError),
+        };
+
+        let sequence_counter = request.sequence_counter;
+        let expected_seq = conn.recv_sequence_counter;
+
+        // Validate sequence counter
+        let is_retransmission = sequence_counter == expected_seq.wrapping_sub(1);
+        let is_expected = sequence_counter == expected_seq;
+
+        if !is_expected && !is_retransmission {
+            debug!(
+                "Sequence counter mismatch: got {}, expected {} (channel {})",
+                sequence_counter, expected_seq, conn.channel_id
+            );
+            let ack = self.build_ack(
+                conn.channel_id, sequence_counter,
+                ConnectionStatus::DataConnectionError,
+                conn, buffer_manager,
+            ).await;
+            return Ok(DataFrameAction::AckOnly(ack));
+        }
+
+        // Extract cEMI payload: everything after KNXnet/IP header (6) + connection header (4)
+        let cemi_offset = 6 + 4;
+        let cemi_payload = if data.len() > cemi_offset { &data[cemi_offset..] } else { &[] };
+
+        // Process the frame (only if not a retransmission)
+        let response_cemi = if is_expected {
+            conn.recv_sequence_counter = expected_seq.wrapping_add(1);
+            conn.last_activity = Instant::now();
+
+            match self.process_cemi_frame(cemi_payload) {
+                Ok(response) => Some(response),
+                Err(status) => {
+                    let ack = self.build_ack(
+                        conn.channel_id, sequence_counter, status,
+                        conn, buffer_manager,
+                    ).await;
+                    return Ok(DataFrameAction::AckOnly(ack));
+                }
+            }
+        } else {
+            // Retransmission: just re-ACK, don't re-process
+            None
+        };
+
+        // Build responses
+        let mut responses = Vec::new();
+
+        // 1. ACK
+        let ack_builder = DeviceConfigurationAckBuilder::new(
+            conn.channel_id, sequence_counter, ConnectionStatus::NoError,
+        );
+        let mut ack_buffer = buffer_manager.borrow().alloc().await;
+        ack_buffer.serialize(&ack_builder);
+        let _ = responses.push(PendingResponse {
+            buffer: ack_buffer,
+            destination: conn.data_endpoint,
+            socket_idx: conn.socket_idx,
+        });
+
+        // 2. If handler returned a response, send it as a DeviceConfigurationRequest
+        //    (server → client direction)
+        if let Some(cemi_response) = response_cemi {
+            let send_seq = conn.send_sequence_counter;
+            conn.send_sequence_counter = send_seq.wrapping_add(1);
+
+            let req_builder = DeviceConfigurationRequestBuilder::new(
+                conn.channel_id, send_seq,
+            );
+
+            let mut resp_buffer = buffer_manager.borrow().alloc().await;
+            resp_buffer.serialize(&req_builder);
+            let header_len = resp_buffer.len();
+            let total_len = header_len + cemi_response.len();
+
+            // Append cEMI payload after the header
+            let buf = resp_buffer.as_mut();
+            buf[header_len..total_len].copy_from_slice(&cemi_response);
+
+            // Patch total_length in the KNXnet/IP header (bytes 4-5)
+            let total_bytes = (total_len as u16).to_be_bytes();
+            buf[4] = total_bytes[0];
+            buf[5] = total_bytes[1];
+
+            resp_buffer.set_len(total_len);
+
+            let _ = responses.push(PendingResponse {
+                buffer: resp_buffer,
+                destination: conn.data_endpoint,
+                socket_idx: conn.socket_idx,
+            });
+        }
+
+        Ok(DataFrameAction::Responses(responses))
+    }
+
+    fn on_data_ack(
+        &mut self,
+        _channel_id: u8,
+        data: &[u8],
+        conn: &mut ConnectionContext,
+    ) -> Result<(), ServerError> {
+        let mut buf = &data[..];
+        let ack = match buf.parse::<DeviceConfigurationAck>() {
+            Ok(a) => a,
+            Err(_) => return Err(ServerError::ParseError),
+        };
+
+        conn.last_activity = Instant::now();
+        // TODO: Implement retransmission tracking — verify this ACK matches
+        // our last sent sequence number, and handle timeout/retransmission
+        // if the ACK doesn't arrive.
+        trace!(
+            "DeviceConfigurationAck: channel={}, seq={}, status={:?}",
+            ack.communication_channel_id, ack.sequence_counter, ack.status
+        );
+        Ok(())
+    }
+
+    fn handled_service_types(&self) -> &[KNXnetIPServiceType] {
+        &[
+            KNXnetIPServiceType::DeviceConfigurationRequest,
+            KNXnetIPServiceType::DeviceConfigurationAck,
+        ]
     }
 }
 
@@ -297,13 +492,34 @@ impl ConnectionTypeHandler for ConnectionTypeHandlerEnum<'_> {
         }
     }
 
-    fn on_data_frame(
+    async fn on_data_frame(
         &mut self,
         channel_id: u8,
-        cemi_payload: &[u8],
-    ) -> Result<Option<Vec<u8, 64>>, ConnectionStatus> {
+        data: &[u8],
+        conn: &mut ConnectionContext,
+        buffer_manager: &RefCell<DynBufferManager<'static>>,
+    ) -> Result<DataFrameAction, ServerError> {
         match self {
-            ConnectionTypeHandlerEnum::DeviceManagement(h) => h.on_data_frame(channel_id, cemi_payload),
+            ConnectionTypeHandlerEnum::DeviceManagement(h) => {
+                h.on_data_frame(channel_id, data, conn, buffer_manager).await
+            }
+        }
+    }
+
+    fn on_data_ack(
+        &mut self,
+        channel_id: u8,
+        data: &[u8],
+        conn: &mut ConnectionContext,
+    ) -> Result<(), ServerError> {
+        match self {
+            ConnectionTypeHandlerEnum::DeviceManagement(h) => h.on_data_ack(channel_id, data, conn),
+        }
+    }
+
+    fn handled_service_types(&self) -> &[KNXnetIPServiceType] {
+        match self {
+            ConnectionTypeHandlerEnum::DeviceManagement(h) => h.handled_service_types(),
         }
     }
 }
@@ -313,15 +529,18 @@ impl ConnectionTypeHandler for ConnectionTypeHandlerEnum<'_> {
 // ============================================================================
 
 /// Per-connection state tracked by the connection manager.
-struct ConnectionContext {
-    channel_id: u8,
-    connection_type: ConnectionType,
-    control_endpoint: SocketAddrV4,
-    data_endpoint: SocketAddrV4,
-    recv_sequence_counter: u8,
-    send_sequence_counter: u8,
-    last_activity: Instant,
-    socket_idx: usize,
+///
+/// Exposed to [`ConnectionTypeHandler`] implementations so they can
+/// read/update sequence counters and access endpoint information.
+pub struct ConnectionContext {
+    pub channel_id: u8,
+    pub connection_type: ConnectionType,
+    pub control_endpoint: SocketAddrV4,
+    pub data_endpoint: SocketAddrV4,
+    pub recv_sequence_counter: u8,
+    pub send_sequence_counter: u8,
+    pub last_activity: Instant,
+    pub socket_idx: usize,
 }
 
 // ============================================================================
@@ -374,6 +593,14 @@ impl<'a, const MAX_CONNECTIONS: usize>
     }
 
     /// Handle an incoming KNX/IP message for a connection-oriented service.
+    ///
+    /// Connection lifecycle messages (Connect, Disconnect, Connectionstate) are
+    /// handled directly. All other service types are routed to the appropriate
+    /// [`ConnectionTypeHandler`] based on the connection's type, by peeking at
+    /// the channel ID in the 4-byte connection header at offset 6.
+    ///
+    /// The `network_layer_tx` is used to inject cEMI frames into the stack when
+    /// a handler returns [`DataFrameAction::AckAndInject`] (e.g., tunneling).
     pub async fn on_indication(
         &mut self,
         service_type: KNXnetIPServiceType,
@@ -381,8 +608,10 @@ impl<'a, const MAX_CONNECTIONS: usize>
         source: SocketAddrV4,
         socket_idx: usize,
         buffer_manager: &RefCell<DynBufferManager<'static>>,
+        network_layer_tx: DynamicSender<'_, LayerOp<Buffer<'static>>>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         match service_type {
+            // Connection lifecycle — handled directly by the connection manager
             KNXnetIPServiceType::ConnectRequest => {
                 self.handle_connect_request(data, source, socket_idx, buffer_manager).await
             }
@@ -392,15 +621,111 @@ impl<'a, const MAX_CONNECTIONS: usize>
             KNXnetIPServiceType::DisconnectRequest => {
                 self.handle_disconnect_request(data, buffer_manager).await
             }
-            KNXnetIPServiceType::DeviceConfigurationRequest => {
-                self.handle_device_configuration_request(data, buffer_manager).await
-            }
-            KNXnetIPServiceType::DeviceConfigurationAck => {
-                self.handle_device_configuration_ack(data)
-            }
+
+            // Everything else: route to the handler via channel ID lookup
             _ => {
-                debug!("Connection manager ignoring unhandled service type {:?}", service_type);
-                Ok(Vec::new())
+                self.dispatch_to_handler(service_type, data, buffer_manager, network_layer_tx).await
+            }
+        }
+    }
+
+    /// Route a data frame to the appropriate handler based on channel ID.
+    ///
+    /// The 4-byte connection header (at offset 6, after the KNXnet/IP header)
+    /// contains the channel ID at byte 7 (offset 6 + 1). We use this to look
+    /// up the connection, find its type, and delegate to the matching handler.
+    async fn dispatch_to_handler(
+        &mut self,
+        service_type: KNXnetIPServiceType,
+        data: &[u8],
+        buffer_manager: &RefCell<DynBufferManager<'static>>,
+        network_layer_tx: DynamicSender<'_, LayerOp<Buffer<'static>>>,
+    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+        // Connection header starts at offset 6 (after KNXnet/IP header).
+        // Byte layout: struct_length(1), channel_id(1), sequence_or_reserved(1), status_or_reserved(1)
+        //
+        // Return InvalidMessage (not ParseError) for short packets so the caller
+        // can fall through to connectionless server dispatch.
+        if data.len() < 6 + 4 {
+            return Err(ServerError::InvalidMessage);
+        }
+
+        let channel_id = data[7]; // offset 6 + 1
+
+        // Find the connection and its type
+        let conn_idx = self.connections.iter().position(|slot| {
+            slot.as_ref().map_or(false, |ctx| ctx.channel_id == channel_id)
+        });
+
+        let Some(conn_idx) = conn_idx else {
+            debug!("Data frame for unknown channel {}, service {:?}", channel_id, service_type);
+            return Err(ServerError::InvalidMessage);
+        };
+
+        let connection_type = self.connections[conn_idx]
+            .as_ref()
+            .expect("just verified Some")
+            .connection_type;
+
+        // Find the handler for this connection type and verify it handles this service type
+        let handler_idx = self.handlers.iter().position(|(ct, handler)| {
+            *ct == connection_type && handler.handled_service_types().contains(&service_type)
+        });
+
+        let Some(handler_idx) = handler_idx else {
+            debug!(
+                "No handler for service type {:?} on connection type {:?}",
+                service_type, connection_type
+            );
+            return Ok(Vec::new());
+        };
+
+        // Determine if this is a data frame (request) or an ACK.
+        // Convention: ACK service types are the request type + 1
+        // (e.g., DeviceConfigurationRequest=0x0310, DeviceConfigurationAck=0x0311;
+        //        TunnelingRequest=0x0420, TunnelingAck=0x0421).
+        let service_type_raw: u16 = service_type.into();
+        let is_ack = (service_type_raw & 0x01) != 0;
+
+        if is_ack {
+            // ACK: delegate to on_data_ack
+            let conn = self.connections[conn_idx]
+                .as_mut()
+                .expect("just verified Some");
+            self.handlers[handler_idx].1.on_data_ack(channel_id, data, conn)?;
+            Ok(Vec::new())
+        } else {
+            // Data frame: delegate to on_data_frame
+            let conn = self.connections[conn_idx]
+                .as_mut()
+                .expect("just verified Some");
+            let action = self.handlers[handler_idx]
+                .1
+                .on_data_frame(channel_id, data, conn, buffer_manager)
+                .await?;
+
+            // Execute the action
+            match action {
+                DataFrameAction::Responses(responses) => Ok(responses),
+                DataFrameAction::AckOnly(ack) => {
+                    let mut responses = Vec::new();
+                    let _ = responses.push(ack);
+                    Ok(responses)
+                }
+                DataFrameAction::AckAndInject { ack, cemi_buffer } => {
+                    // Convert cEMI buffer to internal format and inject into
+                    // the network layer as an indication — same pattern as
+                    // the routing server (routing.rs).
+                    let cemi_msg: KnxMessageBuffer<Buffer<'static>, CemiFormat> =
+                        KnxMessageBuffer::from_cemi(cemi_buffer);
+                    let internal_msg = cemi_msg.into_internal();
+                    let indication = IndicationMessage::indication(internal_msg);
+                    network_layer_tx.send(LayerOp::Indication(indication)).await;
+
+                    let mut responses = Vec::new();
+                    let _ = responses.push(ack);
+                    Ok(responses)
+                }
             }
         }
     }
@@ -783,213 +1108,8 @@ impl<'a, const MAX_CONNECTIONS: usize>
     }
 
     // ========================================================================
-    // Private: DeviceConfigurationRequest
-    // ========================================================================
-
-    async fn handle_device_configuration_request(
-        &mut self,
-        data: &[u8],
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
-    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
-        // Parse just the connection header (KNXnet/IP header + 4-byte tunneling header)
-        let mut buf = &data[..];
-        let request = match buf.parse::<DeviceConfigurationRequest>() {
-            Ok(req) => req,
-            Err(_) => return Err(ServerError::ParseError),
-        };
-
-        let channel_id = request.communication_channel_id;
-        let sequence_counter = request.sequence_counter;
-
-        // Find the connection
-        let conn = match self.find_connection_mut(channel_id) {
-            Some(ctx) => ctx,
-            None => {
-                debug!("DeviceConfigurationRequest for unknown channel {}", channel_id);
-                return Err(ServerError::InvalidMessage);
-            }
-        };
-
-        let data_endpoint = conn.data_endpoint;
-        let connection_type = conn.connection_type;
-        let socket_idx = conn.socket_idx;
-        let expected_seq = conn.recv_sequence_counter;
-
-        // Validate sequence counter
-        let is_retransmission = sequence_counter == expected_seq.wrapping_sub(1);
-        let is_expected = sequence_counter == expected_seq;
-
-        if !is_expected && !is_retransmission {
-            // Out-of-sequence: ACK with error
-            debug!(
-                "Sequence counter mismatch: got {}, expected {} (channel {})",
-                sequence_counter, expected_seq, channel_id
-            );
-            return self.send_device_config_ack(
-                channel_id, sequence_counter,
-                ConnectionStatus::DataConnectionError,
-                data_endpoint, socket_idx, buffer_manager,
-            ).await;
-        }
-
-        // Extract cEMI payload: everything after the KNXnet/IP header (6) + connection header (4)
-        let cemi_offset = 6 + 4;
-        let cemi_payload = if data.len() > cemi_offset {
-            &data[cemi_offset..]
-        } else {
-            &[]
-        };
-
-        // Process the frame (only if not a retransmission)
-        let response_cemi = if is_expected {
-            // Update connection state
-            if let Some(conn) = self.find_connection_mut(channel_id) {
-                conn.recv_sequence_counter = expected_seq.wrapping_add(1);
-                conn.last_activity = Instant::now();
-            }
-
-            // Delegate to the handler
-            if let Some((_, handler)) = self
-                .handlers
-                .iter_mut()
-                .find(|(ct, _)| *ct == connection_type)
-            {
-                match handler.on_data_frame(channel_id, cemi_payload) {
-                    Ok(response) => response,
-                    Err(status) => {
-                        return self.send_device_config_ack(
-                            channel_id, sequence_counter, status,
-                            data_endpoint, socket_idx, buffer_manager,
-                        ).await;
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            // Retransmission: just re-ACK, don't re-process
-            None
-        };
-
-        // Build responses
-        let mut responses = Vec::new();
-
-        // 1. Send ACK immediately
-        let ack_builder = DeviceConfigurationAckBuilder::new(
-            channel_id,
-            sequence_counter,
-            ConnectionStatus::NoError,
-        );
-        let mut ack_buffer = buffer_manager.borrow().alloc().await;
-        ack_buffer.serialize(&ack_builder);
-
-        let _ = responses.push(PendingResponse {
-            buffer: ack_buffer,
-            destination: data_endpoint,
-            socket_idx,
-        });
-
-        // 2. If handler returned a response, send it as a DeviceConfigurationRequest
-        //    (server → client direction)
-        if let Some(cemi_response) = response_cemi {
-            if let Some(conn) = self.find_connection_mut(channel_id) {
-                let send_seq = conn.send_sequence_counter;
-                conn.send_sequence_counter = send_seq.wrapping_add(1);
-
-                let req_builder = DeviceConfigurationRequestBuilder::new(
-                    channel_id, send_seq,
-                );
-
-                // Serialize the header, then append the cEMI payload.
-                let mut resp_buffer = buffer_manager.borrow().alloc().await;
-
-                // Buffer::serialize writes the KNXnet/IP header + connection header
-                // and sets length to header_len. We then extend with the cEMI payload.
-                resp_buffer.serialize(&req_builder);
-                let header_len = resp_buffer.len();
-                let total_len = header_len + cemi_response.len();
-
-                // Append cEMI payload after the header
-                let buf = resp_buffer.as_mut();
-                buf[header_len..total_len].copy_from_slice(&cemi_response);
-
-                // Patch total_length in the KNXnet/IP header (bytes 4-5)
-                let total_bytes = (total_len as u16).to_be_bytes();
-                buf[4] = total_bytes[0];
-                buf[5] = total_bytes[1];
-
-                resp_buffer.set_len(total_len);
-
-                let _ = responses.push(PendingResponse {
-                    buffer: resp_buffer,
-                    destination: data_endpoint,
-                    socket_idx,
-                });
-            }
-        }
-
-        Ok(responses)
-    }
-
-    // ========================================================================
-    // Private: DeviceConfigurationAck
-    // ========================================================================
-
-    fn handle_device_configuration_ack(
-        &mut self,
-        data: &[u8],
-    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
-        let mut buf = &data[..];
-        let ack = match buf.parse::<DeviceConfigurationAck>() {
-            Ok(a) => a,
-            Err(_) => return Err(ServerError::ParseError),
-        };
-
-        if let Some(conn) = self.find_connection_mut(ack.communication_channel_id) {
-            conn.last_activity = Instant::now();
-            // TODO: Implement retransmission tracking — verify this ACK matches
-            // our last sent sequence number, and handle timeout/retransmission
-            // if the ACK doesn't arrive.
-            trace!(
-                "DeviceConfigurationAck: channel={}, seq={}, status={:?}",
-                ack.communication_channel_id, ack.sequence_counter, ack.status
-            );
-        } else {
-            debug!(
-                "DeviceConfigurationAck for unknown channel {}",
-                ack.communication_channel_id
-            );
-        }
-
-        // No response needed for ACKs
-        Ok(Vec::new())
-    }
-
-    // ========================================================================
     // Private: Helpers
     // ========================================================================
-
-    async fn send_device_config_ack(
-        &self,
-        channel_id: u8,
-        sequence_counter: u8,
-        status: ConnectionStatus,
-        destination: SocketAddrV4,
-        socket_idx: usize,
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
-    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
-        let builder = DeviceConfigurationAckBuilder::new(channel_id, sequence_counter, status);
-        let mut buffer = buffer_manager.borrow().alloc().await;
-        buffer.serialize(&builder);
-
-        let mut responses = Vec::new();
-        let _ = responses.push(PendingResponse {
-            buffer,
-            destination,
-            socket_idx,
-        });
-        Ok(responses)
-    }
 
     fn find_connection_mut(&mut self, channel_id: u8) -> Option<&mut ConnectionContext> {
         self.connections

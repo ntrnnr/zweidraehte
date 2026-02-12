@@ -1010,60 +1010,52 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res>
                         Ok(service_type) => {
                             debug!("  Service type: {:?}", service_type);
 
-                            // Connection-oriented service types are routed directly to
-                            // the connection manager, bypassing the server dispatch.
-                            let is_connection_oriented = matches!(
-                                service_type,
-                                KNXnetIPServiceType::ConnectRequest
-                                | KNXnetIPServiceType::ConnectionstateRequest
-                                | KNXnetIPServiceType::DisconnectRequest
-                                | KNXnetIPServiceType::DeviceConfigurationRequest
-                                | KNXnetIPServiceType::DeviceConfigurationAck
-                                // Future: TunnelingRequest, TunnelingAck
-                            );
-
-                            if is_connection_oriented {
-                                match self.connection_manager.on_indication(
-                                    service_type, &buffer[..], source,
-                                    socket_idx, self.buffer_manager,
-                                ).await {
-                                    Ok(responses) => {
-                                        for response in responses {
-                                            response_channel.send(response).await;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        debug!("Connection manager error for {:?}: {:?}", service_type, e);
+                            // Try the connection manager first. It handles:
+                            // - Connection lifecycle (Connect/Disconnect/Connectionstate)
+                            // - Data frames for active connections (routed by channel ID)
+                            // If the service type isn't recognized, fall through to
+                            // connectionless server dispatch.
+                            match self.connection_manager.on_indication(
+                                service_type, &buffer[..], source,
+                                socket_idx, self.buffer_manager,
+                                self.network_layer_tx,
+                            ).await {
+                                Ok(responses) => {
+                                    for response in responses {
+                                        response_channel.send(response).await;
                                     }
                                 }
-                            } else {
-                                // Find all servers that handle this service type on this socket
-                                for server in &mut self.server_instances {
-                                    if server.handles(service_type, socket_idx) {
-                                        // Create server context with buffer manager and network layer channel
-                                        let context = ServerContext::new(
-                                            self.buffer_manager,
-                                            self.network_layer_tx,
-                                            self.max_apdu_length,
-                                            self.device_info_provider,
-                                        );
+                                Err(ServerError::InvalidMessage) => {
+                                    // Connection manager didn't recognize this service type
+                                    // or channel — fall through to connectionless servers.
+                                    for server in &mut self.server_instances {
+                                        if server.handles(service_type, socket_idx) {
+                                            let context = ServerContext::new(
+                                                self.buffer_manager,
+                                                self.network_layer_tx,
+                                                self.max_apdu_length,
+                                                self.device_info_provider,
+                                            );
 
-                                        match server
-                                            .handler
-                                            .on_indication(service_type, &buffer[..], source, &context)
-                                            .await
-                                        {
-                                            Ok(responses) => {
-                                                for response in responses {
-                                                    // Queue responses for sending
-                                                    response_channel.send(response).await;
+                                            match server
+                                                .handler
+                                                .on_indication(service_type, &buffer[..], source, &context)
+                                                .await
+                                            {
+                                                Ok(responses) => {
+                                                    for response in responses {
+                                                        response_channel.send(response).await;
+                                                    }
                                                 }
-                                            }
-                                            Err(e) => {
-                                                error!("Server error handling {:?}: {:?}", service_type, e);
+                                                Err(e) => {
+                                                    error!("Server error handling {:?}: {:?}", service_type, e);
+                                                }
                                             }
                                         }
                                     }
+                                }
+                                Err(e) => {
+                                    debug!("Connection manager error for {:?}: {:?}", service_type, e);
                                 }
                             }
                         }
