@@ -1,9 +1,10 @@
 //! Common External Message Interface (cEMI) message format
 //!
-//! cEMI is used in KNX/IP and USB interfaces to encapsulate KNX telegrams
-//! and local management frames. This module provides parsing and serialization
-//! for both cEMI L_Data frames and cEMI Local Management frames
-//! (M_PropRead/M_PropWrite).
+//! cEMI is used in KNX/IP and USB interfaces to encapsulate KNX telegrams,
+//! local management frames, and transport layer frames. This module provides
+//! parsing and serialization for cEMI L_Data frames, cEMI Local Management
+//! frames (M_PropRead/M_PropWrite), and cEMI Transport Layer frames
+//! (T_Data_Individual/T_Data_Connected).
 //!
 //! ## cEMI L_Data Frame Structure
 //! ```text
@@ -16,6 +17,23 @@
 //! Byte 6+N:    Destination Address (2 bytes)
 //! Byte 8+N:    NPDU Length
 //! Byte 9+N:    TPCI/APCI + Data
+//! ```
+//!
+//! ## cEMI Transport Layer Frame Structure (KNX spec 03/06/03 §4.1.6)
+//!
+//! These frames carry transport layer data directly, without network layer
+//! addressing. Used in cEMI Transport Layer mode over Device Management
+//! connections (KNX spec 03/08/03 §2.6). Unlike L_Data frames, they have
+//! no source/destination addresses — just 6 reserved zero bytes in their place.
+//!
+//! ```text
+//! Byte 0:      Message Code (0x4A = T_Data_Individual.req, 0x94 = .ind,
+//!                            0x41 = T_Data_Connected.req, 0x89 = .ind)
+//! Byte 1:      Additional Info Length (usually 0x00)
+//! Bytes 2+N:   Additional Info (N bytes)
+//! Bytes 2+N..8+N: Reserved (6 zero bytes, no source/destination addresses)
+//! Byte 8+N:    TPDU Length (L)
+//! Bytes 9+N:   TPDU (L bytes: TPCI/APCI + data)
 //! ```
 //!
 //! ## cEMI Local Management Frame Structure
@@ -55,6 +73,10 @@ create_protocol_enum!(
         MPropReadReq, 0xFC, "M_PropRead.req";
         MPropWriteCon, 0xF5, "M_PropWrite.con";
         MPropWriteReq, 0xF6, "M_PropWrite.req";
+        TDataConnectedReq, 0x41, "T_Data_Connected.req";
+        TDataIndividualReq, 0x4A, "T_Data_Individual.req";
+        TDataConnectedInd, 0x89, "T_Data_Connected.ind";
+        TDataIndividualInd, 0x94, "T_Data_Individual.ind";
         _, "Unknown cEMI message code 0x{:x}";
     }
 );
@@ -90,6 +112,29 @@ impl CemiMessageCode {
             CemiMessageCode::MPropWriteReq => Some(CemiMessageCode::MPropWriteCon),
             _ => None,
         }
+    }
+
+    /// Return the corresponding .ind code for a transport layer .req code.
+    ///
+    /// T_Data_Individual.req → T_Data_Individual.ind, etc.
+    /// Returns `None` for codes that are not transport layer request codes.
+    pub fn to_indication(self) -> Option<Self> {
+        match self {
+            CemiMessageCode::TDataIndividualReq => Some(CemiMessageCode::TDataIndividualInd),
+            CemiMessageCode::TDataConnectedReq => Some(CemiMessageCode::TDataConnectedInd),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` if this is a cEMI Transport Layer message code.
+    pub fn is_transport_layer(self) -> bool {
+        matches!(
+            self,
+            CemiMessageCode::TDataIndividualReq
+                | CemiMessageCode::TDataIndividualInd
+                | CemiMessageCode::TDataConnectedReq
+                | CemiMessageCode::TDataConnectedInd
+        )
     }
 }
 
@@ -349,6 +394,114 @@ impl SerializablePacket for CemiLocalMgmtBuilder<'_> {
 }
 
 // ============================================================================
+// CEMI TRANSPORT LAYER — PARSED TYPE
+// ============================================================================
+
+/// Parsed cEMI Transport Layer frame (T_Data_Individual / T_Data_Connected).
+///
+/// These frames are used in cEMI Transport Layer mode (KNX spec 03/08/03 §2.6)
+/// over Device Management connections. Unlike L_Data frames, they carry no
+/// source/destination addresses — the addressing is implicit (the device
+/// itself is always one endpoint). The frame contains only a TPDU after
+/// 6 reserved zero bytes.
+///
+/// Wire format (spec 03/06/03 §4.1.6):
+/// ```text
+/// MC(1) | AddIL(1) | AddInfo(AddIL bytes) | Reserved(6 zeros) | L(1) | TPDU(L bytes)
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CemiTransport<B: SplitByteSlice = &'static [u8]> {
+    pub message_code: CemiMessageCode,
+    /// Additional info bytes (usually empty).
+    pub additional_info: B,
+    /// TPDU bytes (TPCI/APCI + data).
+    pub tpdu: B,
+}
+
+/// Number of reserved zero bytes between additional info and TPDU length
+/// in a cEMI Transport Layer frame.
+const CEMI_TRANSPORT_RESERVED_LEN: usize = 6;
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for CemiTransport<B> {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
+        // MC (1 byte)
+        let mc_byte = buffer.take_byte_front().ok_or(ParseError::Format)?;
+        let message_code =
+            CemiMessageCode::try_from(mc_byte).map_err(|_| ParseError::NotSupported)?;
+
+        // AddIL (1 byte)
+        let add_info_len = buffer.take_byte_front().ok_or(ParseError::Format)? as usize;
+
+        // Additional info (AddIL bytes)
+        let additional_info = if add_info_len > 0 {
+            buffer.take_front(add_info_len).ok_or(ParseError::Format)?
+        } else {
+            buffer.take_front(0).ok_or(ParseError::Format)?
+        };
+
+        // Skip 6 reserved bytes
+        let _reserved = buffer
+            .take_front(CEMI_TRANSPORT_RESERVED_LEN)
+            .ok_or(ParseError::Format)?;
+
+        // L (1 byte) = TPDU length
+        let tpdu_len = buffer.take_byte_front().ok_or(ParseError::Format)? as usize;
+
+        // TPDU (L bytes)
+        let tpdu = buffer.take_front(tpdu_len).ok_or(ParseError::Format)?;
+
+        Ok(CemiTransport { message_code, additional_info, tpdu })
+    }
+}
+
+// ============================================================================
+// CEMI TRANSPORT LAYER — BUILDER
+// ============================================================================
+
+/// Builder for cEMI Transport Layer frames.
+///
+/// Serializes: MC(1) + AddIL(1, always 0) + Reserved(6 zeros) + L(1) + TPDU.
+pub struct CemiTransportBuilder<'a> {
+    pub message_code: CemiMessageCode,
+    pub tpdu: &'a [u8],
+}
+
+impl SerializablePacket for CemiTransportBuilder<'_> {
+    fn bytes_len(&self) -> usize {
+        // MC(1) + AddIL(1) + Reserved(6) + L(1) + TPDU
+        1 + 1 + CEMI_TRANSPORT_RESERVED_LEN + 1 + self.tpdu.len()
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        // MC + AddIL(0)
+        let header = [self.message_code.into(), 0u8];
+        let mut header_buf = bv.take_front(2).expect("too few bytes for cEMI transport header");
+        header_buf.deref_mut().copy_from_slice(&header);
+
+        // 6 reserved zero bytes
+        let mut reserved_buf = bv
+            .take_front(CEMI_TRANSPORT_RESERVED_LEN)
+            .expect("too few bytes for reserved padding");
+        reserved_buf.deref_mut().fill(0);
+
+        // L (TPDU length)
+        let len_byte = [self.tpdu.len() as u8];
+        let mut len_buf = bv.take_front(1).expect("too few bytes for TPDU length");
+        len_buf.deref_mut().copy_from_slice(&len_byte);
+
+        // TPDU
+        if !self.tpdu.is_empty() {
+            let mut tpdu_buf = bv
+                .take_front(self.tpdu.len())
+                .expect("too few bytes for TPDU data");
+            tpdu_buf.deref_mut().copy_from_slice(self.tpdu);
+        }
+    }
+}
+
+// ============================================================================
 // CEMI BUFFER WRAPPER
 // ============================================================================
 
@@ -497,6 +650,11 @@ impl<B: MessageBuffer> CemiBuffer<B> {
     /// Check if this is an L_Data.con message
     pub fn is_l_data_con(&self) -> bool {
         matches!(self.message_code(), CemiMessageCode::LDataCon)
+    }
+
+    /// Check if this is a cEMI Transport Layer message (T_Data_Individual/T_Data_Connected)
+    pub fn is_transport_layer(&self) -> bool {
+        self.message_code().is_transport_layer()
     }
 
     /// Check if this is a local device management message (M_PropRead/Write)
@@ -1111,5 +1269,165 @@ mod tests {
         );
         assert_eq!(CemiMessageCode::LDataReq.to_confirmation(), None);
         assert_eq!(CemiMessageCode::MPropReadCon.to_confirmation(), None);
+    }
+
+    // ========================================================================
+    // cEMI Transport Layer tests
+    // ========================================================================
+
+    #[test]
+    fn test_transport_parse_t_data_connected_req() {
+        // T_Data_Connected.req with a 2-byte TPDU
+        let frame = [
+            0x41, // T_Data_Connected.req
+            0x00, // Additional Info Length = 0
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 6 reserved zero bytes
+            0x02, // TPDU length = 2
+            0x00, 0x81, // TPDU (TPCI/APCI + data)
+        ];
+
+        let mut buf = &frame[..];
+        let parsed = buf.parse::<CemiTransport<_>>().unwrap();
+
+        assert_eq!(parsed.message_code, CemiMessageCode::TDataConnectedReq);
+        assert!(parsed.additional_info.is_empty());
+        assert_eq!(parsed.tpdu, &[0x00, 0x81]);
+    }
+
+    #[test]
+    fn test_transport_parse_t_data_individual_req() {
+        // T_Data_Individual.req with a 3-byte TPDU
+        let frame = [
+            0x4A, // T_Data_Individual.req
+            0x00, // Additional Info Length = 0
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 6 reserved zero bytes
+            0x03, // TPDU length = 3
+            0x43, 0x00, 0x01, // TPDU
+        ];
+
+        let mut buf = &frame[..];
+        let parsed = buf.parse::<CemiTransport<_>>().unwrap();
+
+        assert_eq!(parsed.message_code, CemiMessageCode::TDataIndividualReq);
+        assert_eq!(parsed.tpdu, &[0x43, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn test_transport_parse_with_additional_info() {
+        // T_Data_Connected.req with 2 bytes of additional info
+        let frame = [
+            0x41, // T_Data_Connected.req
+            0x02, // Additional Info Length = 2
+            0xAA, 0xBB, // Additional info
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 6 reserved zero bytes
+            0x01, // TPDU length = 1
+            0x80, // TPDU
+        ];
+
+        let mut buf = &frame[..];
+        let parsed = buf.parse::<CemiTransport<_>>().unwrap();
+
+        assert_eq!(parsed.message_code, CemiMessageCode::TDataConnectedReq);
+        assert_eq!(&*parsed.additional_info, &[0xAA, 0xBB]);
+        assert_eq!(parsed.tpdu, &[0x80]);
+    }
+
+    #[test]
+    fn test_transport_parse_too_short() {
+        // Frame too short to contain reserved bytes
+        let frame = [0x41, 0x00, 0x00, 0x00];
+        let mut buf = &frame[..];
+        assert!(buf.parse::<CemiTransport<_>>().is_err());
+    }
+
+    #[test]
+    fn test_transport_builder_serialize() {
+        let builder = CemiTransportBuilder {
+            message_code: CemiMessageCode::TDataConnectedInd,
+            tpdu: &[0x00, 0x81],
+        };
+
+        let mut buffer = [0u8; 32];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+
+        let expected = [
+            0x89, // T_Data_Connected.ind
+            0x00, // Additional Info Length = 0
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 6 reserved zero bytes
+            0x02, // TPDU length = 2
+            0x00, 0x81, // TPDU
+        ];
+        assert_eq!(written, &expected);
+    }
+
+    #[test]
+    fn test_transport_builder_empty_tpdu() {
+        let builder = CemiTransportBuilder {
+            message_code: CemiMessageCode::TDataIndividualReq,
+            tpdu: &[],
+        };
+
+        assert_eq!(builder.bytes_len(), 9); // MC(1) + AddIL(1) + Reserved(6) + L(1)
+
+        let mut buffer = [0u8; 32];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+
+        assert_eq!(written, &[0x4A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_transport_round_trip() {
+        let original = [
+            0x4A, // T_Data_Individual.req
+            0x00, // Additional Info Length = 0
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Reserved
+            0x03, // TPDU length = 3
+            0x43, 0x00, 0x01, // TPDU
+        ];
+
+        // Parse
+        let mut buf = &original[..];
+        let parsed = buf.parse::<CemiTransport<_>>().unwrap();
+
+        // Serialize back
+        let builder = CemiTransportBuilder {
+            message_code: parsed.message_code,
+            tpdu: parsed.tpdu,
+        };
+
+        let mut buffer = [0u8; 32];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+
+        assert_eq!(written, &original);
+    }
+
+    #[test]
+    fn test_message_code_to_indication() {
+        assert_eq!(
+            CemiMessageCode::TDataIndividualReq.to_indication(),
+            Some(CemiMessageCode::TDataIndividualInd)
+        );
+        assert_eq!(
+            CemiMessageCode::TDataConnectedReq.to_indication(),
+            Some(CemiMessageCode::TDataConnectedInd)
+        );
+        // Non-transport codes return None
+        assert_eq!(CemiMessageCode::LDataReq.to_indication(), None);
+        assert_eq!(CemiMessageCode::MPropReadReq.to_indication(), None);
+        // .ind codes are not .req codes, so also None
+        assert_eq!(CemiMessageCode::TDataIndividualInd.to_indication(), None);
+    }
+
+    #[test]
+    fn test_message_code_is_transport_layer() {
+        assert!(CemiMessageCode::TDataIndividualReq.is_transport_layer());
+        assert!(CemiMessageCode::TDataIndividualInd.is_transport_layer());
+        assert!(CemiMessageCode::TDataConnectedReq.is_transport_layer());
+        assert!(CemiMessageCode::TDataConnectedInd.is_transport_layer());
+        assert!(!CemiMessageCode::LDataReq.is_transport_layer());
+        assert!(!CemiMessageCode::MPropReadReq.is_transport_layer());
     }
 }

@@ -41,9 +41,41 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         Self { property_handler }
     }
 
-    /// Parse and process a cEMI Local Management frame, returning serialized
-    /// response bytes ready to embed in a DeviceConfigurationRequest.
-    fn process_cemi_frame(&self, payload: &[u8]) -> Result<Vec<u8, 64>, ConnectionStatus> {
+    /// Parse and process a cEMI frame from a DeviceConfigurationRequest.
+    ///
+    /// Returns `Ok(Some(bytes))` when a cEMI response should be sent back,
+    /// `Ok(None)` when the frame is recognized but no response is needed
+    /// (the DeviceConfigurationRequest is still ACKed), or `Err` on failure.
+    fn process_cemi_frame(&self, payload: &[u8]) -> Result<Option<Vec<u8, 64>>, ConnectionStatus> {
+        // Peek at the message code to determine the frame type before parsing,
+        // since Local Management and Transport Layer frames have different
+        // wire formats.
+        let mc_byte = *payload.first().ok_or_else(|| {
+            debug!("Empty cEMI payload");
+            ConnectionStatus::DataConnectionError
+        })?;
+        let message_code = CemiMessageCode::try_from(mc_byte).map_err(|_| {
+            debug!("Unknown cEMI message code: 0x{:02x}", mc_byte);
+            ConnectionStatus::DataConnectionError
+        })?;
+
+        // Transport Layer frames (T_Data_Individual.req, T_Data_Connected.req):
+        // Per KNX spec 03/08/03 §2.6.1.3, if cEMI Transport Layer mode is not
+        // (yet) supported, the frame is silently ignored but the
+        // DEVICE_CONFIGURATION_REQUEST is still ACKed.
+        if message_code.is_transport_layer() {
+            // TODO: Implement cEMI Transport Layer mode (KNX spec 03/08/03 §2.6).
+            // These frames should be injected into the transport layer, bypassing
+            // the network layer entirely (they carry no source/destination addresses).
+            // See SESSION.md for architectural notes.
+            debug!(
+                "cEMI Transport Layer frame ignored (not yet supported): {:?}",
+                message_code
+            );
+            return Ok(None);
+        }
+
+        // Local Management frames (M_PropRead/M_PropWrite)
         let mut buf = payload;
         let frame = buf.parse::<CemiLocalMgmt<_>>().map_err(|_| {
             debug!("Failed to parse cEMI Local Management frame ({} bytes)", payload.len());
@@ -56,10 +88,10 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         let object_idx = if frame.object_instance > 0 { (frame.object_instance - 1) as u16 } else { 0 };
 
         match frame.message_code {
-            CemiMessageCode::MPropReadReq => self.handle_prop_read(&frame, object_idx),
-            CemiMessageCode::MPropWriteReq => self.handle_prop_write(&frame, object_idx),
+            CemiMessageCode::MPropReadReq => self.handle_prop_read(&frame, object_idx).map(Some),
+            CemiMessageCode::MPropWriteReq => self.handle_prop_write(&frame, object_idx).map(Some),
             _ => {
-                debug!("Unsupported cEMI Local Management message code: {:?}", frame.message_code);
+                debug!("Unsupported cEMI message code: {:?}", frame.message_code);
                 Err(ConnectionStatus::DataConnectionError)
             }
         }
@@ -223,7 +255,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
             conn.last_activity = Instant::now();
 
             match self.process_cemi_frame(cemi_payload) {
-                Ok(response) => Some(response),
+                Ok(response) => response,
                 Err(status) => {
                     let ack = self.build_ack(
                         conn.channel_id, sequence_counter, status,
