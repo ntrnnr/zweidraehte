@@ -289,33 +289,48 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DeviceConfigurationRequest {
 }
 
 impl DeviceConfigurationRequest {
-    pub fn into_builder(self) -> DeviceConfigurationRequestBuilder {
+    pub fn into_builder(self) -> DeviceConfigurationRequestBuilder<'static> {
         DeviceConfigurationRequestBuilder {
             communication_channel_id: self.communication_channel_id,
             sequence_counter: self.sequence_counter,
+            payload: None,
         }
     }
 }
 
 /// Builder for DeviceConfigurationRequest message.
 ///
-/// The cEMI Local Management payload is not part of this builder — it is
-/// appended separately after serializing the header, since the connection
-/// manager constructs it independently.
-pub struct DeviceConfigurationRequestBuilder {
+/// When `payload` is `Some`, the raw cEMI bytes are appended after the header
+/// and the KNXnet/IP total_length accounts for them automatically.
+/// When `None`, only the 10-byte header is serialized.
+pub struct DeviceConfigurationRequestBuilder<'a> {
     pub communication_channel_id: u8,
     pub sequence_counter: u8,
+    /// Optional cEMI Local Management payload bytes (appended after header).
+    pub payload: Option<&'a [u8]>,
 }
 
-impl DeviceConfigurationRequestBuilder {
+impl<'a> DeviceConfigurationRequestBuilder<'a> {
+    /// Create a header-only builder (no cEMI payload).
     pub fn new(communication_channel_id: u8, sequence_counter: u8) -> Self {
-        Self { communication_channel_id, sequence_counter }
+        Self { communication_channel_id, sequence_counter, payload: None }
+    }
+
+    /// Create a builder with a cEMI payload (pre-serialized bytes).
+    pub fn with_payload(
+        communication_channel_id: u8,
+        sequence_counter: u8,
+        payload: &'a [u8],
+    ) -> Self {
+        Self { communication_channel_id, sequence_counter, payload: Some(payload) }
     }
 }
 
-impl SerializablePacket for DeviceConfigurationRequestBuilder {
+impl SerializablePacket for DeviceConfigurationRequestBuilder<'_> {
     fn bytes_len(&self) -> usize {
-        mem::size_of::<KNXnetIPHeader>() + mem::size_of::<raw::TunnelingHeader>()
+        let header_len = mem::size_of::<KNXnetIPHeader>() + mem::size_of::<raw::TunnelingHeader>();
+        let payload_len = self.payload.map_or(0, |p| p.len());
+        header_len + payload_len
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
@@ -334,6 +349,13 @@ impl SerializablePacket for DeviceConfigurationRequestBuilder {
             status_or_reserved: 0,
         };
         bv.write_obj_front(&tun_header).expect("too few bytes for connection header");
+
+        if let Some(payload) = self.payload {
+            let mut payload_buf = bv
+                .take_front(payload.len())
+                .expect("too few bytes for cEMI payload");
+            payload_buf.deref_mut().copy_from_slice(payload);
+        }
     }
 }
 

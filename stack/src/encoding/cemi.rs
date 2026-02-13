@@ -1,9 +1,11 @@
 //! Common External Message Interface (cEMI) message format
 //!
-//! cEMI is used in KNX/IP and USB interfaces to encapsulate KNX telegrams.
-//! This module provides parsing and serialization for cEMI L_Data frames.
+//! cEMI is used in KNX/IP and USB interfaces to encapsulate KNX telegrams
+//! and local management frames. This module provides parsing and serialization
+//! for both cEMI L_Data frames and cEMI Local Management frames
+//! (M_PropRead/M_PropWrite).
 //!
-//! cEMI L_Data Frame Structure:
+//! ## cEMI L_Data Frame Structure
 //! ```text
 //! Byte 0:      Message Code (0x11 = L_Data.req, 0x29 = L_Data.ind, 0x2e = L_Data.con)
 //! Byte 1:      Additional Info Length (usually 0x00)
@@ -15,8 +17,23 @@
 //! Byte 8+N:    NPDU Length
 //! Byte 9+N:    TPCI/APCI + Data
 //! ```
+//!
+//! ## cEMI Local Management Frame Structure
+//! ```text
+//! Byte 0:      Message Code (0xFC = M_PropRead.req, 0xFB = .con, 0xF6 = M_PropWrite.req, 0xF5 = .con)
+//! Bytes 1-2:   Object Type (u16, big-endian)
+//! Byte 3:      Object Instance (1-based)
+//! Byte 4:      Property ID
+//! Bytes 5-6:   Count (4 bits) | Start Index (12 bits)
+//! Bytes 7+:    Data (present for writes and read responses)
+//! ```
 
-use zerocopy::{SplitByteSlice, SplitByteSliceMut};
+use core::mem;
+
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, SplitByteSlice, SplitByteSliceMut, Unaligned,
+    big_endian::U16,
+};
 
 use crate::{
     messages::{buffers::MessageBuffer, knx::ServiceType, knxip::error::ParseError},
@@ -34,18 +51,22 @@ create_protocol_enum!(
         LDataReq, 0x11, "L_Data.req";
         LDataCon, 0x2e, "L_Data.con";
         LDataInd, 0x29, "L_Data.ind";
+        MPropReadCon, 0xFB, "M_PropRead.con";
+        MPropReadReq, 0xFC, "M_PropRead.req";
+        MPropWriteCon, 0xF5, "M_PropWrite.con";
+        MPropWriteReq, 0xF6, "M_PropWrite.req";
         _, "Unknown cEMI message code 0x{:x}";
     }
 );
 
 impl CemiMessageCode {
-    /// Convert to ServiceType
+    /// Convert to ServiceType (only meaningful for L_Data message codes).
     pub fn to_service_type(self) -> ServiceType {
         match self {
             CemiMessageCode::LDataReq => ServiceType::L_Data_Req,
             CemiMessageCode::LDataCon => ServiceType::L_Data_Con,
             CemiMessageCode::LDataInd => ServiceType::L_Data_Ind,
-            CemiMessageCode::Other(_) => ServiceType::L_Data_Ind, // Default fallback
+            _ => ServiceType::L_Data_Ind, // Default fallback for non-L_Data codes
         }
     }
 
@@ -56,6 +77,18 @@ impl CemiMessageCode {
             ServiceType::L_Data_Con => CemiMessageCode::LDataCon,
             ServiceType::L_Data_Ind => CemiMessageCode::LDataInd,
             _ => CemiMessageCode::LDataInd, // Default fallback for other types
+        }
+    }
+
+    /// Return the corresponding .con (confirmation) code for a .req code.
+    ///
+    /// For local management codes: M_PropRead.req → M_PropRead.con, etc.
+    /// Returns `None` for codes that are not request codes.
+    pub fn to_confirmation(self) -> Option<Self> {
+        match self {
+            CemiMessageCode::MPropReadReq => Some(CemiMessageCode::MPropReadCon),
+            CemiMessageCode::MPropWriteReq => Some(CemiMessageCode::MPropWriteCon),
+            _ => None,
         }
     }
 }
@@ -168,6 +201,150 @@ impl<'a> SerializablePacket for CemiLDataBuilder<'a> {
         // Write KNX frame data
         let mut data_buf = bv.take_front(self.data.len()).expect("too few bytes for data");
         data_buf.deref_mut().copy_from_slice(self.data);
+    }
+}
+
+// ============================================================================
+// CEMI LOCAL MANAGEMENT — WIRE FORMAT
+// ============================================================================
+
+/// Internal wire format types for cEMI Local Management frames.
+mod raw {
+    use super::*;
+
+    /// cEMI Local Management header (7 bytes, fixed part).
+    ///
+    /// Used by M_PropRead.req/.con and M_PropWrite.req/.con frames.
+    /// Any data bytes (write payload or read response) follow immediately
+    /// after this header.
+    #[derive(Copy, Clone, Debug, FromBytes, IntoBytes, Unaligned, KnownLayout, Immutable)]
+    #[repr(C)]
+    pub struct CemiLocalMgmtHeader {
+        pub message_code: u8,
+        pub object_type: U16,
+        pub object_instance: u8,
+        pub property_id: u8,
+        /// Upper 4 bits = element count, lower 12 bits = start index.
+        pub count_start_index: U16,
+    }
+}
+
+// ============================================================================
+// CEMI LOCAL MANAGEMENT — PARSED TYPE
+// ============================================================================
+
+/// Parsed cEMI Local Management frame (M_PropRead/M_PropWrite).
+///
+/// The `data` field contains:
+/// - For M_PropRead.req: empty (no data in the request)
+/// - For M_PropRead.con: the property value bytes (on success) or empty (on error, count=0)
+/// - For M_PropWrite.req: the bytes to write
+/// - For M_PropWrite.con: echo of written data (on success) or empty (on error)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CemiLocalMgmt<B: SplitByteSlice = &'static [u8]> {
+    pub message_code: CemiMessageCode,
+    pub object_type: u16,
+    pub object_instance: u8,
+    pub property_id: u8,
+    /// Number of elements (upper 4 bits of the count|start_index field).
+    pub count: u16,
+    /// Start index (lower 12 bits of the count|start_index field).
+    pub start_index: u16,
+    /// Trailing data bytes (write payload, read response, or empty).
+    pub data: B,
+}
+
+impl<B: SplitByteSlice> CemiLocalMgmt<B> {
+    /// Build a confirmation response for this request frame.
+    ///
+    /// Flips the message code from .req to .con and copies the addressing
+    /// fields. The `count` and `start_index` are taken from `self` (the
+    /// caller may override them for error responses where count=0).
+    pub fn response_builder<'a>(
+        &self,
+        count: u16,
+        start_index: u16,
+        data: &'a [u8],
+    ) -> CemiLocalMgmtBuilder<'a> {
+        let response_code = self.message_code.to_confirmation().unwrap_or(self.message_code);
+        CemiLocalMgmtBuilder {
+            message_code: response_code,
+            object_type: self.object_type,
+            object_instance: self.object_instance,
+            property_id: self.property_id,
+            count,
+            start_index,
+            data,
+        }
+    }
+}
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for CemiLocalMgmt<B> {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
+        let header = buffer
+            .take_obj_front::<raw::CemiLocalMgmtHeader>()
+            .ok_or(ParseError::Format)?;
+
+        let message_code =
+            CemiMessageCode::try_from(header.message_code).map_err(|_| ParseError::NotSupported)?;
+        let count_start = header.count_start_index.get();
+
+        let data = buffer.take_rest_front();
+
+        Ok(CemiLocalMgmt {
+            message_code,
+            object_type: header.object_type.get(),
+            object_instance: header.object_instance,
+            property_id: header.property_id,
+            count: count_start >> 12,
+            start_index: count_start & 0x0FFF,
+            data,
+        })
+    }
+}
+
+// ============================================================================
+// CEMI LOCAL MANAGEMENT — BUILDER
+// ============================================================================
+
+/// Builder for cEMI Local Management frames.
+///
+/// Serializes a 7-byte header followed by an optional data payload.
+pub struct CemiLocalMgmtBuilder<'a> {
+    pub message_code: CemiMessageCode,
+    pub object_type: u16,
+    pub object_instance: u8,
+    pub property_id: u8,
+    pub count: u16,
+    pub start_index: u16,
+    pub data: &'a [u8],
+}
+
+impl SerializablePacket for CemiLocalMgmtBuilder<'_> {
+    fn bytes_len(&self) -> usize {
+        mem::size_of::<raw::CemiLocalMgmtHeader>() + self.data.len()
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        let count_start = ((self.count & 0x0F) << 12) | (self.start_index & 0x0FFF);
+        let header = raw::CemiLocalMgmtHeader {
+            message_code: self.message_code.into(),
+            object_type: U16::from(self.object_type),
+            object_instance: self.object_instance,
+            property_id: self.property_id,
+            count_start_index: U16::from(count_start),
+        };
+        bv.write_obj_front(&header)
+            .expect("too few bytes for cEMI Local Management header");
+
+        if !self.data.is_empty() {
+            let mut data_buf = bv
+                .take_front(self.data.len())
+                .expect("too few bytes for cEMI Local Management data");
+            data_buf.deref_mut().copy_from_slice(self.data);
+        }
     }
 }
 
@@ -325,8 +502,11 @@ impl<B: MessageBuffer> CemiBuffer<B> {
     /// Check if this is a local device management message (M_PropRead/Write)
     pub fn is_device_management(&self) -> bool {
         matches!(
-            self.inner.get(0),
-            Some(0xFC) | Some(0xFB) | Some(0xF6) | Some(0xF5)
+            self.message_code(),
+            CemiMessageCode::MPropReadReq
+                | CemiMessageCode::MPropReadCon
+                | CemiMessageCode::MPropWriteReq
+                | CemiMessageCode::MPropWriteCon
         )
     }
 }
@@ -753,5 +933,183 @@ mod tests {
         assert_eq!(buffer[8], 0x01); // NPDU length
         assert_eq!(buffer[9], 0x00); // TPCI/APCI
         assert_eq!(buffer[10], 0x81); // Data
+    }
+
+    // ========================================================================
+    // cEMI Local Management tests
+    // ========================================================================
+
+    #[test]
+    fn test_local_mgmt_parse_prop_read_req() {
+        // M_PropRead.req: object type 0x0000, instance 1, property 0x33,
+        // count=1, start_index=1
+        let frame = [
+            0xFC, // M_PropRead.req
+            0x00, 0x00, // Object Type
+            0x01, // Object Instance
+            0x33, // Property ID
+            0x10, 0x01, // count=1 (0x1 << 12) | start_index=1
+        ];
+
+        let mut buf = &frame[..];
+        let parsed = buf.parse::<CemiLocalMgmt<_>>().unwrap();
+
+        assert_eq!(parsed.message_code, CemiMessageCode::MPropReadReq);
+        assert_eq!(parsed.object_type, 0x0000);
+        assert_eq!(parsed.object_instance, 1);
+        assert_eq!(parsed.property_id, 0x33);
+        assert_eq!(parsed.count, 1);
+        assert_eq!(parsed.start_index, 1);
+        assert!(parsed.data.is_empty());
+    }
+
+    #[test]
+    fn test_local_mgmt_parse_prop_write_req() {
+        // M_PropWrite.req with 4 bytes of write data
+        let frame = [
+            0xF6, // M_PropWrite.req
+            0x00, 0x00, // Object Type
+            0x01, // Object Instance
+            0x0F, // Property ID
+            0x10, 0x01, // count=1, start_index=1
+            0xDE, 0xAD, 0xBE, 0xEF, // Write data
+        ];
+
+        let mut buf = &frame[..];
+        let parsed = buf.parse::<CemiLocalMgmt<_>>().unwrap();
+
+        assert_eq!(parsed.message_code, CemiMessageCode::MPropWriteReq);
+        assert_eq!(parsed.property_id, 0x0F);
+        assert_eq!(parsed.count, 1);
+        assert_eq!(parsed.start_index, 1);
+        assert_eq!(parsed.data, &[0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn test_local_mgmt_builder_serialize() {
+        let builder = CemiLocalMgmtBuilder {
+            message_code: CemiMessageCode::MPropReadCon,
+            object_type: 0x0000,
+            object_instance: 1,
+            property_id: 0x33,
+            count: 1,
+            start_index: 1,
+            data: &[0x42, 0x43],
+        };
+
+        let mut buffer = [0u8; 32];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+
+        let expected = [
+            0xFB, // M_PropRead.con
+            0x00, 0x00, // Object Type
+            0x01, // Object Instance
+            0x33, // Property ID
+            0x10, 0x01, // count=1, start_index=1
+            0x42, 0x43, // Data
+        ];
+        assert_eq!(written, &expected);
+    }
+
+    #[test]
+    fn test_local_mgmt_round_trip() {
+        let original = [
+            0xF6, // M_PropWrite.req
+            0x00, 0x0B, // Object Type = 11
+            0x02, // Object Instance = 2
+            0x34, // Property ID
+            0x20, 0x05, // count=2, start_index=5
+            0xAA, 0xBB, // Write data
+        ];
+
+        // Parse
+        let mut buf = &original[..];
+        let parsed = buf.parse::<CemiLocalMgmt<_>>().unwrap();
+
+        assert_eq!(parsed.object_type, 0x000B);
+        assert_eq!(parsed.object_instance, 2);
+        assert_eq!(parsed.count, 2);
+        assert_eq!(parsed.start_index, 5);
+
+        // Serialize back
+        let builder = CemiLocalMgmtBuilder {
+            message_code: parsed.message_code,
+            object_type: parsed.object_type,
+            object_instance: parsed.object_instance,
+            property_id: parsed.property_id,
+            count: parsed.count,
+            start_index: parsed.start_index,
+            data: parsed.data,
+        };
+
+        let mut buffer = [0u8; 32];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+
+        assert_eq!(written, &original);
+    }
+
+    #[test]
+    fn test_local_mgmt_response_builder() {
+        // Parse a read request
+        let req = [
+            0xFC, // M_PropRead.req
+            0x00, 0x00, // Object Type
+            0x01, // Object Instance
+            0x33, // Property ID
+            0x10, 0x01, // count=1, start_index=1
+        ];
+
+        let mut buf = &req[..];
+        let parsed = buf.parse::<CemiLocalMgmt<_>>().unwrap();
+
+        // Build a success response
+        let response_data = [0x42];
+        let response_builder = parsed.response_builder(1, 1, &response_data);
+
+        assert_eq!(response_builder.message_code, CemiMessageCode::MPropReadCon);
+        assert_eq!(response_builder.object_type, 0x0000);
+        assert_eq!(response_builder.property_id, 0x33);
+
+        let mut buffer = [0u8; 32];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&response_builder);
+
+        let expected = [
+            0xFB, // M_PropRead.con
+            0x00, 0x00, 0x01, 0x33, // Same addressing
+            0x10, 0x01, // count=1, start_index=1
+            0x42, // Response data
+        ];
+        assert_eq!(written, &expected);
+
+        // Build an error response (count=0)
+        let error_builder = parsed.response_builder(0, 1, &[]);
+
+        let mut buffer = [0u8; 32];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&error_builder);
+
+        let expected_err = [
+            0xFB, // M_PropRead.con
+            0x00, 0x00, 0x01, 0x33,
+            0x00, 0x01, // count=0, start_index=1
+        ];
+        assert_eq!(written, &expected_err);
+    }
+
+    #[test]
+    fn test_message_code_to_confirmation() {
+        assert_eq!(
+            CemiMessageCode::MPropReadReq.to_confirmation(),
+            Some(CemiMessageCode::MPropReadCon)
+        );
+        assert_eq!(
+            CemiMessageCode::MPropWriteReq.to_confirmation(),
+            Some(CemiMessageCode::MPropWriteCon)
+        );
+        assert_eq!(CemiMessageCode::LDataReq.to_confirmation(), None);
+        assert_eq!(CemiMessageCode::MPropReadCon.to_confirmation(), None);
     }
 }

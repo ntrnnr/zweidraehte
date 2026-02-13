@@ -9,7 +9,8 @@ use core::cell::RefCell;
 use embassy_time::Instant;
 use heapless::Vec;
 
-use crate::messages::buffers::{DynBufferManager, MessageBuffer};
+use crate::encoding::cemi::{CemiLocalMgmt, CemiMessageCode};
+use crate::messages::buffers::DynBufferManager;
 use crate::messages::knxip::{
     ConnectionStatus, DeviceConfigurationAck, DeviceConfigurationAckBuilder,
     DeviceConfigurationRequest, DeviceConfigurationRequestBuilder, KNXnetIPServiceType,
@@ -20,17 +21,6 @@ use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::super::{PendingResponse, ServerError};
 use super::{AcceptedConnection, ConnectionContext, ConnectionTypeHandler, DataFrameAction};
-
-// ============================================================================
-// cEMI Local Management message codes
-// ============================================================================
-
-mod cemi_local {
-    pub const M_PROP_READ_REQ: u8 = 0xFC;
-    pub const M_PROP_READ_CON: u8 = 0xFB;
-    pub const M_PROP_WRITE_REQ: u8 = 0xF6;
-    pub const M_PROP_WRITE_CON: u8 = 0xF5;
-}
 
 // ============================================================================
 // Handler
@@ -51,43 +41,25 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         Self { property_handler }
     }
 
-    /// Parse and process a cEMI Local Management frame, returning a response frame.
-    ///
-    /// Frame format:
-    /// - Byte 0: message code (0xFC = M_PropRead.req, 0xF6 = M_PropWrite.req)
-    /// - Bytes 1-2: object type (u16 big-endian)
-    /// - Byte 3: object instance (1-based)
-    /// - Byte 4: property ID
-    /// - Bytes 5-6: count (4 bits) | start index (12 bits)
-    /// - Bytes 7+: data (for writes)
+    /// Parse and process a cEMI Local Management frame, returning serialized
+    /// response bytes ready to embed in a DeviceConfigurationRequest.
     fn process_cemi_frame(&self, payload: &[u8]) -> Result<Vec<u8, 64>, ConnectionStatus> {
-        if payload.len() < 7 {
-            debug!("cEMI Local Management frame too short: {} bytes", payload.len());
-            return Err(ConnectionStatus::DataConnectionError);
-        }
-
-        let message_code = payload[0];
-        let _object_type = u16::from_be_bytes([payload[1], payload[2]]);
-        let object_instance = payload[3];
-        let property_id = payload[4];
-        let count_start = u16::from_be_bytes([payload[5], payload[6]]);
-        let count = (count_start >> 12) as u16;
-        let start_index = count_start & 0x0FFF;
+        let mut buf = payload;
+        let frame = buf.parse::<CemiLocalMgmt<_>>().map_err(|_| {
+            debug!("Failed to parse cEMI Local Management frame ({} bytes)", payload.len());
+            ConnectionStatus::DataConnectionError
+        })?;
 
         // TODO: Proper object type → index translation. Currently uses
         // object_instance - 1 as the index, which works when each object
         // type has exactly one instance (the common case).
-        let object_idx = if object_instance > 0 { (object_instance - 1) as u16 } else { 0 };
+        let object_idx = if frame.object_instance > 0 { (frame.object_instance - 1) as u16 } else { 0 };
 
-        match message_code {
-            cemi_local::M_PROP_READ_REQ => {
-                self.handle_prop_read(payload, object_idx, property_id, start_index, count)
-            }
-            cemi_local::M_PROP_WRITE_REQ => {
-                self.handle_prop_write(payload, object_idx, property_id, start_index, count)
-            }
+        match frame.message_code {
+            CemiMessageCode::MPropReadReq => self.handle_prop_read(&frame, object_idx),
+            CemiMessageCode::MPropWriteReq => self.handle_prop_write(&frame, object_idx),
             _ => {
-                debug!("Unsupported cEMI Local Management message code: 0x{:02x}", message_code);
+                debug!("Unsupported cEMI Local Management message code: {:?}", frame.message_code);
                 Err(ConnectionStatus::DataConnectionError)
             }
         }
@@ -114,89 +86,79 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
 
     fn handle_prop_read(
         &self,
-        original: &[u8],
+        frame: &CemiLocalMgmt<&[u8]>,
         object_idx: u16,
-        property_id: u8,
-        start_index: u16,
-        count: u16,
     ) -> Result<Vec<u8, 64>, ConnectionStatus> {
-        let mut response = Vec::<u8, 64>::new();
-
-        // Response header: same structure but with M_PropRead.con message code
-        let _ = response.push(cemi_local::M_PROP_READ_CON);
-        let _ = response.extend_from_slice(&original[1..5]); // object type + instance + property ID
-
         // Read the property value into a temp buffer
         let mut data_buf = [0u8; 52]; // Leave room for the 7-byte header in the 64-byte response
         // Access level 0 = full access for ETS device management connections.
         // TODO: Revisit when secure tunneling is implemented.
-        match self.property_handler.property_value_read(
+        let response_builder = match self.property_handler.property_value_read(
             object_idx,
-            property_id,
-            start_index,
-            count,
+            frame.property_id,
+            frame.start_index,
+            frame.count,
             &mut data_buf,
             0,
         ) {
             Ok(bytes_read) => {
-                // Success: count + start index as requested
-                let _ = response.extend_from_slice(&original[5..7]);
-                let _ = response.extend_from_slice(&data_buf[..bytes_read]);
+                // Success: echo count + start_index from request, append read data
+                frame.response_builder(frame.count, frame.start_index, &data_buf[..bytes_read])
             }
             Err(_e) => {
                 // Error: count=0 signals error, keep start index
                 debug!(
                     "Property read error: obj={} pid={} start={}: {:?}",
-                    object_idx, property_id, start_index, _e
+                    object_idx, frame.property_id, frame.start_index, _e
                 );
-                let error_count_start = start_index; // count=0, keep start index
-                let _ = response.extend_from_slice(&error_count_start.to_be_bytes());
+                frame.response_builder(0, frame.start_index, &[])
             }
-        }
+        };
 
-        Ok(response)
+        // Serialize the response into a heapless Vec
+        let mut response_bytes = [0u8; 64];
+        let mut cursor = &mut response_bytes[..];
+        let (written, _) = cursor.serialize(&response_builder);
+        let len = written.len();
+        let mut result = Vec::new();
+        let _ = result.extend_from_slice(&response_bytes[..len]);
+        Ok(result)
     }
 
     fn handle_prop_write(
         &self,
-        original: &[u8],
+        frame: &CemiLocalMgmt<&[u8]>,
         object_idx: u16,
-        property_id: u8,
-        start_index: u16,
-        _count: u16,
     ) -> Result<Vec<u8, 64>, ConnectionStatus> {
-        let write_data = &original[7..];
-
-        let mut response = Vec::<u8, 64>::new();
-
-        // Response header: M_PropWrite.con message code
-        let _ = response.push(cemi_local::M_PROP_WRITE_CON);
-        let _ = response.extend_from_slice(&original[1..5]); // object type + instance + property ID
-
-        match self.property_handler.property_value_write(
+        let response_builder = match self.property_handler.property_value_write(
             object_idx,
-            property_id,
-            start_index,
-            write_data,
+            frame.property_id,
+            frame.start_index,
+            frame.data,
             0,
         ) {
             Ok(_write_response) => {
                 // Success: echo back the count + start index and the written data
-                let _ = response.extend_from_slice(&original[5..7]);
-                let _ = response.extend_from_slice(write_data);
+                frame.response_builder(frame.count, frame.start_index, frame.data)
             }
             Err(_e) => {
                 // Error: count=0 signals error
                 debug!(
                     "Property write error: obj={} pid={} start={}: {:?}",
-                    object_idx, property_id, start_index, _e
+                    object_idx, frame.property_id, frame.start_index, _e
                 );
-                let error_count_start = start_index; // count=0, keep start index
-                let _ = response.extend_from_slice(&error_count_start.to_be_bytes());
+                frame.response_builder(0, frame.start_index, &[])
             }
-        }
+        };
 
-        Ok(response)
+        // Serialize the response into a heapless Vec
+        let mut response_bytes = [0u8; 64];
+        let mut cursor = &mut response_bytes[..];
+        let (written, _) = cursor.serialize(&response_builder);
+        let len = written.len();
+        let mut result = Vec::new();
+        let _ = result.extend_from_slice(&response_bytes[..len]);
+        Ok(result)
     }
 }
 
@@ -224,7 +186,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         conn: &mut ConnectionContext,
         buffer_manager: &RefCell<DynBufferManager<'static>>,
     ) -> Result<DataFrameAction, ServerError> {
-        // Parse the DeviceConfigurationRequest header
+        // Parse the DeviceConfigurationRequest header (consumes KNXnet/IP + connection headers)
         let mut buf = &data[..];
         let request = match buf.parse::<DeviceConfigurationRequest>() {
             Ok(req) => req,
@@ -291,30 +253,17 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         });
 
         // 2. If handler returned a response, send it as a DeviceConfigurationRequest
-        //    (server → client direction)
+        //    (server → client direction) with the cEMI payload embedded.
         if let Some(cemi_response) = response_cemi {
             let send_seq = conn.send_sequence_counter;
             conn.send_sequence_counter = send_seq.wrapping_add(1);
 
-            let req_builder = DeviceConfigurationRequestBuilder::new(
-                conn.channel_id, send_seq,
+            let req_builder = DeviceConfigurationRequestBuilder::with_payload(
+                conn.channel_id, send_seq, &cemi_response,
             );
 
             let mut resp_buffer = buffer_manager.borrow().alloc().await;
             resp_buffer.serialize(&req_builder);
-            let header_len = resp_buffer.len();
-            let total_len = header_len + cemi_response.len();
-
-            // Append cEMI payload after the header
-            let buf = resp_buffer.as_mut();
-            buf[header_len..total_len].copy_from_slice(&cemi_response);
-
-            // Patch total_length in the KNXnet/IP header (bytes 4-5)
-            let total_bytes = (total_len as u16).to_be_bytes();
-            buf[4] = total_bytes[0];
-            buf[5] = total_bytes[1];
-
-            resp_buffer.set_len(total_len);
 
             let _ = responses.push(PendingResponse {
                 buffer: resp_buffer,
