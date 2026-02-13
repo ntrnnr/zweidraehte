@@ -14,7 +14,7 @@ use crate::messages::knxip::{
     ConnectionStatus, DeviceConfigurationAck, DeviceConfigurationAckBuilder,
     DeviceConfigurationRequest, DeviceConfigurationRequestBuilder, KNXnetIPServiceType,
 };
-use crate::messages::knxip::substructs::ConnectionType;
+use crate::messages::knxip::substructs::{CRD, CRI, DeviceManagementCRD};
 use crate::objects::interface::PropertyServiceHandler;
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
@@ -204,16 +204,13 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
     fn accept_connection(
         &mut self,
         _channel_id: u8,
-        _cri_data: &[u8],
+        _cri: &CRI,
     ) -> Result<AcceptedConnection, ConnectionStatus> {
         // Device Management CRI has no additional fields beyond the header.
         // Accept unconditionally — the connection manager enforces max connections.
-        //
-        // CRD is just the 2-byte header: struct_len=0x02, struct_type=0x03
-        let mut crd_bytes = Vec::new();
-        let _ = crd_bytes.push(0x02); // struct_len
-        let _ = crd_bytes.push(ConnectionType::DeviceManagement.into()); // struct_type
-        Ok(AcceptedConnection { crd_bytes })
+        Ok(AcceptedConnection {
+            crd: CRD::DeviceManagement(DeviceManagementCRD),
+        })
     }
 
     fn close_connection(&mut self, _channel_id: u8) {

@@ -333,3 +333,169 @@ impl SerializablePacket for DeviceManagementCRDBuilder {
         bv.write_obj_front(&header).expect("too few bytes for CRD header");
     }
 }
+
+// ============================================================================
+// CRI DISPATCH ENUM
+// ============================================================================
+
+/// Connection Request Information — dispatched by connection type.
+///
+/// Follows the same enum-dispatch pattern as [`HPAI`](super::HPAI): the parser
+/// peeks at the connection type in the CRI header, then delegates to the
+/// appropriate typed parser.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CRI {
+    /// Device Management (0x03)
+    DeviceManagement(DeviceManagementCRI),
+    /// Tunneling (0x04)
+    Tunnel(TunnelingCRI),
+    /// Unrecognized connection type — header was consumed, body bytes skipped.
+    Unknown(ConnectionType),
+}
+
+impl CRI {
+    /// The connection type this CRI represents.
+    pub fn connection_type(&self) -> ConnectionType {
+        match self {
+            CRI::DeviceManagement(_) => ConnectionType::DeviceManagement,
+            CRI::Tunnel(_) => ConnectionType::Tunnel,
+            CRI::Unknown(ct) => *ct,
+        }
+    }
+}
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for CRI {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> ParseResult<Self> {
+        // Peek at the CRI header to determine connection type, then delegate
+        // to the typed parser (which re-reads and consumes the header).
+        let header = buffer
+            .peek_obj_front::<raw::Header>()
+            .ok_or_else(debug_err_fn!(ParseError::Format, "too few bytes for CRI header"))?;
+
+        let connection_type: ConnectionType = header.struct_type.into();
+        let struct_len = header.struct_len as usize;
+
+        match connection_type {
+            ConnectionType::DeviceManagement => {
+                Ok(CRI::DeviceManagement(DeviceManagementCRI::parse(buffer, ())?))
+            }
+            ConnectionType::Tunnel => {
+                Ok(CRI::Tunnel(TunnelingCRI::parse(buffer, ())?))
+            }
+            other => {
+                // Consume the entire CRI structure (header + body)
+                let _ = buffer
+                    .take_front(struct_len)
+                    .ok_or_else(debug_err_fn!(
+                        ParseError::Format,
+                        "too few bytes for unknown CRI (struct_len={})", struct_len
+                    ))?;
+                Ok(CRI::Unknown(other))
+            }
+        }
+    }
+}
+
+impl SerializablePacket for CRI {
+    fn bytes_len(&self) -> usize {
+        match self {
+            CRI::DeviceManagement(_) => DeviceManagementCRIBuilder.bytes_len(),
+            CRI::Tunnel(cri) => TunnelingCRIBuilder {
+                knx_layer: cri.knx_layer,
+                individual_address: cri.individual_address,
+            }.bytes_len(),
+            CRI::Unknown(_) => {
+                // Unknown CRI cannot be serialized meaningfully — just the header
+                mem::size_of::<raw::Header>()
+            }
+        }
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        match self {
+            CRI::DeviceManagement(_) => DeviceManagementCRIBuilder.serialize(bv),
+            CRI::Tunnel(cri) => {
+                let builder = TunnelingCRIBuilder {
+                    knx_layer: cri.knx_layer,
+                    individual_address: cri.individual_address,
+                };
+                builder.serialize(bv);
+            }
+            CRI::Unknown(ct) => {
+                let header = raw::Header {
+                    struct_len: mem::size_of::<raw::Header>() as u8,
+                    struct_type: (*ct).into(),
+                };
+                bv.write_obj_front(&header).expect("too few bytes for CRI header");
+            }
+        }
+    }
+}
+
+// ============================================================================
+// CRD DISPATCH ENUM
+// ============================================================================
+
+/// Connection Response Data — dispatched by connection type.
+///
+/// Same enum-dispatch pattern as [`CRI`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CRD {
+    /// Device Management (0x03)
+    DeviceManagement(DeviceManagementCRD),
+    /// Tunneling (0x04)
+    Tunnel(TunnelingCRD),
+}
+
+impl CRD {
+    /// The connection type this CRD represents.
+    pub fn connection_type(&self) -> ConnectionType {
+        match self {
+            CRD::DeviceManagement(_) => ConnectionType::DeviceManagement,
+            CRD::Tunnel(_) => ConnectionType::Tunnel,
+        }
+    }
+}
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for CRD {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> ParseResult<Self> {
+        let header = buffer
+            .peek_obj_front::<raw::Header>()
+            .ok_or_else(debug_err_fn!(ParseError::Format, "too few bytes for CRD header"))?;
+
+        let connection_type: ConnectionType = header.struct_type.into();
+
+        match connection_type {
+            ConnectionType::DeviceManagement => {
+                Ok(CRD::DeviceManagement(DeviceManagementCRD::parse(buffer, ())?))
+            }
+            ConnectionType::Tunnel => {
+                Ok(CRD::Tunnel(TunnelingCRD::parse(buffer, ())?))
+            }
+            _ => {
+                debug!("unsupported CRD connection type: {:?}", connection_type);
+                Err(ParseError::NotSupported)
+            }
+        }
+    }
+}
+
+impl SerializablePacket for CRD {
+    fn bytes_len(&self) -> usize {
+        match self {
+            CRD::DeviceManagement(_) => DeviceManagementCRDBuilder.bytes_len(),
+            CRD::Tunnel(crd) => TunnelingCRDBuilder::new(crd.individual_address).bytes_len(),
+        }
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        match self {
+            CRD::DeviceManagement(_) => DeviceManagementCRDBuilder.serialize(bv),
+            CRD::Tunnel(crd) => TunnelingCRDBuilder::new(crd.individual_address).serialize(bv),
+        }
+    }
+}

@@ -119,11 +119,13 @@ pub fn peek_service_type(bytes: &[u8]) -> ParseResult<KNXnetIPServiceType> {
     KNXnetIPServiceType::try_from(service_type).map_err(|_| ParseError::NotSupported)
 }
 
+mod connection;
 mod discovery;
 mod routing;
 mod tunneling;
 
 //pub use crate::messages::knxip::substructs::*;
+pub use connection::*;
 pub use discovery::*;
 pub use routing::*;
 pub use tunneling::*;
