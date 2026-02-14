@@ -937,6 +937,39 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DescriptionInformationBlock<B>
     }
 }
 
+// Records implementation for parsing a sequence of heterogeneous DIBs.
+//
+// Each DIB is self-describing via its 2-byte header (length + type code),
+// so we delegate to `DescriptionInformationBlock::parse()` which consumes
+// exactly one DIB's worth of bytes from the buffer.
+#[derive(Debug)]
+pub struct DibRecordsImpl;
+
+impl RecordsImplLayout for DibRecordsImpl {
+    type Context = ();
+    type Error = ParseError;
+}
+
+impl RecordsImpl for DibRecordsImpl {
+    type Record<'a> = DescriptionInformationBlock<&'a [u8]>;
+
+    fn parse_with_context<'a, BV: BufferView<&'a [u8]>>(
+        data: &mut BV,
+        _context: &mut (),
+    ) -> RecordParseResult<Self::Record<'a>, Self::Error> {
+        if data.is_empty() {
+            return Ok(ParsedRecord::Done);
+        }
+        DescriptionInformationBlock::parse(data, ()).map(ParsedRecord::Parsed)
+    }
+}
+
+/// A parsed sequence of Description Information Blocks (DIBs).
+///
+/// Zero-copy: holds the raw byte slice and re-parses on iteration.
+/// Provides an `ExactSizeIterator` via `.iter()`.
+pub type DibRecords<B> = Records<B, DibRecordsImpl>;
+
 /// Builder enum for serializing DIBs
 #[derive(Debug)]
 pub enum DescriptionInformationBlockBuilder<'a> {
@@ -975,6 +1008,17 @@ impl<'a> SerializablePacket for DescriptionInformationBlockBuilder<'a> {
             Self::ManufacturerData(m) => m.serialize(bv),
             Self::TunnelingInfo(t) => t.serialize(bv),
         }
+    }
+}
+
+impl<'a> RecordBuilder for DescriptionInformationBlockBuilder<'a> {
+    fn serialized_len(&self) -> usize {
+        self.bytes_len()
+    }
+
+    fn serialize_into(&self, data: &mut [u8]) {
+        let mut data = &mut &mut data[..];
+        self.serialize(&mut data);
     }
 }
 

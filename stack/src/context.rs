@@ -68,3 +68,23 @@ pub trait ApplicationLayerContext {
     fn application_layer_sender(&self) -> DynamicSender<'_, LayerOp<Buffer<'static>>>;
 }
 
+/// Provides IP diagnostics data for remote configuration responses.
+///
+/// The remote diagnostic server (KNX 3/8/7) must include IP_CONFIG,
+/// IP_CUR_CONFIG, and KNX_ADDRESSES DIBs in its responses. This trait
+/// abstracts the data source so the server doesn't depend on
+/// `IpStackState` directly.
+///
+/// Only relevant for KNX/IP devices. Implementations should query the
+/// device state and platform for current network configuration.
+pub trait IpDiagnosticsContext {
+    /// Build an [`IpConfig`] DIB from configured (ETS-programmed) values.
+    fn ip_config(&self) -> crate::messages::knxip::substructs::IpConfig;
+
+    /// Build an [`IpCurrentConfig`] DIB from the platform's current state.
+    fn ip_current_config(&self) -> crate::messages::knxip::substructs::IpCurrentConfig;
+
+    /// Get the device's individual address (for the KNX_ADDRESSES DIB).
+    fn individual_address(&self) -> crate::address::IndividualAddress;
+}
+

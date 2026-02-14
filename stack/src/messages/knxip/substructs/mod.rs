@@ -5,13 +5,16 @@
 //! - HPAIs (Host Protocol Address Information)
 //! - CRIs/CRDs (Connection Request/Response Information)
 //! - SRPs (Search Request Parameters)
+//! - Selectors (Device selectors for remote config and extended search)
 
 mod cr;
 mod dib;
 mod hpai;
+mod selector;
 mod srp;
 
 pub use cr::*;
 pub use dib::*;
 pub use hpai::*;
+pub use selector::*;
 pub use srp::*;

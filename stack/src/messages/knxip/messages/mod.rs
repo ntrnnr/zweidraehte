@@ -121,11 +121,13 @@ pub fn peek_service_type(bytes: &[u8]) -> ParseResult<KNXnetIPServiceType> {
 
 mod connection;
 mod discovery;
+mod remote_config;
 mod routing;
 mod tunneling;
 
 //pub use crate::messages::knxip::substructs::*;
 pub use connection::*;
 pub use discovery::*;
+pub use remote_config::*;
 pub use routing::*;
 pub use tunneling::*;

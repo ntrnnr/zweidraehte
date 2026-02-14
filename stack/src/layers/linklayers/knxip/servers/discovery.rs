@@ -11,29 +11,13 @@ use crate::{
     util::packets::ParseBuffer,
 };
 
-use super::{KnxNetIpServer, PendingResponse, ServerContext, ServerError};
-
-/// Resolve an HPAI to a destination address, using the packet source when
-/// the HPAI address is unspecified (`0.0.0.0`). The HPAI port is always
-/// used — only the IP address is substituted.
-///
-/// Per KNX spec 3/8/2 §8.6.3.3: when a client sends a control HPAI with
-/// IP address 0.0.0.0, the server shall use the IP source address of the
-/// received request packet.
-fn resolve_hpai(hpai: &HPAI, packet_source: SocketAddrV4) -> SocketAddrV4 {
-    let addr = hpai.address();
-    if addr.is_unspecified() {
-        SocketAddrV4::new(*packet_source.ip(), hpai.port())
-    } else {
-        SocketAddrV4::new(addr, hpai.port())
-    }
-}
+use super::{KnxNetIpServer, PendingResponse, ServerContext, ServerError, resolve_hpai};
 
 // FIXME: Strictly speaking, we should only have one server that does discovery on 224.0.23.12:3671 and
 //        then multiple servers that handle the control endpoints of other service containers
 
 /// Maximum number of supported service families a discovery server can advertise
-const MAX_SUPPORTED_SERVICES: usize = 4;
+const MAX_SUPPORTED_SERVICES: usize = 5;
 
 #[derive(Debug)]
 pub struct DiscoveryServer {

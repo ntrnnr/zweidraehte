@@ -202,7 +202,8 @@ async fn main(spawner: Spawner) {
     let link_layer_builder = KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new(INTERFACE_NAME, interface_addr)
         .enable_discovery_server(control_endpoint)
         .enable_routing_server()
-        .enable_device_management();
+        .enable_device_management()
+        .enable_remote_config_server();
 
     // Create stack resources and initialize the stack
     static RESOURCES: StaticCell<

@@ -1,6 +1,6 @@
 pub mod connection_manager;
 pub mod discovery;
-// pub mod remote_config;
+pub mod remote_config;
 pub mod routing;
 
 pub use connection_manager::{
@@ -8,7 +8,7 @@ pub use connection_manager::{
     ConnectionTypeHandlerEnum, DeviceMgmtConnectionHandler,
 };
 pub use discovery::DiscoveryServer;
-// pub use remote_config::RemoteConfigurationServer;
+pub use remote_config::RemoteConfigurationServer;
 pub use routing::RoutingServer;
 
 use core::net::SocketAddrV4;
@@ -18,13 +18,32 @@ use crate::messages::{buffers::Buffer, knx::KnxMessageBuffer, knxip::KNXnetIPSer
 
 use super::{PendingResponse, ServerContext, ServerError};
 
+/// Resolve an HPAI to a destination address, using the packet source when
+/// the HPAI address is unspecified (`0.0.0.0`). The HPAI port is always
+/// used — only the IP address is substituted.
+///
+/// Per KNX spec 3/8/2 §8.6.3.3: when a client sends a control HPAI with
+/// IP address 0.0.0.0, the server shall use the IP source address of the
+/// received request packet.
+pub(super) fn resolve_hpai(
+    hpai: &crate::messages::knxip::substructs::HPAI,
+    packet_source: SocketAddrV4,
+) -> SocketAddrV4 {
+    let addr = hpai.address();
+    if addr.is_unspecified() {
+        SocketAddrV4::new(*packet_source.ip(), hpai.port())
+    } else {
+        SocketAddrV4::new(addr, hpai.port())
+    }
+}
+
 /// Enum wrapping all possible KNX/IP server types
 /// This allows us to store heterogeneous servers without using trait objects
 #[derive(Debug)]
 pub enum ServerHandler {
     Discovery(DiscoveryServer),
     Routing(RoutingServer),
-    // RemoteConfiguration(RemoteConfigurationServer),
+    RemoteConfiguration(RemoteConfigurationServer),
 }
 
 impl ServerHandler {
@@ -39,7 +58,7 @@ impl ServerHandler {
         match self {
             ServerHandler::Discovery(s) => s.on_indication(service_type, data, source, context).await,
             ServerHandler::Routing(s) => s.on_indication(service_type, data, source, context).await,
-            // ServerHandler::RemoteConfiguration(s) => s.on_indication(service_type, data, source, context).await,
+            ServerHandler::RemoteConfiguration(s) => s.on_indication(service_type, data, source, context).await,
         }
     }
 
@@ -52,7 +71,7 @@ impl ServerHandler {
         match self {
             ServerHandler::Discovery(s) => s.on_request(message, context).await,
             ServerHandler::Routing(s) => s.on_request(message, context).await,
-            // ServerHandler::RemoteConfiguration(s) => s.on_request(message, context).await,
+            ServerHandler::RemoteConfiguration(s) => s.on_request(message, context).await,
         }
     }
 
@@ -61,7 +80,7 @@ impl ServerHandler {
         match self {
             ServerHandler::Discovery(s) => s.supports_requests(),
             ServerHandler::Routing(s) => s.supports_requests(),
-            // ServerHandler::RemoteConfiguration(s) => s.supports_requests(),
+            ServerHandler::RemoteConfiguration(s) => s.supports_requests(),
         }
     }
 }
@@ -78,11 +97,11 @@ impl From<RoutingServer> for ServerHandler {
     }
 }
 
-// impl From<RemoteConfigurationServer> for ServerHandler {
-//     fn from(server: RemoteConfigurationServer) -> Self {
-//         ServerHandler::RemoteConfiguration(server)
-//     }
-// }
+impl From<RemoteConfigurationServer> for ServerHandler {
+    fn from(server: RemoteConfigurationServer) -> Self {
+        ServerHandler::RemoteConfiguration(server)
+    }
+}
 
 /// Maximum number of service types per server instance
 const MAX_SERVICE_TYPES: usize = 4;

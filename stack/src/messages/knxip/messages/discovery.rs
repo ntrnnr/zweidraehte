@@ -4,7 +4,10 @@ use core::mem;
 
 use zerocopy::{SplitByteSlice, SplitByteSliceMut, big_endian::U16};
 
-use crate::{messages::knxip::error::*, util::packets::*};
+use crate::{
+    messages::knxip::error::*,
+    util::packets::{records::RecordSequenceBuilder, *},
+};
 
 use super::{super::substructs::*, KNXnetIPServiceType, KNXnetIPVersion, raw};
 
@@ -266,17 +269,7 @@ impl<'a> SerializablePacket for SearchResponseBuilder<'a> {
 #[derive(Debug)]
 pub struct SearchResponseExtended<B: SplitByteSlice = &'static [u8]> {
     pub control_endpoint: HPAI,
-    pub description_information_blocks: heapless::Vec<DescriptionInformationBlock<B>, 16>,
-}
-
-impl<B: SplitByteSlice> SearchResponseExtended<B> {
-    /// Create a new SEARCH_RESPONSE_EXTENDED with the given control endpoint and DIBs
-    pub fn new(
-        control_endpoint: HPAI,
-        description_information_blocks: heapless::Vec<DescriptionInformationBlock<B>, 16>,
-    ) -> Self {
-        Self { control_endpoint, description_information_blocks }
-    }
+    pub description_information_blocks: DibRecords<B>,
 }
 
 impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchResponseExtended<B> {
@@ -296,12 +289,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchResponseExtended<B> {
         // Parse control endpoint
         let control_endpoint = HPAI::parse(buffer, ())?;
 
-        // Parse all DIBs until buffer is empty
-        let mut description_information_blocks = heapless::Vec::new();
-        while !buffer.is_empty() {
-            let dib = DescriptionInformationBlock::parse(buffer, ())?;
-            description_information_blocks.push(dib).map_err(|_| ParseError::Format)?;
-        }
+        let description_information_blocks = DibRecords::parse(buffer.take_rest_front())?;
 
         Ok(SearchResponseExtended { control_endpoint, description_information_blocks })
     }
@@ -324,8 +312,9 @@ impl<'a> SearchResponseExtendedBuilder<'a> {
 
 impl<'a> SerializablePacket for SearchResponseExtendedBuilder<'a> {
     fn bytes_len(&self) -> usize {
-        let dibs_len: usize = self.description_information_blocks.iter().map(|dib| dib.bytes_len()).sum();
-        mem::size_of::<raw::KNXnetIPHeader>() + self.control_endpoint.bytes_len() + dibs_len
+        let dibs: RecordSequenceBuilder<DescriptionInformationBlockBuilder, _> =
+            RecordSequenceBuilder::new(self.description_information_blocks.iter());
+        mem::size_of::<raw::KNXnetIPHeader>() + self.control_endpoint.bytes_len() + dibs.bytes_len()
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
@@ -339,9 +328,9 @@ impl<'a> SerializablePacket for SearchResponseExtendedBuilder<'a> {
 
         self.control_endpoint.serialize(bv);
 
-        for dib in self.description_information_blocks {
-            dib.serialize(bv);
-        }
+        let dibs: RecordSequenceBuilder<DescriptionInformationBlockBuilder, _> =
+            RecordSequenceBuilder::new(self.description_information_blocks.iter());
+        dibs.serialize(bv);
     }
 }
 
@@ -793,10 +782,12 @@ mod tests {
         // Verify
         assert_eq!(parsed.control_endpoint.address(), control_endpoint.address());
         assert_eq!(parsed.control_endpoint.port(), control_endpoint.port());
-        assert_eq!(parsed.description_information_blocks.len(), 3);
+
+        let dibs: Vec<_> = parsed.description_information_blocks.iter().collect();
+        assert_eq!(dibs.len(), 3);
 
         // Check first DIB (DeviceInformation)
-        match &parsed.description_information_blocks[0] {
+        match &dibs[0] {
             DescriptionInformationBlock::DeviceInformation(info) => {
                 assert_eq!(info.individual_address, device_hardware.individual_address);
                 assert_eq!(info.medium, device_hardware.medium);
@@ -805,7 +796,7 @@ mod tests {
         }
 
         // Check second DIB (SupportedServiceFamilies)
-        match &parsed.description_information_blocks[1] {
+        match &dibs[1] {
             DescriptionInformationBlock::SupportedServiceFamilies(families) => {
                 assert_eq!(families.iter().count(), 3);
             }
@@ -813,7 +804,7 @@ mod tests {
         }
 
         // Check third DIB (IpConfig)
-        match &parsed.description_information_blocks[2] {
+        match &dibs[2] {
             DescriptionInformationBlock::IpConfig(config) => {
                 assert_eq!(config.ip_address, ip_config.ip_address);
                 assert_eq!(config.subnet_mask, ip_config.subnet_mask);

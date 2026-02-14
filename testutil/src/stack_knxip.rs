@@ -744,7 +744,8 @@ async fn main(spawner: Spawner) {
     let link_layer_builder = KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new("knxdevbridgeif", interface_addr)
         .enable_discovery_server(control_endpoint)
         .enable_routing_server()
-        .enable_device_management();
+        .enable_device_management()
+        .enable_remote_config_server();
 
     println!("KNX/IP Configuration:");
     println!("  - Interface: knxdevbridgeif");

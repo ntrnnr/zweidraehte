@@ -5,7 +5,10 @@ use core::cell::{Cell, RefCell};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Channel, DynamicSender};
 
-use zweidraehte::context::{ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, PropertyServiceContext};
+use zweidraehte::context::{
+    ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpDiagnosticsContext,
+    PropertyServiceContext,
+};
 use zweidraehte::layers::LayerOp;
 use zweidraehte::messages::buffers::{Buffer, DynBufferManager};
 use zweidraehte::messages::knxip::substructs::DeviceInformation;
@@ -101,6 +104,62 @@ impl DeviceInfoContext for &MockContext {
 impl DeviceInfoContext for &mut MockContext {
     fn device_information(&self) -> DeviceInformation {
         self.device_info.get().expect("MockContext: device_info not set")
+    }
+}
+
+impl IpDiagnosticsContext for &MockContext {
+    fn ip_config(&self) -> zweidraehte::messages::knxip::substructs::IpConfig {
+        use core::net::Ipv4Addr;
+        zweidraehte::messages::knxip::substructs::IpConfig {
+            ip_address: Ipv4Addr::UNSPECIFIED,
+            subnet_mask: Ipv4Addr::UNSPECIFIED,
+            default_gateway: Ipv4Addr::UNSPECIFIED,
+            ip_capabilities: 0,
+            ip_assignment_method: 0,
+        }
+    }
+
+    fn ip_current_config(&self) -> zweidraehte::messages::knxip::substructs::IpCurrentConfig {
+        use core::net::Ipv4Addr;
+        zweidraehte::messages::knxip::substructs::IpCurrentConfig {
+            ip_address: Ipv4Addr::UNSPECIFIED,
+            subnet_mask: Ipv4Addr::UNSPECIFIED,
+            default_gateway: Ipv4Addr::UNSPECIFIED,
+            dhcp_server: Ipv4Addr::UNSPECIFIED,
+            ip_assignment_method: 0,
+        }
+    }
+
+    fn individual_address(&self) -> zweidraehte::address::IndividualAddress {
+        zweidraehte::address::IndividualAddress::new(0, 0, 0)
+    }
+}
+
+impl IpDiagnosticsContext for &mut MockContext {
+    fn ip_config(&self) -> zweidraehte::messages::knxip::substructs::IpConfig {
+        use core::net::Ipv4Addr;
+        zweidraehte::messages::knxip::substructs::IpConfig {
+            ip_address: Ipv4Addr::UNSPECIFIED,
+            subnet_mask: Ipv4Addr::UNSPECIFIED,
+            default_gateway: Ipv4Addr::UNSPECIFIED,
+            ip_capabilities: 0,
+            ip_assignment_method: 0,
+        }
+    }
+
+    fn ip_current_config(&self) -> zweidraehte::messages::knxip::substructs::IpCurrentConfig {
+        use core::net::Ipv4Addr;
+        zweidraehte::messages::knxip::substructs::IpCurrentConfig {
+            ip_address: Ipv4Addr::UNSPECIFIED,
+            subnet_mask: Ipv4Addr::UNSPECIFIED,
+            default_gateway: Ipv4Addr::UNSPECIFIED,
+            dhcp_server: Ipv4Addr::UNSPECIFIED,
+            ip_assignment_method: 0,
+        }
+    }
+
+    fn individual_address(&self) -> zweidraehte::address::IndividualAddress {
+        zweidraehte::address::IndividualAddress::new(0, 0, 0)
     }
 }
 

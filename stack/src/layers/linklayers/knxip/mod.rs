@@ -27,7 +27,7 @@ use crate::{
 
 pub mod servers;
 
-use crate::messages::knxip::substructs::DeviceInformation;
+use crate::messages::knxip::substructs::{DeviceInformation, IpConfig, IpCurrentConfig};
 
 /// Trait object interface for building [`DeviceInformation`] on demand.
 ///
@@ -47,6 +47,38 @@ pub trait DeviceInfoProvider {
 impl<T: crate::context::DeviceInfoContext> DeviceInfoProvider for T {
     fn device_information(&self) -> DeviceInformation {
         crate::context::DeviceInfoContext::device_information(self)
+    }
+}
+
+/// Trait object interface for querying IP diagnostics data.
+///
+/// Used by the remote diagnostic server (KNX 3/8/7) to build response
+/// DIBs (IP_CONFIG, IP_CUR_CONFIG, KNX_ADDRESSES) on demand from
+/// current device state.
+pub trait IpDiagnosticsProvider {
+    /// Build an [`IpConfig`] DIB from configured values.
+    fn ip_config(&self) -> IpConfig;
+
+    /// Build an [`IpCurrentConfig`] DIB from current platform state.
+    fn ip_current_config(&self) -> IpCurrentConfig;
+
+    /// Get the device's individual address (for KNX_ADDRESSES DIB).
+    fn individual_address(&self) -> crate::address::IndividualAddress;
+}
+
+/// Blanket impl: any context implementing [`IpDiagnosticsContext`]
+/// satisfies [`IpDiagnosticsProvider`].
+impl<T: crate::context::IpDiagnosticsContext> IpDiagnosticsProvider for T {
+    fn ip_config(&self) -> IpConfig {
+        crate::context::IpDiagnosticsContext::ip_config(self)
+    }
+
+    fn ip_current_config(&self) -> IpCurrentConfig {
+        crate::context::IpDiagnosticsContext::ip_current_config(self)
+    }
+
+    fn individual_address(&self) -> crate::address::IndividualAddress {
+        crate::context::IpDiagnosticsContext::individual_address(self)
     }
 }
 
@@ -218,8 +250,9 @@ pub struct PendingResponse {
 /// Context provided to servers for accessing stack resources.
 ///
 /// Constructed fresh on every server dispatch from [`KnxNetIp`]'s fields.
-/// Includes an optional [`DeviceInfoProvider`] so servers like the
-/// discovery server can build [`DeviceInformation`] on demand.
+/// Includes a [`DeviceInfoProvider`] so servers like the discovery server
+/// can build [`DeviceInformation`] on demand, and an optional
+/// [`IpDiagnosticsProvider`] for the remote config server's DIBs.
 pub struct ServerContext<'a> {
     /// Buffer manager for allocating message buffers
     buffer_manager: &'a RefCell<DynBufferManager<'static>>,
@@ -229,6 +262,9 @@ pub struct ServerContext<'a> {
     max_apdu_length: u16,
     /// Device info provider for building `DeviceInformation` on demand.
     device_info: &'a dyn DeviceInfoProvider,
+    /// IP diagnostics provider for remote config responses.
+    /// Present when remote config server is enabled.
+    ip_diagnostics: Option<&'a dyn IpDiagnosticsProvider>,
 }
 
 impl<'a> ServerContext<'a> {
@@ -238,8 +274,9 @@ impl<'a> ServerContext<'a> {
         network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         max_apdu_length: u16,
         device_info: &'a dyn DeviceInfoProvider,
+        ip_diagnostics: Option<&'a dyn IpDiagnosticsProvider>,
     ) -> Self {
-        Self { buffer_manager, network_layer_tx, max_apdu_length, device_info }
+        Self { buffer_manager, network_layer_tx, max_apdu_length, device_info, ip_diagnostics }
     }
 
     /// Get the maximum APDU length this device can handle
@@ -252,6 +289,13 @@ impl<'a> ServerContext<'a> {
     /// [`DeviceInformation`] reflecting the current device state.
     pub fn device_info(&self) -> &dyn DeviceInfoProvider {
         self.device_info
+    }
+
+    /// Get the IP diagnostics provider, if available.
+    ///
+    /// Returns `None` if the remote config server is not enabled.
+    pub fn ip_diagnostics(&self) -> Option<&dyn IpDiagnosticsProvider> {
+        self.ip_diagnostics
     }
 
     /// Send an indication to the network layer (L_Data.ind)
@@ -341,7 +385,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpResources<T, MAX_SOCKETS>
 }
 
 /// Maximum number of connectionless servers (discovery + routing)
-const MAX_SERVERS: usize = 2;
+const MAX_SERVERS: usize = 3;
 
 /// Builder configuration for the discovery server
 struct DiscoveryConfig {
@@ -372,6 +416,7 @@ pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize> {
     discovery: Option<DiscoveryConfig>,
     enable_routing: bool,
     enable_device_management: bool,
+    enable_remote_config: bool,
     _transport: core::marker::PhantomData<T>,
 }
 
@@ -392,6 +437,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
             discovery: None,
             enable_routing: false,
             enable_device_management: false,
+            enable_remote_config: false,
             _transport: core::marker::PhantomData,
         }
     }
@@ -437,6 +483,19 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         self
     }
 
+    /// Enable the Remote Diagnostic and Configuration server (KNX 3/8/7).
+    ///
+    /// Handles connectionless remote diagnostics on multicast/broadcast:
+    /// `RemoteDiagnosticRequest` (0x0740), `RemoteBasicConfigurationRequest`
+    /// (0x0742), and `RemoteResetRequest` (0x0743).
+    ///
+    /// All three services are mandatory for KNX/IP certification (§6.2).
+    /// The server listens on the KNX multicast address (`224.0.23.12:3671`).
+    pub fn enable_remote_config_server(mut self) -> Self {
+        self.enable_remote_config = true;
+        self
+    }
+
     /// Build the KnxNetIp link layer.
     ///
     /// This method:
@@ -460,6 +519,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         max_apdu_length: u16,
         property_handler: &'res dyn crate::objects::interface::PropertyServiceHandler,
         device_info_provider: &'res dyn DeviceInfoProvider,
+        ip_diagnostics_provider: Option<&'res dyn IpDiagnosticsProvider>,
         al_sender: DynamicSender<'res, LayerOp<Buffer<'static>>>,
     ) -> KnxNetIp<'res, T, MAX_SOCKETS> {
         // Initialize response channel
@@ -469,7 +529,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         // Auto-derive supported services from enabled features
         // ====================================================================
 
-        let mut supported_services = Vec::<substructs::SupportedService, 4>::new();
+        let mut supported_services = Vec::<substructs::SupportedService, 5>::new();
         let _ = supported_services
             .push(substructs::SupportedService { family: substructs::ServiceFamily::Core, version: 1 });
         if self.enable_device_management {
@@ -479,6 +539,12 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         if self.enable_routing {
             let _ = supported_services
                 .push(substructs::SupportedService { family: substructs::ServiceFamily::Routing, version: 1 });
+        }
+        if self.enable_remote_config {
+            let _ = supported_services.push(substructs::SupportedService {
+                family: substructs::ServiceFamily::RemoteConfigAndDiag,
+                version: 1,
+            });
         }
 
         // ====================================================================
@@ -522,6 +588,27 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
             let _ = service_types.push(KNXnetIPServiceType::RoutingLostMessage);
             let _ = service_types.push(KNXnetIPServiceType::RoutingSystemBroadcast);
 
+            let mut endpoints = Vec::new();
+            let _ = endpoints.push(EndpointType::new_udp(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));
+
+            let _ = server_instances.push(servers::ServerInstance {
+                service_types,
+                socket_indices: Vec::new(),
+                handler: server.into(),
+            });
+            let _ = server_endpoints.push((server_idx, endpoints));
+            server_idx += 1;
+        }
+
+        if self.enable_remote_config {
+            let server = servers::RemoteConfigurationServer::new();
+
+            let mut service_types = Vec::new();
+            let _ = service_types.push(KNXnetIPServiceType::RemoteDiagnosticRequest);
+            let _ = service_types.push(KNXnetIPServiceType::RemoteBasicConfigurationRequest);
+            let _ = service_types.push(KNXnetIPServiceType::RemoteResetRequest);
+
+            // Remote config listens on multicast (same as discovery/routing)
             let mut endpoints = Vec::new();
             let _ = endpoints.push(EndpointType::new_udp(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));
 
@@ -663,6 +750,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
             max_apdu_length,
             connection_manager,
             device_info_provider,
+            ip_diagnostics_provider,
         }
     }
 }
@@ -684,6 +772,7 @@ where
     CTX: crate::context::BufferManagerContext
         + crate::context::PropertyServiceContext
         + crate::context::DeviceInfoContext
+        + crate::context::IpDiagnosticsContext
         + crate::context::ApplicationLayerContext,
 {
     fn build_and_run<'a>(
@@ -693,9 +782,15 @@ where
         network_layer: DynamicSender<'a, LayerOp<crate::messages::buffers::Buffer<'static>>>,
         inbox: impl Inbox<LayerOp<crate::messages::buffers::Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
-        // Build the link layer instance. The blanket impl
+        // Build the link layer instance. The blanket impls
         //   `impl<T: DeviceInfoContext> DeviceInfoProvider for T`
-        // lets us pass `context` directly as `&dyn DeviceInfoProvider`.
+        //   `impl<T: IpDiagnosticsContext> IpDiagnosticsProvider for T`
+        // let us pass `context` directly as trait object references.
+        let ip_diag: Option<&'a dyn IpDiagnosticsProvider> = if self.enable_remote_config {
+            Some(context)
+        } else {
+            None
+        };
         let mut link_layer = self.build(
             resources,
             context.buffer_manager(),
@@ -703,6 +798,7 @@ where
             context.max_apdu_length(),
             context.property_handler(),
             context,
+            ip_diag,
             context.application_layer_sender(),
         );
 
@@ -753,6 +849,9 @@ pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize> {
     connection_manager: servers::ConnectionManager<'res>,
     /// Device info provider for building `DeviceInformation` on demand.
     device_info_provider: &'res dyn DeviceInfoProvider,
+    /// IP diagnostics provider for remote config responses.
+    /// Present when the remote config server is enabled.
+    ip_diagnostics_provider: Option<&'res dyn IpDiagnosticsProvider>,
 }
 
 impl<'res, T: IpTransport, const MAX_SOCKETS: usize> KnxNetIp<'res, T, MAX_SOCKETS> {
@@ -781,6 +880,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> KnxNetIp<'res, T, MAX_SOCKE
                             self.network_layer_tx,
                             self.max_apdu_length,
                             self.device_info_provider,
+                            self.ip_diagnostics_provider,
                         );
                         match server.handler.on_request(&*pending.message, &context).await {
                             Ok(responses) => {
@@ -1038,6 +1138,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res> for KnxNetIp<'r
                                                 self.network_layer_tx,
                                                 self.max_apdu_length,
                                                 self.device_info_provider,
+                                                self.ip_diagnostics_provider,
                                             );
 
                                             match server
@@ -1104,6 +1205,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res> for KnxNetIp<'r
                                                 self.network_layer_tx,
                                                 self.max_apdu_length,
                                                 self.device_info_provider,
+                                                self.ip_diagnostics_provider,
                                             );
                                             match server
                                                 .handler

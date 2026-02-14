@@ -820,6 +820,38 @@ where
     }
 }
 
+impl<D: StackDefinition> context::IpDiagnosticsContext for StackContext<'_, D>
+where
+    D::State: IpStackState,
+{
+    fn ip_config(&self) -> messages::knxip::substructs::IpConfig {
+        let state = &self.inner.state;
+        messages::knxip::substructs::IpConfig {
+            ip_address: state.configured_ip_address(),
+            subnet_mask: state.configured_subnet_mask(),
+            default_gateway: state.configured_default_gateway(),
+            ip_capabilities: state.ip_capabilities(),
+            ip_assignment_method: state.ip_assignment_method(),
+        }
+    }
+
+    fn ip_current_config(&self) -> messages::knxip::substructs::IpCurrentConfig {
+        let state = &self.inner.state;
+        messages::knxip::substructs::IpCurrentConfig {
+            ip_address: state.current_ip_address(),
+            subnet_mask: state.current_subnet_mask(),
+            default_gateway: state.current_default_gateway(),
+            // TODO: Track DHCP server address in IpStackState when DHCP is implemented
+            dhcp_server: core::net::Ipv4Addr::UNSPECIFIED,
+            ip_assignment_method: state.current_ip_assignment_method(),
+        }
+    }
+
+    fn individual_address(&self) -> address::IndividualAddress {
+        self.inner.state.individual_address()
+    }
+}
+
 fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'a, D> {
     x
 }
