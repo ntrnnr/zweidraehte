@@ -438,6 +438,6 @@ mod tests {
         let report = HidReport::parse(&buf).unwrap();
         let result = reassembly.process(&report);
 
-        assert!(matches!(result, Err(ReassemblyError::UnexpectedPacket)));
+        assert!(matches!(result, Err(ReassemblyError::SequenceMismatch { expected: 1, received: 2 })));
     }
 }
