@@ -303,8 +303,14 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         });
 
         let Some(handler_idx) = handler_idx else {
+            // No handler recognizes this service type for the matched connection.
+            // This likely means the channel ID "match" was spurious — the packet
+            // is a connectionless message (e.g., DescriptionRequest) whose bytes
+            // at the connection header offset happened to coincide with an active
+            // channel ID. Return InvalidMessage to fall through to connectionless
+            // server dispatch.
             debug!("No handler for service type {:?} on connection type {:?}", service_type, connection_type);
-            return Ok(Vec::new());
+            return Err(ServerError::InvalidMessage);
         };
 
         // Determine if this is a data frame (request) or an ACK.
@@ -632,12 +638,16 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
 
     /// Resolve an HPAI endpoint, applying NAT detection.
     ///
-    /// Per KNX spec: if the HPAI address is 0.0.0.0:0, the server should use
-    /// the UDP packet source address instead (the client is behind NAT).
+    /// Per KNX spec 3/8/2 §8.6.3.3: when a client sends an HPAI with
+    /// IP address `0.0.0.0`, the server shall use the IP source address of the
+    /// received request packet. The HPAI port is always used — only the IP
+    /// address is substituted.
     fn resolve_endpoint(&self, hpai: &HPAI, packet_source: SocketAddrV4) -> SocketAddrV4 {
         let addr = hpai.address();
-        let port = hpai.port();
-
-        if addr == Ipv4Addr::UNSPECIFIED && port == 0 { packet_source } else { SocketAddrV4::new(addr, port) }
+        if addr.is_unspecified() {
+            SocketAddrV4::new(*packet_source.ip(), hpai.port())
+        } else {
+            SocketAddrV4::new(addr, hpai.port())
+        }
     }
 }

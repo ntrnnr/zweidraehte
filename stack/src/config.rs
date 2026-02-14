@@ -90,9 +90,10 @@ pub const MAX_APDU_LENGTH_TP1_STANDARD: u16 = 15;
 
 /// Maximum APDU length for TP1 with Extended Frame Format (EFF).
 ///
-/// Modern TP1 devices supporting EFF can handle APDUs up to 255 bytes.
+/// The NPDU length byte (1 byte) encodes TPCI + APDU. Maximum NPDU length
+/// is 255 (= 1 byte TPCI + 254 bytes APDU), so the maximum APDU is 254.
 /// This is also the maximum for KNX/IP devices.
-pub const MAX_APDU_LENGTH_EXTENDED: u16 = 255;
+pub const MAX_APDU_LENGTH_EXTENDED: u16 = 254;
 
 /// Frame overhead in bytes.
 ///
@@ -146,9 +147,9 @@ pub const DEFAULT_HEADROOM: usize = 16;
 /// ```
 /// use zweidraehte::config::{buffer_size_for_apdu, MAX_APDU_LENGTH_EXTENDED};
 ///
-/// // For a device supporting 255-byte APDUs
+/// // For a device supporting 254-byte APDUs
 /// const BUFFER_SIZE: usize = buffer_size_for_apdu(MAX_APDU_LENGTH_EXTENDED);
-/// assert_eq!(BUFFER_SIZE, 280); // 255 + 9 + 16
+/// assert_eq!(BUFFER_SIZE, 279); // 254 + 9 + 16
 /// ```
 pub const fn buffer_size_for_apdu(max_apdu_length: u16) -> usize {
     max_apdu_length as usize + FRAME_OVERHEAD + DEFAULT_HEADROOM
@@ -162,7 +163,7 @@ pub const fn buffer_size_for_apdu(max_apdu_length: u16) -> usize {
 pub enum MaxApduLength {
     /// Standard TP1 without EFF: 15 bytes (TPCI + 14 bytes payload)
     Tp1Standard = MAX_APDU_LENGTH_TP1_STANDARD,
-    /// TP1 with EFF or KNX/IP: 255 bytes
+    /// TP1 with EFF or KNX/IP: 254 bytes
     Extended = MAX_APDU_LENGTH_EXTENDED,
 }
 

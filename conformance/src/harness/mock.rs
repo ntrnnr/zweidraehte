@@ -75,7 +75,7 @@ impl<'a, const N: usize, const C: usize> Layer<'a> for MockLinkLayer<'a, N, C> {
                     log::trace!("Mock LL received layer op: {:?}", layer_op);
 
                     match layer_op {
-                        LayerOp::Indication(_msg) => {
+                        LayerOp::Indication(_) => {
                             // Link layer typically doesn't receive indications from upper layers
                             log::warn!("Mock Link Layer received unexpected indication");
                         }

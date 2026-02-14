@@ -49,7 +49,7 @@ use crate::{
     messages::{
         buffers::Buffer,
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
-        knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci, DEFAULT_MESSAGE_ACCESS_LEVEL},
+        knx::{DEFAULT_MESSAGE_ACCESS_LEVEL, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
     },
     objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
 };
@@ -491,12 +491,9 @@ where
                 self.buffer_manager.borrow().alloc_from_slice(&*pm.buf()).await
             } else {
                 // Should not happen, but handle gracefully
-                return KnxMessageBuffer::new(
-                    self.buffer_manager.borrow().alloc_with_size(0).await,
-                    service_type,
-                )
-                .error()
-                .build();
+                return KnxMessageBuffer::new(self.buffer_manager.borrow().alloc_with_size(0).await, service_type)
+                    .error()
+                    .build();
             }
         };
         let send_msg = KnxMessageBuffer::new(send_buffer, service_type);

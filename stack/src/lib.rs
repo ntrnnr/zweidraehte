@@ -153,7 +153,7 @@ pub trait StackState {
     /// - 14: Standard TP1 without Extended Frame Format
     /// - 255: TP1 with EFF or KNX/IP
     ///
-    /// Default implementation returns 255 (full EFF/KNX/IP support).
+    /// Default implementation returns 254 (full EFF/KNX/IP support).
     /// Override this in your state implementation to return a value based on
     /// detected hardware capabilities.
     fn max_apdu_length(&self) -> u16 {
@@ -760,6 +760,7 @@ impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
 pub struct StackContext<'a, D: StackDefinition> {
     inner: &'a Inner<D>,
     interface_objects: &'a D::InterfaceObjects<'static>,
+    al_sender: embassy_sync::channel::DynamicSender<'a, layers::LayerOp<messages::buffers::Buffer<'static>>>,
 }
 
 impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
@@ -779,6 +780,14 @@ impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
 impl<D: StackDefinition> context::PropertyServiceContext for StackContext<'_, D> {
     fn property_handler(&self) -> &dyn objects::interface::PropertyServiceHandler {
         self.interface_objects
+    }
+}
+
+impl<D: StackDefinition> context::ApplicationLayerContext for StackContext<'_, D> {
+    fn application_layer_sender(
+        &self,
+    ) -> embassy_sync::channel::DynamicSender<'_, layers::LayerOp<messages::buffers::Buffer<'static>>> {
+        self.al_sender.clone()
     }
 }
 
@@ -988,6 +997,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let stack_context = StackContext {
             inner: self.stack.inner,
             interface_objects: self.interface_objects,
+            al_sender: al_channel.sender().into(),
         };
         let ll_task = self.link_layer_builder.build_and_run(
             self.link_layer_resources,

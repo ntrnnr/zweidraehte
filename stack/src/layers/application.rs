@@ -104,6 +104,14 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     /// Channel for sending restart requests to user code
     restart_sender: DynamicSender<'a, Request<RestartRequest, RestartResponse>>,
     transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+
+    /// Per-indication response route for cEMI Transport Layer mode.
+    ///
+    /// Set from `IndicationMessage::take_response_route()` at the start of each
+    /// dispatch cycle; consumed by `send_response()` on first use. Not racy
+    /// because the AL is single-threaded (`NoopRawMutex`) and processes one
+    /// message at a time.
+    response_route: ResponseRoute,
 }
 
 // ============================================================================
@@ -142,6 +150,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             app_request_receiver,
             restart_sender,
             transport_layer,
+            response_route: None,
         }
     }
 }
@@ -166,83 +175,97 @@ where
                 Either::First(msg) => {
                     trace!("AL received: {:?}", msg);
 
-                    match msg {
-                        LayerOp::Indication(mut ind) => {
-                            debug!("AL APCI code: {:?}", ind.get_apci_code());
-                            match ind.get_apci_code() {
-                                // --- Group Communication ---
-                                a @ (ApciCode::GroupValueWrite | ApciCode::GroupValueResponse) => {
-                                    self.handle_group_value_write_or_response(&mut ind, a).await;
-                                }
-                                ApciCode::GroupValueRead => {
-                                    self.handle_group_value_read(&ind).await;
-                                }
+                    let mut ind = match msg {
+                        LayerOp::Indication(ind) => ind,
+                        LayerOp::Request { .. } => {
+                            warn!("AL received unexpected Request (should only receive indications)");
+                            continue;
+                        }
+                    };
 
-                                // --- Property Services ---
-                                ApciCode::PropertyDescriptionRead => {
-                                    self.handle_property_description_read(&ind).await;
-                                }
-                                ApciCode::PropertyValueRead => {
-                                    self.handle_property_value_read(&ind).await;
-                                }
-                                ApciCode::PropertyValueWrite => {
-                                    self.handle_property_value_write(&ind).await;
-                                }
+                    // Store the response route on self for the duration of this
+                    // dispatch cycle. When present (cEMI Transport Layer mode),
+                    // send_response() routes through this channel instead of the
+                    // transport layer. Consumed on first use via .take().
+                    self.response_route = ind.take_response_route();
 
-                                // --- Device Management ---
-                                ApciCode::DeviceDescriptorRead => {
-                                    self.handle_device_descriptor_read(&ind).await;
-                                }
-                                ApciCode::IndividualAddressRead => {
-                                    self.handle_individual_address_read(&ind).await;
-                                }
-                                ApciCode::IndividualAddressWrite => {
-                                    self.handle_individual_address_write(&ind).await;
-                                }
-                                ApciCode::IndividualAddressSerialNumberRead => {
-                                    self.handle_individual_address_serial_number_read(&ind).await;
-                                }
-                                ApciCode::IndividualAddressSerialNumberWrite => {
-                                    self.handle_individual_address_serial_number_write(&ind).await;
-                                }
-                                ApciCode::AdcRead => {
-                                    self.handle_adc_read(&ind).await;
-                                }
-                                ApciCode::MemoryRead => {
-                                    self.handle_memory_read(&ind).await;
-                                }
-                                ApciCode::MemoryWrite => {
-                                    self.handle_memory_write(&ind).await;
-                                }
-                                ApciCode::MemoryBitWrite => {
-                                    self.handle_memorybit_write(&ind).await;
-                                }
-                                ApciCode::UserMemoryRead => {
-                                    self.handle_user_memory_read(&ind).await;
-                                }
-                                ApciCode::UserMemoryWrite => {
-                                    self.handle_user_memory_write(&ind).await;
-                                }
-                                ApciCode::UserManufacturerInfoRead => {
-                                    self.handle_user_manufacturer_info_read(&ind).await;
-                                }
-                                ApciCode::AuthorizeRequest => {
-                                    self.handle_authorize_request(&ind).await;
-                                }
-                                ApciCode::KeyWrite => {
-                                    self.handle_key_write(&ind).await;
-                                }
-                                ApciCode::Restart => {
-                                    self.handle_restart(&ind).await;
-                                }
-                                _ => {
-                                    warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
-                                }
-                            }
+                    debug!("AL APCI code: {:?}", ind.get_apci_code());
+                    match ind.get_apci_code() {
+                        // --- Group Communication ---
+                        a @ (ApciCode::GroupValueWrite | ApciCode::GroupValueResponse) => {
+                            self.handle_group_value_write_or_response(&mut ind, a).await;
+                        }
+                        ApciCode::GroupValueRead => {
+                            self.handle_group_value_read(&ind).await;
+                        }
+
+                        // --- Property Services ---
+                        ApciCode::PropertyDescriptionRead => {
+                            self.handle_property_description_read(&ind).await;
+                        }
+                        ApciCode::PropertyValueRead => {
+                            self.handle_property_value_read(&ind).await;
+                        }
+                        ApciCode::PropertyValueWrite => {
+                            self.handle_property_value_write(&ind).await;
+                        }
+
+                        // --- Device Management ---
+                        ApciCode::DeviceDescriptorRead => {
+                            self.handle_device_descriptor_read(&ind).await;
+                        }
+                        ApciCode::IndividualAddressRead => {
+                            self.handle_individual_address_read(&ind).await;
+                        }
+                        ApciCode::IndividualAddressWrite => {
+                            self.handle_individual_address_write(&ind).await;
+                        }
+                        ApciCode::IndividualAddressSerialNumberRead => {
+                            self.handle_individual_address_serial_number_read(&ind).await;
+                        }
+                        ApciCode::IndividualAddressSerialNumberWrite => {
+                            self.handle_individual_address_serial_number_write(&ind).await;
+                        }
+                        ApciCode::AdcRead => {
+                            self.handle_adc_read(&ind).await;
+                        }
+                        ApciCode::MemoryRead => {
+                            self.handle_memory_read(&ind).await;
+                        }
+                        ApciCode::MemoryWrite => {
+                            self.handle_memory_write(&ind).await;
+                        }
+                        ApciCode::MemoryBitWrite => {
+                            self.handle_memorybit_write(&ind).await;
+                        }
+                        ApciCode::UserMemoryRead => {
+                            self.handle_user_memory_read(&ind).await;
+                        }
+                        ApciCode::UserMemoryWrite => {
+                            self.handle_user_memory_write(&ind).await;
+                        }
+                        ApciCode::UserManufacturerInfoRead => {
+                            self.handle_user_manufacturer_info_read(&ind).await;
+                        }
+                        ApciCode::AuthorizeRequest => {
+                            self.handle_authorize_request(&ind).await;
+                        }
+                        ApciCode::KeyWrite => {
+                            self.handle_key_write(&ind).await;
+                        }
+                        ApciCode::Restart => {
+                            self.handle_restart(&ind).await;
                         }
                         _ => {
-                            warn!("AL unexpected LayerOp variant");
+                            warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
                         }
+                    }
+
+                    // If the response route wasn't consumed by any handler (i.e., the
+                    // APCI handler didn't generate a response), signal "no response" to
+                    // the sender so it doesn't hang waiting.
+                    if let Some(route) = self.response_route.take() {
+                        route.send(None).await;
                     }
                 }
                 Either::Second(request) => match request.get() {
@@ -461,8 +484,8 @@ where
             // Set APCI code AFTER copying data to avoid overwriting when data fits in 6 bits
             msg.set_apci_code(ApciCode::GroupValueResponse);
 
-            // Send the response to the transport layer and wait for confirmation
-            let confirmation = self.transport_layer.request(RequestMessage::request(msg)).await;
+            // Send the response and wait for confirmation
+            let confirmation = self.send_response(RequestMessage::request(msg)).await;
             debug!("AL GroupValueResponse confirmation ASAP {} TSAP {}: {:?}", asap, tsap, confirmation.service_type());
 
             trace!("AL sent GroupValueResponse for ASAP {}: {:x?}", asap, self.comm_objects.borrow().value(asap));
@@ -691,7 +714,7 @@ where
                 debug!("AL sending PropertyDescriptionResponse: {:?}", desc);
 
                 // Send the response
-                let confirmation = self.transport_layer.request(msg).await;
+                let confirmation = self.send_response(msg).await;
                 trace!("AL PropertyDescriptionResponse confirmation: {:?}", confirmation.service_type());
             }
             Err(e) => {
@@ -716,7 +739,7 @@ where
                         data[offsets::MSG_APCI + 8] = 0; // Access (ReadAcc=0, WriteAcc=0)
                     });
 
-                let confirmation = self.transport_layer.request(msg).await;
+                let confirmation = self.send_response(msg).await;
                 trace!("AL PropertyDescriptionResponse (error) confirmation: {:?}", confirmation.service_type());
             }
         }
@@ -827,7 +850,7 @@ where
                 debug!("AL sending PropertyValueResponse: {} bytes", data_len);
 
                 // Send the response
-                let confirmation = self.transport_layer.request(msg).await;
+                let confirmation = self.send_response(msg).await;
                 trace!("AL PropertyValueResponse confirmation: {:?}", confirmation.service_type());
             }
             Err(e) => {
@@ -849,7 +872,7 @@ where
                         data[offsets::MSG_APCI + 5] = start_idx as u8;
                     });
 
-                let confirmation = self.transport_layer.request(msg).await;
+                let confirmation = self.send_response(msg).await;
                 trace!("AL PropertyValueResponse (error) confirmation: {:?}", confirmation.service_type());
             }
         }
@@ -952,7 +975,7 @@ where
 
                 debug!("AL sending PropertyValueResponse (write success): {} bytes", response_data_len);
 
-                let confirmation = self.transport_layer.request(msg).await;
+                let confirmation = self.send_response(msg).await;
                 trace!("AL PropertyValueResponse (write) confirmation: {:?}", confirmation.service_type());
             }
             Err(e) => {
@@ -974,7 +997,7 @@ where
                         response_buf[offsets::MSG_APCI + 5] = start_idx as u8;
                     });
 
-                let confirmation = self.transport_layer.request(msg).await;
+                let confirmation = self.send_response(msg).await;
                 trace!("AL PropertyValueResponse (write error) confirmation: {:?}", confirmation.service_type());
             }
         }
@@ -1050,7 +1073,7 @@ where
 
             debug!("AL sending DeviceDescriptorResponse: mask_version={}", D::DEVICE.mask_version);
 
-            let confirmation = self.transport_layer.request(msg).await;
+            let confirmation = self.send_response(msg).await;
             trace!("AL DeviceDescriptorResponse confirmation: {:?}", confirmation.service_type());
         } else if descriptor_type == 2 {
             // Descriptor type 2: respond with extended device info (14 bytes) if supported
@@ -1070,7 +1093,7 @@ where
 
                 debug!("AL sending DeviceDescriptorResponse (DD2): {:02x?}", dd2);
 
-                let confirmation = self.transport_layer.request(msg).await;
+                let confirmation = self.send_response(msg).await;
                 trace!("AL DeviceDescriptorResponse (DD2) confirmation: {:?}", confirmation.service_type());
             } else {
                 // DD2 not supported: error response with type = 0x3F
@@ -1086,7 +1109,7 @@ where
 
                 debug!("AL sending DeviceDescriptorResponse (error, DD2 not supported): descriptor_type=0x3F");
 
-                let confirmation = self.transport_layer.request(msg).await;
+                let confirmation = self.send_response(msg).await;
                 trace!("AL DeviceDescriptorResponse (error) confirmation: {:?}", confirmation.service_type());
             }
         } else {
@@ -1104,7 +1127,7 @@ where
 
             debug!("AL sending DeviceDescriptorResponse (error): descriptor_type=0x3F");
 
-            let confirmation = self.transport_layer.request(msg).await;
+            let confirmation = self.send_response(msg).await;
             trace!("AL DeviceDescriptorResponse (error) confirmation: {:?}", confirmation.service_type());
         }
     }
@@ -1159,7 +1182,7 @@ where
 
         debug!("AL sending IndividualAddressResponse");
 
-        let confirmation = self.transport_layer.request(msg).await;
+        let confirmation = self.send_response(msg).await;
         trace!("AL IndividualAddressResponse confirmation: {:?}", confirmation.service_type());
     }
 
@@ -1267,7 +1290,7 @@ where
         msg.buf_mut()[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8].copy_from_slice(self.state.serial_number());
         // Domain address / reserved (4 bytes, zero) - already zeroed by alloc
 
-        let confirmation = self.transport_layer.request(msg).await;
+        let confirmation = self.send_response(msg).await;
         trace!("AL IndividualAddressSerialNumberResponse confirmation: {:?}", confirmation.service_type());
     }
 
@@ -1390,7 +1413,7 @@ where
 
         debug!("AL sending ADC_Response: channel={}, count={}, sum={}", channel, response_count, sum);
 
-        let confirmation = self.transport_layer.request(msg).await;
+        let confirmation = self.send_response(msg).await;
         trace!("AL ADC_Response confirmation: {:?}", confirmation.service_type());
     }
 
@@ -1467,7 +1490,7 @@ where
 
         debug!("AL sending Memory_Response: address=0x{:04X}, count={}", address, response_count);
 
-        let confirmation = self.transport_layer.request(msg).await;
+        let confirmation = self.send_response(msg).await;
         trace!("AL Memory_Response confirmation: {:?}", confirmation.service_type());
     }
 
@@ -1573,7 +1596,7 @@ where
 
         debug!("AL sending Memory_Response (verify): address=0x{:04X}, count={}", address, response_count);
 
-        let confirmation = self.transport_layer.request(msg).await;
+        let confirmation = self.send_response(msg).await;
         trace!("AL Memory_Response confirmation: {:?}", confirmation.service_type());
     }
 
@@ -1734,7 +1757,7 @@ where
 
         debug!("AL sending A_Memory_Response (for MemoryBit_Write): address=0x{:04X}, count={}", address, count);
 
-        let confirmation = self.transport_layer.request(msg).await;
+        let confirmation = self.send_response(msg).await;
         trace!("AL A_Memory_Response confirmation: {:?}", confirmation.service_type());
     }
 
@@ -1824,7 +1847,7 @@ where
 
         debug!("AL sending UserMemory_Response: address=0x{:05X}, count={}", full_address, response_count);
 
-        let confirmation = self.transport_layer.request(msg).await;
+        let confirmation = self.send_response(msg).await;
         trace!("AL UserMemory_Response confirmation: {:?}", confirmation.service_type());
     }
 
@@ -1940,7 +1963,7 @@ where
 
         debug!("AL sending UserMemory_Response (verify): address=0x{:05X}, count={}", full_address, response_count);
 
-        let confirmation = self.transport_layer.request(msg).await;
+        let confirmation = self.send_response(msg).await;
         trace!("AL UserMemory_Response confirmation: {:?}", confirmation.service_type());
     }
 
@@ -1988,7 +2011,7 @@ where
 
         debug!("AL sending UserManufacturerInfo_Response: {:02x?}", info);
 
-        let confirmation = self.transport_layer.request(msg).await;
+        let confirmation = self.send_response(msg).await;
         trace!("AL UserManufacturerInfo_Response confirmation: {:?}", confirmation.service_type());
     }
 
@@ -2053,7 +2076,7 @@ where
 
         debug!("AL sending Authorize_Response: level={}", access_level);
 
-        let confirmation = self.transport_layer.request(msg).await;
+        let confirmation = self.send_response(msg).await;
         trace!("AL Authorize_Response confirmation: {:?}", confirmation.service_type());
     }
 
@@ -2116,7 +2139,7 @@ where
 
         debug!("AL sending Key_Response: level={}", result_level);
 
-        let confirmation = self.transport_layer.request(msg).await;
+        let confirmation = self.send_response(msg).await;
         trace!("AL Key_Response confirmation: {:?}", confirmation.service_type());
     }
 
@@ -2247,7 +2270,7 @@ where
 
         debug!("AL sending Restart_Response: error={}, process_time={}ms", error, process_time_100ms as u32 * 100);
 
-        let confirmation = self.transport_layer.request(msg).await;
+        let confirmation = self.send_response(msg).await;
         trace!("AL Restart_Response confirmation: {:?}", confirmation.service_type());
     }
 }
@@ -2256,7 +2279,50 @@ where
 // Helpers
 // ============================================================================
 
+/// Optional response route for routed indications (cEMI Transport Layer mode).
+///
+/// When `Some`, responses should be sent through this channel instead of
+/// the transport layer. `Some(msg)` = response generated, `None` = no response.
+/// The route is consumed (taken) on first use; subsequent sends in the same
+/// dispatch cycle go through the transport layer.
+type ResponseRoute = Option<DynamicSender<'static, Option<RequestMessage<Buffer<'static>>>>>;
+
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
+    /// Send a response message, routing it to the appropriate destination.
+    ///
+    /// If `self.response_route` contains a sender (cEMI Transport Layer mode
+    /// from a Device Management connection), the response is sent back through
+    /// that route instead of the transport layer. The route is consumed (taken)
+    /// on first use; subsequent calls in the same dispatch cycle go through the
+    /// transport layer.
+    ///
+    /// Returns a confirmation message. When routing through `response_route`, a
+    /// synthetic no-error confirmation is returned since the device management
+    /// handler doesn't use the KNX confirmation protocol.
+    async fn send_response(
+        &mut self,
+        msg: RequestMessage<Buffer<'static>>,
+    ) -> crate::messages::builder::ConfirmationMessage<Buffer<'static>> {
+        use crate::messages::builder::ConfirmationMessage;
+
+        if let Some(route) = self.response_route.take() {
+            // Routed mode: send response to the device management handler (or similar).
+            // Build a synthetic "no error" confirmation — the handlers only use it for
+            // debug logging, so exact contents don't matter.
+            let service_type = msg.service_type();
+            route.send(Some(msg)).await;
+
+            // Allocate a minimal buffer for the synthetic confirmation
+            let buf = self.buffer_manager.borrow().alloc_with_size(offsets::MSG_CONTROL + 1).await;
+            let mut conf = KnxMessageBuffer::new(buf, service_type);
+            conf.ctrl_field_mut().set_c(Confirm::NoError);
+            ConfirmationMessage::confirmation(conf)
+        } else {
+            // Normal mode: send through the transport layer
+            self.transport_layer.request(msg).await
+        }
+    }
+
     /// Get the object size and message offset for a communication object.
     ///
     /// Returns `(size_in_bytes, offset)` where offset is either:

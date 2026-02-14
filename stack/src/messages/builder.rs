@@ -44,6 +44,8 @@
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 
+use embassy_sync::channel::DynamicSender;
+
 use crate::messages::buffers::Buffer;
 use crate::messages::knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci};
 
@@ -82,6 +84,14 @@ pub mod direction {
 /// `KnxMessageBuffer`, so you can call methods directly without unwrapping.
 pub struct TypedMessage<B: Deref<Target = [u8]>, Dir> {
     inner: KnxMessageBuffer<B>,
+    /// Optional response route for routed indications. When `Some`, responses
+    /// should be sent here instead of the default downstream path. Only
+    /// meaningful for `IndicationMessage`; always `None` for other directions.
+    ///
+    /// Uses `Buffer<'static>` in the sender type (not `B`) because response
+    /// routing only occurs with `'static` buffers, and this avoids requiring
+    /// `B: 'static` on the struct itself.
+    response_route: Option<DynamicSender<'static, Option<RequestMessage<Buffer<'static>>>>>,
     _direction: PhantomData<Dir>,
 }
 
@@ -138,7 +148,25 @@ impl<B: Deref<Target = [u8]>> IndicationMessage<B> {
     /// Used by link layers when they receive data from the bus and need
     /// to pass it up to the network layer.
     pub fn indication(msg: KnxMessageBuffer<B>) -> Self {
-        TypedMessage { inner: msg, _direction: PhantomData }
+        TypedMessage { inner: msg, response_route: None, _direction: PhantomData }
+    }
+
+    /// Attach a response route to this indication.
+    ///
+    /// When a response route is present, the application layer sends responses
+    /// through this channel instead of the default transport layer path. Used
+    /// by cEMI Transport Layer mode to route responses back to the device
+    /// management handler.
+    pub fn with_response_route(mut self, route: DynamicSender<'static, Option<RequestMessage<Buffer<'static>>>>) -> Self {
+        self.response_route = Some(route);
+        self
+    }
+
+    /// Take the response route out of this indication, if any.
+    ///
+    /// Returns `Some` once; subsequent calls return `None`.
+    pub fn take_response_route(&mut self) -> Option<DynamicSender<'static, Option<RequestMessage<Buffer<'static>>>>> {
+        self.response_route.take()
     }
 }
 
@@ -151,7 +179,7 @@ impl<B: Deref<Target = [u8]>> RequestMessage<B> {
     ///
     /// Used when building requests that will flow down the stack.
     pub fn request(msg: KnxMessageBuffer<B>) -> Self {
-        TypedMessage { inner: msg, _direction: PhantomData }
+        TypedMessage { inner: msg, response_route: None, _direction: PhantomData }
     }
 }
 
@@ -164,7 +192,7 @@ impl<B: Deref<Target = [u8]>> ConfirmationMessage<B> {
     ///
     /// Used when building confirmations to return via `response_tx`.
     pub fn confirmation(msg: KnxMessageBuffer<B>) -> Self {
-        TypedMessage { inner: msg, _direction: PhantomData }
+        TypedMessage { inner: msg, response_route: None, _direction: PhantomData }
     }
 }
 

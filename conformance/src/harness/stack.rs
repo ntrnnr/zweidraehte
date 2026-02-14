@@ -578,7 +578,7 @@ pub mod device_info {
 
     /// Maximum APDU length for this device.
     ///
-    /// Uses the extended format (255 bytes) which is supported by KNX/IP
+    /// Uses the extended format (254 bytes) which is supported by KNX/IP
     /// and modern TP1 devices with Extended Frame Format.
     pub const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
 

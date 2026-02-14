@@ -24,7 +24,9 @@ where
 
 /// Layer operation with compile-time direction safety
 ///
-/// - `Indication`: Can only contain an `IndicationMessage` (data flowing UP the stack)
+/// - `Indication`: Can only contain an `IndicationMessage` (data flowing UP the stack).
+///   The indication may optionally carry a response route (see
+///   [`IndicationMessage::with_response_route`]) for cEMI Transport Layer mode.
 /// - `Request`: Can only contain a `RequestMessage` (request flowing DOWN the stack)
 ///   with a response channel that only accepts `ConfirmationMessage`
 ///
@@ -33,10 +35,7 @@ pub enum LayerOp<B: Deref<Target = [u8]> + 'static> {
     /// Data received from lower layer, flowing UP the stack
     Indication(IndicationMessage<B>),
     /// Request to lower layer, flowing DOWN the stack
-    Request {
-        message: RequestMessage<B>,
-        response_tx: DynamicSender<'static, ConfirmationMessage<B>>,
-    },
+    Request { message: RequestMessage<B>, response_tx: DynamicSender<'static, ConfirmationMessage<B>> },
 }
 
 impl<B> core::fmt::Debug for LayerOp<B>
@@ -283,7 +282,9 @@ impl<M, R, const N: usize> ActorRequest<M, R> for Sender<'static, NoopRawMutex, 
 ///
 /// This allows layers to send `RequestMessage`s and receive `ConfirmationMessage`s.
 /// The type system ensures you can't accidentally send the wrong message type.
-impl<'a, B: Deref<Target = [u8]> + 'static> ActorRequest<RequestMessage<B>, ConfirmationMessage<B>> for DynamicSender<'a, LayerOp<B>> {
+impl<'a, B: Deref<Target = [u8]> + 'static> ActorRequest<RequestMessage<B>, ConfirmationMessage<B>>
+    for DynamicSender<'a, LayerOp<B>>
+{
     async fn request(&self, message: RequestMessage<B>) -> ConfirmationMessage<B> {
         let channel: Channel<NoopRawMutex, ConfirmationMessage<B>, 1> = Channel::new();
         let sender: DynamicSender<'_, ConfirmationMessage<B>> = channel.sender().into();

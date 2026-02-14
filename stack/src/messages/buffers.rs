@@ -391,8 +391,8 @@ impl crate::util::packets::SerializeBuffer for Buffer<'_> {
         &mut self,
         packet: &P,
     ) -> (&mut [u8], &mut [u8]) {
-        // Get a mutable slice to the capacity after headroom
-        let start = self.start;
+        // Append after existing data (spare capacity starts here)
+        let start = self.start + self.len;
         let full_buffer = unsafe { self.buffer.as_mut() };
         let usable = &mut full_buffer[start..];
         let original_len = usable.len();
@@ -404,10 +404,10 @@ impl crate::util::packets::SerializeBuffer for Buffer<'_> {
         // temp now points to remaining bytes
         let written = original_len - temp.len();
 
-        // Update the buffer's length to match what was written
-        self.len = written;
+        // Extend the buffer's length by the newly written bytes
+        self.len += written;
 
-        // Split the buffer into written and remaining portions
+        // Split the newly written region into written and remaining portions
         let full_buffer = unsafe { self.buffer.as_mut() };
         let usable = &mut full_buffer[start..];
         let (written_portion, remaining_portion) = usable.split_at_mut(written);

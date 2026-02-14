@@ -408,10 +408,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
     ///
     /// # Arguments
     /// * `control_endpoint` - The HPAI to advertise as this device's control endpoint
-    pub fn enable_discovery_server(
-        mut self,
-        control_endpoint: substructs::HPAI,
-    ) -> Self {
+    pub fn enable_discovery_server(mut self, control_endpoint: substructs::HPAI) -> Self {
         self.discovery = Some(DiscoveryConfig { control_endpoint });
         self
     }
@@ -463,6 +460,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         max_apdu_length: u16,
         property_handler: &'res dyn crate::objects::interface::PropertyServiceHandler,
         device_info_provider: &'res dyn DeviceInfoProvider,
+        al_sender: DynamicSender<'res, LayerOp<Buffer<'static>>>,
     ) -> KnxNetIp<'res, T, MAX_SOCKETS> {
         // Initialize response channel
         let _response_channel = resources.response_channel.write(Channel::new());
@@ -472,21 +470,15 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         // ====================================================================
 
         let mut supported_services = Vec::<substructs::SupportedService, 4>::new();
-        let _ = supported_services.push(substructs::SupportedService {
-            family: substructs::ServiceFamily::Core,
-            version: 1,
-        });
+        let _ = supported_services
+            .push(substructs::SupportedService { family: substructs::ServiceFamily::Core, version: 1 });
         if self.enable_device_management {
-            let _ = supported_services.push(substructs::SupportedService {
-                family: substructs::ServiceFamily::DeviceManagement,
-                version: 1,
-            });
+            let _ = supported_services
+                .push(substructs::SupportedService { family: substructs::ServiceFamily::DeviceManagement, version: 2 });
         }
         if self.enable_routing {
-            let _ = supported_services.push(substructs::SupportedService {
-                family: substructs::ServiceFamily::Routing,
-                version: 1,
-            });
+            let _ = supported_services
+                .push(substructs::SupportedService { family: substructs::ServiceFamily::Routing, version: 1 });
         }
 
         // ====================================================================
@@ -501,10 +493,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         let mut server_idx = 0;
 
         if let Some(discovery) = self.discovery {
-            let server = servers::DiscoveryServer::new(
-                discovery.control_endpoint,
-                supported_services,
-            );
+            let server = servers::DiscoveryServer::new(discovery.control_endpoint, supported_services);
 
             let mut service_types = Vec::new();
             let _ = service_types.push(KNXnetIPServiceType::SearchRequest);
@@ -542,7 +531,9 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
             });
             let _ = server_endpoints.push((server_idx, endpoints));
             #[allow(unused_assignments)]
-            { server_idx += 1; }
+            {
+                server_idx += 1;
+            }
         }
 
         // ====================================================================
@@ -591,8 +582,11 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
             }
         }
 
-        info!("KnxNetIp builder: {} server(s) using {} unique socket(s)",
-              server_instances.len(), socket_descriptors.len());
+        info!(
+            "KnxNetIp builder: {} server(s) using {} unique socket(s)",
+            server_instances.len(),
+            socket_descriptors.len()
+        );
 
         let interface_addr = self.local_addr;
 
@@ -648,7 +642,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
 
         let mut connection_manager = servers::ConnectionManager::new();
         if self.enable_device_management {
-            let handler = servers::DeviceMgmtConnectionHandler::new(property_handler);
+            let handler = servers::DeviceMgmtConnectionHandler::new(property_handler, al_sender, buffer_manager);
             connection_manager.add_handler(
                 crate::messages::knxip::substructs::ConnectionType::DeviceManagement,
                 servers::ConnectionTypeHandlerEnum::DeviceManagement(handler),
@@ -672,9 +666,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
     }
 }
 
-impl<T: IpTransport + 'static, const MAX_SOCKETS: usize> LinkLayerBuilderBase
-    for KnxNetIpBuilder<T, MAX_SOCKETS>
-{
+impl<T: IpTransport + 'static, const MAX_SOCKETS: usize> LinkLayerBuilderBase for KnxNetIpBuilder<T, MAX_SOCKETS> {
     type Resources = KnxNetIpResources<T, MAX_SOCKETS>;
 
     fn create_resources(&self) -> Self::Resources {
@@ -686,12 +678,12 @@ impl<T: IpTransport + 'static, const MAX_SOCKETS: usize> LinkLayerBuilderBase
 /// (optionally) device info for discovery responses. The property handler
 /// is used by the connection manager for Device Management connections
 /// (M_PropRead/M_PropWrite from ETS).
-impl<CTX, T: IpTransport + 'static, const MAX_SOCKETS: usize>
-    LinkLayerBuilder<CTX> for KnxNetIpBuilder<T, MAX_SOCKETS>
+impl<CTX, T: IpTransport + 'static, const MAX_SOCKETS: usize> LinkLayerBuilder<CTX> for KnxNetIpBuilder<T, MAX_SOCKETS>
 where
     CTX: crate::context::BufferManagerContext
         + crate::context::PropertyServiceContext
-        + crate::context::DeviceInfoContext,
+        + crate::context::DeviceInfoContext
+        + crate::context::ApplicationLayerContext,
 {
     fn build_and_run<'a>(
         self,
@@ -710,6 +702,7 @@ where
             context.max_apdu_length(),
             context.property_handler(),
             context,
+            context.application_layer_sender(),
         );
 
         // Run the link layer's process loop
@@ -782,8 +775,12 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> KnxNetIp<'res, T, MAX_SOCKE
 
                 for server in &mut self.server_instances {
                     if server.handler.supports_requests() {
-                        let context =
-                            ServerContext::new(self.buffer_manager, self.network_layer_tx, self.max_apdu_length, self.device_info_provider);
+                        let context = ServerContext::new(
+                            self.buffer_manager,
+                            self.network_layer_tx,
+                            self.max_apdu_length,
+                            self.device_info_provider,
+                        );
                         match server.handler.on_request(&*pending.message, &context).await {
                             Ok(responses) => {
                                 // Success! Send responses and confirmation
@@ -900,9 +897,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> KnxNetIp<'res, T, MAX_SOCKE
     }
 }
 
-impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res>
-    for KnxNetIp<'res, T, MAX_SOCKETS>
-{
+impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res> for KnxNetIp<'res, T, MAX_SOCKETS> {
     type Buffer = Buffer<'static>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
@@ -1015,11 +1010,18 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res>
                             // - Data frames for active connections (routed by channel ID)
                             // If the service type isn't recognized, fall through to
                             // connectionless server dispatch.
-                            match self.connection_manager.on_indication(
-                                service_type, &buffer[..], source,
-                                socket_idx, self.buffer_manager,
-                                self.network_layer_tx,
-                            ).await {
+                            match self
+                                .connection_manager
+                                .on_indication(
+                                    service_type,
+                                    &buffer[..],
+                                    source,
+                                    socket_idx,
+                                    self.buffer_manager,
+                                    self.network_layer_tx,
+                                )
+                                .await
+                            {
                                 Ok(responses) => {
                                     for response in responses {
                                         response_channel.send(response).await;
@@ -1078,7 +1080,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res>
                     trace!("KNX/IP received layer op: {:?}", layer_op);
 
                     match layer_op {
-                        LayerOp::Indication(_msg) => {
+                        LayerOp::Indication(_) => {
                             // Link layer typically doesn't receive indications from upper layers
                             error!("KnxNetIp Link Layer received unexpected indication");
                         }

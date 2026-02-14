@@ -6,16 +6,20 @@
 
 use core::cell::RefCell;
 
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::channel::{Channel, DynamicSender};
 use embassy_time::Instant;
-use heapless::Vec;
 
-use crate::encoding::cemi::{CemiLocalMgmt, CemiMessageCode};
-use crate::messages::buffers::DynBufferManager;
-use crate::messages::knxip::{
-    ConnectionStatus, DeviceConfigurationAck, DeviceConfigurationAckBuilder,
-    DeviceConfigurationRequest, DeviceConfigurationRequestBuilder, KNXnetIPServiceType,
-};
+use crate::encoding::cemi::{self, CemiLocalMgmt, CemiMessageCode, CemiTransportBuilder};
+use crate::layers::LayerOp;
+use crate::messages::buffers::{Buffer, DynBufferManager};
+use crate::messages::builder::{IndicationMessage, RequestMessage};
+use crate::messages::knx::*;
 use crate::messages::knxip::substructs::{CRD, CRI, DeviceManagementCRD};
+use crate::messages::knxip::{
+    ConnectionStatus, DeviceConfigurationAck, DeviceConfigurationAckBuilder, DeviceConfigurationRequest,
+    DeviceConfigurationRequestBuilder, KNXnetIPServiceType,
+};
 use crate::objects::interface::PropertyServiceHandler;
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
@@ -29,16 +33,28 @@ use super::{AcceptedConnection, ConnectionContext, ConnectionTypeHandler, DataFr
 /// Handler for Device Management connections (ConnectionType 0x03).
 ///
 /// Processes cEMI Local Management frames (M_PropRead/M_PropWrite) by
-/// delegating to a [`PropertyServiceHandler`]. Uses a trait object reference
-/// so that no generics leak out of this module.
+/// delegating to a [`PropertyServiceHandler`], and cEMI Transport Layer
+/// frames (T_Data_Connected/T_Data_Individual) by converting them to
+/// internal format and routing them through the application layer.
 pub struct DeviceMgmtConnectionHandler<'a> {
     property_handler: &'a dyn PropertyServiceHandler,
+    /// Sender to the application layer channel, for cEMI Transport Layer mode.
+    al_sender: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+    /// Buffer manager for allocating internal message buffers.
+    buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+    /// Channel ID of the active Device Management connection, if any.
+    /// Only one Device Management connection is allowed at a time.
+    active_channel: Option<u8>,
 }
 
 impl<'a> DeviceMgmtConnectionHandler<'a> {
     /// Create a new Device Management connection handler.
-    pub fn new(property_handler: &'a dyn PropertyServiceHandler) -> Self {
-        Self { property_handler }
+    pub fn new(
+        property_handler: &'a dyn PropertyServiceHandler,
+        al_sender: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+    ) -> Self {
+        Self { property_handler, al_sender, buffer_manager, active_channel: None }
     }
 
     /// Parse and process a cEMI frame from a DeviceConfigurationRequest.
@@ -46,7 +62,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
     /// Returns `Ok(Some(bytes))` when a cEMI response should be sent back,
     /// `Ok(None)` when the frame is recognized but no response is needed
     /// (the DeviceConfigurationRequest is still ACKed), or `Err` on failure.
-    fn process_cemi_frame(&self, payload: &[u8]) -> Result<Option<Vec<u8, 64>>, ConnectionStatus> {
+    async fn process_cemi_frame(&self, payload: &[u8]) -> Result<Option<Buffer<'static>>, ConnectionStatus> {
         // Peek at the message code to determine the frame type before parsing,
         // since Local Management and Transport Layer frames have different
         // wire formats.
@@ -60,19 +76,9 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         })?;
 
         // Transport Layer frames (T_Data_Individual.req, T_Data_Connected.req):
-        // Per KNX spec 03/08/03 §2.6.1.3, if cEMI Transport Layer mode is not
-        // (yet) supported, the frame is silently ignored but the
-        // DEVICE_CONFIGURATION_REQUEST is still ACKed.
+        // Convert to internal format and route through the application layer.
         if message_code.is_transport_layer() {
-            // TODO: Implement cEMI Transport Layer mode (KNX spec 03/08/03 §2.6).
-            // These frames should be injected into the transport layer, bypassing
-            // the network layer entirely (they carry no source/destination addresses).
-            // See SESSION.md for architectural notes.
-            debug!(
-                "cEMI Transport Layer frame ignored (not yet supported): {:?}",
-                message_code
-            );
-            return Ok(None);
+            return self.handle_cemi_transport(payload, message_code).await;
         }
 
         // Local Management frames (M_PropRead/M_PropWrite)
@@ -87,14 +93,135 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         // type has exactly one instance (the common case).
         let object_idx = if frame.object_instance > 0 { (frame.object_instance - 1) as u16 } else { 0 };
 
+        let mut out = self.buffer_manager.borrow().alloc_no_headroom().await;
+
         match frame.message_code {
-            CemiMessageCode::MPropReadReq => self.handle_prop_read(&frame, object_idx).map(Some),
-            CemiMessageCode::MPropWriteReq => self.handle_prop_write(&frame, object_idx).map(Some),
+            CemiMessageCode::MPropReadReq => self.handle_prop_read(&frame, object_idx, &mut out)?,
+            CemiMessageCode::MPropWriteReq => self.handle_prop_write(&frame, object_idx, &mut out)?,
             _ => {
                 debug!("Unsupported cEMI message code: {:?}", frame.message_code);
-                Err(ConnectionStatus::DataConnectionError)
+                return Err(ConnectionStatus::DataConnectionError);
             }
         }
+
+        Ok(Some(out))
+    }
+
+    /// Handle a cEMI Transport Layer frame (T_Data_Connected.req / T_Data_Individual.req).
+    ///
+    /// These frames carry APCI services (DeviceDescriptorRead, MemoryRead/Write,
+    /// Authorize, etc.) from ETS via the Device Management connection. They are
+    /// NOT full TL connections — no T_Connect/T_Disconnect, no sequence numbering.
+    ///
+    /// The flow is:
+    /// 1. Convert cEMI transport frame to internal KNX message format using
+    ///    `cemi_to_knx_message` (the 6 reserved zero bytes map to CTRL/SRC/DST/NPDU)
+    /// 2. Apply post-fixups (CTRL, DST, address type, access level, service type)
+    /// 3. Send as `Indication` (with response route) to the application layer
+    /// 4. Await response on the local channel
+    /// 5. Convert response back to cEMI transport format using `CemiTransportBuilder`
+    async fn handle_cemi_transport(
+        &self,
+        payload: &[u8],
+        message_code: CemiMessageCode,
+    ) -> Result<Option<Buffer<'static>>, ConnectionStatus> {
+        debug!("cEMI Transport Layer frame: {:?} ({} bytes)", message_code, payload.len());
+
+        // Determine the internal service type based on the cEMI message code.
+        // T_Data_Connected.req → T_Data_Ind (connection-oriented APCI services)
+        // T_Data_Individual.req → T_DataUnack_Ind (connectionless APCI services)
+        let service_type = match message_code {
+            CemiMessageCode::TDataConnectedReq => ServiceType::T_Data_Ind,
+            CemiMessageCode::TDataIndividualReq => ServiceType::T_DataUnack_Ind,
+            _ => {
+                debug!("Unexpected transport message code: {:?}", message_code);
+                return Ok(None);
+            }
+        };
+
+        // ================================================================
+        // Inbound: cEMI transport → internal format
+        // ================================================================
+
+        // Allocate a buffer and copy the raw cEMI payload into it.
+        // cemi_to_knx_message works in-place, converting the cEMI format
+        // to internal format. The 6 reserved zero bytes in the cEMI transport
+        // frame occupy the same positions as CTRL1+CTRL2+SRC+DST in cEMI L_Data,
+        // so the conversion produces zeroed CTRL/SRC/DST/NPDU fields which we
+        // then fix up below.
+        let mut buf = self.buffer_manager.borrow().alloc_zeroed(payload.len()).await;
+        buf[..payload.len()].copy_from_slice(payload);
+
+        let buf = cemi::cemi_to_knx_message(buf);
+        let mut msg = KnxMessageBuffer::new(buf, service_type);
+
+        // Post-fixups: the conversion produced zeroed control fields, so set
+        // the fields that matter for internal routing.
+
+        // Set CTRL: standard frame, system priority (management traffic)
+        msg.ctrl_field_mut().set_ft(FrameType::Standard);
+        msg.ctrl_field_mut().set_priority(Priority::System);
+
+        // Individual address type (these are point-to-point management services)
+        msg.set_address_type(AddressType::Individual);
+
+        // Access level 0 = full access for ETS Device Management connections.
+        msg.set_access_level(0);
+
+        let indication = IndicationMessage::indication(msg);
+
+        // ================================================================
+        // Route to AL with response route and await response
+        // ================================================================
+
+        // Create a stack-local channel for the response. Same transmute pattern
+        // as ActorRequest::request() — the channel lives on this stack frame
+        // and we guarantee it outlives the sender.
+        let response_channel: Channel<NoopRawMutex, Option<RequestMessage<Buffer<'static>>>, 1> = Channel::new();
+        let sender: DynamicSender<'_, Option<RequestMessage<Buffer<'static>>>> = response_channel.sender().into();
+
+        // Safety: the channel lives on this stack frame and we await the
+        // response before returning, so the sender cannot outlive the channel.
+        let response_route = unsafe {
+            core::mem::transmute::<
+                &DynamicSender<'_, Option<RequestMessage<Buffer<'static>>>>,
+                &DynamicSender<'static, Option<RequestMessage<Buffer<'static>>>>,
+            >(&sender)
+        }
+        .clone();
+
+        let indication = indication.with_response_route(response_route);
+        self.al_sender.send(LayerOp::Indication(indication)).await;
+
+        let response = response_channel.receive().await;
+
+        // ================================================================
+        // Outbound: internal format → cEMI transport
+        // ================================================================
+
+        let Some(response_msg) = response else {
+            // No response generated (unrecognized APCI, write-only service, etc.)
+            debug!("cEMI Transport: no response from AL");
+            return Ok(None);
+        };
+
+        // Determine the .ind message code for the response
+        let response_mc = message_code.to_indication().ok_or_else(|| {
+            error!("No indication message code for {:?}", message_code);
+            ConnectionStatus::DataConnectionError
+        })?;
+
+        // Extract TPDU from internal format: everything from offset MSG_TPCI onwards
+        let tpdu = &response_msg.buf()[offsets::MSG_TPCI..];
+
+        // Serialize using CemiTransportBuilder directly into a pool Buffer
+        let builder = CemiTransportBuilder { message_code: response_mc, tpdu };
+
+        let mut out = self.buffer_manager.borrow().alloc_no_headroom().await;
+        out.serialize(&builder);
+
+        debug!("cEMI Transport response: {:?} ({} bytes)", response_mc, out.len());
+        Ok(Some(out))
     }
 
     /// Build a DeviceConfigurationAck as a `PendingResponse`.
@@ -109,20 +236,17 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         let builder = DeviceConfigurationAckBuilder::new(channel_id, sequence_counter, status);
         let mut buffer = buffer_manager.borrow().alloc().await;
         buffer.serialize(&builder);
-        PendingResponse {
-            buffer,
-            destination: conn.data_endpoint,
-            socket_idx: conn.socket_idx,
-        }
+        PendingResponse { buffer, destination: conn.data_endpoint, socket_idx: conn.socket_idx }
     }
 
     fn handle_prop_read(
         &self,
         frame: &CemiLocalMgmt<&[u8]>,
         object_idx: u16,
-    ) -> Result<Vec<u8, 64>, ConnectionStatus> {
+        out: &mut Buffer<'_>,
+    ) -> Result<(), ConnectionStatus> {
         // Read the property value into a temp buffer
-        let mut data_buf = [0u8; 52]; // Leave room for the 7-byte header in the 64-byte response
+        let mut data_buf = [0u8; 52]; // Leave room for the 7-byte header
         // Access level 0 = full access for ETS device management connections.
         // TODO: Revisit when secure tunneling is implemented.
         let response_builder = match self.property_handler.property_value_read(
@@ -147,21 +271,16 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
             }
         };
 
-        // Serialize the response into a heapless Vec
-        let mut response_bytes = [0u8; 64];
-        let mut cursor = &mut response_bytes[..];
-        let (written, _) = cursor.serialize(&response_builder);
-        let len = written.len();
-        let mut result = Vec::new();
-        let _ = result.extend_from_slice(&response_bytes[..len]);
-        Ok(result)
+        out.serialize(&response_builder);
+        Ok(())
     }
 
     fn handle_prop_write(
         &self,
         frame: &CemiLocalMgmt<&[u8]>,
         object_idx: u16,
-    ) -> Result<Vec<u8, 64>, ConnectionStatus> {
+        out: &mut Buffer<'_>,
+    ) -> Result<(), ConnectionStatus> {
         let response_builder = match self.property_handler.property_value_write(
             object_idx,
             frame.property_id,
@@ -183,32 +302,30 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
             }
         };
 
-        // Serialize the response into a heapless Vec
-        let mut response_bytes = [0u8; 64];
-        let mut cursor = &mut response_bytes[..];
-        let (written, _) = cursor.serialize(&response_builder);
-        let len = written.len();
-        let mut result = Vec::new();
-        let _ = result.extend_from_slice(&response_bytes[..len]);
-        Ok(result)
+        out.serialize(&response_builder);
+        Ok(())
     }
 }
 
 impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
-    fn accept_connection(
-        &mut self,
-        _channel_id: u8,
-        _cri: &CRI,
-    ) -> Result<AcceptedConnection, ConnectionStatus> {
-        // Device Management CRI has no additional fields beyond the header.
-        // Accept unconditionally — the connection manager enforces max connections.
-        Ok(AcceptedConnection {
-            crd: CRD::DeviceManagement(DeviceManagementCRD),
-        })
+    fn accept_connection(&mut self, channel_id: u8, _cri: &CRI) -> Result<AcceptedConnection, ConnectionStatus> {
+        // Only one Device Management connection at a time.
+        if let Some(existing) = self.active_channel {
+            debug!("Rejecting Device Management connection: already active on channel {}", existing);
+            return Err(ConnectionStatus::NoMoreConnections);
+        }
+
+        self.active_channel = Some(channel_id);
+        debug!("Accepted Device Management connection on channel {}", channel_id);
+
+        Ok(AcceptedConnection { crd: CRD::DeviceManagement(DeviceManagementCRD) })
     }
 
-    fn close_connection(&mut self, _channel_id: u8) {
-        // No per-connection resources to release for device management
+    fn close_connection(&mut self, channel_id: u8) {
+        if self.active_channel == Some(channel_id) {
+            debug!("Closed Device Management connection on channel {}", channel_id);
+            self.active_channel = None;
+        }
     }
 
     async fn on_data_frame(
@@ -237,11 +354,15 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
                 "Sequence counter mismatch: got {}, expected {} (channel {})",
                 sequence_counter, expected_seq, conn.channel_id
             );
-            let ack = self.build_ack(
-                conn.channel_id, sequence_counter,
-                ConnectionStatus::DataConnectionError,
-                conn, buffer_manager,
-            ).await;
+            let ack = self
+                .build_ack(
+                    conn.channel_id,
+                    sequence_counter,
+                    ConnectionStatus::DataConnectionError,
+                    conn,
+                    buffer_manager,
+                )
+                .await;
             return Ok(DataFrameAction::AckOnly(ack));
         }
 
@@ -254,13 +375,10 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
             conn.recv_sequence_counter = expected_seq.wrapping_add(1);
             conn.last_activity = Instant::now();
 
-            match self.process_cemi_frame(cemi_payload) {
+            match self.process_cemi_frame(cemi_payload).await {
                 Ok(response) => response,
                 Err(status) => {
-                    let ack = self.build_ack(
-                        conn.channel_id, sequence_counter, status,
-                        conn, buffer_manager,
-                    ).await;
+                    let ack = self.build_ack(conn.channel_id, sequence_counter, status, conn, buffer_manager).await;
                     return Ok(DataFrameAction::AckOnly(ack));
                 }
             }
@@ -270,12 +388,11 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         };
 
         // Build responses
-        let mut responses = Vec::new();
+        let mut responses = heapless::Vec::<_, 4>::new();
 
         // 1. ACK
-        let ack_builder = DeviceConfigurationAckBuilder::new(
-            conn.channel_id, sequence_counter, ConnectionStatus::NoError,
-        );
+        let ack_builder =
+            DeviceConfigurationAckBuilder::new(conn.channel_id, sequence_counter, ConnectionStatus::NoError);
         let mut ack_buffer = buffer_manager.borrow().alloc().await;
         ack_buffer.serialize(&ack_builder);
         let _ = responses.push(PendingResponse {
@@ -290,9 +407,8 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
             let send_seq = conn.send_sequence_counter;
             conn.send_sequence_counter = send_seq.wrapping_add(1);
 
-            let req_builder = DeviceConfigurationRequestBuilder::with_payload(
-                conn.channel_id, send_seq, &cemi_response,
-            );
+            let req_builder =
+                DeviceConfigurationRequestBuilder::with_payload(conn.channel_id, send_seq, &*cemi_response);
 
             let mut resp_buffer = buffer_manager.borrow().alloc().await;
             resp_buffer.serialize(&req_builder);
@@ -307,12 +423,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         Ok(DataFrameAction::Responses(responses))
     }
 
-    fn on_data_ack(
-        &mut self,
-        _channel_id: u8,
-        data: &[u8],
-        conn: &mut ConnectionContext,
-    ) -> Result<(), ServerError> {
+    fn on_data_ack(&mut self, _channel_id: u8, data: &[u8], conn: &mut ConnectionContext) -> Result<(), ServerError> {
         let mut buf = &data[..];
         let ack = match buf.parse::<DeviceConfigurationAck>() {
             Ok(a) => a,
@@ -331,9 +442,6 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
     }
 
     fn handled_service_types(&self) -> &[KNXnetIPServiceType] {
-        &[
-            KNXnetIPServiceType::DeviceConfigurationRequest,
-            KNXnetIPServiceType::DeviceConfigurationAck,
-        ]
+        &[KNXnetIPServiceType::DeviceConfigurationRequest, KNXnetIPServiceType::DeviceConfigurationAck]
     }
 }

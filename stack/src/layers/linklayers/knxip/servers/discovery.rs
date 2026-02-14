@@ -13,6 +13,22 @@ use crate::{
 
 use super::{KnxNetIpServer, PendingResponse, ServerContext, ServerError};
 
+/// Resolve an HPAI to a destination address, using the packet source when
+/// the HPAI address is unspecified (`0.0.0.0`). The HPAI port is always
+/// used — only the IP address is substituted.
+///
+/// Per KNX spec 3/8/2 §8.6.3.3: when a client sends a control HPAI with
+/// IP address 0.0.0.0, the server shall use the IP source address of the
+/// received request packet.
+fn resolve_hpai(hpai: &HPAI, packet_source: SocketAddrV4) -> SocketAddrV4 {
+    let addr = hpai.address();
+    if addr.is_unspecified() {
+        SocketAddrV4::new(*packet_source.ip(), hpai.port())
+    } else {
+        SocketAddrV4::new(addr, hpai.port())
+    }
+}
+
 // FIXME: Strictly speaking, we should only have one server that does discovery on 224.0.23.12:3671 and
 //        then multiple servers that handle the control endpoints of other service containers
 
@@ -51,6 +67,7 @@ impl DiscoveryServer {
     async fn handle_search_request(
         &self,
         data: &[u8],
+        source: SocketAddrV4,
         context: &ServerContext<'_>,
     ) -> Result<PendingResponse, ServerError> {
         use crate::messages::knxip::{SearchRequest, SearchResponseBuilder};
@@ -86,7 +103,7 @@ impl DiscoveryServer {
 
         debug!("Sending {} byte SearchResponse to discovery endpoint", response_buffer.len());
 
-        let destination = SocketAddrV4::new(request.discovery_endpoint.address(), request.discovery_endpoint.port());
+        let destination = resolve_hpai(&request.discovery_endpoint, source);
 
         Ok(PendingResponse { buffer: response_buffer, destination, socket_idx: 0 })
     }
@@ -99,6 +116,7 @@ impl DiscoveryServer {
     async fn handle_description_request(
         &self,
         data: &[u8],
+        source: SocketAddrV4,
         context: &ServerContext<'_>,
     ) -> Result<PendingResponse, ServerError> {
         use crate::messages::knxip::{DescriptionRequest, DescriptionResponseBuilder};
@@ -133,7 +151,7 @@ impl DiscoveryServer {
 
         debug!("Sending {} byte DescriptionResponse to control endpoint", response_buffer.len());
 
-        let destination = SocketAddrV4::new(request.control_endpoint.address(), request.control_endpoint.port());
+        let destination = resolve_hpai(&request.control_endpoint, source);
 
         Ok(PendingResponse { buffer: response_buffer, destination, socket_idx: 0 })
     }
@@ -144,14 +162,16 @@ impl KnxNetIpServer for DiscoveryServer {
         &mut self,
         service_type: KNXnetIPServiceType,
         data: &[u8],
-        _source: SocketAddrV4,
+        source: SocketAddrV4,
         context: &ServerContext<'a>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         debug!("Discovery server handling {:?}", service_type);
 
         let response = match service_type {
-            KNXnetIPServiceType::SearchRequest => self.handle_search_request(data, context).await?,
-            KNXnetIPServiceType::DescriptionRequest => self.handle_description_request(data, context).await?,
+            KNXnetIPServiceType::SearchRequest => self.handle_search_request(data, source, context).await?,
+            KNXnetIPServiceType::DescriptionRequest => {
+                self.handle_description_request(data, source, context).await?
+            }
             _ => {
                 debug!("Discovery server received unexpected service type: {:?}", service_type);
                 return Err(ServerError::Unsupported);

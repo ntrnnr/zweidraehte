@@ -53,8 +53,9 @@ impl ChipType {
     pub const fn max_apdu_length(&self) -> u16 {
         // TP1 EFF overhead: CTRL(1) + CTRL2(1) + SRC(2) + DST(2) + LEN(1) + CHK(1) = 8 bytes
         let max = self.max_frame_size() - 8;
-        // Cap at 255 per KNX spec (APDU length field is 1 byte in EFF)
-        if max > 255 { 255 } else { max as u16 }
+        // Cap at 254: the EFF length byte (1 byte, max 255) encodes TPCI + APDU,
+        // so max APDU = 255 - 1 = 254.
+        if max > 254 { 254 } else { max as u16 }
     }
 
     /// Whether this chip supports the U_Version.req command

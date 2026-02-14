@@ -16,6 +16,13 @@ For all these XML files, an XSD schema is available at `manuf_tool_data/knx_proj
 
 The project is organized as a Rust workspace with 6 main crates targeting both embedded devices (no_std) and Linux userspace systems.
 
+### Coding style
+
+- Don't assume std or even alloc in the core crates, we need to run on embedded devices
+- If you see common patterns, implement new features using these patterns in case they fit instead of inventing new ones
+- When generating packets, use the existing packet generation infrastructure in `zweidraehte::messages`
+- When parsing packets, use the existing packet parsing infrastructure in `zweidraehte::messages`
+
 ### Crates
 
 #### 1. Stack Crate (`/stack`)

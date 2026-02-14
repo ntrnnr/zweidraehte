@@ -6,7 +6,10 @@
 
 use core::cell::RefCell;
 
-use crate::messages::buffers::DynBufferManager;
+use embassy_sync::channel::DynamicSender;
+
+use crate::layers::LayerOp;
+use crate::messages::buffers::{Buffer, DynBufferManager};
 use crate::messages::knxip::substructs::DeviceInformation;
 use crate::objects::interface::PropertyServiceHandler;
 
@@ -53,5 +56,15 @@ pub trait PropertyServiceContext {
 pub trait DeviceInfoContext {
     /// Build a [`DeviceInformation`] reflecting the current device state.
     fn device_information(&self) -> DeviceInformation;
+}
+
+/// Provides a sender to the application layer's incoming channel.
+///
+/// Used by cEMI Transport Layer mode (Device Management connections) to
+/// inject synthetic indications directly into the application layer,
+/// bypassing the bus transport/network layers.
+pub trait ApplicationLayerContext {
+    /// Get a sender to the application layer channel.
+    fn application_layer_sender(&self) -> DynamicSender<'_, LayerOp<Buffer<'static>>>;
 }
 
