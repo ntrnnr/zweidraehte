@@ -20,7 +20,7 @@ use crate::{
     messages::{
         buffers::{Buffer, MessageBuffer},
         knx::{CemiFormat, InternalFormat, KnxMessageBuffer, ServiceType},
-        knxip::{KNXnetIPServiceType, RoutingBusy, RoutingIndication},
+        knxip::{KNXnetIPServiceType, RoutingBusy, RoutingIndication, RoutingLostMessage},
     },
     util::packets::ParseBuffer,
 };
@@ -405,19 +405,22 @@ impl KnxNetIpServer for RoutingServer {
                 // Check if the frame exceeds our configured maximum APDU length.
                 // cEMI structure: msg_code(1) + add_info_len(1) + [add_info] + ctrl1(1) + ctrl2(1)
                 //                + src(2) + dst(2) + npdu_len(1) + apdu...
-                // The NPDU length byte is at offset 8 if add_info_len is 0.
+                // The NPDU length byte encodes TPCI (1 byte) + APDU, so the APDU
+                // length is npdu_len - 1. We compare against max_apdu + 1 to avoid
+                // underflow when npdu_len is 0.
                 let max_apdu = context.max_apdu_length();
                 if cemi_data.len() >= 9 {
                     let add_info_len = cemi_data[1] as usize;
                     let npdu_len_offset = 2 + add_info_len + 6; // skip add_info + ctrl1 + ctrl2 + src + dst
                     if cemi_data.len() > npdu_len_offset {
                         let npdu_len = cemi_data[npdu_len_offset] as u16;
-                        if npdu_len > max_apdu {
+                        if npdu_len > max_apdu + 1 {
+                            let apdu_len = npdu_len - 1;
                             warn!(
                                 "Dropping oversized frame: APDU length {} exceeds max {}",
-                                npdu_len, max_apdu
+                                apdu_len, max_apdu
                             );
-                            return Err(ServerError::FrameTooLarge(npdu_len, max_apdu));
+                            return Err(ServerError::FrameTooLarge(apdu_len, max_apdu));
                         }
                     }
                 }
@@ -454,11 +457,12 @@ impl KnxNetIpServer for RoutingServer {
             }
 
             KNXnetIPServiceType::RoutingLostMessage => {
-                // Parse lost message count
-                if data.len() >= 8 {
-                    let lost_count = u16::from_be_bytes([data[6], data[7]]);
-                    warn!("RoutingLostMessage: {} messages lost", lost_count);
-                }
+                let lost = data.parse::<RoutingLostMessage>().map_err(|e| {
+                    debug!("Failed to parse RoutingLostMessage: {:?}", e);
+                    ServerError::ParseError
+                })?;
+
+                warn!("RoutingLostMessage: {} messages lost", lost.lost_message_count);
 
                 // No response needed
                 Ok(Vec::new())
