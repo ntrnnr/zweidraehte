@@ -520,6 +520,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
             let _ = service_types.push(KNXnetIPServiceType::RoutingIndication);
             let _ = service_types.push(KNXnetIPServiceType::RoutingBusy);
             let _ = service_types.push(KNXnetIPServiceType::RoutingLostMessage);
+            let _ = service_types.push(KNXnetIPServiceType::RoutingSystemBroadcast);
 
             let mut endpoints = Vec::new();
             let _ = endpoints.push(EndpointType::new_udp(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));

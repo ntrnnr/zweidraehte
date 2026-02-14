@@ -151,7 +151,7 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
         use platform::SystemControl;
         let mut system = platform::LinuxSystem;
         let Err(e) = system.restart().await;
-        log::error!("Failed to restart: {:?}", e);
+        panic!("Failed to restart: {:?}", e);
     }
 }
 

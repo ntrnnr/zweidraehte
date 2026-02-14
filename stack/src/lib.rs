@@ -1447,7 +1447,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     ///         use platform::SystemControl;
     ///         let mut system = platform::LinuxSystem;
     ///         let Err(e) = system.restart().await;
-    ///         log::error!("Failed to restart: {:?}", e);
+    ///         panic!("Failed to restart: {:?}", e);
     ///     }
     /// }
     /// # }

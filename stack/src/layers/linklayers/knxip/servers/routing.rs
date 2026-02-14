@@ -8,9 +8,10 @@
 //! The server includes a routing timekeeper that implements the KNX specification's
 //! congestion control algorithm with states for Normal, Busy, Throttled, and Slow Duration.
 
-// FIXME: When we implement a full router we need to check out the flow control again
-//        We need to handle queue overflows and possibly send RoutingBusy messages ourselves
-//        We also need to check what to do with RoutingLost messages
+// Note: Sending ROUTING_BUSY (spec 3/8/5 §2.3.5) and ROUTING_LOST_MESSAGE (§2.3.4)
+// is only required for KNX/IP Routers that bridge between IP and a KNX subnetwork.
+// As a KNX/IP device, we don't have a LAN-to-KNX queue that can overflow, so neither
+// applies here. Would need implementing if we add router mode.
 
 use core::net::{Ipv4Addr, SocketAddrV4};
 use embassy_time::Instant;
@@ -20,7 +21,7 @@ use crate::{
     messages::{
         buffers::{Buffer, MessageBuffer},
         knx::{CemiFormat, InternalFormat, KnxMessageBuffer, ServiceType},
-        knxip::{KNXnetIPServiceType, RoutingBusy, RoutingIndication, RoutingLostMessage},
+        knxip::{KNXNETIP_HEADER_SIZE, KNXnetIPServiceType, RoutingBusy, RoutingIndication, RoutingLostMessage},
     },
     util::packets::ParseBuffer,
 };
@@ -42,23 +43,31 @@ enum RoutingState {
 
 /// Routing Timekeeper - implements KNX/IP specification congestion control
 ///
-/// This implements the state machine and timing logic from KNX Specification 3/8/2:
-/// - State 0 (Normal): Standard operation with minimal throttling
-/// - State 1 (Busy): Received RoutingBusy, must wait
-/// - State 2 (Throttled): Random delay after busy clears (Trandom)
-/// - State 3 (SlowDuration): Extended delay before normal operation (Tslowduration)
+/// This implements the state machine and timing logic from KNX Specification 3/8/5
+/// §2.3.5 (Figure 5):
+///
+/// - **Normal**: Standard operation. An implementation-specific send bucket throttle
+///   (not from the spec) limits the send rate to prevent overwhelming multicast.
+/// - **Busy**: Received RoutingBusy — blocked for `t_w` ms.
+/// - **Throttled**: Random delay `t_random = [0..1] * N * 50ms` after busy clears.
+/// - **SlowDuration**: Slow control phase lasting `t_slowduration = N * 100ms`.
+///   Sending IS allowed during this phase, with a minimum spacing of `t_slow = 5ms`.
+///   The congestion counter N decays by 1 every 5ms during this phase.
 #[derive(Debug)]
 struct RoutingTimekeeper {
     /// Current state of the routing timekeeper
     state: RoutingState,
 
-    /// Next time when transmission is allowed
+    /// Next time when transmission is allowed (used in Busy and Throttled states)
     next_allowed_time: Instant,
+
+    /// When the SlowDuration phase expires (only meaningful in SlowDuration state)
+    slow_duration_end: Instant,
 
     /// Last time we received a RoutingBusy message
     last_busy_time: Instant,
 
-    /// Time when state last transitioned to Normal (used for N decay)
+    /// Time reference for N counter decay (set on transition to Normal or SlowDuration)
     state_transition_time: Instant,
 
     /// Last time the routing indication bucket was updated
@@ -81,6 +90,7 @@ impl RoutingTimekeeper {
         Self {
             state: RoutingState::Normal,
             next_allowed_time: now,
+            slow_duration_end: now,
             last_busy_time: now,
             state_transition_time: now,
             bucket_update_time: now,
@@ -144,8 +154,10 @@ impl RoutingTimekeeper {
 
         match self.state {
             RoutingState::Normal => {
-                // Calculate minimum wait based on throttling
-                // Throttle time = 2 * send_counter - 80, minimum 5ms
+                // Implementation-specific send rate limiting (not from KNX spec).
+                // Prevents overwhelming the multicast group by enforcing a minimum
+                // inter-frame gap that grows with the send bucket fill level.
+                // Throttle time = max(5, 2 * send_counter - 80) ms.
                 let throttle_time = (2 * self.send_counter as i32) - 80;
                 let throttle_time = if throttle_time < 5 { 5 } else { throttle_time };
 
@@ -180,24 +192,12 @@ impl RoutingTimekeeper {
                     if now < self.next_allowed_time {
                         wait_time = self.next_allowed_time.duration_since(now).as_millis().min(u16::MAX as u64) as u16;
                     } else {
-                        // Throttle expired, move to SlowDuration
-                        self.state = RoutingState::SlowDuration;
-                        self.next_allowed_time = self.next_allowed_time
-                            + embassy_time::Duration::from_millis(self.calculate_tslowduration() as u64);
+                        // Throttle expired, enter slow control phase
+                        self.enter_slow_duration();
+                        trace!("GetWaitTime() state={:?}", self.state);
 
-                        trace!(
-                            "GetWaitTime() state={:?} waitTime={}",
-                            self.state,
-                            if now < self.next_allowed_time {
-                                self.next_allowed_time.duration_since(now).as_millis()
-                            } else {
-                                0
-                            }
-                        );
-
-                        // Check if slow duration also expired
-                        if now >= self.next_allowed_time {
-                            // Back to normal
+                        // Check if slow duration also already expired
+                        if now >= self.slow_duration_end {
                             self.state = RoutingState::Normal;
                             self.state_transition_time = now;
                             trace!("GetWaitTime() state={:?}", self.state);
@@ -210,22 +210,11 @@ impl RoutingTimekeeper {
                 if now < self.next_allowed_time {
                     wait_time = self.next_allowed_time.duration_since(now).as_millis().min(u16::MAX as u64) as u16;
                 } else {
-                    // Transition to SlowDuration
-                    self.state = RoutingState::SlowDuration;
-                    self.next_allowed_time = self.next_allowed_time
-                        + embassy_time::Duration::from_millis(self.calculate_tslowduration() as u64);
+                    // Transition to slow control phase
+                    self.enter_slow_duration();
+                    trace!("GetWaitTime() state={:?}", self.state);
 
-                    trace!(
-                        "GetWaitTime() state={:?} waitTime={}",
-                        self.state,
-                        if now < self.next_allowed_time {
-                            self.next_allowed_time.duration_since(now).as_millis()
-                        } else {
-                            0
-                        }
-                    );
-
-                    if now >= self.next_allowed_time {
+                    if now >= self.slow_duration_end {
                         self.state = RoutingState::Normal;
                         self.state_transition_time = now;
                         trace!("GetWaitTime() state={:?}", self.state);
@@ -234,14 +223,18 @@ impl RoutingTimekeeper {
             }
 
             RoutingState::SlowDuration => {
-                if now < self.next_allowed_time {
-                    wait_time = self.next_allowed_time.duration_since(now).as_millis().min(u16::MAX as u64) as u16;
+                // Slow control phase: sending IS allowed, but with a minimum
+                // spacing of t_slow = 5ms between frames (spec 3/8/5 §2.3.5).
+                if now >= self.slow_duration_end {
+                    // Phase expired, back to normal
+                    self.state = RoutingState::Normal;
+                    self.state_transition_time = now;
+                    trace!("GetWaitTime() state={:?}", self.state);
                 } else {
-                    // Transition to Normal
-                    if now >= self.next_allowed_time {
-                        self.state = RoutingState::Normal;
-                        self.state_transition_time = now;
-                        trace!("GetWaitTime() state={:?}", self.state);
+                    // Enforce t_slow = 5ms minimum inter-frame gap
+                    let next_allowed = self.last_send_time + embassy_time::Duration::from_millis(5);
+                    if now < next_allowed {
+                        wait_time = next_allowed.duration_since(now).as_millis().min(u16::MAX as u64) as u16;
                     }
                 }
             }
@@ -272,9 +265,11 @@ impl RoutingTimekeeper {
     }
 
     /// Update the routing busy bucket (decays congestion counter N)
+    ///
+    /// Per spec 3/8/5 §2.3.5: N decays by 1 every `t_bd = 5ms` during slow control
+    /// (SlowDuration) and in Normal state.
     fn update_routing_busy_bucket(&mut self, now: Instant) {
-        // Only update in Normal state
-        if self.state != RoutingState::Normal {
+        if self.state != RoutingState::Normal && self.state != RoutingState::SlowDuration {
             return;
         }
 
@@ -291,6 +286,18 @@ impl RoutingTimekeeper {
                 self.state_transition_time = now;
             }
         }
+    }
+
+    /// Transition into the SlowDuration (slow control) phase.
+    ///
+    /// Sets the phase end time based on `t_slowduration = N * 100ms` and
+    /// resets the N decay reference to the current transition point.
+    fn enter_slow_duration(&mut self) {
+        self.state = RoutingState::SlowDuration;
+        self.slow_duration_end =
+            self.next_allowed_time + embassy_time::Duration::from_millis(self.calculate_tslowduration() as u64);
+        // N decay runs during slow control; anchor from the transition point
+        self.state_transition_time = self.next_allowed_time;
     }
 
     /// Calculate Trandom - random delay after RoutingBusy clears
@@ -382,6 +389,48 @@ impl RoutingServer {
         let destination = SocketAddrV4::new(self.multicast_addr, self.port);
         Ok(PendingResponse { buffer: output_buffer, destination, socket_idx: 0 })
     }
+
+    /// Process a received cEMI frame from a routing message (RoutingIndication or
+    /// RoutingSystemBroadcast). Validates the APDU length, converts from cEMI to
+    /// internal format, and forwards to the network layer.
+    async fn handle_routing_cemi<'a>(
+        &self,
+        cemi_data: &[u8],
+        context: &ServerContext<'a>,
+    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+        // Check if the frame exceeds our configured maximum APDU length.
+        // cEMI structure: msg_code(1) + add_info_len(1) + [add_info] + ctrl1(1) + ctrl2(1)
+        //                + src(2) + dst(2) + npdu_len(1) + apdu...
+        // The NPDU length byte encodes TPCI (1 byte) + APDU, so the APDU
+        // length is npdu_len - 1. We compare against max_apdu + 1 to avoid
+        // underflow when npdu_len is 0.
+        let max_apdu = context.max_apdu_length();
+        if cemi_data.len() >= 9 {
+            let add_info_len = cemi_data[1] as usize;
+            let npdu_len_offset = 2 + add_info_len + 6; // skip add_info + ctrl1 + ctrl2 + src + dst
+            if cemi_data.len() > npdu_len_offset {
+                let npdu_len = cemi_data[npdu_len_offset] as u16;
+                if npdu_len > max_apdu + 1 {
+                    let apdu_len = npdu_len - 1;
+                    warn!("Dropping oversized frame: APDU length {} exceeds max {}", apdu_len, max_apdu);
+                    return Err(ServerError::FrameTooLarge(apdu_len, max_apdu));
+                }
+            }
+        }
+
+        // Allocate a buffer and copy the cEMI data into it
+        let mut knx_buffer = context.alloc_buffer().await;
+        knx_buffer.push_slice(cemi_data);
+
+        // Convert cEMI to internal format (service type derived from message code)
+        let cemi_msg: KnxMessageBuffer<Buffer<'static>, CemiFormat> = KnxMessageBuffer::from_cemi(knx_buffer);
+        let internal_msg = cemi_msg.into_internal();
+
+        // Forward to network layer
+        context.send_to_network_layer(internal_msg).await;
+
+        Ok(Vec::new())
+    }
 }
 
 impl KnxNetIpServer for RoutingServer {
@@ -394,50 +443,25 @@ impl KnxNetIpServer for RoutingServer {
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         match service_type {
             KNXnetIPServiceType::RoutingIndication => {
-                // Parse the RoutingIndication message
                 let indication = data.parse::<RoutingIndication<_>>().map_err(|e| {
                     debug!("Failed to parse RoutingIndication: {:?}", e);
                     ServerError::ParseError
                 })?;
 
-                let cemi_data = indication.cemi_data();
+                self.handle_routing_cemi(indication.cemi_data(), context).await
+            }
 
-                // Check if the frame exceeds our configured maximum APDU length.
-                // cEMI structure: msg_code(1) + add_info_len(1) + [add_info] + ctrl1(1) + ctrl2(1)
-                //                + src(2) + dst(2) + npdu_len(1) + apdu...
-                // The NPDU length byte encodes TPCI (1 byte) + APDU, so the APDU
-                // length is npdu_len - 1. We compare against max_apdu + 1 to avoid
-                // underflow when npdu_len is 0.
-                let max_apdu = context.max_apdu_length();
-                if cemi_data.len() >= 9 {
-                    let add_info_len = cemi_data[1] as usize;
-                    let npdu_len_offset = 2 + add_info_len + 6; // skip add_info + ctrl1 + ctrl2 + src + dst
-                    if cemi_data.len() > npdu_len_offset {
-                        let npdu_len = cemi_data[npdu_len_offset] as u16;
-                        if npdu_len > max_apdu + 1 {
-                            let apdu_len = npdu_len - 1;
-                            warn!(
-                                "Dropping oversized frame: APDU length {} exceeds max {}",
-                                apdu_len, max_apdu
-                            );
-                            return Err(ServerError::FrameTooLarge(apdu_len, max_apdu));
-                        }
-                    }
+            KNXnetIPServiceType::RoutingSystemBroadcast => {
+                // Same wire format as RoutingIndication (KNXnet/IP header + cEMI).
+                // The dispatch layer already validated the header and extracted the
+                // service type, so we just skip the 6-byte header to get the cEMI.
+                if data.len() <= KNXNETIP_HEADER_SIZE {
+                    debug!("RoutingSystemBroadcast too short: {} bytes", data.len());
+                    return Err(ServerError::ParseError);
                 }
+                let cemi_data = &data[KNXNETIP_HEADER_SIZE..];
 
-                // Allocate a buffer and copy the cEMI data into it
-                let mut knx_buffer = context.alloc_buffer().await;
-                knx_buffer.push_slice(cemi_data);
-
-                // Convert cEMI to internal format (service type derived from message code)
-                let cemi_msg: KnxMessageBuffer<Buffer<'static>, CemiFormat> = KnxMessageBuffer::from_cemi(knx_buffer);
-                let internal_msg = cemi_msg.into_internal();
-
-                // Forward to network layer
-                context.send_to_network_layer(internal_msg).await;
-
-                // No response needed
-                Ok(Vec::new())
+                self.handle_routing_cemi(cemi_data, context).await
             }
 
             KNXnetIPServiceType::RoutingBusy => {
@@ -482,7 +506,7 @@ impl KnxNetIpServer for RoutingServer {
 
         if wait_time > 0 {
             // We need to wait - caller should retry after the specified time
-            warn!("RoutingServer: throttled, need to wait {}ms", wait_time);
+            trace!("RoutingServer: throttled, need to wait {}ms", wait_time);
             return Err(ServerError::Busy(wait_time));
         }
 
