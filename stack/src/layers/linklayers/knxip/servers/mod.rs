@@ -4,8 +4,8 @@ pub mod remote_config;
 pub mod routing;
 
 pub use connection_manager::{
-    ConnectionManager, ConnectionTypeHandler,
-    ConnectionTypeHandlerEnum, DeviceMgmtConnectionHandler,
+    ConnectionManager, ConnectionManagerResult, ConnectionTransport, ConnectionTypeHandler,
+    ConnectionTypeHandlerEnum, DeviceMgmtConnectionHandler, TcpChannelEvent,
 };
 pub use discovery::DiscoveryServer;
 pub use remote_config::RemoteConfigurationServer;
@@ -16,7 +16,7 @@ use heapless::Vec;
 
 use crate::messages::{buffers::Buffer, knx::KnxMessageBuffer, knxip::KNXnetIPServiceType};
 
-use super::{PendingResponse, ServerContext, ServerError};
+use super::{PendingResponse, ResponseTarget, ServerContext, ServerError};
 
 /// Resolve an HPAI to a destination address, using the packet source when
 /// the HPAI address is unspecified (`0.0.0.0`). The HPAI port is always

@@ -26,7 +26,7 @@ use crate::{
     util::packets::ParseBuffer,
 };
 
-use super::{KnxNetIpServer, PendingResponse, ServerContext, ServerError};
+use super::{KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, ServerError};
 
 /// Routing Server State Machine
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,7 +387,10 @@ impl RoutingServer {
         RoutingIndication::wrap_cemi(&mut output_buffer);
 
         let destination = SocketAddrV4::new(self.multicast_addr, self.port);
-        Ok(PendingResponse { buffer: output_buffer, destination, socket_idx: 0 })
+        Ok(PendingResponse {
+            buffer: output_buffer,
+            target: ResponseTarget::Udp { destination, socket_idx: 0 },
+        })
     }
 
     /// Process a received cEMI frame from a routing message (RoutingIndication or

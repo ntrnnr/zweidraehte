@@ -63,10 +63,114 @@ pub trait AsyncUdpSocket: Sized {
     async fn send_to(&self, buf: &[u8], addr: SocketAddrV4) -> Result<usize, Self::Error>;
 }
 
+// ============================================================================
+// TCP
+// ============================================================================
+
+/// Options for creating a TCP listener socket.
+#[derive(Debug, Clone)]
+pub struct TcpListenerOptions {
+    /// Address to bind to (typically `Ipv4Addr::UNSPECIFIED`).
+    pub address: Ipv4Addr,
+    /// Port to bind to.
+    pub port: u16,
+    /// Network interface name to bind to.
+    pub interface: Option<&'static str>,
+}
+
+/// Async TCP listener that accepts incoming connections.
+///
+/// The listener binds to a local address/port and accepts incoming TCP
+/// connections. Each accepted connection produces a stream (implementing
+/// `embedded_io_async::Read + Write`) and the peer's socket address.
+pub trait AsyncTcpListener: Sized {
+    type Error: Debug;
+    type Stream: embedded_io_async::Read<Error: Debug>
+        + embedded_io_async::Write<Error: Debug>
+        + embedded_io_async::ErrorType;
+
+    /// Bind and start listening on the given address/port.
+    fn bind(options: TcpListenerOptions) -> Result<Self, Self::Error>;
+
+    /// Accept a new incoming TCP connection.
+    ///
+    /// Returns the bidirectional stream and the peer's socket address.
+    async fn accept(&self) -> Result<(Self::Stream, SocketAddrV4), Self::Error>;
+
+    /// Get the local endpoint this listener is bound to.
+    fn local_endpoint(&self) -> SocketAddrV4;
+}
+
+/// A TCP listener that never accepts connections.
+///
+/// For platforms that don't support TCP (e.g., embedded no_std targets),
+/// this type satisfies the `AsyncTcpListener` bound on `IpTransport`
+/// without requiring a real TCP implementation.
+pub struct NeverTcpListener {
+    _priv: core::convert::Infallible,
+}
+
+/// A TCP stream type that can never be constructed.
+///
+/// Companion to [`NeverTcpListener`] — since the listener can never be
+/// created, this stream type is never instantiated either.
+pub struct NeverTcpStream {
+    _priv: core::convert::Infallible,
+}
+
+impl embedded_io_async::ErrorType for NeverTcpStream {
+    type Error = core::convert::Infallible;
+}
+
+impl embedded_io_async::Read for NeverTcpStream {
+    async fn read(&mut self, _buf: &mut [u8]) -> Result<usize, Self::Error> {
+        match self._priv {}
+    }
+}
+
+impl embedded_io_async::Write for NeverTcpStream {
+    async fn write(&mut self, _buf: &[u8]) -> Result<usize, Self::Error> {
+        match self._priv {}
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        match self._priv {}
+    }
+}
+
+/// Error type for [`NeverTcpListener`].
+#[derive(Debug)]
+pub struct NeverTcpError;
+
+impl AsyncTcpListener for NeverTcpListener {
+    type Error = NeverTcpError;
+    type Stream = NeverTcpStream;
+
+    fn bind(_options: TcpListenerOptions) -> Result<Self, Self::Error> {
+        Err(NeverTcpError)
+    }
+
+    async fn accept(&self) -> Result<(Self::Stream, SocketAddrV4), Self::Error> {
+        match self._priv {}
+    }
+
+    fn local_endpoint(&self) -> SocketAddrV4 {
+        match self._priv {}
+    }
+}
+
+// ============================================================================
+// IP Transport
+// ============================================================================
+
 /// IP transport abstraction grouping socket types for a platform.
 ///
-/// This trait provides a single type parameter for all IP-related socket types,
-/// making it easy to add TCP support later without changing consumer signatures.
+/// Bundles all IP-related socket types (UDP and TCP) into a single trait,
+/// so consumers are generic over one type parameter rather than many.
 pub trait IpTransport {
     type UdpSocket: AsyncUdpSocket;
+    type TcpListener: AsyncTcpListener<Stream = Self::TcpStream>;
+    type TcpStream: embedded_io_async::Read<Error: Debug>
+        + embedded_io_async::Write<Error: Debug>
+        + embedded_io_async::ErrorType;
 }

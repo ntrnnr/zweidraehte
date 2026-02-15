@@ -27,7 +27,7 @@ use crate::messages::{
 
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
-use super::{KnxNetIpServer, PendingResponse, ServerContext, ServerError, resolve_hpai};
+use super::{KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, ServerError, resolve_hpai};
 
 // ============================================================================
 // SERVER
@@ -117,8 +117,7 @@ impl RemoteConfigurationServer {
         let mut responses = Vec::new();
         let _ = responses.push(PendingResponse {
             buffer: response_buffer,
-            destination,
-            socket_idx: 0,
+            target: ResponseTarget::Udp { destination, socket_idx: 0 },
         });
         Ok(responses)
     }
@@ -204,8 +203,7 @@ impl RemoteConfigurationServer {
         let mut responses = Vec::new();
         let _ = responses.push(PendingResponse {
             buffer: response_buffer,
-            destination,
-            socket_idx: 0,
+            target: ResponseTarget::Udp { destination, socket_idx: 0 },
         });
         Ok(responses)
     }

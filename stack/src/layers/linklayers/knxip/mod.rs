@@ -5,7 +5,7 @@ use core::{
     net::{Ipv4Addr, SocketAddrV4},
 };
 
-use embassy_futures::select::{Either4, select_slice, select4};
+use embassy_futures::select::{Either, Either4, select, select_slice, select4};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, DynamicSender},
@@ -13,7 +13,9 @@ use embassy_sync::{
 use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
 
-use platform::{AsyncUdpSocket, IpTransport, UdpSocketOptions};
+use platform::{AsyncUdpSocket, IpTransport, TcpListenerOptions, UdpSocketOptions};
+
+use self::tcp_manager::{TcpEvent, TcpManager};
 
 use crate::{
     layers::{Inbox, Layer, LayerOp, LinkLayerBuilder, LinkLayerBuilderBase},
@@ -26,6 +28,8 @@ use crate::{
 };
 
 pub mod servers;
+mod tcp_framing;
+mod tcp_manager;
 
 use crate::context::{
     ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpDiagnosticsContext, KnxAddressContext,
@@ -209,17 +213,54 @@ pub enum ServerError {
     FrameTooLarge(u16, u16),
 }
 
+/// Where a response should be sent.
+#[derive(Debug, Clone, Copy)]
+pub enum ResponseTarget {
+    /// Send as a UDP datagram to the given address on the given socket.
+    Udp { destination: SocketAddrV4, socket_idx: usize },
+    /// Write to an active TCP connection identified by its slot index.
+    Tcp { tcp_idx: usize },
+}
+
+/// Origin of an incoming packet — allows servers to build a matching
+/// [`ResponseTarget`] without knowing the transport details.
+#[derive(Debug, Clone, Copy)]
+pub enum PacketOrigin {
+    /// Received as a UDP datagram.
+    Udp { source: SocketAddrV4, socket_idx: usize },
+    /// Received on a TCP connection.
+    Tcp { peer: SocketAddrV4, tcp_idx: usize },
+}
+
+impl PacketOrigin {
+    /// The peer's address, regardless of transport.
+    pub fn peer_addr(&self) -> SocketAddrV4 {
+        match *self {
+            PacketOrigin::Udp { source, .. } => source,
+            PacketOrigin::Tcp { peer, .. } => peer,
+        }
+    }
+
+    /// Build a [`ResponseTarget`] that replies on the same transport.
+    ///
+    /// For UDP, the destination is the packet source address on the same
+    /// socket. For TCP, it routes back on the same TCP connection.
+    pub fn reply_target(&self) -> ResponseTarget {
+        match *self {
+            PacketOrigin::Udp { source, socket_idx } => ResponseTarget::Udp { destination: source, socket_idx },
+            PacketOrigin::Tcp { tcp_idx, .. } => ResponseTarget::Tcp { tcp_idx },
+        }
+    }
+}
+
 /// A response that is ready to be sent
 #[derive(Debug)]
 pub struct PendingResponse {
     /// The buffer containing the response data
     pub buffer: Buffer<'static>,
 
-    /// The destination address
-    pub destination: SocketAddrV4,
-
-    /// Which socket to send on (index into the socket array)
-    pub socket_idx: usize,
+    /// Where to send this response
+    pub target: ResponseTarget,
 }
 
 /// Context provided to servers for accessing stack resources.
@@ -350,7 +391,10 @@ impl SocketDescriptor {
     }
 }
 
-/// Static resources for KNX/IP link layer
+/// Static resources for KNX/IP link layer.
+///
+/// `MAX_TCP` controls the maximum number of concurrent TCP connections.
+/// Set to 0 to disable TCP entirely (saves memory on constrained targets).
 pub struct KnxNetIpResources<T: IpTransport, const MAX_SOCKETS: usize> {
     /// Storage for UDP socket handles
     sockets: MaybeUninit<[Option<T::UdpSocket>; MAX_SOCKETS]>,
@@ -388,16 +432,17 @@ const MAX_SERVERS: usize = 3;
 /// let builder = KnxNetIpBuilder::<LinuxIpTransport, 2>::new("eth0", interface_addr, control_endpoint)
 ///     .enable_routing_server();
 /// ```
-pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize> {
+pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize = 1> {
     interface_name: &'static str,
     local_addr: Ipv4Addr,
     control_endpoint: substructs::HPAI,
     enable_routing: bool,
     enable_remote_config: bool,
+    enable_tcp: bool,
     _transport: core::marker::PhantomData<T>,
 }
 
-impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
+impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBuilder<T, MAX_SOCKETS, MAX_TCP> {
     /// Create a new builder with the network interface to bind to.
     ///
     /// The discovery server is always enabled (mandatory per KNX spec 3/8/2
@@ -412,6 +457,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
     /// # Type Parameters
     /// * `T` - The IP transport implementation providing socket types
     /// * `MAX_SOCKETS` - Maximum number of UDP sockets to create
+    /// * `MAX_TCP` - Maximum number of concurrent TCP connections
     pub const fn new(interface_name: &'static str, local_addr: Ipv4Addr, control_endpoint: substructs::HPAI) -> Self {
         Self {
             interface_name,
@@ -419,6 +465,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
             control_endpoint,
             enable_routing: false,
             enable_remote_config: false,
+            enable_tcp: false,
             _transport: core::marker::PhantomData,
         }
     }
@@ -446,6 +493,18 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         self
     }
 
+    /// Enable TCP support for connection-oriented services.
+    ///
+    /// When enabled, a TCP listener is bound on the same port as the
+    /// control endpoint. Clients (e.g., ETS) can establish TCP connections
+    /// for Device Management and Tunneling. The Core service family
+    /// version is bumped to v2 to indicate TCP support (KNX spec 3/8/2
+    /// §9.2).
+    pub fn enable_tcp(mut self) -> Self {
+        self.enable_tcp = true;
+        self
+    }
+
     /// Build the KnxNetIp link layer.
     ///
     /// This method:
@@ -459,7 +518,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         resources: &'res mut KnxNetIpResources<T, MAX_SOCKETS>,
         context: &'res dyn KnxNetIpContext,
         network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
-    ) -> KnxNetIp<'res, T, MAX_SOCKETS> {
+    ) -> KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP> {
         // Initialize response channel
         let _response_channel = resources.response_channel.write(Channel::new());
 
@@ -470,9 +529,10 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         let mut supported_services = Vec::<substructs::SupportedService, 5>::new();
 
         // Core v1: discovery, description, connection management over UDP.
-        // Core v2 additionally requires TCP support (§9.2), which we don't implement yet.
+        // Core v2 additionally requires TCP support (§9.2).
+        let core_version = if self.enable_tcp { 2 } else { 1 };
         let _ = supported_services
-            .push(substructs::SupportedService { family: substructs::ServiceFamily::Core, version: 1 });
+            .push(substructs::SupportedService { family: substructs::ServiceFamily::Core, version: core_version });
 
         // Device Management v2: mandatory for all KNXnet/IP device classes (3/8/1 Table 2).
         // v2 requires cEMI Transport Layer support (T_Data_Individual, T_Data_Connected)
@@ -688,6 +748,29 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
             servers::ConnectionTypeHandlerEnum::DeviceManagement(handler),
         );
 
+        // ====================================================================
+        // TCP manager
+        // ====================================================================
+
+        let mut tcp_manager = TcpManager::new();
+
+        if self.enable_tcp {
+            let tcp_port = self.control_endpoint.port();
+            let tcp_options = TcpListenerOptions {
+                address: Ipv4Addr::UNSPECIFIED,
+                port: tcp_port,
+                interface: Some(self.interface_name),
+            };
+            match tcp_manager.bind(tcp_options) {
+                Ok(()) => {
+                    info!("TCP listener bound on port {} (interface {})", tcp_port, self.interface_name);
+                }
+                Err(_e) => {
+                    error!("Failed to bind TCP listener on port {}: {:?}", tcp_port, _e);
+                }
+            }
+        }
+
         KnxNetIp {
             resources,
             socket_descriptors,
@@ -699,11 +782,14 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
             connection_manager,
             context,
             enable_remote_config: self.enable_remote_config,
+            tcp_manager,
         }
     }
 }
 
-impl<T: IpTransport + 'static, const MAX_SOCKETS: usize> LinkLayerBuilderBase for KnxNetIpBuilder<T, MAX_SOCKETS> {
+impl<T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_TCP: usize> LinkLayerBuilderBase
+    for KnxNetIpBuilder<T, MAX_SOCKETS, MAX_TCP>
+{
     type Resources = KnxNetIpResources<T, MAX_SOCKETS>;
 
     fn create_resources(&self) -> Self::Resources {
@@ -711,8 +797,8 @@ impl<T: IpTransport + 'static, const MAX_SOCKETS: usize> LinkLayerBuilderBase fo
     }
 }
 
-impl<CTX: KnxNetIpContext, T: IpTransport + 'static, const MAX_SOCKETS: usize> LinkLayerBuilder<CTX>
-    for KnxNetIpBuilder<T, MAX_SOCKETS>
+impl<CTX: KnxNetIpContext, T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_TCP: usize>
+    LinkLayerBuilder<CTX> for KnxNetIpBuilder<T, MAX_SOCKETS, MAX_TCP>
 {
     fn build_and_run<'a>(
         self,
@@ -764,7 +850,7 @@ fn make_server_context<'a>(
     )
 }
 
-pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize> {
+pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize = 1> {
     /// Reference to socket resources
     resources: &'res KnxNetIpResources<T, MAX_SOCKETS>,
     /// Socket descriptors (metadata about each socket)
@@ -789,9 +875,12 @@ pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize> {
     /// Whether the remote config server is enabled (controls whether
     /// `IpDiagnosticsContext` is exposed to servers via `ServerContext`).
     enable_remote_config: bool,
+    /// TCP connection manager. Always present; without a bound listener
+    /// it is a no-op.
+    tcp_manager: TcpManager<T, MAX_TCP>,
 }
 
-impl<'res, T: IpTransport, const MAX_SOCKETS: usize> KnxNetIp<'res, T, MAX_SOCKETS> {
+impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP> {
     /// Process expired retry requests
     async fn process_retry_queue(&mut self, response_channel: &Channel<NoopRawMutex, PendingResponse, 16>) {
         let now = Instant::now();
@@ -902,35 +991,98 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> KnxNetIp<'res, T, MAX_SOCKE
         }
     }
 
-    /// Receive from a socket into a buffer
-    async fn recv_from_socket(&self, socket_idx: usize) -> Result<(Buffer<'static>, SocketAddrV4), ()> {
-        let sockets = unsafe { self.resources.sockets.assume_init_ref() };
+    /// Dispatch a received KNX/IP frame through the connection manager
+    /// and connectionless servers.
+    ///
+    /// Shared between UDP and TCP receive paths. The `origin` identifies
+    /// the transport and peer so that responses are routed correctly and
+    /// TCP connections can be tracked.
+    async fn dispatch_frame(
+        &mut self,
+        buffer: &[u8],
+        origin: PacketOrigin,
+        response_channel: &Channel<NoopRawMutex, PendingResponse, 16>,
+    ) {
+        let source = origin.peer_addr();
+        let socket_idx = match origin {
+            PacketOrigin::Udp { socket_idx, .. } => socket_idx,
+            PacketOrigin::Tcp { .. } => 0,
+        };
 
-        if let Some(Some(socket)) = sockets.get(socket_idx) {
-            // Allocate buffer
-            let mut buffer = self.context.buffer_manager().borrow().alloc().await;
-            buffer.resize(buffer.capacity(), 0);
+        match peek_service_type(buffer) {
+            Ok(service_type) => {
+                debug!("  Service type: {:?}", service_type);
 
-            // Receive data
-            match socket.recv_from(&mut buffer[..]).await {
-                Ok((len, source)) => {
-                    trace!("KNX/IP RX {} bytes on socket {} from {}: {:x?}", len, socket_idx, source, &buffer[..len]);
-                    buffer.set_len(len);
-                    Ok((buffer, source))
-                }
-                Err(e) => {
-                    error!("Failed to receive on socket {}: {:?}", socket_idx, e);
-                    Err(())
+                // Try the connection manager first. It handles
+                // connection lifecycle and data frames for active
+                // connections. If unrecognized, fall through to
+                // connectionless servers.
+                match self
+                    .connection_manager
+                    .on_indication(service_type, buffer, origin, self.context.buffer_manager(), self.network_layer_tx)
+                    .await
+                {
+                    Ok(result) => {
+                        for response in result.responses {
+                            response_channel.send(response).await;
+                        }
+                        // Apply TCP channel tracking side-effects
+                        self.apply_tcp_channel_events(result.tcp_events);
+                    }
+                    Err(ServerError::InvalidMessage) => {
+                        // Fall through to connectionless servers.
+                        for server in &mut self.server_instances {
+                            if server.handles(service_type, socket_idx) {
+                                let context =
+                                    make_server_context(self.context, self.enable_remote_config, self.network_layer_tx);
+
+                                match server.handler.on_indication(service_type, buffer, source, &context).await {
+                                    Ok(responses) => {
+                                        for response in responses {
+                                            response_channel.send(response).await;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Server error handling {:?}: {:?}", service_type, e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Connection manager error for {:?}: {:?}", service_type, e);
+                    }
                 }
             }
-        } else {
-            error!("Socket {} not available", socket_idx);
-            Err(())
+            Err(e) => {
+                warn!("Failed to parse KNX/IP service type from {}: {:?}", source, e);
+            }
+        }
+    }
+
+    /// Apply TCP channel tracking events to the TCP manager.
+    fn apply_tcp_channel_events(&mut self, events: Vec<servers::TcpChannelEvent, 2>) {
+        use servers::TcpChannelEvent;
+        for event in events {
+            match event {
+                TcpChannelEvent::Added { tcp_idx, channel_id } => {
+                    if let Some(tcp_conn) = self.tcp_manager.connection_mut(tcp_idx) {
+                        tcp_conn.add_channel(channel_id);
+                    }
+                }
+                TcpChannelEvent::Removed { tcp_idx, channel_id } => {
+                    if let Some(tcp_conn) = self.tcp_manager.connection_mut(tcp_idx) {
+                        tcp_conn.remove_channel(channel_id);
+                    }
+                }
+            }
         }
     }
 }
 
-impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res> for KnxNetIp<'res, T, MAX_SOCKETS> {
+impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> Layer<'res>
+    for KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP>
+{
     type Buffer = Buffer<'static>;
 
     async fn process<M>(&mut self, mut inbox: M) -> !
@@ -950,14 +1102,28 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res> for KnxNetIp<'r
             // First, drain any pending responses to free their buffers
             // This is important because retry queue processing may need these buffers
             while let Ok(pending_response) = response_channel.try_receive() {
-                let destination = pending_response.destination;
-                let socket_idx = pending_response.socket_idx;
                 let data = &pending_response.buffer[..];
 
-                debug!("Sending {} byte response to {} on socket {} (drain)", data.len(), destination, socket_idx);
-
-                if !self.socket_descriptors.is_empty() {
-                    let _ = self.send_on_socket(socket_idx, data, destination).await;
+                match pending_response.target {
+                    ResponseTarget::Udp { destination, socket_idx } => {
+                        debug!(
+                            "Sending {} byte response to {} on socket {} (drain)",
+                            data.len(),
+                            destination,
+                            socket_idx
+                        );
+                        if !self.socket_descriptors.is_empty() {
+                            let _ = self.send_on_socket(socket_idx, data, destination).await;
+                        }
+                    }
+                    ResponseTarget::Tcp { tcp_idx } => {
+                        debug!("Sending {} byte response on TCP connection {} (drain)", data.len(), tcp_idx);
+                        if self.tcp_manager.write_to(tcp_idx, data).await.is_err() {
+                            warn!("TCP write failed on connection {}, closing", tcp_idx);
+                            self.tcp_manager.close(tcp_idx);
+                            self.connection_manager.on_tcp_closed(tcp_idx);
+                        }
+                    }
                 }
                 // pending_response is dropped here, freeing its buffer
             }
@@ -967,25 +1133,84 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res> for KnxNetIp<'r
 
             // Run connection manager heartbeat check if connections are active
             if self.connection_manager.has_active_connections() {
-                self.connection_manager.on_tick();
+                let tcp_events = self.connection_manager.on_tick();
+                for event in tcp_events {
+                    if let servers::TcpChannelEvent::Removed { tcp_idx, channel_id } = event {
+                        if let Some(tcp_conn) = self.tcp_manager.connection_mut(tcp_idx) {
+                            tcp_conn.remove_channel(channel_id);
+                        }
+                    }
+                }
             }
 
-            // Select between socket receives, inbox messages, pending responses, and timer.
-            // The timer fires for both retry queue processing and heartbeat checks.
+            // Check TCP idle timeouts alongside the heartbeat.
+            if self.tcp_manager.has_active_connections() {
+                let tcp_idle_events = self.tcp_manager.check_idle_timeouts();
+                for event in tcp_idle_events {
+                    if let TcpEvent::Closed { tcp_idx, .. } = &event {
+                        self.connection_manager.on_tcp_closed(*tcp_idx);
+                    }
+                }
+            }
+
+            // ================================================================
+            // Main select: UDP + TCP transport, inbox, responses, timer
+            // ================================================================
+            //
+            // The first arm nests a `select` to combine UDP socket receives
+            // with TCP events (accept + read). This avoids needing select5.
             let result = {
-                // Create futures for receiving from all sockets
+                // Borrow individual fields to avoid conflicting borrows
+                // between recv_from_socket (borrows resources + context)
+                // and tcp_manager.next_event (borrows tcp_manager mutably).
+                let sockets = unsafe { self.resources.sockets.assume_init_ref() };
+                let buffer_manager = self.context.buffer_manager();
+
+                // Create UDP receive futures using raw socket access
+                // (avoids borrowing self through recv_from_socket).
+                let recv = |socket_idx: usize| {
+                    let bm = buffer_manager;
+                    async move {
+                        if let Some(Some(socket)) = sockets.get(socket_idx) {
+                            let mut buffer = bm.borrow().alloc().await;
+                            buffer.resize(buffer.capacity(), 0);
+                            match socket.recv_from(&mut buffer[..]).await {
+                                Ok((len, source)) => {
+                                    trace!(
+                                        "KNX/IP RX {} bytes on socket {} from {}: {:x?}",
+                                        len,
+                                        socket_idx,
+                                        source,
+                                        &buffer[..len]
+                                    );
+                                    buffer.set_len(len);
+                                    Ok((buffer, source))
+                                }
+                                Err(e) => {
+                                    error!("Failed to receive on socket {}: {:?}", socket_idx, e);
+                                    Err(())
+                                }
+                            }
+                        } else {
+                            error!("Socket {} not available", socket_idx);
+                            Err(())
+                        }
+                    }
+                };
+
                 let mut socket_futures = Vec::<_, MAX_SOCKETS>::new();
                 for i in 0..self.socket_descriptors.len() {
-                    let _ = socket_futures.push(self.recv_from_socket(i));
+                    let _ = socket_futures.push(recv(i));
                 }
 
-                // Compute the next timer: the earlier of retry time and heartbeat tick.
-                // Heartbeat runs every 10 seconds when connections are active.
-                let heartbeat_time = if self.connection_manager.has_active_connections() {
-                    Some(Instant::now() + Duration::from_secs(10))
-                } else {
-                    None
-                };
+                // Timer: earliest of retry time, heartbeat tick, and TCP
+                // idle timeout (10s when idle TCP connections exist).
+                let heartbeat_time =
+                    if self.connection_manager.has_active_connections() || self.tcp_manager.has_active_connections() {
+                        Some(Instant::now() + Duration::from_secs(10))
+                    } else {
+                        None
+                    };
 
                 let next_timer = match (self.get_next_retry_time(), heartbeat_time) {
                     (Some(a), Some(b)) => Some(if a < b { a } else { b }),
@@ -994,118 +1219,62 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res> for KnxNetIp<'r
                     (None, None) => None,
                 };
 
+                // Nest select: UDP receives + TCP events in the first arm
+                let transport_future =
+                    select(select_slice(socket_futures.as_mut_slice()), self.tcp_manager.next_event(buffer_manager));
+
                 match next_timer {
                     Some(timer_at) => {
-                        select4(
-                            select_slice(socket_futures.as_mut_slice()),
-                            inbox.next(),
-                            response_channel.receive(),
-                            Timer::at(timer_at),
-                        )
-                        .await
+                        select4(transport_future, inbox.next(), response_channel.receive(), Timer::at(timer_at)).await
                     }
-                    None => {
-                        select4(
-                            select_slice(socket_futures.as_mut_slice()),
-                            inbox.next(),
-                            response_channel.receive(),
-                            pending::<()>(),
-                        )
-                        .await
-                    }
+                    None => select4(transport_future, inbox.next(), response_channel.receive(), pending::<()>()).await,
                 }
             };
 
             match result {
-                // Timer expired (retry queue or heartbeat)
+                // Timer expired (retry queue, heartbeat, or TCP idle)
                 Either4::Fourth(()) => {
-                    // Both retry and heartbeat processing happen at start of loop
                     trace!("KNX/IP timer expired");
                     continue;
                 }
-                // Socket received a packet
-                Either4::First((Ok((buffer, source)), socket_idx)) => {
-                    debug!("Received {} bytes on socket {} from {}", buffer.len(), socket_idx, source);
 
-                    // Filter out our own multicast echoes
-                    if *source.ip() == self.local_addr {
-                        debug!("KNX/IP ignoring own multicast echo: {}", source);
-                        continue;
+                // ============================================================
+                // Transport events (UDP or TCP)
+                // ============================================================
+                Either4::First(transport_event) => match transport_event {
+                    // UDP socket received a packet
+                    Either::First((Ok((buffer, source)), socket_idx)) => {
+                        debug!("Received {} bytes on socket {} from {}", buffer.len(), socket_idx, source);
+
+                        // Filter out our own multicast echoes
+                        if *source.ip() == self.local_addr {
+                            debug!("KNX/IP ignoring own multicast echo: {}", source);
+                            continue;
+                        }
+
+                        let origin = PacketOrigin::Udp { source, socket_idx };
+                        self.dispatch_frame(&buffer, origin, response_channel).await;
                     }
 
-                    // Peek at the service type from the KNX/IP header
-                    match peek_service_type(&buffer[..]) {
-                        Ok(service_type) => {
-                            debug!("  Service type: {:?}", service_type);
-
-                            // Try the connection manager first. It handles:
-                            // - Connection lifecycle (Connect/Disconnect/Connectionstate)
-                            // - Data frames for active connections (routed by channel ID)
-                            // If the service type isn't recognized, fall through to
-                            // connectionless server dispatch.
-                            match self
-                                .connection_manager
-                                .on_indication(
-                                    service_type,
-                                    &buffer[..],
-                                    source,
-                                    socket_idx,
-                                    self.context.buffer_manager(),
-                                    self.network_layer_tx,
-                                )
-                                .await
-                            {
-                                Ok(responses) => {
-                                    for response in responses {
-                                        response_channel.send(response).await;
-                                    }
-                                }
-                                Err(ServerError::InvalidMessage) => {
-                                    // Connection manager didn't recognize this service type
-                                    // or channel — fall through to connectionless servers.
-                                    for server in &mut self.server_instances {
-                                        if server.handles(service_type, socket_idx) {
-                                            let context = make_server_context(
-                                                self.context,
-                                                self.enable_remote_config,
-                                                self.network_layer_tx,
-                                            );
-
-                                            match server
-                                                .handler
-                                                .on_indication(service_type, &buffer[..], source, &context)
-                                                .await
-                                            {
-                                                Ok(responses) => {
-                                                    for response in responses {
-                                                        response_channel.send(response).await;
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    error!("Server error handling {:?}: {:?}", service_type, e);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    debug!("Connection manager error for {:?}: {:?}", service_type, e);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse KNX/IP service type from {}: {:?}", source, e);
-                        }
+                    // UDP socket receive error
+                    Either::First((Err(()), socket_idx)) => {
+                        error!("Socket {} receive error", socket_idx);
                     }
 
-                    // Buffer is automatically returned to the pool when dropped
-                }
+                    // TCP frame received
+                    Either::Second(TcpEvent::Frame { tcp_idx, peer, buffer }) => {
+                        debug!("TCP connection {}: received {} byte frame from {}", tcp_idx, buffer.len(), peer);
 
-                // Socket receive error
-                Either4::First((Err(()), socket_idx)) => {
-                    error!("Socket {} receive error", socket_idx);
-                    // Continue processing other sockets
-                }
+                        let origin = PacketOrigin::Tcp { peer, tcp_idx };
+                        self.dispatch_frame(&buffer, origin, response_channel).await;
+                    }
+
+                    // TCP connection closed
+                    Either::Second(TcpEvent::Closed { tcp_idx, .. }) => {
+                        info!("TCP connection {} closed, tearing down KNX/IP channels", tcp_idx);
+                        self.connection_manager.on_tcp_closed(tcp_idx);
+                    }
+                },
 
                 // Inbox received a layer operation
                 Either4::Second(layer_op) => {
@@ -1202,16 +1371,25 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res> for KnxNetIp<'r
 
                 // Response ready to send
                 Either4::Third(pending_response) => {
-                    let destination = pending_response.destination;
-                    let socket_idx = pending_response.socket_idx;
                     let data = &pending_response.buffer[..];
 
-                    debug!("Sending {} byte response to {} on socket {}", data.len(), destination, socket_idx);
-
-                    if !self.socket_descriptors.is_empty() {
-                        let _ = self.send_on_socket(socket_idx, data, destination).await;
-                    } else {
-                        error!("No sockets available to send response");
+                    match pending_response.target {
+                        ResponseTarget::Udp { destination, socket_idx } => {
+                            debug!("Sending {} byte response to {} on socket {}", data.len(), destination, socket_idx);
+                            if !self.socket_descriptors.is_empty() {
+                                let _ = self.send_on_socket(socket_idx, data, destination).await;
+                            } else {
+                                error!("No sockets available to send response");
+                            }
+                        }
+                        ResponseTarget::Tcp { tcp_idx } => {
+                            debug!("Sending {} byte response on TCP connection {}", data.len(), tcp_idx);
+                            if self.tcp_manager.write_to(tcp_idx, data).await.is_err() {
+                                warn!("TCP write failed on connection {}, closing", tcp_idx);
+                                self.tcp_manager.close(tcp_idx);
+                                self.connection_manager.on_tcp_closed(tcp_idx);
+                            }
+                        }
                     }
                 }
             }

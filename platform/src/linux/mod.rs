@@ -7,6 +7,9 @@ pub use self::serialport::AsyncSerialPort;
 mod multicast_socket;
 pub use self::multicast_socket::AsyncUdpMulticastSocket;
 
+mod tcp;
+pub use self::tcp::{AsyncLinuxTcpListener, AsyncTcpStream};
+
 mod interface;
 pub use self::interface::get_interface_address;
 
@@ -18,4 +21,6 @@ pub struct LinuxIpTransport;
 
 impl crate::IpTransport for LinuxIpTransport {
     type UdpSocket = AsyncUdpMulticastSocket;
+    type TcpListener = AsyncLinuxTcpListener;
+    type TcpStream = AsyncTcpStream;
 }

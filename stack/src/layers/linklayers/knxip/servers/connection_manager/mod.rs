@@ -41,6 +41,7 @@ use crate::messages::knxip::{
 };
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
+use super::super::{PacketOrigin, ResponseTarget};
 use super::{PendingResponse, ServerError};
 
 // ============================================================================
@@ -175,6 +176,15 @@ impl ConnectionTypeHandler for ConnectionTypeHandlerEnum<'_> {
 // Connection Context
 // ============================================================================
 
+/// The transport over which a KNX/IP connection was established.
+#[derive(Debug, Clone, Copy)]
+pub enum ConnectionTransport {
+    /// Connection runs over UDP — responses go to the data endpoint.
+    Udp,
+    /// Connection runs over TCP — responses go back on the same stream.
+    Tcp { tcp_idx: usize },
+}
+
 /// Per-connection state tracked by the connection manager.
 ///
 /// Exposed to [`ConnectionTypeHandler`] implementations so they can
@@ -188,6 +198,55 @@ pub struct ConnectionContext {
     pub send_sequence_counter: u8,
     pub last_activity: Instant,
     pub socket_idx: usize,
+    /// Which transport this connection uses.
+    pub transport: ConnectionTransport,
+}
+
+impl ConnectionContext {
+    /// Build a [`ResponseTarget`] for sending data frames to the client.
+    ///
+    /// For UDP, routes to the data endpoint on the originating socket.
+    /// For TCP, routes back on the TCP connection.
+    pub fn response_target(&self) -> ResponseTarget {
+        match self.transport {
+            ConnectionTransport::Udp => {
+                ResponseTarget::Udp { destination: self.data_endpoint, socket_idx: self.socket_idx }
+            }
+            ConnectionTransport::Tcp { tcp_idx } => ResponseTarget::Tcp { tcp_idx },
+        }
+    }
+}
+
+// ============================================================================
+// TCP Channel Tracking
+// ============================================================================
+
+/// Side-effect for TCP channel tracking.
+///
+/// Returned from connection manager methods so the main loop can update
+/// `TcpConnectionState.channel_ids` without the connection manager needing
+/// a reference to the TCP manager.
+#[derive(Debug)]
+pub enum TcpChannelEvent {
+    /// A KNX/IP channel was created on a TCP connection.
+    Added { tcp_idx: usize, channel_id: u8 },
+    /// A KNX/IP channel was removed from a TCP connection.
+    Removed { tcp_idx: usize, channel_id: u8 },
+}
+
+/// Result of a connection manager operation.
+///
+/// Bundles responses to send with optional TCP channel tracking events
+/// that the main loop must apply to the TCP manager.
+pub struct ConnectionManagerResult {
+    pub responses: Vec<PendingResponse, 4>,
+    pub tcp_events: Vec<TcpChannelEvent, 2>,
+}
+
+impl ConnectionManagerResult {
+    fn responses_only(responses: Vec<PendingResponse, 4>) -> Self {
+        Self { responses, tcp_events: Vec::new() }
+    }
 }
 
 // ============================================================================
@@ -243,23 +302,28 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         &mut self,
         service_type: KNXnetIPServiceType,
         data: &[u8],
-        source: SocketAddrV4,
-        socket_idx: usize,
+        origin: PacketOrigin,
         buffer_manager: &RefCell<DynBufferManager<'static>>,
         network_layer_tx: DynamicSender<'_, LayerOp<Buffer<'static>>>,
-    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+    ) -> Result<ConnectionManagerResult, ServerError> {
         match service_type {
             // Connection lifecycle — handled directly by the connection manager
             KNXnetIPServiceType::ConnectRequest => {
-                self.handle_connect_request(data, source, socket_idx, buffer_manager).await
+                self.handle_connect_request(data, origin, buffer_manager).await
             }
             KNXnetIPServiceType::ConnectionstateRequest => {
-                self.handle_connectionstate_request(data, buffer_manager).await
+                self.handle_connectionstate_request(data, origin, buffer_manager).await
             }
-            KNXnetIPServiceType::DisconnectRequest => self.handle_disconnect_request(data, buffer_manager).await,
+            KNXnetIPServiceType::DisconnectRequest => {
+                self.handle_disconnect_request(data, origin, buffer_manager).await
+            }
 
             // Everything else: route to the handler via channel ID lookup
-            _ => self.dispatch_to_handler(service_type, data, buffer_manager, network_layer_tx).await,
+            _ => {
+                let responses =
+                    self.dispatch_to_handler(service_type, data, buffer_manager, network_layer_tx).await?;
+                Ok(ConnectionManagerResult::responses_only(responses))
+            }
         }
     }
 
@@ -361,8 +425,9 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
     /// Should be called every ~10 seconds from the main loop. Returns
     /// no responses — timed-out connections are silently closed since the
     /// client is presumed dead.
-    pub fn on_tick(&mut self) {
+    pub fn on_tick(&mut self) -> Vec<TcpChannelEvent, MAX_CONNECTIONS> {
         let now = Instant::now();
+        let mut tcp_events = Vec::new();
 
         for slot in &mut self.connections {
             if let Some(ctx) = slot {
@@ -374,21 +439,50 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
                     );
                     let channel_id = ctx.channel_id;
                     let connection_type = ctx.connection_type;
+                    let transport = ctx.transport;
                     *slot = None;
 
                     // Notify the handler
                     if let Some((_, handler)) = self.handlers.iter_mut().find(|(ct, _)| *ct == connection_type) {
                         handler.close_connection(channel_id);
                     }
+
+                    if let ConnectionTransport::Tcp { tcp_idx } = transport {
+                        let _ = tcp_events.push(TcpChannelEvent::Removed { tcp_idx, channel_id });
+                    }
                 }
             }
         }
+
+        tcp_events
     }
 
     /// Check if there are any active connections (used by main loop to
     /// decide whether to run the heartbeat timer).
     pub fn has_active_connections(&self) -> bool {
         self.connections.iter().any(|slot| slot.is_some())
+    }
+
+    /// Called when a TCP connection is closed (peer disconnect or I/O error).
+    ///
+    /// Tears down all KNX/IP connections that were running over this TCP
+    /// stream. Per KNX spec 3/8/2 §8.4.3: when the TCP connection is
+    /// closed, all inner KNX/IP connections are considered terminated.
+    pub fn on_tcp_closed(&mut self, tcp_idx: usize) {
+        for slot in &mut self.connections {
+            let should_close = slot.as_ref().map_or(false, |ctx| {
+                matches!(ctx.transport, ConnectionTransport::Tcp { tcp_idx: idx } if idx == tcp_idx)
+            });
+
+            if should_close {
+                let ctx = slot.take().expect("just checked Some");
+                info!("TCP connection {} closed, tearing down KNX/IP channel {}", tcp_idx, ctx.channel_id);
+
+                if let Some((_, handler)) = self.handlers.iter_mut().find(|(ct, _)| *ct == ctx.connection_type) {
+                    handler.close_connection(ctx.channel_id);
+                }
+            }
+        }
     }
 
     // ========================================================================
@@ -398,24 +492,16 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
     async fn handle_connect_request(
         &mut self,
         data: &[u8],
-        source: SocketAddrV4,
-        socket_idx: usize,
+        origin: PacketOrigin,
         buffer_manager: &RefCell<DynBufferManager<'static>>,
-    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+    ) -> Result<ConnectionManagerResult, ServerError> {
         let mut buf = &data[..];
         let request = match buf.parse::<ConnectRequest>() {
             Ok(req) => req,
             Err(_) => {
                 debug!("Failed to parse ConnectRequest ({} bytes)", data.len());
                 return self
-                    .send_connect_response(
-                        0,
-                        ConnectionStatus::DataConnectionError,
-                        None,
-                        source,
-                        socket_idx,
-                        buffer_manager,
-                    )
+                    .send_connect_response(0, ConnectionStatus::DataConnectionError, None, origin, buffer_manager)
                     .await;
             }
         };
@@ -434,8 +520,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
                     0,
                     ConnectionStatus::ConnectionTypeNotSupported,
                     None,
-                    source,
-                    socket_idx,
+                    origin,
                     buffer_manager,
                 )
                 .await;
@@ -446,7 +531,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         let Some(slot_idx) = slot_idx else {
             debug!("No more connection slots available");
             return self
-                .send_connect_response(0, ConnectionStatus::NoMoreConnections, None, source, socket_idx, buffer_manager)
+                .send_connect_response(0, ConnectionStatus::NoMoreConnections, None, origin, buffer_manager)
                 .await;
         };
 
@@ -456,17 +541,52 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         let accepted = match self.handlers[handler_idx].1.accept_connection(channel_id, &request.cri) {
             Ok(accepted) => accepted,
             Err(status) => {
-                return self.send_connect_response(channel_id, status, None, source, socket_idx, buffer_manager).await;
+                return self.send_connect_response(channel_id, status, None, origin, buffer_manager).await;
             }
         };
 
-        // NAT detection: if HPAI is 0.0.0.0:0, use packet source address
+        // Determine transport and TCP channel tracking based on origin.
+        let source = origin.peer_addr();
+        let (transport, socket_idx, tcp_event) = match origin {
+            PacketOrigin::Tcp { tcp_idx, .. } => {
+                // Per KNX spec 3/8/2 §8.6.3.5: TCP ConnectRequests must use
+                // Route Back HPAI (0.0.0.0:0 with IPv4TCP protocol) for both
+                // control and data endpoints.
+                let is_route_back = |hpai: &HPAI| -> bool {
+                    matches!(hpai, HPAI::Ipv4Tcp { addr, port } if addr.is_unspecified() && *port == 0)
+                };
+
+                if !is_route_back(&request.control_endpoint) || !is_route_back(&request.data_endpoint) {
+                    debug!("TCP ConnectRequest with non-Route-Back HPAI, rejecting");
+                    return self
+                        .send_connect_response(
+                            channel_id,
+                            ConnectionStatus::DataConnectionError,
+                            None,
+                            origin,
+                            buffer_manager,
+                        )
+                        .await;
+                }
+
+                (
+                    ConnectionTransport::Tcp { tcp_idx },
+                    0, // socket_idx is unused for TCP
+                    Some(TcpChannelEvent::Added { tcp_idx, channel_id }),
+                )
+            }
+            PacketOrigin::Udp { socket_idx, .. } => (ConnectionTransport::Udp, socket_idx, None),
+        };
+
+        // NAT detection: if HPAI is 0.0.0.0:0, use packet source address.
+        // For TCP connections the HPAIs are Route Back and not used for routing,
+        // but we store the peer address for logging/diagnostics.
         let control_endpoint = self.resolve_endpoint(&request.control_endpoint, source);
         let data_endpoint = self.resolve_endpoint(&request.data_endpoint, source);
 
         info!(
-            "Accepting {:?} connection: channel_id={}, control={}, data={}",
-            cri_connection_type, channel_id, control_endpoint, data_endpoint
+            "Accepting {:?} connection: channel_id={}, transport={:?}, control={}, data={}",
+            cri_connection_type, channel_id, transport, control_endpoint, data_endpoint
         );
 
         // Store the connection
@@ -479,18 +599,19 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
             send_sequence_counter: 0,
             last_activity: Instant::now(),
             socket_idx,
+            transport,
         });
 
         // Build ConnectResponse with success
-        self.send_connect_response(
-            channel_id,
-            ConnectionStatus::NoError,
-            Some(accepted.crd),
-            control_endpoint,
-            socket_idx,
-            buffer_manager,
-        )
-        .await
+        let mut result = self
+            .send_connect_response(channel_id, ConnectionStatus::NoError, Some(accepted.crd), origin, buffer_manager)
+            .await?;
+
+        if let Some(event) = tcp_event {
+            let _ = result.tcp_events.push(event);
+        }
+
+        Ok(result)
     }
 
     /// Build and send a ConnectResponse.
@@ -498,25 +619,33 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
     /// For success responses, `crd` contains the connection response data.
     /// For error responses, `crd` is `None` — the builder omits the CRD and
     /// uses a minimal HPAI.
+    ///
+    /// The response is routed back via the same transport the request arrived
+    /// on. For TCP, the data endpoint HPAI uses the IPv4TCP protocol code
+    /// (Route Back). For UDP, it uses IPv4UDP with 0.0.0.0:0 (NAT-friendly).
     async fn send_connect_response(
         &self,
         channel_id: u8,
         status: ConnectionStatus,
         crd: Option<CRD>,
-        destination: SocketAddrV4,
-        socket_idx: usize,
+        origin: PacketOrigin,
         buffer_manager: &RefCell<DynBufferManager<'static>>,
-    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
-        // Data HPAI: 0.0.0.0:0 lets the client use the packet source (NAT-friendly)
-        let data_endpoint = HPAI::ipv4_udp(Ipv4Addr::UNSPECIFIED, 0);
+    ) -> Result<ConnectionManagerResult, ServerError> {
+        let data_endpoint = match origin {
+            PacketOrigin::Tcp { .. } => HPAI::ipv4_tcp(Ipv4Addr::UNSPECIFIED, 0),
+            PacketOrigin::Udp { .. } => HPAI::ipv4_udp(Ipv4Addr::UNSPECIFIED, 0),
+        };
 
         let builder = ConnectResponseBuilder::new(channel_id, status, data_endpoint, crd);
         let mut buffer = buffer_manager.borrow().alloc().await;
         buffer.serialize(&builder);
 
         let mut responses = Vec::new();
-        let _ = responses.push(PendingResponse { buffer, destination, socket_idx });
-        Ok(responses)
+        let _ = responses.push(PendingResponse {
+            buffer,
+            target: origin.reply_target(),
+        });
+        Ok(ConnectionManagerResult::responses_only(responses))
     }
 
     // ========================================================================
@@ -526,8 +655,9 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
     async fn handle_connectionstate_request(
         &mut self,
         data: &[u8],
+        origin: PacketOrigin,
         buffer_manager: &RefCell<DynBufferManager<'static>>,
-    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+    ) -> Result<ConnectionManagerResult, ServerError> {
         let mut buf = &data[..];
         let request = match buf.parse::<ConnectionstateRequest>() {
             Ok(req) => req,
@@ -536,17 +666,17 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
 
         let channel_id = request.communication_channel_id;
 
-        // Find the connection
-        let (status, destination, socket_idx) = match self.find_connection_mut(channel_id) {
+        // Find the connection and determine response target.
+        // Known connections reply via their stored transport; unknown channels
+        // reply via the same transport the request arrived on.
+        let (status, target) = match self.find_connection_mut(channel_id) {
             Some(ctx) => {
                 ctx.last_activity = Instant::now();
-                (ConnectionStatus::NoError, ctx.control_endpoint, ctx.socket_idx)
+                (ConnectionStatus::NoError, ctx.response_target())
             }
             None => {
                 debug!("Connectionstate request for unknown channel {}", channel_id);
-                // We still need to respond — use the HPAI from the request
-                let dest = SocketAddrV4::new(request.control_endpoint.address(), request.control_endpoint.port());
-                (ConnectionStatus::NoSuchConnectionID, dest, 0)
+                (ConnectionStatus::NoSuchConnectionID, origin.reply_target())
             }
         };
 
@@ -556,8 +686,8 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         buffer.serialize(&builder);
 
         let mut responses = Vec::new();
-        let _ = responses.push(PendingResponse { buffer, destination, socket_idx });
-        Ok(responses)
+        let _ = responses.push(PendingResponse { buffer, target });
+        Ok(ConnectionManagerResult::responses_only(responses))
     }
 
     // ========================================================================
@@ -567,8 +697,9 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
     async fn handle_disconnect_request(
         &mut self,
         data: &[u8],
+        origin: PacketOrigin,
         buffer_manager: &RefCell<DynBufferManager<'static>>,
-    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+    ) -> Result<ConnectionManagerResult, ServerError> {
         let mut buf = &data[..];
         let request = match buf.parse::<DisconnectRequest>() {
             Ok(req) => req,
@@ -578,7 +709,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         let channel_id = request.communication_channel_id;
 
         // Find and remove the connection
-        let (status, destination, socket_idx) = match self.remove_connection(channel_id) {
+        let (status, target, tcp_event) = match self.remove_connection(channel_id) {
             Some(ctx) => {
                 info!("Disconnecting channel {}", channel_id);
 
@@ -587,13 +718,19 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
                     handler.close_connection(channel_id);
                 }
 
-                (ConnectionStatus::NoError, ctx.control_endpoint, ctx.socket_idx)
+                let target = ctx.response_target();
+                let tcp_event = match ctx.transport {
+                    ConnectionTransport::Tcp { tcp_idx } => {
+                        Some(TcpChannelEvent::Removed { tcp_idx, channel_id })
+                    }
+                    ConnectionTransport::Udp => None,
+                };
+                (ConnectionStatus::NoError, target, tcp_event)
             }
             None => {
                 // Idempotent: respond with NoError even if not found
                 debug!("Disconnect request for unknown channel {}", channel_id);
-                let dest = SocketAddrV4::new(request.control_endpoint.address(), request.control_endpoint.port());
-                (ConnectionStatus::NoError, dest, 0)
+                (ConnectionStatus::NoError, origin.reply_target(), None)
             }
         };
 
@@ -603,8 +740,14 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         buffer.serialize(&builder);
 
         let mut responses = Vec::new();
-        let _ = responses.push(PendingResponse { buffer, destination, socket_idx });
-        Ok(responses)
+        let _ = responses.push(PendingResponse { buffer, target });
+
+        let mut tcp_events = Vec::new();
+        if let Some(event) = tcp_event {
+            let _ = tcp_events.push(event);
+        }
+
+        Ok(ConnectionManagerResult { responses, tcp_events })
     }
 
     // ========================================================================

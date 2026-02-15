@@ -24,7 +24,7 @@ use crate::objects::interface::PropertyServiceHandler;
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::super::{PendingResponse, ServerError};
-use super::{AcceptedConnection, ConnectionContext, ConnectionTypeHandler, DataFrameAction};
+use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction};
 
 // ============================================================================
 // Handler
@@ -236,7 +236,10 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         let builder = DeviceConfigurationAckBuilder::new(channel_id, sequence_counter, status);
         let mut buffer = buffer_manager.borrow().alloc().await;
         buffer.serialize(&builder);
-        PendingResponse { buffer, destination: conn.data_endpoint, socket_idx: conn.socket_idx }
+        PendingResponse {
+            buffer,
+            target: conn.response_target(),
+        }
     }
 
     fn handle_prop_read(
@@ -345,9 +348,11 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         let sequence_counter = request.sequence_counter;
         let expected_seq = conn.recv_sequence_counter;
 
-        // Validate sequence counter
-        let is_retransmission = sequence_counter == expected_seq.wrapping_sub(1);
-        let is_expected = sequence_counter == expected_seq;
+        // Per KNX spec 3/8/2 §8.4.3.4: TCP provides reliable ordered delivery,
+        // so sequence counter validation is skipped for TCP connections.
+        let is_tcp = matches!(conn.transport, ConnectionTransport::Tcp { .. });
+        let is_retransmission = !is_tcp && sequence_counter == expected_seq.wrapping_sub(1);
+        let is_expected = is_tcp || sequence_counter == expected_seq;
 
         if !is_expected && !is_retransmission {
             debug!(
@@ -397,8 +402,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         ack_buffer.serialize(&ack_builder);
         let _ = responses.push(PendingResponse {
             buffer: ack_buffer,
-            destination: conn.data_endpoint,
-            socket_idx: conn.socket_idx,
+            target: conn.response_target(),
         });
 
         // 2. If handler returned a response, send it as a DeviceConfigurationRequest
@@ -415,8 +419,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
 
             let _ = responses.push(PendingResponse {
                 buffer: resp_buffer,
-                destination: conn.data_endpoint,
-                socket_idx: conn.socket_idx,
+                target: conn.response_target(),
             });
         }
 
