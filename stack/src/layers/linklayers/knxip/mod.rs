@@ -61,9 +61,6 @@ pub trait IpDiagnosticsProvider {
 
     /// Build an [`IpCurrentConfig`] DIB from current platform state.
     fn ip_current_config(&self) -> IpCurrentConfig;
-
-    /// Get the device's individual address (for KNX_ADDRESSES DIB).
-    fn individual_address(&self) -> crate::address::IndividualAddress;
 }
 
 /// Blanket impl: any context implementing [`IpDiagnosticsContext`]
@@ -76,9 +73,30 @@ impl<T: crate::context::IpDiagnosticsContext> IpDiagnosticsProvider for T {
     fn ip_current_config(&self) -> IpCurrentConfig {
         crate::context::IpDiagnosticsContext::ip_current_config(self)
     }
+}
 
+/// Trait object interface for querying KNX addresses.
+///
+/// The primary individual address plus any additional addresses assigned
+/// to tunneling connections. Used by servers that need to build the
+/// KNX_ADDRESSES DIB.
+pub trait KnxAddressProvider {
+    /// The device's primary individual address.
+    fn individual_address(&self) -> crate::address::IndividualAddress;
+
+    /// Additional individual addresses (tunneling).
+    fn additional_individual_addresses(&self) -> &[crate::address::IndividualAddress];
+}
+
+/// Blanket impl: any context implementing [`KnxAddressContext`]
+/// satisfies [`KnxAddressProvider`].
+impl<T: crate::context::KnxAddressContext> KnxAddressProvider for T {
     fn individual_address(&self) -> crate::address::IndividualAddress {
-        crate::context::IpDiagnosticsContext::individual_address(self)
+        crate::context::KnxAddressContext::individual_address(self)
+    }
+
+    fn additional_individual_addresses(&self) -> &[crate::address::IndividualAddress] {
+        crate::context::KnxAddressContext::additional_individual_addresses(self)
     }
 }
 
@@ -265,6 +283,8 @@ pub struct ServerContext<'a> {
     /// IP diagnostics provider for remote config responses.
     /// Present when remote config server is enabled.
     ip_diagnostics: Option<&'a dyn IpDiagnosticsProvider>,
+    /// KNX address provider for primary + tunneling addresses.
+    knx_addresses: &'a dyn KnxAddressProvider,
 }
 
 impl<'a> ServerContext<'a> {
@@ -275,8 +295,9 @@ impl<'a> ServerContext<'a> {
         max_apdu_length: u16,
         device_info: &'a dyn DeviceInfoProvider,
         ip_diagnostics: Option<&'a dyn IpDiagnosticsProvider>,
+        knx_addresses: &'a dyn KnxAddressProvider,
     ) -> Self {
-        Self { buffer_manager, network_layer_tx, max_apdu_length, device_info, ip_diagnostics }
+        Self { buffer_manager, network_layer_tx, max_apdu_length, device_info, ip_diagnostics, knx_addresses }
     }
 
     /// Get the maximum APDU length this device can handle
@@ -296,6 +317,11 @@ impl<'a> ServerContext<'a> {
     /// Returns `None` if the remote config server is not enabled.
     pub fn ip_diagnostics(&self) -> Option<&dyn IpDiagnosticsProvider> {
         self.ip_diagnostics
+    }
+
+    /// Get the KNX address provider for primary and tunneling addresses.
+    pub fn knx_addresses(&self) -> &dyn KnxAddressProvider {
+        self.knx_addresses
     }
 
     /// Send an indication to the network layer (L_Data.ind)
@@ -520,6 +546,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         property_handler: &'res dyn crate::objects::interface::PropertyServiceHandler,
         device_info_provider: &'res dyn DeviceInfoProvider,
         ip_diagnostics_provider: Option<&'res dyn IpDiagnosticsProvider>,
+        knx_address_provider: &'res dyn KnxAddressProvider,
         al_sender: DynamicSender<'res, LayerOp<Buffer<'static>>>,
     ) -> KnxNetIp<'res, T, MAX_SOCKETS> {
         // Initialize response channel
@@ -751,6 +778,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
             connection_manager,
             device_info_provider,
             ip_diagnostics_provider,
+            knx_address_provider,
         }
     }
 }
@@ -773,6 +801,7 @@ where
         + crate::context::PropertyServiceContext
         + crate::context::DeviceInfoContext
         + crate::context::IpDiagnosticsContext
+        + crate::context::KnxAddressContext
         + crate::context::ApplicationLayerContext,
 {
     fn build_and_run<'a>(
@@ -785,6 +814,7 @@ where
         // Build the link layer instance. The blanket impls
         //   `impl<T: DeviceInfoContext> DeviceInfoProvider for T`
         //   `impl<T: IpDiagnosticsContext> IpDiagnosticsProvider for T`
+        //   `impl<T: KnxAddressContext> KnxAddressProvider for T`
         // let us pass `context` directly as trait object references.
         let ip_diag: Option<&'a dyn IpDiagnosticsProvider> = if self.enable_remote_config {
             Some(context)
@@ -799,6 +829,7 @@ where
             context.property_handler(),
             context,
             ip_diag,
+            context,
             context.application_layer_sender(),
         );
 
@@ -852,6 +883,8 @@ pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize> {
     /// IP diagnostics provider for remote config responses.
     /// Present when the remote config server is enabled.
     ip_diagnostics_provider: Option<&'res dyn IpDiagnosticsProvider>,
+    /// KNX address provider for primary + tunneling addresses.
+    knx_address_provider: &'res dyn KnxAddressProvider,
 }
 
 impl<'res, T: IpTransport, const MAX_SOCKETS: usize> KnxNetIp<'res, T, MAX_SOCKETS> {
@@ -881,6 +914,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> KnxNetIp<'res, T, MAX_SOCKE
                             self.max_apdu_length,
                             self.device_info_provider,
                             self.ip_diagnostics_provider,
+                            self.knx_address_provider,
                         );
                         match server.handler.on_request(&*pending.message, &context).await {
                             Ok(responses) => {
@@ -1139,6 +1173,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res> for KnxNetIp<'r
                                                 self.max_apdu_length,
                                                 self.device_info_provider,
                                                 self.ip_diagnostics_provider,
+                                                self.knx_address_provider,
                                             );
 
                                             match server
@@ -1206,6 +1241,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res> for KnxNetIp<'r
                                                 self.max_apdu_length,
                                                 self.device_info_provider,
                                                 self.ip_diagnostics_provider,
+                                                self.knx_address_provider,
                                             );
                                             match server
                                                 .handler

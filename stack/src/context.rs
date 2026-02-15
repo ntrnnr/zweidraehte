@@ -83,8 +83,22 @@ pub trait IpDiagnosticsContext {
 
     /// Build an [`IpCurrentConfig`] DIB from the platform's current state.
     fn ip_current_config(&self) -> crate::messages::knxip::substructs::IpCurrentConfig;
+}
 
-    /// Get the device's individual address (for the KNX_ADDRESSES DIB).
+/// Provides KNX individual and additional (tunneling) addresses.
+///
+/// Separated from [`IpDiagnosticsContext`] because the individual address
+/// is a device-wide concept, not specific to IP diagnostics. The
+/// additional addresses will be populated once tunneling is implemented.
+pub trait KnxAddressContext {
+    /// The device's primary individual address.
     fn individual_address(&self) -> crate::address::IndividualAddress;
+
+    /// Additional individual addresses assigned to tunneling connections.
+    ///
+    /// Returns an empty slice when tunneling is not active or configured.
+    fn additional_individual_addresses(&self) -> &[crate::address::IndividualAddress] {
+        &[]
+    }
 }
 

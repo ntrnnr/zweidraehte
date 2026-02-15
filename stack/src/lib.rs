@@ -847,9 +847,18 @@ where
         }
     }
 
+}
+
+impl<D: StackDefinition> context::KnxAddressContext for StackContext<'_, D>
+where
+    D::State: IpStackState,
+{
     fn individual_address(&self) -> address::IndividualAddress {
         self.inner.state.individual_address()
     }
+
+    // additional_individual_addresses() uses the default (empty slice)
+    // until tunneling is implemented.
 }
 
 fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'a, D> {

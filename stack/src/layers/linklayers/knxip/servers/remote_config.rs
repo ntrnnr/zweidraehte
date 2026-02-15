@@ -86,7 +86,11 @@ impl RemoteConfigurationServer {
 
         let ip_config = ip_diag.ip_config();
         let ip_current = ip_diag.ip_current_config();
-        let knx_addresses = KnxAddressesBuilder::new(ip_diag.individual_address(), &[]);
+        let addrs = context.knx_addresses();
+        let knx_addresses = KnxAddressesBuilder::new(
+            addrs.individual_address(),
+            addrs.additional_individual_addresses(),
+        );
 
         let dibs = [
             DescriptionInformationBlockBuilder::IpConfig(&ip_config),
@@ -169,7 +173,11 @@ impl RemoteConfigurationServer {
 
         let ip_config = ip_diag.ip_config();
         let ip_current = ip_diag.ip_current_config();
-        let knx_addresses = KnxAddressesBuilder::new(ip_diag.individual_address(), &[]);
+        let addrs = context.knx_addresses();
+        let knx_addresses = KnxAddressesBuilder::new(
+            addrs.individual_address(),
+            addrs.additional_individual_addresses(),
+        );
 
         let dibs = [
             DescriptionInformationBlockBuilder::IpConfig(&ip_config),

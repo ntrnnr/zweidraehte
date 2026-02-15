@@ -7,7 +7,7 @@ use embassy_sync::channel::{Channel, DynamicSender};
 
 use zweidraehte::context::{
     ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpDiagnosticsContext,
-    PropertyServiceContext,
+    KnxAddressContext, PropertyServiceContext,
 };
 use zweidraehte::layers::LayerOp;
 use zweidraehte::messages::buffers::{Buffer, DynBufferManager};
@@ -129,10 +129,6 @@ impl IpDiagnosticsContext for &MockContext {
             ip_assignment_method: 0,
         }
     }
-
-    fn individual_address(&self) -> zweidraehte::address::IndividualAddress {
-        zweidraehte::address::IndividualAddress::new(0, 0, 0)
-    }
 }
 
 impl IpDiagnosticsContext for &mut MockContext {
@@ -157,7 +153,15 @@ impl IpDiagnosticsContext for &mut MockContext {
             ip_assignment_method: 0,
         }
     }
+}
 
+impl KnxAddressContext for &MockContext {
+    fn individual_address(&self) -> zweidraehte::address::IndividualAddress {
+        zweidraehte::address::IndividualAddress::new(0, 0, 0)
+    }
+}
+
+impl KnxAddressContext for &mut MockContext {
     fn individual_address(&self) -> zweidraehte::address::IndividualAddress {
         zweidraehte::address::IndividualAddress::new(0, 0, 0)
     }
