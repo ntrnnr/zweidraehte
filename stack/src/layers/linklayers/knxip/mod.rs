@@ -28,8 +28,8 @@ use crate::{
 pub mod servers;
 
 use crate::context::{
-    ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpDiagnosticsContext,
-    KnxAddressContext, PropertyServiceContext,
+    ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpDiagnosticsContext, KnxAddressContext,
+    PropertyServiceContext,
 };
 
 /// Type-erased context for KnxNetIp.
@@ -369,17 +369,15 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpResources<T, MAX_SOCKETS>
 /// Maximum number of connectionless servers (discovery + routing)
 const MAX_SERVERS: usize = 3;
 
-/// Builder configuration for the discovery server
-struct DiscoveryConfig {
-    control_endpoint: substructs::HPAI,
-}
-
 /// Builder for KnxNetIp link layer.
 ///
-/// Configure which servers to enable using the purpose-specific builder methods:
-/// - [`enable_discovery_server()`](Self::enable_discovery_server) — Search/Description responses
+/// The discovery server (Core service family) and device management
+/// (connection type 0x03) are always enabled — both are mandatory for
+/// every KNXnet/IP device per KNX spec 3/8/1 Table 2.
+///
+/// Configure optional servers using the builder methods:
 /// - [`enable_routing_server()`](Self::enable_routing_server) — KNX/IP routing multicast
-/// - [`enable_device_management()`](Self::enable_device_management) — Connection-oriented ETS access
+/// - [`enable_remote_config_server()`](Self::enable_remote_config_server) — Remote diagnostics (optional per spec)
 ///
 /// The list of supported service families advertised in discovery responses
 /// is auto-derived from which servers are enabled.
@@ -387,17 +385,14 @@ struct DiscoveryConfig {
 /// # Example
 ///
 /// ```ignore
-/// let builder = KnxNetIpBuilder::<LinuxIpTransport, 2>::new("eth0", interface_addr)
-///     .enable_discovery_server(control_endpoint, device_info)
-///     .enable_routing_server()
-///     .enable_device_management();
+/// let builder = KnxNetIpBuilder::<LinuxIpTransport, 2>::new("eth0", interface_addr, control_endpoint)
+///     .enable_routing_server();
 /// ```
 pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize> {
     interface_name: &'static str,
     local_addr: Ipv4Addr,
-    discovery: Option<DiscoveryConfig>,
+    control_endpoint: substructs::HPAI,
     enable_routing: bool,
-    enable_device_management: bool,
     enable_remote_config: bool,
     _transport: core::marker::PhantomData<T>,
 }
@@ -405,40 +400,27 @@ pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize> {
 impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
     /// Create a new builder with the network interface to bind to.
     ///
+    /// The discovery server is always enabled (mandatory per KNX spec 3/8/2
+    /// §4.2). The `control_endpoint` HPAI is advertised in search and
+    /// description responses.
+    ///
     /// # Arguments
     /// * `interface_name` - The name of the network interface (e.g., "eth0", "wlan0")
     /// * `local_addr` - The local IP address of this interface (for multicast join and echo filtering)
+    /// * `control_endpoint` - The HPAI to advertise as this device's control endpoint
     ///
     /// # Type Parameters
     /// * `T` - The IP transport implementation providing socket types
     /// * `MAX_SOCKETS` - Maximum number of UDP sockets to create
-    pub const fn new(interface_name: &'static str, local_addr: Ipv4Addr) -> Self {
+    pub const fn new(interface_name: &'static str, local_addr: Ipv4Addr, control_endpoint: substructs::HPAI) -> Self {
         Self {
             interface_name,
             local_addr,
-            discovery: None,
+            control_endpoint,
             enable_routing: false,
-            enable_device_management: false,
             enable_remote_config: false,
             _transport: core::marker::PhantomData,
         }
-    }
-
-    /// Enable the discovery server (SearchRequest / DescriptionRequest).
-    ///
-    /// The discovery server listens on the KNX system setup multicast address
-    /// (`224.0.23.12:3671`) for SearchRequest messages and on the unicast
-    /// control endpoint (`0.0.0.0:3671`) for DescriptionRequest messages.
-    ///
-    /// The `supported_services` list in discovery responses is auto-derived
-    /// from which servers are enabled on this builder — you don't need to
-    /// specify it manually.
-    ///
-    /// # Arguments
-    /// * `control_endpoint` - The HPAI to advertise as this device's control endpoint
-    pub fn enable_discovery_server(mut self, control_endpoint: substructs::HPAI) -> Self {
-        self.discovery = Some(DiscoveryConfig { control_endpoint });
-        self
     }
 
     /// Enable the routing server (RoutingIndication / RoutingBusy / RoutingLostMessage).
@@ -448,20 +430,6 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
     /// control per KNX Specification 3/8/2.
     pub fn enable_routing_server(mut self) -> Self {
         self.enable_routing = true;
-        self
-    }
-
-    /// Enable Device Management connections (ConnectionType 0x03).
-    ///
-    /// When enabled, the connection manager will accept Device Management
-    /// connections from ETS and other tools, using the property handler
-    /// from the stack context to serve M_PropRead/M_PropWrite requests.
-    ///
-    /// The connection manager is created during [`build()`](Self::build)
-    /// using the `&dyn PropertyServiceHandler` from the
-    /// [`PropertyServiceContext`](crate::context::PropertyServiceContext).
-    pub fn enable_device_management(mut self) -> Self {
-        self.enable_device_management = true;
         self
     }
 
@@ -484,7 +452,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
     /// 1. Auto-derives supported services from enabled features
     /// 2. Creates server instances with the correct service types and endpoints
     /// 3. Deduplicates and creates UDP sockets
-    /// 4. Creates the connection manager (if device management is enabled)
+    /// 4. Creates the connection manager with device management handler
     /// 5. Returns the final KnxNetIp instance
     fn build<'res>(
         self,
@@ -502,14 +470,17 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         let mut supported_services = Vec::<substructs::SupportedService, 5>::new();
         let _ = supported_services
             .push(substructs::SupportedService { family: substructs::ServiceFamily::Core, version: 1 });
-        if self.enable_device_management {
-            let _ = supported_services
-                .push(substructs::SupportedService { family: substructs::ServiceFamily::DeviceManagement, version: 2 });
-        }
+
+        // Device Management is mandatory for all KNXnet/IP device classes
+        // (KNX spec 3/8/1 Table 2).
+        let _ = supported_services
+            .push(substructs::SupportedService { family: substructs::ServiceFamily::DeviceManagement, version: 2 });
+
         if self.enable_routing {
             let _ = supported_services
                 .push(substructs::SupportedService { family: substructs::ServiceFamily::Routing, version: 1 });
         }
+
         if self.enable_remote_config {
             let _ = supported_services.push(substructs::SupportedService {
                 family: substructs::ServiceFamily::RemoteConfigAndDiag,
@@ -528,8 +499,9 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         let mut server_instances = Vec::<servers::ServerInstance, MAX_SERVERS>::new();
         let mut server_idx = 0;
 
-        if let Some(discovery) = self.discovery {
-            let server = servers::DiscoveryServer::new(discovery.control_endpoint, supported_services);
+        // Discovery server is always enabled (mandatory per KNX spec 3/8/2 §4.2).
+        {
+            let server = servers::DiscoveryServer::new(self.control_endpoint, supported_services);
 
             let mut service_types = Vec::new();
             let _ = service_types.push(KNXnetIPServiceType::SearchRequest);
@@ -698,19 +670,18 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         // Connection manager
         // ====================================================================
 
+        // Device Management is mandatory for all KNXnet/IP device classes
+        // (KNX spec 3/8/1 Table 2).
         let mut connection_manager = servers::ConnectionManager::new();
-        if self.enable_device_management {
-            let handler = servers::DeviceMgmtConnectionHandler::new(
-                context.property_handler(),
-                context.application_layer_sender(),
-                context.buffer_manager(),
-            );
-            connection_manager.add_handler(
-                crate::messages::knxip::substructs::ConnectionType::DeviceManagement,
-                servers::ConnectionTypeHandlerEnum::DeviceManagement(handler),
-            );
-            info!("  Connection manager: Device Management enabled");
-        }
+        let handler = servers::DeviceMgmtConnectionHandler::new(
+            context.property_handler(),
+            context.application_layer_sender(),
+            context.buffer_manager(),
+        );
+        connection_manager.add_handler(
+            crate::messages::knxip::substructs::ConnectionType::DeviceManagement,
+            servers::ConnectionTypeHandlerEnum::DeviceManagement(handler),
+        );
 
         KnxNetIp {
             resources,
@@ -777,11 +748,7 @@ fn make_server_context<'a>(
     enable_remote_config: bool,
     network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
 ) -> ServerContext<'a> {
-    let ip_diagnostics: Option<&dyn IpDiagnosticsContext> = if enable_remote_config {
-        Some(context)
-    } else {
-        None
-    };
+    let ip_diagnostics: Option<&dyn IpDiagnosticsContext> = if enable_remote_config { Some(context) } else { None };
     ServerContext::new(
         context.buffer_manager(),
         network_layer_tx,
@@ -840,7 +807,8 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> KnxNetIp<'res, T, MAX_SOCKE
 
                 for server in &mut self.server_instances {
                     if server.handler.supports_requests() {
-                        let context = make_server_context(self.context, self.enable_remote_config, self.network_layer_tx);
+                        let context =
+                            make_server_context(self.context, self.enable_remote_config, self.network_layer_tx);
                         match server.handler.on_request(&*pending.message, &context).await {
                             Ok(responses) => {
                                 // Success! Send responses and confirmation
@@ -1092,7 +1060,11 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res> for KnxNetIp<'r
                                     // or channel — fall through to connectionless servers.
                                     for server in &mut self.server_instances {
                                         if server.handles(service_type, socket_idx) {
-                                            let context = make_server_context(self.context, self.enable_remote_config, self.network_layer_tx);
+                                            let context = make_server_context(
+                                                self.context,
+                                                self.enable_remote_config,
+                                                self.network_layer_tx,
+                                            );
 
                                             match server
                                                 .handler
@@ -1153,7 +1125,11 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize> Layer<'res> for KnxNetIp<'r
                                     for server in &mut self.server_instances {
                                         if server.handler.supports_requests() {
                                             // Create server context with buffer manager and network layer channel
-                                            let context = make_server_context(self.context, self.enable_remote_config, self.network_layer_tx);
+                                            let context = make_server_context(
+                                                self.context,
+                                                self.enable_remote_config,
+                                                self.network_layer_tx,
+                                            );
                                             match server
                                                 .handler
                                                 .on_request(&**msg_opt.as_ref().unwrap(), &context)

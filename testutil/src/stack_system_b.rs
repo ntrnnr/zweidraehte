@@ -199,11 +199,10 @@ async fn main(spawner: Spawner) {
     let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.1.200".parse().unwrap(), port: 3671 };
 
     let interface_addr = platform::get_interface_address(INTERFACE_NAME).expect("Failed to get interface address");
-    let link_layer_builder = KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new(INTERFACE_NAME, interface_addr)
-        .enable_discovery_server(control_endpoint)
-        .enable_routing_server()
-        .enable_device_management()
-        .enable_remote_config_server();
+    let link_layer_builder =
+        KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new(INTERFACE_NAME, interface_addr, control_endpoint)
+            .enable_routing_server()
+            .enable_remote_config_server();
 
     // Create stack resources and initialize the stack
     static RESOURCES: StaticCell<

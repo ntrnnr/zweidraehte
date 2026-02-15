@@ -741,11 +741,10 @@ async fn main(spawner: Spawner) {
     let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.106.6".parse().unwrap(), port: 3671 };
 
     let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
-    let link_layer_builder = KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new("knxdevbridgeif", interface_addr)
-        .enable_discovery_server(control_endpoint)
-        .enable_routing_server()
-        .enable_device_management()
-        .enable_remote_config_server();
+    let link_layer_builder =
+        KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new("knxdevbridgeif", interface_addr, control_endpoint)
+            .enable_routing_server()
+            .enable_remote_config_server();
 
     println!("KNX/IP Configuration:");
     println!("  - Interface: knxdevbridgeif");
