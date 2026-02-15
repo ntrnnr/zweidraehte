@@ -125,7 +125,7 @@ async fn main(spawner: Spawner) {
 
     // Create resources for the link layer (2 sockets max, 1 server)
     use zweidraehte::layers::linklayers::knxip::KnxNetIpResources;
-    let ll_resources = Box::leak(Box::new(KnxNetIpResources::<platform::LinuxIpTransport, 2>::new()));
+    let ll_resources = Box::leak(Box::new(KnxNetIpResources::new()));
 
     // Build and run the link layer using the LinkLayerBuilder trait
     let link_layer_future = kb.build_and_run(ll_resources, &context, network_sender, link_receiver);

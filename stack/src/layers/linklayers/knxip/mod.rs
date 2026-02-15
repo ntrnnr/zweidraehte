@@ -1,11 +1,10 @@
 use core::{
     cell::RefCell,
     future::pending,
-    mem::MaybeUninit,
     net::{Ipv4Addr, SocketAddrV4},
 };
 
-use embassy_futures::select::{Either, Either4, select, select_slice, select4};
+use embassy_futures::select::{Either, Either4, select, select4};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, DynamicSender},
@@ -13,11 +12,13 @@ use embassy_sync::{
 use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
 
-use platform::{AsyncUdpSocket, IpTransport, TcpListenerOptions, UdpSocketOptions};
-
-use self::tcp_manager::{TcpEvent, TcpManager};
+use platform::{IpTransport, TcpListenerOptions};
 
 use crate::{
+    context::{
+        ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpDiagnosticsContext, KnxAddressContext,
+        PropertyServiceContext,
+    },
     layers::{Inbox, Layer, LayerOp, LinkLayerBuilder, LinkLayerBuilderBase},
     messages::{
         buffers::*,
@@ -27,14 +28,15 @@ use crate::{
     },
 };
 
+use self::{
+    tcp_manager::{TcpEvent, TcpManager},
+    udp_manager::{SocketDescriptor, UdpEvent, UdpManager},
+};
+
 pub mod servers;
 mod tcp_framing;
 mod tcp_manager;
-
-use crate::context::{
-    ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpDiagnosticsContext, KnxAddressContext,
-    PropertyServiceContext,
-};
+mod udp_manager;
 
 /// Type-erased context for KnxNetIp.
 ///
@@ -338,75 +340,25 @@ impl<'a> ServerContext<'a> {
     }
 }
 
-/// Maximum number of multicast groups per socket
-const MAX_MULTICAST_GROUPS: usize = 2;
-
-/// Metadata about a UDP socket
-#[derive(Debug, Clone)]
-pub struct SocketDescriptor {
-    /// The endpoint this socket is bound to (typically 0.0.0.0:port)
-    bind_endpoint: EndpointType,
-
-    /// Multicast groups joined on this socket
-    multicast_groups: Vec<Ipv4Addr, MAX_MULTICAST_GROUPS>,
-
-    /// Whether broadcast is enabled on this socket
-    broadcast_enabled: bool,
-}
-
-impl SocketDescriptor {
-    /// Create a new socket descriptor
-    pub const fn new(bind_endpoint: EndpointType) -> Self {
-        Self { bind_endpoint, multicast_groups: Vec::new(), broadcast_enabled: false }
-    }
-
-    /// Get the bind endpoint
-    pub fn bind_endpoint(&self) -> &EndpointType {
-        &self.bind_endpoint
-    }
-
-    /// Get the port this socket is bound to
-    pub fn port(&self) -> u16 {
-        self.bind_endpoint.port()
-    }
-
-    /// Add a multicast group to join
-    pub fn add_multicast_group(&mut self, addr: Ipv4Addr) -> Result<(), ()> {
-        if !self.multicast_groups.contains(&addr) { self.multicast_groups.push(addr).map_err(|_| ()) } else { Ok(()) }
-    }
-
-    /// Enable broadcast on this socket
-    pub fn enable_broadcast(&mut self) {
-        self.broadcast_enabled = true;
-    }
-
-    /// Check if broadcast is enabled
-    pub fn is_broadcast_enabled(&self) -> bool {
-        self.broadcast_enabled
-    }
-
-    /// Get the multicast groups
-    pub fn multicast_groups(&self) -> &[Ipv4Addr] {
-        &self.multicast_groups
-    }
-}
-
 /// Static resources for KNX/IP link layer.
 ///
-/// `MAX_TCP` controls the maximum number of concurrent TCP connections.
-/// Set to 0 to disable TCP entirely (saves memory on constrained targets).
-pub struct KnxNetIpResources<T: IpTransport, const MAX_SOCKETS: usize> {
-    /// Storage for UDP socket handles
-    sockets: MaybeUninit<[Option<T::UdpSocket>; MAX_SOCKETS]>,
-
-    /// Response channel for queuing outbound messages
-    response_channel: MaybeUninit<Channel<NoopRawMutex, PendingResponse, 16>>,
+/// Provides externally-owned storage that must outlive the
+/// [`KnxNetIp`] link layer instance. Currently holds the response
+/// channel through which servers queue outbound messages.
+pub struct KnxNetIpResources {
+    /// Response channel for queuing outbound messages.
+    response_channel: Channel<NoopRawMutex, PendingResponse, 16>,
 }
 
-impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpResources<T, MAX_SOCKETS> {
-    /// Create a new uninitialized resource container
+impl KnxNetIpResources {
+    /// Create a new resource container.
     pub const fn new() -> Self {
-        Self { sockets: MaybeUninit::uninit(), response_channel: MaybeUninit::uninit() }
+        Self { response_channel: Channel::new() }
+    }
+
+    /// Get a reference to the response channel.
+    pub(super) fn response_channel(&self) -> &Channel<NoopRawMutex, PendingResponse, 16> {
+        &self.response_channel
     }
 }
 
@@ -515,13 +467,10 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
     /// 5. Returns the final KnxNetIp instance
     fn build<'res>(
         self,
-        resources: &'res mut KnxNetIpResources<T, MAX_SOCKETS>,
+        resources: &'res mut KnxNetIpResources,
         context: &'res dyn KnxNetIpContext,
         network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
     ) -> KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP> {
-        // Initialize response channel
-        let _response_channel = resources.response_channel.write(Channel::new());
-
         // ====================================================================
         // Auto-derive supported services from enabled features
         // ====================================================================
@@ -686,46 +635,11 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
         let interface_addr = self.local_addr;
 
         // ====================================================================
-        // Create actual UDP sockets
+        // UDP manager — owns sockets and their descriptors
         // ====================================================================
 
-        let sockets_array = resources.sockets.write(core::array::from_fn(|_| None));
-
-        for (i, desc) in socket_descriptors.iter().enumerate() {
-            let port = desc.port();
-
-            let options = UdpSocketOptions {
-                address: Ipv4Addr::UNSPECIFIED,
-                port,
-                interface: Some(self.interface_name),
-                ..Default::default()
-            };
-
-            match T::UdpSocket::bind(options) {
-                Ok(socket) => {
-                    for &mcast_addr in desc.multicast_groups() {
-                        debug!(
-                            "  Socket {}: Joining multicast group {} on interface {}",
-                            i, mcast_addr, self.interface_name
-                        );
-                        if let Err(e) = socket.join_multicast(mcast_addr, interface_addr) {
-                            error!("Failed to join multicast group {}: {:?}", mcast_addr, e);
-                        }
-                    }
-
-                    if desc.is_broadcast_enabled() {
-                        debug!("  Socket {}: Enabling SO_BROADCAST", i);
-                        let _ = socket.set_broadcast(true);
-                    }
-
-                    info!("  Socket {}: Bound to 0.0.0.0:{} on interface {}", i, port, self.interface_name);
-                    sockets_array[i] = Some(socket);
-                }
-                Err(e) => {
-                    error!("Failed to create socket for port {}: {:?}", port, e);
-                }
-            }
-        }
+        let mut udp_manager = UdpManager::new(interface_addr, socket_descriptors);
+        udp_manager.bind_all(self.interface_name, interface_addr);
 
         for (idx, instance) in server_instances.iter().enumerate() {
             debug!("  Server {}: Handles {:?} on sockets {:?}", idx, instance.service_types, instance.socket_indices);
@@ -773,10 +687,9 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
 
         KnxNetIp {
             resources,
-            socket_descriptors,
+            udp_manager,
             server_instances,
             _interface_name: self.interface_name,
-            local_addr: interface_addr,
             network_layer_tx,
             retry_queue: Vec::new(),
             connection_manager,
@@ -790,7 +703,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
 impl<T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_TCP: usize> LinkLayerBuilderBase
     for KnxNetIpBuilder<T, MAX_SOCKETS, MAX_TCP>
 {
-    type Resources = KnxNetIpResources<T, MAX_SOCKETS>;
+    type Resources = KnxNetIpResources;
 
     fn create_resources(&self) -> Self::Resources {
         KnxNetIpResources::new()
@@ -851,16 +764,14 @@ fn make_server_context<'a>(
 }
 
 pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize = 1> {
-    /// Reference to socket resources
-    resources: &'res KnxNetIpResources<T, MAX_SOCKETS>,
-    /// Socket descriptors (metadata about each socket)
-    socket_descriptors: Vec<SocketDescriptor, MAX_SOCKETS>,
+    /// Reference to externally-owned resources (response channel).
+    resources: &'res KnxNetIpResources,
+    /// UDP socket manager. Owns sockets and their descriptors.
+    udp_manager: UdpManager<T, MAX_SOCKETS>,
     /// Server instances
     server_instances: Vec<servers::ServerInstance, MAX_SERVERS>,
     /// Interface name for logging
     _interface_name: &'static str,
-    /// Local interface IP address (used to filter out our own multicast echoes)
-    local_addr: Ipv4Addr,
     /// Channel to send messages to the network layer
     network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
     /// Queue of messages waiting to be retried after rate limiting
@@ -971,26 +882,6 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNe
         self.retry_queue.iter().map(|r| r.retry_after).min()
     }
 
-    /// Send a packet on a specific socket
-    async fn send_on_socket(&self, socket_idx: usize, data: &[u8], destination: SocketAddrV4) -> Result<(), ()> {
-        trace!("KNX/IP TX {} bytes on socket {} to {}: {:x?}", data.len(), socket_idx, destination, data);
-
-        let sockets = unsafe { self.resources.sockets.assume_init_ref() };
-
-        if let Some(Some(socket)) = sockets.get(socket_idx) {
-            match socket.send_to(data, destination).await {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    error!("Failed to send on socket {}: {:?}", socket_idx, e);
-                    Err(())
-                }
-            }
-        } else {
-            error!("Socket {} not available", socket_idx);
-            Err(())
-        }
-    }
-
     /// Dispatch a received KNX/IP frame through the connection manager
     /// and connectionless servers.
     ///
@@ -1092,11 +983,10 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> Layer
         info!(
             "KnxNetIp Link Layer starting with {} server(s), {} socket(s)",
             self.server_instances.len(),
-            self.socket_descriptors.len()
+            self.udp_manager.socket_count()
         );
 
-        // Get the response channel
-        let response_channel = unsafe { self.resources.response_channel.assume_init_ref() };
+        let response_channel = self.resources.response_channel();
 
         loop {
             // First, drain any pending responses to free their buffers
@@ -1112,9 +1002,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> Layer
                             destination,
                             socket_idx
                         );
-                        if !self.socket_descriptors.is_empty() {
-                            let _ = self.send_on_socket(socket_idx, data, destination).await;
-                        }
+                        let _ = self.udp_manager.send_to(socket_idx, data, destination).await;
                     }
                     ResponseTarget::Tcp { tcp_idx } => {
                         debug!("Sending {} byte response on TCP connection {} (drain)", data.len(), tcp_idx);
@@ -1157,78 +1045,35 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> Layer
             // Main select: UDP + TCP transport, inbox, responses, timer
             // ================================================================
             //
-            // The first arm nests a `select` to combine UDP socket receives
-            // with TCP events (accept + read). This avoids needing select5.
-            let result = {
-                // Borrow individual fields to avoid conflicting borrows
-                // between recv_from_socket (borrows resources + context)
-                // and tcp_manager.next_event (borrows tcp_manager mutably).
-                let sockets = unsafe { self.resources.sockets.assume_init_ref() };
-                let buffer_manager = self.context.buffer_manager();
+            // The first arm nests a `select` to combine UDP events with
+            // TCP events. Both managers present an identical `next_event`
+            // interface, keeping the select symmetric.
+            let buffer_manager = self.context.buffer_manager();
 
-                // Create UDP receive futures using raw socket access
-                // (avoids borrowing self through recv_from_socket).
-                let recv = |socket_idx: usize| {
-                    let bm = buffer_manager;
-                    async move {
-                        if let Some(Some(socket)) = sockets.get(socket_idx) {
-                            let mut buffer = bm.borrow().alloc().await;
-                            buffer.resize(buffer.capacity(), 0);
-                            match socket.recv_from(&mut buffer[..]).await {
-                                Ok((len, source)) => {
-                                    trace!(
-                                        "KNX/IP RX {} bytes on socket {} from {}: {:x?}",
-                                        len,
-                                        socket_idx,
-                                        source,
-                                        &buffer[..len]
-                                    );
-                                    buffer.set_len(len);
-                                    Ok((buffer, source))
-                                }
-                                Err(e) => {
-                                    error!("Failed to receive on socket {}: {:?}", socket_idx, e);
-                                    Err(())
-                                }
-                            }
-                        } else {
-                            error!("Socket {} not available", socket_idx);
-                            Err(())
-                        }
-                    }
+            // Timer: earliest of retry time, heartbeat tick, and TCP
+            // idle timeout (10s when idle TCP connections exist).
+            let heartbeat_time =
+                if self.connection_manager.has_active_connections() || self.tcp_manager.has_active_connections() {
+                    Some(Instant::now() + Duration::from_secs(10))
+                } else {
+                    None
                 };
 
-                let mut socket_futures = Vec::<_, MAX_SOCKETS>::new();
-                for i in 0..self.socket_descriptors.len() {
-                    let _ = socket_futures.push(recv(i));
+            let next_timer = match (self.get_next_retry_time(), heartbeat_time) {
+                (Some(a), Some(b)) => Some(if a < b { a } else { b }),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+
+            let transport_future =
+                select(self.udp_manager.next_event(buffer_manager), self.tcp_manager.next_event(buffer_manager));
+
+            let result = match next_timer {
+                Some(timer_at) => {
+                    select4(transport_future, inbox.next(), response_channel.receive(), Timer::at(timer_at)).await
                 }
-
-                // Timer: earliest of retry time, heartbeat tick, and TCP
-                // idle timeout (10s when idle TCP connections exist).
-                let heartbeat_time =
-                    if self.connection_manager.has_active_connections() || self.tcp_manager.has_active_connections() {
-                        Some(Instant::now() + Duration::from_secs(10))
-                    } else {
-                        None
-                    };
-
-                let next_timer = match (self.get_next_retry_time(), heartbeat_time) {
-                    (Some(a), Some(b)) => Some(if a < b { a } else { b }),
-                    (Some(a), None) => Some(a),
-                    (None, Some(b)) => Some(b),
-                    (None, None) => None,
-                };
-
-                // Nest select: UDP receives + TCP events in the first arm
-                let transport_future =
-                    select(select_slice(socket_futures.as_mut_slice()), self.tcp_manager.next_event(buffer_manager));
-
-                match next_timer {
-                    Some(timer_at) => {
-                        select4(transport_future, inbox.next(), response_channel.receive(), Timer::at(timer_at)).await
-                    }
-                    None => select4(transport_future, inbox.next(), response_channel.receive(), pending::<()>()).await,
-                }
+                None => select4(transport_future, inbox.next(), response_channel.receive(), pending::<()>()).await,
             };
 
             match result {
@@ -1242,22 +1087,14 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> Layer
                 // Transport events (UDP or TCP)
                 // ============================================================
                 Either4::First(transport_event) => match transport_event {
-                    // UDP socket received a packet
-                    Either::First((Ok((buffer, source)), socket_idx)) => {
-                        debug!("Received {} bytes on socket {} from {}", buffer.len(), socket_idx, source);
-
-                        // Filter out our own multicast echoes
-                        if *source.ip() == self.local_addr {
-                            debug!("KNX/IP ignoring own multicast echo: {}", source);
-                            continue;
-                        }
-
+                    // UDP datagram received (multicast echoes already filtered)
+                    Either::First(UdpEvent::Frame { socket_idx, source, buffer }) => {
                         let origin = PacketOrigin::Udp { source, socket_idx };
                         self.dispatch_frame(&buffer, origin, response_channel).await;
                     }
 
                     // UDP socket receive error
-                    Either::First((Err(()), socket_idx)) => {
+                    Either::First(UdpEvent::Error { socket_idx }) => {
                         error!("Socket {} receive error", socket_idx);
                     }
 
@@ -1376,11 +1213,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> Layer
                     match pending_response.target {
                         ResponseTarget::Udp { destination, socket_idx } => {
                             debug!("Sending {} byte response to {} on socket {}", data.len(), destination, socket_idx);
-                            if !self.socket_descriptors.is_empty() {
-                                let _ = self.send_on_socket(socket_idx, data, destination).await;
-                            } else {
-                                error!("No sockets available to send response");
-                            }
+                            let _ = self.udp_manager.send_to(socket_idx, data, destination).await;
                         }
                         ResponseTarget::Tcp { tcp_idx } => {
                             debug!("Sending {} byte response on TCP connection {}", data.len(), tcp_idx);
