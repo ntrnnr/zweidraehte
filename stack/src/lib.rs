@@ -818,6 +818,16 @@ where
             friendly_name,
         }
     }
+
+    fn extended_device_information(&self) -> messages::knxip::substructs::ExtendedDeviceInformation {
+        messages::knxip::substructs::ExtendedDeviceInformation {
+            // Spec §7.5.4.9: medium_status bit 0 = COMMUNICATION_IMPOSSIBLE.
+            // For non-router KNX/IP devices, this is always FALSE (0x00).
+            medium_status: 0x00,
+            max_local_apdu_len: self.inner.state.max_apdu_length(),
+            device_descriptor_type0: D::DEVICE.mask_version.as_u16(),
+        }
+    }
 }
 
 impl<D: StackDefinition> context::IpDiagnosticsContext for StackContext<'_, D>

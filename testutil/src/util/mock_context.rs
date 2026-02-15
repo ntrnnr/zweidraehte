@@ -99,11 +99,27 @@ impl DeviceInfoContext for &MockContext {
     fn device_information(&self) -> DeviceInformation {
         self.device_info.get().expect("MockContext: device_info not set")
     }
+
+    fn extended_device_information(&self) -> zweidraehte::messages::knxip::substructs::ExtendedDeviceInformation {
+        zweidraehte::messages::knxip::substructs::ExtendedDeviceInformation {
+            medium_status: 0x00,
+            max_local_apdu_len: self.max_apdu_length.get(),
+            device_descriptor_type0: 0x091A, // System B TP1
+        }
+    }
 }
 
 impl DeviceInfoContext for &mut MockContext {
     fn device_information(&self) -> DeviceInformation {
         self.device_info.get().expect("MockContext: device_info not set")
+    }
+
+    fn extended_device_information(&self) -> zweidraehte::messages::knxip::substructs::ExtendedDeviceInformation {
+        zweidraehte::messages::knxip::substructs::ExtendedDeviceInformation {
+            medium_status: 0x00,
+            max_local_apdu_len: self.max_apdu_length.get(),
+            device_descriptor_type0: 0x091A, // System B TP1
+        }
     }
 }
 

@@ -60,6 +60,7 @@ create_protocol_enum!(
     #[allow(missing_docs)]
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum SRPType: u8 {
+        Invalid, 0x00, "Invalid";
         SelectByProgrammingMode, 0x01, "Select by Programming Mode";
         SelectByMacAddress, 0x02, "Select by MAC Address";
         SelectByService, 0x03, "Select by Service";
@@ -67,6 +68,12 @@ create_protocol_enum!(
         _, "Unknown SRP Type 0x{:x}";
     }
 );
+
+/// The M (mandatory) bit occupies bit 7 of the SRP type code byte on the wire.
+/// When set, the server MUST be able to evaluate the SRP to respond; if it cannot,
+/// it must not respond. When clear, the server MAY ignore SRPs it doesn't understand.
+const SRP_MANDATORY_BIT: u8 = 0x80;
+const SRP_TYPE_MASK: u8 = 0x7F;
 
 // ============================================================================
 // RECORDS IMPLEMENTATION FOR DIB SELECTORS
@@ -125,6 +132,8 @@ pub type DIBSelectorsRecords<B> = Records<B, DIBSelectorsRecordImpl>;
 /// Search Request Parameter
 ///
 /// Used in extended search requests to filter devices or request specific information.
+/// Per KNX spec 3/8/2 §7.6.3.3, each SRP carries an M (mandatory) bit: if M is set
+/// and the server cannot evaluate the SRP, it must not respond.
 #[derive(Debug)]
 pub enum SearchRequestParameter<B: SplitByteSlice = &'static [u8]> {
     /// Select devices in programming mode (no payload, header only)
@@ -135,6 +144,13 @@ pub enum SearchRequestParameter<B: SplitByteSlice = &'static [u8]> {
     SelectByService { service_family: u8, version: u8 },
     /// Request specific DIBs in the response
     RequestDIBs { selectors: DIBSelectorsRecords<B> },
+    /// Invalid SRP (type code 0x00). Per spec Table 6, this is a test mechanism
+    /// for verifying server behavior with unknown SRPs. The server never evaluates
+    /// it — it only checks the M bit to decide whether to suppress the response.
+    Invalid { mandatory: bool },
+    /// Unknown/unrecognized SRP type. The body bytes are consumed but not interpreted.
+    /// Like Invalid, the server uses the M bit to decide whether to suppress.
+    Unknown { type_code: u8, mandatory: bool },
 }
 
 impl<B: SplitByteSlice> SearchRequestParameter<B> {
@@ -145,6 +161,24 @@ impl<B: SplitByteSlice> SearchRequestParameter<B> {
             Self::SelectByMacAddress { .. } => SRPType::SelectByMacAddress,
             Self::SelectByService { .. } => SRPType::SelectByService,
             Self::RequestDIBs { .. } => SRPType::RequestDIBs,
+            Self::Invalid { .. } => SRPType::Invalid,
+            Self::Unknown { type_code, .. } => SRPType::Other(*type_code),
+        }
+    }
+
+    /// Whether this SRP has the mandatory bit set.
+    ///
+    /// For standard SRP types (ProgrammingMode, MAC, Service, RequestDIBs) the M bit
+    /// is always set per spec Table 6. For Invalid and Unknown, it's whatever was on
+    /// the wire.
+    pub fn is_mandatory(&self) -> bool {
+        match self {
+            // Standard types: M bit is always set (spec Table 6)
+            Self::SelectByProgrammingMode
+            | Self::SelectByMacAddress { .. }
+            | Self::SelectByService { .. }
+            | Self::RequestDIBs { .. } => true,
+            Self::Invalid { mandatory } | Self::Unknown { mandatory, .. } => *mandatory,
         }
     }
 }
@@ -164,6 +198,15 @@ impl<B: SplitByteSlice> SearchRequestParameter<B> {
             Self::RequestDIBs { selectors } => Some(selectors.iter().count()),
             _ => None,
         }
+    }
+
+    /// Whether this SRP is a selection filter (as opposed to a meta-parameter
+    /// like RequestDIBs, or an unknown/invalid type).
+    pub fn is_selection_filter(&self) -> bool {
+        matches!(
+            self,
+            Self::SelectByProgrammingMode | Self::SelectByMacAddress { .. } | Self::SelectByService { .. }
+        )
     }
 }
 
@@ -199,11 +242,14 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchRequestParameter<B> {
             ParseError::Format
         })?;
 
-        // Match on SRP type and parse body
-        let srp_type = SRPType::try_from(header.search_request_parameter_type).map_err(|_| {
-            debug!("unrecognized SRP type: {:x}", header.search_request_parameter_type);
-            ParseError::NotSupported
-        })?;
+        // The M (mandatory) bit is in bit 7 of the type code byte (spec §7.6.3.3).
+        // Mask it off to get the actual type code.
+        let raw_type = header.search_request_parameter_type;
+        let mandatory = raw_type & SRP_MANDATORY_BIT != 0;
+        let srp_type = SRPType::from(raw_type & SRP_TYPE_MASK);
+
+        // Body length (total struct length minus the 2-byte header)
+        let payload_len = header.struct_len.saturating_sub(2) as usize;
 
         match srp_type {
             SRPType::SelectByProgrammingMode => {
@@ -227,9 +273,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchRequestParameter<B> {
                 Ok(Self::SelectByService { service_family: body.service_family, version: body.version })
             }
             SRPType::RequestDIBs => {
-                // Calculate number of bytes for selectors based on length
-                let payload_len = header.struct_len.saturating_sub(2); // subtract header size
-                let selectors_bytes = buffer.take_front(payload_len as usize).ok_or_else(|| {
+                let selectors_bytes = buffer.take_front(payload_len).ok_or_else(|| {
                     debug!("too few bytes for DIB selectors");
                     ParseError::Format
                 })?;
@@ -238,9 +282,27 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchRequestParameter<B> {
 
                 Ok(Self::RequestDIBs { selectors })
             }
-            SRPType::Other(_) => {
-                debug!("unsupported SRP type: {:?}", srp_type);
-                Err(ParseError::NotSupported)
+            SRPType::Invalid => {
+                // Consume any body bytes (spec says struct_len=2, but be robust)
+                if payload_len > 0 {
+                    let _ = buffer.take_front(payload_len).ok_or_else(|| {
+                        debug!("too few bytes for Invalid SRP body");
+                        ParseError::Format
+                    })?;
+                }
+                Ok(Self::Invalid { mandatory })
+            }
+            SRPType::Other(type_code) => {
+                // Unknown SRP type — consume body bytes based on struct_len so parsing
+                // can continue to the next SRP in the sequence.
+                if payload_len > 0 {
+                    let _ = buffer.take_front(payload_len).ok_or_else(|| {
+                        debug!("too few bytes for unknown SRP type 0x{:02x} body", type_code);
+                        ParseError::Format
+                    })?;
+                }
+                debug!("unknown SRP type 0x{:02x}, mandatory={}", type_code, mandatory);
+                Ok(Self::Unknown { type_code, mandatory })
             }
         }
     }
@@ -313,10 +375,12 @@ impl<'a> SerializablePacket for SearchRequestParameterBuilder<'a> {
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
-        // Write header using zerocopy
+        // Write header using zerocopy. Per spec Table 6, the M bit (bit 7) is always
+        // set for all standard SRP types.
         let mut header = bv.take_obj_front_zero::<raw::SRPHeader>().expect("too few bytes for SRP header");
         header.struct_len = self.bytes_len() as u8;
-        header.search_request_parameter_type = self.srp_type().into();
+        let type_code: u8 = self.srp_type().into();
+        header.search_request_parameter_type = type_code | SRP_MANDATORY_BIT;
 
         // Write body using zerocopy
         match self {
@@ -354,17 +418,14 @@ impl<'a> SerializablePacket for SearchRequestParameterBuilder<'a> {
 /// Peek at an SRP header to see what type is present.
 ///
 /// This is useful when you need to determine the SRP type before
-/// doing a full parse.
+/// doing a full parse. The M bit is masked off — only the type code is returned.
 pub fn peek_srp_type(bytes: &[u8]) -> ParseResult<SRPType> {
     let (header, _) = Ref::<_, raw::SRPHeader>::from_prefix(bytes).map_err(|_| {
         debug!("too few bytes for SRP header");
         ParseError::Format
     })?;
 
-    SRPType::try_from(header.search_request_parameter_type).map_err(|_| {
-        debug!("unrecognized SRP type: {:x}", header.search_request_parameter_type);
-        ParseError::NotSupported
-    })
+    Ok(SRPType::from(header.search_request_parameter_type & SRP_TYPE_MASK))
 }
 
 /// Peek at the structure length field in the SRP header.
@@ -382,27 +443,39 @@ mod test {
     use super::*;
     use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
+    // ========================================================================
+    // Parsing tests — wire format uses M bit (0x80) on the type code byte
+    // ========================================================================
+
     #[test]
     fn test_parse_select_by_programming_mode() {
         let data = [
-            0x02, 0x01, // header: length=2, type=SelectByProgrammingMode (no payload)
+            0x02, 0x81, // length=2, type=0x01|M
         ];
 
         let mut slice = &data[..];
         let srp: SearchRequestParameter<&[u8]> = slice.parse().unwrap();
-        match srp {
-            SearchRequestParameter::SelectByProgrammingMode => {
-                // Success - no fields to check
-            }
-            _ => panic!("Wrong SRP type"),
-        }
+        assert!(matches!(srp, SearchRequestParameter::SelectByProgrammingMode));
+        assert!(srp.is_mandatory());
+    }
+
+    #[test]
+    fn test_parse_select_by_programming_mode_without_m_bit() {
+        // Parser should still recognize the type even without M bit
+        let data = [
+            0x02, 0x01, // length=2, type=0x01 (no M bit)
+        ];
+
+        let mut slice = &data[..];
+        let srp: SearchRequestParameter<&[u8]> = slice.parse().unwrap();
+        assert!(matches!(srp, SearchRequestParameter::SelectByProgrammingMode));
     }
 
     #[test]
     fn test_parse_select_by_mac_address() {
         let data = [
-            0x08, 0x02, // header: length=8, type=SelectByMacAddress
-            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, // MAC address
+            0x08, 0x82, // length=8, type=0x02|M
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
         ];
 
         let mut slice = &data[..];
@@ -418,9 +491,8 @@ mod test {
     #[test]
     fn test_parse_select_by_service() {
         let data = [
-            0x04, 0x03, // header: length=4, type=SelectByService
-            0x05, // service family (using 0x05 for test)
-            0x01, // version
+            0x04, 0x83, // length=4, type=0x03|M
+            0x05, 0x01,
         ];
 
         let mut slice = &data[..];
@@ -437,10 +509,8 @@ mod test {
     #[test]
     fn test_parse_request_dibs() {
         let data = [
-            0x05, 0x04, // header: length=5, type=RequestDIBs
-            0x01, // DeviceInfo
-            0x02, // SupportedServiceFamilies
-            0x03, // IPConfig
+            0x05, 0x84, // length=5, type=0x04|M
+            0x01, 0x02, 0x03,
         ];
 
         let mut slice = &data[..];
@@ -458,6 +528,125 @@ mod test {
     }
 
     #[test]
+    fn test_parse_request_dibs_odd_padding() {
+        let data = [
+            0x04, 0x84, // length=4, type=0x04|M
+            0x01, // DeviceInfo
+            0x00, // Padding
+        ];
+
+        let mut slice = &data[..];
+        let srp: SearchRequestParameter<&[u8]> = slice.parse().unwrap();
+        match srp {
+            SearchRequestParameter::RequestDIBs { selectors } => {
+                let items: heapless::Vec<_, 16> = selectors.iter().collect();
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0], KNXnetIPServiceFamily::DeviceInfo);
+            }
+            _ => panic!("Wrong SRP type"),
+        }
+    }
+
+    // ========================================================================
+    // Invalid SRP (type code 0x00) — conformance test mechanism
+    // ========================================================================
+
+    #[test]
+    fn test_parse_invalid_srp_mandatory() {
+        // Invalid SRP with M bit set — server must not respond
+        let data = [
+            0x02, 0x80, // length=2, type=0x00|M
+        ];
+
+        let mut slice = &data[..];
+        let srp: SearchRequestParameter<&[u8]> = slice.parse().unwrap();
+        match srp {
+            SearchRequestParameter::Invalid { mandatory } => assert!(mandatory),
+            _ => panic!("Expected Invalid SRP"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_srp_not_mandatory() {
+        // Invalid SRP without M bit — server should ignore it
+        let data = [
+            0x02, 0x00, // length=2, type=0x00 (no M bit)
+        ];
+
+        let mut slice = &data[..];
+        let srp: SearchRequestParameter<&[u8]> = slice.parse().unwrap();
+        match srp {
+            SearchRequestParameter::Invalid { mandatory } => assert!(!mandatory),
+            _ => panic!("Expected Invalid SRP"),
+        }
+    }
+
+    // ========================================================================
+    // Unknown SRP types — graceful body consumption
+    // ========================================================================
+
+    #[test]
+    fn test_parse_unknown_srp_mandatory() {
+        // Unknown type 0x05 with M bit, 2-byte body
+        let data = [
+            0x04, 0x85, // length=4, type=0x05|M
+            0xAA, 0xBB, // body (consumed but not interpreted)
+        ];
+
+        let mut slice = &data[..];
+        let srp: SearchRequestParameter<&[u8]> = slice.parse().unwrap();
+        match srp {
+            SearchRequestParameter::Unknown { type_code, mandatory } => {
+                assert_eq!(type_code, 0x05);
+                assert!(mandatory);
+            }
+            _ => panic!("Expected Unknown SRP"),
+        }
+        // Buffer should be fully consumed
+        assert!(slice.is_empty());
+    }
+
+    #[test]
+    fn test_parse_unknown_srp_not_mandatory() {
+        // Unknown type 0x7F without M bit, no body
+        let data = [
+            0x02, 0x7F, // length=2, type=0x7F (no M bit)
+        ];
+
+        let mut slice = &data[..];
+        let srp: SearchRequestParameter<&[u8]> = slice.parse().unwrap();
+        match srp {
+            SearchRequestParameter::Unknown { type_code, mandatory } => {
+                assert_eq!(type_code, 0x7F);
+                assert!(!mandatory);
+            }
+            _ => panic!("Expected Unknown SRP"),
+        }
+    }
+
+    #[test]
+    fn test_parse_unknown_srp_with_body_followed_by_known() {
+        // Unknown SRP followed by a known SRP — the unknown body must be consumed
+        // cleanly so the next SRP can be parsed.
+        let data = [
+            0x04, 0x85, // Unknown type 0x05|M, length=4
+            0xAA, 0xBB, // body (2 bytes)
+            0x02, 0x81, // SelectByProgrammingMode, length=2, type=0x01|M
+        ];
+
+        let mut slice = &data[..];
+        let srp1: SearchRequestParameter<&[u8]> = slice.parse().unwrap();
+        assert!(matches!(srp1, SearchRequestParameter::Unknown { type_code: 0x05, mandatory: true }));
+
+        let srp2: SearchRequestParameter<&[u8]> = slice.parse().unwrap();
+        assert!(matches!(srp2, SearchRequestParameter::SelectByProgrammingMode));
+    }
+
+    // ========================================================================
+    // Serialization tests — output must include M bit
+    // ========================================================================
+
+    #[test]
     fn test_serialize_select_by_programming_mode() {
         let srp = SearchRequestParameterBuilder::SelectByProgrammingMode;
 
@@ -466,9 +655,8 @@ mod test {
         let (written, _) = cursor.serialize(&srp);
 
         let expected = [
-            0x02, 0x01, // header: length=2, type=SelectByProgrammingMode (no payload)
+            0x02, 0x81, // length=2, type=0x01|M
         ];
-
         assert_eq!(written, &expected[..]);
     }
 
@@ -482,10 +670,9 @@ mod test {
         let (written, _) = cursor.serialize(&srp);
 
         let expected = [
-            0x08, 0x02, // header: length=8, type=SelectByMacAddress
-            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, // MAC address
+            0x08, 0x82, // length=8, type=0x02|M
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
         ];
-
         assert_eq!(written, &expected[..]);
     }
 
@@ -499,17 +686,14 @@ mod test {
         let (written, _) = cursor.serialize(&srp);
 
         let expected = [
-            0x04, 0x04, // header: length=4, type=RequestDIBs
-            0x01, // DeviceInfo
-            0x02, // SupportedServiceFamilies
+            0x04, 0x84, // length=4, type=0x04|M
+            0x01, 0x02,
         ];
-
         assert_eq!(written, &expected[..]);
     }
 
     #[test]
     fn test_serialize_request_dibs_odd_padding() {
-        // Test with odd number of selectors - should add padding
         let selectors = [KNXnetIPServiceFamily::DeviceInfo];
         let srp = SearchRequestParameterBuilder::RequestDIBs { selectors: &selectors };
 
@@ -518,50 +702,30 @@ mod test {
         let (written, _) = cursor.serialize(&srp);
 
         let expected = [
-            0x04, 0x04, // header: length=4, type=RequestDIBs (includes padding)
-            0x01, // DeviceInfo
-            0x00, // Padding to make length even
-        ];
-
-        assert_eq!(written, &expected[..]);
-    }
-
-    #[test]
-    fn test_parse_request_dibs_odd_padding() {
-        // Test parsing with padding byte
-        let data = [
-            0x04, 0x04, // header: length=4, type=RequestDIBs
+            0x04, 0x84, // length=4, type=0x04|M (includes padding)
             0x01, // DeviceInfo
             0x00, // Padding
         ];
-
-        let mut slice = &data[..];
-        let srp: SearchRequestParameter<&[u8]> = slice.parse().unwrap();
-        match srp {
-            SearchRequestParameter::RequestDIBs { selectors } => {
-                let items: heapless::Vec<_, 16> = selectors.iter().collect();
-                // Should have only 1 selector, padding should be ignored
-                assert_eq!(items.len(), 1);
-                assert_eq!(items[0], KNXnetIPServiceFamily::DeviceInfo);
-            }
-            _ => panic!("Wrong SRP type"),
-        }
+        assert_eq!(written, &expected[..]);
     }
+
+    // ========================================================================
+    // Round-trip tests
+    // ========================================================================
 
     #[test]
     fn test_round_trip_select_by_service() {
         let builder = SearchRequestParameterBuilder::SelectByService { service_family: 0x04, version: 0x01 };
 
-        // Serialize
         let mut buffer = [0u8; 32];
         let mut cursor = &mut buffer[..];
         let (written, _) = cursor.serialize(&builder);
 
-        // Parse
+        // Verify M bit is set in serialized output
+        assert_eq!(written[1], 0x83); // 0x03 | 0x80
+
         let mut parse_buf = &written[..];
         let parsed: SearchRequestParameter<&[u8]> = parse_buf.parse().unwrap();
-
-        // Compare
         match parsed {
             SearchRequestParameter::SelectByService { service_family, version } => {
                 assert_eq!(service_family, 0x04);
@@ -572,23 +736,64 @@ mod test {
     }
 
     #[test]
-    fn test_peek_srp_type() {
-        let data = [
-            0x02, 0x01, // header: length=2, type=SelectByProgrammingMode (no payload)
-        ];
+    fn test_round_trip_select_by_programming_mode() {
+        let builder = SearchRequestParameterBuilder::SelectByProgrammingMode;
 
-        let srp_type = peek_srp_type(&data).unwrap();
-        assert_eq!(srp_type, SRPType::SelectByProgrammingMode);
+        let mut buffer = [0u8; 32];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+
+        let mut parse_buf = &written[..];
+        let parsed: SearchRequestParameter<&[u8]> = parse_buf.parse().unwrap();
+        assert!(matches!(parsed, SearchRequestParameter::SelectByProgrammingMode));
+    }
+
+    // ========================================================================
+    // Peek helpers
+    // ========================================================================
+
+    #[test]
+    fn test_peek_srp_type_masks_m_bit() {
+        // With M bit set
+        let data = [0x02, 0x81]; // type=0x01|M
+        assert_eq!(peek_srp_type(&data).unwrap(), SRPType::SelectByProgrammingMode);
+
+        // Without M bit
+        let data = [0x02, 0x01]; // type=0x01
+        assert_eq!(peek_srp_type(&data).unwrap(), SRPType::SelectByProgrammingMode);
+
+        // Invalid with M bit
+        let data = [0x02, 0x80]; // type=0x00|M
+        assert_eq!(peek_srp_type(&data).unwrap(), SRPType::Invalid);
     }
 
     #[test]
     fn test_peek_srp_structure_length() {
         let data = [
-            0x05, 0x04, // header: length=5, type=RequestDIBs
-            0x01, 0x02, 0x03, // selectors
+            0x05, 0x84, // length=5, type=0x04|M
+            0x01, 0x02, 0x03,
         ];
+        assert_eq!(peek_srp_structure_length(&data).unwrap(), 5);
+    }
 
-        let length = peek_srp_structure_length(&data).unwrap();
-        assert_eq!(length, 5);
+    // ========================================================================
+    // is_mandatory helper
+    // ========================================================================
+
+    #[test]
+    fn test_is_mandatory() {
+        // Standard types are always mandatory
+        assert!(SearchRequestParameter::<&[u8]>::SelectByProgrammingMode.is_mandatory());
+        assert!(SearchRequestParameter::<&[u8]>::SelectByMacAddress {
+            mac_address: EthernetAddress([0; 6])
+        }
+        .is_mandatory());
+        assert!(SearchRequestParameter::<&[u8]>::SelectByService { service_family: 0, version: 0 }.is_mandatory());
+
+        // Invalid/Unknown depend on the wire M bit
+        assert!(SearchRequestParameter::<&[u8]>::Invalid { mandatory: true }.is_mandatory());
+        assert!(!SearchRequestParameter::<&[u8]>::Invalid { mandatory: false }.is_mandatory());
+        assert!(SearchRequestParameter::<&[u8]>::Unknown { type_code: 0x05, mandatory: true }.is_mandatory());
+        assert!(!SearchRequestParameter::<&[u8]>::Unknown { type_code: 0x05, mandatory: false }.is_mandatory());
     }
 }

@@ -468,11 +468,15 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
         // ====================================================================
 
         let mut supported_services = Vec::<substructs::SupportedService, 5>::new();
+
+        // Core v1: discovery, description, connection management over UDP.
+        // Core v2 additionally requires TCP support (§9.2), which we don't implement yet.
         let _ = supported_services
             .push(substructs::SupportedService { family: substructs::ServiceFamily::Core, version: 1 });
 
-        // Device Management is mandatory for all KNXnet/IP device classes
-        // (KNX spec 3/8/1 Table 2).
+        // Device Management v2: mandatory for all KNXnet/IP device classes (3/8/1 Table 2).
+        // v2 requires cEMI Transport Layer support (T_Data_Individual, T_Data_Connected)
+        // in addition to v1's M_PropRead/M_PropWrite/M_Reset (3/8/3 §4.2.5), which we implement.
         let _ = supported_services
             .push(substructs::SupportedService { family: substructs::ServiceFamily::DeviceManagement, version: 2 });
 
@@ -505,6 +509,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> KnxNetIpBuilder<T, MAX_SOCKETS> {
 
             let mut service_types = Vec::new();
             let _ = service_types.push(KNXnetIPServiceType::SearchRequest);
+            let _ = service_types.push(KNXnetIPServiceType::SearchRequestExtended);
             let _ = service_types.push(KNXnetIPServiceType::DescriptionRequest);
 
             // Discovery listens on multicast (system setup) + unicast (any:3671)

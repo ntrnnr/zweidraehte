@@ -453,23 +453,39 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DescriptionResponse<B> {
 /// Builder for DescriptionResponse message
 ///
 /// Since DescriptionResponse contains SupportedServiceFamilies which uses Records,
-/// we need a builder to serialize it properly.
+/// we need a builder to serialize it properly. Optional additional DIBs (e.g.,
+/// IpConfig, IpCurrentConfig, KnxAddresses) can be appended after the mandatory
+/// DeviceInformation and SupportedServiceFamilies.
+///
+/// Per spec Table 5, DescriptionResponse must NOT include TunnelingInfo or
+/// ExtendedDeviceInfo — those are SearchResponseExtended-only.
 pub struct DescriptionResponseBuilder<'a> {
     pub device_hardware: DeviceInformation,
     pub supported_services: &'a [SupportedService],
+    pub additional_dibs: &'a [DescriptionInformationBlockBuilder<'a>],
 }
 
 impl<'a> DescriptionResponseBuilder<'a> {
     pub fn new(device_hardware: DeviceInformation, supported_services: &'a [SupportedService]) -> Self {
-        Self { device_hardware, supported_services }
+        Self { device_hardware, supported_services, additional_dibs: &[] }
+    }
+
+    pub fn with_additional_dibs(
+        device_hardware: DeviceInformation,
+        supported_services: &'a [SupportedService],
+        additional_dibs: &'a [DescriptionInformationBlockBuilder<'a>],
+    ) -> Self {
+        Self { device_hardware, supported_services, additional_dibs }
     }
 }
 
 impl<'a> SerializablePacket for DescriptionResponseBuilder<'a> {
     fn bytes_len(&self) -> usize {
+        let additional: usize = self.additional_dibs.iter().map(|dib| dib.bytes_len()).sum();
         mem::size_of::<raw::KNXnetIPHeader>()
             + self.device_hardware.bytes_len()
             + SupportedServiceFamiliesBuilder::new(self.supported_services).bytes_len()
+            + additional
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
@@ -485,6 +501,10 @@ impl<'a> SerializablePacket for DescriptionResponseBuilder<'a> {
 
         let services_builder = SupportedServiceFamiliesBuilder::new(self.supported_services);
         services_builder.serialize(bv);
+
+        for dib in self.additional_dibs {
+            dib.serialize(bv);
+        }
     }
 }
 

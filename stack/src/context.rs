@@ -10,7 +10,7 @@ use embassy_sync::channel::DynamicSender;
 
 use crate::layers::LayerOp;
 use crate::messages::buffers::{Buffer, DynBufferManager};
-use crate::messages::knxip::substructs::DeviceInformation;
+use crate::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
 use crate::objects::interface::PropertyServiceHandler;
 
 /// Provides access to the buffer manager for allocating and freeing message buffers
@@ -56,6 +56,12 @@ pub trait PropertyServiceContext {
 pub trait DeviceInfoContext {
     /// Build a [`DeviceInformation`] reflecting the current device state.
     fn device_information(&self) -> DeviceInformation;
+
+    /// Build an [`ExtendedDeviceInformation`] reflecting the current device state.
+    ///
+    /// Used in `SearchResponseExtended` (spec §7.6.3.6). Contains medium status,
+    /// max local APDU length, and device descriptor type 0.
+    fn extended_device_information(&self) -> ExtendedDeviceInformation;
 }
 
 /// Provides a sender to the application layer's incoming channel.
