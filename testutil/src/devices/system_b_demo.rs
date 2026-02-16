@@ -567,6 +567,7 @@ impl KnxIpDevice for DemoStack {
 
 impl StackDefinition for DemoStack {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    const TL_STYLE: TlStyle = TlStyle::Style1;
 
     type P = DemoParams;
     type CO = comm_objs::DemoComObjects;

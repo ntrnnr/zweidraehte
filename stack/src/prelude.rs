@@ -44,3 +44,6 @@ pub use crate::storage::{DeviceStorage, NoStorage};
 
 // Memory
 pub use crate::memory::{MemoryMap, MemoryError, NoMemoryMap};
+
+// Transport layer
+pub use crate::layers::transport::TlStyle;

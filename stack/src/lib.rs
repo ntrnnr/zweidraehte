@@ -53,7 +53,7 @@ use crate::{
         ActorRequest, Layer, LayerOp, LinkLayerBuilder, LinkLayerBuilderBase, Request,
         application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
         network::NetworkLayer,
-        transport::TransportLayer,
+        transport::{TransportLayer, TlStyle},
     },
     memory::MemoryMap,
     messages::buffers::{Buffer, BufferManager, DynBufferManager},
@@ -523,6 +523,12 @@ pub trait StackDefinition: Copy {
     /// Set to `None` if not supported. If `None`, the stack will not respond
     /// to A_UserManufacturerInfo_Read requests.
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = None;
+
+    /// Transport layer state machine style per KNX spec 03/03/04 section 5.4.
+    ///
+    /// Determines connection-oriented error recovery behavior. Must be chosen
+    /// explicitly — there is no default.
+    const TL_STYLE: TlStyle;
 
     type P: ConstDefault;
     type CO: ComObjects;
@@ -1025,6 +1031,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             &self.stack.inner.state,
             nl_channel.sender().into(),
             al_channel.sender().into(),
+            D::TL_STYLE,
         );
 
         // Create an application layer

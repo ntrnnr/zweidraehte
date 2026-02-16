@@ -14,16 +14,27 @@ use embassy_time::Instant;
 // Connection State
 // ============================================================================
 
-/// Connection state per KNX spec 03/03/04
+/// Connection state per KNX spec 03/03/04 section 5.1
+///
+/// The `#[repr(u8)]` is used for indexing into the transition tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
 pub enum ConnectionState {
     /// No active connection
     #[default]
-    Closed,
+    Closed = 0,
     /// Connection established, waiting for data or ready to send
-    OpenIdle,
+    OpenIdle = 1,
     /// Sent data, waiting for ACK/NACK
-    OpenWait,
+    OpenWait = 2,
+    /// Client only. Waiting for an IACK after trying to connect to a
+    /// remote partner. Only used by Style 3.
+    Connecting = 3,
+}
+
+impl ConnectionState {
+    /// Total number of states (for transition table sizing)
+    pub const COUNT: usize = 4;
 }
 
 // ============================================================================
@@ -200,6 +211,25 @@ impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_I
         // Then check outgoing
         for conn in self.outgoing.iter_mut() {
             if conn.state != ConnectionState::Closed && conn.remote_addr == addr {
+                return Some(conn);
+            }
+        }
+        None
+    }
+
+    /// Find any connection by remote address, regardless of state.
+    ///
+    /// Unlike `find_any`, this also returns connections in `Closed` state.
+    /// Used for applying deferred state transitions where the connection may
+    /// be temporarily in an intermediate state.
+    pub fn find_any_including_closed(&mut self, addr: IndividualAddress) -> Option<&mut Connection> {
+        for conn in self.incoming.iter_mut() {
+            if conn.remote_addr == addr {
+                return Some(conn);
+            }
+        }
+        for conn in self.outgoing.iter_mut() {
+            if conn.remote_addr == addr {
                 return Some(conn);
             }
         }

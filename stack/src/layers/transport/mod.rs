@@ -27,15 +27,12 @@
 //! - **Global Timer**: Periodic scanning for timeout handling
 
 // FIXME: do we want the connection timeout, ack timeout and max_repetitions to be configurable? Are there PIDs available for interface objects?
-// FIXME: this is the full-blown state machine implementation - we may want a simpler version for smaller microcontrollers
-//        for example if we receive data while in OPEN_WAIT, we could just replace the data we are expecting an ACK for with the new data - multiple other stacks do it that way
-//        I am not sure what documented style we are implementing right now, most likely Style 3 but without tested outgoing connections
 
 mod connection;
 mod state_machine;
 
 pub use connection::{Connection, ConnectionState, ConnectionTable};
-pub use state_machine::{ActionBuffer, MAX_REPETITIONS, TlAction, TlEvent, process_event};
+pub use state_machine::{ActionBuffer, MAX_REPETITIONS, ProcessResult, TlAction, TlEvent, TlStyle, process_event};
 
 use core::cell::RefCell;
 
@@ -101,6 +98,8 @@ pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1,
     application_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     /// Connection table for stateful connections
     connections: ConnectionTable<MAX_INCOMING, MAX_OUTGOING>,
+    /// State machine style (determines error recovery behavior)
+    style: TlStyle,
 }
 
 impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
@@ -112,8 +111,9 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
         state: &'a D::State,
         network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         application_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        style: TlStyle,
     ) -> Self {
-        Self { buffer_manager, state, network_layer, application_layer, connections: ConnectionTable::new() }
+        Self { buffer_manager, state, network_layer, application_layer, connections: ConnectionTable::new(), style }
     }
 }
 
@@ -276,13 +276,13 @@ where
         };
 
         // Process the event through the state machine
-        let actions = process_event(conn, event);
+        let result = process_event(conn, event, self.style);
 
         // Store the message if we need to forward data
         let msg_for_data = if matches!(event, TlEvent::ReceivedData { .. }) { Some(msg) } else { None };
 
         // Execute actions
-        self.execute_actions(actions, source, msg_for_data).await;
+        self.execute_actions(result, source, msg_for_data).await;
     }
 
     // ========================================================================
@@ -418,7 +418,7 @@ where
         };
 
         // Process connect request through state machine
-        let actions = process_event(conn, TlEvent::RequestConnect { dest });
+        let actions = process_event(conn, TlEvent::RequestConnect { dest }, self.style);
         self.execute_actions(actions, dest, None).await;
 
         msg.confirm().build()
@@ -435,7 +435,7 @@ where
 
         // Find the connection
         if let Some(conn) = self.connections.find_any(dest) {
-            let actions = process_event(conn, TlEvent::RequestDisconnect { dest });
+            let actions = process_event(conn, TlEvent::RequestDisconnect { dest }, self.style);
             self.execute_actions(actions, dest, None).await;
         }
 
@@ -467,7 +467,7 @@ where
         }
 
         let seq_no = conn.seq_no_send;
-        let actions = process_event(conn, TlEvent::RequestData { dest });
+        let actions = process_event(conn, TlEvent::RequestData { dest }, self.style);
 
         // For data requests, we need to prepare and send the message
         msg.set_tpci(Tpci::DataConnected(seq_no));
@@ -539,7 +539,7 @@ where
                         TimeoutType::Ack => TlEvent::AckTimeout,
                         TimeoutType::Connection => TlEvent::ConnectionTimeout,
                     };
-                    let actions = process_event(conn, event);
+                    let actions = process_event(conn, event, self.style);
                     self.execute_actions(actions, addr, None).await;
                 }
                 None => break,
@@ -565,7 +565,7 @@ where
                         TimeoutType::Ack => TlEvent::AckTimeout,
                         TimeoutType::Connection => TlEvent::ConnectionTimeout,
                     };
-                    let actions = process_event(conn, event);
+                    let actions = process_event(conn, event, self.style);
                     self.execute_actions(actions, addr, None).await;
                 }
                 None => break,
@@ -582,17 +582,24 @@ where
     // Action Execution
     // ========================================================================
 
-    /// Execute actions returned by the state machine
+    /// Execute actions returned by the state machine and apply the state
+    /// transition.
+    ///
+    /// Actions are executed FIRST (while the connection is still in its
+    /// pre-transition state), then the state transition is applied. This
+    /// ordering is critical because action handlers look up connections by
+    /// address, and connections in `Closed` state are filtered out of those
+    /// lookups.
     ///
     /// Takes ownership of `msg_for_data` since it may need to be forwarded
     /// to the application layer.
     async fn execute_actions(
         &mut self,
-        actions: ActionBuffer,
+        result: ProcessResult,
         remote_addr: IndividualAddress,
         mut msg_for_data: Option<IndicationMessage<Buffer<'static>>>,
     ) {
-        for action in actions.iter() {
+        for action in result.actions.iter() {
             match action {
                 TlAction::SendConnect { dest } => {
                     self.send_connect(dest).await;
@@ -618,7 +625,7 @@ where
                     if let Some(mut msg) = msg_for_data.take() {
                         msg.set_service_type(ServiceType::T_Data_Ind);
                         // Set access level from connection state
-                        if let Some(conn) = self.connections.find_any(remote_addr) {
+                        if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
                             msg.set_access_level(conn.access_level);
                         }
                         self.application_layer.send(LayerOp::Indication(msg)).await;
@@ -628,7 +635,7 @@ where
                     // Store the incoming message for later delivery
                     // This is used when we receive data while in OPEN_WAIT
                     if let Some(msg) = msg_for_data.take() {
-                        if let Some(conn) = self.connections.find_any(remote_addr) {
+                        if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
                             // Allocate a buffer and store the message
                             let queued_buffer = self.buffer_manager.borrow().alloc_from_slice(&*msg.buf()).await;
                             let queued_msg = KnxMessageBuffer::new(queued_buffer, msg.service_type());
@@ -639,7 +646,7 @@ where
                 }
                 TlAction::DeliverQueuedData { source: _ } => {
                     // Deliver any queued incoming data to the application layer
-                    if let Some(conn) = self.connections.find_any(remote_addr) {
+                    if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
                         let access_level = conn.access_level;
                         if let Some(mut queued_msg) = conn.queued_incoming.take() {
                             queued_msg.set_service_type(ServiceType::T_Data_Ind);
@@ -658,32 +665,36 @@ where
                 TlAction::ConfirmConnect { dest, success } => {
                     debug!("TL connect confirmation for {}: {}", dest, success);
                 }
+                TlAction::ConfirmDisconnect { dest } => {
+                    debug!("TL disconnect confirmation for {}", dest);
+                    // TODO: Complete pending disconnect request with confirmation
+                }
                 TlAction::StartAckTimer => {
-                    if let Some(conn) = self.connections.find_any(remote_addr) {
+                    if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
                         let deadline = Instant::now() + Duration::from_millis(ACK_TIMEOUT_MS);
                         conn.start_ack_timeout(deadline);
                     }
                 }
                 TlAction::StopAckTimer => {
-                    if let Some(conn) = self.connections.find_any(remote_addr) {
+                    if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
                         conn.stop_ack_timeout();
                     }
                 }
                 TlAction::StartConnTimer => {
-                    if let Some(conn) = self.connections.find_any(remote_addr) {
+                    if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
                         let deadline = Instant::now() + Duration::from_millis(CONNECTION_TIMEOUT_MS);
                         conn.start_conn_timeout(deadline);
                     }
                 }
                 TlAction::StopConnTimer => {
-                    if let Some(conn) = self.connections.find_any(remote_addr) {
+                    if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
                         conn.stop_conn_timeout();
                     }
                 }
                 TlAction::Retransmit { dest } => {
                     debug!("TL retransmitting to {}", dest);
                     // Get the pending message from the connection
-                    if let Some(conn) = self.connections.find_any(dest) {
+                    if let Some(conn) = self.connections.find_any_including_closed(dest) {
                         if let Some(ref pending_msg) = conn.pending_msg {
                             // Allocate a new buffer and copy the pending message
                             let retransmit_buffer =
@@ -704,7 +715,7 @@ where
                 }
                 TlAction::ClearPendingMessage => {
                     // Clear the pending message to free the buffer
-                    if let Some(conn) = self.connections.find_any(remote_addr) {
+                    if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
                         if conn.pending_msg.take().is_some() {
                             debug!("TL cleared pending message for {}", remote_addr);
                         }
@@ -712,11 +723,17 @@ where
                 }
             }
         }
+
+        // Apply the deferred state transition AFTER all actions have executed.
+        // Actions use find_any_including_closed() to locate the connection
+        // regardless of its current state, since it may be transitioning from
+        // Closed (new connection) or to Closed (disconnecting).
+        result.apply_state_by_addr(&mut self.connections, remote_addr);
     }
 
     /// Execute actions without handling data sending (for request handlers)
-    async fn execute_actions_no_send(&mut self, actions: ActionBuffer, remote_addr: IndividualAddress) {
-        self.execute_actions(actions, remote_addr, None).await;
+    async fn execute_actions_no_send(&mut self, result: ProcessResult, remote_addr: IndividualAddress) {
+        self.execute_actions(result, remote_addr, None).await;
     }
 
     // ========================================================================

@@ -3230,6 +3230,7 @@ impl KnxIpDevice for MdtStack {
 
 impl StackDefinition for MdtStack {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    const TL_STYLE: TlStyle = TlStyle::Style1;
 
     type P = MdtParams;
     type CO = comm_objs::MdtComObjects;

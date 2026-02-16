@@ -700,6 +700,7 @@ const KNXIP_DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
 pub struct MyKnxStackWithKnxIp;
 impl StackDefinition for MyKnxStackWithKnxIp {
     const DEVICE: &'static DeviceDescriptor = &KNXIP_DEVICE_DESCRIPTOR;
+    const TL_STYLE: TlStyle = TlStyle::Style1;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, 2>;

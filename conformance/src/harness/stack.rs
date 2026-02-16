@@ -1103,6 +1103,7 @@ impl StackDefinition for ConformanceTestStack {
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
+    const TL_STYLE: zweidraehte::layers::transport::TlStyle = zweidraehte::layers::transport::TlStyle::Style1;
     type P = TestParameters;
     type CO = ConformanceComObjects;
     type LLB = MockLinkLayerBuilder<16, 16>;
