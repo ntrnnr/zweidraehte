@@ -12,14 +12,14 @@ zerocopy = { workspace = true }
 
 # Linux deps
 embassy-time = { workspace = true }
-serialport = { workspace = true, optional = true }
-async-io = { workspace = true, optional = true }
-nix = { workspace = true, optional = true, features = ["term", "socket", "net"] }
-socket2 = { workspace = true, optional = true }
+serialport = { version = "4.7", optional = true }
+async-io = { version = "2.4", optional = true }
+nix = { version = "0.30", default-features = false, optional = true, features = ["term", "socket", "net"] }
+socket2 = { version = "0.6", optional = true }
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
-serialport_low_latency = { workspace = true, optional = true }
+serialport_low_latency = { version = "0.1.1", optional = true }
 
 [features]
 defmt = ["dep:defmt"]

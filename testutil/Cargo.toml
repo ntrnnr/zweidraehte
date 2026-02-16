@@ -23,15 +23,15 @@ serde_json = { workspace = true }
 embedded-io-async = { workspace = true }
 
 
-env_logger = "0.11"
-log = "0.4"
-chrono = "0.4"
-quick-xml = { version = "0.37", features = ["serialize"] }
-base64 = "0.22"
-regex = "1"
+env_logger = { workspace = true }
+log = { workspace = true }
+chrono = { workspace = true }
+quick-xml = { workspace = true }
+base64 = { workspace = true }
+regex = { workspace = true }
 async-hid = { workspace = true }
 futures-lite = { workspace = true }
-libc = "0.2"
+libc = { workspace = true }
 
 [[bin]]
 name = "testutil"

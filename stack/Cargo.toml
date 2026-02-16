@@ -8,7 +8,6 @@ platform = { path = "../platform", features = ["log", "linux"] }
 ets-macros = { path = "../ets-macros" }
 
 zerocopy = { workspace = true }
-#const-bitfield = { workspace = true }
 const-default = { workspace = true }
 paste = { workspace = true }
 static_cell = { workspace = true }
@@ -20,12 +19,11 @@ embassy-time = { workspace = true }
 defmt = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
 embedded-io-async = { workspace = true }
-pin-project = { workspace = true }
 heapless = { workspace = true }
 replace_with = { workspace = true }
 
 [dev-dependencies]
-test-case = { workspace = true }
+test-case = "3.3"
 
 [features]
 defmt = ["dep:defmt"]

@@ -19,7 +19,6 @@ license = "Proprietary"
 
 [workspace.dependencies]
 zerocopy = { version = "0.8", features = ["derive"] }
-const-bitfield = "0.2"
 const-default = { version = "1.0", features = ["derive"] }
 paste = "1.0"
 static_cell = { version = "2.1", features = ["nightly"] }
@@ -28,7 +27,6 @@ log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_with = { version = "3.12", features = ["macros"] }
 serde_json = "1.0"
-pin-project = "1"
 heapless = "0.9"
 replace_with = { version = "0.1", default-features = false }
 
@@ -39,20 +37,17 @@ embassy-futures = { version = "0.1", default-features = false }
 
 embedded-io-async = { version = "0.6" }
 
-# Platform
-serialport = "4.7"
-async-io = "2.4"
-nix = { version = "0.30", default-features = false }
-serialport_low_latency = { version = "0.1.1" }
-socket2 = "0.6"
 async-hid = "0.4"
 futures-lite = "2.5"
 
-# Testing
-test-case = "3.3"
+# Shared across multiple crates
+chrono = "0.4"
+quick-xml = { version = "0.37", features = ["serialize"] }
+base64 = "0.22"
+regex = "1"
 
-# TUI
-ratatui = "0.30"
-crossterm = "0.28"
-ratatui-image = { version = "10.0", default-features = false, features = ["crossterm"] }
-image = "0.25"
+# Common ecosystem crates
+thiserror = "2.0"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+libc = "0.2"
