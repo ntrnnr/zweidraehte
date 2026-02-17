@@ -52,6 +52,7 @@ use crate::{
 
 /// Service requests from the application to the application layer
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ApplicationLayerService {
     /// Request to send a `A_GroupValue_Write.req` for the given ASAP
     GroupValueWriteRequest(u16),
@@ -398,7 +399,7 @@ where
                     }
                 }
 
-                debug!("AL ASAP {} updated via {:?}: {:x?}", asap, apci, self.comm_objects.borrow().value(asap));
+                debug!("AL ASAP {} updated via {:?}: {:?}", asap, apci, crate::fmt::Bytes(self.comm_objects.borrow().value(asap)));
             } else {
                 error!("Length of telegram not enough to contain object value");
             }
@@ -488,7 +489,7 @@ where
             let confirmation = self.send_response(RequestMessage::request(msg)).await;
             debug!("AL GroupValueResponse confirmation ASAP {} TSAP {}: {:?}", asap, tsap, confirmation.service_type());
 
-            trace!("AL sent GroupValueResponse for ASAP {}: {:x?}", asap, self.comm_objects.borrow().value(asap));
+            trace!("AL sent GroupValueResponse for ASAP {}: {:?}", asap, crate::fmt::Bytes(self.comm_objects.borrow().value(asap)));
 
             // Publish read event to the event channel
             if let Some(index) = <<D as StackDefinition>::CO as ComObjects>::Index::from_index(asap) {
@@ -1091,7 +1092,7 @@ where
                         data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 16].copy_from_slice(dd2);
                     });
 
-                debug!("AL sending DeviceDescriptorResponse (DD2): {:02x?}", dd2);
+                debug!("AL sending DeviceDescriptorResponse (DD2): {:?}", crate::fmt::Bytes(dd2));
 
                 let confirmation = self.send_response(msg).await;
                 trace!("AL DeviceDescriptorResponse (DD2) confirmation: {:?}", confirmation.service_type());
@@ -2009,7 +2010,7 @@ where
                 data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 5].copy_from_slice(info);
             });
 
-        debug!("AL sending UserManufacturerInfo_Response: {:02x?}", info);
+        debug!("AL sending UserManufacturerInfo_Response: {:?}", crate::fmt::Bytes(info));
 
         let confirmation = self.send_response(msg).await;
         trace!("AL UserManufacturerInfo_Response confirmation: {:?}", confirmation.service_type());
@@ -2046,7 +2047,7 @@ where
             buf[offsets::MSG_APCI + 6],
         ];
 
-        debug!("AL Authorize_Request: key={:02x?}", key);
+        debug!("AL Authorize_Request: key={:?}", crate::fmt::Bytes(&key));
 
         // Authorize with the key - returns the access level for this key
         let access_level = self.state.authorize(&key);
@@ -2114,7 +2115,7 @@ where
 
         // Get current access level from the message (set by transport layer from connection)
         let current_access_level = ind.access_level();
-        debug!("AL Key_Write: level={}, key={:02x?}, current_access_level={}", level, key, current_access_level);
+        debug!("AL Key_Write: level={}, key={:?}, current_access_level={}", level, crate::fmt::Bytes(&key), current_access_level);
 
         // Perform the key write
         let result_level = self.state.key_write(level, &key, current_access_level);

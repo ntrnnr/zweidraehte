@@ -102,7 +102,9 @@ impl embedded_io_async::Write for AsyncSerialPort {
         }
     }
 
-    // async fn flush(&mut self) -> Result<()> {
-    //     unsafe { self.s.write_with_mut(|io| io.flush()).await.map_err(|e| e.into()) }
-    // }
+    async fn flush(&mut self) -> std::result::Result<(), Self::Error> {
+        // Serial port writes go directly to the kernel buffer; no additional
+        // flush needed at this level.
+        Ok(())
+    }
 }

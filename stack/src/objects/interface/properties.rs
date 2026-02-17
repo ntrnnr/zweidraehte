@@ -18,6 +18,7 @@ pub enum PropertyAccess {
 
 /// Property errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PropertyError {
     /// Object index out of range
     InvalidObjectIndex,
@@ -145,6 +146,7 @@ impl PropertyDescriptor {
 
 /// Response data for A_PropertyDescription_Read service
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PropertyDescriptionResponse {
     /// Object index
     pub object_idx: u16,

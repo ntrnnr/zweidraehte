@@ -56,6 +56,7 @@ const SELECTOR_TYPE_MAC: u8 = 0x02;
 /// - PrgMode: `[0x02, 0x01]` — 2 bytes, selects devices in programming mode
 /// - MAC: `[0x08, 0x02, mac0..mac5]` — 8 bytes, selects device by MAC address
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Selector {
     /// Select all devices currently in programming mode.
     PrgMode,

@@ -436,6 +436,12 @@ pub const KNX_PORT: u16 = 3671;
 /// (current IP address, MAC address, etc.) for KNX/IP devices.
 pub use platform::NetworkInfo as IpPlatform;
 
+/// Platform abstraction for applying IP configuration changes.
+///
+/// On embedded platforms this reconfigures the network stack (e.g.,
+/// switching between DHCP and static IP). On Linux this is a no-op.
+pub use platform::{IpConfig, NetworkConfig as IpPlatformConfig};
+
 /// Convenience trait alias for types that implement both [`StackState`] and
 /// [`IpStackState`].
 ///

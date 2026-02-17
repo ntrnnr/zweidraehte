@@ -1,4 +1,9 @@
+use core::fmt::Debug;
 use core::net::Ipv4Addr;
+
+// ============================================================================
+// Network Information (read-only)
+// ============================================================================
 
 /// Platform trait for querying current network configuration.
 ///
@@ -26,4 +31,52 @@ pub trait NetworkInfo {
 
     /// Get the KNXnet/IP device capabilities.
     fn knxnetip_device_capabilities(&self) -> u16;
+}
+
+// ============================================================================
+// Network Configuration (apply changes)
+// ============================================================================
+
+/// IP configuration to apply to the platform's network stack.
+///
+/// Used by [`NetworkConfig::apply_ip_config`] to switch between DHCP,
+/// static IP, or other assignment methods at runtime.
+#[derive(Debug, Clone, Copy)]
+pub struct IpConfig {
+    /// IP assignment method bitfield (Manual=1, BootP=2, DHCP=4, AutoIP=8).
+    pub assignment_method: u8,
+    /// Static IP address (used when assignment method is Manual).
+    pub address: Ipv4Addr,
+    /// Static subnet mask (used when assignment method is Manual).
+    pub subnet_mask: Ipv4Addr,
+    /// Static default gateway (used when assignment method is Manual).
+    pub default_gateway: Ipv4Addr,
+}
+
+/// Platform trait for applying IP configuration changes.
+///
+/// On Linux, the OS manages networking independently, so this is a no-op.
+/// On embedded platforms (e.g., Pico W with embassy-net), this reconfigures
+/// the network stack to switch between DHCP and static IP assignment.
+///
+/// The stack calls this when:
+/// - Loading persisted config at boot
+/// - ETS writes the IP assignment method or static IP parameters
+pub trait NetworkConfig {
+    type Error: Debug;
+
+    /// Apply IP configuration to the platform's network stack.
+    ///
+    /// The implementation should switch between DHCP / static / AutoIP
+    /// based on the `assignment_method` bitfield in `config`.
+    fn apply_ip_config(&self, config: &IpConfig) -> Result<(), Self::Error>;
+}
+
+/// No-op implementation for platforms where the OS manages networking.
+impl NetworkConfig for () {
+    type Error = core::convert::Infallible;
+
+    fn apply_ip_config(&self, _config: &IpConfig) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }

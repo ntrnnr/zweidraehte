@@ -12,6 +12,7 @@
 
 use core::cell::RefCell;
 use core::net::{Ipv4Addr, SocketAddrV4};
+use core::pin::Pin;
 
 use embassy_futures::select::select_slice;
 use heapless::Vec;
@@ -137,7 +138,12 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
     /// and enables broadcast as specified. Sockets that fail to bind are
     /// logged and left as `None`; the manager remains usable with the
     /// remaining sockets.
-    pub fn bind_all(&mut self, interface_name: &'static str, interface_addr: Ipv4Addr) {
+    pub fn bind_all(
+        &mut self,
+        socket_ctx: &<T::UdpSocket as platform::AsyncUdpSocket>::Context,
+        interface_name: &'static str,
+        interface_addr: Ipv4Addr,
+    ) {
         for (i, desc) in self.descriptors.iter().enumerate() {
             let port = desc.port();
 
@@ -148,7 +154,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                 ..Default::default()
             };
 
-            match T::UdpSocket::bind(options) {
+            match T::UdpSocket::bind(socket_ctx, options) {
                 Ok(socket) => {
                     for &mcast_addr in desc.multicast_groups() {
                         debug!(
@@ -187,7 +193,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
 
     /// Send a datagram on a specific socket.
     pub async fn send_to(&self, socket_idx: usize, data: &[u8], destination: SocketAddrV4) -> Result<(), ()> {
-        trace!("KNX/IP TX {} bytes on socket {} to {}: {:x?}", data.len(), socket_idx, destination, data);
+        trace!("KNX/IP TX {} bytes on socket {} to {}: {:?}", data.len(), socket_idx, destination, crate::fmt::Bytes(data));
 
         if let Some(Some(socket)) = self.sockets.get(socket_idx) {
             match socket.send_to(data, destination).await {
@@ -231,11 +237,11 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                         match socket.recv_from(&mut buffer[..]).await {
                             Ok((len, source)) => {
                                 trace!(
-                                    "KNX/IP RX {} bytes on socket {} from {}: {:x?}",
+                                    "KNX/IP RX {} bytes on socket {} from {}: {:?}",
                                     len,
                                     socket_idx,
                                     source,
-                                    &buffer[..len]
+                                    crate::fmt::Bytes(&buffer[..len])
                                 );
                                 buffer.set_len(len);
                                 Ok((buffer, source))
@@ -258,7 +264,8 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                 let _ = socket_futures.push(recv(i));
             }
 
-            let (result, socket_idx) = select_slice(socket_futures.as_mut_slice()).await;
+            // SAFETY: socket_futures is a local variable that won't be moved after pinning.
+            let (result, socket_idx) = select_slice(unsafe { Pin::new_unchecked(socket_futures.as_mut_slice()) }).await;
 
             match result {
                 Ok((buffer, source)) => {

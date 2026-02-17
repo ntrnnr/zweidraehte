@@ -15,7 +15,7 @@ use core::net::Ipv4Addr;
 use const_default::ConstDefault;
 
 use crate::{
-    IpPlatform, IpStackState, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS, StackState,
+    IpConfig, IpPlatform, IpPlatformConfig, IpStackState, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS, StackState,
     address::IndividualAddress,
     objects::interface::HasRoutingCount,
     objects::tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication},
@@ -587,8 +587,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 ///
 /// The platform `P` is used to query current network state
 /// (actual IP address, MAC address, etc.) from the operating system.
-pub struct IpLinkLayerState<P: IpPlatform> {
-    /// Platform for querying current network values.
+pub struct IpLinkLayerState<P: IpPlatform + IpPlatformConfig> {
+    /// Platform for querying current network values and applying config.
     platform: P,
 
     // ========================================================================
@@ -605,7 +605,7 @@ pub struct IpLinkLayerState<P: IpPlatform> {
     project_installation_id: Cell<u16>,
 }
 
-impl<P: IpPlatform> IpLinkLayerState<P> {
+impl<P: IpPlatform + IpPlatformConfig> IpLinkLayerState<P> {
     /// Get the platform (for querying current network state).
     pub fn platform(&self) -> &P {
         &self.platform
@@ -625,13 +625,34 @@ impl<P: IpPlatform> IpLinkLayerState<P> {
             project_installation_id: self.project_installation_id.get(),
         }
     }
+
+    /// Apply the current IP configuration to the platform's network stack.
+    ///
+    /// Called after loading config from storage or when ETS writes IP
+    /// configuration properties. On embedded platforms this switches
+    /// between DHCP and static IP. On Linux this is a no-op.
+    pub fn apply_current_config(&self) {
+        let config = IpConfig {
+            assignment_method: self.ip_assignment_method.get(),
+            address: self.configured_ip.get(),
+            subnet_mask: self.configured_subnet.get(),
+            default_gateway: self.configured_gateway.get(),
+        };
+
+        if let Err(e) = self.platform.apply_ip_config(&config) {
+            #[cfg(feature = "log")]
+            log::error!("Failed to apply IP config: {:?}", e);
+            #[cfg(feature = "defmt")]
+            defmt::error!("Failed to apply IP config: {}", defmt::Debug2Format(&e));
+        }
+    }
 }
 
-impl<P: IpPlatform + Default> LinkLayerState for IpLinkLayerState<P> {
+impl<P: IpPlatform + IpPlatformConfig + Default> LinkLayerState for IpLinkLayerState<P> {
     type Config = PersistedIpConfig;
 
     fn from_config(config: PersistedIpConfig) -> Self {
-        Self {
+        let state = Self {
             platform: P::default(),
             friendly_name: RefCell::new(config.friendly_name),
             friendly_name_len: Cell::new(config.friendly_name_len as usize),
@@ -642,7 +663,10 @@ impl<P: IpPlatform + Default> LinkLayerState for IpLinkLayerState<P> {
             routing_multicast: Cell::new(Ipv4Addr::from(config.routing_multicast)),
             ttl: Cell::new(config.ttl),
             project_installation_id: Cell::new(config.project_installation_id),
-        }
+        };
+        // Apply the restored config to the platform's network stack.
+        state.apply_current_config();
+        state
     }
 
     fn to_config(&self) -> PersistedIpConfig {
@@ -714,7 +738,7 @@ pub type IpSystemBDeviceState<
 ///
 /// The `mark_dirty()` calls on setters ensure changes are tracked
 /// for persistence.
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, Plat: IpPlatform + Default> IpStackState
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, Plat: IpPlatform + IpPlatformConfig + Default> IpStackState
     for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpLinkLayerState<Plat>>
 {
     fn current_ip_address(&self) -> Ipv4Addr {
@@ -752,6 +776,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     fn set_configured_ip_address(&self, addr: Ipv4Addr) {
         self.link_layer_state.configured_ip.set(addr);
         self.mark_dirty();
+        self.link_layer_state.apply_current_config();
     }
 
     fn configured_subnet_mask(&self) -> Ipv4Addr {
@@ -761,6 +786,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
         self.link_layer_state.configured_subnet.set(mask);
         self.mark_dirty();
+        self.link_layer_state.apply_current_config();
     }
 
     fn configured_default_gateway(&self) -> Ipv4Addr {
@@ -770,6 +796,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     fn set_configured_default_gateway(&self, gateway: Ipv4Addr) {
         self.link_layer_state.configured_gateway.set(gateway);
         self.mark_dirty();
+        self.link_layer_state.apply_current_config();
     }
 
     fn ip_assignment_method(&self) -> u8 {
@@ -779,6 +806,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     fn set_ip_assignment_method(&self, method: u8) {
         self.link_layer_state.ip_assignment_method.set(method);
         self.mark_dirty();
+        self.link_layer_state.apply_current_config();
     }
 
     fn routing_multicast_address(&self) -> Ipv4Addr {

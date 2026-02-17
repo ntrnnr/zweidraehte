@@ -202,6 +202,7 @@ impl Default for EndpointType {
 
 /// Error type for server operations
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ServerError {
     InvalidMessage,
     ParseError,
@@ -381,7 +382,7 @@ const MAX_SERVERS: usize = 3;
 /// # Example
 ///
 /// ```ignore
-/// let builder = KnxNetIpBuilder::<LinuxIpTransport, 2>::new("eth0", interface_addr, control_endpoint)
+/// let builder = KnxNetIpBuilder::<LinuxIpTransport, 2>::new("eth0", interface_addr, control_endpoint, ())
 ///     .enable_routing_server();
 /// ```
 pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize = 1> {
@@ -391,7 +392,7 @@ pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize, const MAX_T
     enable_routing: bool,
     enable_remote_config: bool,
     enable_tcp: bool,
-    _transport: core::marker::PhantomData<T>,
+    socket_ctx: <T::UdpSocket as platform::AsyncUdpSocket>::Context,
 }
 
 impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBuilder<T, MAX_SOCKETS, MAX_TCP> {
@@ -405,12 +406,18 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
     /// * `interface_name` - The name of the network interface (e.g., "eth0", "wlan0")
     /// * `local_addr` - The local IP address of this interface (for multicast join and echo filtering)
     /// * `control_endpoint` - The HPAI to advertise as this device's control endpoint
+    /// * `socket_ctx` - Platform-specific context for creating UDP sockets
     ///
     /// # Type Parameters
     /// * `T` - The IP transport implementation providing socket types
     /// * `MAX_SOCKETS` - Maximum number of UDP sockets to create
     /// * `MAX_TCP` - Maximum number of concurrent TCP connections
-    pub const fn new(interface_name: &'static str, local_addr: Ipv4Addr, control_endpoint: substructs::HPAI) -> Self {
+    pub fn new(
+        interface_name: &'static str,
+        local_addr: Ipv4Addr,
+        control_endpoint: substructs::HPAI,
+        socket_ctx: <T::UdpSocket as platform::AsyncUdpSocket>::Context,
+    ) -> Self {
         Self {
             interface_name,
             local_addr,
@@ -418,7 +425,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
             enable_routing: false,
             enable_remote_config: false,
             enable_tcp: false,
-            _transport: core::marker::PhantomData,
+            socket_ctx,
         }
     }
 
@@ -639,7 +646,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
         // ====================================================================
 
         let mut udp_manager = UdpManager::new(interface_addr, socket_descriptors);
-        udp_manager.bind_all(self.interface_name, interface_addr);
+        udp_manager.bind_all(&self.socket_ctx, self.interface_name, interface_addr);
 
         for (idx, instance) in server_instances.iter().enumerate() {
             debug!("  Server {}: Handles {:?} on sockets {:?}", idx, instance.service_types, instance.socket_indices);
@@ -1126,7 +1133,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> Layer
                             // Handle transmission requests
                             match msg.service_type() {
                                 ServiceType::L_Data_Req => {
-                                    debug!("KnxNetIp Link Layer sending L_Data_Req: {:x?}", msg);
+                                    debug!("KnxNetIp Link Layer sending L_Data_Req: {:?}", msg);
 
                                     // Find a server that supports outgoing requests
                                     // Note: The server is responsible for protocol-specific transformations

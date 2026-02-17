@@ -259,6 +259,14 @@ impl IpPlatform for MockIpPlatform {
     }
 }
 
+impl platform::NetworkConfig for MockIpPlatform {
+    type Error = core::convert::Infallible;
+
+    fn apply_ip_config(&self, _config: &platform::IpConfig) -> Result<(), Self::Error> {
+        Ok(()) // No-op — OS manages networking on Linux.
+    }
+}
+
 // ============================================================================
 // Interface Objects Configuration
 // ============================================================================
@@ -743,7 +751,7 @@ async fn main(spawner: Spawner) {
 
     let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
     let link_layer_builder =
-        KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new("knxdevbridgeif", interface_addr, control_endpoint)
+        KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new("knxdevbridgeif", interface_addr, control_endpoint, ())
             .enable_routing_server()
             .enable_remote_config_server();
 

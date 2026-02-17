@@ -3195,6 +3195,14 @@ impl IpPlatform for MockIpPlatform {
     }
 }
 
+impl platform::NetworkConfig for MockIpPlatform {
+    type Error = core::convert::Infallible;
+
+    fn apply_ip_config(&self, _config: &platform::IpConfig) -> Result<(), Self::Error> {
+        Ok(()) // No-op — OS manages networking on Linux.
+    }
+}
+
 // ============================================================================
 // Stack Definition
 // ============================================================================

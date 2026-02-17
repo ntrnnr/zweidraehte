@@ -142,7 +142,7 @@ where
                 {
                     msg.set_connection_nr(conn_nr);
                     msg.set_service_type(ServiceType::T_GroupData_Ind);
-                    debug!("TL -> AL: {:x?}", msg);
+                    debug!("TL -> AL: {:?}", msg);
                     self.application_layer.send(LayerOp::Indication(msg)).await;
                 }
             }
@@ -150,7 +150,7 @@ where
             ServiceType::N_Broadcast_Ind => {
                 if let Some(Tpci::DataBroadcast) = msg.get_tpci() {
                     msg.set_service_type(ServiceType::T_Broadcast_Ind);
-                    debug!("TL -> AL: {:x?}", msg);
+                    debug!("TL -> AL: {:?}", msg);
                     self.application_layer.send(LayerOp::Indication(msg)).await;
                 }
             }
@@ -158,7 +158,7 @@ where
             ServiceType::N_SystemBroadcast_Ind => {
                 if let Some(Tpci::DataSystemBroadcast) = msg.get_tpci() {
                     msg.set_service_type(ServiceType::T_SystemBroadcast_Ind);
-                    debug!("TL -> AL: {:x?}", msg);
+                    debug!("TL -> AL: {:?}", msg);
                     self.application_layer.send(LayerOp::Indication(msg)).await;
                 }
             }
@@ -346,7 +346,7 @@ where
             msg.set_dest_addr(DestinationAddress::Group(dst_addr));
             msg.set_service_type(ServiceType::N_GroupData_Req);
 
-            debug!("TL -> NL: {:x?}", msg);
+            debug!("TL -> NL: {:?}", msg);
             let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
 
             confirmation.set_service_type(ServiceType::T_GroupData_Con);
@@ -364,7 +364,7 @@ where
     ) -> ConfirmationMessage<Buffer<'static>> {
         msg.set_tpci(Tpci::DataBroadcast);
         msg.set_service_type(ServiceType::N_Broadcast_Req);
-        debug!("TL -> NL: {:x?}", msg);
+        debug!("TL -> NL: {:?}", msg);
 
         let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
         confirmation.set_service_type(ServiceType::T_Broadcast_Con);
@@ -377,7 +377,7 @@ where
     ) -> ConfirmationMessage<Buffer<'static>> {
         msg.set_tpci(Tpci::DataSystemBroadcast);
         msg.set_service_type(ServiceType::N_SystemBroadcast_Req);
-        debug!("TL -> NL: {:x?}", msg);
+        debug!("TL -> NL: {:?}", msg);
 
         let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
         confirmation.set_service_type(ServiceType::T_SystemBroadcast_Con);
@@ -391,7 +391,7 @@ where
         // Connectionless point-to-point data - no connection state needed
         msg.set_tpci(Tpci::DataIndividual);
         msg.set_service_type(ServiceType::N_Data_Req);
-        debug!("TL -> NL (unack): {:x?}", msg);
+        debug!("TL -> NL (unack): {:?}", msg);
 
         let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
         confirmation.set_service_type(ServiceType::T_DataUnack_Con);
@@ -502,7 +502,7 @@ where
         self.execute_actions_no_send(actions, dest).await;
 
         // Send the copy
-        trace!("Transport layer sending data to Network layer: {:x?}", send_msg);
+        trace!("Transport layer sending data to Network layer: {:?}", send_msg);
         let mut confirmation = self.network_layer.request(RequestMessage::request(send_msg)).await;
 
         // We don't return confirmation immediately - we wait for ACK
@@ -701,7 +701,7 @@ where
                                 self.buffer_manager.borrow().alloc_from_slice(&*pending_msg.buf()).await;
                             let retransmit_msg = KnxMessageBuffer::new(retransmit_buffer, pending_msg.service_type());
 
-                            debug!("TL retransmitting: {:x?}", retransmit_msg);
+                            debug!("TL retransmitting: {:?}", retransmit_msg);
                             let _confirmation =
                                 self.network_layer.request(RequestMessage::request(retransmit_msg)).await;
                         }

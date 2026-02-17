@@ -94,7 +94,7 @@ impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
                 msg.convert_hop_count_to_hop_count_type();
 
                 // Send message up to transport layer
-                debug!("NL -> TL: {:x?}", msg);
+                debug!("NL -> TL: {:?}", msg);
                 self.transport_layer.send(LayerOp::Indication(msg)).await;
             }
 
@@ -145,7 +145,7 @@ impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
                     _ => unreachable!(),
                 }
 
-                debug!("NL -> LL: {:x?}", msg);
+                debug!("NL -> LL: {:?}", msg);
 
                 // Send to link layer using request pattern to get confirmation
                 // Wrap as RequestMessage for the link layer

@@ -6,7 +6,7 @@ description = "KNX conformance testing framework"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-zweidraehte = { path = "../stack", features = ["log"] }
+zweidraehte = { path = "../stack", features = ["log", "linux"] }
 embassy-sync = { workspace = true }
 embassy-time = { workspace = true, features = ["std"] }
 embassy-futures = { workspace = true }

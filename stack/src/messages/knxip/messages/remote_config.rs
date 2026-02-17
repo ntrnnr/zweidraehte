@@ -275,6 +275,7 @@ impl<'a> SerializablePacket for RemoteBasicConfigurationRequestBuilder<'a> {
 
 /// Reset command codes (KNX 3/8/7 §4.7)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum ResetCommand {
     /// Restart the device (equivalent to power cycle)

@@ -87,7 +87,7 @@ impl<'a, const N: usize, const C: usize> Layer<'a> for MockLinkLayer<'a, N, C> {
                     let inner_buf = injection_msg.into_inner();
                     let converted_buf = tp1::tp1_to_knx_message_no_checksum(inner_buf);
                     let internal_msg = KnxMessageBuffer::new(converted_buf, service_type);
-                    debug!("Mock LL injecting message: {:x?}", internal_msg);
+                    debug!("Mock LL injecting message: {:?}", internal_msg);
                     self.network_layer.send(LayerOp::Indication(internal_msg)).await;
                 }
             }

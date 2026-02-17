@@ -65,6 +65,17 @@ macro_rules! __create_protocol_enum_inner {
                 core::fmt::Display::fmt(self, f)
             }
         }
+
+        #[cfg(feature = "defmt")]
+        impl defmt::Format for $name {
+            fn format(&self, f: defmt::Formatter) {
+                match self {
+                    $($name::$variant => defmt::write!(f, $fmt),)*
+                    $name::$delegate_name(x) => defmt::write!(f, "{}", x),
+                    $name::Other(x) => defmt::write!(f, $other_fmt, x),
+                }
+            }
+        }
     };
 
     // Create protocol enum when the Other variant is not specified.
@@ -120,6 +131,16 @@ macro_rules! __create_protocol_enum_inner {
                 core::fmt::Display::fmt(self, f)
             }
         }
+
+        #[cfg(feature = "defmt")]
+        impl defmt::Format for $name {
+            fn format(&self, f: defmt::Formatter) {
+                match self {
+                    $($name::$variant => defmt::write!(f, $fmt),)*
+                    $name::$delegate_name(x) => defmt::write!(f, "{}", x),
+                }
+            }
+        }
     };
 
     // Create protocol enum when the Other variant is specified.
@@ -173,6 +194,16 @@ macro_rules! __create_protocol_enum_inner {
                 core::fmt::Display::fmt(self, f)
             }
         }
+
+        #[cfg(feature = "defmt")]
+        impl defmt::Format for $name {
+            fn format(&self, f: defmt::Formatter) {
+                match self {
+                    $($name::$variant => defmt::write!(f, $fmt),)*
+                    $name::Other(x) => defmt::write!(f, $other_fmt, x),
+                }
+            }
+        }
     };
 
     // Create protocol enum when the Other variant is not specified.
@@ -222,6 +253,15 @@ macro_rules! __create_protocol_enum_inner {
         impl core::fmt::Debug for $name {
             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
                 core::fmt::Display::fmt(self, f)
+            }
+        }
+
+        #[cfg(feature = "defmt")]
+        impl defmt::Format for $name {
+            fn format(&self, f: defmt::Formatter) {
+                match self {
+                    $($name::$variant => defmt::write!(f, $fmt),)*
+                }
             }
         }
     };

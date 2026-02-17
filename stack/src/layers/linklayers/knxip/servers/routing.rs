@@ -30,6 +30,7 @@ use super::{KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, Serv
 
 /// Routing Server State Machine
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 enum RoutingState {
     /// Normal operation - no congestion
     Normal = 0,

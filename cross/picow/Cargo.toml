@@ -4,14 +4,18 @@ name = "picow"
 version = "0.1.0"
 
 [dependencies]
+# Embassy core
 embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-rp = { workspace = true, features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
 embassy-futures = { workspace = true }
+embassy-net = { workspace = true, features = ["udp", "dhcpv4", "medium-ethernet", "multicast", "defmt"] }
 
+# CYW43 WiFi driver
 cyw43 = { workspace = true, features = [] }
 cyw43-pio = { workspace = true, features = [] }
 
+# Cortex-M / embedded
 cortex-m = { workspace = true, features = ["inline-asm"] }
 cortex-m-rt = { workspace = true }
 embedded-hal = { workspace = true }
@@ -22,3 +26,12 @@ futures = { workspace = true, features = ["async-await"] }
 embedded-io-async = { workspace = true }
 static_cell = { workspace = true }
 portable-atomic = { version = "1.5", features = ["critical-section"] }
+
+# KNX stack (via path — resolves to cross workspace's embedded-io-async 0.7)
+zweidraehte = { path = "../../stack", default-features = false, features = ["defmt"] }
+platform = { path = "../../platform", default-features = false, features = ["defmt"] }
+
+# Serialization for flash storage
+postcard = { workspace = true }
+serde = { workspace = true }
+critical-section = "1.2.0"

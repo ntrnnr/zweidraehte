@@ -178,6 +178,7 @@ impl ConnectionTypeHandler for ConnectionTypeHandlerEnum<'_> {
 
 /// The transport over which a KNX/IP connection was established.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ConnectionTransport {
     /// Connection runs over UDP — responses go to the data endpoint.
     Udp,

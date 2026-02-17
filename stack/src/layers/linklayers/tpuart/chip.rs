@@ -5,6 +5,7 @@
 
 /// Supported TPUART-compatible chip types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ChipType {
     /// Unknown chip type (before detection)
     #[default]

@@ -547,6 +547,14 @@ impl IpPlatform for MockIpPlatform {
     }
 }
 
+impl IpPlatformConfig for MockIpPlatform {
+    type Error = core::convert::Infallible;
+
+    fn apply_ip_config(&self, _config: &zweidraehte::IpConfig) -> Result<(), Self::Error> {
+        Ok(()) // No-op for tests — OS manages networking.
+    }
+}
+
 // ============================================================================
 // Device Information
 // ============================================================================

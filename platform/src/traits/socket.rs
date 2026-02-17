@@ -41,11 +41,24 @@ impl Default for UdpSocketOptions {
 /// Provides async send/receive operations for UDP datagrams, plus
 /// multicast group management. Implementations exist for Linux
 /// (using async_io + socket2) and can be added for embedded targets.
+///
+/// The `Context` associated type carries platform-specific state needed
+/// to create sockets (e.g., an embassy-net `Stack` handle on embedded,
+/// or `()` on Linux where sockets are self-contained).
 pub trait AsyncUdpSocket: Sized {
+    #[cfg(not(feature = "defmt"))]
     type Error: Debug;
+    #[cfg(feature = "defmt")]
+    type Error: Debug + defmt::Format;
+
+    /// Platform-specific state needed to create sockets.
+    ///
+    /// On Linux this is `()` since sockets are created via OS syscalls.
+    /// On embedded targets this might be an embassy-net `Stack` handle.
+    type Context;
 
     /// Bind a new socket with the given options.
-    fn bind(options: UdpSocketOptions) -> Result<Self, Self::Error>;
+    fn bind(ctx: &Self::Context, options: UdpSocketOptions) -> Result<Self, Self::Error>;
 
     /// Join a multicast group on the specified interface.
     fn join_multicast(&self, group: Ipv4Addr, interface: Ipv4Addr) -> Result<(), Self::Error>;
@@ -84,10 +97,18 @@ pub struct TcpListenerOptions {
 /// connections. Each accepted connection produces a stream (implementing
 /// `embedded_io_async::Read + Write`) and the peer's socket address.
 pub trait AsyncTcpListener: Sized {
+    #[cfg(not(feature = "defmt"))]
     type Error: Debug;
+    #[cfg(feature = "defmt")]
+    type Error: Debug + defmt::Format;
+    #[cfg(not(feature = "defmt"))]
     type Stream: embedded_io_async::Read<Error: Debug>
         + embedded_io_async::Write<Error: Debug>
         + embedded_io_async::ErrorType;
+    #[cfg(feature = "defmt")]
+    type Stream: embedded_io_async::Read<Error: Debug + defmt::Format>
+        + embedded_io_async::Write<Error: Debug + defmt::Format>
+        + embedded_io_async::ErrorType<Error: defmt::Format>;
 
     /// Bind and start listening on the given address/port.
     fn bind(options: TcpListenerOptions) -> Result<Self, Self::Error>;
@@ -140,6 +161,7 @@ impl embedded_io_async::Write for NeverTcpStream {
 
 /// Error type for [`NeverTcpListener`].
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NeverTcpError;
 
 impl AsyncTcpListener for NeverTcpListener {

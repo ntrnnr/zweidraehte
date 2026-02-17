@@ -110,6 +110,7 @@ create_protocol_enum!(
 );
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Tpci {
     DataBroadcast,
     DataSystemBroadcast,
@@ -600,6 +601,13 @@ pub struct KnxMessageBuffer<B: Deref<Target = [u8]>, F: MessageFormat = Internal
 impl<B: Deref<Target = [u8]>, F: MessageFormat> core::fmt::Debug for KnxMessageBuffer<B, F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "KnxMessage {{ {:?}: {:x?} }}", self.service_type, self.buf.as_ref())
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl<B: Deref<Target = [u8]>, F: MessageFormat> defmt::Format for KnxMessageBuffer<B, F> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "KnxMessage {{ {}: {:02x} }}", self.service_type, self.buf.as_ref())
     }
 }
 

@@ -876,6 +876,13 @@ pub enum DescriptionInformationBlock<B: SplitByteSlice = &'static [u8]> {
     TunnelingInfo(TunnelingInfo<B>),
 }
 
+#[cfg(feature = "defmt")]
+impl<B: SplitByteSlice + core::fmt::Debug> defmt::Format for DescriptionInformationBlock<B> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "{}", defmt::Debug2Format(self))
+    }
+}
+
 impl<B: SplitByteSlice> DescriptionInformationBlock<B> {
     /// Get the description type code for this DIB
     pub fn description_type_code(&self) -> KNXnetIPServiceFamily {

@@ -172,8 +172,9 @@ impl AsyncUdpMulticastSocket {
 
 impl AsyncUdpSocket for AsyncUdpMulticastSocket {
     type Error = crate::Error;
+    type Context = ();
 
-    fn bind(options: UdpSocketOptions) -> core::result::Result<Self, crate::Error> {
+    fn bind(_ctx: &(), options: UdpSocketOptions) -> core::result::Result<Self, crate::Error> {
         AsyncUdpMulticastSocket::bind(options)
     }
 

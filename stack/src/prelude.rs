@@ -7,7 +7,7 @@
 // Core stack
 pub use crate::{
     Stack, Runner, StackResources, StackDefinition,
-    StackState, IpStackState, IpDevice, IpPlatform,
+    StackState, IpStackState, IpDevice, IpPlatform, IpPlatformConfig,
     ReadObjectError, UpdateObjectError,
 };
 

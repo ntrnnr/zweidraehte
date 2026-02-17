@@ -10,6 +10,7 @@
 
 use core::cell::RefCell;
 use core::net::SocketAddrV4;
+use core::pin::Pin;
 
 use embassy_time::{Duration, Instant};
 use heapless::Vec;
@@ -241,7 +242,10 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
             }
             Ok(n) => n,
             Err(_e) => {
-                error!("TCP connection {} read error: {:?}", tcp_idx, _e);
+                #[cfg(feature = "log")]
+                log::error!("TCP connection {} read error: {:?}", tcp_idx, _e);
+                #[cfg(feature = "defmt")]
+                defmt::error!("TCP connection {} read error", tcp_idx);
                 let conn = self.connections[tcp_idx].take().expect("just checked Some");
                 return Some(TcpEvent::Closed { tcp_idx, channel_ids: conn.channel_ids });
             }
@@ -318,7 +322,10 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
                     written += n;
                 }
                 Err(_e) => {
-                    error!("TCP connection {} write error: {:?}", tcp_idx, _e);
+                    #[cfg(feature = "log")]
+                    log::error!("TCP connection {} write error: {:?}", tcp_idx, _e);
+                    #[cfg(feature = "defmt")]
+                    defmt::error!("TCP connection {} write error", tcp_idx);
                     self.connections[tcp_idx] = None;
                     return Err(());
                 }
@@ -410,7 +417,8 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
 
                 // Poll all connections and the listener simultaneously.
                 match select(
-                    select_slice(read_futures.as_mut_slice()),
+                    // SAFETY: read_futures is a local variable that won't be moved after pinning.
+                    select_slice(unsafe { Pin::new_unchecked(read_futures.as_mut_slice()) }),
                     accept_future,
                 )
                 .await
@@ -502,7 +510,10 @@ where
         Ok(0) => return ConnectionReadResult::Closed(core::mem::take(&mut conn.channel_ids)),
         Ok(n) => n,
         Err(_e) => {
-            error!("TCP read error: {:?}", _e);
+            #[cfg(feature = "log")]
+            log::error!("TCP read error: {:?}", _e);
+            #[cfg(feature = "defmt")]
+            defmt::error!("TCP read error");
             return ConnectionReadResult::Closed(core::mem::take(&mut conn.channel_ids));
         }
     };

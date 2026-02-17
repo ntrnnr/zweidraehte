@@ -448,6 +448,7 @@ impl ComObjectType {
 
 /// A Communication object flags field.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(transparent)]
 pub struct ComObjectFlags(u8);
 

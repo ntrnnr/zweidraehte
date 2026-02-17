@@ -50,6 +50,19 @@ where
     }
 }
 
+#[cfg(feature = "defmt")]
+impl<B> defmt::Format for LayerOp<B>
+where
+    B: Deref<Target = [u8]> + 'static,
+{
+    fn format(&self, f: defmt::Formatter) {
+        match self {
+            LayerOp::Indication(msg) => defmt::write!(f, "Indication({})", msg),
+            LayerOp::Request { message, response_tx: _ } => defmt::write!(f, "Request({})", message),
+        }
+    }
+}
+
 pub trait Layer<'a>: Sized {
     /// The buffer type used in messages (e.g., `Buffer<'static>`)
     type Buffer: Deref<Target = [u8]> + 'static;

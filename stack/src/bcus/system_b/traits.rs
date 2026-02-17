@@ -6,7 +6,7 @@
 //! lives in [`DeviceDescriptor`](crate::ets::DeviceDescriptor) via
 //! `StackDefinition::DEVICE`.
 
-use crate::IpPlatform;
+use crate::{IpPlatform, IpPlatformConfig};
 
 /// Trait for KNX/IP devices (mask version 57B0).
 ///
@@ -25,11 +25,12 @@ pub trait KnxIpDevice: Sized + Copy {
     /// Network interface name (e.g., "eth0", "wlan0", "enp0s3").
     const INTERFACE_NAME: &'static str;
 
-    /// Platform for querying current network state.
+    /// Platform for querying and applying network configuration.
     ///
-    /// This provides runtime network information like current IP address,
-    /// MAC address, etc. from the operating system or network stack.
-    type Platform: IpPlatform + Default;
+    /// Must implement [`IpPlatform`] for reading current network state
+    /// and [`IpPlatformConfig`] for applying IP configuration changes
+    /// (e.g., switching between DHCP and static IP).
+    type Platform: IpPlatform + IpPlatformConfig + Default;
 }
 
 /// Trait for TP1 devices (mask version 07B0).

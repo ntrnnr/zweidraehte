@@ -1,13 +1,15 @@
+#![cfg_attr(not(feature = "std"), no_std)]
 #![feature(never_type)]
 #![allow(async_fn_in_trait)]
 
 pub mod address;
+#[cfg(feature = "std")]
 pub mod serialport;
 pub mod traits;
 
 pub use traits::{
-    AsyncTcpListener, AsyncUdpSocket, IpTransport, NeverTcpError, NeverTcpListener, NeverTcpStream, NetworkInfo,
-    SystemControl, TcpListenerOptions, UdpSocketOptions,
+    AsyncTcpListener, AsyncUdpSocket, IpConfig, IpTransport, NeverTcpError, NeverTcpListener, NeverTcpStream,
+    NetworkConfig, NetworkInfo, SystemControl, TcpListenerOptions, UdpSocketOptions,
 };
 
 #[cfg(feature = "linux")]
@@ -40,8 +42,7 @@ impl core::fmt::Display for Error {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
 impl embedded_io_async::Error for Error {
     fn kind(&self) -> embedded_io_async::ErrorKind {

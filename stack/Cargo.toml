@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-platform = { path = "../platform", features = ["log", "linux"] }
+platform = { path = "../platform", default-features = false }
 ets-macros = { path = "../ets-macros" }
 
 zerocopy = { workspace = true }
@@ -26,9 +26,10 @@ replace_with = { workspace = true }
 test-case = "3.3"
 
 [features]
-defmt = ["dep:defmt"]
-log = ["dep:log"]
-std = []
+defmt = ["dep:defmt", "platform/defmt", "heapless/defmt"]
+log = ["dep:log", "platform/log"]
+std = ["platform/std"]
+linux = ["platform/linux", "std"]
 usb = ["std", "dep:async-hid", "dep:futures-lite"]
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]

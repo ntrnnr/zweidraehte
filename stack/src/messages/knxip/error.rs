@@ -3,6 +3,7 @@ pub type ParseResult<T> = core::result::Result<T, ParseError>;
 
 /// Error type for packet parsing.
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ParseError {
     /// Operation is not supported.
     NotSupported,

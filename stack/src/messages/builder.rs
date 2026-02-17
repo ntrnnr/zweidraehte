@@ -138,6 +138,13 @@ impl<B: Deref<Target = [u8]> + core::fmt::Debug, Dir> core::fmt::Debug for Typed
     }
 }
 
+#[cfg(feature = "defmt")]
+impl<B: Deref<Target = [u8]>, Dir> defmt::Format for TypedMessage<B, Dir> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "{}", self.inner)
+    }
+}
+
 // ----------------------------------------------------------------------------
 // IndicationMessage: Creation
 // ----------------------------------------------------------------------------
