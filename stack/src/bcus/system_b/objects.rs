@@ -436,6 +436,22 @@ impl<'a, S: StackState + IpStackState> PropertyServiceHandler for IpObjects<'a, 
 pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP, PEI> =
     (SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>, IpObjects<'a, S>);
 
+/// Convenience alias that fills in the GAT projections automatically.
+///
+/// Equivalent to `KnxIpInterfaceObjects` with all table types inferred
+/// from `S`'s `Has*Table` implementations. Use this in
+/// [`StackDefinition::InterfaceObjects`](crate::StackDefinition) to avoid
+/// spelling out 5 associated type projections manually.
+pub type DefaultKnxIpInterfaceObjects<'a, S> = KnxIpInterfaceObjects<
+    'a,
+    S,
+    <S as HasAddressTable>::ADT,
+    <S as HasAssociationTable>::AST,
+    <S as HasCommunicationObjectTable>::COT,
+    <S as HasApplication>::APP,
+    <S as HasPeiApplication>::PEI,
+>;
+
 // ============================================================================
 // Helper functions
 // ============================================================================

@@ -15,13 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
 use knxprod::ets_pages;
-use platform::LinuxIpTransport;
-use zweidraehte::bcus::system_b::{
-    IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, SystemBMemoryMap, create_knxip_objects,
-};
+use zweidraehte::bcus::system_b::{IpSystemBDeviceState, SystemBIpDeviceDef};
 use zweidraehte::dpt::*;
 use zweidraehte::ets::ets_range_enum;
-use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
 use zweidraehte::prelude::*;
 
 // ============================================================================
@@ -3207,61 +3203,27 @@ impl platform::NetworkConfig for MockIpPlatform {
 // Stack Definition
 // ============================================================================
 
-/// Table sizes computed from DeviceDescriptor
-pub const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
-pub const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
-pub const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
-pub const APP_DATA_SIZE: usize = core::mem::size_of::<MdtParams>();
-
-/// Unified state type
-pub type MdtState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MdtParams, MockIpPlatform>;
-
-/// Memory layout for the device
-pub const MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calculate(
-    SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-    DEVICE_DESCRIPTOR.max_address_table_entries as usize,
-    DEVICE_DESCRIPTOR.max_association_table_entries as usize,
-    DEVICE_DESCRIPTOR.max_com_objects as usize,
-    APP_DATA_SIZE,
-);
-
-/// Memory map for the device
-pub const MEMORY_MAP: SystemBMemoryMap = SystemBMemoryMap::new(MEMORY_LAYOUT);
+/// Unified state type.
+pub type MdtState = IpSystemBDeviceState<
+    { DEVICE_DESCRIPTOR.address_table_size() },
+    { DEVICE_DESCRIPTOR.association_table_size() },
+    { DEVICE_DESCRIPTOR.comm_object_table_size() },
+    MdtParams,
+    MockIpPlatform,
+>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MdtStack;
 
-impl KnxIpDevice for MdtStack {
-    const INTERFACE_NAME: &'static str = INTERFACE_NAME;
-    type Platform = MockIpPlatform;
-}
-
-impl StackDefinition for MdtStack {
+impl SystemBIpDeviceDef for MdtStack {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const TL_STYLE: TlStyle = TlStyle::Style1;
+    const INTERFACE_NAME: &'static str = INTERFACE_NAME;
 
     type P = MdtParams;
     type CO = comm_objs::MdtComObjects;
-    type LLB = KnxNetIpBuilder<LinuxIpTransport, 2>;
+    type Transport = platform::LinuxIpTransport;
+    type Platform = MockIpPlatform;
     type State = MdtState;
-    type Mem = SystemBMemoryMap;
-
-    type InterfaceObjects<'a> = KnxIpInterfaceObjects<
-        'a,
-        Self::State,
-        <Self::State as HasAddressTable>::ADT,
-        <Self::State as HasAssociationTable>::AST,
-        <Self::State as HasCommunicationObjectTable>::COT,
-        <Self::State as HasApplication>::APP,
-        <Self::State as HasPeiApplication>::PEI,
-    >;
-
-    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
-    where
-        Self::State: 'a,
-    {
-        create_knxip_objects::<MdtStack, _>(state, &MEMORY_LAYOUT)
-    }
 }
 
 // ============================================================================

@@ -77,6 +77,25 @@ impl MemoryLayout {
         }
     }
 
+    /// Calculate memory layout from a device descriptor.
+    ///
+    /// Shorthand for `calculate()` that extracts table capacities from the
+    /// descriptor. `app_data_size` is typically `core::mem::size_of::<P>()`
+    /// where `P` is the application parameter type.
+    pub const fn from_descriptor(
+        base_address: u16,
+        device: &crate::ets::DeviceDescriptor,
+        app_data_size: usize,
+    ) -> Self {
+        Self::calculate(
+            base_address,
+            device.max_address_table_entries as usize,
+            device.max_association_table_entries as usize,
+            device.max_com_objects as usize,
+            app_data_size,
+        )
+    }
+
     /// Get the absolute address of the address table.
     pub const fn adt_address(&self) -> u16 {
         self.base_address + self.adt_offset as u16

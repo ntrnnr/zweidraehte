@@ -84,7 +84,8 @@ pub use device_state::{IpLinkLayerState, IpSystemBDeviceState, SystemBDeviceStat
 pub use identity::{DeviceIdentity, StaticIdentity};
 pub use memory_map::{MemoryLayout, SystemBMemoryMap};
 pub use objects::{
-    IpObjects, KnxIpInterfaceObjects, SystemBObjects, create_knxip_objects, create_system_b_objects, device_info_from,
+    DefaultKnxIpInterfaceObjects, IpObjects, KnxIpInterfaceObjects, SystemBObjects,
+    create_knxip_objects, create_system_b_objects, device_info_from,
 };
 pub use storage::{LinkLayerConfig, LinkLayerState, PersistedIpConfig, PersistedState, table_sizes};
-pub use traits::{KnxIpDevice, TpDevice};
+pub use traits::{KnxIpDevice, SystemBIpDeviceDef, TpDevice};

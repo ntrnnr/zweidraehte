@@ -59,10 +59,9 @@ impl core::fmt::Display for BeU16 {
 }
 use platform::LinuxIpTransport;
 use zweidraehte::bcus::system_b::{
-    IpSystemBDeviceState, KnxIpDevice, KnxIpInterfaceObjects, MemoryLayout, SystemBMemoryMap, create_knxip_objects,
+    IpSystemBDeviceState, MemoryLayout, SystemBIpDeviceDef, SystemBMemoryMap,
 };
 use zweidraehte::dpt::*;
-use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
 use zweidraehte::prelude::*;
 
 // ============================================================================
@@ -535,71 +534,47 @@ impl platform::NetworkConfig for MockIpPlatform {
 // Stack Definition
 // ============================================================================
 
-/// Table sizes computed from DeviceDescriptor
-pub const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
-pub const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
-pub const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
-pub const APP_DATA_SIZE: usize = core::mem::size_of::<DemoParams>();
-
-/// Unified state type
-pub type DemoState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, MockIpPlatform>;
-
-/// Persisted (serializable) form of the demo device state.
-pub type DemoPersistedState = zweidraehte::bcus::system_b::PersistedState<
-    ADT_SIZE,
-    AST_SIZE,
-    COT_SIZE,
+/// Unified state type.
+pub type DemoState = IpSystemBDeviceState<
+    { DEVICE_DESCRIPTOR.address_table_size() },
+    { DEVICE_DESCRIPTOR.association_table_size() },
+    { DEVICE_DESCRIPTOR.comm_object_table_size() },
     DemoParams,
-    zweidraehte::bcus::system_b::PersistedIpConfig,
+    MockIpPlatform,
 >;
-
-/// Memory layout for the device
-pub const MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calculate(
-    SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-    DEVICE_DESCRIPTOR.max_address_table_entries as usize,
-    DEVICE_DESCRIPTOR.max_association_table_entries as usize,
-    DEVICE_DESCRIPTOR.max_com_objects as usize,
-    APP_DATA_SIZE,
-);
-
-/// Memory map for the device
-pub const MEMORY_MAP: SystemBMemoryMap = SystemBMemoryMap::new(MEMORY_LAYOUT);
 
 #[derive(Debug, Clone, Copy)]
 pub struct DemoStack;
 
-impl KnxIpDevice for DemoStack {
-    const INTERFACE_NAME: &'static str = INTERFACE_NAME;
-    type Platform = MockIpPlatform;
-}
-
-impl StackDefinition for DemoStack {
+impl SystemBIpDeviceDef for DemoStack {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const TL_STYLE: TlStyle = TlStyle::Style1;
+    const INTERFACE_NAME: &'static str = INTERFACE_NAME;
 
     type P = DemoParams;
     type CO = comm_objs::DemoComObjects;
-    type LLB = KnxNetIpBuilder<LinuxIpTransport, 2>;
+    type Transport = LinuxIpTransport;
+    type Platform = MockIpPlatform;
     type State = DemoState;
-    type Mem = SystemBMemoryMap;
-
-    type InterfaceObjects<'a> = KnxIpInterfaceObjects<
-        'a,
-        Self::State,
-        <Self::State as HasAddressTable>::ADT,
-        <Self::State as HasAssociationTable>::AST,
-        <Self::State as HasCommunicationObjectTable>::COT,
-        <Self::State as HasApplication>::APP,
-        <Self::State as HasPeiApplication>::PEI,
-    >;
-
-    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
-    where
-        Self::State: 'a,
-    {
-        create_knxip_objects::<DemoStack, _>(state, &MEMORY_LAYOUT)
-    }
 }
+
+/// Persisted (serializable) form of the demo device state.
+pub type DemoPersistedState = zweidraehte::bcus::system_b::PersistedState<
+    { DEVICE_DESCRIPTOR.address_table_size() },
+    { DEVICE_DESCRIPTOR.association_table_size() },
+    { DEVICE_DESCRIPTOR.comm_object_table_size() },
+    DemoParams,
+    zweidraehte::bcus::system_b::PersistedIpConfig,
+>;
+
+/// Memory layout for the device.
+pub const MEMORY_LAYOUT: MemoryLayout = MemoryLayout::from_descriptor(
+    SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
+    &DEVICE_DESCRIPTOR,
+    core::mem::size_of::<DemoParams>(),
+);
+
+/// Memory map for the device.
+pub const MEMORY_MAP: SystemBMemoryMap = SystemBMemoryMap::new(MEMORY_LAYOUT);
 
 // ============================================================================
 // ETS Page Layout
