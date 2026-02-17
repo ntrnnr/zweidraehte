@@ -8,7 +8,6 @@ zweidraehte = { path = "../stack", features = ["log", "linux", "usb"] }
 knx-conformance = { path = "../conformance" }
 platform = { path = "../platform", features = ["log", "linux"] }
 knxprod = { path = "../knxprod" }
-
 embassy-sync = { workspace = true, features = ["std"] }
 embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"] }
 embassy-time = { workspace = true, features = ["std"] }
@@ -80,3 +79,4 @@ path = "src/compare_programs.rs"
 [[bin]]
 name = "gen_module_mtxml"
 path = "src/gen_module_mtxml.rs"
+

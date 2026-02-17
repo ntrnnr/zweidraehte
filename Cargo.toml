@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "stack",
     "platform",
+    "devices",
     "testutil",
     "conformance",
     "ets-macros",

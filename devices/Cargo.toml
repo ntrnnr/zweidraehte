@@ -1,0 +1,23 @@
+[package]
+name = "devices"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zweidraehte = { path = "../stack", default-features = false }
+const-default = { workspace = true }
+serde = { workspace = true }
+knxprod = { path = "../knxprod", optional = true }
+env_logger = { workspace = true, optional = true }
+
+[features]
+default = []
+knxprod = ["dep:knxprod"]
+gen = ["knxprod", "dep:env_logger"]
+defmt = ["zweidraehte/defmt"]
+log = ["zweidraehte/log"]
+
+[[bin]]
+name = "gen_light_switch_mtxml"
+path = "src/gen_light_switch_mtxml.rs"
+required-features = ["gen"]
