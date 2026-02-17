@@ -1,7 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
-#![feature(impl_trait_in_assoc_type)]
 
 use defmt::*;
 use embassy_executor::Spawner;
@@ -47,7 +45,7 @@ async fn main(spawner: Spawner) {
     uart_config.parity = Parity::ParityEven;
     let uart_tx_buf = Box::leak(Box::new([0u8; 256]));
     let uart_rx_buf = Box::leak(Box::new([0u8; 256]));
-    let uart = BufferedUart::new(p.USART2, Irqs, p.PA3, p.PA2, uart_tx_buf.as_mut(), uart_rx_buf.as_mut(), uart_config).unwrap();
+    let uart = BufferedUart::new(p.USART2, p.PA3, p.PA2, uart_tx_buf.as_mut(), uart_rx_buf.as_mut(), Irqs, uart_config).unwrap();
 
     // TPUART
     let mut tpuart_config = UartConfig::default();
@@ -55,7 +53,7 @@ async fn main(spawner: Spawner) {
     tpuart_config.parity = Parity::ParityEven;
     let tpuart_tx_buf = Box::leak(Box::new([0u8; 256]));
     let tpuart_rx_buf = Box::leak(Box::new([0u8; 256]));
-    let mut tpuart = BufferedUart::new(p.USART1, Irqs, p.PA10, p.PA9, tpuart_tx_buf.as_mut(), tpuart_rx_buf.as_mut(), tpuart_config).unwrap();
+    let mut tpuart = BufferedUart::new(p.USART1, p.PA10, p.PA9, tpuart_tx_buf.as_mut(), tpuart_rx_buf.as_mut(), Irqs, tpuart_config).unwrap();
 
     // Reset TPUART
     info!("Resetting TPUART");
