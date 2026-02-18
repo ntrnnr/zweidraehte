@@ -452,6 +452,20 @@ pub type DefaultKnxIpInterfaceObjects<'a, S> = KnxIpInterfaceObjects<
     <S as HasPeiApplication>::PEI,
 >;
 
+/// Type alias for [`SystemBObjects`] that auto-fills the associated type projections.
+///
+/// This is the TP1 counterpart to [`DefaultKnxIpInterfaceObjects`]. It provides
+/// 6 interface objects (no IP Parameter Object).
+pub type DefaultSystemBInterfaceObjects<'a, S> = SystemBObjects<
+    'a,
+    S,
+    <S as HasAddressTable>::ADT,
+    <S as HasAssociationTable>::AST,
+    <S as HasCommunicationObjectTable>::COT,
+    <S as HasApplication>::APP,
+    <S as HasPeiApplication>::PEI,
+>;
+
 // ============================================================================
 // Helper functions
 // ============================================================================

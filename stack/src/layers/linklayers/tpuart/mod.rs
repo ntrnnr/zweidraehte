@@ -58,6 +58,7 @@ use embassy_time::{Instant, Timer};
 
 use crate::{
     address::IndividualAddress,
+    context::KnxAddressContext,
     messages::{
         buffers::{Buffer, DynBufferManager, MessageBuffer},
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage},
@@ -130,6 +131,86 @@ impl AddressChecker for NoAddressChecker {
     }
 }
 
+// ============================================================================
+// Link Layer Builder
+// ============================================================================
+
+/// Builder for creating a [`TpUartLinkLayer`] that plugs into the stack's
+/// [`LinkLayerBuilder`](super::super::LinkLayerBuilder) framework.
+///
+/// The builder owns the UART and (optionally) an [`AddressChecker`]. Everything
+/// else — buffer manager, network layer sender, individual address — comes from
+/// the runtime context and `build_and_run` parameters.
+///
+/// # Example
+///
+/// ```ignore
+/// let builder = TpUartLinkLayerBuilder::new(uart);
+/// // ... pass to zweidraehte::new() as the link layer builder
+/// ```
+pub struct TpUartLinkLayerBuilder<U, A: AddressChecker = NoAddressChecker> {
+    uart: U,
+    address_checker: A,
+}
+
+impl<U> TpUartLinkLayerBuilder<U, NoAddressChecker> {
+    /// Create a builder with no group address ACK support.
+    pub fn new(uart: U) -> Self {
+        Self { uart, address_checker: NoAddressChecker }
+    }
+}
+
+impl<U, A: AddressChecker> TpUartLinkLayerBuilder<U, A> {
+    /// Create a builder with a custom [`AddressChecker`] for group address ACKs.
+    pub fn with_address_checker(uart: U, address_checker: A) -> Self {
+        Self { uart, address_checker }
+    }
+}
+
+/// Resources for the TPUART link layer.
+///
+/// Empty — TPUART needs no pre-allocated resources beyond the UART itself.
+pub struct TpUartResources;
+
+impl<U: Send + 'static, A: AddressChecker + Send + 'static> super::super::LinkLayerBuilderBase
+    for TpUartLinkLayerBuilder<U, A>
+{
+    type Resources = TpUartResources;
+
+    fn create_resources(&self) -> Self::Resources {
+        TpUartResources
+    }
+}
+
+impl<CTX, U, A> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<U, A>
+where
+    CTX: crate::context::BufferManagerContext + KnxAddressContext,
+    U: embedded_io_async::Read + embedded_io_async::Write + Send + 'static,
+    A: AddressChecker + Send + 'static,
+{
+    fn build_and_run<'a>(
+        self,
+        _resources: &'a mut Self::Resources,
+        context: &'a CTX,
+        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        inbox: impl Inbox<LayerOp<Buffer<'static>>> + 'a,
+    ) -> impl core::future::Future<Output = !> + 'a {
+        let buffer_manager = context.buffer_manager();
+        let mut ll = TpUartLinkLayer::with_address_checker(
+            self.uart,
+            buffer_manager,
+            network_layer,
+            self.address_checker,
+            context,
+        );
+        async move { ll.process(inbox).await }
+    }
+}
+
+// ============================================================================
+// Link Layer
+// ============================================================================
+
 /// TPUART Link Layer
 ///
 /// Handles communication with TPUART-compatible transceiver chips for KNX TP1.
@@ -151,8 +232,10 @@ where
     main_ctx: StateMachineContext,
     send_ctx: SendContext,
 
-    // Configuration
-    individual_addr: Option<IndividualAddress>,
+    // Configuration — individual address is read from the context at runtime
+    // so it tracks changes (e.g., ETS programming a new address).
+    address_context: &'a dyn KnxAddressContext,
+    last_configured_addr: IndividualAddress,
     retry_config: RetryConfig,
 
     // Group address ACK checker
@@ -198,15 +281,18 @@ where
     /// Only individually-addressed frames matching the configured address
     /// will be ACKed (via TPUART hardware).
     ///
+    /// The individual address is read from `address_context` at runtime,
+    /// so changes (e.g., ETS programming) are automatically picked up.
+    ///
     /// Use [`with_address_checker`](Self::with_address_checker) if you need
     /// group address ACK support.
     pub fn new(
         uart: U,
-        individual_addr: Option<IndividualAddress>,
         buffer_manager: &'a RefCell<DynBufferManager<'static>>,
         network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        address_context: &'a dyn KnxAddressContext,
     ) -> Self {
-        Self::with_address_checker(uart, individual_addr, buffer_manager, network_layer, NoAddressChecker)
+        Self::with_address_checker(uart, buffer_manager, network_layer, NoAddressChecker, address_context)
     }
 }
 
@@ -220,12 +306,15 @@ where
     /// The `address_checker` is called after receiving the destination address
     /// (byte 6) of incoming frames to determine whether to ACK group-addressed
     /// frames.
+    ///
+    /// The individual address is read from `address_context` at runtime,
+    /// so changes (e.g., ETS programming) are automatically picked up.
     pub fn with_address_checker(
         uart: U,
-        individual_addr: Option<IndividualAddress>,
         buffer_manager: &'a RefCell<DynBufferManager<'static>>,
         network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         address_checker: A,
+        address_context: &'a dyn KnxAddressContext,
     ) -> Self {
         Self {
             uart,
@@ -233,7 +322,8 @@ where
             network_layer,
             main_ctx: StateMachineContext::new(),
             send_ctx: SendContext::new(),
-            individual_addr,
+            address_context,
+            last_configured_addr: IndividualAddress::default(),
             retry_config: RetryConfig::default(),
             address_checker,
             receive_buffer: None,
@@ -541,10 +631,14 @@ where
                     }
                 }
                 MainAction::ConfigureAddress => {
-                    if let Some(addr) = self.individual_addr {
+                    let addr = self.address_context.individual_address();
+                    // Skip programming the chip if no address is configured yet
+                    // (default 0.0.0).
+                    if addr != IndividualAddress::default() {
                         let mut buf = [U_SET_ADDRESS, 0x00, 0x00];
                         buf[1..].copy_from_slice(addr.as_bytes());
                         let _ = self.uart.write_all(&buf).await;
+                        self.last_configured_addr = addr;
                     }
                 }
                 MainAction::ConfigureRetryCounts => {
@@ -1003,6 +1097,21 @@ where
             if self.send_ctx.state == SendState::Sending {
                 let actions = process_send_event(&mut self.send_ctx, SendEvent::SendNextByte);
                 self.execute_send_actions(actions).await;
+            }
+
+            // Re-program the TPUART chip if the individual address changed
+            // (e.g., ETS wrote a new address via A_IndividualAddress_Write).
+            if self.main_ctx.main_state == MainState::Idle {
+                let current_addr = self.address_context.individual_address();
+                if current_addr != self.last_configured_addr
+                    && current_addr != IndividualAddress::default()
+                {
+                    let mut cmd = [U_SET_ADDRESS, 0x00, 0x00];
+                    cmd[1..].copy_from_slice(current_addr.as_bytes());
+                    let _ = self.uart.write_all(&cmd).await;
+                    self.last_configured_addr = current_addr;
+                    debug!("TPUART: Individual address updated to {}", current_addr);
+                }
             }
         }
     }

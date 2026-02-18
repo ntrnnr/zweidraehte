@@ -12,6 +12,7 @@ use platform::{
 
 use zweidraehte::{
     address::IndividualAddress,
+    context::KnxAddressContext,
     layers::{ActorRequest, Layer, LayerOp, linklayers::tpuart::TpUartLinkLayer},
     messages::{
         buffers::{Buffer, BufferManager},
@@ -19,6 +20,15 @@ use zweidraehte::{
         knx::{KnxMessageBuffer, ServiceType},
     },
 };
+
+/// Fixed address context for the test binary.
+struct StaticAddress(IndividualAddress);
+
+impl KnxAddressContext for StaticAddress {
+    fn individual_address(&self) -> IndividualAddress {
+        self.0
+    }
+}
 
 // Fake network layer that just prints received messages
 struct FakeNetworkLayer {
@@ -89,7 +99,9 @@ async fn main(spawner: Spawner) {
     let link_receiver = link_channel.receiver();
 
     let s = AsyncSerialPort::open(Options { baud_rate: 19200, parity: Parity::Even, ..Default::default() }).unwrap();
-    let ll = TpUartLinkLayer::new(s, Some(IndividualAddress::new(15, 15, 1)), bm, network_sender);
+    let addr_ctx: &'static StaticAddress =
+        Box::leak(Box::new(StaticAddress(IndividualAddress::new(15, 15, 1))));
+    let ll = TpUartLinkLayer::new(s, bm, network_sender, addr_ctx);
 
     // Spawn the fake network layer
     let fake_network = FakeNetworkLayer { receiver: network_receiver };

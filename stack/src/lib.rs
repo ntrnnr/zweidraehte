@@ -871,16 +871,13 @@ where
 
 }
 
-impl<D: StackDefinition> context::KnxAddressContext for StackContext<'_, D>
-where
-    D::State: IpStackState,
-{
+// Unconditional — `individual_address()` is on `StackState`, not `IpStackState`,
+// so this works for both IP and TP1 devices. `additional_individual_addresses()`
+// returns `&[]` by default until tunneling is implemented.
+impl<D: StackDefinition> context::KnxAddressContext for StackContext<'_, D> {
     fn individual_address(&self) -> address::IndividualAddress {
         self.inner.state.individual_address()
     }
-
-    // additional_individual_addresses() uses the default (empty slice)
-    // until tunneling is implemented.
 }
 
 fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'a, D> {

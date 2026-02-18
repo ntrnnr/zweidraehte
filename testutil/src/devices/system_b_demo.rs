@@ -59,9 +59,12 @@ impl core::fmt::Display for BeU16 {
 }
 use platform::LinuxIpTransport;
 use zweidraehte::bcus::system_b::{
-    IpSystemBDeviceState, MemoryLayout, SystemBIpDeviceDef, SystemBMemoryMap,
+    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, MemoryLayout, SystemBIpDeviceDef,
+    SystemBMemoryMap, create_knxip_objects,
 };
 use zweidraehte::dpt::*;
+use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
+use zweidraehte::layers::transport::TlStyle;
 use zweidraehte::prelude::*;
 
 // ============================================================================
@@ -555,6 +558,30 @@ impl SystemBIpDeviceDef for DemoStack {
     type Transport = LinuxIpTransport;
     type Platform = MockIpPlatform;
     type State = DemoState;
+}
+
+impl StackDefinition for DemoStack {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    const TL_STYLE: TlStyle = TlStyle::Style1;
+
+    type P = DemoParams;
+    type CO = comm_objs::DemoComObjects;
+    type LLB = KnxNetIpBuilder<LinuxIpTransport, 2>;
+    type State = DemoState;
+    type Mem = SystemBMemoryMap;
+    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, DemoState>;
+
+    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    where
+        Self::State: 'a,
+    {
+        let layout = MemoryLayout::from_descriptor(
+            SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
+            &DEVICE_DESCRIPTOR,
+            core::mem::size_of::<DemoParams>(),
+        );
+        create_knxip_objects::<Self, _>(state, &layout)
+    }
 }
 
 /// Persisted (serializable) form of the demo device state.

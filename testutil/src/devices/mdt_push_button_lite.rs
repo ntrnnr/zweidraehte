@@ -15,9 +15,14 @@ use serde::{Deserialize, Serialize};
 
 use knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
 use knxprod::ets_pages;
-use zweidraehte::bcus::system_b::{IpSystemBDeviceState, SystemBIpDeviceDef};
+use zweidraehte::bcus::system_b::{
+    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, MemoryLayout, SystemBIpDeviceDef,
+    SystemBMemoryMap, create_knxip_objects,
+};
 use zweidraehte::dpt::*;
 use zweidraehte::ets::ets_range_enum;
+use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
+use zweidraehte::layers::transport::TlStyle;
 use zweidraehte::prelude::*;
 
 // ============================================================================
@@ -3224,6 +3229,30 @@ impl SystemBIpDeviceDef for MdtStack {
     type Transport = platform::LinuxIpTransport;
     type Platform = MockIpPlatform;
     type State = MdtState;
+}
+
+impl StackDefinition for MdtStack {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    const TL_STYLE: TlStyle = TlStyle::Style1;
+
+    type P = MdtParams;
+    type CO = comm_objs::MdtComObjects;
+    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, 2>;
+    type State = MdtState;
+    type Mem = SystemBMemoryMap;
+    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, MdtState>;
+
+    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    where
+        Self::State: 'a,
+    {
+        let layout = MemoryLayout::from_descriptor(
+            SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
+            &DEVICE_DESCRIPTOR,
+            core::mem::size_of::<MdtParams>(),
+        );
+        create_knxip_objects::<Self, _>(state, &layout)
+    }
 }
 
 // ============================================================================
