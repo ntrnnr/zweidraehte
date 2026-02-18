@@ -46,11 +46,13 @@ paste = "1.0"
 serde_with = { version = "3.12", default-features = false, features = ["macros"] }
 replace_with = { version = "0.1", default-features = false }
 
-# Build for minimal size on all embedded targets
+# Build for minimal size on all embedded targets.
+# panic = "abort" is required for no_std — unwinding is not available.
 [profile.dev]
 incremental = false
 lto = true
 opt-level = "z"
+panic = "abort"
 
 [profile.release]
 incremental = false
@@ -58,3 +60,4 @@ codegen-units = 1
 debug = true
 lto = true
 opt-level = "z"
+panic = "abort"

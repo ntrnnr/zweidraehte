@@ -2,6 +2,16 @@
 //!
 //! Implements [`NetworkInfo`] (read-only queries) and [`NetworkConfig`]
 //! (apply changes) by reading/writing the embassy-net stack configuration.
+//!
+//! # Static Context Pattern
+//!
+//! `IpLinkLayerState<P>` requires `P: Default` because `from_config()` calls
+//! `P::default()` when hydrating persisted state. But `PicoWNetworkInfo` holds
+//! `Stack<'static>` — it can't be defaulted without a live embassy-net stack.
+//!
+//! We solve this with a `StaticCell` storing the network context (stack handle
+//! + MAC). `init()` must be called once in `main()` before any device state
+//! construction. `Default::default()` reads from the static.
 
 use core::cell::Cell;
 use core::net::Ipv4Addr;
@@ -13,6 +23,50 @@ use platform::traits::{IpConfig, NetworkConfig, NetworkInfo};
 // ================================================================================
 // PicoWNetworkInfo
 // ================================================================================
+
+/// Network context initialized once in `main()`, read by `Default::default()`.
+///
+/// `Stack<'static>` contains a `RefCell` and is not `Send`/`Sync`, so we can't
+/// use `Mutex<Cell<Option<...>>>`. Instead we use an `UnsafeCell` guarded by an
+/// atomic flag. This is safe on the single-core RP2040 because:
+///   1. `init()` writes exactly once from the main task (before any reader).
+///   2. `Default::default()` reads only after the flag is set.
+///   3. The RP2040 is single-core, so no concurrent access is possible between
+///      the init write and subsequent reads within the same executor.
+struct NetworkContext {
+    data: core::cell::UnsafeCell<Option<(Stack<'static>, [u8; 6])>>,
+    initialized: portable_atomic::AtomicBool,
+}
+
+// SAFETY: Single-core RP2040; init() and default() are never concurrent.
+unsafe impl Sync for NetworkContext {}
+
+impl NetworkContext {
+    const fn new() -> Self {
+        Self {
+            data: core::cell::UnsafeCell::new(None),
+            initialized: portable_atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn set(&self, stack: Stack<'static>, mac: [u8; 6]) {
+        // SAFETY: Called exactly once from main(), before any reader.
+        unsafe { *self.data.get() = Some((stack, mac)) };
+        self.initialized.store(true, portable_atomic::Ordering::Release);
+    }
+
+    fn get(&self) -> (Stack<'static>, [u8; 6]) {
+        assert!(
+            self.initialized.load(portable_atomic::Ordering::Acquire),
+            "PicoWNetworkInfo::init() not called"
+        );
+        // SAFETY: The Acquire load above synchronizes with the Release store
+        // in set(), guaranteeing the data is fully written before we read it.
+        unsafe { (*self.data.get()).expect("network context initialized") }
+    }
+}
+
+static NETWORK_CONTEXT: NetworkContext = NetworkContext::new();
 
 /// Network information and configuration for the Pico W.
 ///
@@ -29,12 +83,33 @@ pub struct PicoWNetworkInfo {
 }
 
 impl PicoWNetworkInfo {
+    /// Store the network context for later use by `Default::default()`.
+    ///
+    /// Must be called once in `main()` before any device state construction.
+    /// The context is read (not consumed) by the `Default` impl, which is
+    /// invoked by `IpLinkLayerState::from_config()`.
+    pub fn init(stack: Stack<'static>, mac: [u8; 6]) {
+        NETWORK_CONTEXT.set(stack, mac);
+    }
+
     /// Create from a stack handle and the WiFi MAC address.
     ///
     /// `initial_method` should be the assignment method used at boot
     /// (typically DHCP = 0x04).
     pub fn new(stack: Stack<'static>, mac: [u8; 6], initial_method: u8) -> Self {
         Self { stack, mac, assignment_method: Cell::new(initial_method) }
+    }
+}
+
+impl Default for PicoWNetworkInfo {
+    /// Construct from the global network context.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`PicoWNetworkInfo::init()`] has not been called.
+    fn default() -> Self {
+        let (stack, mac) = NETWORK_CONTEXT.get();
+        Self { stack, mac, assignment_method: Cell::new(0x04) }
     }
 }
 

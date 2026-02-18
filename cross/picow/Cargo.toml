@@ -27,9 +27,10 @@ embedded-io-async = { workspace = true }
 static_cell = { workspace = true }
 portable-atomic = { version = "1.5", features = ["critical-section"] }
 
-# KNX stack (via path — resolves to cross workspace's embedded-io-async 0.7)
+# KNX stack and device definitions
 zweidraehte = { path = "../../stack", default-features = false, features = ["defmt"] }
 platform = { path = "../../platform", default-features = false, features = ["defmt"] }
+devices = { path = "../../devices", default-features = false, features = ["defmt"] }
 
 # Serialization for flash storage
 postcard = { workspace = true }

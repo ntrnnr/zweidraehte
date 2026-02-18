@@ -178,12 +178,32 @@ Binaries (run with `cargo run --bin <name>`):
 - `usb_test` - USB interface testing
 
 #### 7. Cross-Compilation Crate (`/cross`)
-**Purpose**: Embedded STM32 cross-compilation support (separate workspace)
+**Purpose**: Embedded cross-compilation support (separate workspace)
+
+**IMPORTANT**: The `cross/` directory is a separate Cargo workspace. To build
+embedded binaries, you must `cd` into the specific project directory first.
+Each project has its own `.cargo/config.toml` that sets the correct target
+(e.g., `thumbv6m-none-eabi` for the Pico W). Building with `-p picow` from
+the parent workspace or the `cross/` directory will use the wrong target and
+fail with confusing errors (e.g., missing `#[panic_handler]`, invalid
+registers).
+
+```bash
+# Correct:
+cd cross/picow && cargo build
+
+# Wrong — uses host target, not thumbv6m-none-eabi:
+cd cross && cargo build -p picow
+```
 
 Contains:
 - `tpuart_bridge/` - TP-UART to other protocol bridges
   - Embedded firmware for STM32
   - Uses embassy async runtime, defmt logging, embassy-stm32 HAL
+- `picow/` - KNX/IP light switch device on Raspberry Pi Pico W
+  - RP2040 + CYW43 WiFi, embassy async runtime
+  - Uses `devices::light_switch` device definition
+  - Build with: `cd cross/picow && WIFI_SSID=x WIFI_PASS=y cargo build`
 
 ### Documentation (`/docs`)
 
