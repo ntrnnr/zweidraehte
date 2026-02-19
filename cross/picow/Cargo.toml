@@ -25,14 +25,10 @@ panic-probe = { workspace = true, features = ["print-defmt"] }
 futures = { workspace = true, features = ["async-await"] }
 embedded-io-async = { workspace = true }
 static_cell = { workspace = true }
-portable-atomic = { version = "1.5", features = ["critical-section"] }
-
 # KNX stack and device definitions
 zweidraehte = { path = "../../stack", default-features = false, features = ["defmt"] }
 platform = { path = "../../platform", default-features = false, features = ["defmt"] }
 devices = { path = "../../devices", default-features = false, features = ["defmt"] }
 
-# Serialization for flash storage
-postcard = { workspace = true }
-serde = { workspace = true }
-critical-section = "1.2.0"
+# Shared RP platform code
+rp-common = { path = "../rp-common", features = ["rp2040"] }

@@ -1,6 +1,6 @@
-//! Flash-based persistent storage for the Pico W (RP2040).
+//! Flash-based persistent storage for RP2040/RP2350.
 //!
-//! Uses the last 4KB sector of the RP2040's 2MB flash for device state
+//! Uses the last 4KB sector of the chip's 2MB flash for device state
 //! persistence. Serialization is via `postcard` (compact no_std binary
 //! format).
 //!
@@ -42,24 +42,24 @@ const STORAGE_OFFSET: u32 = (FLASH_SIZE - SECTOR_SIZE) as u32;
 const MAGIC: [u8; 4] = *b"KNXS";
 
 // ================================================================================
-// FlashStorage
+// RpFlashStorage
 // ================================================================================
 
-/// Persistent storage backed by RP2040 internal flash.
-pub struct FlashStorage<S> {
+/// Persistent storage backed by RP2040/RP2350 internal flash.
+pub struct RpFlashStorage<S> {
     flash: Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>,
     dirty: bool,
     _phantom: core::marker::PhantomData<S>,
 }
 
-impl<S> FlashStorage<S> {
+impl<S> RpFlashStorage<S> {
     /// Create a new flash storage instance.
     pub fn new(flash: Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>) -> Self {
         Self { flash, dirty: false, _phantom: core::marker::PhantomData }
     }
 }
 
-impl<S> DeviceStorage for FlashStorage<S>
+impl<S> DeviceStorage for RpFlashStorage<S>
 where
     S: Serialize + for<'de> Deserialize<'de>,
 {

@@ -1,4 +1,7 @@
-//! Embassy-net UDP socket and IP transport implementation for the Pico W.
+//! Embassy-net UDP socket and IP transport implementation.
+//!
+//! This module is transport-agnostic — it works with any network driver
+//! that plugs into embassy-net (CYW43 WiFi, W5500 Ethernet, etc.).
 
 use core::cell::{Cell, RefCell};
 use core::net::{Ipv4Addr, SocketAddrV4};
@@ -173,17 +176,17 @@ impl AsyncUdpSocket for EmbassyUdpSocket {
 }
 
 // ================================================================================
-// PicoWIpTransport
+// EmbassyIpTransport
 // ================================================================================
 
-/// IP transport type for the Pico W platform.
+/// IP transport for embassy-net based platforms.
 ///
 /// Uses embassy-net UDP sockets and stubs out TCP (KNX/IP Secure is
 /// not a priority for embedded; use [`NeverTcpListener`] to satisfy
 /// the trait bound without pulling in a TCP implementation).
-pub struct PicoWIpTransport;
+pub struct EmbassyIpTransport;
 
-impl IpTransport for PicoWIpTransport {
+impl IpTransport for EmbassyIpTransport {
     type UdpSocket = EmbassyUdpSocket;
     type TcpListener = NeverTcpListener;
     type TcpStream = NeverTcpStream;

@@ -1,4 +1,4 @@
-//! Network information and configuration for the Pico W platform.
+//! Network information and configuration backed by embassy-net.
 //!
 //! Implements [`NetworkInfo`] (read-only queries) and [`NetworkConfig`]
 //! (apply changes) by reading/writing the embassy-net stack configuration.
@@ -6,12 +6,14 @@
 //! # Static Context Pattern
 //!
 //! `IpLinkLayerState<P>` requires `P: Default` because `from_config()` calls
-//! `P::default()` when hydrating persisted state. But `PicoWNetworkInfo` holds
-//! `Stack<'static>` — it can't be defaulted without a live embassy-net stack.
+//! `P::default()` when hydrating persisted state. But `EmbassyNetworkInfo`
+//! holds `Stack<'static>` — it can't be defaulted without a live embassy-net
+//! stack.
 //!
-//! We solve this with a `StaticCell` storing the network context (stack handle
-//! + MAC). `init()` must be called once in `main()` before any device state
-//! construction. `Default::default()` reads from the static.
+//! We solve this with a static storing the network context (stack handle
+//! + MAC). [`EmbassyNetworkInfo::init()`] must be called once in `main()`
+//! before any device state construction. `Default::default()` reads from
+//! the static.
 
 use core::cell::Cell;
 use core::net::Ipv4Addr;
@@ -21,24 +23,24 @@ use embassy_net::{Ipv4Cidr, Stack, StaticConfigV4};
 use platform::traits::{IpConfig, NetworkConfig, NetworkInfo};
 
 // ================================================================================
-// PicoWNetworkInfo
+// EmbassyNetworkInfo
 // ================================================================================
 
 /// Network context initialized once in `main()`, read by `Default::default()`.
 ///
 /// `Stack<'static>` contains a `RefCell` and is not `Send`/`Sync`, so we can't
 /// use `Mutex<Cell<Option<...>>>`. Instead we use an `UnsafeCell` guarded by an
-/// atomic flag. This is safe on the single-core RP2040 because:
+/// atomic flag. This is safe on single-core Cortex-M chips because:
 ///   1. `init()` writes exactly once from the main task (before any reader).
 ///   2. `Default::default()` reads only after the flag is set.
-///   3. The RP2040 is single-core, so no concurrent access is possible between
-///      the init write and subsequent reads within the same executor.
+///   3. Single-core chips have no concurrent access between the init write
+///      and subsequent reads within the same executor.
 struct NetworkContext {
     data: core::cell::UnsafeCell<Option<(Stack<'static>, [u8; 6])>>,
     initialized: portable_atomic::AtomicBool,
 }
 
-// SAFETY: Single-core RP2040; init() and default() are never concurrent.
+// SAFETY: Single-core Cortex-M; init() and default() are never concurrent.
 unsafe impl Sync for NetworkContext {}
 
 impl NetworkContext {
@@ -58,7 +60,7 @@ impl NetworkContext {
     fn get(&self) -> (Stack<'static>, [u8; 6]) {
         assert!(
             self.initialized.load(portable_atomic::Ordering::Acquire),
-            "PicoWNetworkInfo::init() not called"
+            "EmbassyNetworkInfo::init() not called"
         );
         // SAFETY: The Acquire load above synchronizes with the Release store
         // in set(), guaranteeing the data is fully written before we read it.
@@ -68,12 +70,12 @@ impl NetworkContext {
 
 static NETWORK_CONTEXT: NetworkContext = NetworkContext::new();
 
-/// Network information and configuration for the Pico W.
+/// Network information and configuration backed by embassy-net.
 ///
-/// Holds the embassy-net stack handle and the MAC address (obtained from
-/// the CYW43 WiFi driver at init). Provides both read-only network info
-/// and the ability to reconfigure IP settings at runtime.
-pub struct PicoWNetworkInfo {
+/// Holds the embassy-net stack handle and the MAC address. Provides both
+/// read-only network info and the ability to reconfigure IP settings at
+/// runtime.
+pub struct EmbassyNetworkInfo {
     stack: Stack<'static>,
     mac: [u8; 6],
     /// Tracks which assignment method is currently active.
@@ -82,7 +84,7 @@ pub struct PicoWNetworkInfo {
     assignment_method: Cell<u8>,
 }
 
-impl PicoWNetworkInfo {
+impl EmbassyNetworkInfo {
     /// Store the network context for later use by `Default::default()`.
     ///
     /// Must be called once in `main()` before any device state construction.
@@ -92,7 +94,7 @@ impl PicoWNetworkInfo {
         NETWORK_CONTEXT.set(stack, mac);
     }
 
-    /// Create from a stack handle and the WiFi MAC address.
+    /// Create from a stack handle and a MAC address.
     ///
     /// `initial_method` should be the assignment method used at boot
     /// (typically DHCP = 0x04).
@@ -101,12 +103,12 @@ impl PicoWNetworkInfo {
     }
 }
 
-impl Default for PicoWNetworkInfo {
+impl Default for EmbassyNetworkInfo {
     /// Construct from the global network context.
     ///
     /// # Panics
     ///
-    /// Panics if [`PicoWNetworkInfo::init()`] has not been called.
+    /// Panics if [`EmbassyNetworkInfo::init()`] has not been called.
     fn default() -> Self {
         let (stack, mac) = NETWORK_CONTEXT.get();
         Self { stack, mac, assignment_method: Cell::new(0x04) }
@@ -141,7 +143,7 @@ fn mask_to_prefix(mask: Ipv4Addr) -> u8 {
 // NetworkInfo implementation
 // ================================================================================
 
-impl NetworkInfo for PicoWNetworkInfo {
+impl NetworkInfo for EmbassyNetworkInfo {
     fn current_ip_address(&self) -> Ipv4Addr {
         self.stack
             .config_v4()
@@ -195,7 +197,7 @@ pub enum NetworkConfigError {
     UnsupportedMethod(u8),
 }
 
-impl NetworkConfig for PicoWNetworkInfo {
+impl NetworkConfig for EmbassyNetworkInfo {
     type Error = NetworkConfigError;
 
     fn apply_ip_config(&self, config: &IpConfig) -> Result<(), Self::Error> {

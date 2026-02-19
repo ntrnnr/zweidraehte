@@ -4,15 +4,15 @@
 
 use core::net::Ipv4Addr;
 
-use cyw43_pio::PioSpi;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::{DhcpConfig, StackResources as NetStackResources};
-use embassy_rp::bind_interrupts;
-use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
-use embassy_rp::pio::{self, Pio};
-use embassy_time::{Duration, Timer};
+use embassy_net_wiznet::chip::W5500;
+use embassy_rp::gpio::{Input, Level, Output, Pull};
+use embassy_rp::peripherals::SPI0;
+use embassy_rp::spi::{Async, Config as SpiConfig, Spi};
+use embassy_time::{Delay, Duration, Timer};
+use embedded_hal_bus::spi::ExclusiveDevice;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -40,10 +40,15 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP;
 
 /// Serial number: manufacturer ID (0x00FA) + device-specific bytes.
 /// TODO: Read from RP2040 flash unique ID for production.
-const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x03];
+const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x04];
+
+/// MAC address for the W5500 (locally administered).
+/// The W5500 has no built-in MAC, so we provide one ourselves.
+/// TODO: Derive from RP2040 flash unique ID for production.
+const MAC_ADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x04];
 
 /// Device state combining System B tables with IP link-layer state.
-type PicoWState = IpSystemBDeviceState<
+type PicoEthState = IpSystemBDeviceState<
     { DEVICE_DESCRIPTOR.address_table_size() },
     { DEVICE_DESCRIPTOR.association_table_size() },
     { DEVICE_DESCRIPTOR.comm_object_table_size() },
@@ -66,29 +71,29 @@ const MEMORY_MAP: SystemBMemoryMap = SystemBMemoryMap::new(MEMORY_LAYOUT);
 // ----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
-struct PicoWLightSwitch;
+struct PicoEthLightSwitch;
 
-impl SystemBIpDeviceDef for PicoWLightSwitch {
+impl SystemBIpDeviceDef for PicoEthLightSwitch {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const INTERFACE_NAME: &'static str = "wlan0";
+    const INTERFACE_NAME: &'static str = "eth0";
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
     type Transport = EmbassyIpTransport;
     type Platform = EmbassyNetworkInfo;
-    type State = PicoWState;
+    type State = PicoEthState;
 }
 
-impl StackDefinition for PicoWLightSwitch {
+impl StackDefinition for PicoEthLightSwitch {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
     const TL_STYLE: TlStyle = TlStyle::Style1;
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, 2>;
-    type State = PicoWState;
+    type State = PicoEthState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, PicoWState>;
+    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, PicoEthState>;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
@@ -99,48 +104,31 @@ impl StackDefinition for PicoWLightSwitch {
 }
 
 // ================================================================================
-// KNX stack runner task
+// Embassy tasks
 // ================================================================================
 
 #[embassy_executor::task]
-async fn knx_task(runner: Runner<'static, PicoWLightSwitch>) -> ! {
+async fn knx_task(runner: Runner<'static, PicoEthLightSwitch>) -> ! {
     runner.run().await
 }
 
-bind_interrupts!(struct Irqs {
-    PIO0_IRQ_0 => pio::InterruptHandler<PIO0>;
-});
-
 #[embassy_executor::task]
-async fn cyw43_task(
-    runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
+async fn w5500_task(
+    runner: embassy_net_wiznet::Runner<
+        'static,
+        W5500,
+        ExclusiveDevice<Spi<'static, SPI0, Async>, Output<'static>, Delay>,
+        Input<'static>,
+        Output<'static>,
+    >,
 ) -> ! {
     runner.run().await
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
+async fn net_task(mut runner: embassy_net::Runner<'static, embassy_net_wiznet::Device<'static>>) -> ! {
     runner.run().await
 }
-
-// ================================================================================
-// Firmware blobs
-// ================================================================================
-
-// The CYW43439 WiFi chip requires firmware to be loaded at init time.
-// These blobs come from the embassy cyw43-firmware directory, originally
-// sourced from https://github.com/georgerobotics/cyw43-driver.
-// Licensed under the Infineon Permissive Binary License.
-
-// Ensure 4-byte alignment for DMA transfers.
-#[repr(C, align(4))]
-struct Aligned<const N: usize>([u8; N]);
-
-static FW: Aligned<{ include_bytes!("../firmware/43439A0.bin").len() }> =
-    Aligned(*include_bytes!("../firmware/43439A0.bin"));
-
-static CLM: Aligned<{ include_bytes!("../firmware/43439A0_clm.bin").len() }> =
-    Aligned(*include_bytes!("../firmware/43439A0_clm.bin"));
 
 // ================================================================================
 // Entry point
@@ -149,62 +137,41 @@ static CLM: Aligned<{ include_bytes!("../firmware/43439A0_clm.bin").len() }> =
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
-    info!("Pico W initializing");
+    info!("Pico Ethernet (W5500) initializing");
 
     // ========================================================================
-    // CYW43 WiFi driver init
+    // W5500 SPI init
     // ========================================================================
 
-    // The Pico W onboard LED is controlled via the CYW43 WiFi chip
-    // (not a direct GPIO), so we must initialize the WiFi driver even
-    // just to blink the LED.
-    let pwr = Output::new(p.PIN_23, Level::Low);
-    let cs = Output::new(p.PIN_25, Level::High);
-    let mut pio = Pio::new(p.PIO0, Irqs);
-    let spi = PioSpi::new(
-        &mut pio.common,
-        pio.sm0,
-        cyw43_pio::DEFAULT_CLOCK_DIVIDER,
-        pio.irq0,
-        cs,
-        p.PIN_24,
-        p.PIN_29,
-        p.DMA_CH0,
+    // SPI0 connected to the W5500 module.
+    // Pin assignments: MISO=GP4, MOSI=GP3, SCK=GP2, CS=GP5, RST=GP10, INT=GP11
+    let mut spi_cfg = SpiConfig::default();
+    spi_cfg.frequency = 10_000_000;
+    let spi = Spi::new(
+        p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4,
+        p.DMA_CH0, p.DMA_CH1, spi_cfg,
     );
+    let cs = Output::new(p.PIN_5, Level::High);
+    let w5500_int = Input::new(p.PIN_11, Pull::Up);
+    let w5500_reset = Output::new(p.PIN_10, Level::High);
 
-    static STATE: StaticCell<cyw43::State> = StaticCell::new();
-    let state = STATE.init(cyw43::State::new());
-    let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, &FW.0).await;
+    let spi_dev = ExclusiveDevice::new(spi, cs, Delay)
+        .expect("SPI ExclusiveDevice init infallible for Output CS");
 
-    spawner
-        .spawn(cyw43_task(runner))
-        .expect("cyw43_task spawnable once");
+    static W5500_STATE: StaticCell<embassy_net_wiznet::State<8, 8>> = StaticCell::new();
+    let (net_device, w5500_runner) = embassy_net_wiznet::new(
+        MAC_ADDR,
+        W5500_STATE.init(embassy_net_wiznet::State::new()),
+        spi_dev,
+        w5500_int,
+        w5500_reset,
+    )
+    .await
+    .expect("W5500 init");
 
-    control.init(&CLM.0).await;
-    control
-        .set_power_management(cyw43::PowerManagementMode::PowerSave)
-        .await;
+    info!("W5500 initialized successfully");
 
-    // ========================================================================
-    // WiFi connection
-    // ========================================================================
-
-    let ssid = env!("WIFI_SSID");
-    let pass = env!("WIFI_PASS");
-    info!("Connecting to WiFi '{}' ...", ssid);
-
-    loop {
-        let mut opts = cyw43::JoinOptions::default();
-        opts.passphrase = pass.as_bytes();
-        match control.join(ssid, opts).await {
-            Ok(_) => break,
-            Err(e) => {
-                info!("WiFi join failed: status={}", e.status);
-                Timer::after(Duration::from_secs(1)).await;
-            }
-        }
-    }
-    info!("WiFi connected");
+    spawner.spawn(w5500_task(w5500_runner)).expect("w5500_task spawnable once");
 
     // ========================================================================
     // Embassy-net stack init (DHCP)
@@ -238,13 +205,12 @@ async fn main(spawner: Spawner) {
     // Platform layer
     // ========================================================================
 
-    let mac = control.address().await;
-    info!("MAC address: {:02x}", mac);
+    info!("MAC address: {:02x}", MAC_ADDR);
 
     // Initialize the global network context so EmbassyNetworkInfo::default()
     // works during device state construction (IpLinkLayerState::from_config
     // calls P::default()).
-    EmbassyNetworkInfo::init(stack, mac);
+    EmbassyNetworkInfo::init(stack, MAC_ADDR);
 
     // Flash storage for persistent device state.
     // TODO: Load persisted state from flash instead of starting fresh.
@@ -260,7 +226,7 @@ async fn main(spawner: Spawner) {
 
     // Fresh device state (tables empty, default individual address 15.15.255).
     // ETS will program the actual address, tables, and parameters.
-    let device_state = PicoWState::new(&identity);
+    let device_state = PicoEthState::new(&identity);
 
     // The DHCP-assigned IP is used as the local address and control endpoint.
     let local_ip = stack
@@ -273,15 +239,15 @@ async fn main(spawner: Spawner) {
     // The embassy-net stack handle is passed as socket context — when the
     // KNX/IP servers call EmbassyUdpSocket::bind(), they receive it directly.
     let link_layer_builder =
-        KnxNetIpBuilder::<EmbassyIpTransport, 2>::new("wlan0", local_ip, control_endpoint, stack)
+        KnxNetIpBuilder::<EmbassyIpTransport, 2>::new("eth0", local_ip, control_endpoint, stack)
             .enable_routing_server()
             .enable_remote_config_server();
 
     // Allocate stack resources in a static (embassy tasks need 'static).
     static KNX_RESOURCES: StaticCell<
         StackResources<
-            PicoWLightSwitch,
-            { zweidraehte::config::buffer_size_for_apdu(<PicoWLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
+            PicoEthLightSwitch,
+            { zweidraehte::config::buffer_size_for_apdu(<PicoEthLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
         >,
     > = StaticCell::new();
 
@@ -305,7 +271,7 @@ async fn main(spawner: Spawner) {
     info!("  Mask version: 57B0 (System B KNX/IP)");
 
     // ========================================================================
-    // Main loop: heartbeat LED + event monitoring
+    // Main loop: heartbeat LED
     // ========================================================================
 
     // Discard the stack handle — this minimal firmware has no application
@@ -313,10 +279,13 @@ async fn main(spawner: Spawner) {
     // protocol processing autonomously.
     let _ = knx_stack;
 
+    // Standard Pico has the LED on GP25 (direct GPIO, unlike Pico W where
+    // it's behind the CYW43 chip).
+    let mut led = Output::new(p.PIN_25, Level::Low);
     loop {
-        control.gpio_set(0, true).await;
+        led.set_high();
         Timer::after(Duration::from_millis(500)).await;
-        control.gpio_set(0, false).await;
+        led.set_low();
         Timer::after(Duration::from_millis(500)).await;
     }
 }

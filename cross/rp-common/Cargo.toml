@@ -1,0 +1,29 @@
+[package]
+name = "rp-common"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Embassy core
+embassy-net = { workspace = true, features = ["udp", "dhcpv4", "medium-ethernet", "multicast", "defmt"] }
+embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-rp = { workspace = true, features = ["defmt"] }
+
+# Cortex-M / embedded
+cortex-m = { workspace = true }
+defmt = { workspace = true }
+portable-atomic = { version = "1.5", features = ["critical-section"] }
+critical-section = "1.2.0"
+
+# KNX stack and platform traits
+zweidraehte = { path = "../../stack", default-features = false, features = ["defmt"] }
+platform = { path = "../../platform", default-features = false, features = ["defmt"] }
+
+# Serialization for flash storage
+postcard = { workspace = true }
+serde = { workspace = true }
+
+[features]
+default = ["rp2040"]
+rp2040 = ["embassy-rp/rp2040"]
+rp235xa = ["embassy-rp/rp235xa"]
