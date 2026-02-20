@@ -5,7 +5,11 @@ use zerocopy::big_endian::U16;
 
 use super::{ComObjectFlags, ComObjectTableEntry, ComObjectType, CommunicationObjectTable, Table, TableMemory};
 
-/// Communication object descriptor containing type and flags
+/// Communication object descriptor containing type and flags.
+///
+/// Per KNX spec (Table 87), the Group Object Descriptor is a big-endian
+/// 16-bit value where bits 15-8 are configuration flags and bits 7-0 are
+/// the value field type code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComObjectDescriptor {
     /// Data type of this communication object
@@ -16,14 +20,18 @@ pub struct ComObjectDescriptor {
 }
 
 impl ComObjectDescriptor {
-    /// Create a new descriptor from raw bytes
-    pub fn from_bytes(bytes: [u8; 2]) -> Self {
-        Self { object_type: ComObjectType::from(bytes[0]), flags: ComObjectFlags(bytes[1]) }
+    /// Decode a descriptor from its big-endian 16-bit representation.
+    pub fn from_u16(raw: U16) -> Self {
+        let val = raw.get();
+        Self {
+            flags: ComObjectFlags((val >> 8) as u8),
+            object_type: ComObjectType::from(val as u8),
+        }
     }
 
-    /// Convert descriptor to raw bytes
-    pub fn to_bytes(&self) -> [u8; 2] {
-        [u8::from(self.object_type), self.flags.0]
+    /// Encode the descriptor as a big-endian 16-bit value.
+    pub fn to_u16(&self) -> U16 {
+        U16::new(((self.flags.0 as u16) << 8) | u8::from(self.object_type) as u16)
     }
 }
 
@@ -35,17 +43,17 @@ pub struct CoTab7Impl<const N: usize> {
 }
 
 impl<const N: usize> Table<CoTab7Impl<N>> {
-    /// Get the descriptor for communication object at the given index
+    /// Get the descriptor for communication object at the given index.
     fn com_object(&self, idx: u16) -> Option<ComObjectDescriptor> {
         if idx == 0 || idx > self.entry_count() {
             return None;
         }
 
-        // Each entry is 2 bytes (type + flags)
+        // Each entry is a big-endian U16 descriptor
         let offset = 2 + (((idx - 1) as usize) * 2);
-        let bytes = [self.table.data[offset], self.table.data[offset + 1]];
+        let raw = U16::from_bytes(self.table.data[offset..offset + 2].try_into().unwrap());
 
-        Some(ComObjectDescriptor::from_bytes(bytes))
+        Some(ComObjectDescriptor::from_u16(raw))
     }
 }
 
@@ -100,9 +108,12 @@ impl<const N: usize> CommunicationObjectTable for Table<CoTab7Impl<N>> {
             return false;
         }
 
-        // Each entry is 2 bytes (type + flags), flags are at offset 1 within the entry
-        let offset = 2 + (((idx - 1) as usize) * 2) + 1;
-        self.table.data[offset] = flags.0;
+        // Read the existing descriptor, replace flags, write back
+        let offset = 2 + (((idx - 1) as usize) * 2);
+        let raw = U16::from_bytes(self.table.data[offset..offset + 2].try_into().unwrap());
+        let mut desc = ComObjectDescriptor::from_u16(raw);
+        desc.flags = flags;
+        self.table.data[offset..offset + 2].copy_from_slice(&desc.to_u16().to_bytes());
         true
     }
 }
@@ -144,16 +155,17 @@ mod test {
 
         // Write data into the table:
         // - First 2 bytes: count = 3
-        // - Com Object 1: Type=Bit1 (0x00), Flags=0xDC (RTWU config)
-        // - Com Object 2: Type=Byte2 (0x08), Flags=0x44 (T config)
-        // - Com Object 3: Type=Byte4 (0x0A), Flags=0x94 (WU config)
+        // Per spec (Table 87): each descriptor is [flags, type] (high byte = flags, low byte = type)
+        // - Com Object 1: Flags=0xDC (RTWU config), Type=Uint1 (0x00)
+        // - Com Object 2: Flags=0x44 (T config), Type=Byte2 (0x08)
+        // - Com Object 3: Flags=0x94 (WU config), Type=Byte4 (0x0A)
         ct.write(0, &[0x00, 0x03]); // Length: 3 entries
-        ct.write(2, &[0x00, 0xDC]); // Com Object 1
-        ct.write(4, &[0x08, 0x44]); // Com Object 2
-        ct.write(6, &[0x0A, 0x94]); // Com Object 3
+        ct.write(2, &[0xDC, 0x00]); // Com Object 1
+        ct.write(4, &[0x44, 0x08]); // Com Object 2
+        ct.write(6, &[0x94, 0x0A]); // Com Object 3
 
         // Verify raw table contents
-        assert_eq!(&ct.data_ref()[0..8], &[0x00, 0x03, 0x00, 0xDC, 0x08, 0x44, 0x0A, 0x94]);
+        assert_eq!(&ct.data_ref()[0..8], &[0x00, 0x03, 0xDC, 0x00, 0x44, 0x08, 0x94, 0x0A]);
 
         // Issue load complete
         ct.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
@@ -169,9 +181,9 @@ mod test {
         ct.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x08, 0x01, 0xff, 0x00, 0x00], None);
 
         ct.write(0, &[0x00, 0x03]); // Length: 3 entries
-        ct.write(2, &[0x00, 0xDC]); // Com Object 1: Bit1, RTWU config
-        ct.write(4, &[0x08, 0x44]); // Com Object 2: Byte2, T config
-        ct.write(6, &[0x0A, 0x94]); // Com Object 3: Byte4, WU config
+        ct.write(2, &[0xDC, 0x00]); // Com Object 1: RTWU config, Uint1
+        ct.write(4, &[0x44, 0x08]); // Com Object 2: T config, Byte2
+        ct.write(6, &[0x94, 0x0A]); // Com Object 3: WU config, Byte4
         ct.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         // Test accessing each object
@@ -213,7 +225,7 @@ mod test {
         ct.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x04, 0x01, 0xff, 0x00, 0x00], None);
 
         ct.write(0, &[0x00, 0x01]); // Length: 1 entry
-        ct.write(2, &[0x00, 0xDC]); // Com Object 1: Bit1, RTWU config
+        ct.write(2, &[0xDC, 0x00]); // Com Object 1: RTWU config, Uint1
         ct.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         // Get original object
@@ -247,10 +259,10 @@ mod test {
         ct.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x0A, 0x01, 0xff, 0x00, 0x00], None);
 
         ct.write(0, &[0x00, 0x04]); // Length: 4 entries
-        ct.write(2, &[0x00, 0xDC]); // Com Object 1: RTWU config
-        ct.write(4, &[0x08, 0x44]); // Com Object 2: T config
-        ct.write(6, &[0x0A, 0x94]); // Com Object 3: WU config
-        ct.write(8, &[0x07, 0x4C]); // Com Object 4: RT config
+        ct.write(2, &[0xDC, 0x00]); // Com Object 1: RTWU config, Uint1
+        ct.write(4, &[0x44, 0x08]); // Com Object 2: T config, Byte2
+        ct.write(6, &[0x94, 0x0A]); // Com Object 3: WU config, Byte4
+        ct.write(8, &[0x4C, 0x07]); // Com Object 4: RT config, Octet1
         ct.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         // Test object 1 properties (RTWU config)

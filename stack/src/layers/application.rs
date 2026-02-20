@@ -537,7 +537,7 @@ where
             let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
             self.comm_objects.borrow_mut().set_status(asap, new_status);
 
-            debug!("AL comm object {} not enabled for communication", asap);
+            debug!("AL comm object {} not enabled for communication (flags=0x{:02x})", asap, cot_info.flags.to_byte());
             return true;
         }
 

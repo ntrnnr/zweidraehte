@@ -374,8 +374,10 @@ macro_rules! knx_stack_config {
                 $(
                     // Default priority is Low (3) if not specified
                     let priority = $crate::knx_stack_config!(@get_priority $($prio)?);
-                    co7_data[co_idx] = $size;
-                    co7_data[co_idx + 1] = $flags | priority;
+                    // Per KNX spec (Table 87): descriptor is big-endian U16
+                    // with flags in the high byte and value type in the low byte.
+                    co7_data[co_idx] = $flags | priority;
+                    co7_data[co_idx + 1] = $size;
                     co_idx += 2;
                 )*
 
@@ -580,19 +582,19 @@ mod tests {
         let co_data = CONFIG.co7_data();
 
         // CO7 format: [header 2 bytes][obj1 2 bytes][obj2 2 bytes][obj3 2 bytes][obj4 2 bytes]
-        // Each object: [type (size)][flags]
+        // Per spec (Table 87): each descriptor is big-endian U16: [flags][type]
         // Flags = CE | TE = 0x44, plus priority in bits 0-1
 
         // Object 1: System priority (0) -> flags should be 0x44 | 0 = 0x44
-        assert_eq!(co_data[2 + 0 * 2 + 1], 0x44 | 0, "System priority should be 0");
+        assert_eq!(co_data[2 + 0 * 2], 0x44 | 0, "System priority should be 0");
 
         // Object 2: High priority (1) -> flags should be 0x44 | 1 = 0x45
-        assert_eq!(co_data[2 + 1 * 2 + 1], 0x44 | 1, "High priority should be 1");
+        assert_eq!(co_data[2 + 1 * 2], 0x44 | 1, "High priority should be 1");
 
         // Object 3: Alarm priority (2) -> flags should be 0x44 | 2 = 0x46
-        assert_eq!(co_data[2 + 2 * 2 + 1], 0x44 | 2, "Alarm priority should be 2");
+        assert_eq!(co_data[2 + 2 * 2], 0x44 | 2, "Alarm priority should be 2");
 
         // Object 4: Low priority (3, default) -> flags should be 0x44 | 3 = 0x47
-        assert_eq!(co_data[2 + 3 * 2 + 1], 0x44 | 3, "Low priority (default) should be 3");
+        assert_eq!(co_data[2 + 3 * 2], 0x44 | 3, "Low priority (default) should be 3");
     }
 }
