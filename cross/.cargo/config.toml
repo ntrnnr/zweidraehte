@@ -1,2 +1,2 @@
 [env]
-DEFMT_LOG = "trace"
+DEFMT_LOG = "smoltcp=off,trace"
