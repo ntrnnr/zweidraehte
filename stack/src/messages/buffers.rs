@@ -22,6 +22,7 @@
 //! ```
 
 use core::{
+    cell::Cell,
     ops::{Deref, DerefMut},
     ptr::NonNull,
 };
@@ -264,6 +265,8 @@ pub struct Buffer<'a> {
     len: usize,
     /// Channel to return the buffer to the pool.
     sender: channel::DynamicSender<'a, NonNull<[u8]>>,
+    /// Shared counter of currently allocated buffers (decremented on drop).
+    allocated_count: &'a Cell<u8>,
 }
 
 // Safety: Buffer is Send if the underlying memory and sender are Send.
@@ -372,6 +375,10 @@ impl Drop for Buffer<'_> {
         // This operation cannot fail, as we allocated a capacity equal to the
         // number of buffers we create and manage.
         let _ = self.sender.try_send(self.buffer);
+
+        // Decrement the pool usage counter.
+        self.allocated_count
+            .set(self.allocated_count.get().saturating_sub(1));
     }
 }
 
@@ -416,52 +423,91 @@ impl crate::util::packets::SerializeBuffer for Buffer<'_> {
 }
 
 /// A dynamic [`BufferManager`] with generics elided.
+///
+/// Provides both blocking (`alloc`) and non-blocking (`try_alloc`) allocation,
+/// plus pool usage diagnostics via [`allocated_count`](Self::allocated_count)
+/// and [`free_count`](Self::free_count).
 #[derive(Clone, Copy)]
 pub struct DynBufferManager<'a> {
     buffer_sender: DynamicSender<'a, NonNull<[u8]>>,
     buffer_receiver: DynamicReceiver<'a, NonNull<[u8]>>,
     /// Default headroom for new allocations
     default_headroom: usize,
+    /// Total number of buffers in the pool.
+    pool_size: u8,
+    /// Shared counter of currently allocated (in-use) buffers.
+    allocated_count: &'a Cell<u8>,
 }
 
 impl<'a> DynBufferManager<'a> {
+    // ========================================================================
+    // Pool diagnostics
+    // ========================================================================
+
+    /// Number of buffers currently allocated (in use).
+    pub fn allocated_count(&self) -> u8 {
+        self.allocated_count.get()
+    }
+
+    /// Total number of buffers in the pool.
+    pub fn pool_size(&self) -> u8 {
+        self.pool_size
+    }
+
+    /// Number of free (available) buffers.
+    pub fn free_count(&self) -> u8 {
+        self.pool_size.saturating_sub(self.allocated_count.get())
+    }
+
+    /// Increment the counter and build a `Buffer` from a raw pointer.
+    fn finish_alloc(&self, buffer: NonNull<[u8]>, start: usize) -> Buffer<'a> {
+        let count = self.allocated_count.get() + 1;
+        self.allocated_count.set(count);
+        if count >= self.pool_size {
+            warn!(
+                "Buffer pool exhausted ({}/{} allocated)",
+                count, self.pool_size
+            );
+        }
+        Buffer {
+            buffer,
+            start,
+            len: 0,
+            sender: self.buffer_sender,
+            allocated_count: self.allocated_count,
+        }
+    }
+
+    // ========================================================================
+    // Blocking allocation (async — waits for a free buffer)
+    // ========================================================================
+
     /// Allocate a new [`Buffer`] with default headroom.
     ///
     /// The buffer starts empty (len=0) with [`DEFAULT_HEADROOM`] bytes reserved
     /// at the front for prepending headers.
     ///
-    /// In case no free buffers are available, this function will asynchronously block.
+    /// If no free buffers are available, this function blocks asynchronously.
+    /// A warning is logged when the pool is fully exhausted.
     pub async fn alloc(&self) -> Buffer<'a> {
-        Buffer {
-            buffer: self.buffer_receiver.receive().await,
-            start: self.default_headroom,
-            len: 0,
-            sender: self.buffer_sender,
-        }
+        let ptr = self.buffer_receiver.receive().await;
+        self.finish_alloc(ptr, self.default_headroom)
     }
 
     /// Allocate a new [`Buffer`] with specified headroom.
     ///
     /// Use this when you need more or less headroom than the default.
     pub async fn alloc_with_headroom(&self, headroom: usize) -> Buffer<'a> {
-        Buffer {
-            buffer: self.buffer_receiver.receive().await,
-            start: headroom,
-            len: 0,
-            sender: self.buffer_sender,
-        }
+        let ptr = self.buffer_receiver.receive().await;
+        self.finish_alloc(ptr, headroom)
     }
 
     /// Allocate a new [`Buffer`] with no headroom.
     ///
     /// Use this when you know you won't need to prepend any data.
     pub async fn alloc_no_headroom(&self) -> Buffer<'a> {
-        Buffer {
-            buffer: self.buffer_receiver.receive().await,
-            start: 0,
-            len: 0,
-            sender: self.buffer_sender,
-        }
+        let ptr = self.buffer_receiver.receive().await;
+        self.finish_alloc(ptr, 0)
     }
 
     /// Allocate a new [`Buffer`] and fill it with data from a slice.
@@ -489,6 +535,50 @@ impl<'a> DynBufferManager<'a> {
         buffer.resize(size, 0);
         buffer
     }
+
+    // ========================================================================
+    // Non-blocking allocation (returns None if pool is empty)
+    // ========================================================================
+
+    /// Try to allocate a [`Buffer`] without blocking.
+    ///
+    /// Returns `None` if no free buffers are available. Use this in code
+    /// paths where blocking could cause a deadlock and the operation can
+    /// be gracefully skipped (e.g., retransmit copies, ACK responses).
+    pub fn try_alloc(&self) -> Option<Buffer<'a>> {
+        match self.buffer_receiver.try_receive() {
+            Ok(ptr) => Some(self.finish_alloc(ptr, self.default_headroom)),
+            Err(_) => None,
+        }
+    }
+
+    /// Try to allocate a [`Buffer`] with the specified size, without blocking.
+    ///
+    /// Returns `None` if no free buffers are available.
+    pub fn try_alloc_with_size(&self, size: usize) -> Option<Buffer<'a>> {
+        let mut buffer = self.try_alloc()?;
+        buffer.set_len(size);
+        Some(buffer)
+    }
+
+    /// Try to allocate a [`Buffer`] filled from a slice, without blocking.
+    ///
+    /// Returns `None` if no free buffers are available.
+    pub fn try_alloc_from_slice(&self, data: &[u8]) -> Option<Buffer<'a>> {
+        let mut buffer = self.try_alloc()?;
+        buffer.fill_from_slice(data);
+        Some(buffer)
+    }
+
+    /// Try to allocate a [`Buffer`] with no headroom, without blocking.
+    ///
+    /// Returns `None` if no free buffers are available.
+    pub fn try_alloc_no_headroom(&self) -> Option<Buffer<'a>> {
+        match self.buffer_receiver.try_receive() {
+            Ok(ptr) => Some(self.finish_alloc(ptr, 0)),
+            Err(_) => None,
+        }
+    }
 }
 
 /// A manager for a number of pre-allocated chunks of memory represented by
@@ -498,6 +588,8 @@ impl<'a> DynBufferManager<'a> {
 /// The effective usable capacity is `BUFFER_SIZE - DEFAULT_HEADROOM`.
 pub struct BufferManager<const NUM_BUFS: usize> {
     buffers: channel::Channel<NoopRawMutex, NonNull<[u8]>, NUM_BUFS>,
+    /// Tracks how many buffers are currently allocated (in use).
+    allocated_count: Cell<u8>,
 }
 
 impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
@@ -520,7 +612,10 @@ impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
             let _ = queue.try_send(NonNull::from(buffer.as_mut_slice()));
         }
 
-        Self { buffers: queue }
+        Self {
+            buffers: queue,
+            allocated_count: Cell::new(0),
+        }
     }
 
     /// Acquire a [`DynBufferManager`].
@@ -531,6 +626,8 @@ impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
             buffer_sender: self.buffers.dyn_sender(),
             buffer_receiver: self.buffers.dyn_receiver(),
             default_headroom: DEFAULT_HEADROOM,
+            pool_size: NUM_BUFS as u8,
+            allocated_count: &self.allocated_count,
         }
     }
 
@@ -540,6 +637,8 @@ impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
             buffer_sender: self.buffers.dyn_sender(),
             buffer_receiver: self.buffers.dyn_receiver(),
             default_headroom: headroom,
+            pool_size: NUM_BUFS as u8,
+            allocated_count: &self.allocated_count,
         }
     }
 }
@@ -552,14 +651,16 @@ mod tests {
         let buffer_ptr = core::ptr::NonNull::from(data.as_mut());
         let channel =
             Channel::<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::ptr::NonNull<[u8]>, 1>::new();
-        // Leak the channel to get 'static lifetime for testing
+        // Leak the channel and counter to get 'static lifetime for testing
         let channel = Box::leak(Box::new(channel));
+        let counter = Box::leak(Box::new(Cell::new(0u8)));
         let sender = channel.sender();
         Buffer {
             buffer: buffer_ptr,
             start: headroom,
             len: 0,
             sender: sender.into(),
+            allocated_count: counter,
         }
     }
 
@@ -730,12 +831,14 @@ mod tests {
         let channel =
             Channel::<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::ptr::NonNull<[u8]>, 1>::new();
         let channel = Box::leak(Box::new(channel));
+        let counter = Box::leak(Box::new(Cell::new(0u8)));
         let sender = channel.sender();
         let buffer = Buffer {
             buffer: buffer_ptr,
             start: 8,
             len: 0,
             sender: sender.into(),
+            allocated_count: counter,
         };
 
         let buffer = buffer.from_slice(&[1, 2, 3]);

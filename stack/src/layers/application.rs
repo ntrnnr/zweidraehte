@@ -2313,8 +2313,17 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             let service_type = msg.service_type();
             route.send(Some(msg)).await;
 
-            // Allocate a minimal buffer for the synthetic confirmation
-            let buf = self.buffer_manager.borrow().alloc_with_size(offsets::MSG_CONTROL + 1).await;
+            // Allocate a minimal buffer for the synthetic confirmation. Use try_alloc
+            // first because this is the tightest buffer spot in the cEMI path (4th
+            // simultaneous buffer). If the pool is exhausted, fall back to blocking
+            // alloc — the warn from the instrumented alloc() makes the starvation visible.
+            let buf = match self.buffer_manager.borrow().try_alloc_with_size(offsets::MSG_CONTROL + 1) {
+                Some(buf) => buf,
+                None => {
+                    warn!("Buffer pool exhausted when allocating synthetic confirmation — potential stall");
+                    self.buffer_manager.borrow().alloc_with_size(offsets::MSG_CONTROL + 1).await
+                }
+            };
             let mut conf = KnxMessageBuffer::new(buf, service_type);
             conf.ctrl_field_mut().set_c(Confirm::NoError);
             ConfirmationMessage::confirmation(conf)

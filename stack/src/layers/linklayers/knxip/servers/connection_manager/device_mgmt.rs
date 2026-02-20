@@ -392,18 +392,23 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
             None
         };
 
-        // Build responses
+        // Build responses. Use try_alloc for ACK and data response buffers
+        // to avoid blocking — if no buffer is available, the remote side will
+        // retransmit and we'll try again.
         let mut responses = heapless::Vec::<_, 4>::new();
 
         // 1. ACK
         let ack_builder =
             DeviceConfigurationAckBuilder::new(conn.channel_id, sequence_counter, ConnectionStatus::NoError);
-        let mut ack_buffer = buffer_manager.borrow().alloc().await;
-        ack_buffer.serialize(&ack_builder);
-        let _ = responses.push(PendingResponse {
-            buffer: ack_buffer,
-            target: conn.response_target(),
-        });
+        if let Some(mut ack_buffer) = buffer_manager.borrow().try_alloc() {
+            ack_buffer.serialize(&ack_builder);
+            let _ = responses.push(PendingResponse {
+                buffer: ack_buffer,
+                target: conn.response_target(),
+            });
+        } else {
+            warn!("DevMgmt: skipping ACK for channel {} (no free buffers)", conn.channel_id);
+        }
 
         // 2. If handler returned a response, send it as a DeviceConfigurationRequest
         //    (server → client direction) with the cEMI payload embedded.
@@ -414,13 +419,15 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
             let req_builder =
                 DeviceConfigurationRequestBuilder::with_payload(conn.channel_id, send_seq, &*cemi_response);
 
-            let mut resp_buffer = buffer_manager.borrow().alloc().await;
-            resp_buffer.serialize(&req_builder);
-
-            let _ = responses.push(PendingResponse {
-                buffer: resp_buffer,
-                target: conn.response_target(),
-            });
+            if let Some(mut resp_buffer) = buffer_manager.borrow().try_alloc() {
+                resp_buffer.serialize(&req_builder);
+                let _ = responses.push(PendingResponse {
+                    buffer: resp_buffer,
+                    target: conn.response_target(),
+                });
+            } else {
+                warn!("DevMgmt: skipping data response for channel {} (no free buffers)", conn.channel_id);
+            }
         }
 
         Ok(DataFrameAction::Responses(responses))

@@ -632,15 +632,22 @@ where
                     }
                 }
                 TlAction::QueueIncomingData { source: _ } => {
-                    // Store the incoming message for later delivery
-                    // This is used when we receive data while in OPEN_WAIT
+                    // Store the incoming message for later delivery.
+                    // This is used when we receive data while in OPEN_WAIT.
+                    // Use try_alloc to avoid blocking — if no buffer is available,
+                    // drop the message; the remote will retransmit.
                     if let Some(msg) = msg_for_data.take() {
                         if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
-                            // Allocate a buffer and store the message
-                            let queued_buffer = self.buffer_manager.borrow().alloc_from_slice(&*msg.buf()).await;
-                            let queued_msg = KnxMessageBuffer::new(queued_buffer, msg.service_type());
-                            conn.queued_incoming = Some(queued_msg);
-                            debug!("TL queued incoming data from {} for later delivery", remote_addr);
+                            match self.buffer_manager.borrow().try_alloc_from_slice(&*msg.buf()) {
+                                Some(queued_buffer) => {
+                                    let queued_msg = KnxMessageBuffer::new(queued_buffer, msg.service_type());
+                                    conn.queued_incoming = Some(queued_msg);
+                                    debug!("TL queued incoming data from {} for later delivery", remote_addr);
+                                }
+                                None => {
+                                    warn!("TL dropping incoming data from {} (no free buffers to queue)", remote_addr);
+                                }
+                            }
                         }
                     }
                 }
@@ -693,17 +700,22 @@ where
                 }
                 TlAction::Retransmit { dest } => {
                     debug!("TL retransmitting to {}", dest);
-                    // Get the pending message from the connection
+                    // Get the pending message from the connection and retransmit.
+                    // Use try_alloc to avoid blocking — if no buffer is available,
+                    // skip this retransmit; the ACK timeout will fire again.
                     if let Some(conn) = self.connections.find_any_including_closed(dest) {
                         if let Some(ref pending_msg) = conn.pending_msg {
-                            // Allocate a new buffer and copy the pending message
-                            let retransmit_buffer =
-                                self.buffer_manager.borrow().alloc_from_slice(&*pending_msg.buf()).await;
-                            let retransmit_msg = KnxMessageBuffer::new(retransmit_buffer, pending_msg.service_type());
-
-                            debug!("TL retransmitting: {:?}", retransmit_msg);
-                            let _confirmation =
-                                self.network_layer.request(RequestMessage::request(retransmit_msg)).await;
+                            match self.buffer_manager.borrow().try_alloc_from_slice(&*pending_msg.buf()) {
+                                Some(retransmit_buffer) => {
+                                    let retransmit_msg = KnxMessageBuffer::new(retransmit_buffer, pending_msg.service_type());
+                                    debug!("TL retransmitting: {:?}", retransmit_msg);
+                                    let _confirmation =
+                                        self.network_layer.request(RequestMessage::request(retransmit_msg)).await;
+                                }
+                                None => {
+                                    warn!("TL skipping retransmit to {} (no free buffers)", dest);
+                                }
+                            }
                         }
                     }
                 }

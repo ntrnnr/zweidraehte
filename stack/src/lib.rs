@@ -621,7 +621,9 @@ pub trait StackDefinition: Copy {
 ///
 /// - `D`: Your stack definition implementing [`StackDefinition`]
 /// - `BUF_SZ`: Size of each buffer. Use `buffer_size_for_apdu(D::MAX_APDU_LENGTH)`
-/// - `NUM_BUFS`: Number of buffers in the pool (default: 4)
+/// - `NUM_BUFS`: Number of buffers in the pool (default: 8). The cEMI device
+///   management path can hold up to 4 buffers simultaneously, so values below
+///   5 risk deadlocks under concurrent load.
 ///
 /// # Note on Buffer Size
 ///
@@ -629,7 +631,7 @@ pub trait StackDefinition: Copy {
 /// but Rust's `generic_const_exprs` feature is still incomplete and causes
 /// overflow errors when used with static declarations. Until this is fixed,
 /// users must explicitly specify the buffer size.
-pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize = 4> {
+pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize = 8> {
     inner: MaybeUninit<Inner<D>>,
     buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
     buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
@@ -1517,6 +1519,16 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         &self,
     ) -> Request<restart::RestartRequest, restart::RestartResponse> {
         self.restart_receiver.receive().await
+    }
+
+    /// Returns the current buffer pool usage as `(allocated, total)`.
+    ///
+    /// Useful for monitoring pool pressure and diagnosing potential deadlocks
+    /// in production. When `allocated` approaches `total`, incoming allocations
+    /// may block.
+    pub fn buffer_pool_status(&self) -> (u8, u8) {
+        let bm = self.inner.buffer_manager.borrow();
+        (bm.allocated_count(), bm.pool_size())
     }
 }
 

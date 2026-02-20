@@ -681,13 +681,15 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
             }
         };
 
-        // Build response
-        let builder = ConnectionstateResponseBuilder::new(channel_id, status);
-        let mut buffer = buffer_manager.borrow().alloc().await;
-        buffer.serialize(&builder);
-
+        // Build response — non-critical, remote side will retry the keepalive.
         let mut responses = Vec::new();
-        let _ = responses.push(PendingResponse { buffer, target });
+        if let Some(mut buffer) = buffer_manager.borrow().try_alloc() {
+            let builder = ConnectionstateResponseBuilder::new(channel_id, status);
+            buffer.serialize(&builder);
+            let _ = responses.push(PendingResponse { buffer, target });
+        } else {
+            warn!("Buffer pool exhausted — skipping ConnectionstateResponse for channel {}", channel_id);
+        }
         Ok(ConnectionManagerResult::responses_only(responses))
     }
 
@@ -735,13 +737,15 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
             }
         };
 
-        // Build response
-        let builder = DisconnectResponseBuilder::new(channel_id, status);
-        let mut buffer = buffer_manager.borrow().alloc().await;
-        buffer.serialize(&builder);
-
+        // Build response — non-critical, connection times out on remote side anyway.
         let mut responses = Vec::new();
-        let _ = responses.push(PendingResponse { buffer, target });
+        if let Some(mut buffer) = buffer_manager.borrow().try_alloc() {
+            let builder = DisconnectResponseBuilder::new(channel_id, status);
+            buffer.serialize(&builder);
+            let _ = responses.push(PendingResponse { buffer, target });
+        } else {
+            warn!("Buffer pool exhausted — skipping DisconnectResponse for channel {}", channel_id);
+        }
 
         let mut tcp_events = Vec::new();
         if let Some(event) = tcp_event {
