@@ -5953,7 +5953,7 @@ zweidraehte::ets_translations! {
         ButtonFunction::NotActive => "nicht aktiv",
         ButtonFunction::Switch => "Schalten",
         ButtonFunction::Dimming => "Dimmen",
-        ButtonFunction::Blinds => "Jalousie",
+        ButtonFunction::BlindsShutter => "Jalousie",
 
         // SwitchSubfunction translations
         SwitchSubfunction::Switch => "Schalten",

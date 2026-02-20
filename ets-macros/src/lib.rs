@@ -317,6 +317,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             union_field_entries.push(quote! {
                 zweidraehte::ets::EtsUnionFieldInfo {
                     field_name: #name_str,
+                    display_name: #selector_display,
                     offset: #offset_expr,
                     union_info: &#field_type::ETS_UNION_INFO,
                     selector_variants: #field_type::ETS_SELECTOR_VARIANTS,
@@ -447,7 +448,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     let text = &v.text;
                     let value = v.value;
                     quote! {
-                        zweidraehte::ets::EtsEnumVariant { text: #text, value: #value }
+                        zweidraehte::ets::EtsEnumVariant { text: #text, variant_name: #text, value: #value }
                     }
                 })
                 .collect();
@@ -1155,9 +1156,11 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         });
 
         // Add to selector variants
+        let variant_name_str = variant_name.to_string();
         selector_variants.push(quote! {
             zweidraehte::ets::EtsEnumVariant {
                 text: #display_name,
+                variant_name: #variant_name_str,
                 value: #discriminant_value,
             }
         });
@@ -1307,6 +1310,7 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                                 quote! {
                                     zweidraehte::ets::EtsEnumVariant {
                                         text: #text,
+                                        variant_name: #text,
                                         value: #value,
                                     }
                                 }
@@ -1677,9 +1681,11 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             result
         });
 
+        let variant_name_str = variant_ident.to_string();
         enum_variants.push(quote! {
             zweidraehte::ets::EtsEnumVariant {
                 text: #display_name,
+                variant_name: #variant_name_str,
                 value: #discriminant,
             }
         });
@@ -2444,15 +2450,21 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                 let text_tokens = if let Some(ref text) = ref_attr.text { quote!(Some(#text)) } else { quote!(None) };
                 // Only include selector info if the ref has a `when` attribute
                 // Refs without `when` are unconditional and should NOT have selector_param
-                let (selector_value, this_ref_selector_param) = match &ref_attr.when {
+                let (selector_value, selector_value_name, this_ref_selector_param) = match &ref_attr.when {
                     Some(SelectorValue::Path(path)) => {
-                        // Cast the enum variant to i64 to get the discriminant value
-                        (quote!(Some(#path as i64)), selector_param_tokens.clone())
+                        // Cast the enum variant to i64 to get the discriminant value.
+                        // Extract the last path segment as the variant name for
+                        // translation resolution (e.g., "Switch" from
+                        // "ButtonConfigDiscriminant::Switch").
+                        let variant_name = path.segments.last()
+                            .map(|seg| seg.ident.to_string())
+                            .unwrap_or_default();
+                        (quote!(Some(#path as i64)), quote!(Some(#variant_name)), selector_param_tokens.clone())
                     }
-                    Some(SelectorValue::Int(val)) => (quote!(Some(#val as i64)), selector_param_tokens.clone()),
+                    Some(SelectorValue::Int(val)) => (quote!(Some(#val as i64)), quote!(None), selector_param_tokens.clone()),
                     None => {
                         // No `when` = unconditional ref, clear selector_param
-                        (quote!(None), quote!(None))
+                        (quote!(None), quote!(None), quote!(None))
                     }
                 };
 
@@ -2495,6 +2507,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                         size_bits: <#ref_dpt as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
                         flag_overrides: #flag_overrides,
                         selector_value: #selector_value,
+                        selector_value_name: #selector_value_name,
                         selector_param: #this_ref_selector_param,
                     }
                 });
@@ -2515,6 +2528,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                     size_bits: <#inner_ty as zweidraehte::ets::HasDptInfo>::SIZE_BITS as u8,
                     flag_overrides: None,
                     selector_value: None,
+                    selector_value_name: None,
                     selector_param: None,
                 }
             });
@@ -3268,7 +3282,7 @@ fn generate_range_enum(input: EtsRangeEnumInput) -> syn::Result<proc_macro2::Tok
         }
 
         variant_entries.push(quote! {
-            zweidraehte::ets::EtsEnumVariant { text: #display_text, value: #value }
+            zweidraehte::ets::EtsEnumVariant { text: #display_text, variant_name: #variant_name_str, value: #value }
         });
     }
 

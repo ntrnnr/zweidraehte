@@ -201,6 +201,10 @@ pub enum PageElement {
     Block(PageBlock),
     /// Conditional visibility - can wrap entire blocks
     When(ConditionalElement),
+    /// Union selector at channel level — emits the selector param ref directly,
+    /// without wrapping it in a ParameterBlock. Useful when the selector dropdown
+    /// should appear at the top of a channel without a separate section header.
+    UnionSelector(&'static str),
 }
 
 /// A parameter block (collapsible section in ETS).
@@ -638,6 +642,16 @@ macro_rules! ets_pages {
     (@elements) => {
         vec![]
     };
+
+    // Parse a selector element at channel/device level (outside any block).
+    // This emits the selector dropdown directly, without wrapping it in a section.
+    (@elements selector $field:ident $($rest:tt)*) => {{
+        let mut elems = vec![$crate::definition::page_layout::PageElement::UnionSelector(
+            stringify!($field)
+        )];
+        elems.extend($crate::ets_pages!(@elements $($rest)*));
+        elems
+    }};
 
     // Parse a block element
     (@elements block $name:literal => $text:literal { $($items:tt)* } $($rest:tt)*) => {{

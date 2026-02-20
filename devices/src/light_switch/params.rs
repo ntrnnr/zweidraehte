@@ -1,14 +1,23 @@
 //! Parameter definitions for the 2-button light switch.
 //!
-//! Each button is independently configurable for one of four modes:
-//! - Switch: simple on/off toggle
-//! - Dimmer: toggle + relative dimming via long press
-//! - Blind: move up/down + step/stop
-//! - Scene: recall/store scenes
+//! The device supports two operating modes selected by [`ButtonsMode`]:
+//!
+//! - **1-function**: Both physical buttons act as one unit (rocker pair).
+//!   Top = one direction, bottom = opposite. Only `button1_config` is
+//!   user-visible; direction is controlled by [`RockerDirection`].
+//! - **2-function**: Each button is independently configurable with its
+//!   own function mode and comm objects.
+//!
+//! Each button/pair supports four function modes via [`ButtonConfig`]:
+//! - Switch: on/off control (toggle needs status feedback)
+//! - Dimmer: short press toggles, long press dims relatively
+//! - Blind: short press steps, long press moves up/down
+//! - Scene: short press recalls, long press stores
 
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 
+use zweidraehte::ets::ets_range_enum;
 use zweidraehte::prelude::*;
 
 // ============================================================================
@@ -55,38 +64,76 @@ impl ConstDefault for LongPressTime {
     const DEFAULT: Self = Self::Ms500;
 }
 
-/// Switch mode: what a short button press does.
+/// 1-function (rocker pair) or 2-function (independent buttons) mode.
+///
+/// In 1-function mode, both physical buttons act as one unit:
+/// top = ON/brighter/up, bottom = OFF/darker/down (or inverted via
+/// [`RockerDirection`]).
+///
+/// In 2-function mode, each button has its own independent function
+/// configuration and comm objects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
 #[repr(u8)]
-pub enum SwitchOperation {
+pub enum ButtonsMode {
+    #[ets(display = "1-function")]
+    OneFunction = 0,
+    #[ets(display = "2-function")]
+    TwoFunction = 1,
+}
+
+impl ConstDefault for ButtonsMode {
+    const DEFAULT: Self = Self::TwoFunction;
+}
+
+/// Direction assignment for 1-function (rocker) mode.
+///
+/// Controls which physical button maps to which logical direction.
+/// Only visible in the ETS UI when `buttons_mode` is `OneFunction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum RockerDirection {
+    #[ets(display = "Top = ON / Up / Brighter")]
+    Normal = 0,
+    #[ets(display = "Top = OFF / Down / Darker")]
+    Inverted = 1,
+}
+
+impl ConstDefault for RockerDirection {
+    const DEFAULT: Self = Self::Normal;
+}
+
+/// What pressing a button does in Switch mode (2-function only).
+///
+/// In 1-function Switch mode, the action is always fixed on/off based
+/// on which physical button is pressed, so this parameter is hidden.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum SwitchAction {
+    /// Invert the last known state (requires status feedback object)
     #[ets(display = "Toggle")]
     Toggle = 0,
+    /// Always send ON
     #[ets(display = "On")]
     On = 1,
+    /// Always send OFF
     #[ets(display = "Off")]
     Off = 2,
 }
 
-impl ConstDefault for SwitchOperation {
+impl ConstDefault for SwitchAction {
     const DEFAULT: Self = Self::Toggle;
 }
 
-/// Switch mode: what a long button press does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
-#[repr(u8)]
-pub enum SwitchLongPress {
-    #[ets(display = "None")]
-    None = 0,
-    #[ets(display = "Toggle")]
-    Toggle = 1,
-    #[ets(display = "On")]
-    On = 2,
-    #[ets(display = "Off")]
-    Off = 3,
-}
-
-impl ConstDefault for SwitchLongPress {
-    const DEFAULT: Self = Self::None;
+// Scene number selection (1–64).
+// Stored as 0–63 internally, matching DPT 17.001 wire format.
+// Displayed as "1" through "64" in the ETS dropdown.
+ets_range_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[ets(type_name = "SceneNumber")]
+    pub enum SceneNumber {
+        range 0..64 => "Scene{}";
+        default = 0;
+    }
 }
 
 // ============================================================================
@@ -98,22 +145,25 @@ impl ConstDefault for SwitchLongPress {
 /// The discriminant selects the operating mode and controls which
 /// communication objects and parameters are visible in ETS.
 ///
-/// - **Switch**: simple on/off with configurable short and long press actions
-/// - **Dimmer**: short press toggles, long press dims (no extra params — direction alternates)
-/// - **Blind**: short press steps, long press moves (no extra params)
-/// - **Scene**: short press recalls, long press stores (scene number configurable)
+/// - **Switch**: on/off control. In 2-function mode, the `action`
+///   parameter selects between toggle (needs status feedback), fixed
+///   on, or fixed off. In 1-function mode, `action` is hidden —
+///   direction is always fixed via [`RockerDirection`].
+/// - **Dimmer**: short press toggles on/off (needs status feedback),
+///   long press sends relative dimming commands.
+/// - **Blind**: short press sends step/stop, long press sends move
+///   up/down.
+/// - **Scene**: short press recalls a scene, long press stores it.
+///   Scene number is configurable.
 #[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
 #[repr(C, u8)]
 pub enum ButtonConfig {
     /// Switch on/off
     #[ets(display = "Switch")]
     Switch {
-        /// Short press action
-        #[ets(display = "Short press", ets_enum)]
-        operation: SwitchOperation,
-        /// Long press action
-        #[ets(display = "Long press", ets_enum)]
-        long_press: SwitchLongPress,
+        /// What pressing this button does (2-function mode only)
+        #[ets(display = "Switch action", ets_enum)]
+        action: SwitchAction,
     } = 0,
 
     /// Dimming control
@@ -127,18 +177,65 @@ pub enum ButtonConfig {
     /// Scene recall/store
     #[ets(display = "Scene")]
     Scene {
-        /// Scene number (1-64)
-        #[ets(display = "Scene number")]
-        scene_number: u8,
+        /// Scene number (1–64, stored as 0–63 for DPT 17.001)
+        #[ets(display = "Scene number", ets_enum)]
+        scene_number: SceneNumber,
     } = 3,
 }
 
 impl ConstDefault for ButtonConfig {
     const DEFAULT: Self = ButtonConfig::Switch {
-        operation: SwitchOperation::DEFAULT,
-        long_press: SwitchLongPress::DEFAULT,
+        action: SwitchAction::DEFAULT,
     };
 }
+
+// ============================================================================
+// Virtual Parameters (ETS-only, not in device memory)
+// ============================================================================
+
+// Object description text fields for each button. These are editable in ETS
+// and appear in the comm object tree via `{{param:default}}` text templates.
+// They have no device memory footprint.
+pub const LIGHT_SWITCH_VIRTUAL_PARAMS: &[zweidraehte::ets::EtsParamDefExt] = &[
+    zweidraehte::ets::EtsParamDefExt {
+        base: zweidraehte::ets::EtsParamDef {
+            name: "btn1_description",
+            display_name: "Object description",
+            suffix: None,
+            offset: 0,
+            rust_offset: 0,
+            size_bits: 240, // 30 bytes
+            bit_offset: 0,
+            param_type: zweidraehte::ets::EtsParamType::String,
+            hidden: false,
+            no_memory: true,
+            type_name: None,
+            text_pattern: None,
+        },
+        enum_variants: None,
+        default_value: None,
+        is_text_source: false,
+    },
+    zweidraehte::ets::EtsParamDefExt {
+        base: zweidraehte::ets::EtsParamDef {
+            name: "btn2_description",
+            display_name: "Object description",
+            suffix: None,
+            offset: 0,
+            rust_offset: 0,
+            size_bits: 240, // 30 bytes
+            bit_offset: 0,
+            param_type: zweidraehte::ets::EtsParamType::String,
+            hidden: false,
+            no_memory: true,
+            type_name: None,
+            text_pattern: None,
+        },
+        enum_variants: None,
+        default_value: None,
+        is_text_source: false,
+    },
+];
 
 // ============================================================================
 // Application Parameters
@@ -146,10 +243,16 @@ impl ConstDefault for ButtonConfig {
 
 /// Application parameters for the 2-button light switch.
 ///
-/// Global settings (debounce, long press threshold) apply to both buttons.
-/// Each button has an independent function mode selected via the `ButtonConfig`
-/// union — the discriminant controls both the ETS parameter visibility and
-/// which communication objects are active.
+/// The `buttons_mode` parameter selects between 1-function (rocker pair)
+/// and 2-function (independent buttons) operation.
+///
+/// In 1-function mode, `button1_config` drives both buttons' behavior
+/// and `button2_config` is hidden in ETS (but still occupies memory
+/// since `#[repr(C)]` requires fixed layout). The `rocker_direction`
+/// parameter controls which physical button maps to which direction.
+///
+/// In 2-function mode, each button has its own independent `ButtonConfig`.
+/// The `rocker_direction` parameter is hidden.
 #[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize)]
 #[repr(C)]
 pub struct LightSwitchParams {
@@ -161,11 +264,21 @@ pub struct LightSwitchParams {
     #[ets(display = "Long press time", ets_enum)]
     pub long_press_time: LongPressTime,
 
-    /// Button 1 function mode and mode-specific parameters
-    #[ets(union, display = "Button 1 function")]
+    /// 1-function (rocker pair) or 2-function (independent) mode
+    #[ets(display = "Button mode", ets_enum)]
+    pub buttons_mode: ButtonsMode,
+
+    /// Direction assignment for 1-function mode (hidden in 2-function)
+    #[ets(display = "Rocker direction", ets_enum)]
+    pub rocker_direction: RockerDirection,
+
+    /// Button 1 function mode and mode-specific parameters.
+    /// In 1-function mode, this drives the function for both buttons.
+    #[ets(union, display = "Function")]
     pub button1_config: ButtonConfig,
 
-    /// Button 2 function mode and mode-specific parameters
-    #[ets(union, display = "Button 2 function")]
+    /// Button 2 function mode and mode-specific parameters.
+    /// Hidden in 1-function mode.
+    #[ets(union, display = "Function")]
     pub button2_config: ButtonConfig,
 }

@@ -1,7 +1,9 @@
 //! 2-Button Light Switch Device Definition
 //!
-//! A simple wall switch with two momentary buttons, each independently
-//! configurable for switching, dimming, blind control, or scene selection.
+//! A wall switch with two momentary buttons, supporting 1-function
+//! (rocker pair) and 2-function (independent buttons) operating modes.
+//! Each button/pair is configurable for switching, dimming, blind
+//! control, or scene selection.
 //!
 //! This module contains the transport-agnostic device definition:
 //! parameters, communication objects, and ETS page layout. The
@@ -31,6 +33,8 @@ pub mod comm_objs;
 
 #[cfg(feature = "knxprod")]
 mod layout;
+#[cfg(feature = "knxprod")]
+pub mod translations;
 
 pub use params::*;
 
@@ -52,10 +56,10 @@ impl LightSwitchDevice {
     pub const MANUFACTURER_ID: u16 = 0x00FA;
     pub const HARDWARE_TYPE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x03];
     pub const APPLICATION_ID: u16 = 0x0300;
-    pub const APPLICATION_VERSION: u8 = 0x01;
-    pub const MAX_ADDRESS_TABLE_ENTRIES: u16 = 8;
-    pub const MAX_ASSOCIATION_TABLE_ENTRIES: u16 = 8;
-    pub const MAX_COM_OBJECTS: u16 = 4;
+    pub const APPLICATION_VERSION: u8 = 0x02;
+    pub const MAX_ADDRESS_TABLE_ENTRIES: u16 = 10;
+    pub const MAX_ASSOCIATION_TABLE_ENTRIES: u16 = 12;
+    pub const MAX_COM_OBJECTS: u16 = 6;
     pub const PEI_TYPE: u8 = 0;
 
     /// Build a device descriptor for the given mask version.

@@ -469,8 +469,11 @@ pub struct EtsParamDef {
 /// Used for parameters that have a fixed set of named values.
 #[derive(Debug, Clone, Copy)]
 pub struct EtsEnumVariant {
-    /// Display text for this variant
+    /// Display text for this variant (shown in ETS dropdown)
     pub text: &'static str,
+    /// Rust variant name (e.g., `"TwoFunction"` for `ButtonsMode::TwoFunction`).
+    /// Used by translation resolution to match `Type::Variant` ref_paths.
+    pub variant_name: &'static str,
     /// Numeric value for this variant
     pub value: i64,
 }
@@ -660,6 +663,8 @@ pub trait EtsEnumType {
 pub struct EtsUnionFieldInfo {
     /// Name of the field in the parent struct
     pub field_name: &'static str,
+    /// Human-readable display name for the selector (e.g., "Function Mode")
+    pub display_name: &'static str,
     /// Byte offset in the parameter block where this union starts
     pub offset: u16,
     /// Reference to the union's metadata
@@ -770,6 +775,11 @@ pub struct EtsCommObjectRefDef {
     /// Selector value that activates this ref (for choose/when XML generation).
     /// `None` = no selector (always visible), `Some(value)` = show when selector equals value
     pub selector_value: Option<i64>,
+
+    /// Short name of the selector variant (e.g., `"Switch"` for
+    /// `ButtonConfigDiscriminant::Switch`). Used to resolve ref-level
+    /// translations by `ref_name` + variant name.
+    pub selector_value_name: Option<&'static str>,
 
     /// Name of the parameter that selects which ref is active.
     /// This is used to generate the ParamRefId in the choose/when XML structure.
@@ -1041,6 +1051,8 @@ pub struct EtsTranslation {
     /// - Enum variants: `"EnumType::VariantName"` (e.g., `"EnableDisable::Active"`)
     /// - Parameters: `"param::field_name"` (e.g., `"param::startup_delay"`)
     /// - Comm objects: `"obj::object_name"` (e.g., `"obj::switch_output"`)
+    /// - Comm object refs: `"obj_ref::name::Variant"` (e.g., `"obj_ref::btn1_primary::Switch"`)
+    /// - Blocks: `"block::name"` (e.g., `"block::general"`)
     pub ref_path: &'static str,
 
     /// Which attribute is being translated
@@ -1083,6 +1095,8 @@ pub struct EtsTranslation {
 /// - **Suffixes**: `suffix field_name => "translated suffix",`
 /// - **Comm objects**: `obj object_name { text: "translated text" },`
 /// - **Comm objects with function**: `obj object_name { text: "text", function: "func" },`
+/// - **Comm object refs**: `obj_ref name[Variant] { text: "text" },`
+/// - **Comm object refs with function**: `obj_ref name[Variant] { text: "text", function: "func" },`
 ///
 /// Note: Use commas (not semicolons) to separate items within a language block.
 ///
@@ -1314,6 +1328,103 @@ macro_rules! __ets_translations_items {
                     language: $lang,
                     ref_path: concat!("param::", stringify!($param_name)),
                     attribute: $crate::ets::TranslationAttribute::SuffixText,
+                    text: $text,
+                },
+            ]
+            @lang $lang
+            @items [$($rest)*]
+            @rest_langs $rest_langs
+            @attrs $attrs
+            @vis $vis
+            @name $name
+        );
+    };
+
+    // ComObjectRef with text only: obj_ref name[Variant] { text: "..." },
+    //
+    // Targets a specific ComObjectRef identified by the base object field name
+    // and the selector variant. The variant name is the last segment of the
+    // `when` path (e.g., `Switch` from `ButtonConfigDiscriminant::Switch`).
+    (
+        @acc [$($acc:tt)*]
+        @lang $lang:literal
+        @items [obj_ref $obj_name:ident [ $variant:ident ] { text: $text:literal }, $($rest:tt)*]
+        @rest_langs $rest_langs:tt
+        @attrs $attrs:tt
+        @vis $vis:tt
+        @name $name:tt
+    ) => {
+        $crate::__ets_translations_items!(
+            @acc [
+                $($acc)*
+                $crate::ets::EtsTranslation {
+                    language: $lang,
+                    ref_path: concat!("obj_ref::", stringify!($obj_name), "::", stringify!($variant)),
+                    attribute: $crate::ets::TranslationAttribute::Text,
+                    text: $text,
+                },
+            ]
+            @lang $lang
+            @items [$($rest)*]
+            @rest_langs $rest_langs
+            @attrs $attrs
+            @vis $vis
+            @name $name
+        );
+    };
+
+    // ComObjectRef with text and function: obj_ref name[Variant] { text: "...", function: "..." },
+    (
+        @acc [$($acc:tt)*]
+        @lang $lang:literal
+        @items [obj_ref $obj_name:ident [ $variant:ident ] { text: $text:literal, function: $func:literal }, $($rest:tt)*]
+        @rest_langs $rest_langs:tt
+        @attrs $attrs:tt
+        @vis $vis:tt
+        @name $name:tt
+    ) => {
+        $crate::__ets_translations_items!(
+            @acc [
+                $($acc)*
+                $crate::ets::EtsTranslation {
+                    language: $lang,
+                    ref_path: concat!("obj_ref::", stringify!($obj_name), "::", stringify!($variant)),
+                    attribute: $crate::ets::TranslationAttribute::Text,
+                    text: $text,
+                },
+                $crate::ets::EtsTranslation {
+                    language: $lang,
+                    ref_path: concat!("obj_ref::", stringify!($obj_name), "::", stringify!($variant)),
+                    attribute: $crate::ets::TranslationAttribute::FunctionText,
+                    text: $func,
+                },
+            ]
+            @lang $lang
+            @items [$($rest)*]
+            @rest_langs $rest_langs
+            @attrs $attrs
+            @vis $vis
+            @name $name
+        );
+    };
+
+    // Parameter block display text: block "name" => "text",
+    (
+        @acc [$($acc:tt)*]
+        @lang $lang:literal
+        @items [block $block_name:literal => $text:literal, $($rest:tt)*]
+        @rest_langs $rest_langs:tt
+        @attrs $attrs:tt
+        @vis $vis:tt
+        @name $name:tt
+    ) => {
+        $crate::__ets_translations_items!(
+            @acc [
+                $($acc)*
+                $crate::ets::EtsTranslation {
+                    language: $lang,
+                    ref_path: concat!("block::", $block_name),
+                    attribute: $crate::ets::TranslationAttribute::Text,
                     text: $text,
                 },
             ]

@@ -15,6 +15,8 @@ use const_default::ConstDefault;
 
 use devices::light_switch::{
     DEVICE_DESCRIPTOR_IP, LightSwitchDevice, LightSwitchParams, comm_objs,
+    params::LIGHT_SWITCH_VIRTUAL_PARAMS,
+    translations::LIGHT_SWITCH_TRANSLATIONS,
 };
 use knxprod::definition::page_layout::EtsPageLayout;
 use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
@@ -39,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         name: "LightSwitch2",
         device: &DEVICE_DESCRIPTOR_IP,
         params: LightSwitchParams::ETS_PARAMS_EXT,
-        virtual_params: None,
+        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
         param_defaults: param_bytes,
         comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
         comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
@@ -63,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         page_layout: Some(LightSwitchDevice::page_layout()),
         modules: None,
         baggages: None,
-        translations: None,
+        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
     };
 
     let out_dir: PathBuf = ["out", config.name].iter().collect();

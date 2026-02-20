@@ -89,6 +89,7 @@ fn walk_page_element<V: PageLayoutVisitor>(elem: &PageElement, visitor: &mut V) 
         PageElement::When(cond) => {
             walk_conditional_element(cond, visitor);
         }
+        PageElement::UnionSelector(_) => {}
     }
 }
 

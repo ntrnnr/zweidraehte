@@ -102,8 +102,9 @@ pub(crate) struct MultiParamRefMap {
     /// Text-based ref map: (param_name, text_override) -> ref_id
     /// For union variant params that have different text overrides in different contexts
     pub by_text: HashMap<(String, Option<String>), String>,
-    /// Map from param name to primary ref number (for text interpolation)
-    pub param_ref_nums: HashMap<String, u32>,
+    /// Total number of ParameterRefs generated. ComObjectRef _R-N suffixes
+    /// must start after this to avoid collisions with ParameterRef suffixes.
+    pub total_ref_count: u32,
 }
 
 impl MultiParamRefMap {

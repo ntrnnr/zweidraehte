@@ -35,18 +35,88 @@ impl MtxmlGenerator {
             knx.tool_version = version.tool_version().to_string();
         }
         knx.manufacturer_data.manufacturer.ref_id = format!("M-{:04X}", config.device.manufacturer_id);
+
+        let (app, param_ref_ids) = Self::build_application_program(config, &app_id)?;
+
+        // Build Languages at the Manufacturer level (not inside ApplicationProgram).
+        // Per XSD, Languages is a child of Manufacturer, after ApplicationPrograms.
+        // This must happen after building the program since we need the dynamic
+        // section to resolve block name → ID mappings, and param_ref_ids to
+        // resolve {{param:default}} text templates in translated strings.
+        if let Some(translations) = config.translations {
+            // Collect block name → XML ID mapping from the built dynamic section.
+            let block_name_map = app.dynamic.as_ref()
+                .map(|d| collect_block_name_map(d))
+                .unwrap_or_default();
+
+            // Build "obj_ref::name::Variant" → XML ComObjectRef ID mapping.
+            // The XML refs are built in the same order as config.comm_object_refs,
+            // so we zip them to match each ref definition to its XML ID.
+            let obj_ref_id_map: HashMap<String, String> = app.static_section
+                .com_object_refs.as_ref()
+                .map(|xml_refs| {
+                    config.comm_object_refs.iter()
+                        .zip(xml_refs.refs.iter())
+                        .filter_map(|(def, xml_ref)| {
+                            def.selector_value_name.map(|variant| {
+                                let key = format!("obj_ref::{}::{}", def.ref_name, variant);
+                                (key, xml_ref.id.clone())
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Build union parameter name → XML UP-N ID mapping. Union params
+            // in the XML use short names ("button1_config_selector",
+            // "Switch_action"), but translations reference the full qualified
+            // name ("button1_config_Switch_action"). Build both mappings so
+            // either form resolves.
+            let union_param_id_map: HashMap<String, String> = {
+                let mut map = HashMap::new();
+                if let Some(ref params) = app.static_section.parameters {
+                    for item in &params.items {
+                        if let ParameterItem::Union(union_elem) = item {
+                            // Find the field name from the selector param name
+                            // (selector is always named "{field_name}_selector")
+                            let field_name = union_elem.parameters.first()
+                                .and_then(|p| p.name.strip_suffix("_selector"));
+                            for up in &union_elem.parameters {
+                                // Direct name mapping (covers selectors like
+                                // "button1_config_selector")
+                                map.insert(up.name.clone(), up.id.clone());
+                                // Full qualified mapping: prefix field name for
+                                // variant params (e.g., "Switch_action" →
+                                // "button1_config_Switch_action")
+                                if let Some(field) = field_name {
+                                    if !up.name.starts_with(field) {
+                                        let full_name = format!("{}_{}", field, up.name);
+                                        map.insert(full_name, up.id.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                map
+            };
+
+            // Build enum variant → Enumeration XML ID mapping. A single
+            // translation like `ButtonConfigDiscriminant::Switch => "Schalten"`
+            // may need to target multiple XML Enumerations (one per union field
+            // that uses that discriminant). The map key is (variant_name, value)
+            // and the value is a list of all matching Enumeration IDs.
+            let enum_variant_id_map = Self::build_enum_variant_id_map(config, &app_id);
+
+            knx.manufacturer_data.manufacturer.languages =
+                Self::build_languages(config, &app_id, translations, &param_ref_ids, &block_name_map, &obj_ref_id_map, &union_param_id_map, &enum_variant_id_map)?;
+        }
+
         knx.manufacturer_data
             .manufacturer
             .application_programs
             .programs
-            .push(Self::build_application_program(config, &app_id)?);
-
-        // Build Languages at the Manufacturer level (not inside ApplicationProgram).
-        // Per XSD, Languages is a child of Manufacturer, after ApplicationPrograms.
-        if let Some(translations) = config.translations {
-            knx.manufacturer_data.manufacturer.languages =
-                Self::build_languages(config, &app_id, translations)?;
-        }
+            .push(app);
 
         Ok(knx)
     }
@@ -61,10 +131,13 @@ impl MtxmlGenerator {
     }
 
     /// Build the ApplicationProgram element.
+    ///
+    /// Returns the program and the parameter name → ParameterRef ID mapping needed
+    /// for resolving `{{param:default}}` text templates in translations.
     fn build_application_program(
         config: &ApplicationProgramConfig,
         app_id: &str,
-    ) -> Result<ApplicationProgram, GeneratorError> {
+    ) -> Result<(ApplicationProgram, HashMap<String, String>), GeneratorError> {
         let mask_family = config.mask_family();
 
         let mut app = ApplicationProgram {
@@ -81,7 +154,8 @@ impl MtxmlGenerator {
         };
 
         // Build Static section
-        app.static_section = Self::build_static_section(config, app_id, mask_family)?;
+        let (static_section, param_ref_ids) = Self::build_static_section(config, app_id, mask_family)?;
+        app.static_section = static_section;
 
         // Build ModuleDefs (placed between Static and Dynamic per XSD schema)
         app.module_defs = Self::build_module_defs(config, app_id);
@@ -94,17 +168,35 @@ impl MtxmlGenerator {
         };
         app.dynamic = Some(dynamic);
 
-        Ok(app)
+        Ok((app, param_ref_ids))
     }
 
     /// Build the Languages section from translation definitions.
     ///
+    /// The `param_ref_ids` map resolves `{{param:default}}` text templates
+    /// using V20's `TextParameterRefId` + `{{0}}` mechanism. The
+    /// `block_name_map` maps layout block names to their generated XML IDs.
+    /// The `obj_ref_id_map` maps `"obj_ref::name::Variant"` ref_paths to
+    /// their generated XML ComObjectRef IDs, enabling per-ref translations.
+    /// The `union_param_id_map` maps union parameter names (both short and
+    /// field-qualified forms) to their XML `UP-N` IDs.
+    ///
+    /// The `enum_variant_id_map` maps `(variant_name, value)` pairs to all
+    /// matching Enumeration XML IDs, handling the case where one Rust
+    /// discriminant type maps to multiple ParameterTypes (e.g., union
+    /// selectors for different fields).
+    ///
     /// Returns an error if any translation references an unknown parameter, enum variant,
-    /// or communication object.
+    /// communication object, or block.
     fn build_languages(
         config: &ApplicationProgramConfig,
         app_id: &str,
         translations: &[EtsTranslation],
+        param_ref_ids: &HashMap<String, String>,
+        block_name_map: &HashMap<String, String>,
+        obj_ref_id_map: &HashMap<String, String>,
+        union_param_id_map: &HashMap<String, String>,
+        enum_variant_id_map: &HashMap<(String, i64), Vec<String>>,
     ) -> Result<Option<Languages>, GeneratorError> {
         if translations.is_empty() {
             return Ok(None);
@@ -129,27 +221,46 @@ impl MtxmlGenerator {
             }
 
             for (ref_path, trans_items) in by_ref_path {
-                // Convert ref_path to actual XML RefId, validating the reference exists
-                let ref_id = Self::translation_ref_path_to_id(config, app_id, ref_path, lang_id)?;
+                // Convert ref_path to actual XML RefId(s). Enum variant
+                // translations may resolve to multiple IDs when one Rust
+                // discriminant type maps to multiple ParameterTypes (e.g.,
+                // union selectors for different fields).
+                let ref_ids = Self::translation_ref_path_to_ids(
+                    config, app_id, ref_path, lang_id, block_name_map, obj_ref_id_map, union_param_id_map, enum_variant_id_map,
+                )?;
 
-                let mut element = TranslationElement::new(&ref_id);
-                for trans in trans_items {
-                    match trans.attribute {
-                        TranslationAttribute::Text => {
-                            element = element.with_text(trans.text);
-                        }
-                        TranslationAttribute::SuffixText => {
-                            element = element.with_suffix(trans.text);
-                        }
-                        TranslationAttribute::FunctionText => {
-                            element = element.with_function(trans.text);
-                        }
-                        TranslationAttribute::Name => {
-                            element = element.with_name(trans.text);
+                // Base ComObject translations use plain text (templates stripped).
+                // Everything else (blocks, obj_refs, params) resolves
+                // {{param:}} → {{0}} for V20 TextParameterRefId substitution.
+                let is_base_obj = ref_path.starts_with("obj::");
+
+                for ref_id in &ref_ids {
+                    let mut element = TranslationElement::new(ref_id);
+                    for trans in &trans_items {
+                        let resolved_text = if is_base_obj {
+                            Self::strip_text_param_templates(trans.text)
+                        } else {
+                            let (text, _ref_id) = Self::resolve_text_param_ref_v20(trans.text, param_ref_ids);
+                            text
+                        };
+
+                        match trans.attribute {
+                            TranslationAttribute::Text => {
+                                element = element.with_text(&resolved_text);
+                            }
+                            TranslationAttribute::SuffixText => {
+                                element = element.with_suffix(&resolved_text);
+                            }
+                            TranslationAttribute::FunctionText => {
+                                element = element.with_function(&resolved_text);
+                            }
+                            TranslationAttribute::Name => {
+                                element = element.with_name(&resolved_text);
+                            }
                         }
                     }
+                    unit.add_element(element);
                 }
-                unit.add_element(element);
             }
 
             language.add_unit(unit);
@@ -159,24 +270,48 @@ impl MtxmlGenerator {
         Ok(Some(languages))
     }
 
-    /// Convert a translation ref_path to an actual XML RefId.
+    /// Convert a translation ref_path to actual XML RefId(s).
+    ///
+    /// Most ref_path formats resolve to exactly one ID, but enum variant
+    /// translations may resolve to multiple IDs when a single Rust
+    /// discriminant type maps to multiple ParameterTypes (e.g., union
+    /// selectors `button1_config_selector` and `button2_config_selector`
+    /// both use the same `ButtonConfigDiscriminant` enum).
     ///
     /// Ref paths have formats:
-    /// - `"EnumType::Variant"` -> `"{app_id}_PT-{EnumType}_EN-{variant_value}"`
+    /// - `"EnumType::Variant"` -> looked up from pre-built enum variant map
     /// - `"param::field_name"` -> `"{app_id}_P-{param_num}"`
     /// - `"obj::object_name"` -> `"{app_id}_O-{object_index}"`
+    /// - `"obj_ref::name::Variant"` -> looked up from pre-built map
+    /// - `"block::block_name"` -> `"{app_id}_PB-{block_num}"`
     ///
     /// Returns an error if the reference cannot be resolved to an existing entity.
-    fn translation_ref_path_to_id(
+    fn translation_ref_path_to_ids(
         config: &ApplicationProgramConfig,
         app_id: &str,
         ref_path: &str,
         language: &str,
-    ) -> Result<String, GeneratorError> {
+        block_name_map: &HashMap<String, String>,
+        obj_ref_id_map: &HashMap<String, String>,
+        union_param_id_map: &HashMap<String, String>,
+        enum_variant_id_map: &HashMap<(String, i64), Vec<String>>,
+    ) -> Result<Vec<String>, GeneratorError> {
+        // ComObjectRef: "obj_ref::name::Variant" — must be checked before "obj::"
+        if ref_path.starts_with("obj_ref::") {
+            if let Some(ref_id) = obj_ref_id_map.get(ref_path) {
+                return Ok(vec![ref_id.clone()]);
+            }
+            return Err(GeneratorError::UnknownTranslation {
+                language: language.to_string(),
+                ref_path: ref_path.to_string(),
+                kind: "communication object ref".to_string(),
+            });
+        }
+
         if let Some(obj_name) = ref_path.strip_prefix("obj::") {
             // Find comm object by name - check device-level objects
             if let Some(obj) = config.comm_objects.iter().find(|o| o.name == obj_name) {
-                return Ok(format!("{}_O-{}", app_id, obj.index));
+                return Ok(vec![format!("{}_O-{}", app_id, obj.index)]);
             }
             // Check module objects if modules are defined
             if let Some(ref modules) = config.modules {
@@ -184,7 +319,7 @@ impl MtxmlGenerator {
                     if let Some(objs) = module_def.comm_objects {
                         if objs.iter().any(|o| o.name == obj_name) {
                             // Module comm object - use name-based ref
-                            return Ok(format!("{}_O-{}", app_id, obj_name));
+                            return Ok(vec![format!("{}_O-{}", app_id, obj_name)]);
                         }
                     }
                 }
@@ -198,9 +333,16 @@ impl MtxmlGenerator {
         }
 
         if let Some(param_name) = ref_path.strip_prefix("param::") {
+            // Check union parameters first — selector params like
+            // "button1_config_selector" exist in both ETS_PARAMS_EXT (as
+            // P-N) and the Union element (as UP-N). The UP-N ID is the
+            // one that actually appears in the generated XML Parameters.
+            if let Some(up_id) = union_param_id_map.get(param_name) {
+                return Ok(vec![up_id.clone()]);
+            }
             // Find parameter number by name in device-level params
             if let Some(num) = config.find_param_num_by_name(param_name) {
-                return Ok(format!("{}_P-{}", app_id, num));
+                return Ok(vec![format!("{}_P-{}", app_id, num)]);
             }
             // Check module params if modules are defined
             if let Some(ref modules) = config.modules {
@@ -209,13 +351,13 @@ impl MtxmlGenerator {
                     if let Some(params) = module_def.params {
                         if params.iter().any(|p: &_| p.base.name == param_name) {
                             // Module param - use name-based ref
-                            return Ok(format!("{}_P-{}", app_id, param_name));
+                            return Ok(vec![format!("{}_P-{}", app_id, param_name)]);
                         }
                     }
                     // Check module virtual params
                     if let Some(vparams) = module_def.virtual_params {
                         if vparams.iter().any(|p: &_| p.base.name == param_name) {
-                            return Ok(format!("{}_P-{}", app_id, param_name));
+                            return Ok(vec![format!("{}_P-{}", app_id, param_name)]);
                         }
                     }
                 }
@@ -228,6 +370,17 @@ impl MtxmlGenerator {
             });
         }
 
+        if let Some(block_name) = ref_path.strip_prefix("block::") {
+            if let Some(block_id) = block_name_map.get(block_name) {
+                return Ok(vec![block_id.clone()]);
+            }
+            return Err(GeneratorError::UnknownTranslation {
+                language: language.to_string(),
+                ref_path: ref_path.to_string(),
+                kind: "parameter block".to_string(),
+            });
+        }
+
         // Enum variant format: "EnumType::Variant"
         if ref_path.contains("::") {
             let parts: Vec<&str> = ref_path.split("::").collect();
@@ -235,11 +388,22 @@ impl MtxmlGenerator {
                 let enum_type = parts[0];
                 let variant = parts[1];
 
-                // For enum translations, we need to find the variant value
-                // The ref_id format is {app_id}_PT-{EnumType}_EN-{value}
-                // We search through all params to find enum variants with this type/variant name
+                // Find the variant's numeric value from config metadata.
                 if let Some(value) = Self::find_enum_variant_value(config, enum_type, variant) {
-                    return Ok(format!("{}_PT-{}_EN-{}", app_id, enum_type, value));
+                    // Look up all Enumeration XML IDs matching this
+                    // (variant_name, value) pair from the pre-built map.
+                    let key = (variant.to_string(), value);
+                    if let Some(ids) = enum_variant_id_map.get(&key) {
+                        return Ok(ids.clone());
+                    }
+
+                    // Value was found in config but no matching XML IDs — this
+                    // shouldn't happen if the map was built correctly.
+                    return Err(GeneratorError::UnknownTranslation {
+                        language: language.to_string(),
+                        ref_path: ref_path.to_string(),
+                        kind: "enum variant (no matching XML enumeration)".to_string(),
+                    });
                 }
 
                 // Enum variant not found
@@ -288,14 +452,18 @@ impl MtxmlGenerator {
             false
         };
 
-        // Helper to check if variant matches
-        let variant_matches = |text: &str| -> bool {
-            let text_lower = text.to_lowercase();
-            // Direct match
+        // Helper to check if a variant matches the translation ref_path variant name.
+        // Checks both the Rust variant name and the display text.
+        let variant_matches = |v: &zweidraehte::ets::EtsEnumVariant| -> bool {
+            // Exact match on Rust variant name (case-insensitive)
+            if v.variant_name.to_lowercase() == variant_lower {
+                return true;
+            }
+            // Match display text (case-insensitive, removing spaces)
+            let text_lower = v.text.to_lowercase();
             if text_lower == variant_lower {
                 return true;
             }
-            // Match removing spaces (NotActive -> notactive vs "not active")
             let text_no_spaces = text_lower.replace(' ', "");
             if text_no_spaces == variant_lower {
                 return true;
@@ -330,7 +498,7 @@ impl MtxmlGenerator {
         for (param_type_name, variants) in all_variants.iter() {
             if type_matches(**param_type_name) {
                 for variant in variants.iter() {
-                    if variant_matches(variant.text) {
+                    if variant_matches(variant) {
                         return Some(variant.value);
                     }
                 }
@@ -341,7 +509,7 @@ impl MtxmlGenerator {
         // This is useful when enum fields don't have explicit type_name set
         for (_param_type_name, variants) in all_variants.iter() {
             for variant in variants.iter() {
-                if variant_matches(variant.text) {
+                if variant_matches(variant) {
                     return Some(variant.value);
                 }
             }
@@ -352,19 +520,31 @@ impl MtxmlGenerator {
             for union_field in union_fields.iter() {
                 // Check selector variants (the union's discriminant enum)
                 for variant in union_field.selector_variants.iter() {
-                    if variant_matches(variant.text) {
+                    if variant_matches(variant) {
                         return Some(variant.value);
                     }
                 }
 
-                // Check variant params (nested enums within union variants)
+                // Check variant params (nested enums within union variants) — type-matched
                 for variant_param in union_field.union_info.variant_params.iter() {
                     if let Some(variants) = variant_param.enum_variants {
                         if type_matches(variant_param.param.type_name) {
                             for variant in variants.iter() {
-                                if variant_matches(variant.text) {
+                                if variant_matches(variant) {
                                     return Some(variant.value);
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: variant params without type matching (type_name is
+                // often None for union variant params)
+                for variant_param in union_field.union_info.variant_params.iter() {
+                    if let Some(variants) = variant_param.enum_variants {
+                        for variant in variants.iter() {
+                            if variant_matches(variant) {
+                                return Some(variant.value);
                             }
                         }
                     }
@@ -375,12 +555,108 @@ impl MtxmlGenerator {
         None
     }
 
+    /// Build a map from `(variant_name, variant_value)` to all matching
+    /// Enumeration XML IDs across all ParameterTypes.
+    ///
+    /// This handles the case where one Rust enum type maps to multiple
+    /// ParameterTypes. For example, `ButtonConfigDiscriminant` has variants
+    /// `Switch`, `Dimmer`, etc. Each union field using this discriminant gets
+    /// its own selector ParameterType (`tENUM_button1_config_selector_8`,
+    /// `tENUM_button2_config_selector_8`), so a translation like
+    /// `ButtonConfigDiscriminant::Switch => "Schalten"` needs to emit
+    /// TranslationElements for all of them.
+    ///
+    /// The map mirrors the same ParameterType name / ID computation that
+    /// [`build_parameter_types`] uses, ensuring the IDs match exactly.
+    fn build_enum_variant_id_map(
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+    ) -> HashMap<(String, i64), Vec<String>> {
+        let mut map: HashMap<(String, i64), Vec<String>> = HashMap::new();
+
+        // Helper: given a list of enum variants and the ParameterType ID, add
+        // each variant's Enumeration ID to the map.
+        let mut collect = |variants: &[zweidraehte::ets::EtsEnumVariant], type_id: &str| {
+            for v in variants {
+                let enum_id = format!("{}_EN-{}", type_id, v.value);
+                map.entry((v.variant_name.to_string(), v.value))
+                    .or_default()
+                    .push(enum_id);
+            }
+        };
+
+        // Track seen type names to avoid duplicates, matching
+        // build_parameter_types's dedup logic.
+        let mut seen_types = std::collections::HashSet::new();
+
+        // Device-level params (regular enums like ButtonsMode, RockerDirection)
+        for param in config.all_params() {
+            if let Some(variants) = param.enum_variants {
+                let type_name = Self::param_type_name(&param.base);
+                if !seen_types.insert(type_name.clone()) {
+                    continue;
+                }
+                let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
+                collect(variants, &type_id);
+            }
+        }
+
+        // Union fields — selector enums and variant param enums
+        if let Some(union_fields) = config.union_fields {
+            for field in union_fields {
+                // Selector enum (e.g., ButtonConfigDiscriminant)
+                let selector_type_name = format!("tENUM_{}_selector_8", field.field_name);
+                if seen_types.insert(selector_type_name.clone()) {
+                    let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&selector_type_name));
+                    collect(field.selector_variants, &type_id);
+                }
+
+                // Variant param enums (e.g., SwitchAction inside Switch variant)
+                for vp in field.union_info.variant_params {
+                    if let Some(variants) = vp.enum_variants {
+                        let type_name =
+                            Self::union_variant_param_type_name(&vp.param, vp.variant_name, vp.enum_variants);
+                        if !seen_types.insert(type_name.clone()) {
+                            continue;
+                        }
+                        let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
+                        collect(variants, &type_id);
+                    }
+                }
+            }
+        }
+
+        // Module params
+        if let Some(modules) = &config.modules {
+            for def in modules.definitions() {
+                let virtual_params = def.virtual_params.unwrap_or(&[]);
+                let regular_params = def.params.unwrap_or(&[]);
+                for param_ext in virtual_params.iter().chain(regular_params.iter()) {
+                    if let Some(variants) = param_ext.enum_variants {
+                        let type_name = Self::param_type_name(&param_ext.base);
+                        if !seen_types.insert(type_name.clone()) {
+                            continue;
+                        }
+                        let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
+                        collect(variants, &type_id);
+                    }
+                }
+            }
+        }
+
+        map
+    }
+
     /// Build the Static section with all components.
+    ///
+    /// Returns the static section and the parameter name → ref number mapping,
+    /// which is needed for resolving `{{param:default}}` text templates in
+    /// translations.
     fn build_static_section(
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
-    ) -> Result<StaticSection, GeneratorError> {
+    ) -> Result<(StaticSection, HashMap<String, String>), GeneratorError> {
         // Calculate the stripped param size (excluding no_memory virtual parameters)
         let stripped_defaults = strip_no_memory_bytes(config.param_defaults, config.params);
         let param_size = stripped_defaults.len() as u32;
@@ -435,10 +711,12 @@ impl MtxmlGenerator {
             (None, None)
         };
 
-        // Count selector usages from page layout for creating multiple ParameterRefs
-        // We need the comm_obj_ref_map to count PageItem::Obj usages
+        // Count selector usages from page layout for creating multiple ParameterRefs.
+        // We need the comm_obj_ref_map to count PageItem::Obj usages.
+        // The offset is 0 here because we only need the map structure for counting,
+        // not the exact _R-N IDs (those are determined after ParameterRefs are built).
         let (selector_usage_counts, union_variant_texts) = if let Some(layout) = config.page_layout.as_ref() {
-            let comm_obj_ref_map = Self::build_comm_object_ref_map(config, app_id, mask_family);
+            let comm_obj_ref_map = Self::build_comm_object_ref_map(config, app_id, mask_family, 0);
             let counts = count_selector_usages_with_objects(layout, &comm_obj_ref_map);
             let texts = collect_union_variant_texts(layout);
             (Some(counts), Some(texts))
@@ -446,14 +724,18 @@ impl MtxmlGenerator {
             (None, None)
         };
 
-        // Build ParameterRefs first to get the param_name -> ref_num mapping for text param refs
-        let (parameter_refs, param_ref_nums) =
+        // Build ParameterRefs first to get the param_name -> ParameterRef ID mapping
+        let (parameter_refs, param_ref_ids) =
             Self::build_parameter_refs(config, app_id, selector_usage_counts.as_ref(), union_variant_texts.as_ref());
+
+        // ComObjectRef _R-N suffixes must continue from where ParameterRef numbering
+        // left off to avoid ID collisions in the same namespace.
+        let co_ref_offset = parameter_refs.refs.len() as u32;
 
         // Build ComObject table only for masks that support it
         let (com_object_table, com_object_refs) = if mask_family.has_com_object_table() {
             let table = Self::build_com_object_table(config, app_id, mask_family);
-            let refs = Self::build_com_object_refs(config, app_id, mask_family, &param_ref_nums);
+            let refs = Self::build_com_object_refs(config, app_id, mask_family, &param_ref_ids, co_ref_offset);
             // XSD requires ComObjectRefs to have at least one child if present
             let refs_opt = if refs.refs.is_empty() { None } else { Some(refs) };
             (Some(table), refs_opt)
@@ -461,7 +743,7 @@ impl MtxmlGenerator {
             (None, None)
         };
 
-        Ok(StaticSection {
+        Ok((StaticSection {
             code: Some(Self::build_code(config, app_id, param_size, mask_family)),
             parameter_types: Some(Self::build_parameter_types(config, app_id)),
             parameters: Some(Self::build_parameters(config, app_id, &code_segment_id)),
@@ -483,7 +765,7 @@ impl MtxmlGenerator {
             }),
             messages: None,
             options: Some(Options { comparable: Some(true), reconstructable: Some(true) }),
-        })
+        }, param_ref_ids))
     }
 
     /// Build ModuleDefs from the module collection if present.
@@ -1620,7 +1902,7 @@ impl MtxmlGenerator {
             id: format!("{}_UP-{}", app_id, counter),
             name: format!("{}_selector", field.field_name),
             parameter_type: selector_type,
-            text: format!("{} Mode", field.field_name),
+            text: field.display_name.to_string(),
             suffix_text: None,
             value: selector_value,
             offset: 0,
@@ -1685,15 +1967,15 @@ impl MtxmlGenerator {
     /// If `union_variant_texts` is provided, creates multiple refs for union variant params with
     /// different text overrides (matching MDT's approach where each use context has its own ref).
     /// This must use the same numbering scheme as `build_multi_param_ref_map` so the refs match.
-    /// Returns both the ParameterRefs and a mapping of param_name -> first_ref_num for text param refs.
+    /// Returns the ParameterRefs and a mapping of param_name -> first ParameterRef ID.
     fn build_parameter_refs(
         config: &ApplicationProgramConfig,
         app_id: &str,
         selector_usage_counts: Option<&HashMap<String, usize>>,
         union_variant_texts: Option<&HashMap<(String, String), Vec<Option<String>>>>,
-    ) -> (ParameterRefs, HashMap<String, u32>) {
+    ) -> (ParameterRefs, HashMap<String, String>) {
         let mut refs = ParameterRefs::default();
-        let mut param_ref_nums: HashMap<String, u32> = HashMap::new();
+        let mut param_ref_ids: HashMap<String, String> = HashMap::new();
 
         // Build a set of union selector names to skip them in regular params
         let union_selector_names: std::collections::HashSet<String> = config
@@ -1718,8 +2000,9 @@ impl MtxmlGenerator {
             let num_refs =
                 selector_usage_counts.and_then(|counts| counts.get(param.base.name)).copied().unwrap_or(0).max(1); // At least 1 ref
 
-            // Track the first ref number for this param (for text param ref resolution)
-            param_ref_nums.insert(param.base.name.to_string(), next_ref_num);
+            // Track the first ref ID for this param (used by TextParameterRefId in V20)
+            let first_ref_id = format!("{}_R-{}", param_id, next_ref_num);
+            param_ref_ids.insert(param.base.name.to_string(), first_ref_id);
 
             // Create refs with sequential numbering
             for _ in 0..num_refs {
@@ -1745,9 +2028,9 @@ impl MtxmlGenerator {
             let param_id = format!("{}_P-{}", app_id, param_counter);
             let ref_id = format!("{}_R-{}", param_id, next_ref_num);
 
-            // Track the ref number for this picture (for layout processing)
+            // Track the ref ID for this picture (for layout processing)
             let pic_param_name = format!("Pic_{}", pic.baggage_name.replace('.', "_"));
-            param_ref_nums.insert(pic_param_name, next_ref_num);
+            param_ref_ids.insert(pic_param_name, ref_id.clone());
 
             refs.refs.push(ParameterRef {
                 id: ref_id,
@@ -1817,41 +2100,58 @@ impl MtxmlGenerator {
             }
         }
 
-        (refs, param_ref_nums)
+        (refs, param_ref_ids)
     }
 
-    /// Resolve text parameter references in a string.
-    /// Replaces `{{param_name:default}}` with `{{N:default}}` where N is the ref number.
-    fn resolve_text_param_refs(text: &str, param_ref_nums: &HashMap<String, u32>) -> String {
-        // Quick check if there are any references to resolve
+    /// Strip `{{param_name:default}}` templates from text, replacing them
+    /// with just the default text. Used for base ComObject translations,
+    /// where the base object's translated text is simple (no templates) and only
+    /// the ComObjectRef carries `{{0}}`.
+    ///
+    /// When the default is empty (e.g., `"Taster 1 {{btn1_description:}} Schalten"`),
+    /// the template is removed and duplicate whitespace is collapsed.
+    fn strip_text_param_templates(text: &str) -> String {
         if !text.contains("{{") {
             return text.to_string();
         }
-
-        let mut result = text.to_string();
-
-        // Find all {{param_name:default}} patterns and replace with {{N:default}}
-        // Pattern: {{ followed by param_name, then :, then anything until }}
         let re = regex::Regex::new(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*):([^}]*)\}\}").unwrap();
+        let stripped = re.replace_all(text, "$2").to_string();
+        // Collapse runs of whitespace that result from stripping empty templates
+        let ws_re = regex::Regex::new(r" {2,}").unwrap();
+        ws_re.replace_all(&stripped, " ").trim().to_string()
+    }
 
-        for cap in re.captures_iter(text) {
-            let full_match = cap.get(0).unwrap().as_str();
-            let param_name = cap.get(1).unwrap().as_str();
-            let default_text = cap.get(2).unwrap().as_str();
-
-            if let Some(&ref_num) = param_ref_nums.get(param_name) {
-                // Use {{N}} format when default is empty, {{N:default}} otherwise (matches MDT)
-                let replacement = if default_text.is_empty() {
-                    format!("{{{{{}}}}}", ref_num)
-                } else {
-                    format!("{{{{{}:{}}}}}", ref_num, default_text)
-                };
-                result = result.replace(full_match, &replacement);
-            }
-            // If param not found, leave the original text (will show as static text)
+    /// Resolve `{{param_name:default}}` templates for V20 schema.
+    ///
+    /// V20 uses a `TextParameterRefId` attribute on the element to point to
+    /// the ParameterRef whose value replaces `{{0}}`. Only a single text
+    /// parameter reference per element is supported (one `{{0}}`).
+    ///
+    /// Returns `(resolved_text, Option<text_parameter_ref_id>)`. The ref ID
+    /// should be set as the element's `TextParameterRefId` attribute.
+    fn resolve_text_param_ref_v20(
+        text: &str,
+        param_ref_ids: &HashMap<String, String>,
+    ) -> (String, Option<String>) {
+        if !text.contains("{{") {
+            return (text.to_string(), None);
         }
 
-        result
+        let re = regex::Regex::new(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*):([^}]*)\}\}").unwrap();
+
+        // Find the first (and only — V20 supports one per element) template.
+        if let Some(cap) = re.captures(text) {
+            let full_match = cap.get(0).unwrap().as_str();
+            let param_name = cap.get(1).unwrap().as_str();
+
+            if let Some(ref_id) = param_ref_ids.get(param_name) {
+                let resolved = text.replace(full_match, "{{0}}");
+                return (resolved, Some(ref_id.clone()));
+            }
+        }
+
+        // No matching param found — return text unchanged
+        (text.to_string(), None)
     }
 
     /// Build communication object table.
@@ -1944,12 +2244,14 @@ impl MtxmlGenerator {
     ///
     /// Uses the comm_object_refs array which contains one entry per ref.
     /// For multi-ref objects, there will be multiple refs pointing to the same ComObject.
-    /// The param_ref_nums map is used to resolve text parameter references in Text attributes.
+    /// The `param_ref_ids` map resolves `{{param:default}}` templates using the V20
+    /// `TextParameterRefId` + `{{0}}` mechanism.
     fn build_com_object_refs(
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
-        param_ref_nums: &HashMap<String, u32>,
+        param_ref_ids: &HashMap<String, String>,
+        co_ref_offset: u32,
     ) -> ComObjectRefs {
         let mut refs = ComObjectRefs::default();
         let start_index = mask_family.com_object_start_index();
@@ -1957,10 +2259,14 @@ impl MtxmlGenerator {
         for (i, ref_def) in config.comm_object_refs.iter().enumerate() {
             let adjusted_index = ref_def.object_index + start_index;
             let co_id = format!("{}_O-{}", app_id, adjusted_index);
-            let ref_id = format!("{}_R-{}", co_id, i + 1);
+            let ref_id = format!("{}_R-{}", co_id, co_ref_offset + i as u32 + 1);
 
-            // Resolve text parameter references in the text attribute
-            let text = ref_def.text.map(|s| Self::resolve_text_param_refs(s, param_ref_nums));
+            // Resolve text parameter references using V20's TextParameterRefId + {{0}}.
+            let (text, text_parameter_ref_id) = ref_def
+                .text
+                .map(|s| Self::resolve_text_param_ref_v20(s, param_ref_ids))
+                .map(|(t, r)| (Some(t), r))
+                .unwrap_or((None, None));
 
             // Build the ComObjectRef with potential overrides from the ref definition
             // Note: MDT doesn't include Name attribute on ComObjectRefs, only on ComObjects
@@ -1972,6 +2278,7 @@ impl MtxmlGenerator {
                 function_text: Some(ref_def.function_text.to_string()),
                 datapoint_type: Some(dpt_to_string(ref_def.dpt_main, ref_def.dpt_sub)),
                 object_size: Some(object_size_to_string(ref_def.size_bits).to_string()),
+                text_parameter_ref_id,
                 internal_description: None,
                 ..Default::default()
             };
@@ -2301,6 +2608,21 @@ impl MtxmlGenerator {
         // For refs with selector_param, we need to group them and create choose/when structures.
         // For refs without selector_param (simple objects), add them directly.
 
+        // Compute the ComObjectRef offset: total ParameterRefs generated.
+        // In the non-layout path, each non-selector param gets exactly 1 ref,
+        // plus union selectors and variant params each get 1 ref.
+        let co_ref_offset = {
+            let non_selector_count =
+                config.all_params().filter(|p| !union_selector_names.contains(p.base.name)).count() as u32;
+            let union_count = config
+                .union_fields
+                .map(|fields| {
+                    fields.iter().map(|f| 1 + f.union_info.variant_params.len() as u32).sum::<u32>()
+                })
+                .unwrap_or(0);
+            non_selector_count + union_count
+        };
+
         // First, build a map: selector_param -> (object_index -> [(ref_index, selector_value)])
         let mut selector_groups: std::collections::HashMap<
             &str,                                              // selector_param name
@@ -2325,7 +2647,7 @@ impl MtxmlGenerator {
 
             let adjusted_index = ref_def.object_index + co_start_index;
             let co_id = format!("{}_O-{}", app_id, adjusted_index);
-            let ref_id = format!("{}_R-{}", co_id, i + 1);
+            let ref_id = format!("{}_R-{}", co_id, co_ref_offset + i as u32 + 1);
 
             items.push(block_com_obj_ref(ref_id));
         }
@@ -2344,7 +2666,7 @@ impl MtxmlGenerator {
                 for (ref_index, selector_value) in ref_list {
                     let adjusted_index = object_index + co_start_index;
                     let co_id = format!("{}_O-{}", app_id, adjusted_index);
-                    let ref_id = format!("{}_R-{}", co_id, ref_index + 1);
+                    let ref_id = format!("{}_R-{}", co_id, co_ref_offset + *ref_index as u32 + 1);
                     value_to_refs.entry(*selector_value).or_default().push(ref_id);
                 }
             }
@@ -2462,11 +2784,12 @@ impl MtxmlGenerator {
         mask_family: MaskFamily,
         layout: &PageStructure,
     ) -> Result<DynamicSection, GeneratorError> {
-        // Build name-to-RefId mapping for all comm objects (needed for counting)
-        let comm_obj_ref_map = Self::build_comm_object_ref_map(config, app_id, mask_family);
+        // First pass: build a temporary comm_obj_ref_map with offset 0 just for counting
+        // selector usages. The exact _R-N IDs don't matter for counting.
+        let temp_comm_obj_ref_map = Self::build_comm_object_ref_map(config, app_id, mask_family, 0);
 
         // Count selector usages (including PageItem::Obj which needs comm_obj_ref_map)
-        let selector_usage_counts = count_selector_usages_with_objects(layout, &comm_obj_ref_map);
+        let selector_usage_counts = count_selector_usages_with_objects(layout, &temp_comm_obj_ref_map);
 
         // Collect union variant text overrides for creating multiple ParameterRefs with different Text
         let union_variant_texts = collect_union_variant_texts(layout);
@@ -2474,6 +2797,11 @@ impl MtxmlGenerator {
         // Build multi-ref parameter map (supports multiple refs per selector param)
         let param_ref_map =
             Self::build_multi_param_ref_map(config, app_id, &selector_usage_counts, Some(&union_variant_texts));
+
+        // Now build the definitive comm_obj_ref_map with the correct offset
+        // so ComObjectRef _R-N suffixes don't collide with ParameterRef suffixes.
+        let co_ref_offset = param_ref_map.total_ref_count;
+        let comm_obj_ref_map = Self::build_comm_object_ref_map(config, app_id, mask_family, co_ref_offset);
 
         // Generate block and separator counters
         let mut block_counter = 1u32;
@@ -2664,7 +2992,7 @@ impl MtxmlGenerator {
             }
         }
 
-        MultiParamRefMap { primary, multi, by_text, param_ref_nums }
+        MultiParamRefMap { primary, multi, by_text, total_ref_count: next_ref_num - 1 }
     }
 
     /// Build a mapping from comm object field names to their ComObjectRefRef info.
@@ -2678,6 +3006,7 @@ impl MtxmlGenerator {
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
+        co_ref_offset: u32,
     ) -> HashMap<String, Vec<(String, Option<String>, Option<i64>)>> {
         let mut map: HashMap<String, Vec<(String, Option<String>, Option<i64>)>> = HashMap::new();
         let co_start_index = mask_family.com_object_start_index();
@@ -2686,7 +3015,7 @@ impl MtxmlGenerator {
         for (i, ref_def) in config.comm_object_refs.iter().enumerate() {
             let adjusted_index = ref_def.object_index + co_start_index;
             let co_id = format!("{}_O-{}", app_id, adjusted_index);
-            let ref_id = format!("{}_R-{}", co_id, i + 1);
+            let ref_id = format!("{}_R-{}", co_id, co_ref_offset + i as u32 + 1);
 
             // Use the ref_name as the key (this is the field name from the struct)
             map.entry(ref_def.ref_name.to_string()).or_default().push((
@@ -2748,6 +3077,13 @@ impl MtxmlGenerator {
                     )?;
                     items.push(ChannelIndependentItem::Choose(choose));
                 }
+                PageElement::UnionSelector(union_name) => {
+                    let pb = Self::build_inline_union_selector_block(
+                        union_name, config, app_id, param_ref_map,
+                        block_counter, &active_conditions,
+                    )?;
+                    items.push(ChannelIndependentItem::ParameterBlock(pb));
+                }
             }
         }
 
@@ -2803,6 +3139,13 @@ impl MtxmlGenerator {
                     )?;
                     items.push(ChannelItem::Choose(choose));
                 }
+                PageElement::UnionSelector(union_name) => {
+                    let pb = Self::build_inline_union_selector_block(
+                        union_name, config, app_id, param_ref_map,
+                        block_counter, &active_conditions,
+                    )?;
+                    items.push(ChannelItem::ParameterBlock(pb));
+                }
             }
         }
 
@@ -2837,13 +3180,94 @@ impl MtxmlGenerator {
             active_conditions,
         )?;
 
-        // Resolve text parameter references in block text
-        let resolved_text = Self::resolve_text_param_refs(block.text, &param_ref_map.param_ref_nums);
+        // Resolve text parameter references in block text using V20's
+        // TextParameterRefId + {{0}} mechanism.
+        let (resolved_text, text_parameter_ref_id) =
+            Self::resolve_text_param_ref_v20(block.text, &param_ref_map.primary);
 
         Ok(ParameterBlock {
             id: format!("{}_PB-{}", app_id, block_id),
             name: Some(block.name.to_string()),
             text: Some(resolved_text),
+            text_parameter_ref_id,
+            internal_description: None,
+            inline: None,
+            show_in_com_object_tree: None,
+            layout: None,
+            items,
+        })
+    }
+
+    /// Build an inline ParameterBlock for a `PageElement::UnionSelector`.
+    ///
+    /// Emits the same content as `PageItem::UnionSelector` (the selector dropdown
+    /// param ref + a choose/when for each variant's inner parameters), but wrapped
+    /// in an inline `ParameterBlock` so it can appear at channel level without a
+    /// visible section header in ETS.
+    fn build_inline_union_selector_block(
+        union_name: &str,
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        param_ref_map: &MultiParamRefMap,
+        block_counter: &mut u32,
+        _active_conditions: &ActiveConditions,
+    ) -> Result<ParameterBlock, GeneratorError> {
+        let block_id = *block_counter;
+        *block_counter += 1;
+
+        let mut items: Vec<ParameterBlockItem> = Vec::new();
+
+        let selector_name = format!("{}_selector", union_name);
+
+        // Emit the selector dropdown param ref
+        if let Some(ref_id) = param_ref_map.get_primary(&selector_name) {
+            items.push(block_param_ref(ref_id.clone()));
+        }
+
+        // Emit choose/when for variant-specific parameters (if any)
+        if let Some(union_fields) = config.union_fields {
+            if let Some(union_info) = union_fields.iter().find(|u| u.field_name == union_name) {
+                let selector_ref_id = param_ref_map
+                    .get_primary(&selector_name)
+                    .cloned()
+                    .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, &selector_name));
+
+                let mut whens: Vec<When> = Vec::new();
+                for variant in union_info.selector_variants {
+                    let variant_prefix = format!("{}_{}_", union_name, variant.text);
+                    let variant_param_refs: Vec<_> = param_ref_map
+                        .primary
+                        .iter()
+                        .filter(|(name, _)| name.starts_with(&variant_prefix))
+                        .map(|(_, ref_id)| when_param_ref(ref_id.clone()))
+                        .collect();
+
+                    if !variant_param_refs.is_empty() {
+                        whens.push(When {
+                            default: None,
+                            test: Some(variant.value.to_string()),
+                            internal_description: None,
+                            items: variant_param_refs,
+                        });
+                    }
+                }
+
+                whens.sort_by(|a, b| {
+                    let a_val: i64 = a.test.as_ref().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let b_val: i64 = b.test.as_ref().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    a_val.cmp(&b_val)
+                });
+
+                if !whens.is_empty() {
+                    items.push(ParameterBlockItem::Choose(Choose { param_ref_id: selector_ref_id, whens }));
+                }
+            }
+        }
+
+        Ok(ParameterBlock {
+            id: format!("{}_PB-{}", app_id, block_id),
+            name: None,
+            text: None,
             text_parameter_ref_id: None,
             internal_description: None,
             inline: None,
@@ -2924,11 +3348,13 @@ impl MtxmlGenerator {
                                         }
                                     }
                                 } else {
-                                    // No active condition - create a choose/when block as before
-                                    // Get unique ref index for this choose block
-                                    let ref_index = selector_counters.next_index(selector_param);
+                                    // No active condition - create a choose/when block.
+                                    // Use the primary (index 0) ref — the same one the
+                                    // selector dropdown displays. All choose blocks for
+                                    // the same selector must share one ParamRefId so ETS
+                                    // can evaluate them.
                                     let selector_ref_id = param_ref_map
-                                        .get(selector_param, Some(ref_index))
+                                        .get_primary(selector_param)
                                         .cloned()
                                         .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, selector_param));
 
@@ -3781,6 +4207,14 @@ impl MtxmlGenerator {
                             when_items.push(WhenItem::Choose(choose));
                         }
                     }
+                    PageElement::UnionSelector(union_name) => {
+                        if let Ok(pb) = Self::build_inline_union_selector_block(
+                            union_name, config, app_id, param_ref_map,
+                            block_counter, &case_active_conditions,
+                        ) {
+                            when_items.push(WhenItem::ParameterBlock(pb));
+                        }
+                    }
                 }
             }
 
@@ -4075,6 +4509,84 @@ impl MtxmlGenerator {
         }
         Ok(())
     }
+}
+
+// ============================================================================
+// Dynamic Section Helpers
+// ============================================================================
+
+/// Collect a mapping of block name → XML ID from a built dynamic section.
+///
+/// Walks the entire dynamic tree (channels, choose/when blocks) to find
+/// all `ParameterBlock` elements and maps their `Name` to their `Id`.
+/// Used for resolving `block::name` translation references.
+fn collect_block_name_map(dynamic: &DynamicSection) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+
+    fn collect_from_block(block: &ParameterBlock, map: &mut HashMap<String, String>) {
+        if let Some(ref name) = block.name {
+            map.insert(name.clone(), block.id.clone());
+        }
+        for item in &block.items {
+            match item {
+                ParameterBlockItem::Choose(choose) => {
+                    for when in &choose.whens {
+                        collect_from_when_items(&when.items, map);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_from_when_items(items: &[WhenItem], map: &mut HashMap<String, String>) {
+        for item in items {
+            match item {
+                WhenItem::ParameterBlock(block) => collect_from_block(block, map),
+                WhenItem::Choose(choose) => {
+                    for when in &choose.whens {
+                        collect_from_when_items(&when.items, map);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Walk channel-independent block
+    if let Some(ref cib) = dynamic.channel_independent_block {
+        for item in &cib.items {
+            match item {
+                ChannelIndependentItem::ParameterBlock(block) => {
+                    collect_from_block(block, &mut map);
+                }
+                ChannelIndependentItem::Choose(choose) => {
+                    for when in &choose.whens {
+                        collect_from_when_items(&when.items, &mut map);
+                    }
+                }
+            }
+        }
+    }
+
+    // Walk channels
+    for channel in &dynamic.channels {
+        for item in &channel.items {
+            match item {
+                ChannelItem::ParameterBlock(block) => {
+                    collect_from_block(block, &mut map);
+                }
+                ChannelItem::Choose(choose) => {
+                    for when in &choose.whens {
+                        collect_from_when_items(&when.items, &mut map);
+                    }
+                }
+                ChannelItem::Module(_) => {}
+            }
+        }
+    }
+
+    map
 }
 
 // ============================================================================
