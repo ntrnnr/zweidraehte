@@ -1,8 +1,9 @@
 //! Flash-based persistent storage for RP2040/RP2350.
 //!
-//! Uses the last 4KB sector of the chip's 2MB flash for device state
-//! persistence. Serialization is via `postcard` (compact no_std binary
-//! format).
+//! Reserves a region at the end of the chip's 2 MB flash for device state
+//! persistence. The region size is configurable via a const generic on
+//! [`RpFlashStorage`] (default: 4 KiB = one sector). Serialization is via
+//! `postcard` (compact no_std binary format).
 //!
 //! # Format
 //!
@@ -37,29 +38,46 @@ use zweidraehte::storage::DeviceStorage;
 
 const FLASH_SIZE: usize = 2 * 1024 * 1024; // 2MB
 const SECTOR_SIZE: usize = 4096;
-/// Offset of our storage sector from the start of flash.
-const STORAGE_OFFSET: u32 = (FLASH_SIZE - SECTOR_SIZE) as u32;
 const MAGIC: [u8; 4] = *b"KNXS";
+/// Header: 4 bytes magic + 2 bytes payload length.
+const HEADER_SIZE: usize = 6;
 
 // ================================================================================
 // RpFlashStorage
 // ================================================================================
 
 /// Persistent storage backed by RP2040/RP2350 internal flash.
-pub struct RpFlashStorage<S> {
+///
+/// `STORAGE_SIZE` controls how many bytes at the end of flash are reserved
+/// for device state. It must be a non-zero multiple of the 4 KiB sector
+/// size. Increase it if your device's serialized state exceeds the default
+/// 4 KiB (minus 6 bytes header).
+pub struct RpFlashStorage<S, const STORAGE_SIZE: usize = 4096> {
     flash: Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>,
     dirty: bool,
     _phantom: core::marker::PhantomData<S>,
 }
 
-impl<S> RpFlashStorage<S> {
+impl<S, const STORAGE_SIZE: usize> RpFlashStorage<S, STORAGE_SIZE> {
+    /// Offset of the storage region from the start of flash.
+    const STORAGE_OFFSET: u32 = (FLASH_SIZE - STORAGE_SIZE) as u32;
+
+    // Compile-time validation of the storage region size.
+    const _VALIDATE: () = {
+        assert!(STORAGE_SIZE > 0, "STORAGE_SIZE must be non-zero");
+        assert!(STORAGE_SIZE % SECTOR_SIZE == 0, "STORAGE_SIZE must be a multiple of the 4 KiB flash sector size",);
+        assert!(STORAGE_SIZE <= FLASH_SIZE, "STORAGE_SIZE exceeds total flash size",);
+    };
+
     /// Create a new flash storage instance.
     pub fn new(flash: Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>) -> Self {
+        // Force the compile-time validation constants to be evaluated.
+        let _ = Self::_VALIDATE;
         Self { flash, dirty: false, _phantom: core::marker::PhantomData }
     }
 }
 
-impl<S> DeviceStorage for RpFlashStorage<S>
+impl<S, const STORAGE_SIZE: usize> DeviceStorage for RpFlashStorage<S, STORAGE_SIZE>
 where
     S: Serialize + for<'de> Deserialize<'de>,
 {
@@ -67,23 +85,21 @@ where
     type Error = FlashError;
 
     fn load(&mut self) -> Result<Option<S>, Self::Error> {
-        let mut sector = [0u8; SECTOR_SIZE as usize];
-        self.flash
-            .blocking_read(STORAGE_OFFSET, &mut sector)
-            .map_err(|_| FlashError::ReadFailed)?;
+        let mut region = [0u8; STORAGE_SIZE];
+        self.flash.blocking_read(Self::STORAGE_OFFSET, &mut region).map_err(|_| FlashError::ReadFailed)?;
 
         // Check magic bytes.
-        if sector[0..4] != MAGIC {
+        if region[0..4] != MAGIC {
             return Ok(None);
         }
 
         // Read payload length (little-endian u16).
-        let len = u16::from_le_bytes([sector[4], sector[5]]) as usize;
-        if len == 0 || 6 + len > sector.len() {
+        let len = u16::from_le_bytes([region[4], region[5]]) as usize;
+        if len == 0 || HEADER_SIZE + len > region.len() {
             return Ok(None);
         }
 
-        let payload = &sector[6..6 + len];
+        let payload = &region[HEADER_SIZE..HEADER_SIZE + len];
         match postcard::from_bytes(payload) {
             Ok(state) => Ok(Some(state)),
             Err(_) => {
@@ -94,20 +110,21 @@ where
     }
 
     fn save(&mut self, state: &S) -> Result<(), Self::Error> {
-        // Serialize into a stack buffer. Reserve 6 bytes for header.
-        let mut buf = [0u8; SECTOR_SIZE as usize];
+        // Serialize into a stack buffer. Reserve header bytes at the front.
+        let mut buf = [0u8; STORAGE_SIZE];
         buf[0..4].copy_from_slice(&MAGIC);
 
-        let payload = postcard::to_slice(state, &mut buf[6..]).map_err(|_| FlashError::SerializeFailed)?;
+        let payload = postcard::to_slice(state, &mut buf[HEADER_SIZE..])
+            .expect("serialized state exceeds flash storage region — increase STORAGE_SIZE");
         let len = payload.len();
         buf[4..6].copy_from_slice(&(len as u16).to_le_bytes());
 
-        // Erase the sector, then write.
+        // Erase the region, then write.
         self.flash
-            .blocking_erase(STORAGE_OFFSET, STORAGE_OFFSET + SECTOR_SIZE as u32)
+            .blocking_erase(Self::STORAGE_OFFSET, Self::STORAGE_OFFSET + STORAGE_SIZE as u32)
             .map_err(|_| FlashError::EraseFailed)?;
         self.flash
-            .blocking_write(STORAGE_OFFSET, &buf[..6 + len])
+            .blocking_write(Self::STORAGE_OFFSET, &buf[..HEADER_SIZE + len])
             .map_err(|_| FlashError::WriteFailed)?;
 
         self.dirty = false;
@@ -138,5 +155,4 @@ pub enum FlashError {
     ReadFailed,
     EraseFailed,
     WriteFailed,
-    SerializeFailed,
 }
