@@ -382,13 +382,13 @@ const MAX_SERVERS: usize = 3;
 /// # Example
 ///
 /// ```ignore
-/// let builder = KnxNetIpBuilder::<LinuxIpTransport, 2>::new("eth0", interface_addr, control_endpoint, ())
+/// let builder = KnxNetIpBuilder::<LinuxIpTransport, 2>::new("eth0", interface_addr, SocketAddrV4::new(interface_addr, 3671), ())
 ///     .enable_routing_server();
 /// ```
 pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize = 1> {
     interface_name: &'static str,
     local_addr: Ipv4Addr,
-    control_endpoint: substructs::HPAI,
+    control_endpoint: SocketAddrV4,
     enable_routing: bool,
     enable_remote_config: bool,
     enable_tcp: bool,
@@ -405,7 +405,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
     /// # Arguments
     /// * `interface_name` - The name of the network interface (e.g., "eth0", "wlan0")
     /// * `local_addr` - The local IP address of this interface (for multicast join and echo filtering)
-    /// * `control_endpoint` - The HPAI to advertise as this device's control endpoint
+    /// * `control_endpoint` - The UDP endpoint to advertise in search and description responses
     /// * `socket_ctx` - Platform-specific context for creating UDP sockets
     ///
     /// # Type Parameters
@@ -415,7 +415,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
     pub fn new(
         interface_name: &'static str,
         local_addr: Ipv4Addr,
-        control_endpoint: substructs::HPAI,
+        control_endpoint: SocketAddrV4,
         socket_ctx: <T::UdpSocket as platform::AsyncUdpSocket>::Context,
     ) -> Self {
         Self {
@@ -521,7 +521,11 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
 
         // Discovery server is always enabled (mandatory per KNX spec 3/8/2 §4.2).
         {
-            let server = servers::DiscoveryServer::new(self.control_endpoint, supported_services);
+            let control_hpai = substructs::HPAI::ipv4_udp(
+                *self.control_endpoint.ip(),
+                self.control_endpoint.port(),
+            );
+            let server = servers::DiscoveryServer::new(control_hpai, supported_services);
 
             let mut service_types = Vec::new();
             let _ = service_types.push(KNXnetIPServiceType::SearchRequest);
@@ -676,18 +680,16 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
         let mut tcp_manager = TcpManager::new();
 
         if self.enable_tcp {
-            let tcp_port = self.control_endpoint.port();
             let tcp_options = TcpListenerOptions {
-                address: Ipv4Addr::UNSPECIFIED,
-                port: tcp_port,
+                bind_addr: self.control_endpoint,
                 interface: Some(self.interface_name),
             };
             match tcp_manager.bind(tcp_options) {
                 Ok(()) => {
-                    info!("TCP listener bound on port {} (interface {})", tcp_port, self.interface_name);
+                    info!("TCP listener bound on {} (interface {})", self.control_endpoint, self.interface_name);
                 }
                 Err(_e) => {
-                    error!("Failed to bind TCP listener on port {}: {:?}", tcp_port, _e);
+                    error!("Failed to bind TCP listener on {}: {:?}", self.control_endpoint, _e);
                 }
             }
         }

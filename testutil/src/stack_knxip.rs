@@ -114,12 +114,11 @@ use embassy_sync::pubsub::WaitResult;
 use embassy_time::Duration;
 use env_logger::Env;
 use static_cell::StaticCell;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use zweidraehte::prelude::*;
 use zweidraehte::{
     dpt::DPT_Switch,
     layers::linklayers::knxip::KnxNetIpBuilder,
-    messages::knxip::substructs::HPAI,
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
         IpParameterObject,
@@ -747,7 +746,7 @@ async fn main(spawner: Spawner) {
     println!("  - Communication Objects: {} objects", (CONFIG.co7_data().len() - 2) / 2);
 
     // Create KNX/IP link layer
-    let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.106.6".parse().unwrap(), port: 3671 };
+    let control_endpoint = SocketAddrV4::new("192.168.106.6".parse().unwrap(), 3671);
 
     let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
     let link_layer_builder =

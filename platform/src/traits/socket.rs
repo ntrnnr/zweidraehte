@@ -6,10 +6,8 @@ use embassy_time::Duration;
 /// Options for creating a UDP multicast socket.
 #[derive(Debug, Clone)]
 pub struct UdpSocketOptions {
-    /// Address to bind to (typically `Ipv4Addr::UNSPECIFIED`).
-    pub address: Ipv4Addr,
-    /// Port to bind to.
-    pub port: u16,
+    /// Socket address to bind to (typically `Ipv4Addr::UNSPECIFIED` with a specific port).
+    pub bind_addr: SocketAddrV4,
     /// Read timeout (None = no timeout, relies on async).
     pub read_timeout: Option<Duration>,
     /// Write timeout (None = no timeout, relies on async).
@@ -25,8 +23,7 @@ pub struct UdpSocketOptions {
 impl Default for UdpSocketOptions {
     fn default() -> Self {
         Self {
-            address: Ipv4Addr::UNSPECIFIED,
-            port: 0,
+            bind_addr: SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0),
             read_timeout: None,
             write_timeout: None,
             multicast_ttl: 32,
@@ -83,10 +80,8 @@ pub trait AsyncUdpSocket: Sized {
 /// Options for creating a TCP listener socket.
 #[derive(Debug, Clone)]
 pub struct TcpListenerOptions {
-    /// Address to bind to (typically `Ipv4Addr::UNSPECIFIED`).
-    pub address: Ipv4Addr,
-    /// Port to bind to.
-    pub port: u16,
+    /// Socket address to bind to.
+    pub bind_addr: SocketAddrV4,
     /// Network interface name to bind to.
     pub interface: Option<&'static str>,
 }

@@ -3,7 +3,7 @@
 #![feature(never_type)]
 
 use core::cell::RefCell;
-use core::net::Ipv4Addr;
+use core::net::{Ipv4Addr, SocketAddrV4};
 
 use defmt::*;
 use embassy_executor::Spawner;
@@ -31,7 +31,6 @@ use zweidraehte::bcus::system_b::{
 };
 use zweidraehte::dpt::*;
 use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
-use zweidraehte::messages::knxip::substructs::HPAI;
 use zweidraehte::prelude::*;
 use zweidraehte::restart::{RestartError, RestartResponse};
 use zweidraehte::storage::DeviceStorage;
@@ -728,7 +727,7 @@ async fn main(spawner: Spawner) {
         .map(|c| Ipv4Addr::from(c.address.address().octets()))
         .unwrap_or(Ipv4Addr::UNSPECIFIED);
 
-    let control_endpoint = HPAI::Ipv4Udp { addr: local_ip, port: 3671 };
+    let control_endpoint = SocketAddrV4::new(local_ip, 3671);
 
     // The embassy-net stack handle is passed as socket context — when the
     // KNX/IP servers call EmbassyUdpSocket::bind(), they receive it directly.

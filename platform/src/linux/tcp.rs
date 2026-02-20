@@ -36,7 +36,7 @@ impl TcpListenerInner {
             }
         }
 
-        s.bind(&SocketAddrV4::new(options.address, options.port).into())?;
+        s.bind(&options.bind_addr.into())?;
         // Backlog of 4 — we only expect a handful of concurrent TCP
         // connections from ETS / KNX/IP Secure clients.
         s.listen(4)?;

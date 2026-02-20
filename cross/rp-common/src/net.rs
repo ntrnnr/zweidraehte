@@ -123,9 +123,9 @@ impl AsyncUdpSocket for EmbassyUdpSocket {
             &mut bufs.tx_buf,
         );
 
-        socket.bind(options.port).map_err(|_| UdpError::BindError)?;
+        socket.bind(options.bind_addr.port()).map_err(|_| UdpError::BindError)?;
 
-        Ok(Self { socket: RefCell::new(socket), stack: *stack, local_port: options.port })
+        Ok(Self { socket: RefCell::new(socket), stack: *stack, local_port: options.bind_addr.port() })
     }
 
     fn join_multicast(&self, group: Ipv4Addr, _interface: Ipv4Addr) -> Result<(), Self::Error> {

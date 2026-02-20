@@ -13,6 +13,7 @@
 //! - The server will respond with device information
 
 use std::cell::RefCell;
+use std::net::SocketAddrV4;
 
 use embassy_executor::Spawner;
 use embassy_sync::{
@@ -29,7 +30,7 @@ use zweidraehte::{
     },
     messages::{
         buffers::{Buffer, BufferManager},
-        knxip::substructs::{DeviceInformation, HPAI},
+        knxip::substructs::DeviceInformation,
     },
 };
 
@@ -93,7 +94,7 @@ async fn main(spawner: Spawner) {
     use zweidraehte::address::IndividualAddress;
     use zweidraehte::messages::knxip::substructs::{DeviceStatus, KNXMedium};
 
-    let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.106.6".parse().unwrap(), port: 3671 };
+    let control_endpoint = SocketAddrV4::new("192.168.106.6".parse().unwrap(), 3671);
 
     // Set device info on the mock context — discovery responses will
     // build DeviceInformation on demand from this.

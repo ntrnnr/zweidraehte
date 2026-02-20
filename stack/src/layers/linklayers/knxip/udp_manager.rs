@@ -148,8 +148,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
             let port = desc.port();
 
             let options = UdpSocketOptions {
-                address: Ipv4Addr::UNSPECIFIED,
-                port,
+                bind_addr: SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port),
                 interface: Some(interface_name),
                 ..Default::default()
             };

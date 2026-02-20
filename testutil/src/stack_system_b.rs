@@ -15,10 +15,10 @@ use embassy_time::Duration;
 use env_logger::Env;
 use static_cell::StaticCell;
 use zweidraehte::prelude::*;
+use std::net::SocketAddrV4;
 use zweidraehte::{
     bcus::system_b::{DeviceIdentity, SystemBIpDeviceDef},
     layers::linklayers::knxip::KnxNetIpBuilder,
-    messages::knxip::substructs::HPAI,
     restart::{EraseCode, RestartResponse},
 };
 
@@ -196,7 +196,7 @@ async fn main(spawner: Spawner) {
     };
 
     // Create KNX/IP link layer
-    let control_endpoint = HPAI::Ipv4Udp { addr: "192.168.1.200".parse().unwrap(), port: 3671 };
+    let control_endpoint = SocketAddrV4::new("192.168.1.200".parse().unwrap(), 3671);
 
     let interface_addr = platform::get_interface_address(INTERFACE_NAME).expect("Failed to get interface address");
     let link_layer_builder =

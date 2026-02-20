@@ -37,7 +37,7 @@ impl UdpMulticastSocket {
 
         // To be able to receive unicast and multicast traffic on the same socket,
         // we need to bind to INADDR_ANY
-        s.bind(&SocketAddrV4::new(options.address.into(), options.port).into())?;
+        s.bind(&options.bind_addr.into())?;
 
         s.set_read_timeout(options.read_timeout.map(|x| core::time::Duration::from_micros(x.as_micros())))?;
         s.set_write_timeout(options.write_timeout.map(|x| core::time::Duration::from_micros(x.as_micros())))?;

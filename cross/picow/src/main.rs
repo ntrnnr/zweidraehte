@@ -2,7 +2,7 @@
 #![no_main]
 #![feature(never_type)]
 
-use core::net::Ipv4Addr;
+use core::net::{Ipv4Addr, SocketAddrV4};
 
 use cyw43_pio::PioSpi;
 use defmt::*;
@@ -25,7 +25,6 @@ use zweidraehte::bcus::system_b::{
     SystemBMemoryMap, create_knxip_objects,
 };
 use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
-use zweidraehte::messages::knxip::substructs::HPAI;
 use zweidraehte::prelude::*;
 
 use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo};
@@ -257,7 +256,7 @@ async fn main(spawner: Spawner) {
         .map(|c| Ipv4Addr::from(c.address.address().octets()))
         .unwrap_or(Ipv4Addr::UNSPECIFIED);
 
-    let control_endpoint = HPAI::Ipv4Udp { addr: local_ip, port: 3671 };
+    let control_endpoint = SocketAddrV4::new(local_ip, 3671);
 
     // The embassy-net stack handle is passed as socket context — when the
     // KNX/IP servers call EmbassyUdpSocket::bind(), they receive it directly.
