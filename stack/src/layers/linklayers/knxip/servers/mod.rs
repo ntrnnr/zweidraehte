@@ -23,18 +23,26 @@ use super::{PendingResponse, ResponseTarget, ServerContext, ServerError};
 /// used — only the IP address is substituted.
 ///
 /// Per KNX spec 3/8/2 §8.6.3.3: when a client sends a control HPAI with
-/// IP address 0.0.0.0, the server shall use the IP source address of the
-/// received request packet.
+/// IP address 0.0.0.0 and/or port 0, the server shall use the corresponding
+/// values from the IP source address of the received request packet.
+/// This supports NAT traversal scenarios where the client cannot know its
+/// externally visible address/port.
 pub(super) fn resolve_hpai(
     hpai: &crate::messages::knxip::substructs::HPAI,
     packet_source: SocketAddrV4,
 ) -> SocketAddrV4 {
     let addr = hpai.address();
-    if addr.is_unspecified() {
-        SocketAddrV4::new(*packet_source.ip(), hpai.port())
+    let ip = if addr.is_unspecified() {
+        *packet_source.ip()
     } else {
-        SocketAddrV4::new(addr, hpai.port())
-    }
+        addr
+    };
+    let port = if hpai.port() == 0 {
+        packet_source.port()
+    } else {
+        hpai.port()
+    };
+    SocketAddrV4::new(ip, port)
 }
 
 /// Enum wrapping all possible KNX/IP server types
