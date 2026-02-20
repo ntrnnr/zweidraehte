@@ -8,10 +8,12 @@ use cyw43_pio::PioSpi;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::{DhcpConfig, StackResources as NetStackResources};
-use embassy_rp::bind_interrupts;
-use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
-use embassy_rp::pio::{self, Pio};
+use embassy_rp::{
+    bind_interrupts,
+    gpio::{Level, Output},
+    peripherals::{DMA_CH0, PIO0},
+    pio::{self, Pio},
+};
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -20,12 +22,14 @@ use devices::light_switch::{
     self, LightSwitchDevice, LightSwitchParams,
     comm_objs::LightSwitchComObjects,
 };
-use zweidraehte::bcus::system_b::{
-    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, StaticIdentity, SystemBIpDeviceDef,
-    SystemBMemoryMap, create_knxip_objects,
+use zweidraehte::{
+    bcus::system_b::{
+        DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, StaticIdentity, SystemBIpDeviceDef,
+        SystemBMemoryMap, create_knxip_objects,
+    },
+    layers::linklayers::knxip::KnxNetIpBuilder,
+    prelude::*,
 };
-use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
-use zweidraehte::prelude::*;
 
 use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo};
 
@@ -40,14 +44,12 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP;
 /// TODO: Read from RP2040 flash unique ID for production.
 const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x03];
 
+const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
+const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
+const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
+
 /// Device state combining System B tables with IP link-layer state.
-type PicoWState = IpSystemBDeviceState<
-    { DEVICE_DESCRIPTOR.address_table_size() },
-    { DEVICE_DESCRIPTOR.association_table_size() },
-    { DEVICE_DESCRIPTOR.comm_object_table_size() },
-    LightSwitchParams,
-    EmbassyNetworkInfo,
->;
+type PicoWState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, EmbassyNetworkInfo>;
 
 // ----------------------------------------------------------------------------
 // SystemBIpDeviceDef + StackDefinition

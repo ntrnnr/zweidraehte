@@ -537,14 +537,12 @@ impl platform::NetworkConfig for MockIpPlatform {
 // Stack Definition
 // ============================================================================
 
+const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
+const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
+const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
+
 /// Unified state type.
-pub type DemoState = IpSystemBDeviceState<
-    { DEVICE_DESCRIPTOR.address_table_size() },
-    { DEVICE_DESCRIPTOR.association_table_size() },
-    { DEVICE_DESCRIPTOR.comm_object_table_size() },
-    DemoParams,
-    MockIpPlatform,
->;
+pub type DemoState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, MockIpPlatform>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DemoStack;
@@ -580,13 +578,8 @@ impl StackDefinition for DemoStack {
 }
 
 /// Persisted (serializable) form of the demo device state.
-pub type DemoPersistedState = zweidraehte::bcus::system_b::PersistedState<
-    { DEVICE_DESCRIPTOR.address_table_size() },
-    { DEVICE_DESCRIPTOR.association_table_size() },
-    { DEVICE_DESCRIPTOR.comm_object_table_size() },
-    DemoParams,
-    zweidraehte::bcus::system_b::PersistedIpConfig,
->;
+pub type DemoPersistedState =
+    zweidraehte::bcus::system_b::PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, zweidraehte::bcus::system_b::PersistedIpConfig>;
 
 // ============================================================================
 // ETS Page Layout

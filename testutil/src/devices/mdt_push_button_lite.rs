@@ -3208,14 +3208,12 @@ impl platform::NetworkConfig for MockIpPlatform {
 // Stack Definition
 // ============================================================================
 
+const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
+const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
+const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
+
 /// Unified state type.
-pub type MdtState = IpSystemBDeviceState<
-    { DEVICE_DESCRIPTOR.address_table_size() },
-    { DEVICE_DESCRIPTOR.association_table_size() },
-    { DEVICE_DESCRIPTOR.comm_object_table_size() },
-    MdtParams,
-    MockIpPlatform,
->;
+pub type MdtState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MdtParams, MockIpPlatform>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MdtStack;

@@ -10,10 +10,12 @@ use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_net::{DhcpConfig, StackResources as NetStackResources};
 use embassy_net_wiznet::chip::W5500;
-use embassy_rp::flash;
-use embassy_rp::gpio::{Input, Level, Output, Pull};
-use embassy_rp::peripherals::SPI0;
-use embassy_rp::spi::{Async, Config as SpiConfig, Spi};
+use embassy_rp::{
+    flash,
+    gpio::{Input, Level, Output, Pull},
+    peripherals::SPI0,
+    spi::{Async, Config as SpiConfig, Spi},
+};
 use embassy_time::{Delay, Duration, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
 use static_cell::StaticCell;
@@ -25,15 +27,14 @@ use devices::light_switch::{
     params::{ButtonConfig, ButtonsMode, RockerDirection, SwitchAction},
 };
 
-use zweidraehte::bcus::system_b::{
-    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, PersistedIpConfig, PersistedState,
-    StaticIdentity, SystemBIpDeviceDef, SystemBMemoryMap, create_knxip_objects,
+use zweidraehte::{
+    bcus::system_b::*,
+    dpt::*,
+    layers::linklayers::knxip::KnxNetIpBuilder,
+    prelude::*,
+    restart::{RestartError, RestartResponse},
+    storage::DeviceStorage,
 };
-use zweidraehte::dpt::*;
-use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
-use zweidraehte::prelude::*;
-use zweidraehte::restart::{RestartError, RestartResponse};
-use zweidraehte::storage::DeviceStorage;
 
 use rp_common::button::{ButtonEvent, DebouncedButton};
 use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, RpFlashStorage};
@@ -54,23 +55,15 @@ const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x04];
 /// TODO: Derive from RP2040 flash unique ID for production.
 const MAC_ADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x04];
 
+const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
+const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
+const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
+
 /// Device state combining System B tables with IP link-layer state.
-type PicoEthState = IpSystemBDeviceState<
-    { DEVICE_DESCRIPTOR.address_table_size() },
-    { DEVICE_DESCRIPTOR.association_table_size() },
-    { DEVICE_DESCRIPTOR.comm_object_table_size() },
-    LightSwitchParams,
-    EmbassyNetworkInfo,
->;
+type PicoEthState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, EmbassyNetworkInfo>;
 
 /// Serializable snapshot of the full device state for flash persistence.
-type PicoEthPersistedState = PersistedState<
-    { DEVICE_DESCRIPTOR.address_table_size() },
-    { DEVICE_DESCRIPTOR.association_table_size() },
-    { DEVICE_DESCRIPTOR.comm_object_table_size() },
-    LightSwitchParams,
-    PersistedIpConfig,
->;
+type PicoEthPersistedState = PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, PersistedIpConfig>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
