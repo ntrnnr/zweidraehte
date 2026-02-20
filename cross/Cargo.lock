@@ -420,6 +420,7 @@ name = "devices"
 version = "0.1.0"
 dependencies = [
  "const-default",
+ "embassy-time",
  "serde",
  "zweidraehte",
 ]
@@ -1566,9 +1567,12 @@ dependencies = [
  "cortex-m",
  "critical-section",
  "defmt 1.0.1",
+ "embassy-futures",
  "embassy-net",
  "embassy-rp",
  "embassy-time",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
  "platform",
  "portable-atomic",
  "postcard",

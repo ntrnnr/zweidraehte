@@ -9,6 +9,11 @@ embassy-net = { workspace = true, features = ["udp", "dhcpv4", "medium-ethernet"
 embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-rp = { workspace = true, features = ["defmt"] }
 
+# Embedded HAL traits
+embedded-hal = { workspace = true }
+embedded-hal-async = { workspace = true }
+embassy-futures = { workspace = true }
+
 # Cortex-M / embedded
 cortex-m = { workspace = true }
 defmt = { workspace = true }

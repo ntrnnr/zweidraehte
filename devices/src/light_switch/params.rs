@@ -44,6 +44,18 @@ impl ConstDefault for DebounceTime {
     const DEFAULT: Self = Self::Ms50;
 }
 
+impl DebounceTime {
+    pub const fn as_duration(self) -> embassy_time::Duration {
+        embassy_time::Duration::from_millis(match self {
+            Self::Ms20 => 20,
+            Self::Ms50 => 50,
+            Self::Ms80 => 80,
+            Self::Ms100 => 100,
+            Self::Ms150 => 150,
+        })
+    }
+}
+
 /// Threshold for distinguishing short from long button presses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
 #[repr(u8)]
@@ -62,6 +74,18 @@ pub enum LongPressTime {
 
 impl ConstDefault for LongPressTime {
     const DEFAULT: Self = Self::Ms500;
+}
+
+impl LongPressTime {
+    pub const fn as_duration(self) -> embassy_time::Duration {
+        embassy_time::Duration::from_millis(match self {
+            Self::Ms300 => 300,
+            Self::Ms500 => 500,
+            Self::Ms800 => 800,
+            Self::Ms1000 => 1000,
+            Self::Ms1500 => 1500,
+        })
+    }
 }
 
 /// 1-function (rocker pair) or 2-function (independent buttons) mode.

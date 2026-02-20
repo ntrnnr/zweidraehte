@@ -969,6 +969,7 @@ name = "devices"
 version = "0.1.0"
 dependencies = [
  "const-default",
+ "embassy-time",
  "env_logger",
  "knxprod",
  "serde",

@@ -7,6 +7,7 @@
 //! implementations that are reusable across different network transports
 //! (WiFi, Ethernet, etc.).
 
+pub mod button;
 mod net;
 mod network_info;
 mod storage;
