@@ -59,8 +59,8 @@ impl core::fmt::Display for BeU16 {
 }
 use platform::LinuxIpTransport;
 use zweidraehte::bcus::system_b::{
-    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, MemoryLayout, SystemBIpDeviceDef,
-    SystemBMemoryMap, create_knxip_objects,
+    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, SystemBIpDeviceDef, SystemBMemoryMap,
+    create_knxip_objects,
 };
 use zweidraehte::dpt::*;
 use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
@@ -575,12 +575,7 @@ impl StackDefinition for DemoStack {
     where
         Self::State: 'a,
     {
-        let layout = MemoryLayout::from_descriptor(
-            SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-            &DEVICE_DESCRIPTOR,
-            core::mem::size_of::<DemoParams>(),
-        );
-        create_knxip_objects::<Self, _>(state, &layout)
+        create_knxip_objects::<Self, _>(state, &Self::memory_layout())
     }
 }
 
@@ -592,16 +587,6 @@ pub type DemoPersistedState = zweidraehte::bcus::system_b::PersistedState<
     DemoParams,
     zweidraehte::bcus::system_b::PersistedIpConfig,
 >;
-
-/// Memory layout for the device.
-pub const MEMORY_LAYOUT: MemoryLayout = MemoryLayout::from_descriptor(
-    SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-    &DEVICE_DESCRIPTOR,
-    core::mem::size_of::<DemoParams>(),
-);
-
-/// Memory map for the device.
-pub const MEMORY_MAP: SystemBMemoryMap = SystemBMemoryMap::new(MEMORY_LAYOUT);
 
 // ============================================================================
 // ETS Page Layout

@@ -24,10 +24,10 @@ use devices::light_switch::{
     comm_objs::{Index, LightSwitchComObjects},
     params::{ButtonConfig, ButtonsMode, RockerDirection, SwitchAction},
 };
+
 use zweidraehte::bcus::system_b::{
-    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, MemoryLayout, PersistedIpConfig,
-    PersistedState, StaticIdentity, SystemBIpDeviceDef, SystemBMemoryMap,
-    create_knxip_objects,
+    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, PersistedIpConfig, PersistedState,
+    StaticIdentity, SystemBIpDeviceDef, SystemBMemoryMap, create_knxip_objects,
 };
 use zweidraehte::dpt::*;
 use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
@@ -63,16 +63,6 @@ type PicoEthState = IpSystemBDeviceState<
     LightSwitchParams,
     EmbassyNetworkInfo,
 >;
-
-/// Memory layout for the device, derived from the descriptor.
-const MEMORY_LAYOUT: MemoryLayout = MemoryLayout::from_descriptor(
-    SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-    &DEVICE_DESCRIPTOR,
-    core::mem::size_of::<LightSwitchParams>(),
-);
-
-/// Memory map for the device.
-const MEMORY_MAP: SystemBMemoryMap = SystemBMemoryMap::new(MEMORY_LAYOUT);
 
 /// Serializable snapshot of the full device state for flash persistence.
 type PicoEthPersistedState = PersistedState<
@@ -120,7 +110,7 @@ impl StackDefinition for PicoEthLightSwitch {
     where
         Self::State: 'a,
     {
-        create_knxip_objects::<Self, _>(state, &MEMORY_LAYOUT)
+        create_knxip_objects::<Self, _>(state, &Self::memory_layout())
     }
 }
 
@@ -761,7 +751,7 @@ async fn main(spawner: Spawner) {
         (), // hook context — not needed, app logic runs via the stack handle
         link_layer_builder,
         device_state,
-        MEMORY_MAP,
+        PicoEthLightSwitch::memory_map(),
     );
 
     spawner

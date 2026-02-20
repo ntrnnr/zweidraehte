@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
 use knxprod::ets_pages;
 use zweidraehte::bcus::system_b::{
-    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, MemoryLayout, SystemBIpDeviceDef,
-    SystemBMemoryMap, create_knxip_objects,
+    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, SystemBIpDeviceDef, SystemBMemoryMap,
+    create_knxip_objects,
 };
 use zweidraehte::dpt::*;
 use zweidraehte::ets::ets_range_enum;
@@ -3246,12 +3246,7 @@ impl StackDefinition for MdtStack {
     where
         Self::State: 'a,
     {
-        let layout = MemoryLayout::from_descriptor(
-            SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-            &DEVICE_DESCRIPTOR,
-            core::mem::size_of::<MdtParams>(),
-        );
-        create_knxip_objects::<Self, _>(state, &layout)
+        create_knxip_objects::<Self, _>(state, &Self::memory_layout())
     }
 }
 

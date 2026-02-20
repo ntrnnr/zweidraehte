@@ -21,9 +21,8 @@ use devices::light_switch::{
     comm_objs::LightSwitchComObjects,
 };
 use zweidraehte::bcus::system_b::{
-    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, MemoryLayout, StaticIdentity,
-    SystemBIpDeviceDef, SystemBMemoryMap,
-    create_knxip_objects,
+    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, StaticIdentity, SystemBIpDeviceDef,
+    SystemBMemoryMap, create_knxip_objects,
 };
 use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
 use zweidraehte::messages::knxip::substructs::HPAI;
@@ -50,16 +49,6 @@ type PicoWState = IpSystemBDeviceState<
     LightSwitchParams,
     EmbassyNetworkInfo,
 >;
-
-/// Memory layout for the device, derived from the descriptor.
-const MEMORY_LAYOUT: MemoryLayout = MemoryLayout::from_descriptor(
-    SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-    &DEVICE_DESCRIPTOR,
-    core::mem::size_of::<LightSwitchParams>(),
-);
-
-/// Memory map for the device.
-const MEMORY_MAP: SystemBMemoryMap = SystemBMemoryMap::new(MEMORY_LAYOUT);
 
 // ----------------------------------------------------------------------------
 // SystemBIpDeviceDef + StackDefinition
@@ -94,7 +83,7 @@ impl StackDefinition for PicoWLightSwitch {
     where
         Self::State: 'a,
     {
-        create_knxip_objects::<Self, _>(state, &MEMORY_LAYOUT)
+        create_knxip_objects::<Self, _>(state, &Self::memory_layout())
     }
 }
 
@@ -291,7 +280,7 @@ async fn main(spawner: Spawner) {
         (), // hook context — no application hooks yet
         link_layer_builder,
         device_state,
-        MEMORY_MAP,
+        PicoWLightSwitch::memory_map(),
     );
 
     spawner

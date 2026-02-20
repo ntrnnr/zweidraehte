@@ -16,7 +16,7 @@ use env_logger::Env;
 use static_cell::StaticCell;
 use zweidraehte::prelude::*;
 use zweidraehte::{
-    bcus::system_b::DeviceIdentity,
+    bcus::system_b::{DeviceIdentity, SystemBIpDeviceDef},
     layers::linklayers::knxip::KnxNetIpBuilder,
     messages::knxip::substructs::HPAI,
     restart::{EraseCode, RestartResponse},
@@ -207,7 +207,7 @@ async fn main(spawner: Spawner) {
 
     // Create stack resources and initialize the stack
     static RESOURCES: StaticCell<
-        StackResources<DemoStack, { zweidraehte::config::buffer_size_for_apdu(DemoStack::MAX_APDU_LENGTH) }>,
+        StackResources<DemoStack, { zweidraehte::config::buffer_size_for_apdu(<DemoStack as StackDefinition>::MAX_APDU_LENGTH) }>,
     > = StaticCell::new();
     let (stack, runner) = zweidraehte::new(
         RESOURCES.init(StackResources::new()),
@@ -215,7 +215,7 @@ async fn main(spawner: Spawner) {
         (),
         link_layer_builder,
         device_state,
-        MEMORY_MAP,
+        DemoStack::memory_map(),
     );
 
     spawner.spawn(run_stack(runner)).unwrap();

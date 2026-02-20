@@ -65,6 +65,8 @@ use crate::layers::transport::TlStyle;
 use crate::objects::comm::ComObjects;
 use platform::IpTransport;
 
+use super::memory_map::{MemoryLayout, SystemBMemoryMap};
+
 /// Device definition for System B KNX/IP devices.
 ///
 /// Implement this trait alongside [`StackDefinition`](crate::StackDefinition)
@@ -107,15 +109,17 @@ use platform::IpTransport;
 ///     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, MyState>;
 ///
 ///     fn create_interface_objects<'a>(state: &'a MyState) -> Self::InterfaceObjects<'a> {
-///         let layout = MemoryLayout::from_descriptor(
-///             SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-///             Self::DEVICE,
-///             core::mem::size_of::<MyParams>(),
-///         );
-///         create_knxip_objects::<Self, _>(state, &layout)
+///         create_knxip_objects::<Self, _>(state, &Self::memory_layout())
 ///     }
 /// }
 /// ```
+///
+/// # Provided Methods
+///
+/// [`memory_layout()`](Self::memory_layout) and [`memory_map()`](Self::memory_map)
+/// derive the memory layout from `DEVICE` and `P` so you don't need per-device
+/// constants. Use `Self::memory_layout()` in `create_interface_objects` and
+/// pass `MyDevice::memory_map()` to [`zweidraehte::new()`](crate::new).
 ///
 /// # Limitations
 ///
@@ -168,6 +172,27 @@ pub trait SystemBIpDeviceDef: Copy + 'static {
         > + crate::objects::tables::HasPeiApplication<
             PEI: crate::objects::tables::HasLoadStateMachine + crate::objects::tables::HasRunStateMachine,
         > + 'static;
+
+    /// Compute the memory layout for this device's tables.
+    ///
+    /// Derives all table offsets and sizes from [`Self::DEVICE`] and
+    /// `size_of::<Self::P>()`. Override only if you need a non-standard
+    /// base address or custom layout.
+    fn memory_layout() -> MemoryLayout {
+        MemoryLayout::from_descriptor(
+            SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
+            Self::DEVICE,
+            core::mem::size_of::<Self::P>(),
+        )
+    }
+
+    /// Compute the memory map for this device.
+    ///
+    /// Used as the `Mem` argument to [`zweidraehte::new()`](crate::new) and
+    /// internally by [`create_interface_objects`](crate::StackDefinition::create_interface_objects).
+    fn memory_map() -> SystemBMemoryMap {
+        SystemBMemoryMap::new(Self::memory_layout())
+    }
 }
 
 // Blanket impl: SystemBIpDeviceDef → KnxIpDevice
@@ -222,12 +247,7 @@ use crate::layers::linklayers::tpuart::{AddressChecker, NoAddressChecker};
 ///     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, MyState>;
 ///
 ///     fn create_interface_objects<'a>(state: &'a MyState) -> Self::InterfaceObjects<'a> {
-///         let layout = MemoryLayout::from_descriptor(
-///             SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-///             Self::DEVICE,
-///             core::mem::size_of::<MyParams>(),
-///         );
-///         create_system_b_objects::<Self, _>(state, &layout)
+///         create_system_b_objects::<Self, _>(state, &Self::memory_layout())
 ///     }
 /// }
 /// ```
@@ -280,6 +300,27 @@ pub trait SystemBTpDeviceDef: Copy + 'static {
         > + crate::objects::tables::HasPeiApplication<
             PEI: crate::objects::tables::HasLoadStateMachine + crate::objects::tables::HasRunStateMachine,
         > + 'static;
+
+    /// Compute the memory layout for this device's tables.
+    ///
+    /// Derives all table offsets and sizes from [`Self::DEVICE`] and
+    /// `size_of::<Self::P>()`. Override only if you need a non-standard
+    /// base address or custom layout.
+    fn memory_layout() -> MemoryLayout {
+        MemoryLayout::from_descriptor(
+            SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
+            Self::DEVICE,
+            core::mem::size_of::<Self::P>(),
+        )
+    }
+
+    /// Compute the memory map for this device.
+    ///
+    /// Used as the `Mem` argument to [`zweidraehte::new()`](crate::new) and
+    /// internally by [`create_interface_objects`](crate::StackDefinition::create_interface_objects).
+    fn memory_map() -> SystemBMemoryMap {
+        SystemBMemoryMap::new(Self::memory_layout())
+    }
 }
 
 // Blanket impl: SystemBTpDeviceDef → TpDevice
