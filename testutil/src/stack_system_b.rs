@@ -17,7 +17,7 @@ use static_cell::StaticCell;
 use zweidraehte::prelude::*;
 use std::net::SocketAddrV4;
 use zweidraehte::{
-    bcus::system_b::{DeviceIdentity, SystemBIpDeviceDef},
+    bcus::system_b::SystemBIpDeviceDef,
     layers::linklayers::knxip::KnxNetIpBuilder,
     restart::{EraseCode, RestartResponse},
 };
@@ -41,9 +41,8 @@ const IDENTITY_FILE_PATH: &str = "device_identity.json";
 // ============================================================================
 
 /// Save the current device state to JSON storage.
-fn save_state(state: &DemoState, storage: &mut JsonStorage<DemoPersistedState>) {
-    let persisted = state.to_persisted();
-    match storage.save(&persisted) {
+fn save_state(state: &DemoState, storage: &mut JsonStorage<DemoState, FileIdentity>) {
+    match storage.save(state) {
         Ok(()) => {
             state.clear_dirty();
             log::info!("State saved to {}", STATE_FILE_PATH);
@@ -138,7 +137,13 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
         // Persist the post-reset state before restarting so it survives
         // the process re-exec.
         if state.is_dirty() {
-            save_state(state, &mut JsonStorage::<DemoPersistedState>::new(STATE_FILE_PATH));
+            // Construct a temporary storage with the same identity for the
+            // restart handler. The identity file was already provisioned at
+            // startup, so this just re-reads it.
+            let identity =
+                FileIdentity::load_or_provision(IDENTITY_FILE_PATH, SERIAL_NUMBER)
+                    .expect("load device identity for restart save");
+            save_state(state, &mut JsonStorage::new(STATE_FILE_PATH, identity));
         }
 
         // Send the response back to the stack (which forwards it on the bus).
@@ -174,24 +179,26 @@ async fn main(spawner: Spawner) {
 
     // Create storage and try to load persisted state.
     // Storage lives here in the binary — the state struct only tracks dirtiness.
-    let mut storage = JsonStorage::<DemoPersistedState>::new(STATE_FILE_PATH);
+    let mut storage = JsonStorage::<DemoState, _>::new(STATE_FILE_PATH, identity);
     let device_state: DemoState = match storage.load() {
-        Ok(Some(persisted)) => {
+        Ok(Some(state)) => {
             println!("Loaded persisted state from {}", STATE_FILE_PATH);
-            DemoState::from_persisted(&identity, persisted)
+            state
         }
         Ok(None) => {
             println!("No persisted state found, starting fresh");
-            let state = DemoState::new(&identity);
+            let identity = storage.identity();
+            let state = DemoState::new(identity);
             state.set_individual_address(IndividualAddress::new(1, 2, 3));
-            if let Err(e) = storage.save(&state.to_persisted()) {
+            if let Err(e) = storage.save(&state) {
                 log::error!("Failed to save initial state: {}", e);
             }
             state
         }
         Err(e) => {
             println!("Error loading persisted state: {}", e);
-            DemoState::new(&identity)
+            let identity = storage.identity();
+            DemoState::new(identity)
         }
     };
 

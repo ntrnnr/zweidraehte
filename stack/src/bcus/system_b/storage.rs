@@ -23,6 +23,37 @@ use crate::{
     },
 };
 
+use crate::storage::DeviceIdentity;
+
+// ============================================================================
+// HasPersistedState — bridge between runtime and serializable state
+// ============================================================================
+
+/// Trait for converting between runtime state and its serializable form.
+///
+/// Implemented by [`SystemBDeviceState`](super::SystemBDeviceState) to
+/// enable [`DeviceStorage`](crate::storage::DeviceStorage) backends to
+/// work with the runtime state type directly, internalizing the
+/// conversion to/from [`PersistedState`].
+///
+/// # Contract
+///
+/// - [`to_persisted`](Self::to_persisted) must capture all state that
+///   survives a power cycle.
+/// - [`from_persisted`](Self::from_persisted) must restore state such
+///   that the device behaves identically to before the power cycle
+///   (modulo volatile state like programming mode and run state).
+pub trait HasPersistedState: Sized {
+    /// The serializable snapshot type.
+    type Persisted: Serialize + for<'de> Deserialize<'de>;
+
+    /// Export current runtime state to a serializable snapshot.
+    fn to_persisted(&self) -> Self::Persisted;
+
+    /// Restore runtime state from a persisted snapshot and device identity.
+    fn from_persisted(identity: &impl DeviceIdentity, persisted: Self::Persisted) -> Self;
+}
+
 // ============================================================================
 // Link-layer config abstraction
 // ============================================================================

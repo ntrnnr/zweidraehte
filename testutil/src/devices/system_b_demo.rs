@@ -577,10 +577,6 @@ impl StackDefinition for DemoStack {
     }
 }
 
-/// Persisted (serializable) form of the demo device state.
-pub type DemoPersistedState =
-    zweidraehte::bcus::system_b::PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, zweidraehte::bcus::system_b::PersistedIpConfig>;
-
 // ============================================================================
 // ETS Page Layout
 // ============================================================================

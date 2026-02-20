@@ -25,7 +25,8 @@ use crate::{
     },
 };
 
-use super::{DeviceIdentity, LinkLayerState, PersistedIpConfig, PersistedState};
+use crate::storage::DeviceIdentity;
+use super::{HasPersistedState, LinkLayerState, PersistedIpConfig, PersistedState};
 
 // ============================================================================
 // Unified Device State
@@ -173,78 +174,6 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
         }
     }
 
-    /// Create device state from persisted storage.
-    ///
-    /// Restores all state and table data from storage. The link-layer state
-    /// is constructed from the persisted `link_layer_config` via
-    /// [`LinkLayerState::from_config`].
-    ///
-    /// The application's run state is always set to `Halted` — it must
-    /// be explicitly restarted after boot.
-    ///
-    /// # Arguments
-    ///
-    /// - `identity`: Factory-programmed device identity (serial number, etc.)
-    /// - `persisted`: Previously persisted state to restore
-    pub fn from_persisted(
-        identity: &impl DeviceIdentity,
-        persisted: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS::Config>,
-    ) -> Self {
-        // Destructure to move link_layer_config out by value (no Clone needed).
-        let PersistedState {
-            individual_address,
-            auth_keys,
-            routing_count,
-            address_table,
-            association_table,
-            group_object_table,
-            application,
-            pei_program,
-            program_version,
-            pei_program_version,
-            link_layer_config,
-            version: _, // Consumed but unused — migration would check this.
-        } = persisted;
-
-        Self {
-            individual_address: Cell::new(individual_address),
-            serial_number: *identity.serial_number(),
-            auth_keys: RefCell::new(auth_keys),
-            routing_count: Cell::new(routing_count),
-            programming_mode: Cell::new(false),
-            adt: RefCell::new(address_table),
-            ast: RefCell::new(association_table),
-            cot: RefCell::new(group_object_table),
-            app: RefCell::new(application),
-            pei: RefCell::new(pei_program),
-            program_version: RefCell::new(program_version),
-            pei_program_version: RefCell::new(pei_program_version),
-            link_layer_state: LS::from_config(link_layer_config),
-            dirty: Cell::new(false),
-        }
-    }
-
-    /// Export state to persisted format for storage.
-    pub fn to_persisted(&self) -> PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS::Config>
-    where
-        P: Clone,
-    {
-        PersistedState {
-            version: PersistedState::<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS::Config>::VERSION,
-            individual_address: self.individual_address.get(),
-            auth_keys: *self.auth_keys.borrow(),
-            routing_count: self.routing_count.get(),
-            address_table: (*self.adt.borrow()).clone(),
-            association_table: (*self.ast.borrow()).clone(),
-            group_object_table: (*self.cot.borrow()).clone(),
-            application: (*self.app.borrow()).clone(),
-            pei_program: (*self.pei.borrow()).clone(),
-            program_version: *self.program_version.borrow(),
-            pei_program_version: *self.pei_program_version.borrow(),
-            link_layer_config: self.link_layer_state.to_config(),
-        }
-    }
-
     /// Get the link-layer-specific persistent runtime state.
     pub fn link_layer_state(&self) -> &LS {
         &self.link_layer_state
@@ -379,6 +308,76 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
         let ia = self.individual_address.get();
         self.factory_reset();
         self.individual_address.set(ia);
+    }
+}
+
+// ============================================================================
+// HasPersistedState Implementation
+// ============================================================================
+
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault + Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    LS: LinkLayerState,
+> HasPersistedState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+{
+    type Persisted = PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS::Config>;
+
+    fn to_persisted(&self) -> Self::Persisted {
+        PersistedState {
+            version: PersistedState::<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS::Config>::VERSION,
+            individual_address: self.individual_address.get(),
+            auth_keys: *self.auth_keys.borrow(),
+            routing_count: self.routing_count.get(),
+            address_table: (*self.adt.borrow()).clone(),
+            association_table: (*self.ast.borrow()).clone(),
+            group_object_table: (*self.cot.borrow()).clone(),
+            application: (*self.app.borrow()).clone(),
+            pei_program: (*self.pei.borrow()).clone(),
+            program_version: *self.program_version.borrow(),
+            pei_program_version: *self.pei_program_version.borrow(),
+            link_layer_config: self.link_layer_state.to_config(),
+        }
+    }
+
+    fn from_persisted(
+        identity: &impl DeviceIdentity,
+        persisted: Self::Persisted,
+    ) -> Self {
+        // Destructure to move link_layer_config out by value (no Clone needed).
+        let PersistedState {
+            individual_address,
+            auth_keys,
+            routing_count,
+            address_table,
+            association_table,
+            group_object_table,
+            application,
+            pei_program,
+            program_version,
+            pei_program_version,
+            link_layer_config,
+            version: _, // Consumed but unused — migration would check this.
+        } = persisted;
+
+        Self {
+            individual_address: Cell::new(individual_address),
+            serial_number: *identity.serial_number(),
+            auth_keys: RefCell::new(auth_keys),
+            routing_count: Cell::new(routing_count),
+            programming_mode: Cell::new(false),
+            adt: RefCell::new(address_table),
+            ast: RefCell::new(association_table),
+            cot: RefCell::new(group_object_table),
+            app: RefCell::new(application),
+            pei: RefCell::new(pei_program),
+            program_version: RefCell::new(program_version),
+            pei_program_version: RefCell::new(pei_program_version),
+            link_layer_state: LS::from_config(link_layer_config),
+            dirty: Cell::new(false),
+        }
     }
 }
 

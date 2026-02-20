@@ -88,5 +88,5 @@ pub use objects::{
     KnxIpInterfaceObjects, SystemBObjects, create_knxip_objects, create_system_b_objects,
     device_info_from,
 };
-pub use storage::{LinkLayerConfig, LinkLayerState, PersistedIpConfig, PersistedState, table_sizes};
+pub use storage::{HasPersistedState, LinkLayerConfig, LinkLayerState, PersistedIpConfig, PersistedState, table_sizes};
 pub use traits::{KnxIpDevice, SystemBIpDeviceDef, SystemBTpDeviceDef, TpDevice};

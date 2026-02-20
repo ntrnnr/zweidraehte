@@ -30,6 +30,8 @@ use embassy_rp::flash::{self, Flash};
 use embassy_rp::peripherals::FLASH;
 use serde::{Deserialize, Serialize};
 
+use zweidraehte::bcus::system_b::HasPersistedState;
+use zweidraehte::storage::DeviceIdentity;
 use zweidraehte::storage::DeviceStorage;
 
 // ================================================================================
@@ -48,17 +50,22 @@ const HEADER_SIZE: usize = 6;
 
 /// Persistent storage backed by RP2040/RP2350 internal flash.
 ///
+/// `S` is the **runtime** state type (e.g., `PicoEthState`). The storage
+/// internally converts to/from the serializable [`S::Persisted`] form
+/// using the stored [`DeviceIdentity`].
+///
 /// `STORAGE_SIZE` controls how many bytes at the end of flash are reserved
 /// for device state. It must be a non-zero multiple of the 4 KiB sector
 /// size. Increase it if your device's serialized state exceeds the default
 /// 4 KiB (minus 6 bytes header).
-pub struct RpFlashStorage<S, const STORAGE_SIZE: usize = 4096> {
+pub struct RpFlashStorage<S, I, const STORAGE_SIZE: usize = 4096> {
     flash: Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>,
+    identity: I,
     dirty: bool,
     _phantom: core::marker::PhantomData<S>,
 }
 
-impl<S, const STORAGE_SIZE: usize> RpFlashStorage<S, STORAGE_SIZE> {
+impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE> {
     /// Offset of the storage region from the start of flash.
     const STORAGE_OFFSET: u32 = (FLASH_SIZE - STORAGE_SIZE) as u32;
 
@@ -70,19 +77,26 @@ impl<S, const STORAGE_SIZE: usize> RpFlashStorage<S, STORAGE_SIZE> {
     };
 
     /// Create a new flash storage instance.
-    pub fn new(flash: Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>) -> Self {
+    pub fn new(flash: Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>, identity: I) -> Self {
         // Force the compile-time validation constants to be evaluated.
         let _ = Self::_VALIDATE;
-        Self { flash, dirty: false, _phantom: core::marker::PhantomData }
+        Self { flash, identity, dirty: false, _phantom: core::marker::PhantomData }
     }
 }
 
-impl<S, const STORAGE_SIZE: usize> DeviceStorage for RpFlashStorage<S, STORAGE_SIZE>
+impl<S, I, const STORAGE_SIZE: usize> DeviceStorage for RpFlashStorage<S, I, STORAGE_SIZE>
 where
-    S: Serialize + for<'de> Deserialize<'de>,
+    S: HasPersistedState,
+    S::Persisted: Serialize + for<'de> Deserialize<'de>,
+    I: DeviceIdentity,
 {
     type State = S;
+    type Identity = I;
     type Error = FlashError;
+
+    fn identity(&self) -> &I {
+        &self.identity
+    }
 
     fn load(&mut self) -> Result<Option<S>, Self::Error> {
         let mut region = [0u8; STORAGE_SIZE];
@@ -99,9 +113,13 @@ where
             return Ok(None);
         }
 
+        // Deserialize the persisted form, then convert to runtime state.
         let payload = &region[HEADER_SIZE..HEADER_SIZE + len];
-        match postcard::from_bytes(payload) {
-            Ok(state) => Ok(Some(state)),
+        match postcard::from_bytes::<S::Persisted>(payload) {
+            Ok(persisted) => {
+                let state = S::from_persisted(&self.identity, persisted);
+                Ok(Some(state))
+            }
             Err(_) => {
                 defmt::warn!("Flash storage: postcard deserialization failed, returning None");
                 Ok(None)
@@ -110,11 +128,14 @@ where
     }
 
     fn save(&mut self, state: &S) -> Result<(), Self::Error> {
+        // Convert runtime state to serializable form.
+        let persisted = state.to_persisted();
+
         // Serialize into a stack buffer. Reserve header bytes at the front.
         let mut buf = [0u8; STORAGE_SIZE];
         buf[0..4].copy_from_slice(&MAGIC);
 
-        let payload = postcard::to_slice(state, &mut buf[HEADER_SIZE..])
+        let payload = postcard::to_slice(&persisted, &mut buf[HEADER_SIZE..])
             .expect("serialized state exceeds flash storage region — increase STORAGE_SIZE");
         let len = payload.len();
         buf[4..6].copy_from_slice(&(len as u16).to_le_bytes());

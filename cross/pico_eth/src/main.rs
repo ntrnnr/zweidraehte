@@ -62,12 +62,9 @@ const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 /// Device state combining System B tables with IP link-layer state.
 type PicoEthState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, EmbassyNetworkInfo>;
 
-/// Serializable snapshot of the full device state for flash persistence.
-type PicoEthPersistedState = PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, PersistedIpConfig>;
-
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
-type Storage = RpFlashStorage<PicoEthPersistedState>;
+type Storage = RpFlashStorage<PicoEthState, StaticIdentity>;
 
 // ----------------------------------------------------------------------------
 // SystemBIpDeviceDef + StackDefinition
@@ -257,8 +254,7 @@ async fn restart_task(
 /// Save device state to flash. Logs errors but does not propagate them
 /// (flash failure is non-fatal — the device continues with in-RAM state).
 fn save_state(state: &PicoEthState, storage: &RefCell<Storage>) {
-    let persisted = state.to_persisted();
-    match storage.borrow_mut().save(&persisted) {
+    match storage.borrow_mut().save(state) {
         Ok(()) => {
             state.clear_dirty();
             info!("State saved to flash");
@@ -687,20 +683,20 @@ async fn main(spawner: Spawner) {
 
     // Flash storage for persistent device state (last 4KB sector).
     let flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    let mut storage = RpFlashStorage::<PicoEthPersistedState>::new(flash);
+    let mut storage = RpFlashStorage::<PicoEthState, _>::new(flash, identity);
 
     let device_state = match storage.load() {
-        Ok(Some(persisted)) => {
+        Ok(Some(state)) => {
             info!("Loaded persisted state from flash");
-            PicoEthState::from_persisted(&identity, persisted)
+            state
         }
         Ok(None) => {
             info!("No persisted state found, starting fresh");
-            PicoEthState::new(&identity)
+            PicoEthState::new(storage.identity())
         }
         Err(e) => {
             warn!("Flash load failed: {}, starting fresh", e);
-            PicoEthState::new(&identity)
+            PicoEthState::new(storage.identity())
         }
     };
 

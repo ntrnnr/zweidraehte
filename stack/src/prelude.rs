@@ -39,8 +39,8 @@ pub use crate::objects::tables::{
 // Table events and memory types (used in StackDefinition impls and memory maps)
 pub use crate::objects::tables::{LoadEvent, RunEvent, Table, TableMemory, ComObjectFlags};
 
-// Storage
-pub use crate::storage::{DeviceStorage, NoStorage};
+// Storage and identity
+pub use crate::storage::{DeviceIdentity, DeviceStorage, NoStorage, StaticIdentity};
 
 // Memory
 pub use crate::memory::{MemoryMap, MemoryError, NoMemoryMap};
