@@ -37,7 +37,7 @@ use crate::{
         knx::*,
     },
     objects::{
-        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
+        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, LifecycleEvent},
         interface::{HasDeviceObject, PropertyServiceHandler, pid},
         tables::{
             AssociationTable, CommunicationObjectTable, HasApplication, HasAssociationTable,
@@ -89,6 +89,7 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     hook_context: &'a <D::CO as ComObjects>::HookContext,
     event_channel:
         &'a PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
+    lifecycle_channel: &'a PubSubChannel<NoopRawMutex, LifecycleEvent, 4, 2, 1>,
 
     // --- Interface objects ---
     /// Interface objects container with typed access to device properties.
@@ -134,6 +135,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             2,
             1,
         >,
+        lifecycle_channel: &'a PubSubChannel<NoopRawMutex, LifecycleEvent, 4, 2, 1>,
         interface_objects: &'a D::InterfaceObjects<'static>,
         memory_map: &'a D::Mem,
         app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
@@ -146,6 +148,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             comm_objects,
             hook_context,
             event_channel,
+            lifecycle_channel,
             interface_objects,
             memory_map,
             app_request_receiver,
@@ -940,14 +943,33 @@ where
             object_idx, prop_id, count, start_idx, data_len, access_level
         );
 
+        // Capture run state before property writes that might change it.
+        // Both LOAD_STATE_CONTROL and RUN_STATE_CONTROL can affect the run state:
+        // LOAD_STATE_CONTROL cascades into the RSM via RunnableApplication::write_lsm()
+        // (e.g., LoadCompleted triggers HALTED → READY → RUNNING automatically).
+        let was_running =
+            if prop_id == pid::LOAD_STATE_CONTROL || prop_id == pid::RUN_STATE_CONTROL {
+                Some(self.state.app().borrow().is_running())
+            } else {
+                None
+            };
+
         // Perform the write - the response may differ from written data (e.g., LOAD_STATE_CONTROL)
         let result = self.interface_objects.property_value_write(object_idx, prop_id, start_idx, data, access_level);
 
-        // Sync DeviceControl.user_stopped after writes to RUN_STATE_CONTROL.
-        // This needs to be updated whenever the run state machine transitions.
-        if prop_id == pid::RUN_STATE_CONTROL && result.is_ok() {
-            let is_running = self.state.app().borrow().is_running();
-            self.interface_objects.set_user_stopped(!is_running);
+        // Sync DeviceControl.user_stopped and publish lifecycle events on run state transitions.
+        if let Some(was_running) = was_running {
+            if result.is_ok() {
+                let is_running = self.state.app().borrow().is_running();
+                if was_running != is_running {
+                    self.interface_objects.set_user_stopped(!is_running);
+                    self.lifecycle_channel.publish_immediate(if is_running {
+                        LifecycleEvent::ApplicationStarted
+                    } else {
+                        LifecycleEvent::ApplicationStopped
+                    });
+                }
+            }
         }
 
         match result {

@@ -21,6 +21,7 @@ pub use crate::ets::{DeviceDescriptor, MaskVersion, EtsComObjects, EtsEnum, EtsP
 pub use crate::objects::comm::{
     ComObject, ComObjects, ComObjectIndex,
     ComObjectEvent, ComObjectStatus,
+    LifecycleEvent,
 };
 
 // Interface objects (traits + response/error types)

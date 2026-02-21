@@ -266,6 +266,25 @@ fn save_state(state: &PicoEthState, storage: &RefCell<Storage>) {
     }
 }
 
+/// Lifecycle event logger.
+///
+/// Logs application start/stop transitions so we can observe ETS
+/// programming completing (or unloading) via defmt.
+#[embassy_executor::task]
+async fn lifecycle_task(knx: Stack<'static, PicoEthLightSwitch>) -> ! {
+    let mut events = knx.lifecycle_events();
+    loop {
+        match events.next_message_pure().await {
+            LifecycleEvent::ApplicationStarted => {
+                info!("Application STARTED — app is now running");
+            }
+            LifecycleEvent::ApplicationStopped => {
+                info!("Application STOPPED — app is no longer running");
+            }
+        }
+    }
+}
+
 /// Main application task: handles button 1 and button 2 presses.
 ///
 /// Reads the ETS-programmed parameters to determine button mode
@@ -524,6 +543,9 @@ async fn main(spawner: Spawner) {
     spawner
         .spawn(restart_task(knx_stack, storage))
         .expect("restart_task spawnable once");
+    spawner
+        .spawn(lifecycle_task(knx_stack))
+        .expect("lifecycle_task spawnable once");
 
     // ========================================================================
     // Main loop: heartbeat LED + programming mode LED + periodic save

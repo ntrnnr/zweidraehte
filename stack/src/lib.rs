@@ -58,7 +58,7 @@ use crate::{
     memory::MemoryMap,
     messages::buffers::{Buffer, BufferManager, DynBufferManager},
     objects::{
-        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
+        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, LifecycleEvent},
         interface::{HasDeviceObject, PropertyServiceHandler},
         tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine},
     },
@@ -724,6 +724,8 @@ pub(crate) struct Inner<D: StackDefinition> {
     pub(crate) comm_objs: RefCell<D::CO>,
     pub(crate) event_channel:
         PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
+    /// Channel for application lifecycle events (started/stopped running)
+    pub(crate) lifecycle_channel: PubSubChannel<NoopRawMutex, LifecycleEvent, 4, 2, 1>,
     /// Channel for A_Restart requests from application layer to user code
     pub(crate) restart_channel:
         Channel<NoopRawMutex, Request<restart::RestartRequest, restart::RestartResponse>, 1>,
@@ -946,6 +948,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         app_service_channel: Channel::new(),
         comm_objs: RefCell::new(comm_objs),
         event_channel: PubSubChannel::new(),
+        lifecycle_channel: PubSubChannel::new(),
         restart_channel: Channel::new(),
         state,
         hook_context,
@@ -1015,6 +1018,12 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let is_running = self.stack.inner.state.app().borrow().is_running();
         self.interface_objects.set_user_stopped(!is_running);
 
+        // Publish initial lifecycle event so user code can initialize if the
+        // application is already loaded from persisted state.
+        if is_running {
+            self.stack.inner.lifecycle_channel.publish_immediate(LifecycleEvent::ApplicationStarted);
+        }
+
         // Create all the channels for layer to layer communication
         let ll_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
         let nl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
@@ -1046,6 +1055,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             &self.stack.inner.comm_objs,
             &self.stack.inner.hook_context,
             &self.stack.inner.event_channel,
+            &self.stack.inner.lifecycle_channel,
             self.interface_objects,
             &self.stack.inner.memory_map,
             self.app_request_receiver,
@@ -1399,6 +1409,39 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         self.inner.event_channel.dyn_subscriber().unwrap()
     }
 
+    /// Subscribe to application lifecycle events.
+    ///
+    /// Returns a subscriber that receives events when the application transitions
+    /// into or out of the RUNNING state. This includes transitions caused by:
+    /// - ETS programming completing (load state machine cascade)
+    /// - Explicit run state control commands
+    /// - Device startup with persisted loaded state
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// # async fn example(stack: zweidraehte::Stack<'_, MyStackDef>) {
+    /// use zweidraehte::prelude::LifecycleEvent;
+    ///
+    /// let mut lifecycle = stack.lifecycle_events();
+    ///
+    /// loop {
+    ///     match lifecycle.next_message_pure().await {
+    ///         LifecycleEvent::ApplicationStarted => {
+    ///             // Read parameters, initialize outputs, start timers
+    ///         }
+    ///         LifecycleEvent::ApplicationStopped => {
+    ///             // Set outputs to safe state, stop timers
+    ///         }
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub fn lifecycle_events(
+        &self,
+    ) -> embassy_sync::pubsub::DynSubscriber<'_, LifecycleEvent> {
+        self.inner.lifecycle_channel.dyn_subscriber().unwrap()
+    }
+
     /// Allocate a KNX message buffer from raw bytes.
     ///
     /// This is useful for testing and debugging, particularly with mock link layers
@@ -1579,5 +1622,19 @@ where
     /// A reference to the `RefCell` containing the communication object table
     pub fn communication_object_table(&self) -> &RefCell<<D::State as HasCommunicationObjectTable>::COT> {
         self.inner.state.cot()
+    }
+}
+
+impl<'d, D: StackDefinition> Stack<'d, D>
+where
+    D::State: HasApplication,
+{
+    /// Check if the application is currently running.
+    ///
+    /// The application is running when the run state machine is in the RUNNING state.
+    /// This requires the application program to be loaded (either from ETS programming
+    /// or from persisted state).
+    pub fn is_running(&self) -> bool {
+        self.inner.state.app().borrow().is_running()
     }
 }
