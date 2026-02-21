@@ -103,6 +103,24 @@ where
     val.first().map_or(false, |&b| b & 1 != 0)
 }
 
+/// Optimistically update the local status object to match what we sent.
+///
+/// Without this, `read_status` returns the stale value until the actuator
+/// sends a status telegram back. That means consecutive toggles after
+/// boot (when status starts at 0) all read the same value and the button
+/// appears stuck. This local write is overridden whenever a real status
+/// telegram arrives from the bus.
+fn write_local_status<D>(knx: &Stack<'_, D>, status_obj: Index, value: bool)
+where
+    D: StackDefinition<CO = LightSwitchComObjects>,
+{
+    let mut objs = knx.objects().borrow_mut();
+    let buf = objs.value_mut(status_obj.index());
+    if let Some(b) = buf.first_mut() {
+        *b = value as u8;
+    }
+}
+
 // ============================================================================
 // Main Dispatcher
 // ============================================================================
@@ -181,6 +199,7 @@ pub async fn handle_switch<D>(
 
     let dpt = DPT_Switch::from(value);
     let _ = knx.update_object(primary, dpt).await;
+    write_local_status(knx, status, value);
 }
 
 /// Dimmer mode:
@@ -213,6 +232,14 @@ pub async fn handle_dimmer<D, R>(
             };
             let dpt = DPT_Switch::from(value);
             let _ = knx.update_object(primary, dpt).await;
+            write_local_status(knx, status, value);
+
+            // In 2-function mode, set the next dim direction based on
+            // the switch action: if we just turned ON, the user likely
+            // wants to dim DOWN next; if we turned OFF, dim UP.
+            if rocker_on.is_none() {
+                *dim_up = !value;
+            }
         }
         ButtonEvent::LongPress => {
             // Determine dim direction: in rocker mode it's fixed,
