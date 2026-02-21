@@ -1690,30 +1690,31 @@ pub fn create_memorybit_write_verify_suite() -> TestSuite {
     // EFF format: 3C ECF SRC DST LEN TPCI APCI ADDR DATA...
     // ECF = 0x60 (AT=0 individual, HC=6, EFF=0)
     // LEN = 0x43 (67 = 1 TPCI + 1 APCI + 2 ADDR + 63 DATA)
+    // TPCI = 0x42 (T_Data_Connected seq=0, APCI upper 2 bits = 10)
     // APCI = 0xBF = 0x80 | 0x3F (Memory_Write with count=63)
     let preparation = vec![
         comment("M-2.10 Verify Preparation: Reset linear memory to 0x0F"),
         // Block 1: Write 63 bytes starting at 0x0200
         inject_delay("B0 #EDI #BDUT 60 80", 200),
-        inject("3C 60 #EDI #BDUT 43 43 BF 02 00 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        inject("3C 60 #EDI #BDUT 43 42 BF 02 00 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
         expect("B0 #BDUT #EDI 60 C2", 1000),
         inject_delay("B0 #EDI #BDUT 60 C2", 200),
         inject_delay("B0 #EDI #BDUT 60 81", 200),
         // Block 2: Write 63 bytes starting at 0x023F
         inject_delay("B0 #EDI #BDUT 60 80", 200),
-        inject("3C 60 #EDI #BDUT 43 43 BF 02 3F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        inject("3C 60 #EDI #BDUT 43 42 BF 02 3F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
         expect("B0 #BDUT #EDI 60 C2", 1000),
         inject_delay("B0 #EDI #BDUT 60 C2", 200),
         inject_delay("B0 #EDI #BDUT 60 81", 200),
         // Block 3: Write 63 bytes starting at 0x027E
         inject_delay("B0 #EDI #BDUT 60 80", 200),
-        inject("3C 60 #EDI #BDUT 43 43 BF 02 7E 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        inject("3C 60 #EDI #BDUT 43 42 BF 02 7E 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
         expect("B0 #BDUT #EDI 60 C2", 1000),
         inject_delay("B0 #EDI #BDUT 60 C2", 200),
         inject_delay("B0 #EDI #BDUT 60 81", 200),
         // Block 4: Write 63 bytes starting at 0x02BD (covers 0x02BD to 0x02FB)
         inject_delay("B0 #EDI #BDUT 60 80", 200),
-        inject("3C 60 #EDI #BDUT 43 43 BF 02 BD 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        inject("3C 60 #EDI #BDUT 43 42 BF 02 BD 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
         expect("B0 #BDUT #EDI 60 C2", 1000),
         inject_delay("B0 #EDI #BDUT 60 C2", 200),
         // Block 5: Write 4 bytes starting at 0x02FC to cover 0x02FC-0x02FF
