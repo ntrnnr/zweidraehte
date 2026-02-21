@@ -35,6 +35,7 @@ use crate::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
         GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PeiProgramObject,
         PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyServiceHandler, WriteResponse,
+        pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -263,10 +264,20 @@ where
             _ => Err(PropertyError::InvalidObjectIndex),
         };
 
-        // Mark state dirty on any successful property write so that
-        // the device state gets persisted before the next restart.
+        // Mark state dirty on successful property writes, but skip volatile
+        // properties that don't need persistence (runtime control flags,
+        // execution state). These are transient and re-derived on boot.
         if result.is_ok() {
-            self.state.mark_dirty();
+            let volatile = matches!(
+                (object_idx, prop_id),
+                (0, pid::DEVICE_CONTROL)
+                    | (0, pid::PROGMODE)
+                    | (4, pid::RUN_STATE_CONTROL)
+                    | (5, pid::RUN_STATE_CONTROL)
+            );
+            if !volatile {
+                self.state.mark_dirty();
+            }
         }
 
         result
