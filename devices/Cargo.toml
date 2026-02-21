@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 zweidraehte = { path = "../stack", default-features = false }
+embedded-util = { path = "../embedded-util" }
 const-default = { workspace = true }
 serde = { workspace = true }
 knxprod = { path = "../knxprod", optional = true }

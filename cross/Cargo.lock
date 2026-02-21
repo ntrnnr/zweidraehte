@@ -421,6 +421,7 @@ version = "0.1.0"
 dependencies = [
  "const-default",
  "embassy-time",
+ "embedded-util",
  "serde",
  "zweidraehte",
 ]
@@ -869,6 +870,10 @@ checksum = "1763775e2323b7d5f0aa6090657f5e21cfa02ede71f5dc40eead06d64dcd15cc"
 dependencies = [
  "embedded-storage",
 ]
+
+[[package]]
+name = "embedded-util"
+version = "0.1.0"
 
 [[package]]
 name = "ena"
@@ -1573,6 +1578,7 @@ dependencies = [
  "embassy-time",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
+ "embedded-util",
  "platform",
  "portable-atomic",
  "postcard",

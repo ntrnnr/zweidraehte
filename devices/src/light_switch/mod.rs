@@ -28,6 +28,7 @@
 //! }
 //! ```
 
+pub mod app;
 pub mod params;
 pub mod comm_objs;
 

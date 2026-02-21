@@ -4,6 +4,7 @@ members = [
     "stack",
     "platform",
     "devices",
+    "embedded-util",
     "testutil",
     "conformance",
     "ets-macros",

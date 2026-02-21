@@ -970,6 +970,7 @@ version = "0.1.0"
 dependencies = [
  "const-default",
  "embassy-time",
+ "embedded-util",
  "env_logger",
  "knxprod",
  "serde",
@@ -1186,6 +1187,10 @@ checksum = "2564b9f813c544241430e147d8bc454815ef9ac998878d30cc3055449f7fd4c0"
 dependencies = [
  "embedded-io 0.7.1",
 ]
+
+[[package]]
+name = "embedded-util"
+version = "0.1.0"
 
 [[package]]
 name = "encoding_rs"

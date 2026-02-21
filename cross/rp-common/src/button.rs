@@ -11,18 +11,7 @@ use embassy_time::{Duration, Timer};
 use embedded_hal::digital::InputPin;
 use embedded_hal_async::digital::Wait;
 
-/// Result of a debounced button press.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ButtonEvent {
-    /// The button was pressed and released before the long-press threshold.
-    ShortPress,
-
-    /// The button has been held past the long-press threshold and is still
-    /// held down. The caller should act on the long-press start (e.g. begin
-    /// dimming), then call [`DebouncedButton::wait_for_release`] to detect
-    /// when the user lets go.
-    LongPress,
-}
+pub use embedded_util::input::ButtonEvent;
 
 /// A push-button with debounce and short/long press classification.
 ///

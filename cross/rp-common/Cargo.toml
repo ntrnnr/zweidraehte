@@ -23,6 +23,7 @@ critical-section = "1.2.0"
 # KNX stack and platform traits
 zweidraehte = { path = "../../stack", default-features = false, features = ["defmt"] }
 platform = { path = "../../platform", default-features = false, features = ["defmt"] }
+embedded-util = { path = "../../embedded-util" }
 
 # Serialization for flash storage
 postcard = { workspace = true }
