@@ -173,7 +173,8 @@ impl ConformanceHookContext {
     /// The caller must ensure the COT reference remains valid for the
     /// lifetime of the stack.
     pub unsafe fn set_cot(&self, cot: &RefCell<conformance_config::CoTab>) {
-        *self.cot.get() = cot as *const _;
+        // SAFETY: Caller guarantees the COT reference outlives the stack.
+        unsafe { *self.cot.get() = cot as *const _ };
     }
 
     /// Get a reference to the COT if it has been set.
