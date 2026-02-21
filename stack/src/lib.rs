@@ -1126,9 +1126,9 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         asap: <<D as StackDefinition>::CO as ComObjects>::Index,
         value: T,
     ) -> Result<(), UpdateObjectError> {
-        // Check if object is idle and set status atomically
+        // Reject only if the object is actively being transmitted (Busy).
         let accepted = self.inner.with_comm_objs(|co| {
-            if !co.status(asap.index()).is_idle() {
+            if co.status(asap.index()) == ComObjectStatus::Busy {
                 return false;
             }
             co.set_status(asap.index(), ComObjectStatus::WriteRequest);
@@ -1182,7 +1182,10 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// * `Err(UpdateObjectError::Busy)` - The object is already transmitting
     pub async fn write_object_by_asap(&self, asap: u16) -> Result<(), UpdateObjectError> {
         let accepted = self.inner.with_comm_objs(|co| {
-            if !co.status(asap).is_idle() {
+            // Reject only if the object is actively being transmitted (Busy).
+            // Other states (including WriteRequest set via flag manipulation)
+            // are fine — the AL serializes requests through a size-1 channel.
+            if co.status(asap) == ComObjectStatus::Busy {
                 return false;
             }
             co.set_status(asap, ComObjectStatus::WriteRequest);
@@ -1222,7 +1225,8 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// * `Err(ReadObjectError::Busy)` - The object is already transmitting
     pub async fn read_object_by_asap(&self, asap: u16) -> Result<(), ReadObjectError> {
         let accepted = self.inner.with_comm_objs(|co| {
-            if !co.status(asap).is_idle() {
+            // Reject only if the object is actively being transmitted (Busy).
+            if co.status(asap) == ComObjectStatus::Busy {
                 return false;
             }
             co.set_status(asap, ComObjectStatus::ReadRequest);
@@ -1270,9 +1274,9 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         asap: <<D as StackDefinition>::CO as ComObjects>::Index,
         timeout: Option<Duration>,
     ) -> Result<(), ReadObjectError> {
-        // Check if object is idle and set status atomically
+        // Reject only if the object is actively being transmitted (Busy).
         let accepted = self.inner.with_comm_objs(|co| {
-            if !co.status(asap.index()).is_idle() {
+            if co.status(asap.index()) == ComObjectStatus::Busy {
                 return false;
             }
             co.set_status(asap.index(), ComObjectStatus::ReadRequest);

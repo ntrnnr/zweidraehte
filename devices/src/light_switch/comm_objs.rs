@@ -60,7 +60,7 @@ pub struct LightSwitchComObjects {
         index = 2,
         display = "Button 1 status",
         function = "Status feedback",
-        flags = C | W | T | U,
+        flags = C | W | T | U | ROI,
         selector_param = "button1_config_selector"
     )]
     #[ets_ref(dpt = DPT_Switch, when = ButtonConfigDiscriminant::Switch, text = "Button 1 {{btn1_description:}} status", function = "Switch status")]
@@ -104,7 +104,7 @@ pub struct LightSwitchComObjects {
         index = 5,
         display = "Button 2 status",
         function = "Status feedback",
-        flags = C | W | T | U,
+        flags = C | W | T | U | ROI,
         selector_param = "button2_config_selector"
     )]
     #[ets_ref(dpt = DPT_Switch, when = ButtonConfigDiscriminant::Switch, text = "Button 2 {{btn2_description:}} status", function = "Switch status")]

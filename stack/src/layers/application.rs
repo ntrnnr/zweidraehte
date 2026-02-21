@@ -18,7 +18,7 @@
 
 use core::cell::RefCell;
 
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either3, select3};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     channel::{DynamicReceiver, DynamicSender},
@@ -114,6 +114,27 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     /// because the AL is single-threaded (`NoopRawMutex`) and processes one
     /// message at a time.
     response_route: ResponseRoute,
+
+    /// Read-on-init cursor. When `Scanning(idx)`, the AL will process one
+    /// ROI object per main-loop iteration, starting from ASAP `idx`. Set to
+    /// `Scanning(1)` when the application transitions to RUNNING (COT is
+    /// 1-indexed); returns to
+    /// `Idle` when the scan completes or the application stops.
+    ///
+    /// After a successful L2 send, the object transitions to `IdleOk` (like
+    /// the CO-idle action). If a response arrives later, it will
+    /// update the value; if not, the object simply stays idle with its value
+    /// uninitialized — no application-level timeout is needed.
+    read_on_init: ReadOnInitState,
+}
+
+/// State machine for the read-on-init cycle.
+#[derive(Debug)]
+enum ReadOnInitState {
+    /// No ROI cycle active.
+    Idle,
+    /// Scanning objects, sending reads. The `u16` is the next ASAP to check.
+    Scanning(u16),
 }
 
 // ============================================================================
@@ -155,6 +176,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             restart_sender,
             transport_layer,
             response_route: None,
+            read_on_init: ReadOnInitState::Idle,
         }
     }
 }
@@ -174,9 +196,31 @@ where
     where
         M: Inbox<LayerOp<Self::Buffer>>,
     {
+        // If the application is already running at startup (e.g., from
+        // persisted state), begin the read-on-init cycle.
+        if self.state.app().borrow().is_running()
+            && self.state.ast().borrow().is_loaded()
+        {
+            info!("AL read-on-init: starting cycle (app already running at startup)");
+            self.read_on_init = ReadOnInitState::Scanning(1);
+        }
+
         loop {
-            match select(inbox.next(), self.app_request_receiver.receive()).await {
-                Either::First(msg) => {
+            // When the read-on-init cursor is active, this future resolves
+            // immediately so the ROI step runs in the next iteration. When
+            // inactive, it pends forever, keeping the loop driven only by
+            // inbox and app requests.
+            let roi_active = matches!(self.read_on_init, ReadOnInitState::Scanning(_));
+            let roi_future = async move {
+                if !roi_active {
+                    core::future::pending::<()>().await;
+                }
+            };
+
+            // select3 polls in argument order: inbox traffic and app requests
+            // take priority over ROI, so normal traffic is never blocked.
+            match select3(inbox.next(), self.app_request_receiver.receive(), roi_future).await {
+                Either3::First(msg) => {
                     trace!("AL received: {:?}", msg);
 
                     let mut ind = match msg {
@@ -272,7 +316,7 @@ where
                         route.send(None).await;
                     }
                 }
-                Either::Second(request) => match request.get() {
+                Either3::Second(request) => match request.get() {
                     r @ ApplicationLayerService::GroupValueWriteRequest(asap) => {
                         debug!("AL GroupValueWrite.req: {:?}", r);
 
@@ -294,6 +338,9 @@ where
                         request.reply(response).await;
                     }
                 },
+                Either3::Third(()) => {
+                    self.read_on_init_step().await;
+                }
             }
         }
     }
@@ -614,10 +661,15 @@ where
             // Write request clears after successful transmission
             if confirmation.ctrl_field().c() == Confirm::NoError {
                 if read {
-                    // Read request: keep pending, waiting for GroupValue_Response
-                    self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::ReadRequestOk);
+                    // Read request: return to ReadRequest (idle + read pending).
+                    // The object was briefly in Busy during transmission; now
+                    // it's back to "idle, awaiting GroupValue_Response". If a
+                    // response arrives, the value gets updated and status
+                    // becomes Updated. If nobody answers, the object stays in
+                    // ReadRequest — still idle, still usable.
+                    self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::ReadRequest);
                 } else {
-                    // Write request: transmission complete
+                    // Write request: transmission complete → idle.
                     self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::IdleOk);
                 }
             } else {
@@ -635,6 +687,108 @@ where
         }
 
         true
+    }
+
+    // ========================================================================
+    // Read-On-Init
+    // ========================================================================
+
+    /// Process one step of the read-on-init cycle.
+    ///
+    /// Scans forward from the current cursor position to find the next
+    /// communication object eligible for a read-on-init request and sends
+    /// a `A_GroupValue_Read.req` for it. One object is processed per call
+    /// to avoid blocking normal traffic.
+    ///
+    /// An object is eligible when ALL of these hold:
+    /// 1. Its COT entry has the ROI flag set
+    /// 2. Its runtime status is `Uninitialized` (value not yet valid)
+    /// 3. It has at least one association in the AST (is linked)
+    ///
+    /// Objects that are `Uninitialized` are transitioned to `IdleOk` during
+    /// the scan regardless of ROI eligibility, per the conformance suite
+    /// behavior of clearing RAM flags as it walks through objects.
+    ///
+    /// After a successful L2 send, the object goes to `IdleOk` (matching
+    /// the CO-idle action). If a `GroupValue_Response` arrives
+    /// later, it will update the value normally. If nobody answers, the
+    /// object simply stays idle — no application-level timeout is needed.
+    async fn read_on_init_step(&mut self) {
+        let ReadOnInitState::Scanning(start) = self.read_on_init else {
+            return;
+        };
+
+        // Cancel if app is no longer running or AST not loaded.
+        if !self.state.app().borrow().is_running() {
+            debug!("AL read-on-init: cancelled (app not running)");
+            self.read_on_init = ReadOnInitState::Idle;
+            return;
+        }
+        if !self.state.ast().borrow().is_loaded() {
+            debug!("AL read-on-init: cancelled (AST not loaded)");
+            self.read_on_init = ReadOnInitState::Idle;
+            return;
+        }
+
+        let entry_count = self.state.cot().borrow().entry_count();
+        let mut cursor = start;
+
+        // COT is 1-indexed: valid ASAPs are 1..=entry_count.
+        while cursor <= entry_count {
+            let asap = cursor;
+            cursor += 1;
+
+            let Some(cot_info) = self.state.cot().borrow().get_object(asap) else {
+                continue;
+            };
+
+            // Transition Uninitialized objects to IdleOk (clear RAM
+            // flags). Capture whether the object was uninitialized before
+            // the transition so we can check value validity.
+            let was_uninitialized = {
+                let status = self.comm_objects.borrow().status(asap);
+                if status == ComObjectStatus::Uninitialized {
+                    self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::IdleOk);
+                    true
+                } else {
+                    false
+                }
+            };
+
+            // 1. ROI flag must be set
+            if !cot_info.flags.read_on_init() {
+                continue;
+            }
+
+            // 2. Value must not have been valid (was Uninitialized)
+            if !was_uninitialized {
+                debug!("AL read-on-init: ASAP {} skipped (value already valid)", asap);
+                continue;
+            }
+
+            // 3. Object must be linked (has an association)
+            if self.state.ast().borrow().get_sending_tsap(asap).is_none() {
+                debug!("AL read-on-init: ASAP {} skipped (not linked)", asap);
+                continue;
+            }
+
+            // Found an eligible object — send GroupValueRead.req
+            info!("AL read-on-init: sending GroupValueRead for ASAP {}", asap);
+            self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::ReadRequest);
+            self.send_group_value_request(asap, true).await;
+
+            // Log the result of the send attempt
+            let result_status = self.comm_objects.borrow().status(asap);
+            debug!("AL read-on-init: ASAP {} send result: {:?}", asap, result_status);
+
+            // Save cursor for next call and return (one object per step)
+            self.read_on_init = ReadOnInitState::Scanning(cursor);
+            return;
+        }
+
+        // All objects scanned — cycle complete.
+        info!("AL read-on-init: cycle complete ({} objects scanned)", entry_count);
+        self.read_on_init = ReadOnInitState::Idle;
     }
 }
 
@@ -968,6 +1122,14 @@ where
                     } else {
                         LifecycleEvent::ApplicationStopped
                     });
+
+                    // Activate or cancel the read-on-init cycle.
+                    if is_running {
+                        info!("AL read-on-init: starting cycle (app transitioned to running)");
+                        self.read_on_init = ReadOnInitState::Scanning(1);
+                    } else {
+                        self.read_on_init = ReadOnInitState::Idle;
+                    }
                 }
             }
         }

@@ -1,6 +1,7 @@
 use crate::dpt::DatapointType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 /// Status of a communication object
 ///
@@ -16,11 +17,12 @@ pub enum ComObjectStatus {
     /// Object was updated remotely (0x48)
     Updated,
 
-    /// Read request was issued, not yet sent (0x44)
+    /// Read request pending (0x44).
+    ///
+    /// Set when a read request is issued and after successful L2 transmission.
+    /// The object stays in this state until a `GroupValue_Response` arrives
+    /// (transitioning to `Updated`) or until the application resets it.
     ReadRequest,
-
-    /// Read request sent successfully, waiting for response (0x44)
-    ReadRequestOk,
 
     /// Read request failed (transmission error or disabled) (0x45)
     ReadRequestError,
@@ -74,7 +76,6 @@ impl ComObjectStatus {
             ComObjectStatus::WriteRequest => 0x02,      // Transmitting (not idle)
             ComObjectStatus::WriteRequestError => 0x41, // Idle, Error (write failed)
             ComObjectStatus::ReadRequest => 0x44,       // Idle + Read request pending
-            ComObjectStatus::ReadRequestOk => 0x44,     // Idle + Read request pending (sent OK)
             ComObjectStatus::ReadRequestError => 0x45,  // Idle + Read request pending + Error
             ComObjectStatus::Updated => 0x48,           // Idle + Updated
             ComObjectStatus::Uninitialized => 0x40,     // Treat as IdleOk

@@ -203,6 +203,12 @@ async fn main(spawner: Spawner) {
     spawner.spawn(run_stack(runner)).unwrap();
     Timer::after(Duration::from_millis(50)).await;
 
+    // Drain any read-on-init messages that were sent during startup.
+    let roi_drained = harness.drain_captured();
+    if roi_drained > 0 {
+        println!("(Drained {} read-on-init messages from startup)\n", roi_drained);
+    }
+
     let mut passed = 0;
     let mut failed = 0;
     let mut total_steps = 0;
