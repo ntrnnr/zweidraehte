@@ -446,7 +446,8 @@ mod conformance_config {
             // GO2: Configuration flags (8-bit) - for accessing GO0's config flags
             3 => (7, CE | TE | RE | WE | UE),
             // GO3: Value (8-bit) - for accessing GO0's value without flag modification
-            4 => (7, CE | TE | RE | WE | UE),
+            // ROI flag is set for test 1.4.1.6 (Read-on-Init verification).
+            4 => (7, CE | TE | RE | WE | UE | ROI),
 
             // ================================================================
             // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects (ASAP 5-8)

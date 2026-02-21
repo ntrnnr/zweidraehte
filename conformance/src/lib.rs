@@ -163,6 +163,13 @@ pub enum TestStep {
     /// programming mode is off and an IndividualAddress_Read is sent).
     ExpectNone { timeout_ms: u32 },
 
+    /// Wait for `settle_ms` then drain all pending captured messages.
+    ///
+    /// Use this after operations that produce "side-effect" messages (e.g.,
+    /// restart triggers ROI GroupValue_Reads) that are correct behavior but
+    /// would interfere with subsequent Expect steps.
+    Drain { settle_ms: u32 },
+
     /// Custom action placeholder (for complex test scenarios)
     Custom,
 }

@@ -28,7 +28,6 @@ use embassy_sync::{
 use super::{ActorRequest, Inbox, Layer, LayerOp, Request};
 
 use crate::{
-    restart::{EraseCode, RestartError, RestartRequest, RestartResponse},
     StackDefinition, StackState,
     address::GroupAddress,
     messages::{
@@ -44,6 +43,7 @@ use crate::{
             HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine,
         },
     },
+    restart::{EraseCode, RestartError, RestartRequest, RestartResponse},
 };
 
 // ============================================================================
@@ -198,9 +198,7 @@ where
     {
         // If the application is already running at startup (e.g., from
         // persisted state), begin the read-on-init cycle.
-        if self.state.app().borrow().is_running()
-            && self.state.ast().borrow().is_loaded()
-        {
+        if self.state.app().borrow().is_running() && self.state.ast().borrow().is_loaded() {
             info!("AL read-on-init: starting cycle (app already running at startup)");
             self.read_on_init = ReadOnInitState::Scanning(1);
         }
@@ -449,7 +447,12 @@ where
                     }
                 }
 
-                debug!("AL ASAP {} updated via {:?}: {:?}", asap, apci, crate::fmt::Bytes(self.comm_objects.borrow().value(asap)));
+                debug!(
+                    "AL ASAP {} updated via {:?}: {:?}",
+                    asap,
+                    apci,
+                    crate::fmt::Bytes(self.comm_objects.borrow().value(asap))
+                );
             } else {
                 error!("Length of telegram not enough to contain object value");
             }
@@ -539,7 +542,11 @@ where
             let confirmation = self.send_response(RequestMessage::request(msg)).await;
             debug!("AL GroupValueResponse confirmation ASAP {} TSAP {}: {:?}", asap, tsap, confirmation.service_type());
 
-            trace!("AL sent GroupValueResponse for ASAP {}: {:?}", asap, crate::fmt::Bytes(self.comm_objects.borrow().value(asap)));
+            trace!(
+                "AL sent GroupValueResponse for ASAP {}: {:?}",
+                asap,
+                crate::fmt::Bytes(self.comm_objects.borrow().value(asap))
+            );
 
             // Publish read event to the event channel
             if let Some(index) = <<D as StackDefinition>::CO as ComObjects>::Index::from_index(asap) {
@@ -1101,12 +1108,11 @@ where
         // Both LOAD_STATE_CONTROL and RUN_STATE_CONTROL can affect the run state:
         // LOAD_STATE_CONTROL cascades into the RSM via RunnableApplication::write_lsm()
         // (e.g., LoadCompleted triggers HALTED → READY → RUNNING automatically).
-        let was_running =
-            if prop_id == pid::LOAD_STATE_CONTROL || prop_id == pid::RUN_STATE_CONTROL {
-                Some(self.state.app().borrow().is_running())
-            } else {
-                None
-            };
+        let was_running = if prop_id == pid::LOAD_STATE_CONTROL || prop_id == pid::RUN_STATE_CONTROL {
+            Some(self.state.app().borrow().is_running())
+        } else {
+            None
+        };
 
         // Perform the write - the response may differ from written data (e.g., LOAD_STATE_CONTROL)
         let result = self.interface_objects.property_value_write(object_idx, prop_id, start_idx, data, access_level);
@@ -2299,7 +2305,12 @@ where
 
         // Get current access level from the message (set by transport layer from connection)
         let current_access_level = ind.access_level();
-        debug!("AL Key_Write: level={}, key={:?}, current_access_level={}", level, crate::fmt::Bytes(&key), current_access_level);
+        debug!(
+            "AL Key_Write: level={}, key={:?}, current_access_level={}",
+            level,
+            crate::fmt::Bytes(&key),
+            current_access_level
+        );
 
         // Perform the key write
         let result_level = self.state.key_write(level, &key, current_access_level);
@@ -2383,15 +2394,12 @@ where
         // typically require higher access (level 0)
         let required_level = match erase_code {
             EraseCode::Basic | EraseCode::Confirmed => 3, // Anyone
-            _ => 0, // System access required for other erase codes
+            _ => 0,                                       // System access required for other erase codes
         };
 
         let current_level = ind.access_level();
         if current_level > required_level {
-            warn!(
-                "AL Restart: access denied (current={}, required={})",
-                current_level, required_level
-            );
+            warn!("AL Restart: access denied (current={}, required={})", current_level, required_level);
             if needs_response {
                 self.send_restart_response(ind, RestartError::AccessDenied, 0).await;
             }
@@ -2399,12 +2407,7 @@ where
         }
 
         // Send restart request to user code and await response
-        let request = RestartRequest {
-            erase_code,
-            channel,
-            access_level: current_level,
-            needs_response,
-        };
+        let request = RestartRequest { erase_code, channel, access_level: current_level, needs_response };
 
         debug!("AL Restart: sending request to user code");
         let response: RestartResponse = self.restart_sender.request(request).await;
@@ -2414,8 +2417,6 @@ where
         if needs_response {
             self.send_restart_response(ind, response.error, response.process_time_100ms).await;
         }
-
-        // Note: The actual platform restart is triggered by user code after sending the response
     }
 
     /// Send A_Restart_Response message
@@ -2427,10 +2428,13 @@ where
     ) {
         use crate::messages::builder::IndicationExt;
 
-        // Determine transport service based on incoming service type
+        // Determine transport service based on incoming service type.
+        // Connection-oriented data arrives as T_Data_Ind, connectionless
+        // individual data as T_DataUnack_Ind, and broadcast as T_Broadcast_Ind.
         let transport_service = match ind.service_type() {
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req, // Connection-oriented
-            _ => ServiceType::T_Broadcast_Req,                  // Connectionless
+            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
+            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
+            _ => ServiceType::T_Broadcast_Req,
         };
 
         // Response: APCI(2) + Error(1) + ProcessTime(2) = 5 bytes total APDU
@@ -2439,19 +2443,16 @@ where
 
         // Build response using Restart APCI as base, then modify the APCI bytes in with_data
         // to set the correct A_Restart_Response format: 0x03 0xA1
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::Restart, transport_service)
-            .with_data(|data| {
-                // Manually set APCI bytes for A_Restart_Response: 0x03 0xA1
-                // The first byte (0x03) encodes the APCI high bits
-                // The second byte (0xA1) encodes: bit 7=1 (response), bits 0-5 = channel info
-                data[offsets::MSG_APDU] = 0x03;
-                data[offsets::MSG_APCI + 1] = 0xA1;
-                data[offsets::MSG_APCI + 2] = error.into();
-                data[offsets::MSG_APCI + 3] = (process_time_100ms >> 8) as u8;
-                data[offsets::MSG_APCI + 4] = process_time_100ms as u8;
-            });
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::Restart, transport_service).with_data(|data| {
+            // Manually set APCI bytes for A_Restart_Response: 0x03 0xA1
+            // The first byte (0x03) encodes the APCI high bits
+            // The second byte (0xA1) encodes: bit 7=1 (response), bits 0-5 = channel info
+            data[offsets::MSG_APDU] = 0x03;
+            data[offsets::MSG_APCI + 1] = 0xA1;
+            data[offsets::MSG_APCI + 2] = error.into();
+            data[offsets::MSG_APCI + 3] = (process_time_100ms >> 8) as u8;
+            data[offsets::MSG_APCI + 4] = process_time_100ms as u8;
+        });
 
         debug!("AL sending Restart_Response: error={}, process_time={}ms", error, process_time_100ms as u32 * 100);
 

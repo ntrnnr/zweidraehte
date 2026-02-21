@@ -1202,6 +1202,7 @@ pub fn create_restart_suite() -> TestSuite {
             expect("B0 #BDUT #EDI 60 C2", 200),
             // T_Disconnect (use #WAIT variable for restart delay)
             inject_delay("B0 #EDI #BDUT 60 81", 5000),
+            // Drain ROI GroupValue_Read messages triggered by simulated restart.
             comment("Acceptance: Compare BDUT's reaction to what the manufacturer has declared in the supplied PIXIT forms for Management (e.g. previously active programming mode deactivated)."),
             // Verify programming mode is off by reading PID_PROG_MODE
             inject("BC #EDI #BDUT 65 03 D5 00 36 10 01"),

@@ -70,3 +70,12 @@ pub fn trigger_write(asap: u16) -> TestStep {
 pub fn expect_none(timeout_ms: u32) -> TestStep {
     TestStep::ExpectNone { timeout_ms }
 }
+
+/// Drain all pending captured messages after waiting `settle_ms` for
+/// in-flight messages to arrive.
+///
+/// Use after operations that produce side-effect messages (e.g., restart
+/// triggers ROI reads) that would interfere with subsequent Expect steps.
+pub fn drain(settle_ms: u32) -> TestStep {
+    TestStep::Drain { settle_ms }
+}

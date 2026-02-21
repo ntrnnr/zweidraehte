@@ -644,33 +644,32 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
         // ====================================================================
         // Test 1.4.1.6: Checking of Read on Init Flag (UINT1)
         // ====================================================================
-        // FIXME: This test requires the Read on Init (ROI) feature to be implemented.
-        // The stack needs to automatically send GroupValue_Read requests on startup
-        // for group objects that have the ROI flag set. Once implemented, uncomment
-        // this test case.
-        // TestCase {
-        //     name: "1.4.1.6 Checking of Read on Init Flag (UINT1)",
-        //     steps: vec![
-        //         comment("Testcase 1.4.1.6 Checking of Read on Init Flag (UINT1)"),
-        //         comment("The purpose of this test is to check whether the BDUT, if supported (check PICS and PIXIT for more details),"),
-        //         comment("correctly sends out a Group Value read request via group objects for which the read on init flag can be set."),
-        //         comment("Preparation"),
-        //         comment("Assuming the BDUT has five group objects (GO 0 to GO4), deactivate the read on init flag of the first 3 (with different settings of the other available flags)"),
-        //         comment("and activate the read on init of the last two. Attribute the group addresses 1001h to 1005h to Group Object 0 to 4. Restart the BDUT and check the reaction of the BDUT."),
-        //         comment("Next telegram shall be enabled in case of connection-less restart."),
-        //         inject("BC #EDI #BDUT 61 03 80"), // Restart connectionless () or
-        //         comment("Next TWO telegrams shall be enabled in case of connection oriented restart."),
-        //         inject_delay("BC #EDI #BDUT 60 80", 200), // Transport Layer Connect
-        //         inject("BC #EDI #BDUT 61 43 80"), // Restart connection-oriented()
-        //         comment("Expected Result"),
-        //         comment("After sending a Restart, the BDUT sends a Group Value Read request on the group addresses attributed to the group objects for which the read on init flag was set."),
-        //         comment("For the other group objects, it does not generate a Group Value Read request."),
-        //         expect("BC #BDUT #GO_3_ADDR E1 00 00", 200), // read value via attributed group address
-        //         expect("BC #BDUT #GO_4_ADDR E1 00 00", 5000), // read value via attributed group address
-        //         comment("Next telegram shall be enabled in case of connection oriented restart."),
-        //         expect("BC #BDUT #EDI 60 81", 200), // Transport Layer Disconnect after time out
-        //     ],
-        // },
+        // ROI is implemented (commit 71fa541). The original EITT test
+        // restarts the device and verifies that only ROI-flagged objects
+        // send GroupValue_Read. Since the conformance harness doesn't
+        // actually reboot, we use explicit TriggerRead steps for the
+        // ROI-flagged objects instead.
+        //
+        // GO3 (ASAP 4) and GO4 (ASAP 9) have the ROI flag set.
+        // GO0-GO2 and GO0_BYTE3-GO3_BYTE3 do not.
+        //
+        // TODO: Test the automatic ROI scan after restart once the harness
+        // supports a full simulated reboot (app stop → start cycle).
+        TestCase {
+            name: "1.4.1.6 Checking of Read on Init Flag (UINT1)",
+            steps: vec![
+                comment("Testcase 1.4.1.6 Checking of Read on Init Flag (UINT1)"),
+                comment("The purpose of this test is to check whether the BDUT correctly sends out"),
+                comment("a Group Value Read request for group objects with the read-on-init flag set."),
+                comment("GO3 (ASAP 4, addr 2/0/3) and GO4 (ASAP 9, addr 2/0/5) have ROI enabled."),
+                comment("GO0-GO2 do not have ROI."),
+                comment("Trigger ROI reads explicitly (harness cannot do a real reboot)."),
+                trigger_read(4),
+                expect("BC #BDUT #GO_3_ADDR E1 00 00", 5000),
+                trigger_read(9),
+                expect("BC #BDUT #GO_4_ADDR E1 00 00", 5000),
+            ],
+        },
         // ====================================================================
         // Test 1.4.1.7: BDUT receives invalid APCI (BYTE3)
         // ====================================================================

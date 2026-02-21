@@ -34,12 +34,76 @@ use knx_conformance::harness::stack::{ConformanceTestStack, FullStackHarness};
 use knx_conformance::logger;
 use knx_conformance::*;
 
-use zweidraehte::Runner;
+use zweidraehte::objects::comm::{ComObjectStatus, ComObjects};
+use zweidraehte::objects::interface::HasDeviceObject;
+use zweidraehte::objects::tables::CommunicationObjectTable;
+use zweidraehte::restart::{EraseCode, RestartError, RestartResponse};
+use zweidraehte::{Runner, Stack};
 
 /// Run the stack in the background
 #[embassy_executor::task]
 async fn run_stack(runner: Runner<'static, ConformanceTestStack>) {
     runner.run().await;
+}
+
+/// Handle restart requests from the stack.
+///
+/// On a real device, user code receives restart requests, executes the
+/// appropriate reset on the device state, replies, then triggers a platform
+/// reboot. In the conformance harness there is no real reboot, so after
+/// replying we manually clear volatile state that would be lost on reboot:
+/// programming mode and COM object statuses.
+#[embassy_executor::task]
+async fn handle_restarts(stack: Stack<'static, ConformanceTestStack>) {
+    loop {
+        let request = stack.receive_restart_request().await;
+        let state = stack.state();
+
+        let response = match request.get().erase_code {
+            EraseCode::Basic | EraseCode::Confirmed => RestartResponse::success(),
+            EraseCode::FactoryReset => {
+                state.inner().factory_reset();
+                RestartResponse::success()
+            }
+            EraseCode::ResetIA => {
+                state.inner().reset_individual_address();
+                RestartResponse::success()
+            }
+            EraseCode::ResetAP => {
+                state.inner().reset_application();
+                RestartResponse::success()
+            }
+            EraseCode::ResetParam => {
+                state.inner().reset_parameters();
+                RestartResponse::success()
+            }
+            EraseCode::ResetLinks => {
+                state.inner().reset_address_table();
+                state.inner().reset_association_table();
+                RestartResponse::success()
+            }
+            EraseCode::FactoryResetKeepIA => {
+                state.inner().factory_reset_keep_ia();
+                RestartResponse::success()
+            }
+            _ => RestartResponse::error(RestartError::UnsupportedEraseCode),
+        };
+
+        let success = response.error == RestartError::NoError;
+        request.reply(response).await;
+
+        // Simulate volatile state loss from reboot. On a real device these
+        // are cleared naturally by the fresh boot.
+        if success {
+            stack.interface_objects().set_programming_mode_enabled(false);
+
+            let entry_count = stack.communication_object_table().borrow().entry_count();
+            let mut objs = stack.objects().borrow_mut();
+            for asap in 1..=entry_count {
+                objs.set_status(asap, ComObjectStatus::default());
+            }
+        }
+    }
 }
 
 #[embassy_executor::main]
@@ -84,11 +148,15 @@ async fn main(spawner: Spawner) {
         knx_conformance::tests::management::create_memory_read_suite(),
         knx_conformance::tests::management::create_memory_write_suite(),
         knx_conformance::tests::management::create_adc_read_suite(),
-        //knx_conformance::tests::management::create_restart_suite(),
         knx_conformance::tests::management::create_memorybit_write_suite(),
         knx_conformance::tests::management::create_memorybit_write_verify_suite(),
         knx_conformance::tests::management::create_authorization_suite(),
         knx_conformance::tests::management::create_key_write_suite(),
+        // Restart suite placed after authorization/key_write because M-2.9.11
+        // (access denied) requires the auth keys set up by M-2.11. Note that
+        // destructive tests (factory reset, reset IA/AP/links) will corrupt
+        // state for subsequent tests in the same suite.
+        knx_conformance::tests::management::create_restart_suite(),
         //knx_conformance::tests::management::create_property_value_read_suite(),
         knx_conformance::tests::management::create_individual_address_serial_number_write_suite(),
         knx_conformance::tests::management::create_individual_address_serial_number_read_suite(),
@@ -200,7 +268,9 @@ async fn main(spawner: Spawner) {
 
     // Create the full stack harness
     let (harness, runner) = FullStackHarness::new();
+    let stack = *harness.stack();
     spawner.spawn(run_stack(runner)).unwrap();
+    spawner.spawn(handle_restarts(stack)).unwrap();
     Timer::after(Duration::from_millis(50)).await;
 
     // Drain any read-on-init messages that were sent during startup.
@@ -326,6 +396,12 @@ async fn main(spawner: Spawner) {
                                 println!("        ✅ No message received (as expected)");
                             }
                         }
+                    }
+                    TestStep::Drain { settle_ms } => {
+                        println!("  [{}] 🧹 Drain (settle {}ms)", i, settle_ms);
+                        Timer::after(Duration::from_millis(*settle_ms as u64)).await;
+                        let drained = harness.drain_captured();
+                        println!("        Drained {} messages", drained);
                     }
                     TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
                         // These should have been resolved already
@@ -461,6 +537,12 @@ async fn main(spawner: Spawner) {
                             }
                         }
                     }
+                    TestStep::Drain { settle_ms } => {
+                        println!("  [{}] 🧹 Drain (settle {}ms)", i, settle_ms);
+                        Timer::after(Duration::from_millis(*settle_ms as u64)).await;
+                        let drained = harness.drain_captured();
+                        println!("        Drained {} messages", drained);
+                    }
                     TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
                         println!("  [{}] ❌ Unresolved template step", i);
                         test_passed = false;
@@ -576,6 +658,12 @@ async fn main(spawner: Spawner) {
                                 println!("        ✅ No message received (as expected)");
                             }
                         }
+                    }
+                    TestStep::Drain { settle_ms } => {
+                        println!("  [{}] 🧹 Drain (settle {}ms)", i, settle_ms);
+                        Timer::after(Duration::from_millis(*settle_ms as u64)).await;
+                        let drained = harness.drain_captured();
+                        println!("        Drained {} messages", drained);
                     }
                     TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
                         println!("  [{}] ❌ Unresolved template in teardown", i);
