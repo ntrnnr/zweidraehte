@@ -163,12 +163,18 @@ pub enum TlAction {
     /// (caller should forward the actual message)
     IndicateData { source: IndividualAddress },
 
-    /// Queue incoming data for later delivery (when in OPEN_WAIT).
-    /// The message will be stored and delivered when transitioning to OPEN_IDLE.
-    QueueIncomingData { source: IndividualAddress },
+    /// A11: Queue the current event for later processing.
+    ///
+    /// For incoming data (E04 in OPEN_WAIT in some styles): stores the message
+    /// for delivery when transitioning to OPEN_IDLE.
+    ///
+    /// For outgoing data requests (E15 in OPEN_WAIT): signals to the caller
+    /// (`handle_data_request`) that the message should be queued rather than
+    /// sent immediately. The caller stores it in `Connection::queued_outgoing`.
+    QueueEvent { source: IndividualAddress },
 
     /// Deliver any queued incoming data to the application layer.
-    /// Called when transitioning from OPEN_WAIT to OPEN_IDLE.
+    /// Called when transitioning from OPEN_WAIT to OPEN_IDLE (A8).
     DeliverQueuedData { source: IndividualAddress },
 
     /// Confirm connection request to user (T_Connect.con)
@@ -689,6 +695,8 @@ fn execute_action(action: SpecAction, conn: &mut Connection, ctx: &EventContext)
             if conn.has_queued_incoming() {
                 buf.push(TlAction::DeliverQueuedData { source: conn.remote_addr });
             }
+            // Queued outgoing data (from A11) is handled by execute_actions
+            // after the state transition to OPEN_IDLE is applied.
         }
 
         // A8b: ACK received (no data confirm, Style 2)
@@ -717,10 +725,11 @@ fn execute_action(action: SpecAction, conn: &mut Connection, ctx: &EventContext)
 
         // A11: Queue event for later processing
         // Store event back; handle after next event.
-        // For incoming data in OPEN_WAIT, this queues the message.
-        // For disconnect requests in OPEN_WAIT (Style 2), this also queues.
+        // For E15 (outgoing data request) in OPEN_WAIT: signals the caller to
+        // queue the outgoing message instead of sending it.
+        // For E26 (disconnect request) in OPEN_WAIT (Style 2): also queues.
         SpecAction::A11 => {
-            buf.push(TlAction::QueueIncomingData { source: addr });
+            buf.push(TlAction::QueueEvent { source: addr });
         }
 
         // A12: Initiate outgoing connection
@@ -1265,7 +1274,7 @@ mod tests {
 
         assert_eq!(conn.state, ConnectionState::OpenWait);
         let v: Vec<_> = actions.iter().collect();
-        assert!(v.contains(&TlAction::QueueIncomingData { source }));
+        assert!(v.contains(&TlAction::QueueEvent { source }));
     }
 
     // =====================================================================

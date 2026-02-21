@@ -1113,7 +1113,12 @@ impl StackDefinition for ConformanceTestStack {
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
-    const TL_STYLE: zweidraehte::layers::transport::TlStyle = zweidraehte::layers::transport::TlStyle::Style1;
+    // Style 3 is the most complete style: it supports both client-initiated
+    // connections (CONNECTING state) and lenient error handling for wrong-seq
+    // NAK/data in OPEN_WAIT. The style-agnostic conformance tests (post AN181)
+    // are designed to pass on any style, but their expected behavior most closely
+    // matches Style 3 for server-side devices that also initiate connections.
+    const TL_STYLE: zweidraehte::layers::transport::TlStyle = zweidraehte::layers::transport::TlStyle::Style3;
     type P = TestParameters;
     type CO = ConformanceComObjects;
     type LLB = MockLinkLayerBuilder<16, 16>;

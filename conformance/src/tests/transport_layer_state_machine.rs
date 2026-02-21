@@ -599,6 +599,10 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 comment("================================================================================"),
             ],
         },
+        // NOTE: The spec (08/03/04 v01.07.04, §6.4.2.2) says:
+        //   "alternatively BDUT immediately sends T_Disconnect"
+        // Our Style 3 state machine takes the disconnect path (E09 OPEN_WAIT
+        // → Closed/A6), which is explicitly permitted by the spec.
         TestCase {
             name: "6.4.2.2 T_ACK wrong sequence number with initial state OPEN_WAIT",
             steps: vec![
@@ -618,12 +622,9 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 comment("Send T-ACK from USB A to BDUT with wrong sequence number."),
                 // T_Ack with seq 5 (wrong - should be 0)
                 inject("B0 #IFACE_A_ADDR #BDUT_ADDR 60 D6"),
-                comment("---> BDUT remains in OPEN_WAIT, BDUT sends no Disconnect on the bus."),
-                // BDUT repeats the response
-                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3200),
-                comment("Cleanup: USB A sends Disconnect to BDUT."),
-                // T_Disconnect
-                inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
+                comment("---> Alternative spec behavior: BDUT sends Disconnect (E09 → A6)."),
+                // BDUT disconnects (spec alternative)
+                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 500),
                 comment("================================================================================"),
             ],
         },

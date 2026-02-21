@@ -67,6 +67,10 @@ pub struct Connection {
     /// Queued incoming data message received while in OPEN_WAIT state
     /// Will be delivered to application layer when transitioning to OPEN_IDLE
     pub queued_incoming: Option<KnxMessageBuffer<Buffer<'static>>>,
+    /// Queued outgoing data request received while in OPEN_WAIT state (A11
+    /// for E15). Will be sent when transitioning back to OPEN_IDLE after the
+    /// pending message is acknowledged (A8).
+    pub queued_outgoing: Option<KnxMessageBuffer<Buffer<'static>>>,
     /// Current access level for this connection (0 = max access, 3 = min access)
     /// Reset to default (max access level - 1, typically 3) when connection opens.
     /// Modified by A_Authorize_Request.
@@ -95,6 +99,7 @@ impl Connection {
             conn_timeout_deadline: None,
             pending_msg: None,
             queued_incoming: None,
+            queued_outgoing: None,
             access_level: DEFAULT_CONNECTION_ACCESS_LEVEL,
         }
     }
@@ -109,6 +114,7 @@ impl Connection {
         self.conn_timeout_deadline = None;
         self.pending_msg = None;
         self.queued_incoming = None;
+        self.queued_outgoing = None;
         self.access_level = DEFAULT_CONNECTION_ACCESS_LEVEL;
     }
 

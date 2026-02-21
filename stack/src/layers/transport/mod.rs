@@ -469,7 +469,28 @@ where
         let seq_no = conn.seq_no_send;
         let actions = process_event(conn, TlEvent::RequestData { dest }, self.style);
 
-        // For data requests, we need to prepare and send the message
+        // A11 (QueueEvent): The state machine says to defer this request
+        // because we're in OPEN_WAIT. Store the message for later — it will
+        // be sent when the pending message is acknowledged (A8 →
+        // SendQueuedOutgoing).
+        let should_queue = actions.actions.iter().any(|a| matches!(a, TlAction::QueueEvent { .. }));
+        if should_queue {
+            debug!("TL queuing outgoing data request to {} (A11, connection in OPEN_WAIT)", dest);
+            if let Some(conn) = self.connections.find_any(dest) {
+                conn.queued_outgoing = Some(msg);
+            }
+            // Execute remaining actions (state transition, timers)
+            self.execute_actions_no_send(actions, dest).await;
+
+            // Return a confirmation (the actual send will happen later).
+            // Allocate a minimal buffer — the confirmation only needs enough
+            // space for the CTRL1 field that .build() writes into.
+            let confirm_buf = self.buffer_manager.borrow().alloc_with_size(7).await;
+            let confirmation = KnxMessageBuffer::new(confirm_buf, ServiceType::T_Data_Req);
+            return confirmation.confirm().build();
+        }
+
+        // Normal path: prepare and send the message immediately.
         msg.set_tpci(Tpci::DataConnected(seq_no));
         msg.set_dest_addr(DestinationAddress::Individual(dest));
         msg.set_service_type(ServiceType::N_Data_Req);
@@ -631,11 +652,16 @@ where
                         self.application_layer.send(LayerOp::Indication(msg)).await;
                     }
                 }
-                TlAction::QueueIncomingData { source: _ } => {
-                    // Store the incoming message for later delivery.
-                    // This is used when we receive data while in OPEN_WAIT.
-                    // Use try_alloc to avoid blocking — if no buffer is available,
-                    // drop the message; the remote will retransmit.
+                TlAction::QueueEvent { source: _ } => {
+                    // A11: Queue the current event for later processing.
+                    //
+                    // When triggered by incoming data (msg_for_data is Some): store
+                    // the message for later delivery to the app layer.
+                    //
+                    // When triggered by an outgoing data request (E15): the actual
+                    // queuing is handled by the caller (handle_data_request) which
+                    // checks for this action before sending. Here msg_for_data is
+                    // None so the block is a no-op.
                     if let Some(msg) = msg_for_data.take() {
                         if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
                             match self.buffer_manager.borrow().try_alloc_from_slice(&*msg.buf()) {
@@ -741,6 +767,38 @@ where
         // regardless of its current state, since it may be transitioning from
         // Closed (new connection) or to Closed (disconnecting).
         result.apply_state_by_addr(&mut self.connections, remote_addr);
+
+        // If there's queued outgoing data (deferred by A11 during OPEN_WAIT),
+        // send it now that we're back in OPEN_IDLE. We perform A7 (store +
+        // send data) inline rather than re-entering handle_data_request,
+        // which would cause recursive async (needs boxing).
+        if let Some(conn) = self.connections.find_any(remote_addr) {
+            if conn.state == ConnectionState::OpenIdle && conn.queued_outgoing.is_some() {
+                let mut msg = conn.queued_outgoing.take().expect("just checked is_some");
+                debug!("TL sending queued outgoing data to {}", remote_addr);
+
+                // A7: Store + send data with SeqNoSend; clear rep_count;
+                // start ack timer; restart conn timer; → OPEN_WAIT
+                let seq_no = conn.seq_no_send;
+                conn.rep_count = 0;
+
+                msg.set_tpci(Tpci::DataConnected(seq_no));
+                msg.set_dest_addr(DestinationAddress::Individual(remote_addr));
+                msg.set_service_type(ServiceType::N_Data_Req);
+                conn.pending_msg = Some(msg);
+
+                conn.start_ack_timeout(Instant::now() + Duration::from_millis(ACK_TIMEOUT_MS));
+                conn.start_conn_timeout(Instant::now() + Duration::from_millis(CONNECTION_TIMEOUT_MS));
+                conn.state = ConnectionState::OpenWait;
+
+                // Send a copy (original stored for retransmission)
+                if let Some(ref pending) = conn.pending_msg {
+                    let send_buffer = self.buffer_manager.borrow().alloc_from_slice(&*pending.buf()).await;
+                    let send_msg = KnxMessageBuffer::new(send_buffer, pending.service_type());
+                    let _confirmation = self.network_layer.request(RequestMessage::request(send_msg)).await;
+                }
+            }
+        }
     }
 
     /// Execute actions without handling data sending (for request handlers)
