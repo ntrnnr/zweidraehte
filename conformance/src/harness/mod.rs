@@ -1,13 +1,18 @@
 //! Test harnesses for conformance testing
 //!
-//! Provides infrastructure to run the full KNX stack with MockLinkLayer
-//! for injecting and capturing telegrams.
+//! The conformance harness uses a multi-process architecture:
+//! - The parent (conformance-runner) owns device state in shared memory
+//!   and runs the test loop
+//! - The child (conformance-dut) runs the actual KNX stack, communicating
+//!   with the parent over a Unix socketpair
+//! - On restart, the child exits and is respawned, destroying all volatile
+//!   state (transport connections, programming mode, etc.) while persistent
+//!   state survives in shared memory
 
+pub mod ipc;
 pub mod mock;
+pub mod multiprocess;
 pub mod stack;
 
-pub use mock::{
-    CapturedLinkLayerMessage, MockLinkLayer, MockLinkLayerBuilder, MockLinkLayerHandle,
-    MockLinkLayerResources,
-};
-pub use stack::{ConformanceTestStack, FullStackHarness};
+pub use mock::CapturedLinkLayerMessage;
+pub use multiprocess::MultiProcessHarness;

@@ -1,16 +1,8 @@
-//! Full Stack Test Harness
+//! Conformance Test Stack Configuration
 //!
-//! This module provides the infrastructure to run the complete KNX stack
-//! with a MockLinkLayer for conformance testing.
-//!
-//! Unlike the network layer harness, this tests the entire stack end-to-end:
-//! - Application Layer
-//! - Transport Layer
-//! - Network Layer
-//! - MockLinkLayer (for injection/capture)
-//!
-//! This is required for EITT tests that expect full device responses
-//! (e.g., GroupValue_Read → GroupValue_Response).
+//! Defines the device configuration, communication objects, memory map,
+//! and state types used by both the DUT child process and the multi-process
+//! harness.
 //!
 //! ## BCU1-Style Group Object Tests
 //!
@@ -27,9 +19,6 @@ use core::cell::RefCell;
 use std::net::Ipv4Addr;
 
 use const_default::ConstDefault;
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::Channel;
-use static_cell::StaticCell;
 
 use zweidraehte::prelude::*;
 use zweidraehte::{
@@ -38,12 +27,9 @@ use zweidraehte::{
         IpSystemBDeviceState, KnxIpInterfaceObjects, MemoryLayout,
         StaticIdentity, create_knxip_objects,
     },
-    messages::buffers::{Buffer, BufferManager, DynBufferManager, MessageBuffer},
-    messages::knx::{KnxMessageBuffer, ServiceType},
     objects::tables::Application,
 };
 
-use super::mock::{CapturedLinkLayerMessage, MockLinkLayerBuilder, MockLinkLayerHandle};
 
 // ============================================================================
 // Communication Objects (BCU1-style with shadow objects)
@@ -411,7 +397,7 @@ impl ComObjects for ConformanceComObjects {
 // - TSAP 10: 0x1103 (2/1/3) → CO 8 (GO3_BYTE3, value for GO0_BYTE3)
 // - TSAP 11: 0x2D05 (5/5/5) → CO 11 (GO6, 1-bit for transport layer test 2.1)
 
-mod conformance_config {
+pub(crate) mod conformance_config {
     use zweidraehte::config::{CE, RE, ROI, TE, UE, WE};
     use zweidraehte::knx_stack_config;
 
@@ -624,7 +610,7 @@ const CONFORMANCE_MEMORY_LAYOUT: MemoryLayout =
 // Test Parameters
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TestParameters;
 
 impl ConstDefault for TestParameters {
@@ -635,9 +621,6 @@ impl ConstDefault for TestParameters {
 // Stack Definition
 // ============================================================================
 
-/// Stack definition for conformance testing
-#[derive(Debug, Clone, Copy)]
-pub struct ConformanceTestStack;
 
 /// Size of linear memory region (0x0200-0x02FF) - freely accessible
 pub const LINEAR_MEMORY_SIZE: usize = 256;
@@ -1109,20 +1092,26 @@ pub const CONFORMANCE_DD2: [u8; 14] =
 /// Format: Manufacturer ID (2 bytes) + Device Type (1 byte)
 pub const CONFORMANCE_USER_MANUFACTURER_INFO: [u8; 3] = [0x00, 0x00, 0x00];
 
-impl StackDefinition for ConformanceTestStack {
+// ============================================================================
+// Stack Definition (for conformance-dut child process)
+// ============================================================================
+
+/// Stack definition for the conformance DUT child process.
+///
+/// Uses `IpcLinkLayerBuilder` for communication over a Unix socket with the
+/// parent (conformance-runner) process.
+#[derive(Debug, Clone, Copy)]
+pub struct IpcConformanceTestStack;
+
+impl StackDefinition for IpcConformanceTestStack {
     const DEVICE: &'static DeviceDescriptor = &device_info::DEVICE;
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
-    // Style 3 is the most complete style: it supports both client-initiated
-    // connections (CONNECTING state) and lenient error handling for wrong-seq
-    // NAK/data in OPEN_WAIT. The style-agnostic conformance tests (post AN181)
-    // are designed to pass on any style, but their expected behavior most closely
-    // matches Style 3 for server-side devices that also initiate connections.
     const TL_STYLE: zweidraehte::layers::transport::TlStyle = zweidraehte::layers::transport::TlStyle::Style3;
     type P = TestParameters;
     type CO = ConformanceComObjects;
-    type LLB = MockLinkLayerBuilder<16, 16>;
+    type LLB = super::ipc::IpcLinkLayerBuilder;
     type State = ConformanceState;
     type Mem = ConformanceMemoryMap;
 
@@ -1140,7 +1129,7 @@ impl StackDefinition for ConformanceTestStack {
     where
         Self::State: 'a,
     {
-        create_knxip_objects::<ConformanceTestStack, _>(
+        create_knxip_objects::<IpcConformanceTestStack, _>(
             state,
             &CONFORMANCE_MEMORY_LAYOUT,
         )
@@ -1148,146 +1137,85 @@ impl StackDefinition for ConformanceTestStack {
 }
 
 // ============================================================================
-// Static Resources
+// Shared Memory Integration
 // ============================================================================
+//
+// The shared memory stores a `ConformancePersistedState` serialized with
+// postcard. This wraps the stack's own `PersistedState` (which handles
+// auth keys, tables, load/run state, etc.) plus the test memory regions
+// that the conformance harness needs across restarts.
 
-// Injection channel for sending messages into the stack
-static INJECTION_CHANNEL: StaticCell<Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, 16>> = StaticCell::new();
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+use zweidraehte::bcus::system_b::{HasPersistedState, PersistedIpConfig, PersistedState};
 
-// Capture channel for receiving messages from the stack
-static CAPTURE_CHANNEL: StaticCell<Channel<NoopRawMutex, CapturedLinkLayerMessage, 16>> = StaticCell::new();
+/// The persisted state type for the inner `IpSystemBDeviceState`.
+type InnerPersistedState = PersistedState<
+    { table_sizes::ADT },
+    { table_sizes::AST },
+    { table_sizes::COT },
+    TestParameters,
+    PersistedIpConfig,
+>;
 
-// Stack resources - buffer size calculated from MAX_APDU_LENGTH
-static STACK_RESOURCES: StaticCell<StackResources<ConformanceTestStack, { device_info::BUFFER_SIZE }, 4>> =
-    StaticCell::new();
-
-// Buffer manager for test injections - use BUFFER_SIZE from device_info
-static INJECTION_BUFFERS: StaticCell<[[u8; device_info::BUFFER_SIZE]; 16]> = StaticCell::new();
-static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<16>> = StaticCell::new();
-
-// ============================================================================
-// Full Stack Harness
-// ============================================================================
-
-/// Full stack test harness with MockLinkLayer
+/// Full snapshot of conformance test state for shared memory.
 ///
-/// This harness runs the complete KNX stack and provides methods to:
-/// - Inject telegrams (simulating incoming messages from the bus)
-/// - Capture outgoing telegrams (messages the stack sends to the bus)
-/// - Control device state (programming mode, etc.)
-pub struct FullStackHarness {
-    handle: MockLinkLayerHandle<16, 16>,
-    buffer_manager: DynBufferManager<'static>,
-    stack: Stack<'static, ConformanceTestStack>,
+/// Combines the stack's own `PersistedState` (device address, auth keys,
+/// tables, load/run state, IP config) with the test memory regions that
+/// the conformance harness uses.
+///
+/// Uses `serde_as(Bytes)` for the test memory arrays since serde's
+/// built-in array support only covers sizes up to 32.
+#[serde_as]
+#[derive(Serialize, Deserialize)]
+pub struct ConformancePersistedState {
+    /// Core device state — serialized via the stack's `to_persisted()` /
+    /// `from_persisted()` pattern, which correctly handles private fields
+    /// like auth keys.
+    pub inner: InnerPersistedState,
+
+    /// Test memory regions used by conformance memory map tests.
+    #[serde_as(as = "[_; LINEAR_MEMORY_SIZE]")]
+    pub linear_memory: [u8; LINEAR_MEMORY_SIZE],
+    #[serde_as(as = "[_; LEVEL2_MEMORY_SIZE]")]
+    pub level2_memory: [u8; LEVEL2_MEMORY_SIZE],
+    #[serde_as(as = "[_; LEVEL1_MEMORY_SIZE]")]
+    pub level1_memory: [u8; LEVEL1_MEMORY_SIZE],
+    #[serde_as(as = "[_; USER_MEMORY_SIZE]")]
+    pub user_memory: [u8; USER_MEMORY_SIZE],
 }
 
-impl FullStackHarness {
-    /// Create a new full stack harness
+impl ConformanceState {
+    /// Reconstruct `ConformanceState` from a persisted snapshot.
     ///
-    /// Returns the harness and a runner that must be spawned as a task.
-    pub fn new() -> (Self, Runner<'static, ConformanceTestStack>) {
-        // Initialize static channels
-        let injection_channel = INJECTION_CHANNEL.init(Channel::new());
-        let capture_channel = CAPTURE_CHANNEL.init(Channel::new());
+    /// Uses the stack's `from_persisted()` to reconstruct the inner
+    /// device state (including auth keys, tables, load/run states),
+    /// then restores the test memory regions.
+    pub fn from_persisted_snapshot(snapshot: ConformancePersistedState) -> Self {
+        let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
+        let inner = InnerState::from_persisted(&identity, snapshot.inner);
 
-        // Initialize buffer manager for test injections
-        let buffers = INJECTION_BUFFERS.init([[0u8; device_info::BUFFER_SIZE]; 16]);
-        // SAFETY: We're initializing the buffer manager with our static buffers
-        let buffer_manager = INJECTION_BUFFER_MANAGER.init(unsafe { BufferManager::new(buffers) });
-        let dyn_buffer_manager = buffer_manager.dyn_buffer_manager();
-        // SAFETY: We're transmuting to 'static because the buffer manager lives for the entire program
-        let dyn_buffer_manager: DynBufferManager<'static> = unsafe { core::mem::transmute(dyn_buffer_manager) };
-
-        // Create MockLinkLayerBuilder with capture support
-        let (link_layer_builder, handle) =
-            MockLinkLayerBuilder::<16, 16>::with_capture(injection_channel, capture_channel);
-
-        // Create tables from configuration with their memory-mapped base addresses
-        let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables(
-            ConformanceMemoryMap::ADT_BASE as u32,
-            ConformanceMemoryMap::AST_BASE as u32,
-            ConformanceMemoryMap::COT_BASE as u32,
-        );
-
-        // Create application table - starts loaded and running for conformance tests
-
-        let mut app_table = Application::<TestParameters>::new();
-        // Load the application (using None for alloc_address since these are
-        // simple state transitions without RelativeData allocation)
-        // The app automatically transitions HALTED -> READY -> RUNNING when loading completes
-        app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-
-        // Create unified conformance state (combines tables + runtime state)
-        let state = ConformanceState::new(addr_tab, asso_tab, co_tab, app_table);
-
-        // Create stack resources
-        let resources = STACK_RESOURCES.init(StackResources::new());
-
-        // Create hook context (initially with null COT pointer)
-        let hook_context = ConformanceHookContext::new();
-
-        // Create stack
-        let (stack, runner) = zweidraehte::new(
-            resources,
-            ConformanceComObjects::new(),
-            hook_context,
-            link_layer_builder,
-            state,
-            ConformanceMemoryMap,
-        );
-
-        // Patch the hook context with the COT reference
-        // SAFETY: The COT lives in Inner which is stored in STACK_RESOURCES,
-        // so it has 'static lifetime. The stack is single-threaded (embassy).
-        unsafe {
-            stack.hook_context().set_cot(stack.communication_object_table());
+        Self {
+            inner,
+            linear_memory: RefCell::new(snapshot.linear_memory),
+            level2_memory: RefCell::new(snapshot.level2_memory),
+            level1_memory: RefCell::new(snapshot.level1_memory),
+            user_memory: RefCell::new(snapshot.user_memory),
         }
-
-        let harness = Self { handle, buffer_manager: dyn_buffer_manager, stack };
-        (harness, runner)
     }
 
-    /// Allocate a buffer and create a KnxMessageBuffer from raw bytes
-    pub async fn create_message(&self, data: &[u8], service_type: ServiceType) -> KnxMessageBuffer<Buffer<'static>> {
-        let mut buffer = self.buffer_manager.alloc().await;
-        buffer.fill_from_slice(data);
-        KnxMessageBuffer::new(buffer, service_type)
-    }
-
-    /// Inject a telegram into the stack (simulating incoming message from bus)
-    pub async fn inject(&self, msg: KnxMessageBuffer<Buffer<'static>>) {
-        self.handle.inject(msg).await;
-    }
-
-    /// Wait for and receive a captured outgoing telegram
-    pub async fn receive_captured(&self) -> Option<CapturedLinkLayerMessage> {
-        self.handle.receive_captured().await
-    }
-
-    /// Try to receive a captured telegram without blocking
-    pub fn try_receive_captured(&self) -> Option<CapturedLinkLayerMessage> {
-        self.handle.try_receive_captured()
-    }
-
-    /// Set the programming mode flag on the DUT
+    /// Create a snapshot of the current state for persistence.
     ///
-    /// When enabled, the device responds to A_IndividualAddress_Read broadcasts.
-    pub fn set_programming_mode(&self, enabled: bool) {
-
-        self.stack.interface_objects().set_programming_mode_enabled(enabled);
-    }
-
-    /// Drain all pending captured messages from the channel
-    ///
-    /// This is useful for clearing leftover messages between tests.
-    /// Returns the number of messages drained.
-    pub fn drain_captured(&self) -> usize {
-        self.handle.drain_captured()
-    }
-
-    /// Get access to the stack for direct manipulation
-    pub fn stack(&self) -> &Stack<'static, ConformanceTestStack> {
-        &self.stack
+    /// Called by the child's restart handler right before exiting.
+    /// The snapshot is then written to shared memory via postcard.
+    pub fn to_persisted_snapshot(&self) -> ConformancePersistedState {
+        ConformancePersistedState {
+            inner: self.inner.to_persisted(),
+            linear_memory: *self.linear_memory.borrow(),
+            level2_memory: *self.level2_memory.borrow(),
+            level1_memory: *self.level1_memory.borrow(),
+            user_memory: *self.user_memory.borrow(),
+        }
     }
 }
+

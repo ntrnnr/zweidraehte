@@ -171,6 +171,23 @@ pub fn clear_logs() {
     storage.current_logs.clear();
 }
 
+/// Add a pre-built log entry to the current test's capture buffer.
+///
+/// Used by the multi-process harness to inject log entries received from
+/// the child process over IPC into the parent's per-test log storage.
+pub fn add_entry(entry: LogEntry) {
+    let storage = STORAGE.get().expect("Logger not initialized");
+    let mut storage = storage.lock().unwrap();
+
+    if storage.current_logs.len() >= MAX_LOG_ENTRIES {
+        storage.current_logs.pop_front();
+    }
+    if storage.print_live {
+        print_entry(&entry);
+    }
+    storage.current_logs.push_back(entry);
+}
+
 /// Set whether to print logs live to stderr
 pub fn set_live_print(enabled: bool) {
     let storage = STORAGE.get().expect("Logger not initialized");

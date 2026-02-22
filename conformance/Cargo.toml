@@ -16,7 +16,16 @@ static_cell = { workspace = true }
 paste = { workspace = true }
 heapless = { workspace = true }
 log = { workspace = true, features = ["std"] }
+async-io = "2"
+nix = { version = "0.29", features = ["mman", "fs"] }
+serde = { workspace = true, features = ["derive"] }
+postcard = "1.1.3"
+serde_with = { workspace = true, features = ["macros"] }
 
 [[bin]]
 name = "conformance-runner"
 path = "src/bin/runner.rs"
+
+[[bin]]
+name = "conformance-dut"
+path = "src/bin/dut.rs"
