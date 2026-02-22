@@ -15,7 +15,7 @@ use core::net::Ipv4Addr;
 use const_default::ConstDefault;
 
 use crate::{
-    IpConfig, IpPlatform, IpPlatformConfig, IpStackState, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS, StackState,
+    AccessContext, IpConfig, IpPlatform, IpPlatformConfig, IpStackState, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS, StackState,
     address::IndividualAddress,
     objects::interface::HasRoutingCount,
     objects::tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication},
@@ -486,11 +486,11 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
         (MAX_ACCESS_LEVELS - 1) as u8
     }
 
-    fn key_write(&self, level: u8, key: &[u8; 4], current_access_level: u8) -> u8 {
+    fn key_write(&self, level: u8, key: &[u8; 4], ctx: AccessContext) -> u8 {
         if level as usize >= NUM_AUTH_KEYS {
             return 0xFF;
         }
-        if current_access_level > level {
+        if ctx.access_level > level {
             return 0xFF;
         }
         self.auth_keys.borrow_mut()[level as usize] = *key;

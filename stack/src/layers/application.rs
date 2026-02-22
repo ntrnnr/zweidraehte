@@ -235,8 +235,21 @@ where
                     // transport layer. Consumed on first use via .take().
                     self.response_route = ind.take_response_route();
 
-                    debug!("AL APCI code: {:?}", ind.get_apci_code());
-                    match ind.get_apci_code() {
+                    let apci = ind.get_apci_code();
+                    debug!("AL APCI code: {:?}", apci);
+
+                    // Service-level access check (first line of defense).
+                    // Handlers may perform additional fine-grained checks.
+                    let access_ctx = ind.access_ctx();
+                    match crate::access_policy::check_service_access(apci, &access_ctx) {
+                        crate::access_policy::AccessDecision::Denied => {
+                            warn!("AL service {:?} denied: {:?}", apci, access_ctx);
+                            continue;
+                        }
+                        _ => {} // Allowed or Defer — proceed to handler
+                    }
+
+                    match apci {
                         // --- Group Communication ---
                         a @ (ApciCode::GroupValueWrite | ApciCode::GroupValueResponse) => {
                             self.handle_group_value_write_or_response(&mut ind, a).await;
@@ -959,10 +972,10 @@ where
         let count = (count_start >> 12) as u16;
         let start_idx = count_start & 0x0FFF;
 
-        let access_level = ind.access_level();
+        let access_ctx = ind.access_ctx();
         debug!(
-            "AL PropertyValueRead: obj={}, prop_id={}, count={}, start={}, access_level={}",
-            object_idx, prop_id, count, start_idx, access_level
+            "AL PropertyValueRead: obj={}, prop_id={}, count={}, start={}, access_ctx={:?}",
+            object_idx, prop_id, count, start_idx, access_ctx
         );
 
         // Allocate a buffer for the response data
@@ -978,7 +991,7 @@ where
             start_idx,
             count,
             &mut data_buf,
-            access_level,
+            access_ctx,
         );
 
         match result {
@@ -1098,10 +1111,10 @@ where
         let data_len = ind.len() - data_start;
         let data = &buf[data_start..data_start + data_len];
 
-        let access_level = ind.access_level();
+        let access_ctx = ind.access_ctx();
         debug!(
-            "AL PropertyValueWrite: obj={}, prop_id={}, count={}, start={}, data_len={}, access_level={}",
-            object_idx, prop_id, count, start_idx, data_len, access_level
+            "AL PropertyValueWrite: obj={}, prop_id={}, count={}, start={}, data_len={}, access_ctx={:?}",
+            object_idx, prop_id, count, start_idx, data_len, access_ctx
         );
 
         // Capture run state before property writes that might change it.
@@ -1115,7 +1128,7 @@ where
         };
 
         // Perform the write - the response may differ from written data (e.g., LOAD_STATE_CONTROL)
-        let result = self.interface_objects.property_value_write(object_idx, prop_id, start_idx, data, access_level);
+        let result = self.interface_objects.property_value_write(object_idx, prop_id, start_idx, data, access_ctx);
 
         // Sync DeviceControl.user_stopped and publish lifecycle events on run state transitions.
         if let Some(was_running) = was_running {
@@ -1649,9 +1662,9 @@ where
 
         // Read from memory map first to determine response size
         // Pass access level from the message (set by transport layer from connection state)
-        let access_level = ind.access_level();
+        let access_ctx = ind.access_ctx();
         let mut data = [0u8; 63]; // Max count is 63 (6 bits)
-        let result = self.memory_map.read(self.state, address, &mut data[..(count as usize)], access_level);
+        let result = self.memory_map.read(self.state, address, &mut data[..(count as usize)], access_ctx);
 
         let response_count = match result {
             Ok(bytes_read) => bytes_read as u8,
@@ -1737,14 +1750,14 @@ where
         debug!("AL Memory_Write: address=0x{:04X}, count={}", address, count);
 
         // Get access level from the message (set by transport layer from connection state)
-        let access_level = ind.access_level();
+        let access_ctx = ind.access_ctx();
 
         // If length is inconsistent, don't write and respond with count=0
         // Otherwise, write to memory map
         let response_count = if length_inconsistent {
             0 // Length inconsistency: response with count=0
         } else {
-            match self.memory_map.write(self.state, address, data, access_level) {
+            match self.memory_map.write(self.state, address, data, access_ctx) {
                 Ok(bytes_written) => {
                     debug!("AL Memory_Write: wrote {} bytes to 0x{:04X}", bytes_written, address);
                     self.state.mark_dirty();
@@ -1863,13 +1876,13 @@ where
         let xor_masks = &buf[offsets::MSG_APCI + 5 + count as usize..offsets::MSG_APCI + 5 + 2 * count as usize];
 
         // Get access level from the message
-        let access_level = ind.access_level();
+        let access_ctx = ind.access_ctx();
 
         // Read current memory values
         let mut current_data = [0u8; 5]; // Max 5 bytes
         let read_count = current_data[..count as usize].len();
 
-        let read_result = self.memory_map.read(self.state, address, &mut current_data[..read_count], access_level);
+        let read_result = self.memory_map.read(self.state, address, &mut current_data[..read_count], access_ctx);
 
         match read_result {
             Ok(_) => {
@@ -1880,7 +1893,7 @@ where
                 }
 
                 // Write back the modified data
-                match self.memory_map.write(self.state, address, &new_data[..count as usize], access_level) {
+                match self.memory_map.write(self.state, address, &new_data[..count as usize], access_ctx) {
                     Ok(_) => {
                         debug!("AL MemoryBit_Write: wrote {} bytes to 0x{:04X}", count, address);
                         // Check if Verify is enabled - if so, send response with new data
@@ -2001,11 +2014,11 @@ where
 
         // Read from memory map first to determine response size
         // Pass access level from the message (set by transport layer from connection state)
-        let access_level = ind.access_level();
+        let access_ctx = ind.access_ctx();
         let mut data = [0u8; 255]; // Max count is 255 (8 bits)
         let max_read = core::cmp::min(count as usize, data.len());
         // UserMemory uses 16-bit address for the memory map interface (address extension is for user address space)
-        let result = self.memory_map.read(self.state, address_low, &mut data[..max_read], access_level);
+        let result = self.memory_map.read(self.state, address_low, &mut data[..max_read], access_ctx);
 
         let response_count = match result {
             Ok(bytes_read) => bytes_read as u8,
@@ -2101,14 +2114,14 @@ where
         debug!("AL UserMemory_Write: address=0x{:05X}, count={}", full_address, count);
 
         // Get access level from the message (set by transport layer from connection state)
-        let access_level = ind.access_level();
+        let access_ctx = ind.access_ctx();
 
         // If length is inconsistent, don't write and respond with count=0
         // Otherwise, write to memory map
         let response_count = if length_inconsistent {
             0 // Length inconsistency: response with count=0
         } else {
-            match self.memory_map.write(self.state, address_low, data, access_level) {
+            match self.memory_map.write(self.state, address_low, data, access_ctx) {
                 Ok(bytes_written) => {
                     debug!("AL UserMemory_Write: wrote {} bytes to 0x{:05X}", bytes_written, full_address);
                     self.state.mark_dirty();
@@ -2303,17 +2316,17 @@ where
             buf[offsets::MSG_APCI + 6],
         ];
 
-        // Get current access level from the message (set by transport layer from connection)
-        let current_access_level = ind.access_level();
+        // Get current access context from the message (set by transport layer from connection)
+        let current_ctx = ind.access_ctx();
         debug!(
-            "AL Key_Write: level={}, key={:?}, current_access_level={}",
+            "AL Key_Write: level={}, key={:?}, current_ctx={:?}",
             level,
             crate::fmt::Bytes(&key),
-            current_access_level
+            current_ctx
         );
 
         // Perform the key write
-        let result_level = self.state.key_write(level, &key, current_access_level);
+        let result_level = self.state.key_write(level, &key, current_ctx);
 
         debug!("AL Key_Write: result={}", result_level);
 
@@ -2372,12 +2385,10 @@ where
             (EraseCode::Basic, 0, false)
         };
 
+        let restart_ctx = ind.access_ctx();
         debug!(
-            "AL Restart: erase_code={}, channel={}, needs_response={}, access_level={}",
-            erase_code,
-            channel,
-            needs_response,
-            ind.access_level()
+            "AL Restart: erase_code={}, channel={}, needs_response={}, access_ctx={:?}",
+            erase_code, channel, needs_response, restart_ctx
         );
 
         // Check for unknown erase code (Other variant from create_protocol_enum!)
@@ -2389,17 +2400,16 @@ where
             return;
         }
 
-        // For master reset operations (not basic/confirmed), check access level
+        // For master reset operations (not basic/confirmed), check access level.
         // Basic and Confirmed restart can be done by anyone, but other erase codes
-        // typically require higher access (level 0)
+        // typically require higher access (level 0).
         let required_level = match erase_code {
             EraseCode::Basic | EraseCode::Confirmed => 3, // Anyone
             _ => 0,                                       // System access required for other erase codes
         };
 
-        let current_level = ind.access_level();
-        if current_level > required_level {
-            warn!("AL Restart: access denied (current={}, required={})", current_level, required_level);
+        if !restart_ctx.has_level(required_level) {
+            warn!("AL Restart: access denied ({:?}, required={})", restart_ctx, required_level);
             if needs_response {
                 self.send_restart_response(ind, RestartError::AccessDenied, 0).await;
             }
@@ -2407,7 +2417,7 @@ where
         }
 
         // Send restart request to user code and await response
-        let request = RestartRequest { erase_code, channel, access_level: current_level, needs_response };
+        let request = RestartRequest { erase_code, channel, access_ctx: restart_ctx, needs_response };
 
         debug!("AL Restart: sending request to user code");
         let response: RestartResponse = self.restart_sender.request(request).await;

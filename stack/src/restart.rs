@@ -80,8 +80,8 @@ pub struct RestartRequest {
     pub erase_code: EraseCode,
     /// Channel number (usually 0 for all channels, used by multi-channel devices).
     pub channel: u8,
-    /// Access level of the requester (for logging/auditing).
-    pub access_level: u8,
+    /// Access context of the requester.
+    pub access_ctx: crate::AccessContext,
     /// Whether an A_Restart_Response should be sent.
     ///
     /// This is true for master reset requests (erase codes 0x01-0x07)

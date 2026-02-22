@@ -33,6 +33,7 @@ use static_cell::StaticCell;
 
 use zweidraehte::prelude::*;
 use zweidraehte::{
+    AccessContext,
     bcus::system_b::{
         IpSystemBDeviceState, KnxIpInterfaceObjects, MemoryLayout,
         StaticIdentity, create_knxip_objects,
@@ -781,8 +782,8 @@ impl StackState for ConformanceState {
         self.inner.authorize(key)
     }
 
-    fn key_write(&self, level: u8, key: &[u8; 4], current_access_level: u8) -> u8 {
-        self.inner.key_write(level, key, current_access_level)
+    fn key_write(&self, level: u8, key: &[u8; 4], ctx: AccessContext) -> u8 {
+        self.inner.key_write(level, key, ctx)
     }
 
     fn is_programming_mode(&self) -> bool {
@@ -901,7 +902,7 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         tables: &ConformanceState,
         address: u16,
         data: &mut [u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
 
 
@@ -953,7 +954,7 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         // For M-2.6 tests: "protected" (level 3 = no access).
         // For M-2.11 tests: "level 2 block" accessible with default key.
         if address >= Self::LEVEL2_MEMORY_BASE && end_address <= Self::LEVEL2_MEMORY_BASE + LEVEL2_MEMORY_SIZE as u16 {
-            if access_level > 2 {
+            if !ctx.has_level(2) {
                 return Err(MemoryError::AccessDenied);
             }
             let offset = (address - Self::LEVEL2_MEMORY_BASE) as usize;
@@ -966,7 +967,7 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         // Requires access level <= 1 (levels 0 or 1 only).
         // Used by M-2.11 tests as "level 1 block".
         if address >= Self::LEVEL1_MEMORY_BASE && end_address <= Self::LEVEL1_MEMORY_BASE + LEVEL1_MEMORY_SIZE as u16 {
-            if access_level > 1 {
+            if !ctx.has_level(1) {
                 return Err(MemoryError::AccessDenied);
             }
             let offset = (address - Self::LEVEL1_MEMORY_BASE) as usize;
@@ -993,7 +994,7 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         tables: &ConformanceState,
         address: u16,
         data: &[u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
 
 
@@ -1054,7 +1055,7 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         // For M-2.6 tests: "protected" (level 3 = no access).
         // For M-2.11 tests: "level 2 block" accessible with default key.
         if address >= Self::LEVEL2_MEMORY_BASE && end_address <= Self::LEVEL2_MEMORY_BASE + LEVEL2_MEMORY_SIZE as u16 {
-            if access_level > 2 {
+            if !ctx.has_level(2) {
                 return Err(MemoryError::AccessDenied);
             }
             let offset = (address - Self::LEVEL2_MEMORY_BASE) as usize;
@@ -1067,7 +1068,7 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         // Requires access level <= 1 (levels 0 or 1 only).
         // Used by M-2.11 tests as "level 1 block".
         if address >= Self::LEVEL1_MEMORY_BASE && end_address <= Self::LEVEL1_MEMORY_BASE + LEVEL1_MEMORY_SIZE as u16 {
-            if access_level > 1 {
+            if !ctx.has_level(1) {
                 return Err(MemoryError::AccessDenied);
             }
             let offset = (address - Self::LEVEL1_MEMORY_BASE) as usize;

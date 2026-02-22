@@ -20,6 +20,7 @@ use crate::messages::knxip::{
     ConnectionStatus, DeviceConfigurationAck, DeviceConfigurationAckBuilder, DeviceConfigurationRequest,
     DeviceConfigurationRequestBuilder, KNXnetIPServiceType,
 };
+use crate::AccessContext;
 use crate::objects::interface::PropertyServiceHandler;
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
@@ -165,8 +166,9 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         // Individual address type (these are point-to-point management services)
         msg.set_address_type(AddressType::Individual);
 
-        // Access level 0 = full access for ETS Device Management connections.
-        msg.set_access_level(0);
+        // Full access for ETS Device Management connections.
+        // TODO: Revisit when secure tunneling is implemented.
+        msg.set_access_ctx(AccessContext::MAX_ACCESS);
 
         let indication = IndicationMessage::indication(msg);
 
@@ -250,7 +252,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
     ) -> Result<(), ConnectionStatus> {
         // Read the property value into a temp buffer
         let mut data_buf = [0u8; 52]; // Leave room for the 7-byte header
-        // Access level 0 = full access for ETS device management connections.
+        // Full access for ETS device management connections.
         // TODO: Revisit when secure tunneling is implemented.
         let response_builder = match self.property_handler.property_value_read(
             object_idx,
@@ -258,7 +260,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
             frame.start_index,
             frame.count,
             &mut data_buf,
-            0,
+            AccessContext::MAX_ACCESS,
         ) {
             Ok(bytes_read) => {
                 // Success: echo count + start_index from request, append read data
@@ -289,7 +291,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
             frame.property_id,
             frame.start_index,
             frame.data,
-            0,
+            AccessContext::MAX_ACCESS,
         ) {
             Ok(_write_response) => {
                 // Success: echo back the count + start index and the written data

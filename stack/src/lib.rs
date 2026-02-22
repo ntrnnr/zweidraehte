@@ -25,6 +25,7 @@ pub mod error;
 pub mod ets;
 pub mod layers;
 pub mod memory;
+pub mod access_policy;
 pub mod messages;
 pub mod objects;
 pub mod prelude;
@@ -259,16 +260,16 @@ pub trait StackState {
     /// Arguments:
     /// - `level`: The access level to set the key for
     /// - `key`: The new 4-byte key
-    /// - `current_access_level`: The current access level of the connection
+    /// - `ctx`: The access context of the current connection
     ///
     /// Returns the level if successful, or 0xFF if:
     /// - The level is invalid (>= max_access_levels)
-    /// - The current access level is higher than the target level
+    /// - The caller's access level is higher (less privileged) than the target level
     ///
     /// If key is `0xFFFFFFFF`, the key for that level is deleted (set to invalid).
     ///
     /// Default implementation: always returns 0xFF (not supported).
-    fn key_write(&self, _level: u8, _key: &[u8; 4], _current_access_level: u8) -> u8 {
+    fn key_write(&self, _level: u8, _key: &[u8; 4], _ctx: AccessContext) -> u8 {
         0xFF // Not supported by default
     }
 }
@@ -279,6 +280,46 @@ pub const MAX_ACCESS_LEVELS: usize = 4;
 /// Number of settable authorization keys (levels 0-2).
 /// Level 3 is "access for everyone" and has no key - it's what you get when auth fails.
 pub const NUM_AUTH_KEYS: usize = 3;
+
+// ============================================================================
+// Access Context
+// ============================================================================
+
+/// Authorization context for a service request.
+///
+/// Bundles all access-related state needed to evaluate policies.
+/// Currently contains only the legacy 4-level access level.
+/// Will be extended for KNX Secure with security mode, role, etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct AccessContext {
+    /// Legacy access level (0 = max access, 3 = min access).
+    pub access_level: u8,
+    // Future KNX Secure fields:
+    // pub security_mode: bool,
+    // pub security_ctrl: SecurityControl,
+}
+
+impl AccessContext {
+    /// Create a new access context with the given legacy access level.
+    pub const fn new(access_level: u8) -> Self {
+        Self { access_level }
+    }
+
+    /// Check whether this context has at least the given access level.
+    ///
+    /// In KNX, lower number = more access. Returns true if
+    /// `self.access_level <= required`.
+    pub const fn has_level(&self, required: u8) -> bool {
+        self.access_level <= required
+    }
+
+    /// Minimum-access context (level 3, no special privileges).
+    pub const MIN_ACCESS: Self = Self { access_level: 3 };
+
+    /// Maximum-access context (level 0, full system access).
+    pub const MAX_ACCESS: Self = Self { access_level: 0 };
+}
 
 // ============================================================================
 // IP Stack State Extension

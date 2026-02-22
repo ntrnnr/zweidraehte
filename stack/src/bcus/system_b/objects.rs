@@ -29,7 +29,7 @@
 use core::cell::RefCell;
 
 use crate::{
-    IpStackState, StackState,
+    AccessContext, IpStackState, StackState,
     dpt::{DeviceControl, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
@@ -219,11 +219,11 @@ where
         start_idx: u16,
         count: u16,
         buf: &mut [u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<usize, PropertyError> {
         // Check access level
         let desc = self.get_descriptor(object_idx, prop_id).ok_or(PropertyError::InvalidPropertyId)?;
-        if !desc.can_read(access_level) {
+        if !desc.can_read(ctx) {
             return Err(PropertyError::AccessDenied);
         }
 
@@ -245,11 +245,11 @@ where
         prop_id: u8,
         start_idx: u16,
         data: &[u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<WriteResponse, PropertyError> {
         // Check access level
         let desc = self.get_descriptor(object_idx, prop_id).ok_or(PropertyError::InvalidPropertyId)?;
-        if !desc.can_write(access_level) {
+        if !desc.can_write(ctx) {
             return Err(PropertyError::AccessDenied);
         }
 
@@ -381,12 +381,12 @@ impl<'a, S: StackState + IpStackState> PropertyServiceHandler for IpObjects<'a, 
         start_idx: u16,
         count: u16,
         buf: &mut [u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<usize, PropertyError> {
         if object_idx == 0 {
             // Check access level
             if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(prop_id) {
-                if !desc.can_read(access_level) {
+                if !desc.can_read(ctx) {
                     return Err(PropertyError::AccessDenied);
                 }
             } else {
@@ -404,12 +404,12 @@ impl<'a, S: StackState + IpStackState> PropertyServiceHandler for IpObjects<'a, 
         prop_id: u8,
         start_idx: u16,
         data: &[u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<WriteResponse, PropertyError> {
         if object_idx == 0 {
             // Check access level
             if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(prop_id) {
-                if !desc.can_write(access_level) {
+                if !desc.can_write(ctx) {
                     return Err(PropertyError::AccessDenied);
                 }
             } else {

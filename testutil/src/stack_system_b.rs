@@ -84,7 +84,7 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
         println!("*** RESTART REQUEST RECEIVED ***");
         println!("*** Erase Code: {} ***", req.erase_code);
         println!("*** Channel: {} ***", req.channel);
-        println!("*** Access Level: {} ***", req.access_level);
+        println!("*** Access Level: {:?} ***", req.access_ctx);
         println!("*** Needs Response: {} ***", req.needs_response);
         println!("********************************************\n");
 

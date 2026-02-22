@@ -4,6 +4,7 @@
 //! to the device's tables for A_Memory_Read/Write services.
 
 use crate::{
+    AccessContext,
     memory::{MemoryError, MemoryMap},
     objects::tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, TableMemory},
 };
@@ -177,7 +178,7 @@ impl<Tables> MemoryMap<Tables> for SystemBMemoryMap
 where
     Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication,
 {
-    fn read(&self, tables: &Tables, address: u16, data: &mut [u8], _access_level: u8) -> Result<usize, MemoryError> {
+    fn read(&self, tables: &Tables, address: u16, data: &mut [u8], _ctx: AccessContext) -> Result<usize, MemoryError> {
         let layout = &self.layout;
 
         // Check if address is within our mapped range
@@ -235,7 +236,7 @@ where
         }
     }
 
-    fn write(&self, tables: &Tables, address: u16, data: &[u8], _access_level: u8) -> Result<usize, MemoryError> {
+    fn write(&self, tables: &Tables, address: u16, data: &[u8], _ctx: AccessContext) -> Result<usize, MemoryError> {
         let layout = &self.layout;
 
         // Check if address is within our mapped range

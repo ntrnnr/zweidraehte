@@ -6,6 +6,7 @@
 use core::net::Ipv4Addr;
 
 use super::{PropertyDescriptionResponse, PropertyDescriptor, PropertyError};
+use crate::AccessContext;
 use crate::dpt::{
     InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong,
 };
@@ -322,7 +323,7 @@ pub trait PropertyServiceHandler {
     /// * `start_idx` - 1-based start index for array properties
     /// * `count` - Number of elements to read
     /// * `buf` - Buffer to write data into
-    /// * `access_level` - Caller's access level (0 = full access, 3 = minimal)
+    /// * `ctx` - Caller's access context
     ///
     /// # Returns
     /// Number of bytes written or error (including `AccessDenied` if insufficient access)
@@ -333,7 +334,7 @@ pub trait PropertyServiceHandler {
         start_idx: u16,
         count: u16,
         buf: &mut [u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<usize, PropertyError>;
 
     /// Handle A_PropertyValue_Write request
@@ -345,7 +346,7 @@ pub trait PropertyServiceHandler {
     /// * `prop_id` - Property ID to write
     /// * `start_idx` - 1-based start index for array properties
     /// * `data` - Data to write
-    /// * `access_level` - Caller's access level (0 = full access, 3 = minimal)
+    /// * `ctx` - Caller's access context
     ///
     /// # Returns
     /// * `Ok(WriteResponse::Echo)` - The write succeeded; response should echo the input data
@@ -357,7 +358,7 @@ pub trait PropertyServiceHandler {
         prop_id: u8,
         start_idx: u16,
         data: &[u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<WriteResponse, PropertyError>;
 }
 
@@ -525,7 +526,7 @@ impl PropertyServiceHandler for () {
         _start_idx: u16,
         _count: u16,
         _buf: &mut [u8],
-        _access_level: u8,
+        _ctx: AccessContext,
     ) -> Result<usize, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
     }
@@ -536,7 +537,7 @@ impl PropertyServiceHandler for () {
         _prop_id: u8,
         _start_idx: u16,
         _data: &[u8],
-        _access_level: u8,
+        _ctx: AccessContext,
     ) -> Result<WriteResponse, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
     }
@@ -614,13 +615,13 @@ where
         start_idx: u16,
         count: u16,
         buf: &mut [u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<usize, PropertyError> {
         let base_count = self.0.object_count();
         if object_idx < base_count {
-            self.0.property_value_read(object_idx, prop_id, start_idx, count, buf, access_level)
+            self.0.property_value_read(object_idx, prop_id, start_idx, count, buf, ctx)
         } else {
-            self.1.property_value_read(object_idx - base_count, prop_id, start_idx, count, buf, access_level)
+            self.1.property_value_read(object_idx - base_count, prop_id, start_idx, count, buf, ctx)
         }
     }
 
@@ -630,13 +631,13 @@ where
         prop_id: u8,
         start_idx: u16,
         data: &[u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<WriteResponse, PropertyError> {
         let base_count = self.0.object_count();
         if object_idx < base_count {
-            self.0.property_value_write(object_idx, prop_id, start_idx, data, access_level)
+            self.0.property_value_write(object_idx, prop_id, start_idx, data, ctx)
         } else {
-            self.1.property_value_write(object_idx - base_count, prop_id, start_idx, data, access_level)
+            self.1.property_value_write(object_idx - base_count, prop_id, start_idx, data, ctx)
         }
     }
 }

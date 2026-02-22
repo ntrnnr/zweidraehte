@@ -15,6 +15,8 @@
 //! [`HasAssociationTable`](crate::objects::tables::HasAssociationTable), and
 //! [`HasCommunicationObjectTable`](crate::objects::tables::HasCommunicationObjectTable).
 
+use crate::AccessContext;
+
 // ============================================================================
 // Memory Map
 // ============================================================================
@@ -42,8 +44,7 @@ pub enum MemoryError {
 pub trait MemoryMap<Tables> {
     /// Read from memory at absolute address.
     ///
-    /// The `access_level` parameter indicates the current authorization level (0-3 typically).
-    /// Level 0 is maximum access, level 3 is minimum access.
+    /// The `ctx` parameter carries the caller's authorization context.
     /// Implementations can use this to restrict access to protected memory regions.
     ///
     /// Returns the number of bytes read, or an error if the address is not accessible
@@ -53,13 +54,12 @@ pub trait MemoryMap<Tables> {
         tables: &Tables,
         address: u16,
         data: &mut [u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<usize, MemoryError>;
 
     /// Write to memory at absolute address.
     ///
-    /// The `access_level` parameter indicates the current authorization level (0-3 typically).
-    /// Level 0 is maximum access, level 3 is minimum access.
+    /// The `ctx` parameter carries the caller's authorization context.
     /// Implementations can use this to restrict access to protected memory regions.
     ///
     /// Returns the number of bytes written, or an error if the address is not
@@ -69,7 +69,7 @@ pub trait MemoryMap<Tables> {
         tables: &Tables,
         address: u16,
         data: &[u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<usize, MemoryError>;
 }
 
@@ -93,7 +93,7 @@ impl<T> MemoryMap<T> for NoMemoryMap {
         _tables: &T,
         _address: u16,
         _data: &mut [u8],
-        _access_level: u8,
+        _ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
         Err(MemoryError::NotAccessible)
     }
@@ -103,7 +103,7 @@ impl<T> MemoryMap<T> for NoMemoryMap {
         _tables: &T,
         _address: u16,
         _data: &[u8],
-        _access_level: u8,
+        _ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
         Err(MemoryError::NotAccessible)
     }

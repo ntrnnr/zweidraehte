@@ -2,6 +2,7 @@
 
 use core::fmt;
 
+use crate::AccessContext;
 use crate::dpt::PropertyDataDefinition;
 
 /// Property access rights
@@ -125,22 +126,22 @@ impl PropertyDescriptor {
         Self::new(pid, T::ID, max_elements, access, read_level, write_level)
     }
 
-    /// Check if reading is allowed at the given access level
+    /// Check if reading is allowed under the given access context.
     ///
     /// In KNX, lower access level = more permissions (0 = full access, 3 = minimal).
     /// A property with `read_level=0` requires the caller to have access level 0.
     /// A property with `read_level=3` can be read by anyone (levels 0-3).
-    pub const fn can_read(&self, caller_level: u8) -> bool {
-        matches!(self.access, PropertyAccess::ReadOnly | PropertyAccess::ReadWrite) && caller_level <= self.read_level
+    pub const fn can_read(&self, ctx: AccessContext) -> bool {
+        matches!(self.access, PropertyAccess::ReadOnly | PropertyAccess::ReadWrite) && ctx.access_level <= self.read_level
     }
 
-    /// Check if writing is allowed at the given access level
+    /// Check if writing is allowed under the given access context.
     ///
     /// In KNX, lower access level = more permissions (0 = full access, 3 = minimal).
     /// A property with `write_level=0` requires the caller to have access level 0.
     /// A property with `write_level=3` can be written by anyone (levels 0-3).
-    pub const fn can_write(&self, caller_level: u8) -> bool {
-        matches!(self.access, PropertyAccess::ReadWrite | PropertyAccess::WriteOnly) && caller_level <= self.write_level
+    pub const fn can_write(&self, ctx: AccessContext) -> bool {
+        matches!(self.access, PropertyAccess::ReadWrite | PropertyAccess::WriteOnly) && ctx.access_level <= self.write_level
     }
 }
 

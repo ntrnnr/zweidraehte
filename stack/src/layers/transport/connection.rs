@@ -7,6 +7,7 @@
 use crate::{
     address::IndividualAddress,
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
+    AccessContext,
 };
 use embassy_time::Instant;
 
@@ -71,10 +72,10 @@ pub struct Connection {
     /// for E15). Will be sent when transitioning back to OPEN_IDLE after the
     /// pending message is acknowledged (A8).
     pub queued_outgoing: Option<KnxMessageBuffer<Buffer<'static>>>,
-    /// Current access level for this connection (0 = max access, 3 = min access)
-    /// Reset to default (max access level - 1, typically 3) when connection opens.
+    /// Authorization context for this connection.
+    /// Reset to minimum access (level 3) when connection opens.
     /// Modified by A_Authorize_Request.
-    pub access_level: u8,
+    pub access_ctx: AccessContext,
 }
 
 impl Default for Connection {
@@ -82,9 +83,6 @@ impl Default for Connection {
         Self::new()
     }
 }
-
-/// Default access level for new connections (minimum access = level 3)
-pub const DEFAULT_CONNECTION_ACCESS_LEVEL: u8 = 3;
 
 impl Connection {
     /// Create a new connection in the closed state
@@ -100,7 +98,7 @@ impl Connection {
             pending_msg: None,
             queued_incoming: None,
             queued_outgoing: None,
-            access_level: DEFAULT_CONNECTION_ACCESS_LEVEL,
+            access_ctx: AccessContext::MIN_ACCESS,
         }
     }
 
@@ -115,7 +113,7 @@ impl Connection {
         self.pending_msg = None;
         self.queued_incoming = None;
         self.queued_outgoing = None;
-        self.access_level = DEFAULT_CONNECTION_ACCESS_LEVEL;
+        self.access_ctx = AccessContext::MIN_ACCESS;
     }
 
     /// Check if there is queued incoming data

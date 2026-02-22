@@ -41,12 +41,12 @@ use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant, Timer};
 
 use crate::{
-    StackDefinition, StackState,
+    AccessContext, StackDefinition, StackState,
     address::IndividualAddress,
     messages::{
         buffers::Buffer,
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
-        knx::{DEFAULT_MESSAGE_ACCESS_LEVEL, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
+        knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
     },
     objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
 };
@@ -247,10 +247,10 @@ where
             // Allocate new connection and set the default access level
             let mut conn = self.connections.allocate_incoming(source);
             if let Some(c) = conn.as_mut() {
-                // Set access level to the default (first unset key level)
+                // Set access context to the default (first unset key level)
                 let default_level = self.state.default_access_level();
                 debug!("TL setting connection access level to {} (default)", default_level);
-                c.access_level = default_level;
+                c.access_ctx = AccessContext::new(default_level);
             }
             conn
         } else {
@@ -457,13 +457,13 @@ where
             None => return msg.error().build(),
         };
 
-        // Update connection's access level from the message if explicitly set
-        // (set by application layer after authorization)
+        // Update connection's access context from the message if explicitly set
+        // (set by application layer after authorization).
         // Only update if the message has a non-default access level to avoid
-        // overwriting the current level with the default on every message
-        let msg_access_level = msg.access_level();
-        if msg_access_level != DEFAULT_MESSAGE_ACCESS_LEVEL {
-            conn.access_level = msg_access_level;
+        // overwriting the current level with the default on every message.
+        let msg_access_ctx = msg.access_ctx();
+        if msg_access_ctx != AccessContext::MIN_ACCESS {
+            conn.access_ctx = msg_access_ctx;
         }
 
         let seq_no = conn.seq_no_send;
@@ -645,9 +645,9 @@ where
                 TlAction::IndicateData { source: _ } => {
                     if let Some(mut msg) = msg_for_data.take() {
                         msg.set_service_type(ServiceType::T_Data_Ind);
-                        // Set access level from connection state
+                        // Set access context from connection state
                         if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
-                            msg.set_access_level(conn.access_level);
+                            msg.set_access_ctx(conn.access_ctx);
                         }
                         self.application_layer.send(LayerOp::Indication(msg)).await;
                     }
@@ -680,10 +680,10 @@ where
                 TlAction::DeliverQueuedData { source: _ } => {
                     // Deliver any queued incoming data to the application layer
                     if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
-                        let access_level = conn.access_level;
+                        let access_ctx = conn.access_ctx;
                         if let Some(mut queued_msg) = conn.queued_incoming.take() {
                             queued_msg.set_service_type(ServiceType::T_Data_Ind);
-                            queued_msg.set_access_level(access_level);
+                            queued_msg.set_access_ctx(access_ctx);
                             debug!("TL delivering queued data from {}", remote_addr);
                             self.application_layer
                                 .send(LayerOp::Indication(IndicationMessage::indication(queued_msg)))

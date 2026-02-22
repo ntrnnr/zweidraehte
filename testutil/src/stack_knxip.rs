@@ -378,7 +378,7 @@ where
         start_idx: u16,
         count: u16,
         buf: &mut [u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<usize, PropertyError> {
         // Check access level first (in separate scope to release borrow)
         {
@@ -392,7 +392,7 @@ where
                 _ => return Err(PropertyError::InvalidObjectIndex),
             };
             if let Some((_, desc)) = desc {
-                if !desc.can_read(access_level) {
+                if !desc.can_read(ctx) {
                     return Err(PropertyError::AccessDenied);
                 }
             }
@@ -415,7 +415,7 @@ where
         prop_id: u8,
         start_idx: u16,
         data: &[u8],
-        access_level: u8,
+        ctx: AccessContext,
     ) -> Result<WriteResponse, PropertyError> {
         // Check access level first (in separate scope to release borrow)
         {
@@ -429,7 +429,7 @@ where
                 _ => return Err(PropertyError::InvalidObjectIndex),
             };
             if let Some((_, desc)) = desc {
-                if !desc.can_write(access_level) {
+                if !desc.can_write(ctx) {
                     return Err(PropertyError::AccessDenied);
                 }
             }
