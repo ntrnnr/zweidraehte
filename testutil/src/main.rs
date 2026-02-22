@@ -66,6 +66,8 @@ pub struct MyState {
     pub cot: RefCell<CoTab7<30>>,
     /// Application program (load and run state machines)
     pub app: RefCell<Application<()>>,
+    /// Per-connection access level store
+    access_store: zweidraehte::ConnectionAuthLevels<1>,
 }
 
 impl MyState {
@@ -76,6 +78,7 @@ impl MyState {
             ast: RefCell::new(ast),
             cot: RefCell::new(cot),
             app: RefCell::new(Application::new()),
+            access_store: zweidraehte::ConnectionAuthLevels::<1>::new(),
         }
     }
 }
@@ -88,6 +91,7 @@ impl Default for MyState {
             ast: RefCell::new(AssoTab6::<15>::new()),
             cot: RefCell::new(CoTab7::<30>::new()),
             app: RefCell::new(Application::new()),
+            access_store: zweidraehte::ConnectionAuthLevels::<1>::new(),
         }
     }
 }
@@ -124,6 +128,20 @@ impl HasCommunicationObjectTable for MyState {
     type COT = CoTab7<30>;
     fn cot(&self) -> &RefCell<Self::COT> {
         &self.cot
+    }
+}
+
+impl zweidraehte::HasConnectionAuth for MyState {
+    fn connection_access(&self, slot: u8) -> zweidraehte::AccessContext {
+        self.access_store.get(slot)
+    }
+
+    fn set_connection_access(&self, slot: u8, ctx: zweidraehte::AccessContext) {
+        self.access_store.set(slot, ctx);
+    }
+
+    fn reset_connection_access(&self, slot: u8, default_level: u8) {
+        self.access_store.reset(slot, default_level);
     }
 }
 

@@ -34,7 +34,7 @@ pub mod storage;
 pub mod util;
 
 use core::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     mem::MaybeUninit,
 };
 
@@ -319,18 +319,98 @@ impl AccessContext {
 
     /// Maximum-access context (level 0, full system access).
     pub const MAX_ACCESS: Self = Self { access_level: 0 };
+}
 
-    /// Sentinel value meaning "no access level has been explicitly set".
-    ///
-    /// Used on message buffers to distinguish "not set" from "explicitly set
-    /// to level 3 (MIN_ACCESS)". The transport layer uses this to decide
-    /// whether to update the connection's access context from a response.
-    pub const UNSET: Self = Self { access_level: 0xFF };
+// ============================================================================
+// Access Source
+// ============================================================================
 
-    /// Returns true if this context was explicitly set (not the UNSET sentinel).
-    pub const fn is_set(&self) -> bool {
-        self.access_level != 0xFF
+/// Describes where to look up the access level for a message.
+///
+/// Messages flowing through the stack carry this tag so the application layer
+/// knows how to resolve the effective [`AccessContext`]:
+///
+/// - **Connectionless** messages (broadcast, group, individual-unaddressed)
+///   use the default access level from [`StackState::default_access_level()`].
+/// - **Connection-oriented** messages reference a slot in the shared
+///   [`ConnectionAuthLevels`] where the transport layer maintains the
+///   current authorization level per connection.
+/// - **Explicit** is for special paths (e.g. KNX/IP Device Management) that
+///   bypass the transport layer and need to stamp a fixed access level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum AccessSource {
+    /// Connectionless — use the default access level.
+    Default,
+    /// Connection-oriented — look up from shared store by slot index.
+    Connection(u8),
+    /// Explicit access context (e.g. KNX/IP device management).
+    Explicit(AccessContext),
+}
+
+// ============================================================================
+// Connection Access Store
+// ============================================================================
+
+/// Per-connection access level store.
+///
+/// Sized by [`StackDefinition::MAX_CONNECTIONS`] and owned by the device
+/// state type.  The transport and application layers access it through the
+/// [`HasConnectionAuth`] trait, which hides the const generic `N`.
+///
+/// The slot index matches the connection table: slot 0 is the first incoming
+/// connection, etc.  On connect the TL resets the slot to the default level;
+/// on authorize the AL writes the granted level directly.
+///
+/// Single-threaded (embassy `NoopRawMutex`), so [`Cell`] is safe.
+pub struct ConnectionAuthLevels<const N: usize> {
+    levels: [Cell<AccessContext>; N],
+}
+
+impl<const N: usize> ConnectionAuthLevels<N> {
+    pub const fn new() -> Self {
+        Self { levels: [const { Cell::new(AccessContext::MIN_ACCESS) }; N] }
     }
+
+    /// Read the access context for a connection slot.
+    pub fn get(&self, slot: u8) -> AccessContext {
+        self.levels[slot as usize].get()
+    }
+
+    /// Write the access context for a connection slot.
+    pub fn set(&self, slot: u8, ctx: AccessContext) {
+        self.levels[slot as usize].set(ctx);
+    }
+
+    /// Reset a slot back to the given default level.
+    pub fn reset(&self, slot: u8, default_level: u8) {
+        self.levels[slot as usize].set(AccessContext::new(default_level));
+    }
+}
+
+impl<const N: usize> Default for ConnectionAuthLevels<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Trait for state types that contain a [`ConnectionAuthLevels`].
+///
+/// Provides slot-level access to per-connection authorization levels.
+/// The const generic `N` on [`ConnectionAuthLevels`] is hidden behind
+/// these methods so that layers don't need to carry the generic.
+///
+/// The transport layer resets slot levels on connect/disconnect; the
+/// application layer reads and writes them on authorize and access checks.
+pub trait HasConnectionAuth {
+    /// Read the access context for a connection slot.
+    fn connection_access(&self, slot: u8) -> AccessContext;
+
+    /// Write the access context for a connection slot.
+    fn set_connection_access(&self, slot: u8, ctx: AccessContext);
+
+    /// Reset a slot back to the given default level.
+    fn reset_connection_access(&self, slot: u8, default_level: u8);
 }
 
 // ============================================================================
@@ -582,6 +662,16 @@ pub trait StackDefinition: Copy {
     /// Set to `None` if not supported. If `None`, the stack will not respond
     /// to A_UserManufacturerInfo_Read requests.
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = None;
+
+    /// Maximum number of concurrent transport-layer connections.
+    ///
+    /// This controls the size of the per-connection access level store
+    /// (incoming + outgoing slots). A typical KNX device has 1 incoming
+    /// connection (from ETS or a configurator) and 0 outgoing. Routers
+    /// or gateways may need more.
+    ///
+    /// Default is 1.
+    const MAX_CONNECTIONS: usize = 1;
 
     /// Transport layer state machine style per KNX spec 03/03/04 section 5.4.
     ///
@@ -1059,7 +1149,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
     //        Problem is all the process() methods in the layers require these traits
     pub async fn run(self) -> !
     where
-        D::State: HasAddressTable + HasApplication + HasAssociationTable + HasCommunicationObjectTable,
+        D::State: HasAddressTable + HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
         D::InterfaceObjects<'static>: HasDeviceObject,
     {
         // Initialize the run state machine at startup.

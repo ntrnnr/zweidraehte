@@ -846,6 +846,20 @@ impl HasRoutingCount for ConformanceState {
     fn routing_count(&self) -> u8 { self.inner.routing_count() }
 }
 
+impl zweidraehte::HasConnectionAuth for ConformanceState {
+    fn connection_access(&self, slot: u8) -> zweidraehte::AccessContext {
+        self.inner.connection_access(slot)
+    }
+
+    fn set_connection_access(&self, slot: u8, ctx: zweidraehte::AccessContext) {
+        self.inner.set_connection_access(slot, ctx);
+    }
+
+    fn reset_connection_access(&self, slot: u8, default_level: u8) {
+        self.inner.reset_connection_access(slot, default_level);
+    }
+}
+
 /// Memory map for conformance tests.
 ///
 /// Memory layout:

@@ -28,7 +28,7 @@ use embassy_sync::{
 use super::{ActorRequest, Inbox, Layer, LayerOp, Request};
 
 use crate::{
-    StackDefinition, StackState,
+    AccessContext, AccessSource, HasConnectionAuth, StackDefinition, StackState,
     address::GroupAddress,
     messages::{
         buffers::{Buffer, DynBufferManager},
@@ -179,6 +179,22 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             read_on_init: ReadOnInitState::Idle,
         }
     }
+
+    /// Resolve the effective [`AccessContext`] for an indication message.
+    ///
+    /// - [`AccessSource::Default`] → default access level from device state
+    /// - [`AccessSource::Connection(slot)`] → look up from shared access store
+    /// - [`AccessSource::Explicit(ctx)`] → use as-is (e.g. KNX/IP Device Mgmt)
+    fn resolve_access(&self, ind: &IndicationMessage<Buffer<'static>>) -> AccessContext
+    where
+        D::State: HasConnectionAuth,
+    {
+        match ind.access_source() {
+            AccessSource::Default => AccessContext::new(self.state.default_access_level()),
+            AccessSource::Connection(slot) => self.state.connection_access(slot),
+            AccessSource::Explicit(ctx) => ctx,
+        }
+    }
 }
 
 // ============================================================================
@@ -187,7 +203,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
 impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D>
 where
-    D::State: HasApplication + HasAssociationTable + HasCommunicationObjectTable,
+    D::State: HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
     D::InterfaceObjects<'static>: HasDeviceObject,
 {
     type Buffer = Buffer<'static>;
@@ -240,7 +256,7 @@ where
 
                     // Service-level access check (first line of defense).
                     // Handlers may perform additional fine-grained checks.
-                    let access_ctx = ind.access_ctx();
+                    let access_ctx = self.resolve_access(&ind);
                     match crate::access_policy::check_service_access(apci, &access_ctx) {
                         crate::access_policy::AccessDecision::Denied => {
                             warn!("AL service {:?} denied: {:?}", apci, access_ctx);
@@ -818,7 +834,7 @@ where
 
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
 where
-    D::State: HasApplication,
+    D::State: HasApplication + HasConnectionAuth,
     D::InterfaceObjects<'static>: HasDeviceObject,
 {
     /// Handle `A_PropertyDescription_Read.ind`
@@ -972,7 +988,7 @@ where
         let count = (count_start >> 12) as u16;
         let start_idx = count_start & 0x0FFF;
 
-        let access_ctx = ind.access_ctx();
+        let access_ctx = self.resolve_access(ind);
         debug!(
             "AL PropertyValueRead: obj={}, prop_id={}, count={}, start={}, access_ctx={:?}",
             object_idx, prop_id, count, start_idx, access_ctx
@@ -1111,7 +1127,7 @@ where
         let data_len = ind.len() - data_start;
         let data = &buf[data_start..data_start + data_len];
 
-        let access_ctx = ind.access_ctx();
+        let access_ctx = self.resolve_access(ind);
         debug!(
             "AL PropertyValueWrite: obj={}, prop_id={}, count={}, start={}, data_len={}, access_ctx={:?}",
             object_idx, prop_id, count, start_idx, data_len, access_ctx
@@ -1214,6 +1230,7 @@ where
 
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
 where
+    D::State: HasConnectionAuth,
     D::InterfaceObjects<'static>: HasDeviceObject,
 {
     /// Handle `A_DeviceDescriptor_Read.ind`
@@ -1662,7 +1679,7 @@ where
 
         // Read from memory map first to determine response size
         // Pass access level from the message (set by transport layer from connection state)
-        let access_ctx = ind.access_ctx();
+        let access_ctx = self.resolve_access(ind);
         let mut data = [0u8; 63]; // Max count is 63 (6 bits)
         let result = self.memory_map.read(self.state, address, &mut data[..(count as usize)], access_ctx);
 
@@ -1750,7 +1767,7 @@ where
         debug!("AL Memory_Write: address=0x{:04X}, count={}", address, count);
 
         // Get access level from the message (set by transport layer from connection state)
-        let access_ctx = ind.access_ctx();
+        let access_ctx = self.resolve_access(ind);
 
         // If length is inconsistent, don't write and respond with count=0
         // Otherwise, write to memory map
@@ -1876,7 +1893,7 @@ where
         let xor_masks = &buf[offsets::MSG_APCI + 5 + count as usize..offsets::MSG_APCI + 5 + 2 * count as usize];
 
         // Get access level from the message
-        let access_ctx = ind.access_ctx();
+        let access_ctx = self.resolve_access(ind);
 
         // Read current memory values
         let mut current_data = [0u8; 5]; // Max 5 bytes
@@ -2014,7 +2031,7 @@ where
 
         // Read from memory map first to determine response size
         // Pass access level from the message (set by transport layer from connection state)
-        let access_ctx = ind.access_ctx();
+        let access_ctx = self.resolve_access(ind);
         let mut data = [0u8; 255]; // Max count is 255 (8 bits)
         let max_read = core::cmp::min(count as usize, data.len());
         // UserMemory uses 16-bit address for the memory map interface (address extension is for user address space)
@@ -2114,7 +2131,7 @@ where
         debug!("AL UserMemory_Write: address=0x{:05X}, count={}", full_address, count);
 
         // Get access level from the message (set by transport layer from connection state)
-        let access_ctx = ind.access_ctx();
+        let access_ctx = self.resolve_access(ind);
 
         // If length is inconsistent, don't write and respond with count=0
         // Otherwise, write to memory map
@@ -2262,21 +2279,25 @@ where
             warn!("AL Authorize_Request rejected: connection-oriented only");
             return;
         }
+
+        // Write the granted level directly to the shared access store so it
+        // takes effect immediately — no piggybacking on the response message.
+        if let AccessSource::Connection(slot) = ind.access_source() {
+            self.state.set_connection_access(slot, AccessContext::new(access_level));
+        }
+
         let transport_service = ServiceType::T_Data_Req;
 
         // Response: APCI(2) + Level(1) = 3 bytes
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 3;
         let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
 
-        let mut msg = ind
+        let msg = ind
             .respond_with(msg_buf)
             .with_application(ApciCode::AuthorizeResponse, transport_service)
             .with_data(|data| {
                 data[offsets::MSG_APCI + 2] = access_level;
             });
-
-        // Set access level on the message so TL can update connection state
-        msg.set_access_level(access_level);
 
         debug!("AL sending Authorize_Response: level={}", access_level);
 
@@ -2317,7 +2338,7 @@ where
         ];
 
         // Get current access context from the message (set by transport layer from connection)
-        let current_ctx = ind.access_ctx();
+        let current_ctx = self.resolve_access(ind);
         debug!(
             "AL Key_Write: level={}, key={:?}, current_ctx={:?}",
             level,
@@ -2385,7 +2406,7 @@ where
             (EraseCode::Basic, 0, false)
         };
 
-        let restart_ctx = ind.access_ctx();
+        let restart_ctx = self.resolve_access(ind);
         debug!(
             "AL Restart: erase_code={}, channel={}, needs_response={}, access_ctx={:?}",
             erase_code, channel, needs_response, restart_ctx

@@ -41,7 +41,7 @@ use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant, Timer};
 
 use crate::{
-    AccessContext, StackDefinition, StackState,
+    AccessSource, HasConnectionAuth, StackDefinition, StackState,
     address::IndividualAddress,
     messages::{
         buffers::Buffer,
@@ -120,7 +120,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>
 where
-    D::State: HasAddressTable,
+    D::State: HasAddressTable + HasConnectionAuth,
 {
     // ========================================================================
     // Indication Handling (from Network Layer)
@@ -142,8 +142,7 @@ where
                 {
                     msg.set_connection_nr(conn_nr);
                     msg.set_service_type(ServiceType::T_GroupData_Ind);
-                    let default_level = self.state.default_access_level();
-                    msg.set_access_ctx(AccessContext::new(default_level));
+                    // Connectionless — AccessSource::Default is already set on new messages.
                     debug!("TL -> AL: {:?}", msg);
                     self.application_layer.send(LayerOp::Indication(msg)).await;
                 }
@@ -152,8 +151,6 @@ where
             ServiceType::N_Broadcast_Ind => {
                 if let Some(Tpci::DataBroadcast) = msg.get_tpci() {
                     msg.set_service_type(ServiceType::T_Broadcast_Ind);
-                    let default_level = self.state.default_access_level();
-                    msg.set_access_ctx(AccessContext::new(default_level));
                     debug!("TL -> AL: {:?}", msg);
                     self.application_layer.send(LayerOp::Indication(msg)).await;
                 }
@@ -162,8 +159,6 @@ where
             ServiceType::N_SystemBroadcast_Ind => {
                 if let Some(Tpci::DataSystemBroadcast) = msg.get_tpci() {
                     msg.set_service_type(ServiceType::T_SystemBroadcast_Ind);
-                    let default_level = self.state.default_access_level();
-                    msg.set_access_ctx(AccessContext::new(default_level));
                     debug!("TL -> AL: {:?}", msg);
                     self.application_layer.send(LayerOp::Indication(msg)).await;
                 }
@@ -238,12 +233,8 @@ where
             Tpci::DataConnected(seq_no) => TlEvent::ReceivedData { source, seq_no },
             Tpci::DataIndividual => {
                 // Unnumbered individual data — forward to application.
-                // Set the default access level since there's no connection
-                // state to track authorization (connectionless = default key
-                // level, same as a fresh connection).
+                // Connectionless: AccessSource::Default is already set.
                 msg.set_service_type(ServiceType::T_DataUnack_Ind);
-                let default_level = self.state.default_access_level();
-                msg.set_access_ctx(AccessContext::new(default_level));
                 self.application_layer.send(LayerOp::Indication(msg)).await;
                 return;
             }
@@ -255,13 +246,12 @@ where
 
         // For connect events, we need to allocate a connection slot
         let conn = if matches!(event, TlEvent::ReceivedConnect { .. }) {
-            // Allocate new connection and set the default access level
+            // Allocate new connection and reset its access level in the shared store
             let mut conn = self.connections.allocate_incoming(source);
             if let Some(c) = conn.as_mut() {
-                // Set access context to the default (first unset key level)
                 let default_level = self.state.default_access_level();
                 debug!("TL setting connection access level to {} (default)", default_level);
-                c.access_ctx = AccessContext::new(default_level);
+                self.state.reset_connection_access(c.slot_index, default_level);
             }
             conn
         } else {
@@ -468,14 +458,9 @@ where
             None => return msg.error().build(),
         };
 
-        // Update connection's access context from the message if explicitly set
-        // by the application layer (e.g., after A_Authorize_Response). Messages
-        // that don't call set_access_level() have the UNSET sentinel, which we
-        // skip to avoid overwriting the connection's current level.
-        let msg_access_ctx = msg.access_ctx();
-        if msg_access_ctx.is_set() {
-            conn.access_ctx = msg_access_ctx;
-        }
+        // Access level updates (e.g. A_Authorize) are now written directly
+        // to the shared ConnectionAuthLevels by the AL — no piggybacking
+        // on response messages needed.
 
         let seq_no = conn.seq_no_send;
         let actions = process_event(conn, TlEvent::RequestData { dest }, self.style);
@@ -656,9 +641,9 @@ where
                 TlAction::IndicateData { source: _ } => {
                     if let Some(mut msg) = msg_for_data.take() {
                         msg.set_service_type(ServiceType::T_Data_Ind);
-                        // Set access context from connection state
+                        // Tag with connection slot so AL can look up access level
                         if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
-                            msg.set_access_ctx(conn.access_ctx);
+                            msg.set_access_source(AccessSource::Connection(conn.slot_index));
                         }
                         self.application_layer.send(LayerOp::Indication(msg)).await;
                     }
@@ -691,10 +676,10 @@ where
                 TlAction::DeliverQueuedData { source: _ } => {
                     // Deliver any queued incoming data to the application layer
                     if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
-                        let access_ctx = conn.access_ctx;
+                        let slot = conn.slot_index;
                         if let Some(mut queued_msg) = conn.queued_incoming.take() {
                             queued_msg.set_service_type(ServiceType::T_Data_Ind);
-                            queued_msg.set_access_ctx(access_ctx);
+                            queued_msg.set_access_source(AccessSource::Connection(slot));
                             debug!("TL delivering queued data from {}", remote_addr);
                             self.application_layer
                                 .send(LayerOp::Indication(IndicationMessage::indication(queued_msg)))
@@ -914,7 +899,7 @@ where
 impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> Layer<'a>
     for TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>
 where
-    D::State: HasAddressTable,
+    D::State: HasAddressTable + HasConnectionAuth,
 {
     type Buffer = Buffer<'static>;
 

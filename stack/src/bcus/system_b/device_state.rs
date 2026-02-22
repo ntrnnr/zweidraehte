@@ -75,6 +75,7 @@ pub struct SystemBDeviceState<
     const COT_SIZE: usize,
     P: ConstDefault,
     LS: LinkLayerState = (),
+    const MAX_CONN: usize = 1,
 > {
     // ========================================================================
     // Runtime State
@@ -131,6 +132,14 @@ pub struct SystemBDeviceState<
     link_layer_state: LS,
 
     // ========================================================================
+    // Access Control
+    // ========================================================================
+    /// Per-connection access levels. Written by the AL (authorize), read by
+    /// both AL and TL. Not persisted — resets to `MIN_ACCESS` on each
+    /// connection open.
+    access_store: crate::ConnectionAuthLevels<MAX_CONN>,
+
+    // ========================================================================
     // Dirty Tracking
     // ========================================================================
     /// Dirty flag indicating unsaved changes.
@@ -141,8 +150,8 @@ pub struct SystemBDeviceState<
     dirty: Cell<bool>,
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
-    SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState, const MAX_CONN: usize>
+    SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS, MAX_CONN>
 {
     /// Create new device state with factory defaults.
     ///
@@ -169,6 +178,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
             pei: RefCell::new(PeiApplication::new()),
             program_version: RefCell::new([0; 5]),
             pei_program_version: RefCell::new([0; 5]),
+            access_store: crate::ConnectionAuthLevels::new(),
             link_layer_state: LS::from_config(LS::Config::default()),
             dirty: Cell::new(false),
         }
@@ -321,7 +331,8 @@ impl<
     const COT_SIZE: usize,
     P: ConstDefault + Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
     LS: LinkLayerState,
-> HasPersistedState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+    const MAX_CONN: usize,
+> HasPersistedState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS, MAX_CONN>
 {
     type Persisted = PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS::Config>;
 
@@ -375,6 +386,7 @@ impl<
             pei: RefCell::new(pei_program),
             program_version: RefCell::new(program_version),
             pei_program_version: RefCell::new(pei_program_version),
+            access_store: crate::ConnectionAuthLevels::new(),
             link_layer_state: LS::from_config(link_layer_config),
             dirty: Cell::new(false),
         }
@@ -573,6 +585,22 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState, const MAX_CONN: usize>
+    crate::HasConnectionAuth for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS, MAX_CONN>
+{
+    fn connection_access(&self, slot: u8) -> crate::AccessContext {
+        self.access_store.get(slot)
+    }
+
+    fn set_connection_access(&self, slot: u8, ctx: crate::AccessContext) {
+        self.access_store.set(slot, ctx);
+    }
+
+    fn reset_connection_access(&self, slot: u8, default_level: u8) {
+        self.access_store.reset(slot, default_level);
+    }
+}
+
 // ============================================================================
 // IP Link-Layer State
 // ============================================================================
@@ -737,8 +765,8 @@ pub type IpSystemBDeviceState<
 ///
 /// The `mark_dirty()` calls on setters ensure changes are tracked
 /// for persistence.
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, Plat: IpPlatform + IpPlatformConfig + Default> IpStackState
-    for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpLinkLayerState<Plat>>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, Plat: IpPlatform + IpPlatformConfig + Default, const MAX_CONN: usize> IpStackState
+    for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpLinkLayerState<Plat>, MAX_CONN>
 {
     fn current_ip_address(&self) -> Ipv4Addr {
         self.link_layer_state.platform.current_ip_address()

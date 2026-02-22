@@ -508,6 +508,8 @@ pub struct KnxIpState<P: IpPlatform> {
     pub cot: RefCell<stack_test_config::CoTab>,
     /// Application program table (holds both load and run state machines)
     pub app: RefCell<Application<()>>,
+    /// Per-connection access level store
+    access_store: zweidraehte::ConnectionAuthLevels<1>,
 }
 
 impl<P: IpPlatform> KnxIpState<P> {
@@ -519,6 +521,7 @@ impl<P: IpPlatform> KnxIpState<P> {
             ast: RefCell::new(stack_test_config::AssoTab::new()),
             cot: RefCell::new(stack_test_config::CoTab::new()),
             app: RefCell::new(Application::new()),
+            access_store: zweidraehte::ConnectionAuthLevels::<1>::new(),
         }
     }
 
@@ -537,6 +540,7 @@ impl<P: IpPlatform> KnxIpState<P> {
             ast: RefCell::new(ast),
             cot: RefCell::new(cot),
             app: RefCell::new(app),
+            access_store: zweidraehte::ConnectionAuthLevels::<1>::new(),
         }
     }
 }
@@ -684,6 +688,20 @@ impl<P: IpPlatform> HasApplication for KnxIpState<P> {
     type APP = Application<()>;
     fn app(&self) -> &RefCell<Self::APP> {
         &self.app
+    }
+}
+
+impl<P: IpPlatform> zweidraehte::HasConnectionAuth for KnxIpState<P> {
+    fn connection_access(&self, slot: u8) -> zweidraehte::AccessContext {
+        self.access_store.get(slot)
+    }
+
+    fn set_connection_access(&self, slot: u8, ctx: zweidraehte::AccessContext) {
+        self.access_store.set(slot, ctx);
+    }
+
+    fn reset_connection_access(&self, slot: u8, default_level: u8) {
+        self.access_store.reset(slot, default_level);
     }
 }
 

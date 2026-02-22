@@ -3,7 +3,7 @@ use core::ops::{Deref, DerefMut};
 
 use crate::address::{GroupAddress, IndividualAddress};
 use crate::messages::buffers::MessageBuffer;
-use crate::AccessContext;
+use crate::{AccessContext, AccessSource};
 
 /// Offsets to fields in the KNX message buffers
 pub mod offsets {
@@ -591,10 +591,10 @@ impl MessageFormat for Tp1Format {}
 pub struct KnxMessageBuffer<B: Deref<Target = [u8]>, F: MessageFormat = InternalFormat> {
     service_type: ServiceType,
     buf: B,
-    /// Authorization context for this message.
-    /// Set by transport layer for connection-oriented messages.
-    /// Defaults to minimum access (level 3) for connectionless messages.
-    access_ctx: AccessContext,
+    /// Where to look up the access level for this message.
+    /// Set by the transport layer (or link layer for special paths like
+    /// KNX/IP Device Management).
+    access_source: AccessSource,
     /// Marker for the message format
     _format: PhantomData<F>,
 }
@@ -642,28 +642,14 @@ impl<B: Deref<Target = [u8]>, F: MessageFormat> KnxMessageBuffer<B, F> {
         self.service_type = service_type;
     }
 
-    /// Get the access context for this message.
-    pub fn access_ctx(&self) -> AccessContext {
-        self.access_ctx
+    /// Get the access source for this message.
+    pub fn access_source(&self) -> AccessSource {
+        self.access_source
     }
 
-    /// Set the access context for this message.
-    pub fn set_access_ctx(&mut self, ctx: AccessContext) {
-        self.access_ctx = ctx;
-    }
-
-    /// Get the legacy access level (0 = max access, 3 = min access).
-    ///
-    /// Convenience shorthand for `self.access_ctx().access_level`.
-    pub fn access_level(&self) -> u8 {
-        self.access_ctx.access_level
-    }
-
-    /// Set the access level on this message.
-    ///
-    /// Convenience shorthand for wrapping in [`AccessContext`].
-    pub fn set_access_level(&mut self, level: u8) {
-        self.access_ctx = AccessContext::new(level);
+    /// Set the access source for this message.
+    pub fn set_access_source(&mut self, source: AccessSource) {
+        self.access_source = source;
     }
 
     pub fn len(&self) -> usize {
@@ -678,7 +664,7 @@ impl<B: Deref<Target = [u8]>, F: MessageFormat> KnxMessageBuffer<B, F> {
 impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
     /// Create a new KnxMessageBuffer in internal format.
     pub fn new(buf: B, service_type: ServiceType) -> Self {
-        KnxMessageBuffer { service_type, buf, access_ctx: AccessContext::UNSET, _format: PhantomData }
+        KnxMessageBuffer { service_type, buf, access_source: AccessSource::Default, _format: PhantomData }
     }
 
     /// Create a KnxMessageBuffer from a buffer, using a default service type.
@@ -689,7 +675,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
         KnxMessageBuffer {
             service_type: ServiceType::L_Data_Ind,
             buf,
-            access_ctx: AccessContext::UNSET,
+            access_source: AccessSource::Default,
             _format: PhantomData,
         }
     }
@@ -1076,7 +1062,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, CemiFormat> {
     pub fn from_cemi(buf: B) -> Self {
         let message_code = buf[0];
         let service_type = ServiceType::try_from(message_code).unwrap_or(ServiceType::L_Data_Ind);
-        KnxMessageBuffer { service_type, buf, access_ctx: AccessContext::UNSET, _format: PhantomData }
+        KnxMessageBuffer { service_type, buf, access_source: AccessSource::Default, _format: PhantomData }
     }
 
     /// Get the cEMI message code byte.
@@ -1124,7 +1110,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, CemiFormat> {
             return KnxMessageBuffer {
                 service_type: self.service_type,
                 buf: self.buf,
-                access_ctx: self.access_ctx,
+                access_source: self.access_source,
                 _format: PhantomData,
             };
         }
@@ -1178,7 +1164,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, CemiFormat> {
         KnxMessageBuffer {
             service_type: self.service_type,
             buf: self.buf,
-            access_ctx: self.access_ctx,
+            access_source: self.access_source,
             _format: PhantomData,
         }
     }
@@ -1235,7 +1221,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, InternalFormat> {
         KnxMessageBuffer {
             service_type: self.service_type,
             buf: self.buf,
-            access_ctx: self.access_ctx,
+            access_source: self.access_source,
             _format: PhantomData,
         }
     }
@@ -1264,7 +1250,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, InternalFormat> {
 impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, Tp1Format> {
     /// Create a new KnxMessageBuffer wrapping a TP1-formatted buffer.
     pub fn from_tp1(buf: B, service_type: ServiceType) -> Self {
-        KnxMessageBuffer { service_type, buf, access_ctx: AccessContext::UNSET, _format: PhantomData }
+        KnxMessageBuffer { service_type, buf, access_source: AccessSource::Default, _format: PhantomData }
     }
 }
 

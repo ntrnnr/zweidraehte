@@ -7,7 +7,6 @@
 use crate::{
     address::IndividualAddress,
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
-    AccessContext,
 };
 use embassy_time::Instant;
 
@@ -72,10 +71,9 @@ pub struct Connection {
     /// for E15). Will be sent when transitioning back to OPEN_IDLE after the
     /// pending message is acknowledged (A8).
     pub queued_outgoing: Option<KnxMessageBuffer<Buffer<'static>>>,
-    /// Authorization context for this connection.
-    /// Reset to minimum access (level 3) when connection opens.
-    /// Modified by A_Authorize_Request.
-    pub access_ctx: AccessContext,
+    /// Slot index for looking up this connection's access level in the
+    /// shared [`ConnectionAuthLevels`]. Set once on allocation.
+    pub slot_index: u8,
 }
 
 impl Default for Connection {
@@ -98,7 +96,7 @@ impl Connection {
             pending_msg: None,
             queued_incoming: None,
             queued_outgoing: None,
-            access_ctx: AccessContext::MIN_ACCESS,
+            slot_index: 0,
         }
     }
 
@@ -113,7 +111,8 @@ impl Connection {
         self.pending_msg = None;
         self.queued_incoming = None;
         self.queued_outgoing = None;
-        self.access_ctx = AccessContext::MIN_ACCESS;
+        // slot_index is intentionally not reset — it's set by
+        // ConnectionTable::allocate_incoming() and stays stable.
     }
 
     /// Check if there is queued incoming data
@@ -255,6 +254,7 @@ impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_I
         if let Some(idx) = self.incoming.iter().position(|c| c.state == ConnectionState::Closed) {
             self.incoming[idx].reset();
             self.incoming[idx].remote_addr = addr;
+            self.incoming[idx].slot_index = idx as u8;
             return Some(&mut self.incoming[idx]);
         }
 
@@ -272,10 +272,12 @@ impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_I
             return Some(&mut self.outgoing[idx]);
         }
 
-        // Try to find a free slot
+        // Try to find a free slot. Outgoing slots continue numbering after
+        // incoming slots so they don't collide in the access store.
         if let Some(idx) = self.outgoing.iter().position(|c| c.state == ConnectionState::Closed) {
             self.outgoing[idx].reset();
             self.outgoing[idx].remote_addr = addr;
+            self.outgoing[idx].slot_index = (MAX_INCOMING + idx) as u8;
             return Some(&mut self.outgoing[idx]);
         }
 

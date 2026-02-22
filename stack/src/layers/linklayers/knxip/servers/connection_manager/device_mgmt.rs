@@ -20,7 +20,7 @@ use crate::messages::knxip::{
     ConnectionStatus, DeviceConfigurationAck, DeviceConfigurationAckBuilder, DeviceConfigurationRequest,
     DeviceConfigurationRequestBuilder, KNXnetIPServiceType,
 };
-use crate::AccessContext;
+use crate::{AccessContext, AccessSource};
 use crate::objects::interface::PropertyServiceHandler;
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
@@ -168,7 +168,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
 
         // Full access for ETS Device Management connections.
         // TODO: Revisit when secure tunneling is implemented.
-        msg.set_access_ctx(AccessContext::MAX_ACCESS);
+        msg.set_access_source(AccessSource::Explicit(AccessContext::MAX_ACCESS));
 
         let indication = IndicationMessage::indication(msg);
 
