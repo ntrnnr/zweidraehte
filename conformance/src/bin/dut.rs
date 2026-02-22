@@ -115,58 +115,60 @@ async fn handle_restarts(
     loop {
         let request = stack.receive_restart_request().await;
         let state = stack.state();
+        let erase_code = request.get().erase_code;
 
-        let response = match request.get().erase_code {
-            EraseCode::Basic | EraseCode::Confirmed => RestartResponse::success(),
-            EraseCode::FactoryReset => {
-                state.inner().factory_reset();
-                RestartResponse::success()
-            }
-            EraseCode::ResetIA => {
-                state.inner().reset_individual_address();
-                RestartResponse::success()
-            }
-            EraseCode::ResetAP => {
-                state.inner().reset_application();
-                RestartResponse::success()
-            }
-            EraseCode::ResetParam => {
-                state.inner().reset_parameters();
-                RestartResponse::success()
-            }
-            EraseCode::ResetLinks => {
-                state.inner().reset_address_table();
-                state.inner().reset_association_table();
-                RestartResponse::success()
-            }
-            EraseCode::FactoryResetKeepIA => {
-                state.inner().factory_reset_keep_ia();
-                RestartResponse::success()
-            }
-            _ => RestartResponse::error(RestartError::UnsupportedEraseCode),
+        // Validate the erase code. Unknown codes are rejected without restart.
+        let supported = !matches!(erase_code, EraseCode::Other(_));
+        let response = if supported {
+            RestartResponse::success()
+        } else {
+            RestartResponse::error(RestartError::UnsupportedEraseCode)
         };
 
         let success = response.error == RestartError::NoError;
+
+        // Reply first so the stack can send the A_Restart_Response while the
+        // device state (especially the individual address) is still intact.
+        // State changes happen *after* the response is transmitted.
         request.reply(response).await;
 
-        if success {
-            // Give the stack a moment to send the response over IPC
-            // before we flush and exit.
-            Timer::after(Duration::from_millis(50)).await;
-
-            // Flush persistent state to shared memory, then exit.
-            // The parent will detect EOF and respawn us.
-            let snapshot = state.to_persisted_snapshot();
-
-            // SAFETY: Single-threaded embassy executor — no concurrent access.
-            let shm_mut = unsafe { &mut *shm.0.get() };
-            if let Err(e) = shm_mut.write_state(&snapshot) {
-                log::error!("Failed to flush state to shared memory: {}", e);
-            }
-
-            log::info!("Restart: flushed state to shm, exiting");
-            std::process::exit(0);
+        if !success {
+            continue;
         }
+
+        // Give the stack a moment to send the response over IPC
+        // before we apply state changes and exit.
+        Timer::after(Duration::from_millis(50)).await;
+
+        // Apply the erase-code-specific state changes.
+        match erase_code {
+            EraseCode::Basic | EraseCode::Confirmed => {
+                // No state changes — just restart.
+            }
+            EraseCode::FactoryReset => state.inner().factory_reset(),
+            EraseCode::ResetIA => state.inner().reset_individual_address(),
+            EraseCode::ResetAP => state.inner().reset_application(),
+            EraseCode::ResetParam => state.inner().reset_parameters(),
+            EraseCode::ResetLinks => {
+                state.inner().reset_address_table();
+                state.inner().reset_association_table();
+            }
+            EraseCode::FactoryResetKeepIA => state.inner().factory_reset_keep_ia(),
+            _ => unreachable!("unsupported erase codes filtered above"),
+        }
+
+        // Flush persistent state to shared memory, then exit.
+        // The parent will detect EOF and respawn us.
+        let snapshot = state.to_persisted_snapshot();
+
+        // SAFETY: Single-threaded embassy executor — no concurrent access.
+        let shm_mut = unsafe { &mut *shm.0.get() };
+        if let Err(e) = shm_mut.write_state(&snapshot) {
+            log::error!("Failed to flush state to shared memory: {}", e);
+        }
+
+        log::info!("Restart: flushed state to shm, exiting");
+        std::process::exit(0);
     }
 }
 

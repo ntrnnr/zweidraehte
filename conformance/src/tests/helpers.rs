@@ -71,6 +71,14 @@ pub fn expect_none(timeout_ms: u32) -> TestStep {
     TestStep::ExpectNone { timeout_ms }
 }
 
+/// Wait for a duration.
+///
+/// Used after connectionless restart injects to give the DUT child process
+/// time to flush and exit before the next step runs.
+pub fn wait(duration_ms: u32) -> TestStep {
+    TestStep::Wait { duration_ms }
+}
+
 /// Drain all pending captured messages after waiting `settle_ms` for
 /// in-flight messages to arrive.
 ///

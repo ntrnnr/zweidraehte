@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use super::helpers::{comment, expect, expect_none, inject, inject_delay, set_programming_mode};
+use super::helpers::{comment, expect, expect_none, inject, inject_delay, set_programming_mode, wait};
 use crate::{TestCase, TestSuite, TestVariable};
 
 /// Create test variables for management tests
@@ -1144,9 +1144,10 @@ fn create_restart_test_variables() -> BTreeMap<String, TestVariable> {
     let mut vars = create_test_variables();
     // Factory default address (FF FF = 15.15.255)
     vars.insert("BDUT_DEFAULT_ADDR".to_string(), TestVariable::Bytes(vec![0xFF, 0xFF]));
-    // Authorization key for access level where BDUT prevents master reset
+    // Authorization key installed at level 1 by M-2.9.11 before testing
+    // "access denied". The EITT describes this as "e.g. level 1 with the
+    // key 12345678h" — level 1 is insufficient for master reset (level 0).
     vars.insert("AUTHORIZATION_KEY".to_string(), TestVariable::Bytes(vec![0x12, 0x34, 0x56, 0x78]));
-    // Access level where BDUT prevents master reset
     vars.insert("ACCESS_LEVEL".to_string(), TestVariable::Bytes(vec![0x01]));
     vars
 }
@@ -1178,17 +1179,16 @@ pub fn create_restart_suite() -> TestSuite {
     use super::helpers::inject_delay;
     let vars = create_restart_test_variables();
 
+    // Suite preparation (matches EITT "2.9 Restart preparation"):
+    // Activate programming mode and set IA.
+    let preparation = vec![
+        comment("Testcase 2.9 Restart preparation"),
+        comment("Activate Programming Mode and set IA"),
+        inject("BC #EDI #BDUT 66 03 D7 00 36 10 01 01"),
+        expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 01", 500),
+    ];
+
     let cases = vec![
-        // ====================================================================
-        // M-2.9 Restart preparation
-        // ====================================================================
-        TestCase::new("M-2.9 Restart preparation").with_steps(vec![
-            comment("Testcase 2.9 Restart preparation"),
-            comment("Activate Programming Mode and setting IA"),
-            inject("BC #EDI #BDUT_DEFAULT_ADDR 66 03 D7 00 36 10 01 01"),
-            expect("BC #BDUT_DEFAULT_ADDR #EDI 66 03 D6 00 36 10 01 01", 500),
-            inject_delay("BC #EDI 00 00 E3 00 C0 #BDUT", 200),
-        ]),
         // ====================================================================
         // M-2.9.1 Send Basic Restart (connection oriented)
         // ====================================================================
@@ -1217,7 +1217,11 @@ pub fn create_restart_suite() -> TestSuite {
             inject("BC #EDI #BDUT 66 03 D7 00 36 10 01 01"),
             expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 01", 500),
             comment("Send Basic restart"),
-            inject_delay("BC #EDI #BDUT 61 03 80", 5000),
+            inject("BC #EDI #BDUT 61 03 80"),
+            // Wait for the DUT child process to flush and exit. The next
+            // inject triggers a respawn so the PropertyValueRead runs
+            // against the fresh child with programming mode cleared.
+            wait(5000),
             comment("Acceptance: Compare BDUT's reaction to what the manufacturer has declared in the supplied PIXIT forms for Management  - verify that previously active programming mode deactivated"),
             inject("BC #EDI #BDUT 65 03 D5 00 36 10 01"),
             expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 00", 500),
@@ -1233,9 +1237,11 @@ pub fn create_restart_suite() -> TestSuite {
             comment("Send Confirmed restart"),
             inject("BC #EDI #BDUT 63 03 81 01 00"),
             expect("BC #BDUT #EDI 64 03 A1 00 ?? ??", 5000),
+            // Wait for the DUT to flush and exit after sending the response.
+            wait(5000),
             comment("Acceptance: Compare BDUT's reaction to what the manufacturer has declared in the supplied PIXIT forms for Management: is a confirmed alternative to the unconfirmed basis restart."),
             comment("Alternatively if the system profile does not require support of this erase code"),
-            comment("Programming mode is swithed off"),
+            comment("Programming mode is switched off"),
             inject("BC #EDI #BDUT 65 03 D5 00 36 10 01"),
             expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 00", 500),
         ]),
@@ -1246,20 +1252,20 @@ pub fn create_restart_suite() -> TestSuite {
             comment("Testcase 2.9.3a Send Master Reset – confirmed Restart (connection oriented)"),
             // T_Connect
             inject_delay("B0 #EDI #BDUT 60 80", 200),
-            // Enable programming mode
+            // Enable programming mode (seqno 0)
             inject("BC #EDI #BDUT 66 43 D7 00 36 10 01 01"),
             expect("B0 #BDUT #EDI 60 C2", 0),
             expect("BC #BDUT #EDI 66 43 D6 00 36 10 01 01", 500),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            // Send Master Reset with erase code 0x01 (confirmed restart)
-            inject("B0 #EDI #BDUT 63 43 81 01 00"),
+            // Send Master Reset with erase code 0x01 – confirmed restart (seqno 1)
+            inject("B0 #EDI #BDUT 63 47 81 01 00"),
             expect("B0 #BDUT #EDI 60 C6", 0),
-            expect("B0 #BDUT #EDI 64 43 A1 00 ?? ??", 200),
+            expect("B0 #BDUT #EDI 64 47 A1 00 ?? ??", 200),
             inject_delay("B0 #EDI #BDUT 60 C6", 200),
-            // T_Disconnect
+            // T_Disconnect (5s delay: child exits and respawns during this wait)
             inject_delay("B0 #EDI #BDUT 60 81", 5000),
             comment("Acceptance: Compare BDUT's reaction to what the manufacturer has declared in the supplied PIXIT forms for Management: is a confirmed alternative to the unconfirmed basis restart."),
-            // Verify programming mode is off after restart
+            // Verify programming mode is off after restart (new connection, seqno 0)
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             inject("BC #EDI #BDUT 65 43 D5 00 36 10 01"),
             expect("B0 #BDUT #EDI 60 C2", 0),
@@ -1483,9 +1489,22 @@ pub fn create_restart_suite() -> TestSuite {
         TestCase::new("M-2.9.11 Access denied (connection-oriented)").with_steps(vec![
             comment("Testcase 2.9.11 Access denied (connection oriented)"),
             comment("Authorize at level where BDUT would not allow to carry out a master reset. The below example shows that this would be e.g. level 1 with the key 12345678h."),
-            // T_Connect
+            // Install AUTHORIZATION_KEY at level 1. Earlier factory reset
+            // tests (M-2.9.4/9) wipe auth keys, so we must re-install here.
             inject_delay("B0 #EDI #BDUT 60 80", 200),
-            // A_Authorize_Request with key
+            // Authorize with default key (0xFFFFFFFF) → level 0
+            inject("BC #EDI #BDUT 66 43 D1 00 FF FF FF FF"),
+            expect("B0 #BDUT #EDI 60 C2", 0),
+            expect("BC #BDUT #EDI 62 43 D2 00", 400),
+            inject_delay("B0 #EDI #BDUT 60 C2", 200),
+            // A_Key_Write: level=1, key=AUTHORIZATION_KEY
+            inject("BC #EDI #BDUT 66 47 D3 01 #AUTHORIZATION_KEY"),
+            expect("B0 #BDUT #EDI 60 C6", 0),
+            expect("BC #BDUT #EDI 62 47 D4 01", 400),
+            inject_delay("B0 #EDI #BDUT 60 C6", 200),
+            inject_delay("B0 #EDI #BDUT 60 81", 200),
+            // Now test: connect and authorize with AUTHORIZATION_KEY → level 1
+            inject_delay("B0 #EDI #BDUT 60 80", 200),
             inject("BC #EDI #BDUT 66 43 D1 00 #AUTHORIZATION_KEY"),
             expect("B0 #BDUT #EDI 60 C2", 0),
             expect("BC #BDUT #EDI 62 43 D2 #ACCESS_LEVEL", 400),
@@ -1531,7 +1550,9 @@ pub fn create_restart_suite() -> TestSuite {
         // to set up the BDUT with programming mode and correct IA
     ];
 
-    TestSuite::new("M-2.9 Restart", vars).with_cases(cases)
+    TestSuite::new("M-2.9 Restart", vars)
+        .with_preparation(preparation)
+        .with_cases(cases)
 }
 
 // ============================================================================

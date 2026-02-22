@@ -142,6 +142,8 @@ where
                 {
                     msg.set_connection_nr(conn_nr);
                     msg.set_service_type(ServiceType::T_GroupData_Ind);
+                    let default_level = self.state.default_access_level();
+                    msg.set_access_ctx(AccessContext::new(default_level));
                     debug!("TL -> AL: {:?}", msg);
                     self.application_layer.send(LayerOp::Indication(msg)).await;
                 }
@@ -150,6 +152,8 @@ where
             ServiceType::N_Broadcast_Ind => {
                 if let Some(Tpci::DataBroadcast) = msg.get_tpci() {
                     msg.set_service_type(ServiceType::T_Broadcast_Ind);
+                    let default_level = self.state.default_access_level();
+                    msg.set_access_ctx(AccessContext::new(default_level));
                     debug!("TL -> AL: {:?}", msg);
                     self.application_layer.send(LayerOp::Indication(msg)).await;
                 }
@@ -158,6 +162,8 @@ where
             ServiceType::N_SystemBroadcast_Ind => {
                 if let Some(Tpci::DataSystemBroadcast) = msg.get_tpci() {
                     msg.set_service_type(ServiceType::T_SystemBroadcast_Ind);
+                    let default_level = self.state.default_access_level();
+                    msg.set_access_ctx(AccessContext::new(default_level));
                     debug!("TL -> AL: {:?}", msg);
                     self.application_layer.send(LayerOp::Indication(msg)).await;
                 }
@@ -231,8 +237,13 @@ where
             }
             Tpci::DataConnected(seq_no) => TlEvent::ReceivedData { source, seq_no },
             Tpci::DataIndividual => {
-                // Unnumbered individual data - forward to application
+                // Unnumbered individual data — forward to application.
+                // Set the default access level since there's no connection
+                // state to track authorization (connectionless = default key
+                // level, same as a fresh connection).
                 msg.set_service_type(ServiceType::T_DataUnack_Ind);
+                let default_level = self.state.default_access_level();
+                msg.set_access_ctx(AccessContext::new(default_level));
                 self.application_layer.send(LayerOp::Indication(msg)).await;
                 return;
             }
@@ -458,11 +469,11 @@ where
         };
 
         // Update connection's access context from the message if explicitly set
-        // (set by application layer after authorization).
-        // Only update if the message has a non-default access level to avoid
-        // overwriting the current level with the default on every message.
+        // by the application layer (e.g., after A_Authorize_Response). Messages
+        // that don't call set_access_level() have the UNSET sentinel, which we
+        // skip to avoid overwriting the connection's current level.
         let msg_access_ctx = msg.access_ctx();
-        if msg_access_ctx != AccessContext::MIN_ACCESS {
+        if msg_access_ctx.is_set() {
             conn.access_ctx = msg_access_ctx;
         }
 

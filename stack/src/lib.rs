@@ -319,6 +319,18 @@ impl AccessContext {
 
     /// Maximum-access context (level 0, full system access).
     pub const MAX_ACCESS: Self = Self { access_level: 0 };
+
+    /// Sentinel value meaning "no access level has been explicitly set".
+    ///
+    /// Used on message buffers to distinguish "not set" from "explicitly set
+    /// to level 3 (MIN_ACCESS)". The transport layer uses this to decide
+    /// whether to update the connection's access context from a response.
+    pub const UNSET: Self = Self { access_level: 0xFF };
+
+    /// Returns true if this context was explicitly set (not the UNSET sentinel).
+    pub const fn is_set(&self) -> bool {
+        self.access_level != 0xFF
+    }
 }
 
 // ============================================================================

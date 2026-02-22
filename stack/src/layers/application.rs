@@ -2400,6 +2400,15 @@ where
             return;
         }
 
+        // Validate channel number. Only channel 0 is supported.
+        if channel != 0 {
+            warn!("AL Restart: invalid channel number {}", channel);
+            if needs_response {
+                self.send_restart_response(ind, RestartError::InvalidChannel, 0).await;
+            }
+            return;
+        }
+
         // For master reset operations (not basic/confirmed), check access level.
         // Basic and Confirmed restart can be done by anyone, but other erase codes
         // typically require higher access (level 0).

@@ -381,7 +381,7 @@ async fn main(spawner: Spawner) {
     // SPI0 connected to the W5500 module.
     // Pin assignments: MISO=GP4, MOSI=GP3, SCK=GP2, CS=GP5, RST=GP10, INT=GP11
     let mut spi_cfg = SpiConfig::default();
-    spi_cfg.frequency = 10_000_000;
+    spi_cfg.frequency = 50_000_000;
     let spi = Spi::new(
         p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4,
         p.DMA_CH0, p.DMA_CH1, spi_cfg,

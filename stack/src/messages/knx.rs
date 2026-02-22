@@ -678,7 +678,7 @@ impl<B: Deref<Target = [u8]>, F: MessageFormat> KnxMessageBuffer<B, F> {
 impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
     /// Create a new KnxMessageBuffer in internal format.
     pub fn new(buf: B, service_type: ServiceType) -> Self {
-        KnxMessageBuffer { service_type, buf, access_ctx: AccessContext::MIN_ACCESS, _format: PhantomData }
+        KnxMessageBuffer { service_type, buf, access_ctx: AccessContext::UNSET, _format: PhantomData }
     }
 
     /// Create a KnxMessageBuffer from a buffer, using a default service type.
@@ -689,7 +689,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
         KnxMessageBuffer {
             service_type: ServiceType::L_Data_Ind,
             buf,
-            access_ctx: AccessContext::MIN_ACCESS,
+            access_ctx: AccessContext::UNSET,
             _format: PhantomData,
         }
     }
@@ -1076,7 +1076,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, CemiFormat> {
     pub fn from_cemi(buf: B) -> Self {
         let message_code = buf[0];
         let service_type = ServiceType::try_from(message_code).unwrap_or(ServiceType::L_Data_Ind);
-        KnxMessageBuffer { service_type, buf, access_ctx: AccessContext::MIN_ACCESS, _format: PhantomData }
+        KnxMessageBuffer { service_type, buf, access_ctx: AccessContext::UNSET, _format: PhantomData }
     }
 
     /// Get the cEMI message code byte.
@@ -1264,7 +1264,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, InternalFormat> {
 impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, Tp1Format> {
     /// Create a new KnxMessageBuffer wrapping a TP1-formatted buffer.
     pub fn from_tp1(buf: B, service_type: ServiceType) -> Self {
-        KnxMessageBuffer { service_type, buf, access_ctx: AccessContext::MIN_ACCESS, _format: PhantomData }
+        KnxMessageBuffer { service_type, buf, access_ctx: AccessContext::UNSET, _format: PhantomData }
     }
 }
 
