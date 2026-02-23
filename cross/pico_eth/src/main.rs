@@ -521,7 +521,7 @@ async fn main(spawner: Spawner) {
 
     info!("KNX/IP stack started");
     info!("  Manufacturer: {:04x}", LightSwitchDevice::MANUFACTURER_ID);
-    info!("  Application:  {:04x} v{:02x}", LightSwitchDevice::APPLICATION_ID, LightSwitchDevice::APPLICATION_VERSION);
+    info!("  Application:  {:04x} v{:02x}", LightSwitchDevice::APPLICATION_ID_IP, LightSwitchDevice::APPLICATION_VERSION);
     info!("  Local IP:     {}", local_ip);
     info!("  Mask version: 57B0 (System B KNX/IP)");
 

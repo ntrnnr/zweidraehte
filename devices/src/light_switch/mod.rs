@@ -56,7 +56,11 @@ pub struct LightSwitchDevice;
 impl LightSwitchDevice {
     pub const MANUFACTURER_ID: u16 = 0x00FA;
     pub const HARDWARE_TYPE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x03];
-    pub const APPLICATION_ID: u16 = 0x0300;
+    /// Application ID for the KNX/IP variant.
+    pub const APPLICATION_ID_IP: u16 = 0x0300;
+    /// Application ID for the TP1 variant. Distinct from the IP variant so
+    /// both can coexist in a single knxprod package.
+    pub const APPLICATION_ID_TP1: u16 = 0x0301;
     pub const APPLICATION_VERSION: u8 = 0x02;
     pub const MAX_ADDRESS_TABLE_ENTRIES: u16 = 10;
     pub const MAX_ASSOCIATION_TABLE_ENTRIES: u16 = 12;
@@ -65,15 +69,20 @@ impl LightSwitchDevice {
 
     /// Build a device descriptor for the given mask version.
     ///
-    /// The mask version determines the transport medium:
-    /// - `SystemBKnxIp` (0x57B0) for KNX/IP devices
-    /// - `SystemBTp1` (0x07B0) for TP-UART devices
+    /// The mask version determines the transport medium and selects the
+    /// matching application ID:
+    /// - `SystemBKnxIp` (0x57B0) → `APPLICATION_ID_IP` (0x0300)
+    /// - `SystemBTp1` (0x07B0) → `APPLICATION_ID_TP1` (0x0301)
     pub const fn device_descriptor(mask: MaskVersion) -> DeviceDescriptor {
+        let application_id = match mask {
+            MaskVersion::SystemBTp1 => Self::APPLICATION_ID_TP1,
+            _ => Self::APPLICATION_ID_IP,
+        };
         DeviceDescriptor {
             mask_version: mask,
             manufacturer_id: Self::MANUFACTURER_ID,
             hardware_type: Self::HARDWARE_TYPE,
-            application_id: Self::APPLICATION_ID,
+            application_id,
             application_version: Self::APPLICATION_VERSION,
             max_address_table_entries: Self::MAX_ADDRESS_TABLE_ENTRIES,
             max_association_table_entries: Self::MAX_ASSOCIATION_TABLE_ENTRIES,
