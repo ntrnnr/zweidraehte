@@ -264,7 +264,7 @@ impl ConnectionManagerResult {
 /// obtained from the [`PropertyServiceContext`]. A connection manager with no
 /// registered handlers is effectively a no-op: ConnectRequests will be rejected
 /// with `ConnectionTypeNotSupported`.
-pub struct ConnectionManager<'a, const MAX_CONNECTIONS: usize = 4> {
+pub struct ConnectionManager<'a, const MAX_CONNECTIONS: usize = 1> {
     connections: [Option<ConnectionContext>; MAX_CONNECTIONS],
     handlers: Vec<(ConnectionType, ConnectionTypeHandlerEnum<'a>), 4>,
     heartbeat_timeout: Duration,

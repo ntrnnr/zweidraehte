@@ -55,7 +55,7 @@ const FRAME_OUTPUT_BUF_SIZE: usize = 512;
 /// tracking. The `channel_ids` field tracks which inner KNX/IP connections
 /// are running over this TCP stream — when the stream closes, the
 /// connection manager uses this to tear down the right channels.
-pub struct TcpConnectionState<S> {
+pub struct TcpConnectionState<S, const MAX_CHANNELS: usize> {
     stream: S,
     framer: KnxIpFrameReader,
     peer_addr: SocketAddrV4,
@@ -63,10 +63,10 @@ pub struct TcpConnectionState<S> {
     last_activity: Instant,
     /// Channel IDs of inner KNX/IP connections on this TCP stream.
     /// Updated by the main loop when connections are created/destroyed.
-    channel_ids: Vec<u8, 4>,
+    channel_ids: Vec<u8, MAX_CHANNELS>,
 }
 
-impl<S> TcpConnectionState<S> {
+impl<S, const MAX_CHANNELS: usize> TcpConnectionState<S, MAX_CHANNELS> {
     fn new(stream: S, peer_addr: SocketAddrV4) -> Self {
         let now = Instant::now();
         Self {
@@ -110,20 +110,13 @@ impl<S> TcpConnectionState<S> {
 // ============================================================================
 
 /// Event produced by the TCP manager for the main loop.
-pub enum TcpEvent {
+pub enum TcpEvent<const MAX_CHANNELS: usize> {
     /// A complete KNX/IP frame was extracted from a TCP stream.
-    Frame {
-        tcp_idx: usize,
-        peer: SocketAddrV4,
-        buffer: Buffer<'static>,
-    },
+    Frame { tcp_idx: usize, peer: SocketAddrV4, buffer: Buffer<'static> },
     /// A TCP connection was closed (peer disconnect, I/O error, or idle
     /// timeout). The `channel_ids` are the inner KNX/IP connections that
     /// need to be torn down.
-    Closed {
-        tcp_idx: usize,
-        channel_ids: Vec<u8, 4>,
-    },
+    Closed { tcp_idx: usize, channel_ids: Vec<u8, MAX_CHANNELS> },
 }
 
 // ============================================================================
@@ -132,7 +125,7 @@ pub enum TcpEvent {
 
 /// Manages TCP listener and active connections for KNX/IP.
 ///
-/// Generic over the platform's `IpTransport` and a const `MAX_TCP`
+/// Generic over the platform's `IpTransport` and a const `MAX_TCP_STREAMS`
 /// parameter controlling the maximum number of concurrent TCP connections.
 ///
 /// The manager is driven by the main loop calling [`next_event()`] in a
@@ -141,30 +134,26 @@ pub enum TcpEvent {
 /// - Reading from all active streams and extracting frames
 /// - Detecting idle timeouts
 /// - Writing responses back on specific connections
-pub struct TcpManager<T: IpTransport, const MAX_TCP: usize> {
+pub struct TcpManager<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize = 1> {
     listener: Option<T::TcpListener>,
-    connections: [Option<TcpConnectionState<T::TcpStream>>; MAX_TCP],
+    connections: [Option<TcpConnectionState<T::TcpStream, MAX_CHANNELS>>; MAX_TCP_STREAMS],
 }
 
-impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
+impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
+    TcpManager<T, MAX_TCP_STREAMS, MAX_CHANNELS>
+{
     /// Create a new TCP manager with no listener and no connections.
     ///
     /// Call [`bind()`](Self::bind) to start the listener.
     pub fn new() -> Self {
-        Self {
-            listener: None,
-            connections: core::array::from_fn(|_| None),
-        }
+        Self { listener: None, connections: core::array::from_fn(|_| None) }
     }
 
     /// Bind the TCP listener to the given options.
     ///
     /// Returns an error if binding fails (e.g., port in use). The manager
     /// remains usable without a listener — it just won't accept connections.
-    pub fn bind(
-        &mut self,
-        options: TcpListenerOptions,
-    ) -> Result<(), <T::TcpListener as AsyncTcpListener>::Error> {
+    pub fn bind(&mut self, options: TcpListenerOptions) -> Result<(), <T::TcpListener as AsyncTcpListener>::Error> {
         match T::TcpListener::bind(options) {
             Ok(listener) => {
                 self.listener = Some(listener);
@@ -183,7 +172,7 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
     }
 
     /// Find the connection state for a given TCP index.
-    pub fn connection_mut(&mut self, tcp_idx: usize) -> Option<&mut TcpConnectionState<T::TcpStream>> {
+    pub fn connection_mut(&mut self, tcp_idx: usize) -> Option<&mut TcpConnectionState<T::TcpStream, MAX_CHANNELS>> {
         self.connections.get_mut(tcp_idx).and_then(|slot| slot.as_mut())
     }
 
@@ -191,7 +180,7 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
     ///
     /// Returns a list of closed connection events. Called from the main
     /// loop's timer handler.
-    pub fn check_idle_timeouts(&mut self) -> Vec<TcpEvent, MAX_TCP> {
+    pub fn check_idle_timeouts(&mut self) -> Vec<TcpEvent<MAX_CHANNELS>, MAX_TCP_STREAMS> {
         let now = Instant::now();
         let mut events = Vec::new();
 
@@ -227,7 +216,7 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
         &mut self,
         tcp_idx: usize,
         buffer_manager: &RefCell<DynBufferManager<'static>>,
-    ) -> Option<TcpEvent> {
+    ) -> Option<TcpEvent<MAX_CHANNELS>> {
         let conn = self.connections[tcp_idx].as_mut()?;
 
         let mut read_buf = [0u8; TCP_READ_BUF_SIZE];
@@ -275,10 +264,7 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
                     break;
                 }
                 FrameEvent::FrameSkipped { total_length } => {
-                    warn!(
-                        "TCP connection {}: skipped oversized frame ({} bytes)",
-                        tcp_idx, total_length
-                    );
+                    warn!("TCP connection {}: skipped oversized frame ({} bytes)", tcp_idx, total_length);
                     // Continue processing remaining bytes in the read buffer
                 }
                 FrameEvent::ProtocolError => {
@@ -337,7 +323,7 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
 
     /// Close a specific TCP connection and return the channel IDs
     /// that were active on it.
-    pub fn close(&mut self, tcp_idx: usize) -> Vec<u8, 4> {
+    pub fn close(&mut self, tcp_idx: usize) -> Vec<u8, MAX_CHANNELS> {
         match self.connections[tcp_idx].take() {
             Some(conn) => {
                 info!("Closing TCP connection {} from {}", tcp_idx, conn.peer_addr);
@@ -377,32 +363,29 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
     /// forever via `read_slot`, so `select_slice` naturally ignores them.
     ///
     /// Pends forever if no listener is bound and no connections exist.
-    pub async fn next_event(
-        &mut self,
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
-    ) -> TcpEvent {
+    pub async fn next_event(&mut self, buffer_manager: &RefCell<DynBufferManager<'static>>) -> TcpEvent<MAX_CHANNELS> {
         use embassy_futures::select::{Either, select, select_slice};
 
         loop {
             // The select result must outlive the futures vec, so we
             // extract it from a scoped block where futures are built,
             // polled, and dropped before we touch self.connections again.
-            enum SelectOutcome<S> {
+            enum SelectOutcome<S, const N: usize> {
                 Frame { slot_idx: usize, buffer: Buffer<'static> },
-                Closed { slot_idx: usize, channel_ids: Vec<u8, 4> },
+                Closed { slot_idx: usize, channel_ids: Vec<u8, N> },
                 NeedMoreData,
                 Accepted(S, SocketAddrV4),
                 AcceptError,
             }
 
-            let outcome: SelectOutcome<T::TcpStream> = {
+            let outcome: SelectOutcome<T::TcpStream, MAX_CHANNELS> = {
                 // Split-borrow: listener and connections are disjoint fields.
                 let listener = self.listener.as_ref();
                 let connections = &mut self.connections;
 
                 // Build a future for each connection slot. Empty slots pend
                 // forever, so select_slice naturally ignores them.
-                let mut read_futures = Vec::<_, MAX_TCP>::new();
+                let mut read_futures = Vec::<_, MAX_TCP_STREAMS>::new();
                 for slot in connections.iter_mut() {
                     let _ = read_futures.push(read_slot(slot, buffer_manager));
                 }
@@ -424,12 +407,8 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
                 .await
                 {
                     Either::First((read_result, slot_idx)) => match read_result {
-                        ConnectionReadResult::Frame(buffer) => {
-                            SelectOutcome::Frame { slot_idx, buffer }
-                        }
-                        ConnectionReadResult::Closed(channel_ids) => {
-                            SelectOutcome::Closed { slot_idx, channel_ids }
-                        }
+                        ConnectionReadResult::Frame(buffer) => SelectOutcome::Frame { slot_idx, buffer },
+                        ConnectionReadResult::Closed(channel_ids) => SelectOutcome::Closed { slot_idx, channel_ids },
                         ConnectionReadResult::NeedMoreData => SelectOutcome::NeedMoreData,
                     },
                     Either::Second(accept_result) => match accept_result {
@@ -446,16 +425,12 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
 
             match outcome {
                 SelectOutcome::Frame { slot_idx, buffer } => {
-                    let peer = self.connections[slot_idx]
-                        .as_ref()
-                        .expect("read_slot returned Frame from Some slot")
-                        .peer_addr;
+                    let peer =
+                        self.connections[slot_idx].as_ref().expect("read_slot returned Frame from Some slot").peer_addr;
                     return TcpEvent::Frame { tcp_idx: slot_idx, peer, buffer };
                 }
                 SelectOutcome::Closed { slot_idx, channel_ids } => {
-                    let conn = self.connections[slot_idx]
-                        .take()
-                        .expect("read_slot returned Closed from Some slot");
+                    let conn = self.connections[slot_idx].take().expect("read_slot returned Closed from Some slot");
                     info!("TCP connection {} from {} closed", slot_idx, conn.peer_addr);
                     return TcpEvent::Closed { tcp_idx: slot_idx, channel_ids };
                 }
@@ -467,14 +442,10 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
                     match free {
                         Some(slot) => {
                             info!("TCP connection {} accepted from {}", slot, peer);
-                            self.connections[slot] =
-                                Some(TcpConnectionState::new(stream, peer));
+                            self.connections[slot] = Some(TcpConnectionState::new(stream, peer));
                         }
                         None => {
-                            warn!(
-                                "TCP connection from {} rejected: all {} slots full",
-                                peer, MAX_TCP
-                            );
+                            warn!("TCP connection from {} rejected: all {} slots full", peer, MAX_TCP_STREAMS);
                             drop(stream);
                         }
                     }
@@ -497,10 +468,10 @@ impl<T: IpTransport, const MAX_TCP: usize> TcpManager<T, MAX_TCP> {
 /// This is a free function (not a method) so the caller can borrow
 /// individual connection slots independently of each other and of the
 /// listener.
-async fn read_one_connection<S>(
-    conn: &mut TcpConnectionState<S>,
+async fn read_one_connection<S, const MAX_CHANNELS: usize>(
+    conn: &mut TcpConnectionState<S, MAX_CHANNELS>,
     buffer_manager: &RefCell<DynBufferManager<'static>>,
-) -> ConnectionReadResult
+) -> ConnectionReadResult<MAX_CHANNELS>
 where
     S: embedded_io_async::Read<Error: core::fmt::Debug>,
 {
@@ -549,12 +520,12 @@ where
 }
 
 /// Outcome of reading from a single TCP connection.
-enum ConnectionReadResult {
+enum ConnectionReadResult<const MAX_CHANNELS: usize> {
     /// A complete KNX/IP frame was extracted.
     Frame(Buffer<'static>),
     /// The connection was closed or errored. Contains the channel IDs
     /// that were active on it.
-    Closed(Vec<u8, 4>),
+    Closed(Vec<u8, MAX_CHANNELS>),
     /// More data needed — no complete frame yet.
     NeedMoreData,
 }
@@ -565,10 +536,10 @@ enum ConnectionReadResult {
 /// every slot in the connections array, regardless of whether the slot
 /// is occupied. Empty slots pend forever and are effectively ignored
 /// by `select_slice`.
-async fn read_slot<S>(
-    slot: &mut Option<TcpConnectionState<S>>,
+async fn read_slot<S, const MAX_CHANNELS: usize>(
+    slot: &mut Option<TcpConnectionState<S, MAX_CHANNELS>>,
     buffer_manager: &RefCell<DynBufferManager<'static>>,
-) -> ConnectionReadResult
+) -> ConnectionReadResult<MAX_CHANNELS>
 where
     S: embedded_io_async::Read<Error: core::fmt::Debug>,
 {

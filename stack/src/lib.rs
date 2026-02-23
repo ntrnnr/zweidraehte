@@ -354,8 +354,9 @@ pub enum AccessSource {
 
 /// Per-connection access level store.
 ///
-/// Sized by [`StackDefinition::MAX_CONNECTIONS`] and owned by the device
-/// state type.  The transport and application layers access it through the
+/// Sized by the total number of transport-layer connections
+/// (`TL_MAX_INCOMING + TL_MAX_OUTGOING`) and owned by the device state type.
+/// The transport and application layers access it through the
 /// [`HasConnectionAuth`] trait, which hides the const generic `N`.
 ///
 /// The slot index matches the connection table: slot 0 is the first incoming
@@ -663,15 +664,27 @@ pub trait StackDefinition: Copy {
     /// to A_UserManufacturerInfo_Read requests.
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = None;
 
-    /// Maximum number of concurrent transport-layer connections.
+    /// Maximum incoming transport-layer connections (from remote devices).
     ///
-    /// This controls the size of the per-connection access level store
-    /// (incoming + outgoing slots). A typical KNX device has 1 incoming
-    /// connection (from ETS or a configurator) and 0 outgoing. Routers
-    /// or gateways may need more.
+    /// A typical KNX device accepts 1 incoming connection (from ETS or a
+    /// configurator). Routers or gateways may need more. Default: 1.
     ///
-    /// Default is 1.
-    const MAX_CONNECTIONS: usize = 1;
+    /// Note: Due to `generic_const_exprs` limitations, the default
+    /// [`Runner::run()`] cannot forward these constants to the transport
+    /// layer at compile time. The TL's own defaults (1/0) match these
+    /// defaults. If you override these values, you'll need a custom runner
+    /// that instantiates `TransportLayer` with explicit const generics.
+    const TL_MAX_INCOMING: usize = 1;
+
+    /// Maximum outgoing transport-layer connections (initiated by us).
+    ///
+    /// A typical KNX device has 0 outgoing connections. Routers or gateways
+    /// that actively connect to other devices need more. Default: 0.
+    ///
+    /// Only valid with [`TlStyle::Style3`] or higher — the transport layer
+    /// will panic at startup if `TL_MAX_OUTGOING > 0` with a style that
+    /// does not support outgoing connections.
+    const TL_MAX_OUTGOING: usize = 0;
 
     /// Transport layer state machine style per KNX spec 03/03/04 section 5.4.
     ///
@@ -1152,6 +1165,13 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         D::State: HasAddressTable + HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
         D::InterfaceObjects<'static>: HasDeviceObject,
     {
+        // Validate that outgoing connections require Style 3 (which has the
+        // CONNECTING state needed for client-initiated connections).
+        assert!(
+            D::TL_MAX_OUTGOING == 0 || D::TL_STYLE == TlStyle::Style3,
+            "TL_MAX_OUTGOING > 0 requires TlStyle::Style3 (has CONNECTING state for client connections)"
+        );
+
         // Initialize the run state machine at startup.
         // If the application is already loaded (from persistent storage), this will
         // transition it to RUNNING.
@@ -1182,7 +1202,14 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             tl_channel.sender().into(),
         );
 
-        // Create a transport layer
+        // Create a transport layer.
+        //
+        // TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
+        // generics here once `generic_const_exprs` no longer overflows for trait
+        // consts forwarded through where-clauses. Until then the TL uses its own
+        // defaults (1 incoming, 0 outgoing) which match the `StackDefinition`
+        // defaults. Override by instantiating `TransportLayer` with explicit const
+        // generics in a custom runner.
         let mut transport_layer = TransportLayer::<'_, D>::new(
             &self.stack.inner.buffer_manager,
             &self.stack.inner.state,

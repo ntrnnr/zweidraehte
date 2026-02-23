@@ -935,12 +935,3 @@ where
     }
 }
 
-// ============================================================================
-// Backwards Compatibility (original simple layer without connections)
-// ============================================================================
-
-/// Alias for transport layer with single incoming connection (typical device)
-pub type DeviceTransportLayer<'a, D> = TransportLayer<'a, D, 1, 0>;
-
-/// Alias for connectionless-only transport layer
-pub type ConnectionlessTransportLayer<'a, D> = TransportLayer<'a, D, 0, 0>;

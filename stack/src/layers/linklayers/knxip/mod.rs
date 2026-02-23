@@ -385,7 +385,12 @@ const MAX_SERVERS: usize = 3;
 /// let builder = KnxNetIpBuilder::<LinuxIpTransport, 2>::new("eth0", interface_addr, SocketAddrV4::new(interface_addr, 3671), ())
 ///     .enable_routing_server();
 /// ```
-pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize = 1> {
+pub struct KnxNetIpBuilder<
+    T: IpTransport,
+    const MAX_SOCKETS: usize,
+    const MAX_TCP_STREAMS: usize = 1,
+    const MAX_CHANNELS: usize = 1,
+> {
     interface_name: &'static str,
     local_addr: Ipv4Addr,
     control_endpoint: SocketAddrV4,
@@ -395,7 +400,9 @@ pub struct KnxNetIpBuilder<T: IpTransport, const MAX_SOCKETS: usize, const MAX_T
     socket_ctx: <T::UdpSocket as platform::AsyncUdpSocket>::Context,
 }
 
-impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBuilder<T, MAX_SOCKETS, MAX_TCP> {
+impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
+    KnxNetIpBuilder<T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+{
     /// Create a new builder with the network interface to bind to.
     ///
     /// The discovery server is always enabled (mandatory per KNX spec 3/8/2
@@ -411,7 +418,9 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
     /// # Type Parameters
     /// * `T` - The IP transport implementation providing socket types
     /// * `MAX_SOCKETS` - Maximum number of UDP sockets to create
-    /// * `MAX_TCP` - Maximum number of concurrent TCP connections
+    /// * `MAX_TCP_STREAMS` - Maximum number of concurrent TCP connections (default: 1)
+    /// * `MAX_CHANNELS` - Maximum concurrent KNX/IP connection-oriented
+    ///   sessions (Device Management, Tunneling, etc.). Default: 4
     pub fn new(
         interface_name: &'static str,
         local_addr: Ipv4Addr,
@@ -477,7 +486,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
         resources: &'res mut KnxNetIpResources,
         context: &'res dyn KnxNetIpContext,
         network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
-    ) -> KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP> {
+    ) -> KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS> {
         // ====================================================================
         // Auto-derive supported services from enabled features
         // ====================================================================
@@ -521,10 +530,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
 
         // Discovery server is always enabled (mandatory per KNX spec 3/8/2 §4.2).
         {
-            let control_hpai = substructs::HPAI::ipv4_udp(
-                *self.control_endpoint.ip(),
-                self.control_endpoint.port(),
-            );
+            let control_hpai = substructs::HPAI::ipv4_udp(*self.control_endpoint.ip(), self.control_endpoint.port());
             let server = servers::DiscoveryServer::new(control_hpai, supported_services);
 
             let mut service_types = Vec::new();
@@ -662,7 +668,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
 
         // Device Management is mandatory for all KNXnet/IP device classes
         // (KNX spec 3/8/1 Table 2).
-        let mut connection_manager = servers::ConnectionManager::new();
+        let mut connection_manager = servers::ConnectionManager::<MAX_CHANNELS>::new();
         let handler = servers::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.application_layer_sender(),
@@ -680,10 +686,8 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
         let mut tcp_manager = TcpManager::new();
 
         if self.enable_tcp {
-            let tcp_options = TcpListenerOptions {
-                bind_addr: self.control_endpoint,
-                interface: Some(self.interface_name),
-            };
+            let tcp_options =
+                TcpListenerOptions { bind_addr: self.control_endpoint, interface: Some(self.interface_name) };
             match tcp_manager.bind(tcp_options) {
                 Ok(()) => {
                     info!("TCP listener bound on {} (interface {})", self.control_endpoint, self.interface_name);
@@ -709,8 +713,8 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIpBui
     }
 }
 
-impl<T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_TCP: usize> LinkLayerBuilderBase
-    for KnxNetIpBuilder<T, MAX_SOCKETS, MAX_TCP>
+impl<T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
+    LinkLayerBuilderBase for KnxNetIpBuilder<T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 {
     type Resources = KnxNetIpResources;
 
@@ -719,8 +723,13 @@ impl<T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_TCP: usize> L
     }
 }
 
-impl<CTX: KnxNetIpContext, T: IpTransport + 'static, const MAX_SOCKETS: usize, const MAX_TCP: usize>
-    LinkLayerBuilder<CTX> for KnxNetIpBuilder<T, MAX_SOCKETS, MAX_TCP>
+impl<
+    CTX: KnxNetIpContext,
+    T: IpTransport + 'static,
+    const MAX_SOCKETS: usize,
+    const MAX_TCP_STREAMS: usize,
+    const MAX_CHANNELS: usize,
+> LinkLayerBuilder<CTX> for KnxNetIpBuilder<T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 {
     fn build_and_run<'a>(
         self,
@@ -772,7 +781,13 @@ fn make_server_context<'a>(
     )
 }
 
-pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize = 1> {
+pub struct KnxNetIp<
+    'res,
+    T: IpTransport,
+    const MAX_SOCKETS: usize,
+    const MAX_TCP_STREAMS: usize = 1,
+    const MAX_CHANNELS: usize = 1,
+> {
     /// Reference to externally-owned resources (response channel).
     resources: &'res KnxNetIpResources,
     /// UDP socket manager. Owns sockets and their descriptors.
@@ -787,7 +802,7 @@ pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TC
     retry_queue: Vec<PendingRequest, MAX_RETRY_QUEUE_SIZE>,
     /// Connection manager for connection-oriented services.
     /// Always present; without registered handlers it's a no-op.
-    connection_manager: servers::ConnectionManager<'res>,
+    connection_manager: servers::ConnectionManager<'res, MAX_CHANNELS>,
     /// Type-erased stack context providing buffer management, device info,
     /// IP diagnostics, KNX addresses, property service, and application
     /// layer access.
@@ -797,10 +812,12 @@ pub struct KnxNetIp<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TC
     enable_remote_config: bool,
     /// TCP connection manager. Always present; without a bound listener
     /// it is a no-op.
-    tcp_manager: TcpManager<T, MAX_TCP>,
+    tcp_manager: TcpManager<T, MAX_TCP_STREAMS, MAX_CHANNELS>,
 }
 
-impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP> {
+impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
+    KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+{
     /// Process expired retry requests
     async fn process_retry_queue(&mut self, response_channel: &Channel<NoopRawMutex, PendingResponse, 16>) {
         let now = Instant::now();
@@ -980,8 +997,8 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> KnxNe
     }
 }
 
-impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP: usize> Layer<'res>
-    for KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP>
+impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize> Layer<'res>
+    for KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 {
     type Buffer = Buffer<'static>;
 
