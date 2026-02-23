@@ -24,11 +24,10 @@ use crate::schema::*;
 use super::helpers::{block_com_obj_ref, block_items_to_when_items, block_param_ref, when_com_obj_ref, when_param_ref};
 use super::traversal::{
     collect_pictures_from_layout, collect_pictures_from_module_layout, collect_union_variant_texts,
-    count_selector_usages_with_objects,
 };
 use super::{
-    strip_no_memory_bytes, ActiveConditions, ApplicationProgramConfig, GeneratorError, MaskFamily, MultiParamRefMap,
-    SelectorRefCounters, System7MemoryLayout,
+    strip_no_memory_bytes, ActiveConditions, ApplicationProgramConfig, GeneratorError, MaskFamily, ParamRefMap,
+    System7MemoryLayout,
 };
 use crate::signing::KnxSchemaVersion;
 

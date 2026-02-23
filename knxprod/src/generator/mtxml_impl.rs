@@ -711,22 +711,11 @@ impl MtxmlGenerator {
             (None, None)
         };
 
-        // Count selector usages from page layout for creating multiple ParameterRefs.
-        // We need the comm_obj_ref_map to count PageItem::Obj usages.
-        // The offset is 0 here because we only need the map structure for counting,
-        // not the exact _R-N IDs (those are determined after ParameterRefs are built).
-        let (selector_usage_counts, union_variant_texts) = if let Some(layout) = config.page_layout.as_ref() {
-            let comm_obj_ref_map = Self::build_comm_object_ref_map(config, app_id, mask_family, 0);
-            let counts = count_selector_usages_with_objects(layout, &comm_obj_ref_map);
-            let texts = collect_union_variant_texts(layout);
-            (Some(counts), Some(texts))
-        } else {
-            (None, None)
-        };
+        let union_variant_texts = config.page_layout.as_ref().map(collect_union_variant_texts);
 
         // Build ParameterRefs first to get the param_name -> ParameterRef ID mapping
         let (parameter_refs, param_ref_ids) =
-            Self::build_parameter_refs(config, app_id, selector_usage_counts.as_ref(), union_variant_texts.as_ref());
+            Self::build_parameter_refs(config, app_id, union_variant_texts.as_ref());
 
         // ComObjectRef _R-N suffixes must continue from where ParameterRef numbering
         // left off to avoid ID collisions in the same namespace.
@@ -1962,16 +1951,17 @@ impl MtxmlGenerator {
     }
 
     /// Build parameter references.
-    /// If `selector_usage_counts` is provided, creates multiple refs for parameters that are
-    /// used multiple times as selectors in ObjWithValue/GroupedObjChoose.
-    /// If `union_variant_texts` is provided, creates multiple refs for union variant params with
-    /// different text overrides (matching MDT's approach where each use context has its own ref).
-    /// This must use the same numbering scheme as `build_multi_param_ref_map` so the refs match.
-    /// Returns the ParameterRefs and a mapping of param_name -> first ParameterRef ID.
+    /// Build ParameterRef elements for all parameters.
+    ///
+    /// Each parameter gets exactly one ParameterRef. Union variant params may get
+    /// additional refs for different text overrides (matching MDT's approach where
+    /// each use context has its own ref with distinct display text).
+    ///
+    /// This must use the same numbering scheme as `build_param_ref_map` so the refs match.
+    /// Returns the ParameterRefs and a mapping of param_name -> ParameterRef ID.
     fn build_parameter_refs(
         config: &ApplicationProgramConfig,
         app_id: &str,
-        selector_usage_counts: Option<&HashMap<String, usize>>,
         union_variant_texts: Option<&HashMap<(String, String), Vec<Option<String>>>>,
     ) -> (ParameterRefs, HashMap<String, String>) {
         let mut refs = ParameterRefs::default();
@@ -1983,7 +1973,7 @@ impl MtxmlGenerator {
             .map(|fields| fields.iter().map(|f| format!("{}_selector", f.field_name)).collect())
             .unwrap_or_default();
 
-        // Use a single sequential counter for all ref numbers (matching build_multi_param_ref_map)
+        // Use a single sequential counter for all ref numbers (matching build_param_ref_map)
         let mut next_ref_num = 1u32;
         let mut param_counter = 1u32;
 
@@ -1995,30 +1985,19 @@ impl MtxmlGenerator {
             }
 
             let param_id = format!("{}_P-{}", app_id, param_counter);
+            let ref_id = format!("{}_R-{}", param_id, next_ref_num);
+            param_ref_ids.insert(param.base.name.to_string(), ref_id.clone());
 
-            // Determine how many refs to create for this parameter
-            let num_refs =
-                selector_usage_counts.and_then(|counts| counts.get(param.base.name)).copied().unwrap_or(0).max(1); // At least 1 ref
-
-            // Track the first ref ID for this param (used by TextParameterRefId in V20)
-            let first_ref_id = format!("{}_R-{}", param_id, next_ref_num);
-            param_ref_ids.insert(param.base.name.to_string(), first_ref_id);
-
-            // Create refs with sequential numbering
-            for _ in 0..num_refs {
-                let ref_id = format!("{}_R-{}", param_id, next_ref_num);
-                refs.refs.push(ParameterRef {
-                    id: ref_id,
-                    ref_id: param_id.clone(),
-                    text: None,
-                    internal_description: None,
-                    access: None,
-                    value: None,
-                    base_value: None,
-                });
-                next_ref_num += 1;
-            }
-
+            refs.refs.push(ParameterRef {
+                id: ref_id,
+                ref_id: param_id,
+                text: None,
+                internal_description: None,
+                access: None,
+                value: None,
+                base_value: None,
+            });
+            next_ref_num += 1;
             param_counter += 1;
         }
 
@@ -2052,24 +2031,17 @@ impl MtxmlGenerator {
             for field in union_fields {
                 // Selector ref - must match ID in build_union (UP-1, UP-2, etc.)
                 let selector_id = format!("{}_UP-{}", app_id, up_counter);
-                let selector_name = format!("{}_selector", field.field_name);
 
-                // How many refs for the selector?
-                let num_refs =
-                    selector_usage_counts.and_then(|counts| counts.get(&selector_name)).copied().unwrap_or(0).max(1);
-
-                for _ in 0..num_refs {
-                    refs.refs.push(ParameterRef {
-                        id: format!("{}_R-{}", selector_id, next_ref_num),
-                        ref_id: selector_id.clone(),
-                        text: None,
-                        internal_description: None,
-                        access: None,
-                        value: None,
-                        base_value: None,
-                    });
-                    next_ref_num += 1;
-                }
+                refs.refs.push(ParameterRef {
+                    id: format!("{}_R-{}", selector_id, next_ref_num),
+                    ref_id: selector_id,
+                    text: None,
+                    internal_description: None,
+                    access: None,
+                    value: None,
+                    base_value: None,
+                });
+                next_ref_num += 1;
                 up_counter += 1;
 
                 // Variant parameter refs - in the same order as build_union
@@ -2080,7 +2052,7 @@ impl MtxmlGenerator {
                     // Look up text overrides for this variant
                     let key = (field.field_name.to_string(), param.variant_name.to_string());
                     let text_overrides =
-                        union_variant_texts.and_then(|texts| texts.get(&key)).cloned().unwrap_or_else(|| vec![None]); // At least one ref with no text
+                        union_variant_texts.and_then(|texts| texts.get(&key)).cloned().unwrap_or_else(|| vec![None]);
 
                     // Create a ref for each unique text override
                     for text in text_overrides {
@@ -2784,31 +2756,21 @@ impl MtxmlGenerator {
         mask_family: MaskFamily,
         layout: &PageStructure,
     ) -> Result<DynamicSection, GeneratorError> {
-        // First pass: build a temporary comm_obj_ref_map with offset 0 just for counting
-        // selector usages. The exact _R-N IDs don't matter for counting.
-        let temp_comm_obj_ref_map = Self::build_comm_object_ref_map(config, app_id, mask_family, 0);
-
-        // Count selector usages (including PageItem::Obj which needs comm_obj_ref_map)
-        let selector_usage_counts = count_selector_usages_with_objects(layout, &temp_comm_obj_ref_map);
-
-        // Collect union variant text overrides for creating multiple ParameterRefs with different Text
+        // Collect union variant text overrides for creating ParameterRefs with different Text
         let union_variant_texts = collect_union_variant_texts(layout);
 
-        // Build multi-ref parameter map (supports multiple refs per selector param)
+        // Build parameter ref map
         let param_ref_map =
-            Self::build_multi_param_ref_map(config, app_id, &selector_usage_counts, Some(&union_variant_texts));
+            Self::build_param_ref_map(config, app_id, Some(&union_variant_texts));
 
-        // Now build the definitive comm_obj_ref_map with the correct offset
-        // so ComObjectRef _R-N suffixes don't collide with ParameterRef suffixes.
+        // Build comm_obj_ref_map with offset so ComObjectRef _R-N suffixes
+        // don't collide with ParameterRef suffixes.
         let co_ref_offset = param_ref_map.total_ref_count;
         let comm_obj_ref_map = Self::build_comm_object_ref_map(config, app_id, mask_family, co_ref_offset);
 
         // Generate block and separator counters
         let mut block_counter = 1u32;
         let mut sep_counter = 1u32;
-
-        // Track selector ref usage for allocating unique refs to each choose block
-        let mut selector_counters = SelectorRefCounters::new();
 
         // Build ChannelIndependentBlock if device_settings is non-empty
         let channel_independent_block = if layout.device_settings.is_empty() {
@@ -2823,7 +2785,6 @@ impl MtxmlGenerator {
                 &comm_obj_ref_map,
                 &mut block_counter,
                 &mut sep_counter,
-                &mut selector_counters,
             )?;
             Some(ChannelIndependentBlock { items })
         };
@@ -2843,7 +2804,6 @@ impl MtxmlGenerator {
                     &comm_obj_ref_map,
                     &mut block_counter,
                     &mut sep_counter,
-                    &mut selector_counters,
                 )?;
                 // Use channel number in ID if specified, otherwise use sequential index
                 let ch_num = ch_def.number.unwrap_or(i as u32 + 1);
@@ -2863,19 +2823,17 @@ impl MtxmlGenerator {
 
         Ok(DynamicSection { channel_independent_block, channels })
     }
-    /// Build a multi-ref parameter map that supports multiple refs per parameter.
-    /// Parameters that are used as selectors in ObjWithValue/GroupedObjChoose
-    /// get multiple refs (matching MDT's fine-grained structure).
-    fn build_multi_param_ref_map(
+    /// Build a parameter ref map for use in dynamic section generation.
+    ///
+    /// Each parameter gets exactly one ref. Union variant params may get additional
+    /// refs for different text overrides.
+    fn build_param_ref_map(
         config: &ApplicationProgramConfig,
         app_id: &str,
-        selector_usage_counts: &HashMap<String, usize>,
         union_variant_texts: Option<&HashMap<(String, String), Vec<Option<String>>>>,
-    ) -> MultiParamRefMap {
+    ) -> ParamRefMap {
         let mut primary = HashMap::new();
-        let mut multi: HashMap<String, Vec<String>> = HashMap::new();
         let mut by_text: HashMap<(String, Option<String>), String> = HashMap::new();
-        let mut param_ref_nums: HashMap<String, u32> = HashMap::new();
 
         // Build a set of union selector names
         let union_selector_names: std::collections::HashSet<String> = config
@@ -2883,8 +2841,6 @@ impl MtxmlGenerator {
             .map(|fields| fields.iter().map(|f| format!("{}_selector", f.field_name)).collect())
             .unwrap_or_default();
 
-        // Track ref numbering - we need unique numbers for all refs
-        // MDT uses high numbers for additional refs (e.g., R-90, R-174, R-216 for same P-35)
         let mut next_ref_num = 1u32;
 
         // Map all params (virtual first, then regular, non-selector)
@@ -2895,29 +2851,9 @@ impl MtxmlGenerator {
             }
             let param_name = param_ext.base.name.to_string();
             let param_id = format!("{}_P-{}", app_id, param_counter);
-
-            // How many refs do we need for this param?
-            let num_refs = selector_usage_counts.get(&param_name).copied().unwrap_or(0).max(1);
-
-            // Create refs
-            let mut refs = Vec::with_capacity(num_refs);
-            let first_ref_num = next_ref_num; // Track for param_ref_nums
-            for i in 0..num_refs {
-                let ref_id = format!("{}_R-{}", param_id, next_ref_num);
-                if i == 0 {
-                    primary.insert(param_name.clone(), ref_id.clone());
-                }
-                refs.push(ref_id);
-                next_ref_num += 1;
-            }
-
-            // Store the primary ref number for text interpolation
-            param_ref_nums.insert(param_name.clone(), first_ref_num);
-
-            if num_refs > 1 {
-                multi.insert(param_name, refs);
-            }
-
+            let ref_id = format!("{}_R-{}", param_id, next_ref_num);
+            primary.insert(param_name, ref_id);
+            next_ref_num += 1;
             param_counter += 1;
         }
 
@@ -2927,9 +2863,7 @@ impl MtxmlGenerator {
             let param_id = format!("{}_P-{}", app_id, param_counter);
             let pic_param_name = format!("Pic_{}", pic.baggage_name.replace('.', "_"));
             let ref_id = format!("{}_R-{}", param_id, next_ref_num);
-
-            primary.insert(pic_param_name.clone(), ref_id);
-            param_ref_nums.insert(pic_param_name, next_ref_num);
+            primary.insert(pic_param_name, ref_id);
             next_ref_num += 1;
             param_counter += 1;
         }
@@ -2942,28 +2876,9 @@ impl MtxmlGenerator {
                 // Selector param
                 let selector_name = format!("{}_selector", field.field_name);
                 let selector_id = format!("{}_UP-{}", app_id, up_counter);
-
-                // How many refs for the selector?
-                let num_refs = selector_usage_counts.get(&selector_name).copied().unwrap_or(0).max(1);
-
-                let mut refs = Vec::with_capacity(num_refs);
-                let first_ref_num = next_ref_num; // Track for param_ref_nums
-                for i in 0..num_refs {
-                    let ref_id = format!("{}_R-{}", selector_id, next_ref_num);
-                    if i == 0 {
-                        primary.insert(selector_name.clone(), ref_id.clone());
-                    }
-                    refs.push(ref_id);
-                    next_ref_num += 1;
-                }
-
-                // Store the primary ref number for text interpolation
-                param_ref_nums.insert(selector_name.clone(), first_ref_num);
-
-                if num_refs > 1 {
-                    multi.insert(selector_name, refs);
-                }
-
+                let ref_id = format!("{}_R-{}", selector_id, next_ref_num);
+                primary.insert(selector_name, ref_id);
+                next_ref_num += 1;
                 up_counter += 1;
 
                 // Variant params - create refs for each unique text override
@@ -2975,7 +2890,7 @@ impl MtxmlGenerator {
                     // Look up text overrides for this variant
                     let key = (field.field_name.to_string(), variant_param.variant_name.to_string());
                     let text_overrides =
-                        union_variant_texts.and_then(|texts| texts.get(&key)).cloned().unwrap_or_else(|| vec![None]); // At least one ref with no text
+                        union_variant_texts.and_then(|texts| texts.get(&key)).cloned().unwrap_or_else(|| vec![None]);
 
                     // Create a ref for each unique text override
                     for (i, text) in text_overrides.iter().enumerate() {
@@ -2992,7 +2907,7 @@ impl MtxmlGenerator {
             }
         }
 
-        MultiParamRefMap { primary, multi, by_text, total_ref_count: next_ref_num - 1 }
+        ParamRefMap { primary, by_text, total_ref_count: next_ref_num - 1 }
     }
 
     /// Build a mapping from comm object field names to their ComObjectRefRef info.
@@ -3034,11 +2949,10 @@ impl MtxmlGenerator {
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
-        param_ref_map: &MultiParamRefMap,
+        param_ref_map: &ParamRefMap,
         comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
         block_counter: &mut u32,
         sep_counter: &mut u32,
-        selector_counters: &mut SelectorRefCounters,
     ) -> Result<Vec<ChannelIndependentItem>, GeneratorError> {
         let mut items = Vec::new();
 
@@ -3057,7 +2971,6 @@ impl MtxmlGenerator {
                         comm_obj_ref_map,
                         block_counter,
                         sep_counter,
-                        selector_counters,
                         &active_conditions,
                     )?;
                     items.push(ChannelIndependentItem::ParameterBlock(pb));
@@ -3072,7 +2985,6 @@ impl MtxmlGenerator {
                         comm_obj_ref_map,
                         block_counter,
                         sep_counter,
-                        selector_counters,
                         &active_conditions,
                     )?;
                     items.push(ChannelIndependentItem::Choose(choose));
@@ -3096,11 +3008,10 @@ impl MtxmlGenerator {
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
-        param_ref_map: &MultiParamRefMap,
+        param_ref_map: &ParamRefMap,
         comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
         block_counter: &mut u32,
         sep_counter: &mut u32,
-        selector_counters: &mut SelectorRefCounters,
     ) -> Result<Vec<ChannelItem>, GeneratorError> {
         let mut items = Vec::new();
 
@@ -3119,7 +3030,6 @@ impl MtxmlGenerator {
                         comm_obj_ref_map,
                         block_counter,
                         sep_counter,
-                        selector_counters,
                         &active_conditions,
                     )?;
                     items.push(ChannelItem::ParameterBlock(pb));
@@ -3134,7 +3044,6 @@ impl MtxmlGenerator {
                         comm_obj_ref_map,
                         block_counter,
                         sep_counter,
-                        selector_counters,
                         &active_conditions,
                     )?;
                     items.push(ChannelItem::Choose(choose));
@@ -3158,11 +3067,10 @@ impl MtxmlGenerator {
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
-        param_ref_map: &MultiParamRefMap,
+        param_ref_map: &ParamRefMap,
         comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
         block_counter: &mut u32,
         sep_counter: &mut u32,
-        selector_counters: &mut SelectorRefCounters,
         active_conditions: &ActiveConditions,
     ) -> Result<ParameterBlock, GeneratorError> {
         let block_id = *block_counter;
@@ -3176,7 +3084,6 @@ impl MtxmlGenerator {
             param_ref_map,
             comm_obj_ref_map,
             sep_counter,
-            selector_counters,
             active_conditions,
         )?;
 
@@ -3208,7 +3115,7 @@ impl MtxmlGenerator {
         union_name: &str,
         config: &ApplicationProgramConfig,
         app_id: &str,
-        param_ref_map: &MultiParamRefMap,
+        param_ref_map: &ParamRefMap,
         block_counter: &mut u32,
         _active_conditions: &ActiveConditions,
     ) -> Result<ParameterBlock, GeneratorError> {
@@ -3220,7 +3127,7 @@ impl MtxmlGenerator {
         let selector_name = format!("{}_selector", union_name);
 
         // Emit the selector dropdown param ref
-        if let Some(ref_id) = param_ref_map.get_primary(&selector_name) {
+        if let Some(ref_id) = param_ref_map.get(&selector_name) {
             items.push(block_param_ref(ref_id.clone()));
         }
 
@@ -3228,7 +3135,7 @@ impl MtxmlGenerator {
         if let Some(union_fields) = config.union_fields {
             if let Some(union_info) = union_fields.iter().find(|u| u.field_name == union_name) {
                 let selector_ref_id = param_ref_map
-                    .get_primary(&selector_name)
+                    .get(&selector_name)
                     .cloned()
                     .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, &selector_name));
 
@@ -3283,10 +3190,9 @@ impl MtxmlGenerator {
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
-        param_ref_map: &MultiParamRefMap,
+        param_ref_map: &ParamRefMap,
         comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
         sep_counter: &mut u32,
-        selector_counters: &mut SelectorRefCounters,
         active_conditions: &ActiveConditions,
     ) -> Result<Vec<ParameterBlockItem>, GeneratorError> {
         let mut items = Vec::new();
@@ -3294,7 +3200,7 @@ impl MtxmlGenerator {
         for page_item in page_items {
             match page_item {
                 PageItem::Param(name) => {
-                    if let Some(ref_id) = param_ref_map.get_primary(*name) {
+                    if let Some(ref_id) = param_ref_map.get(*name) {
                         items.push(block_param_ref(ref_id.clone()));
                     } else {
                         // Try to find it using the existing method as fallback
@@ -3354,7 +3260,7 @@ impl MtxmlGenerator {
                                     // the same selector must share one ParamRefId so ETS
                                     // can evaluate them.
                                     let selector_ref_id = param_ref_map
-                                        .get_primary(selector_param)
+                                        .get(selector_param)
                                         .cloned()
                                         .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, selector_param));
 
@@ -3411,7 +3317,6 @@ impl MtxmlGenerator {
                         param_ref_map,
                         comm_obj_ref_map,
                         sep_counter,
-                        selector_counters,
                         active_conditions,
                     )?;
                     items.push(ParameterBlockItem::Choose(choose));
@@ -3425,7 +3330,7 @@ impl MtxmlGenerator {
                     let selector_name = format!("{}_selector", union_name);
 
                     // Emit selector parameter ref
-                    if let Some(ref_id) = param_ref_map.get_primary(&selector_name) {
+                    if let Some(ref_id) = param_ref_map.get(&selector_name) {
                         items.push(block_param_ref(ref_id.clone()));
                     }
 
@@ -3434,7 +3339,7 @@ impl MtxmlGenerator {
                         if let Some(union_info) = union_fields.iter().find(|u| u.field_name == *union_name) {
                             // Get selector ref ID for the choose
                             let selector_ref_id = param_ref_map
-                                .get_primary(&selector_name)
+                                .get(&selector_name)
                                 .cloned()
                                 .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, &selector_name));
 
@@ -3492,10 +3397,8 @@ impl MtxmlGenerator {
                     //   - ComObjectRefRef (from ref_name)
                     //   - Value param ref (from variant_name)
 
-                    // Get unique selector ref ID for this choose block
-                    let ref_index = selector_counters.next_index(selector_param);
                     let selector_ref_id = param_ref_map
-                        .get(*selector_param, Some(ref_index))
+                        .get(*selector_param)
                         .cloned()
                         .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, selector_param));
 
@@ -3535,19 +3438,19 @@ impl MtxmlGenerator {
 
                                 // Add extra param refs first
                                 for extra_param in *extra_params {
-                                    if let Some(ref_id) = param_ref_map.get_primary(*extra_param) {
+                                    if let Some(ref_id) = param_ref_map.get(*extra_param) {
                                         when_items.push(when_param_ref(ref_id.clone()));
                                     }
                                 }
 
                                 // Add sub-selector param ref
-                                if let Some(ref_id) = param_ref_map.get_primary(*sub_selector_param) {
+                                if let Some(ref_id) = param_ref_map.get(*sub_selector_param) {
                                     when_items.push(when_param_ref(ref_id.clone()));
                                 }
 
                                 // Build nested choose on sub-selector
                                 let sub_selector_ref_id = param_ref_map
-                                    .get_primary(*sub_selector_param)
+                                    .get(*sub_selector_param)
                                     .cloned()
                                     .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, sub_selector_param));
 
@@ -3597,7 +3500,7 @@ impl MtxmlGenerator {
 
                                 // Add extra param refs
                                 for extra_param in *extra_params {
-                                    if let Some(ref_id) = param_ref_map.get_primary(*extra_param) {
+                                    if let Some(ref_id) = param_ref_map.get(*extra_param) {
                                         when_items.push(when_param_ref(ref_id.clone()));
                                     }
                                 }
@@ -3652,10 +3555,8 @@ impl MtxmlGenerator {
                     // This matches MDT's pattern where a single choose on P-35 (object_type) contains
                     // multiple objects like button1_main, button1_status_toggle, etc.
 
-                    // Get unique selector ref ID for this choose block
-                    let ref_index = selector_counters.next_index(selector_param);
                     let selector_ref_id = param_ref_map
-                        .get(*selector_param, Some(ref_index))
+                        .get(*selector_param)
                         .cloned()
                         .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, selector_param));
 
@@ -3711,7 +3612,7 @@ impl MtxmlGenerator {
 
                             // Add hidden param refs (once per when clause)
                             for hidden_param in *hidden_params {
-                                if let Some(ref_id) = param_ref_map.get_primary(*hidden_param) {
+                                if let Some(ref_id) = param_ref_map.get(*hidden_param) {
                                     when_items.push(when_param_ref(ref_id.clone()));
                                 }
                             }
@@ -3766,7 +3667,7 @@ impl MtxmlGenerator {
 
                     // Add param refs directly
                     for param_name in *params {
-                        if let Some(ref_id) = param_ref_map.get_primary(*param_name) {
+                        if let Some(ref_id) = param_ref_map.get(*param_name) {
                             items.push(block_param_ref(ref_id.clone()));
                         }
                     }
@@ -3790,7 +3691,7 @@ impl MtxmlGenerator {
 
                     // Add param refs directly
                     for param_name in *params {
-                        if let Some(ref_id) = param_ref_map.get_primary(*param_name) {
+                        if let Some(ref_id) = param_ref_map.get(*param_name) {
                             items.push(block_param_ref(ref_id.clone()));
                         }
                     }
@@ -3811,7 +3712,7 @@ impl MtxmlGenerator {
 
                     // Add param refs directly
                     for param_name in *params {
-                        if let Some(ref_id) = param_ref_map.get_primary(*param_name) {
+                        if let Some(ref_id) = param_ref_map.get(*param_name) {
                             items.push(block_param_ref(ref_id.clone()));
                         }
                     }
@@ -3843,7 +3744,7 @@ impl MtxmlGenerator {
 
                     // Add hidden param refs
                     for param_name in *hidden_params {
-                        if let Some(ref_id) = param_ref_map.get_primary(*param_name) {
+                        if let Some(ref_id) = param_ref_map.get(*param_name) {
                             items.push(block_param_ref(ref_id.clone()));
                         }
                     }
@@ -3857,7 +3758,7 @@ impl MtxmlGenerator {
                             // Look up ref by text - the ParameterRef already has the Text attribute
                             let ref_id = param_ref_map
                                 .get_by_text(param_name, *text_override)
-                                .or_else(|| param_ref_map.get_primary(param_name));
+                                .or_else(|| param_ref_map.get(param_name));
                             if let Some(ref_id) = ref_id {
                                 items.push(block_param_ref(ref_id.clone()));
                             }
@@ -3878,7 +3779,7 @@ impl MtxmlGenerator {
                             // Look up ref by text - the ParameterRef already has the Text attribute
                             let ref_id = param_ref_map
                                 .get_by_text(param_name, *text_override)
-                                .or_else(|| param_ref_map.get_primary(param_name));
+                                .or_else(|| param_ref_map.get(param_name));
                             if let Some(ref_id) = ref_id {
                                 items.push(block_param_ref(ref_id.clone()));
                             }
@@ -3903,7 +3804,7 @@ impl MtxmlGenerator {
                             // Look up ref by text - the ParameterRef already has the Text attribute
                             let ref_id = param_ref_map
                                 .get_by_text(param_name, *text_override)
-                                .or_else(|| param_ref_map.get_primary(param_name));
+                                .or_else(|| param_ref_map.get(param_name));
                             if let Some(ref_id) = ref_id {
                                 items.push(block_param_ref(ref_id.clone()));
                                 param_ref_id = Some(ref_id.clone());
@@ -3925,7 +3826,6 @@ impl MtxmlGenerator {
                                 param_ref_map,
                                 comm_obj_ref_map,
                                 sep_counter,
-                                selector_counters,
                                 active_conditions,
                             )?;
                             // Convert ParameterBlockItem to WhenItem
@@ -3972,7 +3872,6 @@ impl MtxmlGenerator {
                                 param_ref_map,
                                 comm_obj_ref_map,
                                 sep_counter,
-                                selector_counters,
                                 active_conditions,
                             )?;
                             // Convert ParameterBlockItem to WhenItem
@@ -4090,7 +3989,7 @@ impl MtxmlGenerator {
 
                             for (idx, (selector, inline_args)) in instances.iter().enumerate() {
                                 // Get the param ref for the selector
-                                if let Some(selector_ref_id) = param_ref_map.get_primary(selector) {
+                                if let Some(selector_ref_id) = param_ref_map.get(selector) {
                                     // Create module instance
                                     let instance_suffix = idx + 1;
                                     let module_instance_id = format!("{}_M-{}", module_def_id, instance_suffix);
@@ -4137,7 +4036,7 @@ impl MtxmlGenerator {
                     // Pictures are virtual parameters with TypePicture.
                     // Look up the ParameterRefRef for this picture.
                     let pic_param_name = format!("Pic_{}", baggage_name.replace('.', "_"));
-                    if let Some(ref_id) = param_ref_map.get_primary(&pic_param_name) {
+                    if let Some(ref_id) = param_ref_map.get(&pic_param_name) {
                         items.push(block_param_ref(ref_id.clone()));
                     } else {
                         log::warn!("Picture param ref not found for: {}", baggage_name);
@@ -4155,15 +4054,14 @@ impl MtxmlGenerator {
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
-        param_ref_map: &MultiParamRefMap,
+        param_ref_map: &ParamRefMap,
         comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
         block_counter: &mut u32,
         sep_counter: &mut u32,
-        selector_counters: &mut SelectorRefCounters,
         active_conditions: &ActiveConditions,
     ) -> Result<Choose, GeneratorError> {
         let selector_ref_id = param_ref_map
-            .get_primary(cond.selector)
+            .get(cond.selector)
             .cloned()
             .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, cond.selector));
 
@@ -4185,7 +4083,6 @@ impl MtxmlGenerator {
                             comm_obj_ref_map,
                             block_counter,
                             sep_counter,
-                            selector_counters,
                             &case_active_conditions,
                         ) {
                             when_items.push(WhenItem::ParameterBlock(pb));
@@ -4201,7 +4098,6 @@ impl MtxmlGenerator {
                             comm_obj_ref_map,
                             block_counter,
                             sep_counter,
-                            selector_counters,
                             &case_active_conditions,
                         ) {
                             when_items.push(WhenItem::Choose(choose));
@@ -4235,14 +4131,13 @@ impl MtxmlGenerator {
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
-        param_ref_map: &MultiParamRefMap,
+        param_ref_map: &ParamRefMap,
         comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
         sep_counter: &mut u32,
-        selector_counters: &mut SelectorRefCounters,
         active_conditions: &ActiveConditions,
     ) -> Result<Choose, GeneratorError> {
         let selector_ref_id = param_ref_map
-            .get_primary(cond.selector)
+            .get(cond.selector)
             .cloned()
             .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, cond.selector));
 
@@ -4258,7 +4153,6 @@ impl MtxmlGenerator {
                 param_ref_map,
                 comm_obj_ref_map,
                 sep_counter,
-                selector_counters,
                 &case_active_conditions,
             )?;
 

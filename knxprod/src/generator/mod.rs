@@ -68,37 +68,10 @@ impl ActiveConditions {
     }
 }
 
-/// Tracks usage of selector params for creating separate ParameterRefs.
-/// MDT creates separate ParameterRefs for the same parameter when used in
-/// different ObjWithValue/GroupedObjChoose contexts.
-/// This allows for more choose blocks with fewer when clauses each.
-#[derive(Default)]
-pub(crate) struct SelectorRefCounters {
-    /// Counter per selector param name, incremented each time a new ref is used.
-    counters: HashMap<String, usize>,
-}
-
-impl SelectorRefCounters {
-    pub fn new() -> Self {
-        Self { counters: HashMap::new() }
-    }
-
-    /// Get the next ref index for a selector param and increment counter.
-    pub fn next_index(&mut self, param_name: &str) -> usize {
-        let counter = self.counters.entry(param_name.to_string()).or_insert(0);
-        let index = *counter;
-        *counter += 1;
-        index
-    }
-}
-
-/// Maps parameter names to multiple ParameterRef IDs.
-/// For params that are used multiple times as selectors, stores all their ref IDs.
-pub(crate) struct MultiParamRefMap {
-    /// Primary ref map (first/only ref for each param)
+/// Maps parameter names to ParameterRef IDs.
+pub(crate) struct ParamRefMap {
+    /// Ref map: param name -> ref_id
     pub primary: HashMap<String, String>,
-    /// Multi-ref map: param name -> Vec<ref_id> for params with multiple refs
-    pub multi: HashMap<String, Vec<String>>,
     /// Text-based ref map: (param_name, text_override) -> ref_id
     /// For union variant params that have different text overrides in different contexts
     pub by_text: HashMap<(String, Option<String>), String>,
@@ -107,24 +80,9 @@ pub(crate) struct MultiParamRefMap {
     pub total_ref_count: u32,
 }
 
-impl MultiParamRefMap {
-    /// Get the ref ID for a param. If it has multiple refs and an index is provided,
-    /// returns the ref at that index. Otherwise returns the primary ref.
-    pub fn get(&self, param_name: &str, index: Option<usize>) -> Option<&String> {
-        if let Some(idx) = index {
-            // Try to get the indexed ref from multi map
-            if let Some(refs) = self.multi.get(param_name) {
-                if idx < refs.len() {
-                    return Some(&refs[idx]);
-                }
-            }
-        }
-        // Fall back to primary
-        self.primary.get(param_name)
-    }
-
-    /// Get the primary ref (for params that aren't selectors or when index doesn't matter)
-    pub fn get_primary(&self, param_name: &str) -> Option<&String> {
+impl ParamRefMap {
+    /// Get the ref ID for a param.
+    pub fn get(&self, param_name: &str) -> Option<&String> {
         self.primary.get(param_name)
     }
 
