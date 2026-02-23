@@ -1255,15 +1255,14 @@ mod tests {
     fn test_suite_created() {
         let suite = create_group_objects_uint1_suite();
         assert_eq!(suite.name, "Group Objects UINT1 Tests");
-        // Note: Test 1.4.1.6 is commented out pending ROI feature implementation
-        assert_eq!(suite.cases.len(), 7);
+        assert_eq!(suite.cases.len(), 8);
         assert_eq!(suite.cases[0].name, "1.4.1.1 BDUT sends A_GroupValue_Read (UINT1)");
         assert_eq!(suite.cases[1].name, "1.4.1.2 BDUT receives A_GroupValue_Read (UINT1)");
         assert_eq!(suite.cases[2].name, "1.4.1.3 BDUT sends A_GroupValue_Write (UINT1)");
         assert_eq!(suite.cases[3].name, "1.4.1.4 BDUT receives A_GroupValue_Write (UINT1)");
         assert_eq!(suite.cases[4].name, "1.4.1.4a BDUT receives an invalid data length (BYTE3, optional)");
         assert_eq!(suite.cases[5].name, "1.4.1.5 BDUT receives A_GroupValue_Response (UINT1)");
-        // 1.4.1.6 is commented out - requires ROI feature
-        assert_eq!(suite.cases[6].name, "1.4.1.7 BDUT receives invalid APCI (BYTE3)");
+        assert_eq!(suite.cases[6].name, "1.4.1.6 Checking of Read on Init Flag (UINT1)");
+        assert_eq!(suite.cases[7].name, "1.4.1.7 BDUT receives invalid APCI (BYTE3)");
     }
 }
