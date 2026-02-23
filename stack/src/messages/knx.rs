@@ -882,18 +882,18 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
         use offsets::*;
 
         let apci_value: u8 = apci.into();
-        let category = (apci_value & 0xc0);
+        let category = apci_value & 0xc0;
 
         match category {
             // Extended
             0x40 => {
                 self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 1;
-                self.buf[MSG_APCI + 1] = (apci_value | 0xc0);
+                self.buf[MSG_APCI + 1] = apci_value | 0xc0;
             }
             // User
             0x80 => {
                 self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 2;
-                self.buf[MSG_APCI + 1] = (apci_value | 0xc0);
+                self.buf[MSG_APCI + 1] = apci_value | 0xc0;
             }
             // Escaped
             0xc0 => {
