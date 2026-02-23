@@ -117,7 +117,7 @@ use static_cell::StaticCell;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use zweidraehte::prelude::*;
 use zweidraehte::{
-    dpt::DPT_Switch,
+    dpt::{DPT_Switch, InterfaceObjectType},
     layers::linklayers::knxip::KnxNetIpBuilder,
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
@@ -352,6 +352,18 @@ where
 {
     fn object_count(&self) -> u16 {
         6 // Device, AddrTable, AssoTable, AppProgram, GroupObjectTable, IpParameter
+    }
+
+    fn object_type_at(&self, object_idx: u16) -> Option<InterfaceObjectType> {
+        match object_idx {
+            0 => Some(InterfaceObjectType::Device),
+            1 => Some(InterfaceObjectType::AddressTable),
+            2 => Some(InterfaceObjectType::AssociationTable),
+            3 => Some(InterfaceObjectType::ApplicationProgram),
+            4 => Some(InterfaceObjectType::GroupObjectTable),
+            5 => Some(InterfaceObjectType::IPParameter),
+            _ => None,
+        }
     }
 
     fn property_description_read(

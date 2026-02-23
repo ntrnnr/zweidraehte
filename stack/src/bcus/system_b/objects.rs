@@ -30,7 +30,7 @@ use core::cell::RefCell;
 
 use crate::{
     AccessContext, IpStackState, StackState,
-    dpt::{DeviceControl, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
+    dpt::{DeviceControl, InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
         GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PeiProgramObject,
@@ -195,6 +195,18 @@ where
         Self::OBJECT_COUNT
     }
 
+    fn object_type_at(&self, object_idx: u16) -> Option<InterfaceObjectType> {
+        match object_idx {
+            0 => Some(InterfaceObjectType::Device),
+            1 => Some(InterfaceObjectType::AddressTable),
+            2 => Some(InterfaceObjectType::AssociationTable),
+            3 => Some(InterfaceObjectType::GroupObjectTable),
+            4 => Some(InterfaceObjectType::ApplicationProgram),
+            5 => Some(InterfaceObjectType::InterfaceProgram),
+            _ => None,
+        }
+    }
+
     fn property_description_read(
         &self,
         object_idx: u16,
@@ -357,6 +369,13 @@ impl<'a, S: StackState + IpStackState> IpObjects<'a, S> {
 impl<'a, S: StackState + IpStackState> PropertyServiceHandler for IpObjects<'a, S> {
     fn object_count(&self) -> u16 {
         Self::OBJECT_COUNT
+    }
+
+    fn object_type_at(&self, object_idx: u16) -> Option<InterfaceObjectType> {
+        match object_idx {
+            0 => Some(InterfaceObjectType::IPParameter),
+            _ => None,
+        }
     }
 
     fn property_description_read(

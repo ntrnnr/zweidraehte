@@ -87,10 +87,14 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
             ConnectionStatus::DataConnectionError
         })?;
 
-        // TODO: Proper object type → index translation. Currently uses
-        // object_instance - 1 as the index, which works when each object
-        // type has exactly one instance (the common case).
-        let object_idx = if frame.object_instance > 0 { (frame.object_instance - 1) as u16 } else { 0 };
+        let object_idx = self.property_handler.resolve_object_index(frame.object_type, frame.object_instance)
+            .ok_or_else(|| {
+                debug!(
+                    "Unknown interface object: type=0x{:04x}, instance={}",
+                    frame.object_type, frame.object_instance
+                );
+                ConnectionStatus::DataConnectionError
+            })?;
 
         let mut out = self.buffer_manager.alloc_no_headroom().await;
 

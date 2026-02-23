@@ -298,6 +298,32 @@ pub trait PropertyServiceHandler {
     /// Get the number of interface objects
     fn object_count(&self) -> u16;
 
+    /// Get the object type for a given index.
+    ///
+    /// Returns `None` if `object_idx` is out of range.
+    fn object_type_at(&self, object_idx: u16) -> Option<InterfaceObjectType>;
+
+    /// Resolve a (object_type, object_instance) pair to a flat object index.
+    ///
+    /// The `object_instance` is 1-based per the cEMI Local Management
+    /// convention: instance 1 is the first object of that type, instance 2
+    /// is the second, etc.
+    ///
+    /// Returns `None` if no object with that type and instance exists.
+    fn resolve_object_index(&self, object_type: u16, object_instance: u8) -> Option<u16> {
+        let target_type = InterfaceObjectType::from(object_type);
+        let mut instance_count: u8 = 0;
+        for idx in 0..self.object_count() {
+            if self.object_type_at(idx) == Some(target_type) {
+                instance_count += 1;
+                if instance_count == object_instance {
+                    return Some(idx);
+                }
+            }
+        }
+        None
+    }
+
     /// Handle A_PropertyDescription_Read request
     ///
     /// Returns property metadata including type, max elements, and access rights.
@@ -510,6 +536,10 @@ impl PropertyServiceHandler for () {
         0
     }
 
+    fn object_type_at(&self, _object_idx: u16) -> Option<InterfaceObjectType> {
+        None
+    }
+
     fn property_description_read(
         &self,
         _object_idx: u16,
@@ -589,6 +619,15 @@ where
 {
     fn object_count(&self) -> u16 {
         self.0.object_count() + self.1.object_count()
+    }
+
+    fn object_type_at(&self, object_idx: u16) -> Option<InterfaceObjectType> {
+        let base_count = self.0.object_count();
+        if object_idx < base_count {
+            self.0.object_type_at(object_idx)
+        } else {
+            self.1.object_type_at(object_idx - base_count)
+        }
     }
 
     fn property_description_read(
