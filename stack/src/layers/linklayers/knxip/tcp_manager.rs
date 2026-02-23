@@ -50,15 +50,14 @@ const FRAME_OUTPUT_BUF_SIZE: usize = 512;
 
 /// State of a single active TCP connection.
 ///
-/// Wraps the async stream with a frame reader, peer address, and idle
-/// tracking. The `channel_ids` field tracks which inner KNX/IP connections
+/// Wraps the async stream with a frame reader, peer address, and idle-
+/// timeout tracking. The `channel_ids` field tracks which inner KNX/IP connections
 /// are running over this TCP stream — when the stream closes, the
 /// connection manager uses this to tear down the right channels.
 pub struct TcpConnectionState<S, const MAX_CHANNELS: usize> {
     stream: S,
     framer: KnxIpFrameReader,
     peer_addr: SocketAddrV4,
-    connected_at: Instant,
     last_activity: Instant,
     /// Channel IDs of inner KNX/IP connections on this TCP stream.
     /// Updated by the main loop when connections are created/destroyed.
@@ -67,13 +66,11 @@ pub struct TcpConnectionState<S, const MAX_CHANNELS: usize> {
 
 impl<S, const MAX_CHANNELS: usize> TcpConnectionState<S, MAX_CHANNELS> {
     fn new(stream: S, peer_addr: SocketAddrV4) -> Self {
-        let now = Instant::now();
         Self {
             stream,
             framer: KnxIpFrameReader::new(),
             peer_addr,
-            connected_at: now,
-            last_activity: now,
+            last_activity: Instant::now(),
             channel_ids: Vec::new(),
         }
     }
