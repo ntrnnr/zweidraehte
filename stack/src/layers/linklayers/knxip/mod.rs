@@ -396,6 +396,7 @@ pub struct KnxNetIpBuilder<
     enable_routing: bool,
     enable_remote_config: bool,
     enable_tcp: bool,
+    routing_multicast_addr: Ipv4Addr,
     socket_ctx: <T::UdpSocket as platform::AsyncUdpSocket>::Context,
 }
 
@@ -433,17 +434,30 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
             enable_routing: false,
             enable_remote_config: false,
             enable_tcp: false,
+            routing_multicast_addr: crate::DEFAULT_MULTICAST_ADDR,
             socket_ctx,
         }
     }
 
     /// Enable the routing server (RoutingIndication / RoutingBusy / RoutingLostMessage).
     ///
-    /// The routing server listens on the default KNX multicast address
-    /// (`224.0.23.12:3671`) for routing messages and implements congestion
-    /// control per KNX Specification 3/8/2.
+    /// The routing server listens on the KNX multicast address for routing
+    /// messages and implements congestion control per KNX Specification
+    /// 3/8/2. Uses the default multicast address (`224.0.23.12`) unless
+    /// overridden with [`routing_multicast_addr`](Self::routing_multicast_addr).
     pub fn enable_routing_server(mut self) -> Self {
         self.enable_routing = true;
+        self
+    }
+
+    /// Override the routing multicast address.
+    ///
+    /// Defaults to `224.0.23.12` (the standard KNX multicast address).
+    /// Custom addresses are used in some installations to separate routing
+    /// domains or avoid conflicts with other KNX/IP routers on the same
+    /// network segment.
+    pub fn routing_multicast_addr(mut self, addr: Ipv4Addr) -> Self {
+        self.routing_multicast_addr = addr;
         self
     }
 
@@ -552,7 +566,8 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
         }
 
         if self.enable_routing {
-            let server = servers::RoutingServer::new(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT);
+            let routing_addr = self.routing_multicast_addr;
+            let server = servers::RoutingServer::new(routing_addr, crate::KNX_PORT);
 
             let mut service_types = Vec::new();
             let _ = service_types.push(KNXnetIPServiceType::RoutingIndication);
@@ -561,7 +576,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
             let _ = service_types.push(KNXnetIPServiceType::RoutingSystemBroadcast);
 
             let mut endpoints = Vec::new();
-            let _ = endpoints.push(EndpointType::new_udp(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));
+            let _ = endpoints.push(EndpointType::new_udp(routing_addr, crate::KNX_PORT));
 
             let _ = server_instances.push(servers::ServerInstance {
                 service_types,
