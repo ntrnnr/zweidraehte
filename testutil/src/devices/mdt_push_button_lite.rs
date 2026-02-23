@@ -5918,10 +5918,10 @@ mod tests {
 // Translations
 // ============================================================================
 
-/// German translations for MDT Push Button Lite device.
-///
-/// This demonstrates the `ets_translations!` macro for defining translations
-/// separately from the enum/param definitions to keep code clean.
+// German translations for MDT Push Button Lite device.
+//
+// This demonstrates the `ets_translations!` macro for defining translations
+// separately from the enum/param definitions to keep code clean.
 zweidraehte::ets_translations! {
     pub MDT_TRANSLATIONS_DE;
 
