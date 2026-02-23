@@ -229,7 +229,14 @@ pub enum ResponseTarget {
 #[derive(Debug, Clone, Copy)]
 pub enum PacketOrigin {
     /// Received as a UDP datagram.
-    Udp { source: SocketAddrV4, socket_idx: usize },
+    Udp {
+        source: SocketAddrV4,
+        socket_idx: usize,
+        /// The local IP address the packet was addressed to. `None` if
+        /// the platform doesn't report this. Used for unicast/multicast
+        /// traffic type enforcement.
+        destination: Option<Ipv4Addr>,
+    },
     /// Received on a TCP connection.
     Tcp { peer: SocketAddrV4, tcp_idx: usize },
 }
@@ -249,7 +256,7 @@ impl PacketOrigin {
     /// socket. For TCP, it routes back on the same TCP connection.
     pub fn reply_target(&self) -> ResponseTarget {
         match *self {
-            PacketOrigin::Udp { source, socket_idx } => ResponseTarget::Udp { destination: source, socket_idx },
+            PacketOrigin::Udp { source, socket_idx, .. } => ResponseTarget::Udp { destination: source, socket_idx },
             PacketOrigin::Tcp { tcp_idx, .. } => ResponseTarget::Tcp { tcp_idx },
         }
     }
@@ -944,6 +951,52 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
             Ok(service_type) => {
                 debug!("  Service type: {:?}", service_type);
 
+                // Enforce traffic type constraints: certain service types
+                // must only arrive via unicast or multicast.
+                {
+                    use crate::messages::knxip::TrafficRule;
+                    let rule = service_type.traffic_rule();
+
+                    match &origin {
+                        // UDP: check destination IP to distinguish unicast
+                        // from multicast. Skip if the platform doesn't
+                        // report destination (None).
+                        PacketOrigin::Udp { destination: Some(dest), .. } => {
+                            let is_multicast = dest.octets()[0] & 0xF0 == 0xE0;
+                            let allowed = match rule {
+                                TrafficRule::UnicastOnly => !is_multicast,
+                                TrafficRule::MulticastOnly => is_multicast,
+                                TrafficRule::Any => true,
+                            };
+                            if !allowed {
+                                warn!(
+                                    "Dropping {:?} from {}: expected {} but destination was {}",
+                                    service_type,
+                                    source,
+                                    if is_multicast { "unicast" } else { "multicast" },
+                                    dest,
+                                );
+                                return;
+                            }
+                        }
+
+                        // TCP is inherently unicast — reject multicast-only
+                        // service types.
+                        PacketOrigin::Tcp { .. } => {
+                            if rule == TrafficRule::MulticastOnly {
+                                warn!(
+                                    "Dropping {:?} from {} on TCP: multicast-only service type",
+                                    service_type, source,
+                                );
+                                return;
+                            }
+                        }
+
+                        // UDP without destination info — can't enforce.
+                        PacketOrigin::Udp { destination: None, .. } => {}
+                    }
+                }
+
                 match service_type.category() {
                     // Connection lifecycle and connection-oriented data go
                     // to the connection manager.
@@ -973,8 +1026,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
 
                     // Connectionless messages go directly to servers.
                     ServiceCategory::Connectionless => {
-                        self.dispatch_to_servers(service_type, buffer, source, socket_idx, response_channel)
-                            .await;
+                        self.dispatch_to_servers(service_type, buffer, source, socket_idx, response_channel).await;
                     }
                 }
             }
@@ -995,8 +1047,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
     ) {
         for server in &mut self.server_instances {
             if server.handles(service_type, socket_idx) {
-                let context =
-                    make_server_context(self.context, self.enable_remote_config, self.network_layer_tx);
+                let context = make_server_context(self.context, self.enable_remote_config, self.network_layer_tx);
 
                 match server.handler.on_indication(service_type, buffer, source, &context).await {
                     Ok(responses) => {
@@ -1149,8 +1200,8 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                 // ============================================================
                 Either4::First(transport_event) => match transport_event {
                     // UDP datagram received (multicast echoes already filtered)
-                    Either::First(UdpEvent::Frame { socket_idx, source, buffer }) => {
-                        let origin = PacketOrigin::Udp { source, socket_idx };
+                    Either::First(UdpEvent::Frame { socket_idx, source, destination, buffer }) => {
+                        let origin = PacketOrigin::Udp { source, socket_idx, destination };
                         self.dispatch_frame(&buffer, origin, response_channel).await;
                     }
 

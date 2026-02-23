@@ -130,6 +130,72 @@ impl KNXnetIPServiceType {
 }
 
 // ============================================================================
+// Traffic Type Rules
+// ============================================================================
+
+/// Whether a service type may be received via unicast, multicast, or either.
+///
+/// These constraints come from the KNX specification and prevent misrouted
+/// packets from being processed. For example, a `ConnectRequest` arriving
+/// on the multicast address would be rejected as unicast-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrafficRule {
+    /// Only accept from unicast traffic.
+    UnicastOnly,
+    /// Only accept from multicast traffic.
+    MulticastOnly,
+    /// Accept from either unicast or multicast.
+    Any,
+}
+
+impl KNXnetIPServiceType {
+    /// Return the traffic type constraint for this service type.
+    ///
+    /// Used by the dispatch layer to drop packets that arrived via the
+    /// wrong traffic type (e.g., connection-oriented messages on multicast).
+    pub fn traffic_rule(&self) -> TrafficRule {
+        use KNXnetIPServiceType::*;
+        match self {
+            // Connection lifecycle — unicast only (KNX 3/8/2 §7)
+            ConnectRequest | ConnectResponse
+            | ConnectionstateRequest | ConnectionstateResponse
+            | DisconnectRequest | DisconnectResponse => TrafficRule::UnicastOnly,
+
+            // Connection-oriented data — unicast only
+            DeviceConfigurationRequest | DeviceConfigurationAck
+            | TunnelingRequest | TunnelingAck
+            | TunnelingFeatureGet | TunnelingFeatureResponse
+            | TunnelingFeatureSet | TunnelingFeatureInfo => TrafficRule::UnicastOnly,
+
+            // Routing — multicast only (KNX 3/8/5)
+            RoutingIndication | RoutingLostMessage
+            | RoutingBusy | RoutingSystemBroadcast => TrafficRule::MulticastOnly,
+
+            // Discovery — either (SearchRequest can be multicast or unicast,
+            // DescriptionRequest is unicast to the control endpoint)
+            SearchRequest | SearchResponse
+            | SearchRequestExtended | SearchResponseExtended
+            | DescriptionRequest | DescriptionResponse => TrafficRule::Any,
+
+            // Remote config — multicast (KNX 3/8/7)
+            RemoteDiagnosticRequest | RemoteDiagnosticResponse
+            | RemoteBasicConfigurationRequest
+            | RemoteResetRequest => TrafficRule::MulticastOnly,
+
+            // Secure session bootstrap — unicast (TCP)
+            SessionRequest | SessionResponse
+            | SessionAuthenticate | SessionStatus => TrafficRule::UnicastOnly,
+
+            // SecureWrapper and TimerNotify can wrap any service type
+            SecureWrapper | TimerNotify => TrafficRule::Any,
+
+            // Unknown — don't enforce
+            _ => TrafficRule::Any,
+        }
+    }
+}
+
+// ============================================================================
 // SHARED WIRE FORMAT - ZEROCOPY TYPES
 // ============================================================================
 

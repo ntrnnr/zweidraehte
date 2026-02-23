@@ -148,7 +148,7 @@ impl AsyncUdpSocket for EmbassyUdpSocket {
         SocketAddrV4::new(ip, self.local_port)
     }
 
-    async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddrV4), Self::Error> {
+    async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddrV4, Option<Ipv4Addr>), Self::Error> {
         let mut socket = self.socket.borrow_mut();
         let result = socket
             .recv_from_with(|data, meta| {
@@ -159,7 +159,17 @@ impl AsyncUdpSocket for EmbassyUdpSocket {
                     #[allow(unreachable_patterns)]
                     _ => Ipv4Addr::UNSPECIFIED,
                 };
-                (len, SocketAddrV4::new(addr, meta.endpoint.port))
+
+                // Extract the local destination IP from the packet metadata.
+                // This tells us whether the packet was addressed to a unicast
+                // or multicast IP, enabling traffic type enforcement.
+                let local_addr = meta.local_address.and_then(|a| match a {
+                    embassy_net::IpAddress::Ipv4(v4) => Some(v4),
+                    #[allow(unreachable_patterns)]
+                    _ => None,
+                });
+
+                (len, SocketAddrV4::new(addr, meta.endpoint.port), local_addr)
             })
             .await;
         Ok(result)

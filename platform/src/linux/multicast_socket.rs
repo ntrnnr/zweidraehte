@@ -4,6 +4,12 @@ use std::os::unix::io::{AsRawFd, RawFd};
 
 use async_io::Async;
 use embassy_time::{Duration, with_timeout};
+use nix::sys::socket::{
+    ControlMessageOwned, MsgFlags, SockaddrIn, recvmsg, setsockopt,
+    sockopt::Ipv4PacketInfo,
+};
+use nix::libc;
+use std::io::IoSliceMut;
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::Result;
@@ -34,6 +40,12 @@ impl UdpMulticastSocket {
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             }
         }
+
+        // Enable IP_PKTINFO so recvmsg returns the destination IP address
+        // of each incoming packet. This lets the stack distinguish unicast
+        // from multicast traffic on shared sockets.
+        setsockopt(&s, Ipv4PacketInfo, &true)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
         // To be able to receive unicast and multicast traffic on the same socket,
         // we need to bind to INADDR_ANY
@@ -132,18 +144,43 @@ impl AsyncUdpMulticastSocket {
         .map_err(|e| e.into())
     }
 
-    pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddrV4)> {
-        let reader = self.watcher.read_with(|io| io.s.recv_from(buf));
+    pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddrV4, Option<Ipv4Addr>)> {
+        // Use recvmsg with IP_PKTINFO to obtain the destination IP address
+        // of the incoming packet, allowing unicast/multicast disambiguation.
+        let reader = self.watcher.read_with(|io| {
+            let fd = io.s.as_raw_fd();
+            let mut iov = [IoSliceMut::new(buf)];
+
+            // Ancillary data buffer sized for a single in_pktinfo control message.
+            let mut cmsg_buf = nix::cmsg_space!(libc::in_pktinfo);
+
+            let msg = recvmsg::<SockaddrIn>(fd, &mut iov, Some(&mut cmsg_buf), MsgFlags::empty())
+                .map_err(|e| std::io::Error::from(e))?;
+
+            let len = msg.bytes;
+
+            // Extract source address from the msg header.
+            let source = msg
+                .address
+                .map(|sa| SocketAddrV4::new(sa.ip(), sa.port()))
+                .unwrap_or_else(|| SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
+
+            // Extract destination IP from IP_PKTINFO ancillary data.
+            let mut local_addr = None;
+            for cmsg in msg.cmsgs()? {
+                if let ControlMessageOwned::Ipv4PacketInfo(pktinfo) = cmsg {
+                    local_addr = Some(Ipv4Addr::from(u32::from_be(pktinfo.ipi_addr.s_addr)));
+                }
+            }
+
+            Ok((len, source, local_addr))
+        });
 
         if let Some(read_timeout) = self.read_timeout {
             with_timeout(read_timeout.into(), reader).await?
         } else {
             reader.await
         }
-        .map(|x| match x {
-            (length, SocketAddr::V4(addr)) => (length, addr),
-            _ => panic!("UDP multicast socket doesn't support IPv6"),
-        })
         .map_err(|e| e.into())
     }
 
@@ -193,7 +230,7 @@ impl AsyncUdpSocket for AsyncUdpMulticastSocket {
         }
     }
 
-    async fn recv_from(&self, buf: &mut [u8]) -> core::result::Result<(usize, SocketAddrV4), crate::Error> {
+    async fn recv_from(&self, buf: &mut [u8]) -> core::result::Result<(usize, SocketAddrV4, Option<Ipv4Addr>), crate::Error> {
         AsyncUdpMulticastSocket::recv_from(self, buf).await
     }
 

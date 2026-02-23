@@ -66,8 +66,13 @@ pub trait AsyncUdpSocket: Sized {
     /// Get the local endpoint this socket is bound to.
     fn local_endpoint(&self) -> SocketAddrV4;
 
-    /// Receive a datagram, returning (bytes_read, source_addr).
-    async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddrV4), Self::Error>;
+    /// Receive a datagram, returning (bytes_read, source_addr, local_dest_ip).
+    ///
+    /// The third element is the local IP address the packet was addressed to
+    /// (i.e., the destination IP from the sender's perspective). This allows
+    /// distinguishing unicast from multicast traffic on shared sockets.
+    /// Platforms that cannot report this return `None`.
+    async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddrV4, Option<Ipv4Addr>), Self::Error>;
 
     /// Send a datagram to the specified address.
     async fn send_to(&self, buf: &[u8], addr: SocketAddrV4) -> Result<usize, Self::Error>;

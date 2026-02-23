@@ -94,6 +94,11 @@ pub enum UdpEvent {
     Frame {
         socket_idx: usize,
         source: SocketAddrV4,
+        /// The local IP address the packet was addressed to (destination IP
+        /// from the sender's perspective). `None` if the platform doesn't
+        /// report this information. Used to distinguish unicast from
+        /// multicast traffic.
+        destination: Option<Ipv4Addr>,
         buffer: Buffer<'static>,
     },
     /// A receive error occurred on a socket. Non-fatal; the socket
@@ -233,16 +238,17 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                         let mut buffer = bm.alloc().await;
                         buffer.resize(buffer.capacity(), 0);
                         match socket.recv_from(&mut buffer[..]).await {
-                            Ok((len, source)) => {
+                            Ok((len, source, destination)) => {
                                 trace!(
-                                    "KNX/IP RX {} bytes on socket {} from {}: {:?}",
+                                    "KNX/IP RX {} bytes on socket {} from {} (dest {:?}): {:?}",
                                     len,
                                     socket_idx,
                                     source,
+                                    destination,
                                     crate::fmt::Bytes(&buffer[..len])
                                 );
                                 buffer.set_len(len);
-                                Ok((buffer, source))
+                                Ok((buffer, source, destination))
                             }
                             Err(e) => {
                                 error!("Failed to receive on socket {}: {:?}", socket_idx, e);
@@ -252,7 +258,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                     } else {
                         // Socket failed to bind — pend forever so this
                         // slot is ignored by select_slice.
-                        core::future::pending::<Result<(Buffer<'static>, SocketAddrV4), ()>>().await
+                        core::future::pending::<Result<(Buffer<'static>, SocketAddrV4, Option<Ipv4Addr>), ()>>().await
                     }
                 }
             };
@@ -266,7 +272,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
             let (result, socket_idx) = select_slice(unsafe { Pin::new_unchecked(socket_futures.as_mut_slice()) }).await;
 
             match result {
-                Ok((buffer, source)) => {
+                Ok((buffer, source, destination)) => {
                     // Filter multicast echoes: packets originating from
                     // our own address are dropped silently.
                     if *source.ip() == self.local_addr {
@@ -276,8 +282,8 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                         continue;
                     }
 
-                    debug!("Received {} bytes on socket {} from {}", buffer.len(), socket_idx, source);
-                    return UdpEvent::Frame { socket_idx, source, buffer };
+                    debug!("Received {} bytes on socket {} from {} (dest {:?})", buffer.len(), socket_idx, source, destination);
+                    return UdpEvent::Frame { socket_idx, source, destination, buffer };
                 }
                 Err(()) => {
                     return UdpEvent::Error { socket_idx };
