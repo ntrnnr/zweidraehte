@@ -4,8 +4,6 @@
 //! delegating to a [`PropertyServiceHandler`]. Uses a trait object reference
 //! so that no generics leak out of this module.
 
-use core::cell::RefCell;
-
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Channel, DynamicSender};
 use embassy_time::Instant;
@@ -42,7 +40,7 @@ pub struct DeviceMgmtConnectionHandler<'a> {
     /// Sender to the application layer channel, for cEMI Transport Layer mode.
     al_sender: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     /// Buffer manager for allocating internal message buffers.
-    buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+    buffer_manager: &'a DynBufferManager<'static>,
     /// Channel ID of the active Device Management connection, if any.
     /// Only one Device Management connection is allowed at a time.
     active_channel: Option<u8>,
@@ -53,7 +51,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
     pub fn new(
         property_handler: &'a dyn PropertyServiceHandler,
         al_sender: DynamicSender<'a, LayerOp<Buffer<'static>>>,
-        buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+        buffer_manager: &'a DynBufferManager<'static>,
     ) -> Self {
         Self { property_handler, al_sender, buffer_manager, active_channel: None }
     }
@@ -94,7 +92,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         // type has exactly one instance (the common case).
         let object_idx = if frame.object_instance > 0 { (frame.object_instance - 1) as u16 } else { 0 };
 
-        let mut out = self.buffer_manager.borrow().alloc_no_headroom().await;
+        let mut out = self.buffer_manager.alloc_no_headroom().await;
 
         match frame.message_code {
             CemiMessageCode::MPropReadReq => self.handle_prop_read(&frame, object_idx, &mut out)?,
@@ -150,7 +148,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         // frame occupy the same positions as CTRL1+CTRL2+SRC+DST in cEMI L_Data,
         // so the conversion produces zeroed CTRL/SRC/DST/NPDU fields which we
         // then fix up below.
-        let mut buf = self.buffer_manager.borrow().alloc_zeroed(payload.len()).await;
+        let mut buf = self.buffer_manager.alloc_zeroed(payload.len()).await;
         buf[..payload.len()].copy_from_slice(payload);
 
         let buf = cemi::cemi_to_knx_message(buf);
@@ -218,7 +216,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         // Serialize using CemiTransportBuilder directly into a pool Buffer
         let builder = CemiTransportBuilder { message_code: response_mc, tpdu };
 
-        let mut out = self.buffer_manager.borrow().alloc_no_headroom().await;
+        let mut out = self.buffer_manager.alloc_no_headroom().await;
         out.serialize(&builder);
 
         debug!("cEMI Transport response: {:?} ({} bytes)", response_mc, out.len());
@@ -232,10 +230,10 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         sequence_counter: u8,
         status: ConnectionStatus,
         conn: &ConnectionContext,
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
+        buffer_manager: &DynBufferManager<'static>,
     ) -> PendingResponse {
         let builder = DeviceConfigurationAckBuilder::new(channel_id, sequence_counter, status);
-        let mut buffer = buffer_manager.borrow().alloc().await;
+        let mut buffer = buffer_manager.alloc().await;
         buffer.serialize(&builder);
         PendingResponse {
             buffer,
@@ -337,7 +335,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         _channel_id: u8,
         data: &[u8],
         conn: &mut ConnectionContext,
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
+        buffer_manager: &DynBufferManager<'static>,
     ) -> Result<DataFrameAction, ServerError> {
         // Parse the DeviceConfigurationRequest header (consumes KNXnet/IP + connection headers)
         let mut buf = data;
@@ -401,7 +399,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         // 1. ACK
         let ack_builder =
             DeviceConfigurationAckBuilder::new(conn.channel_id, sequence_counter, ConnectionStatus::NoError);
-        if let Some(mut ack_buffer) = buffer_manager.borrow().try_alloc() {
+        if let Some(mut ack_buffer) = buffer_manager.try_alloc() {
             ack_buffer.serialize(&ack_builder);
             let _ = responses.push(PendingResponse {
                 buffer: ack_buffer,
@@ -420,7 +418,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
             let req_builder =
                 DeviceConfigurationRequestBuilder::with_payload(conn.channel_id, send_seq, &cemi_response);
 
-            if let Some(mut resp_buffer) = buffer_manager.borrow().try_alloc() {
+            if let Some(mut resp_buffer) = buffer_manager.try_alloc() {
                 resp_buffer.serialize(&req_builder);
                 let _ = responses.push(PendingResponse {
                     buffer: resp_buffer,

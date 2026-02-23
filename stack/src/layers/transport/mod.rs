@@ -34,8 +34,6 @@ mod state_machine;
 pub use connection::{Connection, ConnectionState, ConnectionTable};
 pub use state_machine::{ActionBuffer, MAX_REPETITIONS, ProcessResult, TlAction, TlEvent, TlStyle, process_event};
 
-use core::cell::RefCell;
-
 use embassy_futures::select::{Either, select};
 use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant, Timer};
@@ -89,7 +87,7 @@ enum TimeoutType {
 /// - `MAX_OUTGOING`: Maximum number of outgoing connections (default: 0)
 pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1, const MAX_OUTGOING: usize = 0> {
     /// Buffer manager for allocating messages
-    buffer_manager: &'a RefCell<crate::messages::buffers::DynBufferManager<'static>>,
+    buffer_manager: &'a crate::messages::buffers::DynBufferManager<'static>,
     /// Unified device state (contains tables and runtime state)
     state: &'a D::State,
     /// Channel to send messages to the network layer
@@ -107,7 +105,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 {
     /// Create a new Transport Layer
     pub fn new(
-        buffer_manager: &'a RefCell<crate::messages::buffers::DynBufferManager<'static>>,
+        buffer_manager: &'a crate::messages::buffers::DynBufferManager<'static>,
         state: &'a D::State,
         network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         application_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
@@ -481,7 +479,7 @@ where
             // Return a confirmation (the actual send will happen later).
             // Allocate a minimal buffer — the confirmation only needs enough
             // space for the CTRL1 field that .build() writes into.
-            let confirm_buf = self.buffer_manager.borrow().alloc_with_size(7).await;
+            let confirm_buf = self.buffer_manager.alloc_with_size(7).await;
             let confirmation = KnxMessageBuffer::new(confirm_buf, ServiceType::T_Data_Req);
             return confirmation.confirm().build();
         }
@@ -505,10 +503,10 @@ where
         let send_buffer = {
             let pending = self.connections.find_any(dest).and_then(|c| c.pending_msg.as_ref());
             if let Some(pm) = pending {
-                self.buffer_manager.borrow().alloc_from_slice(pm.buf()).await
+                self.buffer_manager.alloc_from_slice(pm.buf()).await
             } else {
                 // Should not happen, but handle gracefully
-                return KnxMessageBuffer::new(self.buffer_manager.borrow().alloc_with_size(0).await, service_type)
+                return KnxMessageBuffer::new(self.buffer_manager.alloc_with_size(0).await, service_type)
                     .error()
                     .build();
             }
@@ -660,7 +658,7 @@ where
                     // None so the block is a no-op.
                     if let Some(msg) = msg_for_data.take()
                         && let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
-                            match self.buffer_manager.borrow().try_alloc_from_slice(msg.buf()) {
+                            match self.buffer_manager.try_alloc_from_slice(msg.buf()) {
                                 Some(queued_buffer) => {
                                     let queued_msg = KnxMessageBuffer::new(queued_buffer, msg.service_type());
                                     conn.queued_incoming = Some(queued_msg);
@@ -726,7 +724,7 @@ where
                     // skip this retransmit; the ACK timeout will fire again.
                     if let Some(conn) = self.connections.find_any_including_closed(dest)
                         && let Some(ref pending_msg) = conn.pending_msg {
-                            match self.buffer_manager.borrow().try_alloc_from_slice(pending_msg.buf()) {
+                            match self.buffer_manager.try_alloc_from_slice(pending_msg.buf()) {
                                 Some(retransmit_buffer) => {
                                     let retransmit_msg = KnxMessageBuffer::new(retransmit_buffer, pending_msg.service_type());
                                     debug!("TL retransmitting: {:?}", retransmit_msg);
@@ -786,7 +784,7 @@ where
 
                 // Send a copy (original stored for retransmission)
                 if let Some(ref pending) = conn.pending_msg {
-                    let send_buffer = self.buffer_manager.borrow().alloc_from_slice(pending.buf()).await;
+                    let send_buffer = self.buffer_manager.alloc_from_slice(pending.buf()).await;
                     let send_msg = KnxMessageBuffer::new(send_buffer, pending.service_type());
                     let _confirmation = self.network_layer.request(RequestMessage::request(send_msg)).await;
                 }
@@ -809,7 +807,7 @@ where
         // Control PDUs need only the basic header (7 bytes up to and including TPCI)
         const CONTROL_PDU_LEN: usize = 7;
 
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(CONTROL_PDU_LEN).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(CONTROL_PDU_LEN).await;
 
         let msg = MessageBuilder::new_request(
             msg_buf,
@@ -830,7 +828,7 @@ where
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(CONTROL_PDU_LEN).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(CONTROL_PDU_LEN).await;
 
         let msg = MessageBuilder::new_request(
             msg_buf,
@@ -851,7 +849,7 @@ where
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(CONTROL_PDU_LEN).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(CONTROL_PDU_LEN).await;
 
         let msg = MessageBuilder::new_request(
             msg_buf,
@@ -872,7 +870,7 @@ where
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(CONTROL_PDU_LEN).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(CONTROL_PDU_LEN).await;
 
         let msg = MessageBuilder::new_request(
             msg_buf,

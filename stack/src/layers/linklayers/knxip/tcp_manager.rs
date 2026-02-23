@@ -8,7 +8,6 @@
 //! [`next_event()`](TcpManager::next_event) that the main loop `select`s
 //! alongside UDP socket futures.
 
-use core::cell::RefCell;
 use core::net::SocketAddrV4;
 use core::pin::Pin;
 
@@ -215,7 +214,7 @@ impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
     pub async fn read_from(
         &mut self,
         tcp_idx: usize,
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
+        buffer_manager: &DynBufferManager<'static>,
     ) -> Option<TcpEvent<MAX_CHANNELS>> {
         let conn = self.connections[tcp_idx].as_mut()?;
 
@@ -253,7 +252,7 @@ impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
             match event {
                 FrameEvent::Frame(frame_len) => {
                     // Copy the complete frame into a buffer for dispatch
-                    let mut buffer = buffer_manager.borrow().alloc().await;
+                    let mut buffer = buffer_manager.alloc().await;
                     buffer.push_slice(&frame_output[..frame_len]);
 
                     let peer = conn.peer_addr;
@@ -363,7 +362,7 @@ impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
     /// forever via `read_slot`, so `select_slice` naturally ignores them.
     ///
     /// Pends forever if no listener is bound and no connections exist.
-    pub async fn next_event(&mut self, buffer_manager: &RefCell<DynBufferManager<'static>>) -> TcpEvent<MAX_CHANNELS> {
+    pub async fn next_event(&mut self, buffer_manager: &DynBufferManager<'static>) -> TcpEvent<MAX_CHANNELS> {
         use embassy_futures::select::{Either, select, select_slice};
 
         loop {
@@ -470,7 +469,7 @@ impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
 /// listener.
 async fn read_one_connection<S, const MAX_CHANNELS: usize>(
     conn: &mut TcpConnectionState<S, MAX_CHANNELS>,
-    buffer_manager: &RefCell<DynBufferManager<'static>>,
+    buffer_manager: &DynBufferManager<'static>,
 ) -> ConnectionReadResult<MAX_CHANNELS>
 where
     S: embedded_io_async::Read<Error: core::fmt::Debug>,
@@ -501,7 +500,7 @@ where
 
         match event {
             FrameEvent::Frame(frame_len) => {
-                let mut buffer = buffer_manager.borrow().alloc().await;
+                let mut buffer = buffer_manager.alloc().await;
                 buffer.push_slice(&frame_output[..frame_len]);
                 return ConnectionReadResult::Frame(buffer);
             }
@@ -538,7 +537,7 @@ enum ConnectionReadResult<const MAX_CHANNELS: usize> {
 /// by `select_slice`.
 async fn read_slot<S, const MAX_CHANNELS: usize>(
     slot: &mut Option<TcpConnectionState<S, MAX_CHANNELS>>,
-    buffer_manager: &RefCell<DynBufferManager<'static>>,
+    buffer_manager: &DynBufferManager<'static>,
 ) -> ConnectionReadResult<MAX_CHANNELS>
 where
     S: embedded_io_async::Read<Error: core::fmt::Debug>,

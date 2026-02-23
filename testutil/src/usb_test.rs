@@ -6,7 +6,6 @@
 
 use testutil::util::keyboard;
 
-use std::cell::RefCell;
 use std::io::Write as IoWrite;
 
 use embassy_executor::Spawner;
@@ -116,11 +115,11 @@ async fn run_fake_network(mut fake_network: FakeNetworkLayer) {
 
 // Simple context that just provides a buffer manager
 struct SimpleContext {
-    buffer_manager: &'static RefCell<zweidraehte::messages::buffers::DynBufferManager<'static>>,
+    buffer_manager: &'static zweidraehte::messages::buffers::DynBufferManager<'static>,
 }
 
 impl BufferManagerContext for SimpleContext {
-    fn buffer_manager(&self) -> &RefCell<zweidraehte::messages::buffers::DynBufferManager<'static>> {
+    fn buffer_manager(&self) -> &zweidraehte::messages::buffers::DynBufferManager<'static> {
         self.buffer_manager
     }
 
@@ -196,7 +195,7 @@ async fn main(spawner: Spawner) {
     let buffers = Box::leak(Box::new(buffers));
     let buffer_manager = unsafe { BufferManager::new(buffers) };
     let buffer_manager = Box::leak(Box::new(buffer_manager));
-    let bm = Box::leak(Box::new(RefCell::new(buffer_manager.dyn_buffer_manager())));
+    let bm = Box::leak(Box::new(buffer_manager.dyn_buffer_manager()));
 
     // Create channels for communication between link layer and fake network layer
     let network_channel = Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<Buffer<'static>>, 32>::new()));
@@ -241,7 +240,7 @@ async fn main(spawner: Spawner) {
                     print!("Sending GroupValueWrite(1) to 2/0/3... ");
                     std::io::stdout().flush().ok();
 
-                    let buffer = bm.borrow().alloc().await;
+                    let buffer = bm.alloc().await;
                     let msg = build_group_value_write(buffer, GROUP_ADDR, true);
 
                     let confirmation = link_sender.request(msg).await;
@@ -251,7 +250,7 @@ async fn main(spawner: Spawner) {
                     print!("Sending GroupValueWrite(0) to 2/0/3... ");
                     std::io::stdout().flush().ok();
 
-                    let buffer = bm.borrow().alloc().await;
+                    let buffer = bm.alloc().await;
                     let msg = build_group_value_write(buffer, GROUP_ADDR, false);
 
                     let confirmation = link_sender.request(msg).await;

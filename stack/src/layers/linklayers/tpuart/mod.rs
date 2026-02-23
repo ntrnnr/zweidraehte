@@ -50,8 +50,6 @@
 //! **Note**: Bus monitor mode is mutually exclusive with normal operation. Once enabled,
 //! a chip reset is required to return to normal mode.
 
-use core::cell::RefCell;
-
 use embassy_futures::select::{Either3, select3};
 use embassy_sync::channel::DynamicSender;
 use embassy_time::{Instant, Timer};
@@ -223,7 +221,7 @@ where
     uart: U,
 
     // Buffer management
-    buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+    buffer_manager: &'a DynBufferManager<'static>,
 
     // Upper layer connection
     network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
@@ -288,7 +286,7 @@ where
     /// group address ACK support.
     pub fn new(
         uart: U,
-        buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+        buffer_manager: &'a DynBufferManager<'static>,
         network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         address_context: &'a dyn KnxAddressContext,
     ) -> Self {
@@ -311,7 +309,7 @@ where
     /// so changes (e.g., ETS programming) are automatically picked up.
     pub fn with_address_checker(
         uart: U,
-        buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+        buffer_manager: &'a DynBufferManager<'static>,
         network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         address_checker: A,
         address_context: &'a dyn KnxAddressContext,
@@ -515,7 +513,7 @@ where
                     let _ = self.uart.write_all(&[byte]).await;
                 }
                 MainAction::AllocReceiveBuffer => {
-                    let buffer = self.buffer_manager.borrow().alloc().await;
+                    let buffer = self.buffer_manager.alloc().await;
                     self.receive_buffer = Some(buffer);
                 }
                 MainAction::StoreReceivedByte(byte) => {
@@ -890,7 +888,7 @@ where
         }
 
         // Allocate buffer for TP1 format and copy data
-        let mut tp1_buf = self.buffer_manager.borrow().alloc().await;
+        let mut tp1_buf = self.buffer_manager.alloc().await;
         for &byte in &msg[..] {
             tp1_buf.push(byte);
         }

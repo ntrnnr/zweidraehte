@@ -1,6 +1,6 @@
 //! Mock context for testing link layers in isolation.
 
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Channel, DynamicSender};
@@ -19,7 +19,7 @@ use zweidraehte::objects::interface::PropertyServiceHandler;
 /// This provides a minimal implementation of the required context traits
 /// for testing link layers in isolation.
 pub struct MockContext {
-    buffer_manager: RefCell<DynBufferManager<'static>>,
+    buffer_manager: DynBufferManager<'static>,
     max_apdu_length: Cell<u16>,
     device_info: Cell<Option<DeviceInformation>>,
     /// Dummy AL channel for ApplicationLayerContext. Messages sent here are dropped.
@@ -30,7 +30,7 @@ impl MockContext {
     /// Create a new mock context with the provided buffer manager.
     pub fn new(buffer_manager: DynBufferManager<'static>) -> Self {
         Self {
-            buffer_manager: RefCell::new(buffer_manager),
+            buffer_manager,
             max_apdu_length: Cell::new(zweidraehte::config::MAX_APDU_LENGTH_EXTENDED),
             device_info: Cell::new(None),
             al_channel: Channel::new(),
@@ -40,7 +40,7 @@ impl MockContext {
     /// Create a new mock context with a custom max APDU length.
     pub fn with_max_apdu_length(buffer_manager: DynBufferManager<'static>, max_apdu_length: u16) -> Self {
         Self {
-            buffer_manager: RefCell::new(buffer_manager),
+            buffer_manager,
             max_apdu_length: Cell::new(max_apdu_length),
             device_info: Cell::new(None),
             al_channel: Channel::new(),
@@ -54,7 +54,7 @@ impl MockContext {
 }
 
 impl BufferManagerContext for &MockContext {
-    fn buffer_manager(&self) -> &RefCell<DynBufferManager<'static>> {
+    fn buffer_manager(&self) -> &DynBufferManager<'static> {
         &self.buffer_manager
     }
 
@@ -82,7 +82,7 @@ impl PropertyServiceContext for &mut MockContext {
 }
 
 impl BufferManagerContext for &mut MockContext {
-    fn buffer_manager(&self) -> &RefCell<DynBufferManager<'static>> {
+    fn buffer_manager(&self) -> &DynBufferManager<'static> {
         &self.buffer_manager
     }
 

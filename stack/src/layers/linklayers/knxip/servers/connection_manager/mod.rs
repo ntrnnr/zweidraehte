@@ -23,7 +23,6 @@ mod device_mgmt;
 
 pub use device_mgmt::DeviceMgmtConnectionHandler;
 
-use core::cell::RefCell;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use embassy_sync::channel::DynamicSender;
@@ -107,7 +106,7 @@ pub trait ConnectionTypeHandler {
         channel_id: u8,
         data: &[u8],
         conn: &mut ConnectionContext,
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
+        buffer_manager: &DynBufferManager<'static>,
     ) -> Result<DataFrameAction, ServerError>;
 
     /// Handle an incoming ACK for a frame we sent to the client.
@@ -150,7 +149,7 @@ impl ConnectionTypeHandler for ConnectionTypeHandlerEnum<'_> {
         channel_id: u8,
         data: &[u8],
         conn: &mut ConnectionContext,
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
+        buffer_manager: &DynBufferManager<'static>,
     ) -> Result<DataFrameAction, ServerError> {
         match self {
             ConnectionTypeHandlerEnum::DeviceManagement(h) => {
@@ -304,7 +303,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         service_type: KNXnetIPServiceType,
         data: &[u8],
         origin: PacketOrigin,
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
+        buffer_manager: &DynBufferManager<'static>,
         network_layer_tx: DynamicSender<'_, LayerOp<Buffer<'static>>>,
     ) -> Result<ConnectionManagerResult, ServerError> {
         match service_type {
@@ -337,7 +336,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         &mut self,
         service_type: KNXnetIPServiceType,
         data: &[u8],
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
+        buffer_manager: &DynBufferManager<'static>,
         network_layer_tx: DynamicSender<'_, LayerOp<Buffer<'static>>>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         // Connection header starts at offset 6 (after KNXnet/IP header).
@@ -493,7 +492,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         &mut self,
         data: &[u8],
         origin: PacketOrigin,
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
+        buffer_manager: &DynBufferManager<'static>,
     ) -> Result<ConnectionManagerResult, ServerError> {
         let mut buf = data;
         let request = match buf.parse::<ConnectRequest>() {
@@ -629,7 +628,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         status: ConnectionStatus,
         crd: Option<CRD>,
         origin: PacketOrigin,
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
+        buffer_manager: &DynBufferManager<'static>,
     ) -> Result<ConnectionManagerResult, ServerError> {
         let data_endpoint = match origin {
             PacketOrigin::Tcp { .. } => HPAI::ipv4_tcp(Ipv4Addr::UNSPECIFIED, 0),
@@ -637,7 +636,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         };
 
         let builder = ConnectResponseBuilder::new(channel_id, status, data_endpoint, crd);
-        let mut buffer = buffer_manager.borrow().alloc().await;
+        let mut buffer = buffer_manager.alloc().await;
         buffer.serialize(&builder);
 
         let mut responses = Vec::new();
@@ -656,7 +655,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         &mut self,
         data: &[u8],
         origin: PacketOrigin,
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
+        buffer_manager: &DynBufferManager<'static>,
     ) -> Result<ConnectionManagerResult, ServerError> {
         let mut buf = data;
         let request = match buf.parse::<ConnectionstateRequest>() {
@@ -682,7 +681,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
 
         // Build response — non-critical, remote side will retry the keepalive.
         let mut responses = Vec::new();
-        if let Some(mut buffer) = buffer_manager.borrow().try_alloc() {
+        if let Some(mut buffer) = buffer_manager.try_alloc() {
             let builder = ConnectionstateResponseBuilder::new(channel_id, status);
             buffer.serialize(&builder);
             let _ = responses.push(PendingResponse { buffer, target });
@@ -700,7 +699,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         &mut self,
         data: &[u8],
         origin: PacketOrigin,
-        buffer_manager: &RefCell<DynBufferManager<'static>>,
+        buffer_manager: &DynBufferManager<'static>,
     ) -> Result<ConnectionManagerResult, ServerError> {
         let mut buf = data;
         let request = match buf.parse::<DisconnectRequest>() {
@@ -738,7 +737,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
 
         // Build response — non-critical, connection times out on remote side anyway.
         let mut responses = Vec::new();
-        if let Some(mut buffer) = buffer_manager.borrow().try_alloc() {
+        if let Some(mut buffer) = buffer_manager.try_alloc() {
             let builder = DisconnectResponseBuilder::new(channel_id, status);
             buffer.serialize(&builder);
             let _ = responses.push(PendingResponse { buffer, target });

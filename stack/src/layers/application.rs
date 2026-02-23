@@ -82,7 +82,7 @@ pub enum ApplicationLayerServiceResponse {
 /// local application.
 pub struct ApplicationLayer<'a, D: StackDefinition> {
     // --- Shared stack resources ---
-    buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+    buffer_manager: &'a DynBufferManager<'static>,
     /// Unified device state (contains tables and runtime configuration)
     state: &'a D::State,
     comm_objects: &'a RefCell<D::CO>,
@@ -145,7 +145,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Create a new Application Layer
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+        buffer_manager: &'a DynBufferManager<'static>,
         state: &'a D::State,
         comm_objects: &'a RefCell<D::CO>,
         hook_context: &'a <D::CO as ComObjects>::HookContext,
@@ -551,7 +551,7 @@ where
             self.comm_objects.borrow_mut().prepare_read(asap, self.hook_context);
 
             // Allocate a new message for the response
-            let msg_buf = self.buffer_manager.borrow().alloc_with_size(object_size + msg_offset).await;
+            let msg_buf = self.buffer_manager.alloc_with_size(object_size + msg_offset).await;
 
             // Build the GroupValueResponse message
             // Note: We can't use respond_with() because group communication uses connection_nr (TSAP)
@@ -666,7 +666,7 @@ where
             );
 
             // Allocate a new message with the required size
-            let msg_buf = self.buffer_manager.borrow().alloc_with_size(object_size + msg_offset).await;
+            let msg_buf = self.buffer_manager.alloc_with_size(object_size + msg_offset).await;
 
             // Note: We don't use MessageBuilder here because group communication uses
             // connection_nr (TSAP) instead of individual addressing, which the builder
@@ -894,7 +894,7 @@ where
             Ok(desc) => {
                 // Allocate response message: APCI(2) + ObjectIdx(1) + PropId(1) + PropIdx(1) + Type(1) + MaxElements(2) + Access(1) = 9
                 const RESPONSE_LEN: usize = offsets::MSG_APCI + 9;
-                let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+                let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -917,7 +917,7 @@ where
 
                 // Full response: APCI(2) + ObjIdx(1) + PID(1) + PropIdx(1) + Type(1) + MaxNo(2) + Access(1) = 9
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 9;
-                let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
+                let msg_buf = self.buffer_manager.alloc_with_size(ERROR_RESPONSE_LEN).await;
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -1014,7 +1014,7 @@ where
             Ok(data_len) => {
                 // Allocate response message: APCI(2) + ObjIdx(1) + PropId(1) + Count+StartIdx(2) + Data(N)
                 let response_len = offsets::MSG_APCI + 6 + data_len;
-                let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+                let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
 
                 // Build the response count_start field
                 // Per KNX spec: if start_idx=0 (element count query), response must have nr_of_elem=1
@@ -1052,7 +1052,7 @@ where
                 warn!("AL PropertyValueRead failed: {:?}", e);
 
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 6;
-                let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
+                let msg_buf = self.buffer_manager.alloc_with_size(ERROR_RESPONSE_LEN).await;
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -1176,7 +1176,7 @@ where
                 let response_data: &[u8] = write_response.as_slice().unwrap_or(data);
                 let response_data_len = response_data.len();
                 let response_len = offsets::MSG_APCI + 6 + response_data_len;
-                let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+                let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -1202,7 +1202,7 @@ where
                 warn!("AL PropertyValueWrite failed: {:?}", e);
 
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 6;
-                let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
+                let msg_buf = self.buffer_manager.alloc_with_size(ERROR_RESPONSE_LEN).await;
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -1278,7 +1278,7 @@ where
         if descriptor_type == 0 {
             // Descriptor type 0: respond with mask version (2 bytes)
             const RESPONSE_LEN: usize = offsets::MSG_APCI + 4; // APCI(2) + MaskVersion(2)
-            let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+            let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
 
             let msg = ind
                 .respond_with(msg_buf)
@@ -1299,7 +1299,7 @@ where
             // Descriptor type 2: respond with extended device info (14 bytes) if supported
             if let Some(dd2) = D::DEVICE_DESCRIPTOR_TYPE2 {
                 const RESPONSE_LEN: usize = offsets::MSG_APCI + 16; // APCI(2) + DD2(14)
-                let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+                let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -1318,7 +1318,7 @@ where
             } else {
                 // DD2 not supported: error response with type = 0x3F
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 2;
-                let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
+                let msg_buf = self.buffer_manager.alloc_with_size(ERROR_RESPONSE_LEN).await;
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -1335,7 +1335,7 @@ where
         } else {
             // Any other descriptor type: error response with type = 0x3F, no data
             const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 2; // APCI(2) only, no data
-            let msg_buf = self.buffer_manager.borrow().alloc_with_size(ERROR_RESPONSE_LEN).await;
+            let msg_buf = self.buffer_manager.alloc_with_size(ERROR_RESPONSE_LEN).await;
 
             let msg = ind
                 .respond_with(msg_buf)
@@ -1387,7 +1387,7 @@ where
         // IndividualAddressResponse: APCI only, no payload
         // The individual address is conveyed in the source address field of the L_Data frame
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 2;
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
 
         // Build broadcast response
         // Note: For IndividualAddressResponse, we broadcast to 0x0000 (all devices)
@@ -1494,7 +1494,7 @@ where
 
         // Response: APCI (2) + serial (6) + domain/reserved (4) = 12 bytes APDU
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 12;
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
 
         // Build broadcast response
         let mut msg = MessageBuilder::new_request(
@@ -1608,7 +1608,7 @@ where
 
         // Response: APCI(2) + count(1) + sum(2) = 5 bytes APDU
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
 
         // We support channels 0-5 (typical KNX ADC channels), return 0 for unsupported
         // For supported channels, we return dummy values (0x0000 for the sum)
@@ -1690,7 +1690,7 @@ where
         // Response: APCI(2) + address(2) + data(response_count) = 4 + response_count bytes APDU
         // On error, response_count is 0 and no data is sent (just APCI + address)
         let response_len = offsets::MSG_APCI + 4 + (response_count as usize);
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
 
         let msg = ind
             .respond_with(msg_buf)
@@ -1796,7 +1796,7 @@ where
         // Send Memory_Response with written data (or count=0 on error)
         // Response: APCI(2) + address(2) + data(response_count) = 4 + response_count bytes APDU
         let response_len = offsets::MSG_APCI + 4 + (response_count as usize);
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
 
         let msg = ind
             .respond_with(msg_buf)
@@ -1954,7 +1954,7 @@ where
         // Response format: [APCI:2 with count in low 4 bits of byte 1] [address:2] [data:count]
         // The count is embedded in the APCI code (0x140 | count), same as A_Memory_Response
         let response_len = offsets::MSG_APCI + 4 + (count as usize);
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
 
         let msg = ind
             .respond_with(msg_buf)
@@ -2044,7 +2044,7 @@ where
         // Response: APCI(2) + count(1) + address(2) + data(response_count) = 5 + response_count bytes APDU
         // On error, response_count is 0 and no data is sent (just APCI + count + address)
         let response_len = offsets::MSG_APCI + 5 + (response_count as usize);
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
 
         let msg = ind
             .respond_with(msg_buf)
@@ -2160,7 +2160,7 @@ where
         // Send UserMemory_Response with written data (or count=0 on error)
         // Response: APCI(2) + count(1) + address(2) + data(response_count) = 5 + response_count bytes APDU
         let response_len = offsets::MSG_APCI + 5 + (response_count as usize);
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(response_len).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
 
         let msg = ind
             .respond_with(msg_buf)
@@ -2219,7 +2219,7 @@ where
 
         // Response: APCI(2) + Manufacturer ID(2) + Device Type(1) = 5 bytes
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
 
         let msg = ind
             .respond_with(msg_buf)
@@ -2289,7 +2289,7 @@ where
 
         // Response: APCI(2) + Level(1) = 3 bytes
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 3;
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
 
         let msg = ind
             .respond_with(msg_buf)
@@ -2359,7 +2359,7 @@ where
 
         // Response: APCI(2) + Level(1) = 3 bytes
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 3;
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
 
         let msg =
             ind.respond_with(msg_buf).with_application(ApciCode::KeyResponse, transport_service).with_data(|data| {
@@ -2478,7 +2478,7 @@ where
 
         // Response: APCI(2) + Error(1) + ProcessTime(2) = 5 bytes total APDU
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
-        let msg_buf = self.buffer_manager.borrow().alloc_with_size(RESPONSE_LEN).await;
+        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
 
         // Build response using Restart APCI as base, then modify the APCI bytes in with_data
         // to set the correct A_Restart_Response format: 0x03 0xA1
@@ -2541,11 +2541,11 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             // first because this is the tightest buffer spot in the cEMI path (4th
             // simultaneous buffer). If the pool is exhausted, fall back to blocking
             // alloc — the warn from the instrumented alloc() makes the starvation visible.
-            let buf = match self.buffer_manager.borrow().try_alloc_with_size(offsets::MSG_CONTROL + 1) {
+            let buf = match self.buffer_manager.try_alloc_with_size(offsets::MSG_CONTROL + 1) {
                 Some(buf) => buf,
                 None => {
                     warn!("Buffer pool exhausted when allocating synthetic confirmation — potential stall");
-                    self.buffer_manager.borrow().alloc_with_size(offsets::MSG_CONTROL + 1).await
+                    self.buffer_manager.alloc_with_size(offsets::MSG_CONTROL + 1).await
                 }
             };
             let mut conf = KnxMessageBuffer::new(buf, service_type);

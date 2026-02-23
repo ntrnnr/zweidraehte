@@ -882,7 +882,7 @@ impl<'d, D: StackDefinition> Clone for Stack<'d, D> {
 }
 
 pub(crate) struct Inner<D: StackDefinition> {
-    pub(crate) buffer_manager: RefCell<DynBufferManager<'static>>,
+    pub(crate) buffer_manager: DynBufferManager<'static>,
     pub(crate) app_service_channel:
         Channel<NoopRawMutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
     pub(crate) comm_objs: RefCell<D::CO>,
@@ -912,7 +912,7 @@ impl<D: StackDefinition> Inner<D> {
 
 // Implement context traits for Inner
 impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
-    fn buffer_manager(&self) -> &RefCell<DynBufferManager<'static>> {
+    fn buffer_manager(&self) -> &DynBufferManager<'static> {
         &self.buffer_manager
     }
 
@@ -944,7 +944,7 @@ pub struct StackContext<'a, D: StackDefinition> {
 }
 
 impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
-    fn buffer_manager(&self) -> &RefCell<DynBufferManager<'static>> {
+    fn buffer_manager(&self) -> &DynBufferManager<'static> {
         &self.inner.buffer_manager
     }
 
@@ -1108,7 +1108,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         unsafe { core::mem::transmute(resources.buffer_manager.write(BufferManager::new(buffers))) };
 
     let inner = Inner {
-        buffer_manager: RefCell::new(buffer_manager.dyn_buffer_manager()),
+        buffer_manager: buffer_manager.dyn_buffer_manager(),
         app_service_channel: Channel::new(),
         comm_objs: RefCell::new(comm_objs),
         event_channel: PubSubChannel::new(),
@@ -1651,7 +1651,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # }
     /// ```
     pub async fn alloc_message(&self, msg: &[u8]) -> KnxMessageBuffer<Buffer<'static>> {
-        let buffer = self.inner.buffer_manager.borrow_mut().alloc_from_slice(msg).await;
+        let buffer = self.inner.buffer_manager.alloc_from_slice(msg).await;
         KnxMessageBuffer::new(buffer, messages::knx::ServiceType::L_Data_Ind)
     }
 
@@ -1752,7 +1752,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// in production. When `allocated` approaches `total`, incoming allocations
     /// may block.
     pub fn buffer_pool_status(&self) -> (u8, u8) {
-        let bm = self.inner.buffer_manager.borrow();
+        let bm = &self.inner.buffer_manager;
         (bm.allocated_count(), bm.pool_size())
     }
 }

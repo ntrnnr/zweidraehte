@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-
 use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use embassy_time::{Duration, Ticker};
@@ -83,7 +81,7 @@ async fn main(spawner: Spawner) {
     let buffers = Box::leak(Box::new(buffers));
     let buffer_manager = unsafe { BufferManager::new(buffers) };
     let buffer_manager = Box::leak(Box::new(buffer_manager));
-    let bm = Box::leak(Box::new(RefCell::new(buffer_manager.dyn_buffer_manager())));
+    let bm = Box::leak(Box::new(buffer_manager.dyn_buffer_manager()));
 
     // Create channels for communication between link layer and fake network layer
     let network_channel =
@@ -116,7 +114,7 @@ async fn main(spawner: Spawner) {
     loop {
         timer.next().await;
 
-        let test_buffer = bm.borrow().alloc_from_slice(&[0xbc, 0x10, 0x64, 0x18, 0x00, 0xe1, 0x00, 0x80]).await;
+        let test_buffer = bm.alloc_from_slice(&[0xbc, 0x10, 0x64, 0x18, 0x00, 0xe1, 0x00, 0x80]).await;
         let test_msg = KnxMessageBuffer::new(test_buffer, ServiceType::L_Data_Req);
 
         println!("Transmitting test message: {:x?}", test_msg.buf());

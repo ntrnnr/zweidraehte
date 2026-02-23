@@ -10,7 +10,6 @@
 //! borrow conflicts in the main loop where a `next_event` future coexists
 //! with `send_to` calls triggered by response draining.
 
-use core::cell::RefCell;
 use core::net::{Ipv4Addr, SocketAddrV4};
 use core::pin::Pin;
 
@@ -216,7 +215,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
     /// arrives.
     ///
     /// Pends forever if no sockets are bound.
-    pub async fn next_event(&self, buffer_manager: &RefCell<DynBufferManager<'static>>) -> UdpEvent {
+    pub async fn next_event(&self, buffer_manager: &DynBufferManager<'static>) -> UdpEvent {
         if self.descriptors.is_empty() {
             // No sockets to poll — pend forever so the select in the
             // main loop naturally falls through to TCP or other arms.
@@ -231,7 +230,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                 let bm = buffer_manager;
                 async move {
                     if let Some(Some(socket)) = self.sockets.get(socket_idx) {
-                        let mut buffer = bm.borrow().alloc().await;
+                        let mut buffer = bm.alloc().await;
                         buffer.resize(buffer.capacity(), 0);
                         match socket.recv_from(&mut buffer[..]).await {
                             Ok((len, source)) => {

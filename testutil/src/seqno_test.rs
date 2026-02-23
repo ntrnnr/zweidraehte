@@ -132,11 +132,11 @@ async fn run_network(mut layer: TestNetworkLayer) {
 
 // Simple context that just provides a buffer manager
 struct SimpleContext {
-    buffer_manager: &'static RefCell<zweidraehte::messages::buffers::DynBufferManager<'static>>,
+    buffer_manager: &'static zweidraehte::messages::buffers::DynBufferManager<'static>,
 }
 
 impl BufferManagerContext for SimpleContext {
-    fn buffer_manager(&self) -> &RefCell<zweidraehte::messages::buffers::DynBufferManager<'static>> {
+    fn buffer_manager(&self) -> &zweidraehte::messages::buffers::DynBufferManager<'static> {
         self.buffer_manager
     }
 
@@ -317,7 +317,7 @@ async fn clear_received(received: &RefCell<Vec<Vec<u8>>>) {
 }
 
 async fn run_seqno_test(
-    bm: &'static RefCell<zweidraehte::messages::buffers::DynBufferManager<'static>>,
+    bm: &'static zweidraehte::messages::buffers::DynBufferManager<'static>,
     link_sender: embassy_sync::channel::DynamicSender<'static, LayerOp<Buffer<'static>>>,
     received: &'static RefCell<Vec<Vec<u8>>>,
 ) {
@@ -331,7 +331,7 @@ async fn run_seqno_test(
     // Step 1: T_Connect
     println!("--- Step 1: T_Connect ---");
     {
-        let buffer = bm.borrow().alloc().await;
+        let buffer = bm.alloc().await;
         let msg = build_t_connect(buffer, TESTER_ADDR, DUT_ADDR);
         print_frame("TX", msg.buf());
         let _conf = link_sender.request(msg).await;
@@ -343,7 +343,7 @@ async fn run_seqno_test(
     println!("\n--- Step 2: Memory Write with count > data (malformed) ---");
     println!("Sending count=3 but only 2 data bytes - should be rejected");
     {
-        let buffer = bm.borrow().alloc().await;
+        let buffer = bm.alloc().await;
         // count=3, but only 2 bytes of data (AA BB)
         let msg = build_user_memory_write(buffer, TESTER_ADDR, DUT_ADDR, 0, MEM_ADDR, 3, &[0xAA, 0xBB]);
         print_frame("TX", msg.buf());
@@ -365,7 +365,7 @@ async fn run_seqno_test(
     println!("Sending count=2 but 3 data bytes - should be rejected");
     println!("Question: Does seqno increment or stay at 0?");
     {
-        let buffer = bm.borrow().alloc().await;
+        let buffer = bm.alloc().await;
         // Try BOTH seqno=0 (as in XML) and seqno=1 (normal increment)
         // First try seqno=0 to see if device accepts it
         let msg = build_user_memory_write(buffer, TESTER_ADDR, DUT_ADDR, 0, MEM_ADDR, 2, &[0x01, 0x02, 0x03]);
@@ -388,7 +388,7 @@ async fn run_seqno_test(
         println!("  -> No response to seqno=0, trying seqno=1...");
 
         {
-            let buffer = bm.borrow().alloc().await;
+            let buffer = bm.alloc().await;
             let msg = build_user_memory_write(buffer, TESTER_ADDR, DUT_ADDR, 1, MEM_ADDR, 2, &[0x01, 0x02, 0x03]);
             print_frame("TX (seqno=1)", msg.buf());
             let _conf = link_sender.request(msg).await;
@@ -413,7 +413,7 @@ async fn run_seqno_test(
     // Step 4: Read memory to verify nothing changed
     println!("\n--- Step 4: Read memory to verify data unchanged ---");
     {
-        let buffer = bm.borrow().alloc().await;
+        let buffer = bm.alloc().await;
         // Use seqno that matches expected state
         let msg = build_user_memory_read(buffer, TESTER_ADDR, DUT_ADDR, 1, MEM_ADDR, 3);
         print_frame("TX", msg.buf());
@@ -438,7 +438,7 @@ async fn run_seqno_test(
 
     // Step 5: ACK the response
     {
-        let buffer = bm.borrow().alloc().await;
+        let buffer = bm.alloc().await;
         let msg = build_t_ack(buffer, TESTER_ADDR, DUT_ADDR, 0);
         print_frame("TX", msg.buf());
         let _conf = link_sender.request(msg).await;
@@ -448,7 +448,7 @@ async fn run_seqno_test(
     // Step 6: Disconnect
     println!("\n--- Step 6: Disconnect ---");
     {
-        let buffer = bm.borrow().alloc().await;
+        let buffer = bm.alloc().await;
         let msg = build_t_disconnect(buffer, TESTER_ADDR, DUT_ADDR);
         print_frame("TX", msg.buf());
         let _conf = link_sender.request(msg).await;
@@ -489,7 +489,7 @@ async fn main(spawner: Spawner) {
     let buffers = Box::leak(Box::new(buffers));
     let buffer_manager = unsafe { BufferManager::new(buffers) };
     let buffer_manager = Box::leak(Box::new(buffer_manager));
-    let bm = Box::leak(Box::new(RefCell::new(buffer_manager.dyn_buffer_manager())));
+    let bm = Box::leak(Box::new(buffer_manager.dyn_buffer_manager()));
 
     let received: &'static RefCell<Vec<Vec<u8>>> = Box::leak(Box::new(RefCell::new(Vec::new())));
 

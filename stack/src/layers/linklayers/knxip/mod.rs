@@ -1,5 +1,4 @@
 use core::{
-    cell::RefCell,
     future::pending,
     net::{Ipv4Addr, SocketAddrV4},
 };
@@ -273,7 +272,7 @@ pub struct PendingResponse {
 /// KNX addresses through the individual context trait accessors.
 pub struct ServerContext<'a> {
     /// Buffer manager for allocating message buffers
-    buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+    buffer_manager: &'a DynBufferManager<'static>,
     /// Channel to send messages up to the network layer
     network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     /// Maximum APDU length this device can handle
@@ -290,7 +289,7 @@ pub struct ServerContext<'a> {
 impl<'a> ServerContext<'a> {
     /// Create a new server context
     pub fn new(
-        buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+        buffer_manager: &'a DynBufferManager<'static>,
         network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         max_apdu_length: u16,
         device_info: &'a dyn DeviceInfoContext,
@@ -332,11 +331,11 @@ impl<'a> ServerContext<'a> {
 
     /// Allocate a buffer for responses
     pub async fn alloc_buffer(&self) -> Buffer<'static> {
-        self.buffer_manager.borrow().alloc().await
+        self.buffer_manager.alloc().await
     }
 
     /// Get direct access to the buffer manager
-    pub fn buffer_manager(&self) -> &RefCell<DynBufferManager<'static>> {
+    pub fn buffer_manager(&self) -> &DynBufferManager<'static> {
         self.buffer_manager
     }
 }

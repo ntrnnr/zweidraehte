@@ -4,8 +4,6 @@
 //! Layers depend only on the specific context traits they need, making them
 //! easier to test and more modular.
 
-use core::cell::RefCell;
-
 use embassy_sync::channel::DynamicSender;
 
 use crate::layers::LayerOp;
@@ -16,7 +14,7 @@ use crate::objects::interface::PropertyServiceHandler;
 /// Provides access to the buffer manager for allocating and freeing message buffers
 pub trait BufferManagerContext {
     /// Get a reference to the buffer manager
-    fn buffer_manager(&self) -> &RefCell<DynBufferManager<'static>>;
+    fn buffer_manager(&self) -> &DynBufferManager<'static>;
 
     /// Get the maximum APDU length this device can handle.
     ///

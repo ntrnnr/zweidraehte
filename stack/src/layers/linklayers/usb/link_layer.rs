@@ -22,8 +22,6 @@
 
 extern crate alloc;
 
-use core::cell::RefCell;
-
 use embassy_futures::select::{Either3, select3};
 use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant, Timer};
@@ -308,7 +306,7 @@ struct PendingTransmission {
 /// USB Link Layer
 struct UsbLinkLayer<'a, D: UsbHidDevice> {
     transport: UsbCemiTransport<'a, D>,
-    buffer_manager: &'a RefCell<DynBufferManager<'static>>,
+    buffer_manager: &'a DynBufferManager<'static>,
     network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
     pending_tx: Option<PendingTransmission>,
     timeout_deadline: Option<Instant>,
@@ -354,7 +352,7 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
         // This is an indication - forward to network layer
         if message_code == CemiMessageCode::LDataInd {
             // Allocate buffer and copy cEMI data
-            let mut buffer = self.buffer_manager.borrow().alloc().await;
+            let mut buffer = self.buffer_manager.alloc().await;
             buffer.push_slice(cemi_data);
 
             // Create typed cEMI message and convert to internal format
