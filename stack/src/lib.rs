@@ -67,6 +67,7 @@ use crate::{
 
 /// Error type for read object operations with timeout
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ReadObjectError {
     /// The read request timed out without receiving a response
     Timeout,
@@ -76,6 +77,7 @@ pub enum ReadObjectError {
 
 /// Error type for update/write object operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum UpdateObjectError {
     /// The object is busy (already transmitting)
     Busy,
