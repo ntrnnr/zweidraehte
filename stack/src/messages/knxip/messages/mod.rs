@@ -85,6 +85,51 @@ impl Default for KNXnetIPServiceType {
 }
 
 // ============================================================================
+// Service Type Categorization
+// ============================================================================
+
+/// How a KNXnet/IP service type should be dispatched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceCategory {
+    /// Connection lifecycle (connect, disconnect, connectionstate).
+    /// Handled directly by the connection manager.
+    ConnectionLifecycle,
+    /// Connection-oriented data routed via channel ID lookup
+    /// (e.g., DeviceConfigurationRequest, TunnelingRequest).
+    ConnectionData,
+    /// Connectionless — handled directly by server instances
+    /// (e.g., SearchRequest, RoutingIndication).
+    Connectionless,
+}
+
+impl KNXnetIPServiceType {
+    /// Classify this service type for dispatch purposes.
+    ///
+    /// Response service types (ConnectResponse, etc.) are classified alongside
+    /// their corresponding request types — as a server we wouldn't normally
+    /// receive unsolicited responses, but if we do they follow the same path.
+    pub fn category(&self) -> ServiceCategory {
+        use KNXnetIPServiceType::*;
+        match self {
+            // Connection lifecycle
+            ConnectRequest | ConnectResponse
+            | ConnectionstateRequest | ConnectionstateResponse
+            | DisconnectRequest | DisconnectResponse => ServiceCategory::ConnectionLifecycle,
+
+            // Connection-oriented data
+            DeviceConfigurationRequest | DeviceConfigurationAck
+            | TunnelingRequest | TunnelingAck
+            | TunnelingFeatureGet | TunnelingFeatureResponse
+            | TunnelingFeatureSet | TunnelingFeatureInfo => ServiceCategory::ConnectionData,
+
+            // Everything else: discovery, routing, remote config, secure
+            // session bootstrap, and unknown service types.
+            _ => ServiceCategory::Connectionless,
+        }
+    }
+}
+
+// ============================================================================
 // SHARED WIRE FORMAT - ZEROCOPY TYPES
 // ============================================================================
 

@@ -291,13 +291,13 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
 
     /// Handle an incoming KNX/IP message for a connection-oriented service.
     ///
-    /// Connection lifecycle messages (Connect, Disconnect, Connectionstate) are
-    /// handled directly. All other service types are routed to the appropriate
-    /// [`ConnectionTypeHandler`] based on the connection's type, by peeking at
-    /// the channel ID in the 4-byte connection header at offset 6.
+    /// The caller must only pass service types with category
+    /// [`ServiceCategory::ConnectionLifecycle`] or [`ServiceCategory::ConnectionData`].
+    /// Connectionless service types are handled separately by the server instances.
     ///
-    /// The `network_layer_tx` is used to inject cEMI frames into the stack when
-    /// a handler returns [`DataFrameAction::AckAndInject`] (e.g., tunneling).
+    /// Connection lifecycle messages (Connect, Disconnect, Connectionstate) are
+    /// handled directly. Connection-oriented data frames are routed to the
+    /// appropriate [`ConnectionTypeHandler`] via channel ID lookup.
     pub async fn on_indication(
         &mut self,
         service_type: KNXnetIPServiceType,
@@ -341,9 +341,6 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         // Connection header starts at offset 6 (after KNXnet/IP header).
         // Byte layout: struct_length(1), channel_id(1), sequence_or_reserved(1), status_or_reserved(1)
-        //
-        // Return InvalidMessage (not ParseError) for short packets so the caller
-        // can fall through to connectionless server dispatch.
         if data.len() < 6 + 4 {
             return Err(ServerError::InvalidMessage);
         }
@@ -367,12 +364,6 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         });
 
         let Some(handler_idx) = handler_idx else {
-            // No handler recognizes this service type for the matched connection.
-            // This likely means the channel ID "match" was spurious — the packet
-            // is a connectionless message (e.g., DescriptionRequest) whose bytes
-            // at the connection header offset happened to coincide with an active
-            // channel ID. Return InvalidMessage to fall through to connectionless
-            // server dispatch.
             debug!("No handler for service type {:?} on connection type {:?}", service_type, connection_type);
             return Err(ServerError::InvalidMessage);
         };

@@ -650,9 +650,10 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
             for endpoint in endpoints {
                 let port = endpoint.port();
                 if let Some(sock_idx) = socket_descriptors.iter().position(|desc| desc.port() == port)
-                    && !server_instances[*srv_idx].socket_indices.contains(&sock_idx) {
-                        let _ = server_instances[*srv_idx].socket_indices.push(sock_idx);
-                    }
+                    && !server_instances[*srv_idx].socket_indices.contains(&sock_idx)
+                {
+                    let _ = server_instances[*srv_idx].socket_indices.push(sock_idx);
+                }
             }
         }
 
@@ -921,8 +922,8 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
         self.retry_queue.iter().map(|r| r.retry_after).min()
     }
 
-    /// Dispatch a received KNX/IP frame through the connection manager
-    /// and connectionless servers.
+    /// Dispatch a received KNX/IP frame to the connection manager or
+    /// connectionless servers based on the service type category.
     ///
     /// Shared between UDP and TCP receive paths. The `origin` identifies
     /// the transport and peer so that responses are routed correctly and
@@ -943,49 +944,70 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
             Ok(service_type) => {
                 debug!("  Service type: {:?}", service_type);
 
-                // Try the connection manager first. It handles
-                // connection lifecycle and data frames for active
-                // connections. If unrecognized, fall through to
-                // connectionless servers.
-                match self
-                    .connection_manager
-                    .on_indication(service_type, buffer, origin, self.context.buffer_manager(), self.network_layer_tx)
-                    .await
-                {
-                    Ok(result) => {
-                        for response in result.responses {
-                            response_channel.send(response).await;
-                        }
-                        // Apply TCP channel tracking side-effects
-                        self.apply_tcp_channel_events(result.tcp_events);
-                    }
-                    Err(ServerError::InvalidMessage) => {
-                        // Fall through to connectionless servers.
-                        for server in &mut self.server_instances {
-                            if server.handles(service_type, socket_idx) {
-                                let context =
-                                    make_server_context(self.context, self.enable_remote_config, self.network_layer_tx);
-
-                                match server.handler.on_indication(service_type, buffer, source, &context).await {
-                                    Ok(responses) => {
-                                        for response in responses {
-                                            response_channel.send(response).await;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Server error handling {:?}: {:?}", service_type, e);
-                                    }
+                match service_type.category() {
+                    // Connection lifecycle and connection-oriented data go
+                    // to the connection manager.
+                    ServiceCategory::ConnectionLifecycle | ServiceCategory::ConnectionData => {
+                        match self
+                            .connection_manager
+                            .on_indication(
+                                service_type,
+                                buffer,
+                                origin,
+                                self.context.buffer_manager(),
+                                self.network_layer_tx,
+                            )
+                            .await
+                        {
+                            Ok(result) => {
+                                for response in result.responses {
+                                    response_channel.send(response).await;
                                 }
+                                self.apply_tcp_channel_events(result.tcp_events);
+                            }
+                            Err(e) => {
+                                debug!("Connection manager error for {:?}: {:?}", service_type, e);
                             }
                         }
                     }
-                    Err(e) => {
-                        debug!("Connection manager error for {:?}: {:?}", service_type, e);
+
+                    // Connectionless messages go directly to servers.
+                    ServiceCategory::Connectionless => {
+                        self.dispatch_to_servers(service_type, buffer, source, socket_idx, response_channel)
+                            .await;
                     }
                 }
             }
             Err(e) => {
                 warn!("Failed to parse KNX/IP service type from {}: {:?}", source, e);
+            }
+        }
+    }
+
+    /// Route a connectionless service type to the matching server instance.
+    async fn dispatch_to_servers(
+        &mut self,
+        service_type: KNXnetIPServiceType,
+        buffer: &[u8],
+        source: SocketAddrV4,
+        socket_idx: usize,
+        response_channel: &Channel<NoopRawMutex, PendingResponse, 16>,
+    ) {
+        for server in &mut self.server_instances {
+            if server.handles(service_type, socket_idx) {
+                let context =
+                    make_server_context(self.context, self.enable_remote_config, self.network_layer_tx);
+
+                match server.handler.on_indication(service_type, buffer, source, &context).await {
+                    Ok(responses) => {
+                        for response in responses {
+                            response_channel.send(response).await;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Server error handling {:?}: {:?}", service_type, e);
+                    }
+                }
             }
         }
     }
@@ -1010,8 +1032,8 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
     }
 }
 
-impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize> Layer<'res>
-    for KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
+    Layer<'res> for KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 {
     type Buffer = Buffer<'static>;
 
@@ -1063,9 +1085,10 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                 let tcp_events = self.connection_manager.on_tick();
                 for event in tcp_events {
                     if let servers::TcpChannelEvent::Removed { tcp_idx, channel_id } = event
-                        && let Some(tcp_conn) = self.tcp_manager.connection_mut(tcp_idx) {
-                            tcp_conn.remove_channel(channel_id);
-                        }
+                        && let Some(tcp_conn) = self.tcp_manager.connection_mut(tcp_idx)
+                    {
+                        tcp_conn.remove_channel(channel_id);
+                    }
                 }
             }
 
@@ -1179,11 +1202,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                                                 self.enable_remote_config,
                                                 self.network_layer_tx,
                                             );
-                                            match server
-                                                .handler
-                                                .on_request(msg_opt.as_ref().unwrap(), &context)
-                                                .await
-                                            {
+                                            match server.handler.on_request(msg_opt.as_ref().unwrap(), &context).await {
                                                 Ok(responses) => {
                                                     for response in responses {
                                                         response_channel.send(response).await;
