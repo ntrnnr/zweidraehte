@@ -201,13 +201,12 @@ impl MaskVersion {
     /// Build a lookup table of all resources by name.
     pub fn resource_map(&self) -> HashMap<&str, &Resource> {
         let mut map = HashMap::new();
-        if let Some(hc) = self.hawk_config() {
-            if let Some(resources) = &hc.resources {
+        if let Some(hc) = self.hawk_config()
+            && let Some(resources) = &hc.resources {
                 for res in &resources.resources {
                     map.insert(res.name.as_str(), res);
                 }
             }
-        }
         map
     }
 }

@@ -100,7 +100,7 @@ where
 {
     let objs = knx.objects().borrow();
     let val = objs.value(status_obj.index());
-    val.first().map_or(false, |&b| b & 1 != 0)
+    val.first().is_some_and(|&b| b & 1 != 0)
 }
 
 /// Optimistically update the local status object to match what we sent.

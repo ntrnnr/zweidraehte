@@ -183,7 +183,7 @@ impl StackDefinition for MyKnxStack {
     where
         Self::State: 'a,
     {
-        ()
+        
     }
 }
 

@@ -31,12 +31,11 @@ fn download_and_cache_master_data(version: KnxSchemaVersion) -> Result<String, S
     // Check cache first
     if let Some(cache_dir) = get_cache_dir() {
         let cache_path = cache_dir.join(&cache_filename);
-        if cache_path.exists() {
-            if let Ok(content) = fs::read_to_string(&cache_path) {
+        if cache_path.exists()
+            && let Ok(content) = fs::read_to_string(&cache_path) {
                 log::info!("Using cached {} from {:?}", cache_filename, cache_path);
                 return Ok(content);
             }
-        }
     }
 
     // Download

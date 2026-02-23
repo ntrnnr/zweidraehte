@@ -75,7 +75,7 @@ async fn main(spawner: Spawner) {
     let bm = Box::leak(Box::new(RefCell::new(buffer_manager.dyn_buffer_manager())));
 
     // Create mock context for testing
-    let context = Box::leak(Box::new(MockContext::new(bm.borrow().clone())));
+    let context = Box::leak(Box::new(MockContext::new(*bm.borrow())));
 
     // Create channels for communication between link layer and network layer
     let network_channel =

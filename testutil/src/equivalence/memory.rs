@@ -82,7 +82,7 @@ impl MemoryImage {
             }
         } else {
             // Multi-byte value (assume bit_offset is 0 for simplicity)
-            let num_bytes = ((size_bits + 7) / 8) as usize;
+            let num_bytes = size_bits.div_ceil(8) as usize;
             for i in 0..num_bytes {
                 let byte_idx = local_offset + i;
                 if byte_idx < self.bytes.len() {
@@ -107,7 +107,7 @@ impl MemoryImage {
             }
         } else {
             // Multi-byte value
-            let num_bytes = ((size_bits + 7) / 8) as usize;
+            let num_bytes = size_bits.div_ceil(8) as usize;
             let mut value: u64 = 0;
             for i in 0..num_bytes {
                 let byte_idx = local_offset + i;

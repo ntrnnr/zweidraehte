@@ -32,7 +32,7 @@ pub fn object_size_to_string(size_bits: u8) -> &'static str {
         112 => "14 Bytes",
         _ => {
             // Default to bytes calculation
-            let bytes = (size_bits + 7) / 8;
+            let bytes = size_bits.div_ceil(8);
             match bytes {
                 1 => "1 Byte",
                 2 => "2 Bytes",

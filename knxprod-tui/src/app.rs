@@ -33,14 +33,13 @@ fn compute_module_object_number(
     // Check if object has a BaseNumber argument reference
     if let Some(base_number_ref) = &obj.base_number {
         // The base_number_ref is an argument ID - we need to find the argument name first
-        if let Some(arguments) = &module_def.arguments {
-            if let Some(arg_def) = arguments.arguments.iter().find(|a| a.id == *base_number_ref) {
+        if let Some(arguments) = &module_def.arguments
+            && let Some(arg_def) = arguments.arguments.iter().find(|a| a.id == *base_number_ref) {
                 // Now look up the argument value by name in the expanded module
                 if let Some(ModuleArgValue::Numeric(base)) = expanded.args.get(&arg_def.name) {
                     return (*base as u16).saturating_add(local_number);
                 }
             }
-        }
     }
 
     // No BaseNumber or couldn't resolve - use local number as-is
@@ -892,12 +891,11 @@ impl App {
             if when.default.unwrap_or(false) {
                 continue;
             }
-            if let Some(test) = &when.test {
-                if self.matches_condition(selector_value, test) {
+            if let Some(test) = &when.test
+                && self.matches_condition(selector_value, test) {
                     any_matched = true;
                     self.collect_modules_from_when(&when.items, modules);
                 }
-            }
         }
 
         if !any_matched {
@@ -939,12 +937,11 @@ impl App {
             if when.default.unwrap_or(false) {
                 continue; // Handle defaults in second pass
             }
-            if let Some(test) = &when.test {
-                if self.matches_condition(selector_value, test) {
+            if let Some(test) = &when.test
+                && self.matches_condition(selector_value, test) {
                     any_matched = true;
                     self.collect_when_blocks(&when.items, blocks);
                 }
-            }
         }
 
         // Second pass: if no explicit when matched, process default
@@ -1017,19 +1014,17 @@ impl App {
             if let Ok(test_val) = rest.trim().parse::<i64>() {
                 return value < test_val;
             }
-        } else if let Some(rest) = test.strip_prefix('=') {
-            if let Ok(test_val) = rest.trim().parse::<i64>() {
+        } else if let Some(rest) = test.strip_prefix('=')
+            && let Ok(test_val) = rest.trim().parse::<i64>() {
                 return value == test_val;
             }
-        }
 
         // Handle space-separated list of values (OR)
         for part in test.split_whitespace() {
-            if let Ok(test_val) = part.parse::<i64>() {
-                if value == test_val {
+            if let Ok(test_val) = part.parse::<i64>()
+                && value == test_val {
                     return true;
                 }
-            }
         }
 
         false
@@ -1286,18 +1281,16 @@ impl App {
             match parent {
                 None => {
                     // Device settings block
-                    if let Some(cib) = &dynamic.channel_independent_block {
-                        if let Some(pb) = self.find_block_in_cib(&cib, block_name) {
+                    if let Some(cib) = &dynamic.channel_independent_block
+                        && let Some(pb) = self.find_block_in_cib(cib, block_name) {
                             self.add_block_items(&pb.items.clone());
                         }
-                    }
                 }
                 Some(channel_idx) => {
-                    if let Some(channel) = dynamic.channels.get(channel_idx) {
-                        if let Some(pb) = self.find_block_in_channel(channel, block_name) {
+                    if let Some(channel) = dynamic.channels.get(channel_idx)
+                        && let Some(pb) = self.find_block_in_channel(channel, block_name) {
                             self.add_block_items(&pb.items.clone());
                         }
-                    }
                 }
             }
         }
@@ -1559,12 +1552,11 @@ impl App {
         let param_id = format!("{}::{}", expanded.instance_id, param_id_str);
 
         // Check if this is a picture type (only for regular parameters)
-        if let Some(FoundParameter::Regular(ref p)) = found_param {
-            if let Some(ref_id) = self.get_module_picture_ref_id(p) {
+        if let Some(FoundParameter::Regular(ref p)) = found_param
+            && let Some(ref_id) = self.get_module_picture_ref_id(p) {
                 self.content_items.push(ContentItem::Picture { ref_id });
                 return;
             }
-        }
 
         // Build widget based on parameter type
         let widget = self.build_widget_for_module_param_by_type(&param_type, &param_id);
@@ -1811,14 +1803,13 @@ impl App {
             if when.default.unwrap_or(false) {
                 continue;
             }
-            if let Some(test) = &when.test {
-                if self.matches_condition(selector_value, test) {
+            if let Some(test) = &when.test
+                && self.matches_condition(selector_value, test) {
                     any_matched = true;
                     if let Some(pb) = self.find_block_in_when_items(&when.items, block_name) {
                         return Some(pb);
                     }
                 }
-            }
         }
 
         // Second pass: if no explicit when matched, search in default
@@ -1857,8 +1848,8 @@ impl App {
         for item in items {
             match item {
                 ParameterBlockItem::ParameterRefRef(prr) => {
-                    if self.device.is_param_ref_visible(&prr.ref_id) {
-                        if let Some(pref) = self.device.get_parameter_ref(&prr.ref_id) {
+                    if self.device.is_param_ref_visible(&prr.ref_id)
+                        && let Some(pref) = self.device.get_parameter_ref(&prr.ref_id) {
                             // Skip if the ParameterRef itself has Access="None"
                             if pref.access.as_deref() == Some("None") {
                                 continue;
@@ -1873,11 +1864,10 @@ impl App {
                             }
 
                             // Skip hidden parameters (Access="None") or those with empty text
-                            if let Some(info) = self.device.get_parameter_info(&param_id) {
-                                if info.hidden || info.text.is_empty() {
+                            if let Some(info) = self.device.get_parameter_info(&param_id)
+                                && (info.hidden || info.text.is_empty()) {
                                     continue;
                                 }
-                            }
 
                             let raw_text = prr.text.clone().or_else(|| pref.text.clone()).unwrap_or_else(|| {
                                 self.device
@@ -1899,7 +1889,6 @@ impl App {
 
                             self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
                         }
-                    }
                 }
                 ParameterBlockItem::ParameterSeparator(sep) => {
                     let text = sep.text.as_ref().map(|t| self.device.interpolate_text(t));
@@ -1936,12 +1925,11 @@ impl App {
             if when.default.unwrap_or(false) {
                 continue; // Handle defaults in second pass
             }
-            if let Some(test) = &when.test {
-                if self.matches_condition(selector_value, test) {
+            if let Some(test) = &when.test
+                && self.matches_condition(selector_value, test) {
                     any_matched = true;
                     self.add_when_items(&when.items);
                 }
-            }
         }
 
         // Second pass: if no explicit when matched, process default
@@ -1960,8 +1948,8 @@ impl App {
         for item in items {
             match item {
                 WhenItem::ParameterRefRef(prr) => {
-                    if self.device.is_param_ref_visible(&prr.ref_id) {
-                        if let Some(pref) = self.device.get_parameter_ref(&prr.ref_id) {
+                    if self.device.is_param_ref_visible(&prr.ref_id)
+                        && let Some(pref) = self.device.get_parameter_ref(&prr.ref_id) {
                             // Skip if the ParameterRef itself has Access="None"
                             if pref.access.as_deref() == Some("None") {
                                 continue;
@@ -1976,11 +1964,10 @@ impl App {
                             }
 
                             // Skip hidden parameters (Access="None") or those with empty text
-                            if let Some(info) = self.device.get_parameter_info(&param_id) {
-                                if info.hidden || info.text.is_empty() {
+                            if let Some(info) = self.device.get_parameter_info(&param_id)
+                                && (info.hidden || info.text.is_empty()) {
                                     continue;
                                 }
-                            }
 
                             let raw_text = prr.text.clone().or_else(|| pref.text.clone()).unwrap_or_else(|| {
                                 self.device
@@ -2002,7 +1989,6 @@ impl App {
 
                             self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
                         }
-                    }
                 }
                 WhenItem::ParameterSeparator(sep) => {
                     let text = sep.text.as_ref().map(|t| self.device.interpolate_text(t));
@@ -2436,14 +2422,13 @@ impl App {
 
         // Check if this table references an existing code segment
         // If so, add annotations to that segment instead of creating a new one
-        if let Some(code_segment) = &at.code_segment {
-            if let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment) {
+        if let Some(code_segment) = &at.code_segment
+            && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment) {
                 // Add annotations to existing segment
                 let annotations = self.build_address_table_annotations(offset, &flavour);
                 self.memory_segments[seg_idx].annotations.extend(annotations);
                 return;
             }
-        }
 
         // Create a standalone synthetic segment (for System B or if segment not found)
         // Use real assigned group addresses instead of placeholders
@@ -2540,14 +2525,13 @@ impl App {
         let entry_size = flavour.entry_size();
 
         // Check if this table references an existing code segment
-        if let Some(code_segment) = &at.code_segment {
-            if let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment) {
+        if let Some(code_segment) = &at.code_segment
+            && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment) {
                 // Add annotations to existing segment
                 let annotations = self.build_association_table_annotations(offset, &flavour);
                 self.memory_segments[seg_idx].annotations.extend(annotations);
                 return;
             }
-        }
 
         // Create a standalone synthetic segment using real association entries
         let association_entries = self.device.build_association_entries();
@@ -2662,16 +2646,14 @@ impl App {
         let max_entries = cot_config.as_ref().and_then(|c| c.max_entries).unwrap_or(255);
 
         // Check if this table references an existing code segment
-        if let Some(cot) = cot_config {
-            if let Some(code_segment) = &cot.code_segment {
-                if let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment) {
+        if let Some(cot) = cot_config
+            && let Some(code_segment) = &cot.code_segment
+                && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment) {
                     // Add annotations to existing segment
                     let annotations = self.build_com_object_table_annotations(offset);
                     self.memory_segments[seg_idx].annotations.extend(annotations);
                     return;
                 }
-            }
-        }
 
         // Create a standalone synthetic segment
         // Build table data: 2-byte count + entry_count x 2-byte entries
@@ -2837,7 +2819,7 @@ impl App {
                 let ga_info = self.format_group_address(idx as u16);
 
                 // Get object size for display
-                let size_str = com_obj_ref.object_size.as_ref().map(|s| s.as_str()).unwrap_or("?");
+                let size_str = com_obj_ref.object_size.as_deref().unwrap_or("?");
 
                 let full_name = if ga_info.is_empty() {
                     format!("CO[{}] {} ({})", idx, name, size_str)
@@ -2873,7 +2855,7 @@ impl App {
                 let ga_info = self.format_group_address(idx as u16);
 
                 // Get object size for display
-                let size_str = com_obj_ref.object_size.as_ref().map(|s| s.as_str()).unwrap_or("?");
+                let size_str = com_obj_ref.object_size.as_deref().unwrap_or("?");
 
                 let full_name = if ga_info.is_empty() {
                     format!("CO[{}] {} ({})", idx, name, size_str)
@@ -3087,7 +3069,7 @@ impl App {
             knxprod::runtime::model::ParameterValue::Text(s) => {
                 // For text, write raw bytes
                 let bytes = s.as_bytes();
-                let max_bytes = (size_bits as usize + 7) / 8;
+                let max_bytes = (size_bits as usize).div_ceil(8);
                 for (i, &b) in bytes.iter().take(max_bytes).enumerate() {
                     if byte_offset + i < data.len() {
                         data[byte_offset + i] = b;
@@ -3107,7 +3089,7 @@ impl App {
         };
 
         // Handle bit-level writing for integer values
-        if bit_offset == 0 && size_bits % 8 == 0 {
+        if bit_offset == 0 && size_bits.is_multiple_of(8) {
             // Simple byte-aligned write
             let num_bytes = (size_bits / 8) as usize;
             // Clamp to max 8 bytes (64 bits) since we use u64
@@ -3221,12 +3203,11 @@ impl App {
             })
         });
 
-        if let Some(arg_def) = channel_arg {
-            if let Some(knxprod::runtime::model::ModuleArgValue::Numeric(val)) = expanded.args.get(&arg_def.name) {
+        if let Some(arg_def) = channel_arg
+            && let Some(knxprod::runtime::model::ModuleArgValue::Numeric(val)) = expanded.args.get(&arg_def.name) {
                 // Use module name with channel number, e.g., "Ch1" or "DimmerChannel 1"
                 return format!("Ch{}", val);
             }
-        }
 
         // Fallback: use interpolated module name if available
         if let Some(name) = &expanded.name {
@@ -3377,7 +3358,7 @@ impl App {
 
         for ann in &segment.annotations {
             let start_byte = ann.offset as usize;
-            let end_byte = start_byte + ((ann.size_bits as usize + 7) / 8);
+            let end_byte = start_byte + (ann.size_bits as usize).div_ceil(8);
             if byte_offset >= start_byte && byte_offset < end_byte {
                 return Some(ann);
             }
@@ -3414,12 +3395,11 @@ impl App {
 
     /// Navigate memory view right (by 1 byte).
     pub fn memory_move_right(&mut self, visible_lines: usize) {
-        if let Some(seg) = self.memory_segments.get(self.selected_segment_idx) {
-            if self.selected_byte_offset + 1 < seg.data.len() {
+        if let Some(seg) = self.memory_segments.get(self.selected_segment_idx)
+            && self.selected_byte_offset + 1 < seg.data.len() {
                 self.selected_byte_offset += 1;
                 self.adjust_memory_scroll_with_visible(visible_lines);
             }
-        }
     }
 
     /// Select a specific memory segment.
@@ -3717,12 +3697,11 @@ impl App {
             (_, Focus::Tabs) => self.prev_tab(),
             (MainTab::Parameters, Focus::Sidebar) => {
                 // Collapse the selected tree node
-                if let Some(node) = self.tree_nodes.get(self.selected_tree_idx) {
-                    if node.has_children && self.expanded_nodes.contains(&node.id) {
+                if let Some(node) = self.tree_nodes.get(self.selected_tree_idx)
+                    && node.has_children && self.expanded_nodes.contains(&node.id) {
                         self.expanded_nodes.remove(&node.id);
                         self.rebuild_tree();
                     }
-                }
             }
             (MainTab::Memory, Focus::Content) => {
                 self.memory_move_left();
@@ -3740,12 +3719,11 @@ impl App {
             (_, Focus::Tabs) => self.next_tab(),
             (MainTab::Parameters, Focus::Sidebar) => {
                 // Expand the selected tree node
-                if let Some(node) = self.tree_nodes.get(self.selected_tree_idx) {
-                    if node.has_children && !self.expanded_nodes.contains(&node.id) {
+                if let Some(node) = self.tree_nodes.get(self.selected_tree_idx)
+                    && node.has_children && !self.expanded_nodes.contains(&node.id) {
                         self.expanded_nodes.insert(node.id.clone());
                         self.rebuild_tree();
                     }
-                }
             }
             (MainTab::Memory, Focus::Content) => {
                 // Use default visible lines for now (20)
@@ -3802,12 +3780,11 @@ impl App {
                 self.device.clear_group_addresses(object_number);
 
                 // If buffer is non-empty, parse and assign the new address
-                if !buffer.is_empty() {
-                    if let Some(addr) = knxprod::runtime::model::GroupAddress::parse(&buffer) {
+                if !buffer.is_empty()
+                    && let Some(addr) = knxprod::runtime::model::GroupAddress::parse(&buffer) {
                         // First assigned address becomes the sending address
                         self.device.assign_group_address(object_number, addr);
                     }
-                }
 
                 self.edit_mode = EditMode::None;
                 self.rebuild_com_objects();
@@ -3820,8 +3797,8 @@ impl App {
                 }
                 (MainTab::Parameters, Focus::Sidebar) => {
                     // Toggle expand/collapse
-                    if let Some(node) = self.tree_nodes.get(self.selected_tree_idx) {
-                        if node.has_children {
+                    if let Some(node) = self.tree_nodes.get(self.selected_tree_idx)
+                        && node.has_children {
                             let id = node.id.clone();
                             if self.expanded_nodes.contains(&id) {
                                 self.expanded_nodes.remove(&id);
@@ -3830,7 +3807,6 @@ impl App {
                             }
                             self.rebuild_tree();
                         }
-                    }
                 }
                 (MainTab::Parameters, Focus::Content) => {
                     // Enter edit mode for the selected parameter

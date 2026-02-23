@@ -660,12 +660,11 @@ impl Device {
             if when.default.unwrap_or(false) {
                 continue;
             }
-            if let Some(test) = &when.test {
-                if self.matches_condition(selector_value, test) {
+            if let Some(test) = &when.test
+                && self.matches_condition(selector_value, test) {
                     items_to_process.push(when.items.clone());
                     any_matched = true;
                 }
-            }
         }
 
         if !any_matched {
@@ -708,9 +707,9 @@ impl Device {
 
     fn get_selector_value_with_module(&self, param_ref_id: &str, module_ctx: Option<&ModuleContext>) -> Option<i64> {
         // First try module context if available
-        if let Some(ctx) = module_ctx {
-            if let Some(param_refs) = &ctx.module_def.static_section.parameter_refs {
-                if let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id) {
+        if let Some(ctx) = module_ctx
+            && let Some(param_refs) = &ctx.module_def.static_section.parameter_refs
+                && let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id) {
                     let composite_id = format!("{}::{}", ctx.instance_id, param_ref.ref_id);
                     if let Some(value) = self.module_param_values.get(&composite_id) {
                         return match value {
@@ -720,8 +719,6 @@ impl Device {
                         };
                     }
                 }
-            }
-        }
 
         // Fall back to main device parameter lookup
         self.get_selector_value(param_ref_id)
@@ -730,8 +727,8 @@ impl Device {
     fn process_module(&mut self, module: &Module) {
         self.visible_modules.insert(module.id.clone());
 
-        if let Some(module_def) = self.module_defs.get(&module.ref_id).cloned() {
-            if let Some(dynamic) = &module_def.dynamic {
+        if let Some(module_def) = self.module_defs.get(&module.ref_id).cloned()
+            && let Some(dynamic) = &module_def.dynamic {
                 let module_ctx = ModuleContext { instance_id: module.id.clone(), module_def: module_def.clone() };
 
                 for item in &dynamic.items {
@@ -745,7 +742,6 @@ impl Device {
                     }
                 }
             }
-        }
     }
 
     fn get_selector_value(&self, param_ref_id: &str) -> Option<i64> {
@@ -783,9 +779,9 @@ impl crate::runtime::model::ConditionEvaluator for Device {
         module_ctx: Option<&crate::runtime::model::VisitorModuleContext>,
     ) -> Option<i64> {
         // If module context is provided, first try module parameter lookup
-        if let Some(ctx) = module_ctx {
-            if let Some(param_refs) = &ctx.module_def.static_section.parameter_refs {
-                if let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id) {
+        if let Some(ctx) = module_ctx
+            && let Some(param_refs) = &ctx.module_def.static_section.parameter_refs
+                && let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id) {
                     let composite_id = format!("{}::{}", ctx.instance_id, param_ref.ref_id);
                     if let Some(value) = self.module_param_values.get(&composite_id) {
                         return match value {
@@ -795,8 +791,6 @@ impl crate::runtime::model::ConditionEvaluator for Device {
                         };
                     }
                 }
-            }
-        }
 
         // Fall back to main device parameter lookup
         Device::get_selector_value(self, param_ref_id)
@@ -961,8 +955,8 @@ fn build_module_param_values(
     let mut values = HashMap::new();
 
     for (instance_id, expanded) in expanded_modules {
-        if let Some(module_def) = module_defs.get(&expanded.module_def_id) {
-            if let Some(params) = &module_def.static_section.parameters {
+        if let Some(module_def) = module_defs.get(&expanded.module_def_id)
+            && let Some(params) = &module_def.static_section.parameters {
                 for item in &params.items {
                     match item {
                         ParameterItem::Parameter(p) => {
@@ -981,7 +975,6 @@ fn build_module_param_values(
                     }
                 }
             }
-        }
     }
 
     values

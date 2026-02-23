@@ -399,10 +399,10 @@ fn handle_log_frame(payload: &[u8]) {
 fn clear_cloexec(fd: std::os::unix::io::RawFd) -> io::Result<()> {
     use nix::fcntl;
     let flags = fcntl::fcntl(fd, fcntl::FcntlArg::F_GETFD)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(|e| io::Error::other(e))?;
     let mut fd_flags = nix::fcntl::FdFlag::from_bits_truncate(flags);
     fd_flags.remove(nix::fcntl::FdFlag::FD_CLOEXEC);
     fcntl::fcntl(fd, fcntl::FcntlArg::F_SETFD(fd_flags))
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(|e| io::Error::other(e))?;
     Ok(())
 }

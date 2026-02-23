@@ -452,7 +452,7 @@ impl DeviceParams {
     pub fn is_channel_enabled(&self, channel: usize) -> bool {
         [self.enable_ch1, self.enable_ch2, self.enable_ch3, self.enable_ch4]
             .get(channel)
-            .map_or(false, |&v| v == ChannelEnable::Enabled)
+            .is_some_and(|&v| v == ChannelEnable::Enabled)
     }
 }
 

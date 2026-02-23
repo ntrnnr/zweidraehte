@@ -68,7 +68,7 @@ fn pkcs1v15_pad(digest_info: &[u8], k: usize) -> Result<rsa::BigUint, SigningErr
 
     let ps_len = k - t_len - 3;
     let mut em = vec![0x00, 0x01];
-    em.extend(std::iter::repeat(0xff).take(ps_len));
+    em.extend(std::iter::repeat_n(0xff, ps_len));
     em.push(0x00);
     em.extend_from_slice(digest_info);
 
@@ -332,8 +332,8 @@ pub fn verify_hardware_xml(
                                     };
                                     result.registration_signatures.push(sig_result);
                                 }
-                            } else if let Some(ref h2p_attrs) = current_h2p_attrs {
-                                if let Some(ref hw_attrs) = current_hardware_attrs {
+                            } else if let Some(ref h2p_attrs) = current_h2p_attrs
+                                && let Some(ref hw_attrs) = current_hardware_attrs {
                                     let h2p_app_hashes: Vec<String> = current_app_refs
                                         .iter()
                                         .filter_map(|r| app_program_hashes.get(r).cloned())
@@ -371,7 +371,6 @@ pub fn verify_hardware_xml(
                                     };
                                     result.registration_signatures.push(sig_result);
                                 }
-                            }
                         }
                     }
                     _ => {}
@@ -393,8 +392,8 @@ pub fn verify_hardware_xml(
                     }
                     "Product" => {
                         // Verify product hash if present
-                        if let (Some(hw_attrs), Some(prod_attrs)) = (&current_hardware_attrs, &current_product_attrs) {
-                            if let Some(expected_hash) = prod_attrs.get("Hash") {
+                        if let (Some(hw_attrs), Some(prod_attrs)) = (&current_hardware_attrs, &current_product_attrs)
+                            && let Some(expected_hash) = prod_attrs.get("Hash") {
                                 let computed_hash = compute_product_hash(hw_attrs, prod_attrs);
                                 let id = prod_attrs.get("Id").cloned().unwrap_or_default();
 
@@ -406,13 +405,12 @@ pub fn verify_hardware_xml(
                                     valid: expected_hash == &computed_hash,
                                 });
                             }
-                        }
                         current_product_attrs = None;
                     }
                     "Hardware2Program" => {
                         // Verify H2P hash if present
-                        if let (Some(hw_attrs), Some(h2p_attrs)) = (&current_hardware_attrs, &current_h2p_attrs) {
-                            if let Some(expected_hash) = h2p_attrs.get("Hash") {
+                        if let (Some(hw_attrs), Some(h2p_attrs)) = (&current_hardware_attrs, &current_h2p_attrs)
+                            && let Some(expected_hash) = h2p_attrs.get("Hash") {
                                 let h2p_app_hashes: Vec<String> = current_app_refs
                                     .iter()
                                     .filter_map(|r| app_program_hashes.get(r).cloned())
@@ -437,7 +435,6 @@ pub fn verify_hardware_xml(
                                     app_hashes_found: h2p_app_hashes.len(),
                                 });
                             }
-                        }
                         current_h2p_attrs = None;
                         current_app_refs.clear();
                     }

@@ -160,11 +160,10 @@ pub async fn read_frame_async(stream: &Async<UnixStream>) -> io::Result<Option<I
     let len = u16::from_le_bytes([header[1], header[2]]) as usize;
 
     let mut payload = vec![0u8; len];
-    if len > 0 {
-        if !read_exact_async(stream, &mut payload).await? {
+    if len > 0
+        && !read_exact_async(stream, &mut payload).await? {
             return Ok(None);
         }
-    }
 
     Ok(Some(IpcFrame { tag, payload }))
 }
@@ -241,11 +240,11 @@ impl SharedMemory {
             c"conformance_state",
             memfd::MemFdCreateFlag::MFD_CLOEXEC,
         )
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(|e| io::Error::other(e))?;
 
         // Set the size
         nix::unistd::ftruncate(&fd, size as i64)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
         // Map into our address space
         let ptr = unsafe {
@@ -257,7 +256,7 @@ impl SharedMemory {
                 &fd,
                 0,
             )
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+            .map_err(|e| io::Error::other(e))?
         };
 
         Ok(Self { fd, ptr: ptr.as_ptr() as *mut u8, size })
@@ -286,7 +285,7 @@ impl SharedMemory {
                 &owned_fd,
                 0,
             )
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+            .map_err(|e| io::Error::other(e))?
         };
 
         Ok(Self { fd: owned_fd, ptr: ptr.as_ptr() as *mut u8, size })
@@ -316,7 +315,7 @@ impl SharedMemory {
 
         // Serialize directly into the payload region
         let payload = postcard::to_slice(state, &mut buf[SHM_HEADER_SIZE..])
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("postcard serialize: {e}")))?;
+            .map_err(|e| io::Error::other(format!("postcard serialize: {e}")))?;
         let len = payload.len();
 
         // Write length
@@ -358,11 +357,11 @@ impl SharedMemory {
         use nix::fcntl;
         let raw = self.fd.as_raw_fd();
         let flags = fcntl::fcntl(raw, fcntl::FcntlArg::F_GETFD)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
         let mut fd_flags = nix::fcntl::FdFlag::from_bits_truncate(flags);
         fd_flags.remove(nix::fcntl::FdFlag::FD_CLOEXEC);
         fcntl::fcntl(raw, fcntl::FcntlArg::F_SETFD(fd_flags))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
         Ok(())
     }
 }
@@ -579,6 +578,12 @@ fn knx_to_tp1_vec_no_checksum(src: &[u8]) -> Vec<u8> {
 /// Resources for IpcLinkLayer (minimal — the socket is passed at build time).
 pub struct IpcLinkLayerResources {
     _private: MaybeUninit<()>,
+}
+
+impl Default for IpcLinkLayerResources {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IpcLinkLayerResources {

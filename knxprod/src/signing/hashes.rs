@@ -125,7 +125,7 @@ pub fn compute_hardware2program_hash_bytes(
 
     // 4. ApplicationProgramRef elements sorted by normalized RefId
     let mut sorted_refs: Vec<_> = app_ref_ids.iter().collect();
-    sorted_refs.sort_by(|a, b| normalize_appl_prog_id(a).cmp(&normalize_appl_prog_id(b)));
+    sorted_refs.sort_by_key(|a| normalize_appl_prog_id(a));
 
     for ref_id in sorted_refs {
         data.extend(serialize_app_ref(ref_id));

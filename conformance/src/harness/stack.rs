@@ -300,11 +300,10 @@ impl ComObjects for ConformanceComObjects {
             Some(CoIndex::Go2ConfigFlags) => {
                 // GO2 reads GO0's configuration flags from the COT
                 // GO0 is at ASAP 1 (index 1 in the COT)
-                if let Some(cot) = ctx.cot() {
-                    if let Some(flags) = cot.borrow().object_flags(1) {
+                if let Some(cot) = ctx.cot()
+                    && let Some(flags) = cot.borrow().object_flags(1) {
                         self.go_2_config_flags.value.as_mut()[0] = flags.to_byte();
                     }
-                }
             }
             Some(CoIndex::Go3Value) => {
                 // GO3 reads GO0's value
@@ -320,11 +319,10 @@ impl ComObjects for ConformanceComObjects {
             Some(CoIndex::Go2Byte3ConfigFlags) => {
                 // GO2_BYTE3 reads GO0_BYTE3's configuration flags from the COT
                 // GO0_BYTE3 is at ASAP 5 (index 5 in the COT)
-                if let Some(cot) = ctx.cot() {
-                    if let Some(flags) = cot.borrow().object_flags(5) {
+                if let Some(cot) = ctx.cot()
+                    && let Some(flags) = cot.borrow().object_flags(5) {
                         self.go_2_byte3_config_flags.value.as_mut()[0] = flags.to_byte();
                     }
-                }
             }
             Some(CoIndex::Go3Byte3Value) => {
                 // GO3_BYTE3 reads GO0_BYTE3's value (3 bytes)

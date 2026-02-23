@@ -102,33 +102,28 @@ impl VisibilityConstraint {
         let test = test.trim();
 
         // Check for comparison operators
-        if let Some(rest) = test.strip_prefix("!=") {
-            if let Ok(val) = rest.trim().parse::<i64>() {
+        if let Some(rest) = test.strip_prefix("!=")
+            && let Ok(val) = rest.trim().parse::<i64>() {
                 return VisibilityConstraint::NotEquals { selector: selector.to_string(), value: val };
             }
-        }
-        if let Some(rest) = test.strip_prefix(">=") {
-            if let Ok(val) = rest.trim().parse::<i64>() {
+        if let Some(rest) = test.strip_prefix(">=")
+            && let Ok(val) = rest.trim().parse::<i64>() {
                 // >= is equivalent to > (val - 1)
                 return VisibilityConstraint::GreaterThan { selector: selector.to_string(), value: val - 1 };
             }
-        }
-        if let Some(rest) = test.strip_prefix("<=") {
-            if let Ok(val) = rest.trim().parse::<i64>() {
+        if let Some(rest) = test.strip_prefix("<=")
+            && let Ok(val) = rest.trim().parse::<i64>() {
                 // <= is equivalent to < (val + 1)
                 return VisibilityConstraint::LessThan { selector: selector.to_string(), value: val + 1 };
             }
-        }
-        if let Some(rest) = test.strip_prefix('>') {
-            if let Ok(val) = rest.trim().parse::<i64>() {
+        if let Some(rest) = test.strip_prefix('>')
+            && let Ok(val) = rest.trim().parse::<i64>() {
                 return VisibilityConstraint::GreaterThan { selector: selector.to_string(), value: val };
             }
-        }
-        if let Some(rest) = test.strip_prefix('<') {
-            if let Ok(val) = rest.trim().parse::<i64>() {
+        if let Some(rest) = test.strip_prefix('<')
+            && let Ok(val) = rest.trim().parse::<i64>() {
                 return VisibilityConstraint::LessThan { selector: selector.to_string(), value: val };
             }
-        }
 
         // Space-separated OR values
         let values: BTreeSet<i64> = test.split_whitespace().filter_map(|s| s.parse::<i64>().ok()).collect();

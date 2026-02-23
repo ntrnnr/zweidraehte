@@ -391,11 +391,10 @@ where
                 5 => self.ip_parameter.borrow().property_descriptor_by_id(prop_id),
                 _ => return Err(PropertyError::InvalidObjectIndex),
             };
-            if let Some((_, desc)) = desc {
-                if !desc.can_read(ctx) {
+            if let Some((_, desc)) = desc
+                && !desc.can_read(ctx) {
                     return Err(PropertyError::AccessDenied);
                 }
-            }
         }
 
         match object_idx {
@@ -428,11 +427,10 @@ where
                 5 => self.ip_parameter.borrow().property_descriptor_by_id(prop_id),
                 _ => return Err(PropertyError::InvalidObjectIndex),
             };
-            if let Some((_, desc)) = desc {
-                if !desc.can_write(ctx) {
+            if let Some((_, desc)) = desc
+                && !desc.can_write(ctx) {
                     return Err(PropertyError::AccessDenied);
                 }
-            }
         }
 
         match object_idx {
@@ -890,7 +888,7 @@ async fn main(spawner: Spawner) {
                 // Example: Toggle output when input changes
                 if let ComObjectEvent::Updated = event {
                     let idx = index.index();
-                    if idx >= 1 && idx <= 4 {
+                    if (1..=4).contains(&idx) {
                         // Input updated - toggle corresponding output
                         let output_idx = comm_objs::Index::from_index(idx + 4).unwrap();
                         let current = {
@@ -898,7 +896,7 @@ async fn main(spawner: Spawner) {
                             let co_borrow = objects.borrow();
                             let value_bytes = co_borrow.value(idx + 4);
                             // DPT_Switch is stored as a single byte, bit 0 is the value
-                            value_bytes.len() > 0 && (value_bytes[0] & 0x01) != 0
+                            !value_bytes.is_empty() && (value_bytes[0] & 0x01) != 0
                         };
                         let _ = stack.update_object(output_idx, DPT_Switch::from(!current)).await;
                         println!("Toggled output CO {} in response to input CO {}", idx + 4, idx);

@@ -82,17 +82,14 @@ impl From<bool> for EnableFlag {
 /// but the ETS/MTXML schema only supports Low, High, and Alert.
 /// System priority is mapped to Low when generating XML.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum ComObjectPriority {
+    #[default]
     Low,
     High,
     Alert,
 }
 
-impl Default for ComObjectPriority {
-    fn default() -> Self {
-        ComObjectPriority::Low
-    }
-}
 
 /// Container for communication object references
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -301,7 +301,7 @@ pub(crate) fn strip_no_memory_bytes(raw_defaults: &[u8], params: &[EtsParamDefEx
         .filter(|p| p.base.no_memory)
         .map(|p| {
             let offset = p.base.offset as usize;
-            let size_bytes = ((p.base.size_bits as usize) + 7) / 8;
+            let size_bytes = (p.base.size_bits as usize).div_ceil(8);
             (offset, size_bytes)
         })
         .collect();

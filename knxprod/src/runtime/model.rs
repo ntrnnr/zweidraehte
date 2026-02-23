@@ -461,14 +461,12 @@ fn walk_choose<V, E>(
         if when.default.unwrap_or(false) {
             continue;
         }
-        if let Some(test) = &when.test {
-            if let Some(condition) = Condition::parse(test) {
-                if selector_value.is_some_and(|v| condition.matches(v)) {
+        if let Some(test) = &when.test
+            && let Some(condition) = Condition::parse(test)
+                && selector_value.is_some_and(|v| condition.matches(v)) {
                     walk_when_items(&when.items, visitor, evaluator, module_defs, module_ctx);
                     any_matched = true;
                 }
-            }
-        }
     }
 
     // Process default if nothing matched

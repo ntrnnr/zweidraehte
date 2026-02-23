@@ -337,7 +337,7 @@ async fn run_seqno_test(
         let _conf = link_sender.request(msg).await;
     }
     Timer::after(Duration::from_millis(300)).await;
-    clear_received(&received).await;
+    clear_received(received).await;
 
     // Step 2: Memory Write with count > data (malformed)
     println!("\n--- Step 2: Memory Write with count > data (malformed) ---");
@@ -351,7 +351,7 @@ async fn run_seqno_test(
     }
 
     // Wait for T_ACK
-    if let Some(resp) = wait_for_response(&received, 1000).await {
+    if let Some(resp) = wait_for_response(received, 1000).await {
         let tpci = resp.get(6).copied().unwrap_or(0);
         let ack_seqno = (tpci >> 2) & 0x0F;
         println!("  -> Got response, ACK seqno = {}", ack_seqno);
@@ -373,7 +373,7 @@ async fn run_seqno_test(
         let _conf = link_sender.request(msg).await;
     }
 
-    if let Some(resp) = wait_for_response(&received, 1000).await {
+    if let Some(resp) = wait_for_response(received, 1000).await {
         let tpci = resp.get(6).copied().unwrap_or(0);
         if (tpci & 0xC0) == 0xC0 {
             // Control frame (ACK/NAK)
@@ -394,7 +394,7 @@ async fn run_seqno_test(
             let _conf = link_sender.request(msg).await;
         }
 
-        if let Some(resp) = wait_for_response(&received, 1000).await {
+        if let Some(resp) = wait_for_response(received, 1000).await {
             let tpci = resp.get(6).copied().unwrap_or(0);
             if (tpci & 0xC0) == 0xC0 {
                 let ack_seqno = (tpci >> 2) & 0x0F;
@@ -421,7 +421,7 @@ async fn run_seqno_test(
     }
 
     // Should get ACK then Response
-    while let Some(resp) = wait_for_response(&received, 1000).await {
+    while let Some(resp) = wait_for_response(received, 1000).await {
         let tpci = resp.get(6).copied().unwrap_or(0);
         if (tpci & 0xC0) == 0xC0 {
             println!("  -> Got ACK");
@@ -519,7 +519,7 @@ async fn main(spawner: Spawner) {
 
     // Main loop
     loop {
-        run_seqno_test(bm, link_sender.clone(), received).await;
+        run_seqno_test(bm, link_sender, received).await;
 
         // Wait for user input
         loop {

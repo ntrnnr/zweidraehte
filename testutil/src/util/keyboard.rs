@@ -53,12 +53,11 @@ fn init_raw_mode() {
 
 /// Restore terminal to original settings
 extern "C" fn restore_terminal() {
-    if let Some(original) = ORIGINAL_TERMIOS.get() {
-        if let Ok(original) = original.lock() {
+    if let Some(original) = ORIGINAL_TERMIOS.get()
+        && let Ok(original) = original.lock() {
             let fd = std::io::stdin().as_raw_fd();
             unsafe { libc::tcsetattr(fd, libc::TCSANOW, &*original) };
         }
-    }
 }
 
 /// Poll for a key press (non-blocking)

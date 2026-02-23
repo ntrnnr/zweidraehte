@@ -126,9 +126,8 @@ impl Telegram {
         let mut data = Vec::new();
 
         for token in input.split_whitespace() {
-            if token.starts_with('#') {
+            if let Some(expr) = token.strip_prefix('#') {
                 // Variable expression
-                let expr = &token[1..];
                 let bytes = parse_variable_expr(expr, variables)?;
                 data.extend(bytes);
             } else if token == "??" {
@@ -174,9 +173,8 @@ impl TelegramMatcher {
         let mut wildcards = Vec::new();
 
         for token in input.split_whitespace() {
-            if token.starts_with('#') {
+            if let Some(expr) = token.strip_prefix('#') {
                 // Variable expression
-                let expr = &token[1..];
                 let bytes = parse_variable_expr(expr, variables)?;
                 expected.extend(&bytes);
                 wildcards.extend(vec![false; bytes.len()]);
@@ -216,7 +214,7 @@ impl TelegramMatcher {
         let mut result = String::new();
 
         if actual.len() != self.expected.len() {
-            let _ = write!(result, "Length mismatch: expected {} bytes, got {}\n", self.expected.len(), actual.len());
+            let _ = writeln!(result, "Length mismatch: expected {} bytes, got {}", self.expected.len(), actual.len());
         }
 
         let _ = write!(result, "Expected: ");

@@ -43,11 +43,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
     let focused = app.focus == Focus::Tabs;
 
-    let tabs = vec![
-        ("Parameters", MainTab::Parameters),
+    let tabs = [("Parameters", MainTab::Parameters),
         ("Communication Objects", MainTab::CommObjects),
-        ("Memory", MainTab::Memory),
-    ];
+        ("Memory", MainTab::Memory)];
 
     let mut spans = Vec::new();
     spans.push(Span::raw(" "));
@@ -496,7 +494,7 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
         .take(visible_rows)
         .map(|(i, row)| {
             let is_selected = i == app.selected_obj_idx && focused;
-            let is_editing = editing_object.as_ref().map_or(false, |(n, _)| *n == row.number);
+            let is_editing = editing_object.as_ref().is_some_and(|(n, _)| *n == row.number);
             let style =
                 if is_selected { Style::default().bg(Color::DarkGray).fg(Color::White) } else { Style::default() };
 
@@ -673,7 +671,7 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
 
     // Calculate visible lines (reserve 2 lines: 1 for header, 1 for info)
     let visible_lines = (inner.height.saturating_sub(2)) as usize;
-    let total_lines = (segment.data.len() + 15) / 16;
+    let total_lines = segment.data.len().div_ceil(16);
 
     // Build hex dump lines
     let mut lines: Vec<Line> = Vec::with_capacity(visible_lines + 2);
