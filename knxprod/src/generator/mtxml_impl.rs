@@ -9,7 +9,7 @@ impl MtxmlGenerator {
     ///
     /// The `schema_version` parameter controls the xmlns namespace and tool version
     /// in the generated XML. If `None`, defaults to V20.
-    pub fn generate(
+    pub(crate) fn generate(
         config: &ApplicationProgramConfig,
         schema_version: Option<KnxSchemaVersion>,
     ) -> Result<String, GeneratorError> {
@@ -2353,7 +2353,7 @@ impl MtxmlGenerator {
 
         // 2. Compare device serial number (PID_SERIAL_NUMBER = 78, ObjIdx = 0 for Device Object)
         // The InlineData is the expected serial number as hex
-        let serial_hex = config.serial_number.iter().map(|b| format!("{:02X}", b)).collect::<String>();
+        let serial_hex = layout.serial_number.iter().map(|b| format!("{:02X}", b)).collect::<String>();
         // Pad to 10 bytes (20 hex chars) like MDT does
         let serial_padded = format!("{:0<20}", serial_hex);
         controls.push(LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {

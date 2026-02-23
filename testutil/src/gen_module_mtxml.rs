@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use knxprod::definition::page_layout::EtsPageLayout;
 use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
-use knxprod::{ApplicationProgramConfig, KnxprodBuilder};
+use knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
 use testutil::devices::module_test_device::{
     BAGGAGES, DEVICE_DESCRIPTOR, DEVICE_VIRTUAL_PARAMS, DeviceParams, MODULE_TRANSLATIONS_DE, MODULE_TRANSLATIONS_EN,
     ModuleTestDevice, SERIAL_NUMBER,
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let all_translations: Vec<_> =
         MODULE_TRANSLATIONS_DE.iter().chain(MODULE_TRANSLATIONS_EN.iter()).copied().collect();
 
-    let config = ApplicationProgramConfig {
+    let app = ApplicationProgramDef {
         name: "ModuleDimmer4Ch",
         device: &DEVICE_DESCRIPTOR,
         params: DeviceParams::ETS_PARAMS_EXT,
@@ -52,17 +52,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         non_reg_relevant_data_version: None,
         replaces_versions: None,
         application_data_hash: None,
-
-        // Hardware/Catalog configuration
-        serial_number: SERIAL_NUMBER,
-        hardware_version: 1,
-        hardware_name: "4-Channel Dimmer Module Test",
-        product_name: "4-Ch Dimmer (Module Test)",
-        order_number: "MOD-DIM-4CH",
-        is_rail_mounted: false,
-        catalog_section: "Dimmer Actuators",
-
-        // Use the page layout from ModuleTestDevice
         page_layout: Some(ModuleTestDevice::page_layout()),
         modules: Some(modules),
         baggages: Some(BAGGAGES),
@@ -71,19 +60,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Output directory: out/<device>/
-    let out_dir: PathBuf = ["out", config.name].iter().collect();
+    let out_dir: PathBuf = ["out", app.name].iter().collect();
+
+    let builder = KnxprodBuilder::single_device(SingleDeviceDef {
+        app: &app,
+        serial_number: SERIAL_NUMBER,
+        hardware_version: 1,
+        hardware_name: "4-Channel Dimmer Module Test",
+        product_name: "4-Ch Dimmer (Module Test)",
+        order_number: "MOD-DIM-4CH",
+        is_rail_mounted: false,
+        catalog_section: "Dimmer Actuators",
+    })
+    .output_dir(&out_dir)
+    .file_prefix("Module")
+    .schema_version(KnxSchemaVersion::V20);
 
     // Check if --knxprod flag is provided
     let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
 
     if generate_knxprod {
         // Use KnxprodBuilder to generate everything including signed package
-        let (output, knxprod_path) = KnxprodBuilder::new(&config)
-            .output_dir(&out_dir)
-            .file_prefix("Module")
-            .schema_version(KnxSchemaVersion::V20)
-            .master_data(MasterDataSource::Download)
-            .build_all()?;
+        let (output, knxprod_path) = builder.master_data(MasterDataSource::Download).build_all()?;
 
         // Print what was generated
         let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
@@ -98,11 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("\nVerify with: python3 manuf_tool_data/knx_verifier.py all .");
     } else {
         // Just generate MTXML files
-        let (output, paths) = KnxprodBuilder::new(&config)
-            .output_dir(&out_dir)
-            .file_prefix("Module")
-            .schema_version(KnxSchemaVersion::V20)
-            .write_mtxml_with_paths()?;
+        let (output, paths) = builder.write_mtxml_with_paths()?;
 
         let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
         println!("Output directory: {}", manuf_dir.display());

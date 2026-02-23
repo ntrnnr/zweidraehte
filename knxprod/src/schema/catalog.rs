@@ -57,10 +57,10 @@ pub struct CatalogManufacturer {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Catalog {
     #[serde(rename = "CatalogSection")]
-    pub catalog_section: CatalogSection,
+    pub catalog_sections: Vec<CatalogSection>,
 }
 
-/// Catalog section (category) containing items.
+/// Catalog section (category) containing items and nested subsections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogSection {
     #[serde(rename = "@Id")]
@@ -71,8 +71,10 @@ pub struct CatalogSection {
     pub number: String,
     #[serde(rename = "@DefaultLanguage")]
     pub default_language: String,
-    #[serde(rename = "CatalogItem")]
-    pub catalog_item: CatalogItem,
+    #[serde(rename = "CatalogItem", default, skip_serializing_if = "Vec::is_empty")]
+    pub catalog_items: Vec<CatalogItem>,
+    #[serde(rename = "CatalogSection", default, skip_serializing_if = "Vec::is_empty")]
+    pub subsections: Vec<CatalogSection>,
 }
 
 impl Default for CatalogSection {
@@ -82,7 +84,8 @@ impl Default for CatalogSection {
             name: String::new(),
             number: "1".to_string(),
             default_language: "en-US".to_string(),
-            catalog_item: CatalogItem::default(),
+            catalog_items: vec![],
+            subsections: vec![],
         }
     }
 }

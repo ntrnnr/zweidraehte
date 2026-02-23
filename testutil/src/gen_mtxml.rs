@@ -15,7 +15,7 @@ use const_default::ConstDefault;
 
 use knxprod::definition::page_layout::EtsPageLayout;
 use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
-use knxprod::{ApplicationProgramConfig, KnxprodBuilder};
+use knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
 use testutil::devices::system_b_demo::{DEVICE_DESCRIPTOR, DemoParams, DemoStack, SERIAL_NUMBER, comm_objs};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         core::slice::from_raw_parts(&defaults as *const DemoParams as *const u8, core::mem::size_of::<DemoParams>())
     };
 
-    let config = ApplicationProgramConfig {
+    let app = ApplicationProgramDef {
         name: "DerGeraet",
         device: &DEVICE_DESCRIPTOR,
         params: DemoParams::ETS_PARAMS_EXT,
@@ -43,17 +43,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         non_reg_relevant_data_version: None,
         replaces_versions: None,
         application_data_hash: None,
-
-        // Hardware/Catalog configuration
-        serial_number: SERIAL_NUMBER,
-        hardware_version: 1,
-        hardware_name: "System B IP device",
-        product_name: "My System B IP device",
-        order_number: "1234",
-        is_rail_mounted: false,
-        catalog_section: "KNX/IP Devices",
-
-        // Use the page layout from DemoStack
         page_layout: Some(DemoStack::page_layout()),
         modules: None,
         baggages: None,
@@ -61,18 +50,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Output directory: out/<device>/
-    let out_dir: PathBuf = ["out", config.name].iter().collect();
+    let out_dir: PathBuf = ["out", app.name].iter().collect();
+
+    let builder = KnxprodBuilder::single_device(SingleDeviceDef {
+        app: &app,
+        serial_number: SERIAL_NUMBER,
+        hardware_version: 1,
+        hardware_name: "System B IP device",
+        product_name: "My System B IP device",
+        order_number: "1234",
+        is_rail_mounted: false,
+        catalog_section: "KNX/IP Devices",
+    })
+    .output_dir(&out_dir)
+    .schema_version(KnxSchemaVersion::V20);
 
     // Check if --knxprod flag is provided
     let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
 
     if generate_knxprod {
         // Use KnxprodBuilder to generate everything including signed package
-        let (output, knxprod_path) = KnxprodBuilder::new(&config)
-            .output_dir(&out_dir)
-            .schema_version(KnxSchemaVersion::V20)
-            .master_data(MasterDataSource::Download)
-            .build_all()?;
+        let (output, knxprod_path) = builder.master_data(MasterDataSource::Download).build_all()?;
 
         // Print what was generated
         let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
@@ -84,10 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("\nVerify with: python3 manuf_tool_data/knx_verifier.py all .");
     } else {
         // Just generate MTXML files
-        let (output, paths) = KnxprodBuilder::new(&config)
-            .output_dir(&out_dir)
-            .schema_version(KnxSchemaVersion::V20)
-            .write_mtxml_with_paths()?;
+        let (output, paths) = builder.write_mtxml_with_paths()?;
 
         let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
         println!("Output directory: {}", manuf_dir.display());

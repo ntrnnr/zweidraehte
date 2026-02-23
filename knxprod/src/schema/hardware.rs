@@ -54,10 +54,12 @@ pub struct HardwareManufacturer {
 }
 
 /// Container for Hardware elements.
+///
+/// Wraps a `Vec<Hardware>` but serializes each element as `<Hardware>`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HardwareContainer {
     #[serde(rename = "Hardware")]
-    pub hardware: Hardware,
+    pub hardware: Vec<Hardware>,
 }
 
 /// Hardware definition.
@@ -71,6 +73,8 @@ pub struct Hardware {
     pub serial_number: String,
     #[serde(rename = "@VersionNumber")]
     pub version_number: u8,
+    #[serde(rename = "@BusCurrent", skip_serializing_if = "Option::is_none")]
+    pub bus_current: Option<u16>,
     #[serde(rename = "@HasIndividualAddress")]
     pub has_individual_address: bool,
     #[serde(rename = "@HasApplicationProgram")]
@@ -88,6 +92,7 @@ impl Default for Hardware {
             name: String::new(),
             serial_number: String::new(),
             version_number: 1,
+            bus_current: None,
             has_individual_address: true,
             has_application_program: true,
             products: Products::default(),
@@ -100,7 +105,7 @@ impl Default for Hardware {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Products {
     #[serde(rename = "Product")]
-    pub product: Product,
+    pub products: Vec<Product>,
 }
 
 /// Product definition within Hardware.
@@ -114,6 +119,8 @@ pub struct Product {
     pub order_number: String,
     #[serde(rename = "@IsRailMounted")]
     pub is_rail_mounted: bool,
+    #[serde(rename = "@VisibleDescription", skip_serializing_if = "Option::is_none")]
+    pub visible_description: Option<String>,
     #[serde(rename = "@DefaultLanguage")]
     pub default_language: String,
 }
@@ -125,6 +132,7 @@ impl Default for Product {
             text: String::new(),
             order_number: String::new(),
             is_rail_mounted: false,
+            visible_description: None,
             default_language: "en-US".to_string(),
         }
     }
@@ -134,7 +142,7 @@ impl Default for Product {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Hardware2Programs {
     #[serde(rename = "Hardware2Program")]
-    pub hardware2program: Hardware2Program,
+    pub hardware2programs: Vec<Hardware2Program>,
 }
 
 /// Links Hardware to ApplicationProgram.

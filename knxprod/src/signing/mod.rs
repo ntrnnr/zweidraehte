@@ -22,7 +22,9 @@
 //!
 //! let config = SigningConfig {
 //!     manufacturer_id: "00FA".to_string(),
-//!     application_program: app_xml,
+//!     application_programs: vec![
+//!         ("M-00FA_A-0001-01-0000".to_string(), app_xml),
+//!     ],
 //!     hardware: hardware_xml,
 //!     catalog: catalog_xml,
 //!     baggage_files: vec![],
@@ -92,11 +94,12 @@ pub struct SigningConfig {
     /// Manufacturer ID (e.g., "00FA")
     pub manufacturer_id: String,
 
-    /// Application program XML content
-    pub application_program: String,
-
-    /// Application program ID (e.g., "M-00FA_A-0070-35-1740")
-    pub application_program_id: String,
+    /// Application programs as `(program_id, xml_content)` pairs.
+    ///
+    /// Each entry becomes a separate XML file in the knxprod package,
+    /// named `<program_id>.xml`. The program ID is also used to compute
+    /// hashes that are embedded in Hardware.xml.
+    pub application_programs: Vec<(String, String)>,
 
     /// Hardware XML content (will have hashes/signatures injected)
     pub hardware: String,

@@ -3,78 +3,137 @@
 use crate::schema::{CatalogItem, CatalogKnx, CatalogSection};
 use crate::signing::KnxSchemaVersion;
 
-use super::{ApplicationProgramConfig, GeneratorError};
+use super::builder::AppProgramRef;
+use super::{ApplicationProgramDef, CatalogSectionDef, GeneratorError, HardwareDef};
 
 /// Generator for creating Catalog MTXML files.
 pub struct CatalogGenerator;
 
 impl CatalogGenerator {
-    /// Generate a complete Catalog MTXML document from the configuration.
-    ///
-    /// The `schema_version` parameter controls the xmlns namespace and tool version
-    /// in the generated XML. If `None`, defaults to V20.
-    pub fn generate(
-        config: &ApplicationProgramConfig,
+    /// Generate Catalog XML from multiple catalog section definitions.
+    pub fn generate_multi(
+        manufacturer_id: u16,
+        sections: &[CatalogSectionDef],
+        hardware_defs: &[HardwareDef],
+        application_programs: &[&ApplicationProgramDef],
         schema_version: Option<KnxSchemaVersion>,
     ) -> Result<String, GeneratorError> {
-        let knx = Self::build_catalog_knx(config, schema_version);
+        let knx =
+            Self::build_catalog_knx_multi(manufacturer_id, sections, hardware_defs, application_programs, schema_version);
         Self::serialize(&knx)
     }
 
-    /// Build the complete Catalog KNX document structure.
-    fn build_catalog_knx(
-        config: &ApplicationProgramConfig,
+    /// Build a Catalog KNX document from multiple catalog section definitions.
+    fn build_catalog_knx_multi(
+        manufacturer_id: u16,
+        sections: &[CatalogSectionDef],
+        hardware_defs: &[HardwareDef],
+        application_programs: &[&ApplicationProgramDef],
         schema_version: Option<KnxSchemaVersion>,
     ) -> CatalogKnx {
-        let manufacturer_id = format!("M-{:04X}", config.device.manufacturer_id);
-        let serial_hex = config.serial_number.iter().map(|b| format!("{:02X}", b)).collect::<String>();
-
-        // Hardware ID: M-XXXX_H-<serial>-<version>
-        let hardware_id = format!("{}_H-{}-{}", manufacturer_id, serial_hex, config.hardware_version);
-
-        // Application hash suffix (defaults to 0000)
-        let app_hash = config.application_hash.unwrap_or("0000");
-
-        // Hardware2Program ID - must match Hardware2Program ID in Hardware.xml
-        let h2p_id = format!(
-            "{}_HP-{:04X}-{:02X}-{}",
-            hardware_id, config.device.application_id, config.device.application_version, app_hash
-        );
-
-        // Product ID - must be URL-encoded for ID convention compliance
-        let product_id = format!("{}_P-{}", hardware_id, super::mtxml::MtxmlGenerator::encode_id(config.order_number));
-
-        // Catalog Section ID
-        let section_id = format!("{}_CS-1", manufacturer_id);
-
-        // Catalog Item ID: <h2p_id>_CI-<order_number>-1
-        // Order number must be URL-encoded for ID convention compliance
-        let catalog_item_id =
-            format!("{}_CI-{}-1", h2p_id, super::mtxml::MtxmlGenerator::encode_id(config.order_number));
+        let manuf_str = format!("M-{:04X}", manufacturer_id);
 
         let mut knx = CatalogKnx::default();
-        // Set schema version namespace and tool version if specified
         if let Some(version) = schema_version {
             knx.xmlns = version.namespace_url();
             knx.tool_version = version.tool_version().to_string();
         }
-        knx.manufacturer_data.manufacturer.ref_id = manufacturer_id;
-        knx.manufacturer_data.manufacturer.catalog.catalog_section = CatalogSection {
-            id: section_id,
-            name: config.catalog_section.to_string(),
-            number: "1".to_string(),
-            default_language: "en-US".to_string(),
-            catalog_item: CatalogItem {
-                id: catalog_item_id,
-                name: config.product_name.to_string(),
-                number: "1".to_string(),
-                product_ref_id: product_id,
-                hardware2program_ref_id: h2p_id,
-                default_language: "en-US".to_string(),
-            },
-        };
+        knx.manufacturer_data.manufacturer.ref_id = manuf_str.clone();
 
+        // Global section counter for unique IDs.
+        let mut section_counter = 0u32;
+        let mut item_counter = 0u32;
+
+        let catalog_sections: Vec<CatalogSection> = sections
+            .iter()
+            .map(|sec| {
+                Self::build_section(
+                    sec,
+                    &manuf_str,
+                    hardware_defs,
+                    application_programs,
+                    &mut section_counter,
+                    &mut item_counter,
+                )
+            })
+            .collect();
+
+        knx.manufacturer_data.manufacturer.catalog.catalog_sections = catalog_sections;
         knx
+    }
+
+    /// Recursively build a CatalogSection from a CatalogSectionDef.
+    fn build_section(
+        def: &CatalogSectionDef,
+        manuf_str: &str,
+        hardware_defs: &[HardwareDef],
+        application_programs: &[&ApplicationProgramDef],
+        section_counter: &mut u32,
+        item_counter: &mut u32,
+    ) -> CatalogSection {
+        *section_counter += 1;
+        let section_id = format!("{}_CS-{}", manuf_str, section_counter);
+
+        let catalog_items: Vec<CatalogItem> = def
+            .entries
+            .iter()
+            .map(|entry| {
+                *item_counter += 1;
+
+                let hw_def = &hardware_defs[entry.hardware.0];
+                let serial_hex = hw_def.serial_number.iter().map(|b| format!("{:02X}", b)).collect::<String>();
+                let hardware_id = format!("{}_H-{}-{}", manuf_str, serial_hex, hw_def.hardware_version);
+
+                let AppProgramRef(app_idx) = entry.application_program;
+                let app = application_programs[app_idx];
+                let app_hash = app.application_hash.unwrap_or("0000");
+
+                // Hardware2Program ID
+                let h2p_id = format!(
+                    "{}_HP-{:04X}-{:02X}-{}",
+                    hardware_id, app.device.application_id, app.device.application_version, app_hash
+                );
+
+                // Product ID by order number
+                let product_id = format!(
+                    "{}_P-{}",
+                    hardware_id,
+                    super::mtxml::MtxmlGenerator::encode_id(entry.product_order_number)
+                );
+
+                // Catalog Item ID
+                let catalog_item_id = format!(
+                    "{}_CI-{}-{}",
+                    h2p_id,
+                    super::mtxml::MtxmlGenerator::encode_id(entry.product_order_number),
+                    item_counter
+                );
+
+                CatalogItem {
+                    id: catalog_item_id,
+                    name: entry.name.to_string(),
+                    number: item_counter.to_string(),
+                    product_ref_id: product_id,
+                    hardware2program_ref_id: h2p_id,
+                    default_language: "en-US".to_string(),
+                }
+            })
+            .collect();
+
+        let subsections: Vec<CatalogSection> = def
+            .subsections
+            .iter()
+            .map(|sub| Self::build_section(sub, manuf_str, hardware_defs, application_programs, section_counter, item_counter))
+            .collect();
+
+        CatalogSection {
+            id: section_id,
+            name: def.name.to_string(),
+            number: section_counter.to_string(),
+            default_language: "en-US".to_string(),
+            catalog_items,
+            subsections,
+        }
     }
 
     /// Serialize the Catalog KNX document to XML string.

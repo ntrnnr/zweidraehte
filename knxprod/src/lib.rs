@@ -22,28 +22,34 @@
 //! # Quick Start with KnxprodBuilder
 //!
 //! ```rust,ignore
-//! use knxprod::{KnxprodBuilder, ApplicationProgramConfig};
+//! use knxprod::{KnxprodBuilder, ApplicationProgramDef, SingleDeviceDef};
 //! use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
 //!
-//! let config = ApplicationProgramConfig { /* ... */ };
+//! let app = ApplicationProgramDef { /* ... */ };
 //!
 //! // Generate all MTXML files
-//! let output = KnxprodBuilder::new(&config)
-//!     .schema_version(KnxSchemaVersion::V20)
-//!     .generate_all()?;
+//! let output = KnxprodBuilder::single_device(SingleDeviceDef {
+//!     app: &app,
+//!     serial_number: [0x00, 0xFA, 0x00, 0x00, 0x00, 0x01],
+//!     hardware_version: 1,
+//!     hardware_name: "My Device",
+//!     product_name: "My Device v1",
+//!     order_number: "DEV-001",
+//!     is_rail_mounted: false,
+//!     catalog_section: "My Devices",
+//! })
+//! .schema_version(KnxSchemaVersion::V20)
+//! .generate_all()?;
 //!
-//! // Or write to disk
-//! KnxprodBuilder::new(&config)
-//!     .output_dir("out/MyDevice")
-//!     .file_prefix("My")
-//!     .schema_version(KnxSchemaVersion::V20)
-//!     .write_mtxml()?;
-//!
-//! // Or create a signed .knxprod package
-//! let knxprod = KnxprodBuilder::new(&config)
-//!     .schema_version(KnxSchemaVersion::V20)
-//!     .master_data(MasterDataSource::Download)
-//!     .build_knxprod()?;
+//! // Or write to disk and create a signed .knxprod package
+//! let (output, knxprod_path) = KnxprodBuilder::single_device(SingleDeviceDef {
+//!     app: &app,
+//!     /* ... same fields ... */
+//! })
+//! .output_dir("out/MyDevice")
+//! .schema_version(KnxSchemaVersion::V20)
+//! .master_data(MasterDataSource::Download)
+//! .build_all()?;
 //! ```
 //!
 //! # Modules
@@ -97,8 +103,10 @@ pub mod runtime;
 
 // Generators - main API for creating MTXML
 pub use generator::{
-    ApplicationProgramConfig, BaggageGenerator, BuilderError, CatalogGenerator, GeneratorError, HardwareGenerator,
-    KnxprodBuilder, KnxprodOutput, MtxmlGenerator, System7MemoryLayout, System7Segment,
+    AppProgramRef, ApplicationProgramDef, BaggageGenerator, BuilderError,
+    CatalogEntryDef, CatalogGenerator, CatalogSectionDef, GeneratorError, HardwareDef, HardwareGenerator,
+    HardwareRef, KnxprodBuilder, KnxprodOutput, MtxmlGenerator, ProductDef, SingleDeviceDef,
+    System7MemoryLayout, System7Segment,
 };
 
 // Parsing - main entry points

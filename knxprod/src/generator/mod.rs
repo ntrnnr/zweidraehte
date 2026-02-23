@@ -28,7 +28,7 @@ use zweidraehte::ets::{
 
 // Re-export public types
 pub use baggage::BaggageGenerator;
-pub use builder::{BuilderError, KnxprodBuilder, KnxprodOutput};
+pub use builder::{AppProgramRef, BuilderError, HardwareRef, KnxprodBuilder, KnxprodOutput};
 pub use catalog::CatalogGenerator;
 pub use hardware::HardwareGenerator;
 pub use mtxml::MtxmlGenerator;
@@ -128,10 +128,164 @@ pub struct System7MemoryLayout {
     pub address_table_max_entries: u16,
     /// Association table max entries
     pub association_table_max_entries: u16,
+    /// Device serial number for load procedure verification.
+    ///
+    /// Used in the `LdCtrlCompareProp` load control to verify the device
+    /// identity before programming. This is the hardware serial number
+    /// that ETS checks against `PID_SERIAL_NUMBER`.
+    pub serial_number: [u8; 6],
 }
 
-/// Configuration for generating MTXML files (ApplicationProgram, Hardware, Catalog).
-pub struct ApplicationProgramConfig<'a> {
+// ============================================================================
+// Public Definition Types
+// ============================================================================
+
+/// Everything needed to generate one ApplicationProgram XML file.
+///
+/// Contains only application-program-level concerns: parameters,
+/// communication objects, page layout, modules, and memory layout.
+/// Hardware/product/catalog properties are defined separately via
+/// [`ProductDef`], [`HardwareDef`], and [`CatalogSectionDef`].
+pub struct ApplicationProgramDef<'a> {
+    /// Human-readable application name (becomes `ApplicationProgram/@Name`).
+    pub name: &'a str,
+    /// Device descriptor with mask version, manufacturer ID, application ID/version, etc.
+    pub device: &'a DeviceDescriptor,
+    /// Extended parameter definitions with enum variants.
+    pub params: &'a [EtsParamDefExt],
+    /// Virtual parameter definitions (ETS-only, not stored in device memory).
+    pub virtual_params: Option<&'a [EtsParamDefExt]>,
+    /// Default parameter values as raw bytes.
+    pub param_defaults: &'a [u8],
+    /// Communication object definitions.
+    pub comm_objects: &'a [EtsCommObjectDef],
+    /// Communication object reference definitions (for multi-ref objects).
+    pub comm_object_refs: &'a [EtsCommObjectRefDef],
+    /// Union fields from derive macro.
+    pub union_fields: Option<&'a [EtsUnionFieldInfo]>,
+    /// Channel name for the UI grouping.
+    pub channel_name: &'a str,
+    /// Base address for absolute segments (System 7 only, deprecated — use `system7_layout`).
+    pub absolute_segment_address: Option<u32>,
+    /// System 7 memory layout configuration.
+    pub system7_layout: Option<System7MemoryLayout>,
+    /// Application hash/suffix for the ApplicationProgram ID (4 hex chars).
+    /// If None, defaults to "0000".
+    pub application_hash: Option<&'a str>,
+    /// Non-registration relevant data version.
+    pub non_reg_relevant_data_version: Option<u32>,
+    /// Previous versions this program replaces (space-separated list).
+    pub replaces_versions: Option<&'a str>,
+    /// Hash of the application data (base64 encoded).
+    pub application_data_hash: Option<&'a str>,
+    /// Page layout definition for the Dynamic section.
+    pub page_layout: Option<PageStructure>,
+    /// Module collection for ModuleDefs/Module instances.
+    pub modules: Option<ModuleCollection>,
+    /// Baggage definitions (icons, etc.).
+    pub baggages: Option<&'a [BaggageDef<'a>]>,
+    /// Translations for non-default languages.
+    pub translations: Option<&'a [EtsTranslation]>,
+}
+
+/// A product variant within a hardware definition.
+///
+/// Multiple products can exist per hardware — for example, "55" and "63"
+/// frame variants of the same push button that differ only in order number
+/// and product text.
+pub struct ProductDef<'a> {
+    /// Product display text (shown in ETS catalog).
+    pub name: &'a str,
+    /// Product order number (for ordering/identification).
+    pub order_number: &'a str,
+    /// Whether the device is rail-mounted (DIN rail).
+    pub is_rail_mounted: bool,
+    /// Optional additional description text.
+    pub visible_description: Option<&'a str>,
+}
+
+/// A hardware definition linking products to application programs.
+///
+/// In the XML, a `<Hardware>` element contains `<Products>` and
+/// `<Hardware2Programs>`. Multiple products can share the same hardware,
+/// and multiple `<Hardware2Program>` entries can link to different
+/// application programs.
+pub struct HardwareDef<'a> {
+    /// Device serial number (6 bytes, first 2 should match manufacturer_id).
+    pub serial_number: [u8; 6],
+    /// Hardware version number (displayed in ETS).
+    pub hardware_version: u8,
+    /// Hardware name (displayed in ETS hardware list).
+    pub name: &'a str,
+    /// Bus current consumption in mA (optional).
+    pub bus_current: Option<u16>,
+    /// Products in this hardware definition.
+    pub products: Vec<ProductDef<'a>>,
+    /// Application programs linked to this hardware.
+    /// Each entry creates a `<Hardware2Program>` element.
+    pub application_programs: Vec<AppProgramRef>,
+}
+
+/// A catalog entry linking a product to a hardware-to-program mapping.
+///
+/// Each entry becomes a `<CatalogItem>` in the output XML. It references
+/// a specific product (by order number within a hardware) and a specific
+/// application program (via the Hardware2Program linkage).
+pub struct CatalogEntryDef<'a> {
+    /// Display name in ETS catalog.
+    pub name: &'a str,
+    /// Which hardware this entry refers to.
+    pub hardware: HardwareRef,
+    /// Which product within that hardware (by order number).
+    pub product_order_number: &'a str,
+    /// Which application program (determines the Hardware2Program link).
+    pub application_program: AppProgramRef,
+}
+
+/// A section (category) in the ETS catalog, containing entries and/or
+/// nested subsections.
+pub struct CatalogSectionDef<'a> {
+    /// Section name (displayed in ETS).
+    pub name: &'a str,
+    /// Catalog entries in this section.
+    pub entries: Vec<CatalogEntryDef<'a>>,
+    /// Nested sub-sections.
+    pub subsections: Vec<CatalogSectionDef<'a>>,
+}
+
+/// Convenience struct for the common single-device case.
+///
+/// Captures all the hardware/product/catalog data while referencing an
+/// [`ApplicationProgramDef`] for the program-specific data. Internally,
+/// `KnxprodBuilder::single_device` expands this into one hardware with
+/// one product, one Hardware2Program, one catalog section, and one
+/// catalog item.
+pub struct SingleDeviceDef<'a> {
+    /// The application program definition.
+    pub app: &'a ApplicationProgramDef<'a>,
+    /// Device serial number (6 bytes).
+    pub serial_number: [u8; 6],
+    /// Hardware version number.
+    pub hardware_version: u8,
+    /// Hardware name.
+    pub hardware_name: &'a str,
+    /// Product display text.
+    pub product_name: &'a str,
+    /// Product order number.
+    pub order_number: &'a str,
+    /// Whether the device is rail-mounted.
+    pub is_rail_mounted: bool,
+    /// Catalog section name.
+    pub catalog_section: &'a str,
+}
+
+/// Internal configuration passed to the MTXML generator.
+///
+/// This type is an implementation detail — external code should use
+/// [`ApplicationProgramDef`] + [`SingleDeviceDef`] or the multi-device
+/// builder API instead. The builder constructs this internally as an
+/// adapter for `MtxmlGenerator`.
+pub(crate) struct ApplicationProgramConfig<'a> {
     /// Human-readable application name
     pub name: &'a str,
     /// Device descriptor with mask version, manufacturer ID, etc.
@@ -176,24 +330,6 @@ pub struct ApplicationProgramConfig<'a> {
     /// Used by ETS for integrity checking.
     pub application_data_hash: Option<&'a str>,
 
-    // ========================================================================
-    // Hardware/Catalog fields (for Hardware.mtxml and Catalog.mtxml generation)
-    // ========================================================================
-    /// Device serial number (6 bytes, unique per device).
-    /// First 2 bytes should match manufacturer_id.
-    pub serial_number: [u8; 6],
-    /// Hardware version number (displayed in ETS)
-    pub hardware_version: u8,
-    /// Hardware name (displayed in ETS hardware list)
-    pub hardware_name: &'a str,
-    /// Product display text (shown in ETS catalog)
-    pub product_name: &'a str,
-    /// Product order number (for ordering/identification)
-    pub order_number: &'a str,
-    /// Whether the device is rail-mounted (DIN rail)
-    pub is_rail_mounted: bool,
-    /// Catalog section name (category in ETS catalog)
-    pub catalog_section: &'a str,
     /// Optional page layout definition. If provided, the Dynamic section will be
     /// generated according to this layout. If None, auto-generation is used.
     pub page_layout: Option<PageStructure>,
@@ -212,14 +348,9 @@ pub struct ApplicationProgramConfig<'a> {
 }
 
 impl<'a> ApplicationProgramConfig<'a> {
-    /// Get the mask family for this configuration
+    /// Get the mask family for this configuration.
     pub fn mask_family(&self) -> MaskFamily {
         MaskFamily::from_mask_version(self.device.mask_version.as_u16())
-    }
-
-    /// Get the number of virtual params at the device level.
-    pub fn virtual_params_count(&self) -> usize {
-        self.virtual_params.map_or(0, |vp| vp.len())
     }
 
     /// Iterate over all device-level params (virtual params first, then regular params).

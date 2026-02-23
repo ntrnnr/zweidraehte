@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use knxprod::definition::page_layout::EtsPageLayout;
 use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
-use knxprod::{ApplicationProgramConfig, KnxprodBuilder, System7MemoryLayout, System7Segment};
+use knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef, System7MemoryLayout, System7Segment};
 use testutil::devices::mdt_push_button_lite::{
     DEVICE_DESCRIPTOR, MDT_TRANSLATIONS_DE, MdtParams, MdtStack, SERIAL_NUMBER, comm_objs,
 };
@@ -82,9 +82,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         association_table_offset: 0,
         address_table_max_entries: 255,
         association_table_max_entries: 255,
+        serial_number: SERIAL_NUMBER,
     };
 
-    let config = ApplicationProgramConfig {
+    let app = ApplicationProgramDef {
         name: "Push Button Lite 55 1-fold Basic",
         device: &DEVICE_DESCRIPTOR,
         params: MdtParams::ETS_PARAMS_EXT,
@@ -100,17 +101,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         non_reg_relevant_data_version: Some(28),
         replaces_versions: Some("18 19"),
         application_data_hash: None, // Hash changes with content, would be generated later
-
-        // Hardware/Catalog configuration
-        serial_number: SERIAL_NUMBER,
-        hardware_version: 1,
-        hardware_name: "Push Button Lite 55 1-fold Basic",
-        product_name: "MDT Push Button Lite 55 1-fold Basic",
-        order_number: "KP_BE_01",
-        is_rail_mounted: false,
-        catalog_section: "KNX Push Buttons",
-
-        // Use the page layout from MdtStack
         page_layout: Some(MdtStack::page_layout()),
         modules: None,
         baggages: None,
@@ -121,17 +111,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device_name = "MdtPushButtonLite";
     let out_dir: PathBuf = ["out", device_name].iter().collect();
 
+    let builder = KnxprodBuilder::single_device(SingleDeviceDef {
+        app: &app,
+        serial_number: SERIAL_NUMBER,
+        hardware_version: 1,
+        hardware_name: "Push Button Lite 55 1-fold Basic",
+        product_name: "MDT Push Button Lite 55 1-fold Basic",
+        order_number: "KP_BE_01",
+        is_rail_mounted: false,
+        catalog_section: "KNX Push Buttons",
+    })
+    .output_dir(&out_dir)
+    .file_prefix("Mdt")
+    .schema_version(KnxSchemaVersion::V20);
+
     // Check if --knxprod flag is provided
     let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
 
     if generate_knxprod {
         // Use KnxprodBuilder to generate everything including signed package
-        let (output, knxprod_path) = KnxprodBuilder::new(&config)
-            .output_dir(&out_dir)
-            .file_prefix("Mdt")
-            .schema_version(KnxSchemaVersion::V20)
-            .master_data(MasterDataSource::Download)
-            .build_all()?;
+        let (output, knxprod_path) = builder.master_data(MasterDataSource::Download).build_all()?;
 
         // Print what was generated
         let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
@@ -143,11 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("\nVerify with: python3 manuf_tool_data/knx_verifier.py all .");
     } else {
         // Just generate MTXML files
-        let (output, paths) = KnxprodBuilder::new(&config)
-            .output_dir(&out_dir)
-            .file_prefix("Mdt")
-            .schema_version(KnxSchemaVersion::V20)
-            .write_mtxml_with_paths()?;
+        let (output, paths) = builder.write_mtxml_with_paths()?;
 
         let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
         eprintln!("Output directory: {}", manuf_dir.display());

@@ -758,7 +758,7 @@ impl<M: KnxModule> ConditionalModuleInstance<M> {
 ///
 /// This is the main structure used by the generator to produce the ModuleDefs
 /// and Module elements in the XML output.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ModuleCollection {
     /// All module definitions used by this device
     definitions: Vec<StoredModuleDef>,

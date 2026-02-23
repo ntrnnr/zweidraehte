@@ -453,21 +453,29 @@ pub fn create_knxprod(config: &SigningConfig, master_data: MasterDataSource) -> 
     // Get master data
     let master_xml = get_master_data(&master_data)?;
 
-    // Sign ApplicationProgram XML (add Hash attribute)
-    let signed_app_program = sign_application_program_xml(&config.application_program)?;
+    // Sign each ApplicationProgram XML (add Hash attribute) and collect
+    // all app program hashes for Hardware.xml signing.
+    let mut all_app_hashes: HashMap<String, String> = HashMap::new();
+    let mut signed_app_programs: Vec<(String, Vec<u8>)> = Vec::new();
 
-    // Get ApplicationProgram hash from the signed XML
-    let app_program_hashes = extract_app_program_hashes(&signed_app_program)?;
+    for (program_id, program_xml) in &config.application_programs {
+        let signed_xml = sign_application_program_xml(program_xml)?;
+        let hashes = extract_app_program_hashes(&signed_xml)?;
+        all_app_hashes.extend(hashes);
+        signed_app_programs.push((
+            format!("{}.xml", program_id),
+            signed_xml.into_bytes(),
+        ));
+    }
 
-    // Sign Hardware.xml
-    let signed_hardware = sign_hardware_xml(&config.hardware, &app_program_hashes)?;
+    // Sign Hardware.xml using the collected hashes from all app programs.
+    let signed_hardware = sign_hardware_xml(&config.hardware, &all_app_hashes)?;
 
-    // Collect files for the manufacturer directory
-    let mut dir_files: Vec<(String, Vec<u8>)> = vec![
-        (format!("{}.xml", config.application_program_id), signed_app_program.as_bytes().to_vec()),
-        ("Hardware.xml".to_string(), signed_hardware.as_bytes().to_vec()),
-        ("Catalog.xml".to_string(), config.catalog.as_bytes().to_vec()),
-    ];
+    // Collect files for the manufacturer directory.
+    let mut dir_files: Vec<(String, Vec<u8>)> = Vec::new();
+    dir_files.extend(signed_app_programs);
+    dir_files.push(("Hardware.xml".to_string(), signed_hardware.into_bytes()));
+    dir_files.push(("Catalog.xml".to_string(), config.catalog.as_bytes().to_vec()));
 
     // Add baggage files
     for (path, content) in &config.baggage_files {

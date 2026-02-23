@@ -21,16 +21,14 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use knxprod::{BaggageGenerator, ApplicationProgramConfig};
+//! use knxprod::BaggageGenerator;
 //! use knxprod::schema::BaggageDef;
 //!
 //! let baggages = [BaggageDef::embedded("icon.png", &PNG_BYTES)];
-//! let config = ApplicationProgramConfig { /* ... */ baggages: Some(&baggages), /* ... */ };
-//!
-//! let xml = BaggageGenerator::generate(&config)?;
+//! let xml = BaggageGenerator::generate(0x00FA, Some(&baggages), None)?;
 //! ```
 
-use super::{ApplicationProgramConfig, GeneratorError};
+use super::GeneratorError;
 use crate::signing::KnxSchemaVersion;
 
 // Re-export for external use
@@ -50,26 +48,26 @@ use std::io::{self, Write};
 /// # Example
 ///
 /// ```rust,ignore
-/// use knxprod::{BaggageGenerator, ApplicationProgramConfig};
+/// use knxprod::BaggageGenerator;
 ///
-/// let config = ApplicationProgramConfig { /* ... */ };
-/// let xml = BaggageGenerator::generate(&config)?;
+/// let xml = BaggageGenerator::generate(0x00FA, Some(&baggages), None)?;
 /// ```
 pub struct BaggageGenerator;
 
 impl BaggageGenerator {
-    /// Generate a complete Baggages.xml manifest from the configuration.
+    /// Generate a complete Baggages.xml manifest.
     ///
-    /// Returns `Ok(None)` if no baggages are defined in the config.
+    /// Returns `Ok(None)` if `baggages` is `None` or empty.
     /// Returns `Ok(Some(xml))` with the XML content if baggages are present.
     ///
     /// The `schema_version` parameter controls the xmlns namespace and tool version
     /// in the generated XML. If `None`, defaults to V20.
     pub fn generate(
-        config: &ApplicationProgramConfig,
+        manufacturer_id: u16,
+        baggages: Option<&[BaggageDef<'_>]>,
         schema_version: Option<KnxSchemaVersion>,
     ) -> Result<Option<String>, GeneratorError> {
-        let Some(baggages) = config.baggages else {
+        let Some(baggages) = baggages else {
             return Ok(None);
         };
 
@@ -78,7 +76,7 @@ impl BaggageGenerator {
         }
 
         let version = schema_version.unwrap_or(KnxSchemaVersion::V20);
-        let xml = Self::generate_xml(config.device.manufacturer_id, baggages, version);
+        let xml = Self::generate_xml(manufacturer_id, baggages, version);
         Ok(Some(xml))
     }
 
@@ -152,15 +150,15 @@ impl BaggageGenerator {
     /// # Arguments
     ///
     /// * `base_dir` - The output directory (e.g., "M-0083/")
-    /// * `config` - The application program configuration
+    /// * `baggages` - Baggage definitions to write
     ///
     /// # Errors
     ///
     /// Returns an error if file operations fail.
-    pub fn write_files(base_dir: &std::path::Path, config: &ApplicationProgramConfig) -> io::Result<()> {
-        let Some(baggages) = config.baggages else {
+    pub fn write_files(base_dir: &std::path::Path, baggages: &[BaggageDef<'_>]) -> io::Result<()> {
+        if baggages.is_empty() {
             return Ok(());
-        };
+        }
 
         let baggages_dir = base_dir.join("Baggages");
         std::fs::create_dir_all(&baggages_dir)?;
@@ -195,26 +193,23 @@ impl BaggageGenerator {
     ///
     /// # Arguments
     ///
-    /// * `config` - The application program configuration
+    /// * `manufacturer_id` - The KNX manufacturer ID
+    /// * `baggages` - Baggage definitions
     /// * `schema_version` - The KNX schema version (if None, defaults to V20)
     ///
     /// # Returns
     ///
     /// A vector of (relative_path, file_content) pairs.
     pub fn get_files_for_signing(
-        config: &ApplicationProgramConfig,
+        manufacturer_id: u16,
+        baggages: &[BaggageDef<'_>],
         schema_version: Option<KnxSchemaVersion>,
     ) -> io::Result<Vec<(String, Vec<u8>)>> {
-        let Some(baggages) = config.baggages else {
-            return Ok(Vec::new());
-        };
-
         if baggages.is_empty() {
             return Ok(Vec::new());
         }
 
         let version = schema_version.unwrap_or(KnxSchemaVersion::V20);
-        let manufacturer_id = config.device.manufacturer_id;
 
         let mut files = Vec::with_capacity(baggages.len() + 1);
 
