@@ -133,11 +133,18 @@ where
             // Connectionless services
             // ─────────────────────────────────────────────────────────────────
             ServiceType::N_GroupData_Ind => {
-                if let Some(Tpci::DataGroup) = msg.get_tpci()
+                // Look up the TSAP before entering the block to avoid holding
+                // the ADT RefCell borrow across the send await below.
+                let tsap = if let Some(Tpci::DataGroup) = msg.get_tpci()
                     && let DestinationAddress::Group(g) = msg.get_dest_addr()
-                    && self.state.adt().borrow().is_loaded()
-                    && let Some(conn_nr) = self.state.adt().borrow().get_tsap(g)
                 {
+                    let adt = self.state.adt().borrow();
+                    if adt.is_loaded() { adt.get_tsap(g) } else { None }
+                } else {
+                    None
+                };
+
+                if let Some(conn_nr) = tsap {
                     msg.set_connection_nr(conn_nr);
                     msg.set_service_type(ServiceType::T_GroupData_Ind);
                     // Connectionless — AccessSource::Default is already set on new messages.
@@ -335,9 +342,14 @@ where
     ) -> ConfirmationMessage<Buffer<'static>> {
         trace!("T_GroupData_Req: {:?}", msg);
 
-        if self.state.adt().borrow().is_loaded()
-            && let Some(dst_addr) = self.state.adt().borrow().get_address(msg.get_connection_nr())
-        {
+        // Extract the group address before entering the block to avoid holding
+        // the ADT RefCell borrow across the network layer request await below.
+        let dst_addr = {
+            let adt = self.state.adt().borrow();
+            if adt.is_loaded() { adt.get_address(msg.get_connection_nr()) } else { None }
+        };
+
+        if let Some(dst_addr) = dst_addr {
             trace!("TL conn_nr -> group addr: {}", dst_addr);
             let original_conn_nr = msg.get_connection_nr();
 
@@ -657,18 +669,19 @@ where
                     // checks for this action before sending. Here msg_for_data is
                     // None so the block is a no-op.
                     if let Some(msg) = msg_for_data.take()
-                        && let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
-                            match self.buffer_manager.try_alloc_from_slice(msg.buf()) {
-                                Some(queued_buffer) => {
-                                    let queued_msg = KnxMessageBuffer::new(queued_buffer, msg.service_type());
-                                    conn.queued_incoming = Some(queued_msg);
-                                    debug!("TL queued incoming data from {} for later delivery", remote_addr);
-                                }
-                                None => {
-                                    warn!("TL dropping incoming data from {} (no free buffers to queue)", remote_addr);
-                                }
+                        && let Some(conn) = self.connections.find_any_including_closed(remote_addr)
+                    {
+                        match self.buffer_manager.try_alloc_from_slice(msg.buf()) {
+                            Some(queued_buffer) => {
+                                let queued_msg = KnxMessageBuffer::new(queued_buffer, msg.service_type());
+                                conn.queued_incoming = Some(queued_msg);
+                                debug!("TL queued incoming data from {} for later delivery", remote_addr);
+                            }
+                            None => {
+                                warn!("TL dropping incoming data from {} (no free buffers to queue)", remote_addr);
                             }
                         }
+                    }
                 }
                 TlAction::DeliverQueuedData { source: _ } => {
                     // Deliver any queued incoming data to the application layer
@@ -723,19 +736,21 @@ where
                     // Use try_alloc to avoid blocking — if no buffer is available,
                     // skip this retransmit; the ACK timeout will fire again.
                     if let Some(conn) = self.connections.find_any_including_closed(dest)
-                        && let Some(ref pending_msg) = conn.pending_msg {
-                            match self.buffer_manager.try_alloc_from_slice(pending_msg.buf()) {
-                                Some(retransmit_buffer) => {
-                                    let retransmit_msg = KnxMessageBuffer::new(retransmit_buffer, pending_msg.service_type());
-                                    debug!("TL retransmitting: {:?}", retransmit_msg);
-                                    let _confirmation =
-                                        self.network_layer.request(RequestMessage::request(retransmit_msg)).await;
-                                }
-                                None => {
-                                    warn!("TL skipping retransmit to {} (no free buffers)", dest);
-                                }
+                        && let Some(ref pending_msg) = conn.pending_msg
+                    {
+                        match self.buffer_manager.try_alloc_from_slice(pending_msg.buf()) {
+                            Some(retransmit_buffer) => {
+                                let retransmit_msg =
+                                    KnxMessageBuffer::new(retransmit_buffer, pending_msg.service_type());
+                                debug!("TL retransmitting: {:?}", retransmit_msg);
+                                let _confirmation =
+                                    self.network_layer.request(RequestMessage::request(retransmit_msg)).await;
+                            }
+                            None => {
+                                warn!("TL skipping retransmit to {} (no free buffers)", dest);
                             }
                         }
+                    }
                 }
                 TlAction::StorePendingMessage => {
                     // Handled in the caller
@@ -746,9 +761,10 @@ where
                 TlAction::ClearPendingMessage => {
                     // Clear the pending message to free the buffer
                     if let Some(conn) = self.connections.find_any_including_closed(remote_addr)
-                        && conn.pending_msg.take().is_some() {
-                            debug!("TL cleared pending message for {}", remote_addr);
-                        }
+                        && conn.pending_msg.take().is_some()
+                    {
+                        debug!("TL cleared pending message for {}", remote_addr);
+                    }
                 }
             }
         }
@@ -764,31 +780,33 @@ where
         // send data) inline rather than re-entering handle_data_request,
         // which would cause recursive async (needs boxing).
         if let Some(conn) = self.connections.find_any(remote_addr)
-            && conn.state == ConnectionState::OpenIdle && conn.queued_outgoing.is_some() {
-                let mut msg = conn.queued_outgoing.take().expect("just checked is_some");
-                debug!("TL sending queued outgoing data to {}", remote_addr);
+            && conn.state == ConnectionState::OpenIdle
+            && conn.queued_outgoing.is_some()
+        {
+            let mut msg = conn.queued_outgoing.take().expect("just checked is_some");
+            debug!("TL sending queued outgoing data to {}", remote_addr);
 
-                // A7: Store + send data with SeqNoSend; clear rep_count;
-                // start ack timer; restart conn timer; → OPEN_WAIT
-                let seq_no = conn.seq_no_send;
-                conn.rep_count = 0;
+            // A7: Store + send data with SeqNoSend; clear rep_count;
+            // start ack timer; restart conn timer; → OPEN_WAIT
+            let seq_no = conn.seq_no_send;
+            conn.rep_count = 0;
 
-                msg.set_tpci(Tpci::DataConnected(seq_no));
-                msg.set_dest_addr(DestinationAddress::Individual(remote_addr));
-                msg.set_service_type(ServiceType::N_Data_Req);
-                conn.pending_msg = Some(msg);
+            msg.set_tpci(Tpci::DataConnected(seq_no));
+            msg.set_dest_addr(DestinationAddress::Individual(remote_addr));
+            msg.set_service_type(ServiceType::N_Data_Req);
+            conn.pending_msg = Some(msg);
 
-                conn.start_ack_timeout(Instant::now() + Duration::from_millis(ACK_TIMEOUT_MS));
-                conn.start_conn_timeout(Instant::now() + Duration::from_millis(CONNECTION_TIMEOUT_MS));
-                conn.state = ConnectionState::OpenWait;
+            conn.start_ack_timeout(Instant::now() + Duration::from_millis(ACK_TIMEOUT_MS));
+            conn.start_conn_timeout(Instant::now() + Duration::from_millis(CONNECTION_TIMEOUT_MS));
+            conn.state = ConnectionState::OpenWait;
 
-                // Send a copy (original stored for retransmission)
-                if let Some(ref pending) = conn.pending_msg {
-                    let send_buffer = self.buffer_manager.alloc_from_slice(pending.buf()).await;
-                    let send_msg = KnxMessageBuffer::new(send_buffer, pending.service_type());
-                    let _confirmation = self.network_layer.request(RequestMessage::request(send_msg)).await;
-                }
+            // Send a copy (original stored for retransmission)
+            if let Some(ref pending) = conn.pending_msg {
+                let send_buffer = self.buffer_manager.alloc_from_slice(pending.buf()).await;
+                let send_msg = KnxMessageBuffer::new(send_buffer, pending.service_type());
+                let _confirmation = self.network_layer.request(RequestMessage::request(send_msg)).await;
             }
+        }
     }
 
     /// Execute actions without handling data sending (for request handlers)
@@ -928,4 +946,3 @@ where
         }
     }
 }
-

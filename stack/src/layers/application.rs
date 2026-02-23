@@ -638,8 +638,11 @@ where
 
         self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::Busy);
 
-        // We only send to the first TSAP per spec
-        if let Some(tsap) = self.state.ast().borrow().get_sending_tsap(asap) {
+        // We only send to the first TSAP per spec.
+        // Extract TSAP before entering the block to avoid holding the RefCell
+        // borrow across the buffer allocation and transport layer awaits below.
+        let sending_tsap = self.state.ast().borrow().get_sending_tsap(asap);
+        if let Some(tsap) = sending_tsap {
             trace!("AL found sending TSAP {} for ASAP {}", tsap, asap);
 
             // Determine the length of this comm obj and the offset in the message
@@ -1148,25 +1151,26 @@ where
 
         // Sync DeviceControl.user_stopped and publish lifecycle events on run state transitions.
         if let Some(was_running) = was_running
-            && result.is_ok() {
-                let is_running = self.state.app().borrow().is_running();
-                if was_running != is_running {
-                    self.interface_objects.set_user_stopped(!is_running);
-                    self.lifecycle_channel.publish_immediate(if is_running {
-                        LifecycleEvent::ApplicationStarted
-                    } else {
-                        LifecycleEvent::ApplicationStopped
-                    });
+            && result.is_ok()
+        {
+            let is_running = self.state.app().borrow().is_running();
+            if was_running != is_running {
+                self.interface_objects.set_user_stopped(!is_running);
+                self.lifecycle_channel.publish_immediate(if is_running {
+                    LifecycleEvent::ApplicationStarted
+                } else {
+                    LifecycleEvent::ApplicationStopped
+                });
 
-                    // Activate or cancel the read-on-init cycle.
-                    if is_running {
-                        info!("AL read-on-init: starting cycle (app transitioned to running)");
-                        self.read_on_init = ReadOnInitState::Scanning(1);
-                    } else {
-                        self.read_on_init = ReadOnInitState::Idle;
-                    }
+                // Activate or cancel the read-on-init cycle.
+                if is_running {
+                    info!("AL read-on-init: starting cycle (app transitioned to running)");
+                    self.read_on_init = ReadOnInitState::Scanning(1);
+                } else {
+                    self.read_on_init = ReadOnInitState::Idle;
                 }
             }
+        }
 
         match result {
             Ok(write_response) => {
@@ -1285,7 +1289,7 @@ where
                 .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
                 .with_data(|data| {
                     // Set descriptor type to 0 in the response
-                    data[offsets::MSG_APCI + 1] = ((data[offsets::MSG_APCI + 1] & 0xC0));
+                    data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0);
                     // Copy mask version from device descriptor
                     let mask_version = D::DEVICE.mask_version_bytes();
                     data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4].copy_from_slice(&mask_version);
@@ -2291,12 +2295,11 @@ where
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 3;
         let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
 
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::AuthorizeResponse, transport_service)
-            .with_data(|data| {
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::AuthorizeResponse, transport_service).with_data(
+            |data| {
                 data[offsets::MSG_APCI + 2] = access_level;
-            });
+            },
+        );
 
         debug!("AL sending Authorize_Response: level={}", access_level);
 
@@ -2338,12 +2341,7 @@ where
 
         // Get current access context from the message (set by transport layer from connection)
         let current_ctx = self.resolve_access(ind);
-        debug!(
-            "AL Key_Write: level={}, key={:?}, current_ctx={:?}",
-            level,
-            crate::fmt::Bytes(&key),
-            current_ctx
-        );
+        debug!("AL Key_Write: level={}, key={:?}, current_ctx={:?}", level, crate::fmt::Bytes(&key), current_ctx);
 
         // Perform the key write
         let result_level = self.state.key_write(level, &key, current_ctx);
