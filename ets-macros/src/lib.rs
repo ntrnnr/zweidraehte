@@ -922,11 +922,11 @@ fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
         }
         Type::Array(array) => {
             // Handle [u8; N] arrays
-            if let Type::Path(inner) = array.elem.as_ref() {
-                if inner.path.is_ident("u8") {
+            if let Type::Path(inner) = array.elem.as_ref()
+                && inner.path.is_ident("u8") {
                     // Extract array length
-                    if let Expr::Lit(lit) = &array.len {
-                        if let Lit::Int(int) = &lit.lit {
+                    if let Expr::Lit(lit) = &array.len
+                        && let Lit::Int(int) = &lit.lit {
                             let len: usize = int.base10_parse()?;
                             return Ok(TypeInfo {
                                 size_bytes: len,
@@ -935,9 +935,7 @@ fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
                                 param_type: quote!(zweidraehte::ets::EtsParamType::None),
                             });
                         }
-                    }
                 }
-            }
             Err(syn::Error::new_spanned(ty, "Only [u8; N] arrays are supported"))
         }
         _ => Err(syn::Error::new_spanned(ty, "Unsupported type")),
@@ -1060,11 +1058,10 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     for variant in variants.iter() {
         if let syn::Fields::Named(fields) = &variant.fields {
             for field in &fields.named {
-                if let Ok(type_info) = get_type_info(&field.ty) {
-                    if type_info.align > max_align {
+                if let Ok(type_info) = get_type_info(&field.ty)
+                    && type_info.align > max_align {
                         max_align = type_info.align;
                     }
-                }
             }
         }
     }
@@ -1084,15 +1081,10 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     for variant in variants.iter() {
         let variant_name = &variant.ident;
         // Get explicit discriminant if present, otherwise use auto-incrementing value
-        let discriminant_value = if let Some((_, expr)) = &variant.discriminant {
-            if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }) = expr {
-                let val = lit.base10_parse::<i64>().unwrap_or(current_discriminant);
-                current_discriminant = val;
-                val
-            } else {
-                let val = current_discriminant;
-                val
-            }
+        let discriminant_value = if let Some((_, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }))) =
+            &variant.discriminant
+        {
+            lit.base10_parse::<i64>().unwrap_or(current_discriminant)
         } else {
             current_discriminant
         };
@@ -1626,7 +1618,7 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // Generate variant definitions and display match arms
     let mut enum_variants = Vec::new();
     let mut display_arms = Vec::new();
-    let mut current_discriminant: i64 = 0;
+    let mut next_discriminant: i64 = 0;
     let mut default_variant_ident: Option<&syn::Ident> = None;
 
     for variant in variants.iter() {
@@ -1647,24 +1639,17 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
 
-        // Get discriminant value
+        // Get discriminant value (explicit or auto-incrementing)
         let discriminant = if let Some((_, expr)) = &variant.discriminant {
-            if let syn::Expr::Lit(lit) = expr {
-                if let syn::Lit::Int(int) = &lit.lit {
-                    let val: i64 = int.base10_parse()?;
-                    current_discriminant = val;
-                    val
-                } else {
-                    return Err(syn::Error::new_spanned(expr, "Expected integer discriminant"));
-                }
+            if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(int), .. }) = expr {
+                int.base10_parse()?
             } else {
-                return Err(syn::Error::new_spanned(expr, "Expected literal discriminant"));
+                return Err(syn::Error::new_spanned(expr, "Expected integer literal discriminant"));
             }
         } else {
-            let val = current_discriminant;
-            current_discriminant += 1;
-            val
+            next_discriminant
         };
+        next_discriminant = discriminant + 1;
 
         // Parse variant attributes for display name
         let variant_attrs = parse_variant_attrs(&variant.attrs)?;
@@ -1694,8 +1679,6 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         display_arms.push(quote! {
             Self::#variant_ident => write!(f, #display_name)
         });
-
-        current_discriminant = discriminant + 1;
     }
 
     let size_bits = (repr_size * 8) as u8;
@@ -2137,8 +2120,6 @@ fn parse_ets_ref_attrs(attrs: &[Attribute]) -> syn::Result<Vec<ComObjectRefAttrs
 struct ComObjectField {
     /// Field identifier
     ident: syn::Ident,
-    /// Field type as declared (ComObject<T> or just T)
-    ty: syn::Type,
     /// Inner type (the T in ComObject<T>, or the type itself if not wrapped)
     inner_ty: syn::Type,
     /// Parsed #[ets(...)] attributes
@@ -2153,17 +2134,13 @@ struct ComObjectField {
 
 /// Extract inner type from ComObject<T> or return the type as-is
 fn extract_inner_type(ty: &syn::Type) -> syn::Type {
-    if let syn::Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            if segment.ident == "ComObject" {
-                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
+    if let syn::Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+            && segment.ident == "ComObject"
+                && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+                    && let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
                         return inner.clone();
                     }
-                }
-            }
-        }
-    }
     ty.clone()
 }
 
@@ -2195,11 +2172,10 @@ fn extract_array_info(ty: &syn::Type) -> Option<(syn::Type, ArrayLen)> {
     if let syn::Type::Array(arr) = ty {
         let elem = (*arr.elem).clone();
         // Try to parse the length expression as a literal first
-        if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit_int), .. }) = &arr.len {
-            if let Ok(len) = lit_int.base10_parse::<usize>() {
+        if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit_int), .. }) = &arr.len
+            && let Ok(len) = lit_int.base10_parse::<usize>() {
                 return Some((elem, ArrayLen::Literal(len)));
             }
-        }
         // Otherwise, keep the expression (could be a const like NUM_CHANNELS)
         return Some((elem, ArrayLen::Expr(arr.len.clone())));
     }
@@ -2275,7 +2251,6 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
 
         com_objects.push(ComObjectField {
             ident: field_ident,
-            ty: field_ty,
             inner_ty,
             attrs,
             refs,
