@@ -41,6 +41,12 @@ use super::{KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, Serv
 #[derive(Debug)]
 pub struct RemoteConfigurationServer;
 
+impl Default for RemoteConfigurationServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RemoteConfigurationServer {
     pub fn new() -> Self {
         RemoteConfigurationServer

@@ -76,12 +76,11 @@ impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
                 // If we receive a message with our own individual address as source,
                 // another device on the bus has the same address - set the duplication flag.
                 // This is a "sticky" flag that stays set until device reset.
-                if msg.get_source_addr() == self.state.individual_address() {
-                    if !self.interface_objects.device_control().address_duplication() {
+                if msg.get_source_addr() == self.state.individual_address()
+                    && !self.interface_objects.device_control().address_duplication() {
                         warn!("NL: Individual address duplication detected!");
                         self.interface_objects.set_address_duplication(true);
                     }
-                }
 
                 match msg.get_address_type() {
                     AddressType::Group => msg.set_service_type(ServiceType::N_GroupData_Ind),

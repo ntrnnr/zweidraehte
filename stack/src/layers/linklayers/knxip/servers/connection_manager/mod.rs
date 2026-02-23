@@ -353,7 +353,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
 
         // Find the connection and its type
         let conn_idx =
-            self.connections.iter().position(|slot| slot.as_ref().map_or(false, |ctx| ctx.channel_id == channel_id));
+            self.connections.iter().position(|slot| slot.as_ref().is_some_and(|ctx| ctx.channel_id == channel_id));
 
         let Some(conn_idx) = conn_idx else {
             debug!("Data frame for unknown channel {}, service {:?}", channel_id, service_type);
@@ -431,8 +431,8 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         let mut tcp_events = Vec::new();
 
         for slot in &mut self.connections {
-            if let Some(ctx) = slot {
-                if now - ctx.last_activity > self.heartbeat_timeout {
+            if let Some(ctx) = slot
+                && now - ctx.last_activity > self.heartbeat_timeout {
                     info!(
                         "Connection {} timed out (no heartbeat for {}s), closing",
                         ctx.channel_id,
@@ -452,7 +452,6 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
                         let _ = tcp_events.push(TcpChannelEvent::Removed { tcp_idx, channel_id });
                     }
                 }
-            }
         }
 
         tcp_events
@@ -471,7 +470,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
     /// closed, all inner KNX/IP connections are considered terminated.
     pub fn on_tcp_closed(&mut self, tcp_idx: usize) {
         for slot in &mut self.connections {
-            let should_close = slot.as_ref().map_or(false, |ctx| {
+            let should_close = slot.as_ref().is_some_and(|ctx| {
                 matches!(ctx.transport, ConnectionTransport::Tcp { tcp_idx: idx } if idx == tcp_idx)
             });
 
@@ -496,7 +495,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         origin: PacketOrigin,
         buffer_manager: &RefCell<DynBufferManager<'static>>,
     ) -> Result<ConnectionManagerResult, ServerError> {
-        let mut buf = &data[..];
+        let mut buf = data;
         let request = match buf.parse::<ConnectRequest>() {
             Ok(req) => req,
             Err(_) => {
@@ -659,7 +658,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         origin: PacketOrigin,
         buffer_manager: &RefCell<DynBufferManager<'static>>,
     ) -> Result<ConnectionManagerResult, ServerError> {
-        let mut buf = &data[..];
+        let mut buf = data;
         let request = match buf.parse::<ConnectionstateRequest>() {
             Ok(req) => req,
             Err(_) => return Err(ServerError::ParseError),
@@ -703,7 +702,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         origin: PacketOrigin,
         buffer_manager: &RefCell<DynBufferManager<'static>>,
     ) -> Result<ConnectionManagerResult, ServerError> {
-        let mut buf = &data[..];
+        let mut buf = data;
         let request = match buf.parse::<DisconnectRequest>() {
             Ok(req) => req,
             Err(_) => return Err(ServerError::ParseError),
@@ -765,11 +764,10 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
 
     fn remove_connection(&mut self, channel_id: u8) -> Option<ConnectionContext> {
         for slot in &mut self.connections {
-            if let Some(ctx) = slot {
-                if ctx.channel_id == channel_id {
+            if let Some(ctx) = slot
+                && ctx.channel_id == channel_id {
                     return slot.take();
                 }
-            }
         }
         None
     }

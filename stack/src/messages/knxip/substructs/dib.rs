@@ -838,7 +838,7 @@ impl<'a> SerializablePacket for TunnelingInfoBuilder<'a> {
     fn bytes_len(&self) -> usize {
         mem::size_of::<raw::Header>()
             + mem::size_of::<raw::TunnelingInformationData>()
-            + self.slots.len() * mem::size_of::<TunnelingSlotInfo>()
+            + core::mem::size_of_val(self.slots)
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {

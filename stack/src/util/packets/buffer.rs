@@ -75,7 +75,7 @@ pub trait BufferView<B: ByteSlice>: Sized + AsRef<[u8]> {
     where
         T: FromBytes + KnownLayout + Immutable + Unaligned,
     {
-        Some(Ref::into_ref(Ref::<_, T>::from_suffix((&*self).as_ref()).ok()?.1))
+        Some(Ref::into_ref(Ref::<_, T>::from_suffix((*self).as_ref()).ok()?.1))
     }
 
     fn take_obj_back<T>(&mut self) -> Option<Ref<B, T>>
@@ -350,27 +350,27 @@ impl<'b, 'a: 'b> BufferView<&'b mut [u8]> for &'b mut &'a mut [u8] {
 impl<'b, 'a: 'b> BufferViewMut<&'b mut [u8]> for &'b mut &'a mut [u8] {}
 
 pub(crate) fn take_front<'a>(bytes: &mut &'a [u8], n: usize) -> &'a [u8] {
-    let (prefix, rest) = mem::replace(bytes, &[]).split_at(n);
+    let (prefix, rest) = core::mem::take(bytes).split_at(n);
     *bytes = rest;
     prefix
 }
 
 pub(crate) fn take_back<'a>(bytes: &mut &'a [u8], n: usize) -> &'a [u8] {
     let split = bytes.len() - n;
-    let (rest, suffix) = mem::replace(bytes, &[]).split_at(split);
+    let (rest, suffix) = core::mem::take(bytes).split_at(split);
     *bytes = rest;
     suffix
 }
 
 pub(crate) fn take_front_mut<'a>(bytes: &mut &'a mut [u8], n: usize) -> &'a mut [u8] {
-    let (prefix, rest) = mem::replace(bytes, &mut []).split_at_mut(n);
+    let (prefix, rest) = core::mem::take(bytes).split_at_mut(n);
     *bytes = rest;
     prefix
 }
 
 pub(crate) fn take_back_mut<'a>(bytes: &mut &'a mut [u8], n: usize) -> &'a mut [u8] {
     let split = <[u8]>::len(bytes) - n;
-    let (rest, suffix) = mem::replace(bytes, &mut []).split_at_mut(split);
+    let (rest, suffix) = core::mem::take(bytes).split_at_mut(split);
     *bytes = rest;
     suffix
 }

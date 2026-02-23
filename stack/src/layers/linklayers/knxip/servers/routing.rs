@@ -176,8 +176,7 @@ impl RoutingTimekeeper {
                 } else {
                     // Busy period expired, transition to Throttled
                     self.state = RoutingState::Throttled;
-                    self.next_allowed_time =
-                        self.next_allowed_time + embassy_time::Duration::from_millis(self.calculate_trandom() as u64);
+                    self.next_allowed_time += embassy_time::Duration::from_millis(self.calculate_trandom() as u64);
 
                     trace!(
                         "GetWaitTime() state={:?} waitTime={}",

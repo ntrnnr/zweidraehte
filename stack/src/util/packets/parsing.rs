@@ -53,7 +53,7 @@ pub trait ParseBufferMut {
     ) -> Result<P, P::Error>;
 }
 
-impl<'a> ParseBuffer for &'a [u8] {
+impl ParseBuffer for &[u8] {
     fn parse_with<'b, ParseArgs, P: ParsablePacket<&'b [u8], ParseArgs>>(
         &'b mut self,
         args: ParseArgs,
@@ -65,7 +65,7 @@ impl<'a> ParseBuffer for &'a [u8] {
 
         impl<'a, 'b> AsRef<[u8]> for ByteSlice<'a, 'b> {
             fn as_ref(&self) -> &[u8] {
-                &self.0
+                self.0
             }
         }
 
@@ -94,7 +94,7 @@ impl<'a> ParseBuffer for &'a [u8] {
     }
 }
 
-impl<'a> ParseBuffer for &'a mut [u8] {
+impl ParseBuffer for &mut [u8] {
     fn parse_with<'b, ParseArgs, P: ParsablePacket<&'b [u8], ParseArgs>>(
         &'b mut self,
         args: ParseArgs,
@@ -103,7 +103,7 @@ impl<'a> ParseBuffer for &'a mut [u8] {
     }
 }
 
-impl<'a> ParseBufferMut for &'a mut [u8] {
+impl ParseBufferMut for &mut [u8] {
     fn parse_with_mut<'b, ParseArgs, P: ParsablePacket<&'b mut [u8], ParseArgs>>(
         &'b mut self,
         args: ParseArgs,
@@ -112,13 +112,13 @@ impl<'a> ParseBufferMut for &'a mut [u8] {
     }
 }
 
-impl<'a> SerializeBuffer for &'a mut [u8] {
+impl SerializeBuffer for &mut [u8] {
     fn serialize<P: SerializablePacket>(&mut self, packet: &P) -> (&mut [u8], &mut [u8]) {
         let original_len = <[u8]>::len(self);
         let mut temp = &mut **self;
         packet.serialize(&mut &mut temp);
         // temp now points to remaining bytes
-        let written = original_len - <[u8]>::len(&temp);
+        let written = original_len - <[u8]>::len(temp);
         // Split the original buffer into written and remaining portions
         let buffer = core::mem::take(self);
         let (written_portion, remaining_portion) = buffer.split_at_mut(written);

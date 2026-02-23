@@ -72,7 +72,7 @@ impl<const N: usize> AddressTable for Table<AddrTab7Impl<N>> {
             let addr_tbl = self.addr(idx as usize);
 
             if address == addr_tbl {
-                return Some(idx as u16);
+                return Some(idx);
             }
 
             if address < addr_tbl {
@@ -86,7 +86,7 @@ impl<const N: usize> AddressTable for Table<AddrTab7Impl<N>> {
     }
 
     fn contains(&self, address: GroupAddress) -> bool {
-        self.get_tsap(address) != None
+        self.get_tsap(address).is_some()
     }
 }
 

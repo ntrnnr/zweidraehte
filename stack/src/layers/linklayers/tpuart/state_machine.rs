@@ -829,12 +829,11 @@ fn process_receive_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut A
     }
 
     // Check if we have received the expected length
-    if let Some(expected) = recv.expected_len {
-        if recv.bytes_received >= expected {
+    if let Some(expected) = recv.expected_len
+        && recv.bytes_received >= expected {
             // Frame complete
             complete_frame_reception(ctx, actions);
         }
-    }
 }
 
 fn complete_frame_reception(ctx: &mut StateMachineContext, actions: &mut ActionBuffer) {

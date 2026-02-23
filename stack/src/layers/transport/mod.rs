@@ -505,7 +505,7 @@ where
         let send_buffer = {
             let pending = self.connections.find_any(dest).and_then(|c| c.pending_msg.as_ref());
             if let Some(pm) = pending {
-                self.buffer_manager.borrow().alloc_from_slice(&*pm.buf()).await
+                self.buffer_manager.borrow().alloc_from_slice(pm.buf()).await
             } else {
                 // Should not happen, but handle gracefully
                 return KnxMessageBuffer::new(self.buffer_manager.borrow().alloc_with_size(0).await, service_type)
@@ -658,9 +658,9 @@ where
                     // queuing is handled by the caller (handle_data_request) which
                     // checks for this action before sending. Here msg_for_data is
                     // None so the block is a no-op.
-                    if let Some(msg) = msg_for_data.take() {
-                        if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
-                            match self.buffer_manager.borrow().try_alloc_from_slice(&*msg.buf()) {
+                    if let Some(msg) = msg_for_data.take()
+                        && let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
+                            match self.buffer_manager.borrow().try_alloc_from_slice(msg.buf()) {
                                 Some(queued_buffer) => {
                                     let queued_msg = KnxMessageBuffer::new(queued_buffer, msg.service_type());
                                     conn.queued_incoming = Some(queued_msg);
@@ -671,7 +671,6 @@ where
                                 }
                             }
                         }
-                    }
                 }
                 TlAction::DeliverQueuedData { source: _ } => {
                     // Deliver any queued incoming data to the application layer
@@ -725,9 +724,9 @@ where
                     // Get the pending message from the connection and retransmit.
                     // Use try_alloc to avoid blocking — if no buffer is available,
                     // skip this retransmit; the ACK timeout will fire again.
-                    if let Some(conn) = self.connections.find_any_including_closed(dest) {
-                        if let Some(ref pending_msg) = conn.pending_msg {
-                            match self.buffer_manager.borrow().try_alloc_from_slice(&*pending_msg.buf()) {
+                    if let Some(conn) = self.connections.find_any_including_closed(dest)
+                        && let Some(ref pending_msg) = conn.pending_msg {
+                            match self.buffer_manager.borrow().try_alloc_from_slice(pending_msg.buf()) {
                                 Some(retransmit_buffer) => {
                                     let retransmit_msg = KnxMessageBuffer::new(retransmit_buffer, pending_msg.service_type());
                                     debug!("TL retransmitting: {:?}", retransmit_msg);
@@ -739,7 +738,6 @@ where
                                 }
                             }
                         }
-                    }
                 }
                 TlAction::StorePendingMessage => {
                     // Handled in the caller
@@ -749,11 +747,10 @@ where
                 }
                 TlAction::ClearPendingMessage => {
                     // Clear the pending message to free the buffer
-                    if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
-                        if conn.pending_msg.take().is_some() {
+                    if let Some(conn) = self.connections.find_any_including_closed(remote_addr)
+                        && conn.pending_msg.take().is_some() {
                             debug!("TL cleared pending message for {}", remote_addr);
                         }
-                    }
                 }
             }
         }
@@ -768,8 +765,8 @@ where
         // send it now that we're back in OPEN_IDLE. We perform A7 (store +
         // send data) inline rather than re-entering handle_data_request,
         // which would cause recursive async (needs boxing).
-        if let Some(conn) = self.connections.find_any(remote_addr) {
-            if conn.state == ConnectionState::OpenIdle && conn.queued_outgoing.is_some() {
+        if let Some(conn) = self.connections.find_any(remote_addr)
+            && conn.state == ConnectionState::OpenIdle && conn.queued_outgoing.is_some() {
                 let mut msg = conn.queued_outgoing.take().expect("just checked is_some");
                 debug!("TL sending queued outgoing data to {}", remote_addr);
 
@@ -789,12 +786,11 @@ where
 
                 // Send a copy (original stored for retransmission)
                 if let Some(ref pending) = conn.pending_msg {
-                    let send_buffer = self.buffer_manager.borrow().alloc_from_slice(&*pending.buf()).await;
+                    let send_buffer = self.buffer_manager.borrow().alloc_from_slice(pending.buf()).await;
                     let send_msg = KnxMessageBuffer::new(send_buffer, pending.service_type());
                     let _confirmation = self.network_layer.request(RequestMessage::request(send_msg)).await;
                 }
             }
-        }
     }
 
     /// Execute actions without handling data sending (for request handlers)

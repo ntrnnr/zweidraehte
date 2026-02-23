@@ -67,6 +67,11 @@ pub trait MessageBuffer: Deref<Target = [u8]> + DerefMut<Target = [u8]> + Sized 
     /// Length of the active data region.
     fn len(&self) -> usize;
 
+    /// Whether the active data region is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Set the length of the active data region.
     ///
     /// # Panics

@@ -444,7 +444,7 @@ where
             let (object_size, msg_offset) = Self::get_object_size_and_offset(&cot_info);
 
             // Check if incoming message is long enough to carry a comm object value
-            if ind.len() as usize == object_size + msg_offset {
+            if ind.len() == object_size + msg_offset {
                 // Set the APCI to all zeros, because we don't need it anymore
                 // We do that so that we can just copy out the DPT even if the
                 // object type is one of the small ones with <= 6 bit. If the APCI
@@ -985,7 +985,7 @@ where
         let object_idx = buf[offsets::MSG_APCI + 2] as u16;
         let prop_id = buf[offsets::MSG_APCI + 3];
         let count_start = ((buf[offsets::MSG_APCI + 4] as u16) << 8) | (buf[offsets::MSG_APCI + 5] as u16);
-        let count = (count_start >> 12) as u16;
+        let count = (count_start >> 12);
         let start_idx = count_start & 0x0FFF;
 
         let access_ctx = self.resolve_access(ind);
@@ -1020,7 +1020,7 @@ where
                 // Per KNX spec: if start_idx=0 (element count query), response must have nr_of_elem=1
                 let response_count_start = if start_idx == 0 {
                     // Element count query: respond with count=1, start_idx=0
-                    (1u16 << 12) | 0
+                    (1u16 << 12)
                 } else {
                     // Normal read: echo back the original count_start
                     count_start
@@ -1119,7 +1119,7 @@ where
         let object_idx = buf[offsets::MSG_APCI + 2] as u16;
         let prop_id = buf[offsets::MSG_APCI + 3];
         let count_start = ((buf[offsets::MSG_APCI + 4] as u16) << 8) | (buf[offsets::MSG_APCI + 5] as u16);
-        let count = (count_start >> 12) as u16;
+        let count = (count_start >> 12);
         let start_idx = count_start & 0x0FFF;
 
         // Extract the data to write
@@ -1147,8 +1147,8 @@ where
         let result = self.interface_objects.property_value_write(object_idx, prop_id, start_idx, data, access_ctx);
 
         // Sync DeviceControl.user_stopped and publish lifecycle events on run state transitions.
-        if let Some(was_running) = was_running {
-            if result.is_ok() {
+        if let Some(was_running) = was_running
+            && result.is_ok() {
                 let is_running = self.state.app().borrow().is_running();
                 if was_running != is_running {
                     self.interface_objects.set_user_stopped(!is_running);
@@ -1167,7 +1167,6 @@ where
                     }
                 }
             }
-        }
 
         match result {
             Ok(write_response) => {
@@ -1286,7 +1285,7 @@ where
                 .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
                 .with_data(|data| {
                     // Set descriptor type to 0 in the response
-                    data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0) | 0x00;
+                    data[offsets::MSG_APCI + 1] = ((data[offsets::MSG_APCI + 1] & 0xC0));
                     // Copy mask version from device descriptor
                     let mask_version = D::DEVICE.mask_version_bytes();
                     data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4].copy_from_slice(&mask_version);

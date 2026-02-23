@@ -13,6 +13,7 @@ use crate::dpt::DatapointType;
 /// - Bit 2: Read request pending
 /// - Bit 1: Write/Transmit request pending
 /// - Bit 0: Error flag (1 = error, 0 = ok)
+#[derive(Default)]
 pub enum ComObjectStatus {
     /// Object was updated remotely (0x48)
     Updated,
@@ -43,14 +44,10 @@ pub enum ComObjectStatus {
     IdleError,
 
     /// Object is currently uninitialized
+    #[default]
     Uninitialized,
 }
 
-impl Default for ComObjectStatus {
-    fn default() -> Self {
-        ComObjectStatus::Uninitialized
-    }
-}
 
 impl ComObjectStatus {
     /// Convert status to a BCU1-style flags byte.

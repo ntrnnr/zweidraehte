@@ -311,7 +311,7 @@ impl<'a, B: Deref<Target = [u8]> + 'static> ActorRequest<RequestMessage<B>, Conf
                 &embassy_sync::channel::DynamicSender<'_, ConfirmationMessage<B>>,
             >(&sender)
         };
-        let layer_op = LayerOp::Request { message, response_tx: response_tx.clone() };
+        let layer_op = LayerOp::Request { message, response_tx: *response_tx };
         self.send(layer_op).await;
         let res = channel.receive().await;
 
@@ -336,7 +336,7 @@ impl<'a, B: Deref<Target = [u8]> + 'static, const N: usize> ActorRequest<Request
                 &embassy_sync::channel::DynamicSender<'_, ConfirmationMessage<B>>,
             >(&sender)
         };
-        let layer_op = LayerOp::Request { message, response_tx: response_tx.clone() };
+        let layer_op = LayerOp::Request { message, response_tx: *response_tx };
         self.send(layer_op).await;
         let res = channel.receive().await;
 

@@ -306,11 +306,10 @@ impl ProcessResult {
         connections: &mut super::connection::ConnectionTable<I, O>,
         addr: IndividualAddress,
     ) {
-        if let Some(next_state) = self.next_state {
-            if let Some(conn) = connections.find_any_including_closed(addr) {
+        if let Some(next_state) = self.next_state
+            && let Some(conn) = connections.find_any_including_closed(addr) {
                 conn.state = next_state;
             }
-        }
     }
 }
 

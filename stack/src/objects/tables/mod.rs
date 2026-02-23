@@ -463,7 +463,7 @@ impl ComObjectFlags {
     const P_SHIFT: u8 = 0;
     const P_LEN: u8 = 2;
     const P_MAX: u8 = (1 << Self::P_LEN) - 1; // Max priority value (3)
-    const P_MASK: u8 = (Self::P_MAX as u8) << Self::P_SHIFT;
+    const P_MASK: u8 = Self::P_MAX << Self::P_SHIFT;
 
     /// Common group object configuration: Transmit to bus (T)
     pub const CONFIG_T: u8 = Self::CE_FLAG_MASK | Self::TE_FLAG_MASK;
@@ -747,6 +747,12 @@ pub struct Table<T: TableMemory> {
 
 impl<T: TableMemory> ConstDefault for Table<T> {
     const DEFAULT: Self = Table::new();
+}
+
+impl<T: TableMemory> Default for Table<T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: TableMemory> Table<T> {

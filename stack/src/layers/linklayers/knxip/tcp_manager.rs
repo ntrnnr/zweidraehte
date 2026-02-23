@@ -185,7 +185,7 @@ impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
         let mut events = Vec::new();
 
         for (idx, slot) in self.connections.iter_mut().enumerate() {
-            let should_close = slot.as_ref().map_or(false, |conn| conn.is_idle_expired(now));
+            let should_close = slot.as_ref().is_some_and(|conn| conn.is_idle_expired(now));
 
             if should_close {
                 let conn = slot.take().expect("just checked Some");

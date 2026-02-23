@@ -168,12 +168,9 @@ where
         let actions = process_busmon_event(&mut self.ctx, BusMonitorEvent::Enable);
 
         for action in actions.iter() {
-            match action {
-                BusMonitorAction::SendBusMonitorEnable => {
-                    self.uart.write_all(&[U_BUSMON_REQ]).await
-                        .map_err(|_| BusMonitorError::IoError)?;
-                }
-                _ => {}
+            if let BusMonitorAction::SendBusMonitorEnable = action {
+                self.uart.write_all(&[U_BUSMON_REQ]).await
+                    .map_err(|_| BusMonitorError::IoError)?;
             }
         }
 
@@ -187,11 +184,8 @@ where
         let actions = process_busmon_event(&mut self.ctx, BusMonitorEvent::Disable);
 
         for action in actions.iter() {
-            match action {
-                BusMonitorAction::SendReset => {
-                    self.reset_chip().await?;
-                }
-                _ => {}
+            if let BusMonitorAction::SendReset = action {
+                self.reset_chip().await?;
             }
         }
 
@@ -243,15 +237,12 @@ where
                     let actions = process_busmon_event(&mut self.ctx, BusMonitorEvent::Timer);
 
                     for action in actions.iter() {
-                        match action {
-                            BusMonitorAction::FrameComplete => {
-                                self.timeout_deadline = None;
-                                return Ok(CapturedFrame {
-                                    data: &buffer[..write_idx],
-                                    ack_status,
-                                });
-                            }
-                            _ => {}
+                        if let BusMonitorAction::FrameComplete = action {
+                            self.timeout_deadline = None;
+                            return Ok(CapturedFrame {
+                                data: &buffer[..write_idx],
+                                ack_status,
+                            });
                         }
                     }
 
@@ -306,7 +297,7 @@ where
             .map_err(|_| BusMonitorError::IoError)?;
 
         let mut buf = [0u8; 1];
-        let timeout = Timer::after(Duration::from_millis(TIMEOUT_RESET.as_millis() as u64));
+        let timeout = Timer::after(Duration::from_millis(TIMEOUT_RESET.as_millis()));
 
         match select(timeout, self.uart.read(&mut buf)).await {
             Either::First(_) => Err(BusMonitorError::Timeout),

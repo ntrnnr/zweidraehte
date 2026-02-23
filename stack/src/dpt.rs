@@ -440,11 +440,11 @@ pub struct DatapointID<const MAIN: u16, const SUB: u16>;
 
 impl<const MAIN: u16, const SUB: u16> DatapointID<MAIN, SUB> {
     pub fn main(&self) -> u16 {
-        return MAIN;
+        MAIN
     }
 
     pub fn sub(&self) -> u16 {
-        return SUB;
+        SUB
     }
 }
 
@@ -618,7 +618,7 @@ pub type DPT_SerNum = DatapointType<PDT_Generic06, 221, 001>;
 
 impl core::fmt::Debug for DPT_SerNum {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let i: KNXSerialNumber = self.clone().into();
+        let i: KNXSerialNumber = (*self).into();
         write!(f, "{:?}", i)
     }
 }
@@ -1075,7 +1075,7 @@ impl From<Scaling> for DPT_Scaling {
 
 impl core::fmt::Debug for DPT_Scaling {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s: Scaling = self.clone().into();
+        let s: Scaling = (*self).into();
         write!(f, "{:?}", s)
     }
 }
@@ -1344,7 +1344,7 @@ impl From<SceneNumber> for DPT_SceneNumber {
 
 impl core::fmt::Debug for DPT_SceneNumber {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s: SceneNumber = self.clone().into();
+        let s: SceneNumber = (*self).into();
         write!(f, "{:?}", s)
     }
 }
@@ -1395,7 +1395,7 @@ pub type DPT_PropDataType = DatapointType<PDT_UnsignedInt, 7, 010>;
 
 impl core::fmt::Debug for DPT_PropDataType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let i: InterfaceObjectType = self.clone().into();
+        let i: InterfaceObjectType = (*self).into();
         write!(f, "{:?}", i)
     }
 }
@@ -1468,7 +1468,7 @@ pub type DPT_ErrorClass_System = DatapointType<PDT_Enum8, 20, 011>;
 
 impl core::fmt::Debug for DPT_ErrorClass_System {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let i: SystemError = self.clone().into();
+        let i: SystemError = (*self).into();
         write!(f, "{:?}", i)
     }
 }

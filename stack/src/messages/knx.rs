@@ -282,7 +282,7 @@ impl Ctrl1Field {
     const P_SHIFT: u8 = 2;
     const P_LEN: u8 = 2;
     const P_MAX: u8 = (1 << Self::P_LEN) - 1;
-    const P_MASK: u8 = (Self::P_MAX as u8) << Self::P_SHIFT;
+    const P_MASK: u8 = Self::P_MAX << Self::P_SHIFT;
 
     pub fn new(flags: u8) -> Self {
         Self(flags)
@@ -322,7 +322,7 @@ impl Ctrl1Field {
     }
 
     pub fn priority(&self) -> Priority {
-        ((self.0 & Self::P_MASK) >> Self::P_SHIFT).try_into().unwrap()
+        ((self.0 & Self::P_MASK) >> Self::P_SHIFT).into()
     }
 
     pub fn set_priority<P: Into<u8>>(&mut self, priority: P) {
@@ -403,12 +403,12 @@ impl TpciField {
     const SEQNO_SHIFT: u8 = 2;
     const SEQNO_LEN: u8 = 4;
     const SEQNO_MAX: u8 = (1 << Self::SEQNO_LEN) - 1;
-    const SEQNO_MASK: u8 = (Self::SEQNO_MAX as u8) << Self::SEQNO_SHIFT;
+    const SEQNO_MASK: u8 = Self::SEQNO_MAX << Self::SEQNO_SHIFT;
 
     const CTRLT_SHIFT: u8 = 0;
     const CTRLT_LEN: u8 = 2;
     const CTRLT_MAX: u8 = (1 << Self::CTRLT_LEN) - 1;
-    const CTRLT_MASK: u8 = (Self::CTRLT_MAX as u8) << Self::CTRLT_SHIFT;
+    const CTRLT_MASK: u8 = Self::CTRLT_MAX << Self::CTRLT_SHIFT;
 
     pub fn new(flags: u8) -> Self {
         Self(flags)
@@ -655,6 +655,10 @@ impl<B: Deref<Target = [u8]>, F: MessageFormat> KnxMessageBuffer<B, F> {
     pub fn len(&self) -> usize {
         self.buf.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.len() == 0
+    }
 }
 
 // ============================================================================
@@ -747,16 +751,16 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
 
         if addr_type != 0 && self.read_u16_be(MSG_DEST_ADDR) == 0 {
             if (self.buf[MSG_CONTROL] & 0x10) == 0 {
-                return DestinationAddress::SystemBroadcast;
+                DestinationAddress::SystemBroadcast
             } else {
-                return DestinationAddress::Broadcast;
+                DestinationAddress::Broadcast
             }
         } else if addr_type != 0 {
-            return DestinationAddress::Group(GroupAddress::from_bytes(&self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2]));
+            DestinationAddress::Group(GroupAddress::from_bytes(&self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2]))
         } else {
-            return DestinationAddress::Individual(IndividualAddress::from_bytes(
+            DestinationAddress::Individual(IndividualAddress::from_bytes(
                 &self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2],
-            ));
+            ))
         }
     }
 
@@ -778,14 +782,14 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
 
         if addr_type != 0 && self.read_u16_be(MSG_DEST_ADDR) == 0 {
             if self.ctrl_field().sb() == SystemBroadcast::SysBroadcast {
-                return AddressType::SystemBroadcast;
+                AddressType::SystemBroadcast
             } else {
-                return AddressType::Broadcast;
+                AddressType::Broadcast
             }
         } else if addr_type != 0 {
-            return AddressType::Group;
+            AddressType::Group
         } else {
-            return AddressType::Individual;
+            AddressType::Individual
         }
     }
 
@@ -878,23 +882,23 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
         use offsets::*;
 
         let apci_value: u8 = apci.into();
-        let category = (apci_value & 0xc0) as u8;
+        let category = (apci_value & 0xc0);
 
         match category {
             // Extended
             0x40 => {
                 self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 1;
-                self.buf[MSG_APCI + 1] = (apci_value | 0xc0) as u8;
+                self.buf[MSG_APCI + 1] = (apci_value | 0xc0);
             }
             // User
             0x80 => {
                 self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 2;
-                self.buf[MSG_APCI + 1] = (apci_value | 0xc0) as u8;
+                self.buf[MSG_APCI + 1] = (apci_value | 0xc0);
             }
             // Escaped
             0xc0 => {
                 self.buf[MSG_APCI] = (self.buf[MSG_APCI] & 0xfc) | 3;
-                self.buf[MSG_APCI + 1] = apci_value as u8;
+                self.buf[MSG_APCI + 1] = apci_value;
             }
             // Short
             _ => {

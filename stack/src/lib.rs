@@ -797,6 +797,12 @@ pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUF
     interface_objects: MaybeUninit<D::InterfaceObjects<'static>>,
 }
 
+impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> Default for StackResources<D, BUF_SZ, NUM_BUFS> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResources<D, BUF_SZ, NUM_BUFS> {
     pub fn new() -> Self {
         Self {
@@ -961,7 +967,7 @@ impl<D: StackDefinition> context::ApplicationLayerContext for StackContext<'_, D
     fn application_layer_sender(
         &self,
     ) -> embassy_sync::channel::DynamicSender<'_, layers::LayerOp<messages::buffers::Buffer<'static>>> {
-        self.al_sender.clone()
+        self.al_sender
     }
 }
 
@@ -1059,7 +1065,7 @@ fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
 ) -> (DynamicSender<'static, MSG>, DynamicReceiver<'static, MSG>) {
     let sender: DynamicSender<'_, MSG> = channel.sender().into();
     let receiver: DynamicReceiver<'_, MSG> = channel.receiver().into();
-    (sender.into(), receiver.into())
+    (sender, receiver)
 }
 
 /// Create a new KNX stack.
@@ -1141,14 +1147,14 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     let stack = Stack {
         inner,
         interface_objects,
-        app_request_sender: app_request_sender.into(),
-        restart_receiver: restart_receiver.into(),
+        app_request_sender: app_request_sender,
+        restart_receiver: restart_receiver,
     };
     let runner = Runner {
         stack,
         interface_objects,
-        app_request_receiver: app_request_receiver.into(),
-        restart_sender: restart_sender.into(),
+        app_request_receiver: app_request_receiver,
+        restart_sender: restart_sender,
         link_layer_builder,
         link_layer_resources,
     };

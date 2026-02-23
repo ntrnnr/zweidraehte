@@ -635,11 +635,10 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
         for (srv_idx, endpoints) in &server_endpoints {
             for endpoint in endpoints {
                 let port = endpoint.port();
-                if let Some(sock_idx) = socket_descriptors.iter().position(|desc| desc.port() == port) {
-                    if !server_instances[*srv_idx].socket_indices.contains(&sock_idx) {
+                if let Some(sock_idx) = socket_descriptors.iter().position(|desc| desc.port() == port)
+                    && !server_instances[*srv_idx].socket_indices.contains(&sock_idx) {
                         let _ = server_instances[*srv_idx].socket_indices.push(sock_idx);
                     }
-                }
             }
         }
 
@@ -840,7 +839,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                     if server.handler.supports_requests() {
                         let context =
                             make_server_context(self.context, self.enable_remote_config, self.network_layer_tx);
-                        match server.handler.on_request(&*pending.message, &context).await {
+                        match server.handler.on_request(&pending.message, &context).await {
                             Ok(responses) => {
                                 // Success! Send responses and confirmation
                                 for response in responses {
@@ -1049,11 +1048,10 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
             if self.connection_manager.has_active_connections() {
                 let tcp_events = self.connection_manager.on_tick();
                 for event in tcp_events {
-                    if let servers::TcpChannelEvent::Removed { tcp_idx, channel_id } = event {
-                        if let Some(tcp_conn) = self.tcp_manager.connection_mut(tcp_idx) {
+                    if let servers::TcpChannelEvent::Removed { tcp_idx, channel_id } = event
+                        && let Some(tcp_conn) = self.tcp_manager.connection_mut(tcp_idx) {
                             tcp_conn.remove_channel(channel_id);
                         }
-                    }
                 }
             }
 
@@ -1169,7 +1167,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                                             );
                                             match server
                                                 .handler
-                                                .on_request(&**msg_opt.as_ref().unwrap(), &context)
+                                                .on_request(msg_opt.as_ref().unwrap(), &context)
                                                 .await
                                             {
                                                 Ok(responses) => {

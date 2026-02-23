@@ -578,9 +578,7 @@ where
                     debug!("TPUART: Chip version: {}", version);
                 }
                 MainAction::IncrementResetCounter => {
-                    if self.main_ctx.reset_counter < 255 {
-                        self.main_ctx.reset_counter += 1;
-                    }
+                    self.main_ctx.reset_counter = self.main_ctx.reset_counter.saturating_add(1);
                 }
                 MainAction::ResetBusFailureCounter => {
                     self.main_ctx.reset_counter = 0;
@@ -600,17 +598,15 @@ where
                 }
                 MainAction::SendSmFrameStart => {
                     // Check if this is an echo of our transmission
-                    if let Some(ref tx) = self.current_tx {
-                        if let Some(ref buf) = self.receive_buffer {
-                            if buf.len() >= 4 && self.is_echo(&tx.tp1_buffer, buf) {
+                    if let Some(ref tx) = self.current_tx
+                        && let Some(ref buf) = self.receive_buffer
+                            && buf.len() >= 4 && self.is_echo(&tx.tp1_buffer, buf) {
                                 self.main_ctx.receive_state.is_echo = true;
                                 let actions = process_send_event(&mut self.send_ctx, SendEvent::FrameStartReceived {
                                     is_echo: true,
                                 });
                                 self.execute_send_actions(actions).await;
                             }
-                        }
-                    }
                 }
                 MainAction::SendSmFrameComplete => {
                     let actions = process_send_event(&mut self.send_ctx, SendEvent::EchoReceived);
@@ -690,8 +686,8 @@ where
         for action in actions.iter().copied() {
             match action {
                 SendAction::SendByte { index, is_last } => {
-                    if let Some(ref tx) = self.current_tx {
-                        if index < tx.tp1_buffer.len() {
+                    if let Some(ref tx) = self.current_tx
+                        && index < tx.tp1_buffer.len() {
                             let byte = tx.tp1_buffer[index];
                             let is_long_frame = tx.tp1_buffer.len() > 64;
 
@@ -738,7 +734,6 @@ where
                                 }
                             }
                         }
-                    }
                 }
                 SendAction::StartSendTimer => {
                     self.timeout_deadline = Some(Instant::now() + TIMEOUT_SEND);
@@ -838,8 +833,8 @@ where
 
         // Check if this is an echo of our transmission
         // Compare control byte (ignoring repeat bit) and addresses
-        if let Some(ref tx) = self.current_tx {
-            if tx.tp1_buffer.len() >= 6 {
+        if let Some(ref tx) = self.current_tx
+            && tx.tp1_buffer.len() >= 6 {
                 let tx_buf = &tx.tp1_buffer;
                 let ctrl_match = ((header[0] ^ tx_buf[0]) & !0x20) == 0;
                 let addr_match = header[1..6] == tx_buf[1..6];
@@ -849,7 +844,6 @@ where
                     return;
                 }
             }
-        }
 
         // Check if group address (bit 7 of AT/NPCI byte)
         let is_group_address = (at_npci & 0x80) != 0;
@@ -951,11 +945,10 @@ where
 
     /// Check and start pending transmission if idle
     async fn check_pending_transmission(&mut self) {
-        if self.main_ctx.main_state == MainState::Idle && self.current_tx.is_none() {
-            if let Some(pending) = self.pending_tx.take() {
+        if self.main_ctx.main_state == MainState::Idle && self.current_tx.is_none()
+            && let Some(pending) = self.pending_tx.take() {
                 self.start_transmission(pending.buffer, pending.response_tx).await;
             }
-        }
     }
 
     // ========================================================================

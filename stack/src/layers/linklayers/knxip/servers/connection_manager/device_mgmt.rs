@@ -184,13 +184,12 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
 
         // Safety: the channel lives on this stack frame and we await the
         // response before returning, so the sender cannot outlive the channel.
-        let response_route = unsafe {
+        let response_route = *unsafe {
             core::mem::transmute::<
                 &DynamicSender<'_, Option<RequestMessage<Buffer<'static>>>>,
                 &DynamicSender<'static, Option<RequestMessage<Buffer<'static>>>>,
             >(&sender)
-        }
-        .clone();
+        };
 
         let indication = indication.with_response_route(response_route);
         self.al_sender.send(LayerOp::Indication(indication)).await;
@@ -341,7 +340,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         buffer_manager: &RefCell<DynBufferManager<'static>>,
     ) -> Result<DataFrameAction, ServerError> {
         // Parse the DeviceConfigurationRequest header (consumes KNXnet/IP + connection headers)
-        let mut buf = &data[..];
+        let mut buf = data;
         let request = match buf.parse::<DeviceConfigurationRequest>() {
             Ok(req) => req,
             Err(_) => return Err(ServerError::ParseError),
@@ -419,7 +418,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
             conn.send_sequence_counter = send_seq.wrapping_add(1);
 
             let req_builder =
-                DeviceConfigurationRequestBuilder::with_payload(conn.channel_id, send_seq, &*cemi_response);
+                DeviceConfigurationRequestBuilder::with_payload(conn.channel_id, send_seq, &cemi_response);
 
             if let Some(mut resp_buffer) = buffer_manager.borrow().try_alloc() {
                 resp_buffer.serialize(&req_builder);
@@ -436,7 +435,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
     }
 
     fn on_data_ack(&mut self, _channel_id: u8, data: &[u8], conn: &mut ConnectionContext) -> Result<(), ServerError> {
-        let mut buf = &data[..];
+        let mut buf = data;
         let ack = match buf.parse::<DeviceConfigurationAck>() {
             Ok(a) => a,
             Err(_) => return Err(ServerError::ParseError),
