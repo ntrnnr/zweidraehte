@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(never_type)]
 
+use core::cell::RefCell;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use cyw43_pio::PioSpi;
@@ -10,6 +11,7 @@ use embassy_executor::Spawner;
 use embassy_net::{DhcpConfig, StackResources as NetStackResources};
 use embassy_rp::{
     bind_interrupts,
+    flash,
     gpio::{Level, Output},
     peripherals::{DMA_CH0, PIO0},
     pio::{self, Pio},
@@ -24,14 +26,16 @@ use devices::light_switch::{
 };
 use zweidraehte::{
     bcus::system_b::{
-        DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, StaticIdentity, SystemBIpDeviceDef,
+        DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, SystemBIpDeviceDef,
         SystemBMemoryMap, create_knxip_objects,
     },
     layers::linklayers::knxip::KnxNetIpBuilder,
     prelude::*,
+    restart::{RestartError, RestartResponse},
+    storage::DeviceStorage,
 };
 
-use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo};
+use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, RpFlashStorage};
 
 // ================================================================================
 // Device Definition
@@ -40,16 +44,16 @@ use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo};
 /// Device descriptor from the light switch device definition (KNX/IP variant).
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP;
 
-/// Serial number: manufacturer ID (0x00FA) + device-specific bytes.
-/// TODO: Read from RP2040 flash unique ID for production.
-const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x03];
-
 const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
 const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Device state combining System B tables with IP link-layer state.
 type PicoWState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, EmbassyNetworkInfo>;
+
+/// Flash storage handle, shared between the main loop (periodic save)
+/// and the restart handler (save before reset).
+type Storage = RpFlashStorage<PicoWState, rp_common::FlashIdentityData>;
 
 // ----------------------------------------------------------------------------
 // SystemBIpDeviceDef + StackDefinition
@@ -114,6 +118,102 @@ async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'sta
 }
 
 // ================================================================================
+// Application Logic
+// ================================================================================
+
+/// Restart handler — executes resets from ETS, persists state, and reboots.
+///
+/// When the KNX stack receives an A_Restart request (e.g. from ETS during
+/// programming or factory reset), this task:
+/// 1. Executes the appropriate reset based on the erase code
+/// 2. Saves the (possibly modified) state to flash
+/// 3. Sends the A_Restart_Response back to the stack
+/// 4. Triggers a Cortex-M system reset
+#[embassy_executor::task]
+async fn restart_task(
+    knx: Stack<'static, PicoWLightSwitch>,
+    storage: &'static RefCell<Storage>,
+) -> ! {
+    use rp_common::CortexMSystem;
+    use platform::SystemControl;
+    use zweidraehte::restart::EraseCode;
+
+    loop {
+        let request = knx.receive_restart_request().await;
+        let req = request.get();
+        let state = knx.state();
+
+        info!("Restart request: erase_code={}", req.erase_code);
+
+        let response = match req.erase_code {
+            EraseCode::Basic | EraseCode::Confirmed => {
+                info!("Basic restart (no data reset)");
+                RestartResponse::success()
+            }
+            EraseCode::FactoryReset => {
+                info!("Factory reset — clearing all data");
+                state.factory_reset();
+                RestartResponse::success()
+            }
+            EraseCode::ResetIA => {
+                info!("Resetting individual address");
+                state.reset_individual_address();
+                RestartResponse::success()
+            }
+            EraseCode::ResetAP => {
+                info!("Resetting application program");
+                state.reset_application();
+                RestartResponse::success()
+            }
+            EraseCode::ResetParam => {
+                info!("Resetting parameters");
+                state.reset_parameters();
+                RestartResponse::success()
+            }
+            EraseCode::FactoryResetKeepIA => {
+                info!("Factory reset (keeping individual address)");
+                state.factory_reset_keep_ia();
+                RestartResponse::success()
+            }
+            EraseCode::ResetLinks | EraseCode::Other(_) => {
+                warn!("Unsupported erase code");
+                RestartResponse::error(RestartError::UnsupportedEraseCode)
+            }
+        };
+
+        // Persist the post-reset state before rebooting.
+        if state.is_dirty() {
+            save_state(state, storage);
+        }
+
+        // Send the response back (which the stack forwards on the bus).
+        request.reply(response).await;
+
+        // Brief delay so the response can be sent on the wire.
+        Timer::after(Duration::from_millis(100)).await;
+
+        // Cortex-M system reset — does not return.
+        let mut system = CortexMSystem;
+        let Err(_e) = system.restart().await;
+        // unreachable on success, but the compiler needs the loop
+    }
+}
+
+/// Save device state to flash. Logs errors but does not propagate them
+/// (flash failure is non-fatal — the device continues with in-RAM state).
+fn save_state(state: &PicoWState, storage: &RefCell<Storage>) {
+    match storage.borrow_mut().save(state) {
+        Ok(()) => {
+            state.clear_dirty();
+            info!("State saved to flash");
+        }
+        Err(e) => {
+            warn!("Flash save failed: {}", e);
+        }
+    }
+}
+
+// ================================================================================
 // Firmware blobs
 // ================================================================================
 
@@ -140,6 +240,19 @@ static CLM: Aligned<{ include_bytes!("../firmware/43439A0_clm.bin").len() }> =
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("Pico W initializing");
+
+    // ========================================================================
+    // Device identity (from flash — read/provision before anything else)
+    // ========================================================================
+
+    let mut flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
+    let identity_data = rp_common::read_or_provision_identity(
+        &mut flash,
+        LightSwitchDevice::MANUFACTURER_ID.to_be_bytes(),
+    );
+
+    let seed = identity_data.derive_seed();
+    info!("Serial: {=[u8]:02x}", identity_data.serial_number);
 
     // ========================================================================
     // CYW43 WiFi driver init
@@ -200,10 +313,6 @@ async fn main(spawner: Spawner) {
     // Embassy-net stack init (DHCP)
     // ========================================================================
 
-    // Use a deterministic seed derived from the chip's unique flash ID
-    // so multicast IGMP joins get a consistent random delay.
-    let seed = 0x0123_4567_89AB_CDEFu64; // TODO: read from flash unique ID
-
     static NET_RESOURCES: StaticCell<NetStackResources<3>> = StaticCell::new();
     let (stack, net_runner) = embassy_net::new(
         net_device,
@@ -236,21 +345,39 @@ async fn main(spawner: Spawner) {
     // calls P::default()).
     EmbassyNetworkInfo::init(stack, mac);
 
-    // Flash storage for persistent device state.
-    // TODO: Load persisted state from flash instead of starting fresh.
-    // let flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    // let _storage = rp_common::RpFlashStorage::<PersistedState>::new(flash);
+    // ========================================================================
+    // Persistent storage
+    // ========================================================================
+
+    // Flash storage for persistent device state (last 4 KiB sector).
+    // The `flash` handle was used transiently for identity provisioning
+    // above and is now passed to RpFlashStorage for config persistence.
+    let mut storage = RpFlashStorage::<PicoWState, _>::new(flash, identity_data);
+
+    let device_state = match storage.load() {
+        Ok(Some(state)) => {
+            info!("Loaded persisted state from flash");
+            state
+        }
+        Ok(None) => {
+            info!("No persisted state found, starting fresh");
+            PicoWState::new(storage.identity())
+        }
+        Err(e) => {
+            warn!("Flash load failed: {}, starting fresh", e);
+            PicoWState::new(storage.identity())
+        }
+    };
+
+    // Put storage in a static RefCell so both the restart handler and the
+    // main loop can access it. Both run on the same single-threaded
+    // executor, so RefCell is safe (no concurrent borrow possible).
+    static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
+    let storage = &*STORAGE.init(RefCell::new(storage));
 
     // ========================================================================
     // KNX stack
     // ========================================================================
-
-    // Device identity — serial number burned into the device.
-    let identity = StaticIdentity::new(SERIAL_NUMBER);
-
-    // Fresh device state (tables empty, default individual address 15.15.255).
-    // ETS will program the actual address, tables, and parameters.
-    let device_state = PicoWState::new(&identity);
 
     // The DHCP-assigned IP is used as the local address and control endpoint.
     let local_ip = stack
@@ -287,6 +414,9 @@ async fn main(spawner: Spawner) {
     spawner
         .spawn(knx_task(knx_runner))
         .expect("knx_task spawnable once");
+    spawner
+        .spawn(restart_task(knx_stack, storage))
+        .expect("restart_task spawnable once");
 
     info!("KNX/IP stack started");
     info!("  Manufacturer: {:04x}", LightSwitchDevice::MANUFACTURER_ID);
@@ -295,18 +425,21 @@ async fn main(spawner: Spawner) {
     info!("  Mask version: 57B0 (System B KNX/IP)");
 
     // ========================================================================
-    // Main loop: heartbeat LED + event monitoring
+    // Main loop: heartbeat LED + periodic save
     // ========================================================================
-
-    // Discard the stack handle — this minimal firmware has no application
-    // logic beyond what ETS programs. The KNX runner task handles all
-    // protocol processing autonomously.
-    let _ = knx_stack;
 
     loop {
         control.gpio_set(0, true).await;
         Timer::after(Duration::from_millis(500)).await;
         control.gpio_set(0, false).await;
         Timer::after(Duration::from_millis(500)).await;
+
+        // Periodically persist any state changes from ETS programming
+        // (table writes, parameter changes, address changes, etc.).
+        // The restart handler also saves before rebooting, but this
+        // catches changes that don't involve a restart.
+        if knx_stack.state().is_dirty() {
+            save_state(knx_stack.state(), storage);
+        }
     }
 }

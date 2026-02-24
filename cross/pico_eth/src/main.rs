@@ -38,7 +38,7 @@ use zweidraehte::{
 };
 
 use rp_common::button::DebouncedButton;
-use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, RpFlashStorage};
+use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, RpFlashStorage, FlashIdentityData};
 
 // ================================================================================
 // Device Definition
@@ -47,14 +47,9 @@ use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, RpFlashStorage};
 /// Device descriptor from the light switch device definition (KNX/IP variant).
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP;
 
-/// Serial number: manufacturer ID (0x00FA) + device-specific bytes.
-/// TODO: Read from RP2040 flash unique ID for production.
-const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x04];
-
-/// MAC address for the W5500 (locally administered).
-/// The W5500 has no built-in MAC, so we provide one ourselves.
-/// TODO: Derive from RP2040 flash unique ID for production.
-const MAC_ADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x04];
+/// MAC vendor prefix for locally-administered MAC addresses.
+/// Bit 1 (locally administered) is forced set by `derive_mac_address`.
+const MAC_OUI: [u8; 3] = [0x02, 0x00, 0xFA];
 
 const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
 const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
@@ -65,7 +60,7 @@ type PicoEthState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwit
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
-type Storage = RpFlashStorage<PicoEthState, StaticIdentity>;
+type Storage = RpFlashStorage<PicoEthState, FlashIdentityData>;
 
 // ----------------------------------------------------------------------------
 // SystemBIpDeviceDef + StackDefinition
@@ -375,6 +370,21 @@ async fn main(spawner: Spawner) {
     info!("Pico Ethernet (W5500) initializing");
 
     // ========================================================================
+    // Device identity (from flash — must happen before W5500 init for MAC)
+    // ========================================================================
+
+    let mut flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
+    let identity_data = rp_common::read_or_provision_identity(
+        &mut flash,
+        LightSwitchDevice::MANUFACTURER_ID.to_be_bytes(),
+    );
+
+    let mac_addr = identity_data.derive_mac_address(MAC_OUI);
+    let seed = identity_data.derive_seed();
+    info!("Serial: {=[u8]:02x}", identity_data.serial_number);
+    info!("MAC:    {=[u8]:02x}", mac_addr);
+
+    // ========================================================================
     // W5500 SPI init
     // ========================================================================
 
@@ -395,7 +405,7 @@ async fn main(spawner: Spawner) {
 
     static W5500_STATE: StaticCell<embassy_net_wiznet::State<8, 8>> = StaticCell::new();
     let (net_device, w5500_runner) = embassy_net_wiznet::new(
-        MAC_ADDR,
+        mac_addr,
         W5500_STATE.init(embassy_net_wiznet::State::new()),
         spi_dev,
         w5500_int,
@@ -411,10 +421,6 @@ async fn main(spawner: Spawner) {
     // ========================================================================
     // Embassy-net stack init (DHCP)
     // ========================================================================
-
-    // Use a deterministic seed derived from the chip's unique flash ID
-    // so multicast IGMP joins get a consistent random delay.
-    let seed = 0x0123_4567_89AB_CDEFu64; // TODO: read from flash unique ID
 
     static NET_RESOURCES: StaticCell<NetStackResources<3>> = StaticCell::new();
     let (stack, net_runner) = embassy_net::new(
@@ -440,23 +446,19 @@ async fn main(spawner: Spawner) {
     // Platform layer
     // ========================================================================
 
-    info!("MAC address: {:02x}", MAC_ADDR);
-
     // Initialize the global network context so EmbassyNetworkInfo::default()
     // works during device state construction (IpLinkLayerState::from_config
     // calls P::default()).
-    EmbassyNetworkInfo::init(stack, MAC_ADDR);
+    EmbassyNetworkInfo::init(stack, mac_addr);
 
     // ========================================================================
     // Persistent storage
     // ========================================================================
 
-    // Device identity — serial number burned into the device.
-    let identity = StaticIdentity::new(SERIAL_NUMBER);
-
-    // Flash storage for persistent device state (last 4KB sector).
-    let flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    let mut storage = RpFlashStorage::<PicoEthState, _>::new(flash, identity);
+    // Flash storage for persistent device state (last 4 KiB sector).
+    // The `flash` handle was used transiently for identity provisioning
+    // above and is now passed to RpFlashStorage for config persistence.
+    let mut storage = RpFlashStorage::<PicoEthState, _>::new(flash, identity_data);
 
     let device_state = match storage.load() {
         Ok(Some(state)) => {
