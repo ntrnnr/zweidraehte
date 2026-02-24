@@ -1,4 +1,4 @@
-//! Generate MTXML / knxprod from the light switch device definition.
+//! Generate MTXML / knxprod / knxproj from the light switch device definition.
 //!
 //! Produces a multi-device package containing both a KNX/IP variant
 //! and a TP1 (TPUART) variant of the same light switch. Both share
@@ -6,8 +6,9 @@
 //! differ only in mask version and therefore medium type.
 //!
 //! Usage:
-//!   cargo run --bin gen_light_switch_mtxml            # MTXML only
-//!   cargo run --bin gen_light_switch_mtxml -- --knxprod  # full signed package
+//!   cargo run --bin gen_light_switch_mtxml              # MTXML only
+//!   cargo run --bin gen_light_switch_mtxml -- --knxprod  # signed .knxprod package
+//!   cargo run --bin gen_light_switch_mtxml -- --knxproj  # signed .knxproj test project
 
 use std::env;
 use std::path::PathBuf;
@@ -22,8 +23,8 @@ use devices::light_switch::{
 use knxprod::definition::page_layout::EtsPageLayout;
 use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
 use knxprod::{
-    ApplicationProgramDef, CatalogEntryDef, CatalogSectionDef, HardwareDef, KnxprodBuilder,
-    ProductDef,
+    ApplicationProgramDef, CatalogEntryDef, CatalogSectionDef, DeviceInstanceDef, HardwareDef,
+    KnxprodBuilder, ProductDef,
 };
 
 /// Hardware serial for the KNX/IP variant.
@@ -145,14 +146,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         subsections: vec![],
     });
 
+    let generate_knxproj = env::args().any(|arg| arg == "--knxproj");
+    let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
+
+    // Register device instances for knxproj generation. This must happen
+    // before the builder is consumed by the chainable configuration methods.
+    if generate_knxproj {
+        builder.device_instance(DeviceInstanceDef {
+            name: "2-Button Light Switch IP",
+            hardware: hw_ip_ref,
+            product_order_number: "LS-0002-IP",
+            application_program: app_ip_ref,
+        });
+        builder.device_instance(DeviceInstanceDef {
+            name: "2-Button Light Switch TP1",
+            hardware: hw_tp1_ref,
+            product_order_number: "LS-0002-TP",
+            application_program: app_tp1_ref,
+        });
+    }
+
     let out_dir: PathBuf = ["out", "LightSwitch2"].iter().collect();
     let builder = builder
         .output_dir(&out_dir)
         .schema_version(KnxSchemaVersion::V20);
 
-    let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
+    if generate_knxproj {
+        let knxproj_path = builder
+            .project_name("Test Project LightSwitch2fold")
+            .master_data(MasterDataSource::Download)
+            .write_knxproj()?;
 
-    if generate_knxprod {
+        println!(
+            "Generated: {} ({} bytes)",
+            knxproj_path.display(),
+            std::fs::metadata(&knxproj_path)?.len()
+        );
+    } else if generate_knxprod {
         let (output, knxprod_path) = builder.master_data(MasterDataSource::Download).build_all()?;
 
         let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
@@ -175,7 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         println!("\nAll MTXML files generated successfully!");
-        println!("Tip: Use --knxprod flag to also generate a signed .knxprod package");
+        println!("Tip: Use --knxprod or --knxproj flag for signed packages");
     }
 
     Ok(())

@@ -2601,6 +2601,7 @@ dependencies = [
  "serde",
  "sha1",
  "thiserror 2.0.18",
+ "uuid",
  "zip",
  "zweidraehte",
 ]

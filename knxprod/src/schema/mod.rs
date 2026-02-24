@@ -29,6 +29,7 @@ mod load_procedures;
 mod modules;
 mod param_refs;
 mod parameters;
+mod project;
 mod static_section;
 
 // Re-export all public types for backwards compatibility
@@ -43,4 +44,5 @@ pub use load_procedures::*;
 pub use modules::*;
 pub use param_refs::*;
 pub use parameters::*;
+pub use project::*;
 pub use static_section::*;

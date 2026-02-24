@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Seek, Write};
 use std::path::PathBuf;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -444,14 +444,27 @@ pub fn sign_application_program_xml(app_xml: &str) -> Result<String, SigningErro
     String::from_utf8(result).map_err(|e| SigningError::XmlWrite(format!("UTF-8 error: {}", e)))
 }
 
-/// Create a signed .knxprod ZIP archive.
-pub fn create_knxprod(config: &SigningConfig, master_data: MasterDataSource) -> Result<Vec<u8>, SigningError> {
+/// Configuration for a project to embed in a `.knxproj` archive.
+pub struct ProjectConfig {
+    /// Project ID (e.g., "P-0001").
+    pub project_id: String,
+    /// Content of `project.xml` (metadata: name, GUID, Puid counter).
+    pub project_xml: String,
+    /// Content of `0.xml` (topology with device instances).
+    pub topology_xml: String,
+}
+
+/// Sign all manufacturer files and return the signed directory contents
+/// together with the directory signature.
+///
+/// When `include_catalog` is false, `Catalog.xml` is omitted from the
+/// directory — this matches the ETS convention for `.knxproj` archives
+/// which embed a project instead.
+fn sign_manufacturer_files(
+    config: &SigningConfig,
+    include_catalog: bool,
+) -> Result<(Vec<(String, Vec<u8>)>, String), SigningError> {
     use super::signatures::sign_directory_contents;
-
-    let manuf_dir = format!("M-{}", config.manufacturer_id);
-
-    // Get master data
-    let master_xml = get_master_data(&master_data)?;
 
     // Sign each ApplicationProgram XML (add Hash attribute) and collect
     // all app program hashes for Hardware.xml signing.
@@ -462,10 +475,7 @@ pub fn create_knxprod(config: &SigningConfig, master_data: MasterDataSource) -> 
         let signed_xml = sign_application_program_xml(program_xml)?;
         let hashes = extract_app_program_hashes(&signed_xml)?;
         all_app_hashes.extend(hashes);
-        signed_app_programs.push((
-            format!("{}.xml", program_id),
-            signed_xml.into_bytes(),
-        ));
+        signed_app_programs.push((format!("{}.xml", program_id), signed_xml.into_bytes()));
     }
 
     // Sign Hardware.xml using the collected hashes from all app programs.
@@ -475,19 +485,52 @@ pub fn create_knxprod(config: &SigningConfig, master_data: MasterDataSource) -> 
     let mut dir_files: Vec<(String, Vec<u8>)> = Vec::new();
     dir_files.extend(signed_app_programs);
     dir_files.push(("Hardware.xml".to_string(), signed_hardware.into_bytes()));
-    dir_files.push(("Catalog.xml".to_string(), config.catalog.as_bytes().to_vec()));
+    if include_catalog {
+        dir_files.push(("Catalog.xml".to_string(), config.catalog.as_bytes().to_vec()));
+    }
 
-    // Add baggage files
+    // Add baggage files.
     for (path, content) in &config.baggage_files {
         dir_files.push((path.clone(), content.clone()));
     }
 
-    // Create directory signature
-    let files_for_signing: Vec<(String, Vec<u8>)> = dir_files.clone();
-    let files_refs: Vec<(String, &[u8])> = files_for_signing.iter().map(|(p, c)| (p.clone(), c.as_slice())).collect();
+    // Create directory signature.
+    let files_refs: Vec<(String, &[u8])> = dir_files.iter().map(|(p, c)| (p.clone(), c.as_slice())).collect();
     let dir_signature = sign_directory_contents(&files_refs)?;
 
-    // Create ZIP archive
+    Ok((dir_files, dir_signature))
+}
+
+/// Write a signed directory into a ZIP: the directory's files under
+/// `{dir_name}/` and a `{dir_name}.signature` file with UTF-8 BOM.
+fn write_signed_directory<W: Write + Seek>(
+    zip: &mut ZipWriter<W>,
+    dir_name: &str,
+    files: &[(String, Vec<u8>)],
+    signature: &str,
+    options: SimpleFileOptions,
+) -> Result<(), SigningError> {
+    for (filename, content) in files {
+        let path = format!("{}/{}", dir_name, filename);
+        zip.start_file(&path, options)?;
+        zip.write_all(content)?;
+    }
+
+    let sig_filename = format!("{}.signature", dir_name);
+    zip.start_file(&sig_filename, options)?;
+    // UTF-8 BOM, matching the ETS convention.
+    zip.write_all(&[0xEF, 0xBB, 0xBF])?;
+    zip.write_all(signature.as_bytes())?;
+
+    Ok(())
+}
+
+/// Create a signed `.knxprod` ZIP archive.
+pub fn create_knxprod(config: &SigningConfig, master_data: MasterDataSource) -> Result<Vec<u8>, SigningError> {
+    let manuf_dir = format!("M-{}", config.manufacturer_id);
+    let master_xml = get_master_data(&master_data)?;
+    let (dir_files, dir_signature) = sign_manufacturer_files(config, true)?;
+
     let mut zip_buffer = Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut zip_buffer);
@@ -495,23 +538,58 @@ pub fn create_knxprod(config: &SigningConfig, master_data: MasterDataSource) -> 
             .compression_method(zip::CompressionMethod::Deflated)
             .compression_level(Some(6));
 
-        // Add knx_master.xml at root
         zip.start_file("knx_master.xml", file_options)?;
         zip.write_all(master_xml.as_bytes())?;
 
-        // Add manufacturer directory files (no explicit directory entries - matches working knxprod format)
-        for (filename, content) in &dir_files {
-            let path = format!("{}/{}", manuf_dir, filename);
-            zip.start_file(&path, file_options)?;
-            zip.write_all(content)?;
-        }
+        write_signed_directory(&mut zip, &manuf_dir, &dir_files, &dir_signature, file_options)?;
 
-        // Add directory signature file (with UTF-8 BOM)
-        let sig_filename = format!("{}.signature", manuf_dir);
-        zip.start_file(&sig_filename, file_options)?;
-        // Write UTF-8 BOM
-        zip.write_all(&[0xEF, 0xBB, 0xBF])?;
-        zip.write_all(dir_signature.as_bytes())?;
+        zip.finish()?;
+    }
+
+    Ok(zip_buffer.into_inner())
+}
+
+/// Create a signed `.knxproj` ZIP archive.
+///
+/// A `.knxproj` is a superset of `.knxprod`: it contains the same signed
+/// manufacturer directory and master data, plus a project directory
+/// (`P-XXXX/`) with `project.xml` and `0.xml`, signed with its own
+/// directory signature.
+pub fn create_knxproj(
+    config: &SigningConfig,
+    project: &ProjectConfig,
+    master_data: MasterDataSource,
+) -> Result<Vec<u8>, SigningError> {
+    use super::signatures::sign_directory_contents;
+
+    let manuf_dir = format!("M-{}", config.manufacturer_id);
+    let master_xml = get_master_data(&master_data)?;
+    let (manuf_files, manuf_signature) = sign_manufacturer_files(config, false)?;
+
+    // Sign the project directory.
+    let project_files: Vec<(String, Vec<u8>)> = vec![
+        ("project.xml".to_string(), project.project_xml.as_bytes().to_vec()),
+        ("0.xml".to_string(), project.topology_xml.as_bytes().to_vec()),
+    ];
+    let project_refs: Vec<(String, &[u8])> = project_files
+        .iter()
+        .map(|(p, c)| (p.clone(), c.as_slice()))
+        .collect();
+    let project_signature = sign_directory_contents(&project_refs)?;
+
+    // Build the ZIP archive.
+    let mut zip_buffer = Cursor::new(Vec::new());
+    {
+        let mut zip = ZipWriter::new(&mut zip_buffer);
+        let file_options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .compression_level(Some(6));
+
+        zip.start_file("knx_master.xml", file_options)?;
+        zip.write_all(master_xml.as_bytes())?;
+
+        write_signed_directory(&mut zip, &manuf_dir, &manuf_files, &manuf_signature, file_options)?;
+        write_signed_directory(&mut zip, &project.project_id, &project_files, &project_signature, file_options)?;
 
         zip.finish()?;
     }

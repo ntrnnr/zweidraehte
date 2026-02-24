@@ -246,6 +246,10 @@ pub struct KnxprodBuilder<'a> {
     file_prefix: String,
     master_data: Option<MasterDataSource>,
     schema_version: Option<KnxSchemaVersion>,
+
+    // Project configuration for knxproj generation.
+    project_name: Option<String>,
+    device_instances: Vec<super::project::DeviceInstanceDef<'a>>,
 }
 
 impl<'a> KnxprodBuilder<'a> {
@@ -264,6 +268,8 @@ impl<'a> KnxprodBuilder<'a> {
             file_prefix: String::new(),
             master_data: None,
             schema_version: None,
+            project_name: None,
+            device_instances: Vec::new(),
         }
     }
 
@@ -336,6 +342,15 @@ impl<'a> KnxprodBuilder<'a> {
         self.catalog_sections.push(section);
     }
 
+    /// Add a device instance for knxproj generation.
+    ///
+    /// Each device instance becomes a `<DeviceInstance>` in the project's
+    /// `<UnassignedDevices>` topology. Call [`Self::project_name`] and
+    /// [`Self::write_knxproj`] to generate the archive.
+    pub fn device_instance(&mut self, def: super::project::DeviceInstanceDef<'a>) {
+        self.device_instances.push(def);
+    }
+
     // ========================================================================
     // Configuration Methods (chainable, consume self)
     // ========================================================================
@@ -361,6 +376,14 @@ impl<'a> KnxprodBuilder<'a> {
     /// Set the KNX XML schema version to use.
     pub fn schema_version(mut self, version: KnxSchemaVersion) -> Self {
         self.schema_version = Some(version);
+        self
+    }
+
+    /// Set the project name for knxproj generation.
+    ///
+    /// Required when calling [`Self::build_knxproj`] or [`Self::write_knxproj`].
+    pub fn project_name(mut self, name: &str) -> Self {
+        self.project_name = Some(name.to_string());
         self
     }
 
@@ -524,6 +547,93 @@ impl<'a> KnxprodBuilder<'a> {
         let output = self.write_mtxml()?;
         let knxprod_path = self.write_knxprod()?;
         Ok((output, knxprod_path))
+    }
+
+    // ========================================================================
+    // Knxproj Generation
+    // ========================================================================
+
+    /// Build a signed `.knxproj` package containing both product data and
+    /// an ETS project with the registered device instances.
+    ///
+    /// Requires [`Self::project_name`], [`Self::master_data`], and at least
+    /// one device instance registered via [`Self::device_instance`].
+    pub fn build_knxproj(&self) -> Result<Vec<u8>, BuilderError> {
+        use super::project::ProjectGenerator;
+        use crate::signing::{create_knxproj, ProjectConfig};
+
+        let project_name = self.project_name.as_deref().ok_or_else(|| {
+            BuilderError::Config("project_name() must be set before calling build_knxproj()".to_string())
+        })?;
+        if self.device_instances.is_empty() {
+            return Err(BuilderError::Config(
+                "at least one device_instance() must be registered before calling build_knxproj()".to_string(),
+            ));
+        }
+
+        let master_data = self.master_data.clone().ok_or_else(|| {
+            BuilderError::Config("master_data() must be set before calling build_knxproj()".to_string())
+        })?;
+        let resolved_master_data = match master_data {
+            MasterDataSource::Download => {
+                let version = self.schema_version.unwrap_or(KnxSchemaVersion::V20);
+                MasterDataSource::DownloadVersion(version)
+            }
+            other => other,
+        };
+
+        let output = self.generate_all()?;
+        let signing_config = Self::create_signing_config(&output);
+
+        let project_id = "P-0001";
+
+        // ETS reserves Puid 1 and 2 for internal use; device Puids start at 3.
+        let last_used_puid = 2 + self.device_instances.len() as u32;
+
+        let project_xml = ProjectGenerator::generate_project_xml(
+            project_id,
+            project_name,
+            last_used_puid,
+            self.schema_version,
+        )?;
+
+        let app_refs: Vec<&ApplicationProgramDef> = self.application_programs.iter().copied().collect();
+        let topology_xml = ProjectGenerator::generate_topology_xml(
+            project_id,
+            self.manufacturer_id,
+            &self.device_instances,
+            &self.hardware_defs,
+            &app_refs,
+            self.schema_version,
+        )?;
+
+        let project_config = ProjectConfig {
+            project_id: project_id.to_string(),
+            project_xml,
+            topology_xml,
+        };
+
+        let knxproj_bytes = create_knxproj(&signing_config, &project_config, resolved_master_data)?;
+        Ok(knxproj_bytes)
+    }
+
+    /// Build and write a signed `.knxproj` package to a file.
+    pub fn write_knxproj(&self) -> Result<PathBuf, BuilderError> {
+        let knxproj_bytes = self.build_knxproj()?;
+        let name = self.project_name.as_deref().unwrap_or("project");
+
+        let output_path = if let Some(ref dir) = self.output_dir {
+            dir.join(format!("{}.knxproj", name))
+        } else {
+            PathBuf::from(format!("{}.knxproj", name))
+        };
+
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        fs::write(&output_path, knxproj_bytes)?;
+        Ok(output_path)
     }
 
     // ========================================================================

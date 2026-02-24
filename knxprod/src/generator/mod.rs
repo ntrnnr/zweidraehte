@@ -14,6 +14,7 @@ mod catalog;
 mod hardware;
 mod helpers;
 mod mtxml;
+mod project;
 mod traversal;
 
 use std::collections::HashMap;
@@ -32,6 +33,7 @@ pub use builder::{AppProgramRef, BuilderError, HardwareRef, KnxprodBuilder, Knxp
 pub use catalog::CatalogGenerator;
 pub use hardware::HardwareGenerator;
 pub use mtxml::MtxmlGenerator;
+pub use project::DeviceInstanceDef;
 
 // ============================================================================
 // Shared Types
