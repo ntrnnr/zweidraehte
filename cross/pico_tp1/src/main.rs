@@ -11,12 +11,14 @@ use embassy_rp::{
     bind_interrupts,
     flash,
     gpio::{Input, Level, Output, Pull},
+    interrupt,
     peripherals::UART0,
-    uart::{self, BufferedUart, BufferedUartRx, BufferedUartTx, Config as UartConfig, Parity},
+    uart::{Config as UartConfig, Parity, Uart},
 };
 use embassy_time::{Duration, Timer};
 use embedded_hal::digital::InputPin;
 use embedded_hal_async::digital::Wait;
+use rp_common::uart::{DirectInterruptHandler, DirectUart, DirectUartRx, DirectUartTx};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -43,8 +45,24 @@ use rp_common::{FlashIdentityData, RpFlashStorage};
 // ================================================================================
 
 bind_interrupts!(struct Irqs {
-    UART0_IRQ => uart::BufferedInterruptHandler<UART0>;
+    UART0_IRQ => DirectInterruptHandler<UART0>;
 });
+
+// ================================================================================
+// High-Priority KNX Executor
+// ================================================================================
+
+// The KNX stack (TPUART event loop) runs on a dedicated interrupt executor
+// at elevated priority. This preempts the main thread executor so the UART
+// byte reader is never starved by application-layer processing. Without
+// this, NL/TL/AL work on the main executor can hold off the TPUART read
+// loop for >521µs, causing UART overruns.
+static EXECUTOR_KNX: embassy_executor::InterruptExecutor = embassy_executor::InterruptExecutor::new();
+
+#[interrupt]
+unsafe fn SWI_IRQ_0() {
+    unsafe { EXECUTOR_KNX.on_interrupt() }
+}
 
 // ================================================================================
 // Device Definition
@@ -80,8 +98,8 @@ impl SystemBTpDeviceDef for PicoTp1LightSwitch {
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
-    type UartTx = BufferedUartTx;
-    type UartRx = BufferedUartRx;
+    type UartTx = DirectUartTx;
+    type UartRx = DirectUartRx;
     type State = PicoTp1State;
 }
 
@@ -92,7 +110,7 @@ impl StackDefinition for PicoTp1LightSwitch {
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
-    type LLB = TpUartLinkLayerBuilder<BufferedUartTx, BufferedUartRx>;
+    type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
     type State = PicoTp1State;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, PicoTp1State>;
@@ -128,9 +146,19 @@ impl StackDefinition for PicoTp1LightSwitch {
 // Embassy tasks
 // ================================================================================
 
+/// Newtype wrapper to assert `Send` for `Runner` on single-core Cortex-M0+.
+///
+/// `Runner` contains `DynamicReceiver`/`DynamicSender` whose `&dyn` trait
+/// objects aren't `Sync`, preventing auto-`Send`. On a single-core MCU
+/// (no real threads, only interrupt priorities sharing the same memory),
+/// this is safe — the `critical-section` implementation guarantees mutual
+/// exclusion between interrupt levels.
+struct SendRunner(Runner<'static, PicoTp1LightSwitch>);
+unsafe impl Send for SendRunner {}
+
 #[embassy_executor::task]
-async fn knx_task(runner: Runner<'static, PicoTp1LightSwitch>) -> ! {
-    runner.run().await
+async fn knx_task(runner: SendRunner) -> ! {
+    runner.0.run().await
 }
 
 // ================================================================================
@@ -381,20 +409,18 @@ async fn main(spawner: Spawner) {
     uart_config.baudrate = 19200;
     uart_config.parity = Parity::ParityEven;
 
-    static TX_BUF: StaticCell<[u8; 256]> = StaticCell::new();
-    static RX_BUF: StaticCell<[u8; 256]> = StaticCell::new();
-
-    let uart = BufferedUart::new(
+    // Create a blocking UART first (handles baud rate, parity, pin muxing),
+    // then convert to DirectUart which disables the FIFO and uses per-byte
+    // interrupts with direct register access — no intermediate ring buffers.
+    let uart = Uart::new_blocking(
         p.UART0,
         p.PIN_0, // TX = GP0
         p.PIN_1, // RX = GP1
-        Irqs,
-        TX_BUF.init([0; 256]),
-        RX_BUF.init([0; 256]),
         uart_config,
     );
+    let (uart_tx, uart_rx) = DirectUart::new::<UART0>(uart, Irqs);
 
-    info!("UART0 initialized (19200 8E1)");
+    info!("UART0 initialized (19200 8E1, direct register access)");
 
     // ========================================================================
     // Persistent storage
@@ -430,7 +456,6 @@ async fn main(spawner: Spawner) {
     // KNX stack
     // ========================================================================
 
-    let (uart_tx, uart_rx) = uart.split();
     let link_layer_builder = TpUartLinkLayerBuilder::new(uart_tx, uart_rx);
 
     // Allocate stack resources in a static (embassy tasks need 'static).
@@ -450,11 +475,17 @@ async fn main(spawner: Spawner) {
         PicoTp1LightSwitch::memory_map(),
     );
 
-    spawner
-        .spawn(knx_task(knx_runner))
+    // Start the KNX executor on SWI_IRQ_0 at elevated priority so the
+    // TPUART byte reader preempts application-layer processing. On
+    // Cortex-M0+ (2 priority bits), P2 is the second-highest level.
+    use embassy_rp::interrupt::InterruptExt;
+    interrupt::SWI_IRQ_0.set_priority(interrupt::Priority::P2);
+    let knx_spawner = EXECUTOR_KNX.start(interrupt::SWI_IRQ_0);
+    knx_spawner
+        .spawn(knx_task(SendRunner(knx_runner)))
         .expect("knx_task spawnable once");
 
-    info!("KNX TP1 stack started");
+    info!("KNX TP1 stack started (high-priority executor)");
     info!("  Manufacturer: {:04x}", LightSwitchDevice::MANUFACTURER_ID);
     info!("  Application:  {:04x} v{:02x}", LightSwitchDevice::APPLICATION_ID_TP1, LightSwitchDevice::APPLICATION_VERSION);
     info!("  Mask version: 07B0 (System B TP1)");

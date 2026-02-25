@@ -1,17 +1,18 @@
 #![no_std]
 #![feature(never_type)]
 
-//! Shared platform code for RP2040/RP2350 KNX/IP devices.
+//! Shared platform code for RP2040/RP2350 KNX devices.
 //!
-//! Provides embassy-net based networking, flash storage, and system control
-//! implementations that are reusable across different network transports
-//! (WiFi, Ethernet, etc.).
+//! Provides embassy-net based networking, flash storage, system control,
+//! and a direct-register UART driver for latency-critical TPUART
+//! communication.
 
 pub mod button;
 mod net;
 mod network_info;
 mod storage;
 mod system;
+pub mod uart;
 
 pub use net::{EmbassyIpTransport, EmbassyUdpSocket, UdpError};
 pub use network_info::{EmbassyNetworkInfo, NetworkConfigError};

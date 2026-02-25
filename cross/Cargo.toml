@@ -21,6 +21,7 @@ embassy-net = { version = "0.8", default-features = false }
 # Embassy HALs
 embassy-stm32 = { version = "0.5" }
 embassy-rp = { version = "0.9" }
+embassy-hal-internal = { version = "0.3" }
 
 # CYW43 WiFi driver (Pico W)
 cyw43 = { version = "0.6", default-features = false }
