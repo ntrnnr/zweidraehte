@@ -858,18 +858,21 @@ fn process_receive_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut A
 
     // Check if we have received the expected length
     if let Some(expected) = recv.expected_len
-        && recv.bytes_received >= expected {
-            // Frame complete
-            complete_frame_reception(ctx, actions);
-        }
+        && recv.bytes_received >= expected
+    {
+        // Frame complete
+        complete_frame_reception(ctx, actions);
+    }
 }
 
 fn complete_frame_reception(ctx: &mut StateMachineContext, actions: &mut ActionBuffer) {
     let recv = &ctx.receive_state;
 
     if recv.is_echo {
-        // This was an echo of our transmission
+        // This was an echo of our transmission — notify the send SM,
+        // then release the receive buffer (echo data is not forwarded).
         actions.push(MainAction::SendSmFrameComplete).unwrap();
+        actions.push(MainAction::ReleaseReceiveBuffer).unwrap();
     } else if recv.is_repeated {
         // Repeated telegram, drop it
         actions.push(MainAction::ReleaseReceiveBuffer).unwrap();

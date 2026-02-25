@@ -789,7 +789,7 @@ pub trait StackDefinition: Copy {
 /// but Rust's `generic_const_exprs` feature is still incomplete and causes
 /// overflow errors when used with static declarations. Until this is fixed,
 /// users must explicitly specify the buffer size.
-pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize = 8> {
+pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize = 12> {
     inner: MaybeUninit<Inner<D>>,
     buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
     buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
@@ -1206,11 +1206,18 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             self.stack.inner.lifecycle_channel.publish_immediate(LifecycleEvent::ApplicationStarted);
         }
 
-        // Create all the channels for layer to layer communication
-        let ll_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
-        let nl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
-        let tl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
-        let al_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1> = Channel::new();
+        // Create all the channels for layer to layer communication.
+        //
+        // Capacity 2: each layer can have one request in-flight (waiting for
+        // a confirmation round-trip) while simultaneously accepting one
+        // incoming indication. With capacity 1, a layer blocked on a
+        // request() round-trip cannot receive new indications, which
+        // back-pressures all the way down to the link layer and freezes the
+        // UART event loop — a classic producer-consumer deadlock.
+        let ll_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 2> = Channel::new();
+        let nl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 2> = Channel::new();
+        let tl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 2> = Channel::new();
+        let al_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 2> = Channel::new();
 
         // Create a network layer with reference to stack state and interface objects.
         // The routing count (hop count) for outgoing messages is read from the device object.

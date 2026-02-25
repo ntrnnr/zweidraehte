@@ -7,10 +7,10 @@
 //!
 //! This driver:
 //! - Disables the UART FIFO so each received byte triggers an interrupt
-//! - The ISR reads the byte from DR into an embassy `RingBuffer` (64 bytes)
+//! - The ISR reads bytes from DR into an embassy `RingBuffer` (128 bytes)
 //!   and wakes the async task — this decouples HW timing from task latency
 //! - The task drains the ring buffer, never missing bytes even if upper
-//!   layer processing (NL/TL/AL in the same `join4` task) takes >521µs
+//!   layer processing (NL/TL/AL in the same `join4` task) takes >573µs
 //! - TX writes the data register directly from task context
 //! - Implements `embedded_io_async::Read` / `Write` for compatibility with
 //!   the TPUART link layer's generic trait bounds
@@ -98,7 +98,7 @@ unsafe fn reg_clear<T: Default + Copy>(
 //
 // We add an `AtomicWaker` for async notification and an overrun counter.
 
-const RX_BUF_SIZE: usize = 64;
+const RX_BUF_SIZE: usize = 128;
 
 /// Per-instance state shared between the ISR and the async RX/TX tasks.
 struct State {
@@ -193,10 +193,13 @@ impl<T: DirectUartInstance> embassy_rp::interrupt::typelevel::Handler<T::Interru
                     let dr = r.uartdr().read();
                     if !writer.push_one(dr.data()) {
                         // Ring buffer full — count the dropped byte.
+                        // Logged at task level in DirectUartRx::read().
                         state.rx_overrun.fetch_add(1, Ordering::Relaxed);
                     }
 
-                    // Check HW overrun (byte lost before we even got the IRQ)
+                    // HW overrun: a byte was lost before we got the IRQ.
+                    // Don't log here — defmt takes a critical section which
+                    // extends ISR time and cascades into more overruns.
                     if dr.oe() {
                         state.rx_overrun.fetch_add(1, Ordering::Relaxed);
                     }
@@ -245,7 +248,7 @@ impl DirectUart {
     ///
     /// After this call:
     /// - The UART FIFO is **disabled** so each byte triggers an interrupt
-    /// - The ISR reads bytes into a 64-byte ring buffer
+    /// - The ISR reads bytes into a 128-byte ring buffer
     /// - RX and TX interrupts are enabled
     pub fn new<T: DirectUartInstance>(
         _uart: Uart<'_, Blocking>,
@@ -266,11 +269,17 @@ impl DirectUart {
 
         // Disable the FIFO so each received byte triggers an immediate
         // interrupt. The PL011's lowest FIFO threshold is 1/8 (4 bytes),
-        // which would batch bytes into groups of 4. We need per-byte
-        // interrupts so the ISR can push each byte into the ring buffer
-        // as soon as it arrives. The 64-byte ring buffer provides the
-        // overrun protection that the HW FIFO can't (since we need
-        // per-byte granularity).
+        // which would batch bytes and add up to ~2.3ms latency at 19200
+        // baud — too much for TPUART ACK timing (U_ACK_INF must be sent
+        // within ~1.7ms of receiving the 6th header byte). With FIFO
+        // disabled, each byte triggers an interrupt, and the 128-byte
+        // ring buffer provides overrun protection.
+        //
+        // The trade-off: without the HW FIFO, any critical section >573us
+        // (one byte time at 19200 8E1) causes an HW overrun. Embassy's
+        // timer driver and defmt-rtt both take critical sections that can
+        // exceed this. The ring buffer absorbs task-level latency, but
+        // cannot help when interrupts are globally masked by PRIMASK.
         unsafe {
             reg_clear(&r.uartlcr_h(), |w| {
                 w.set_fen(true);
@@ -381,10 +390,10 @@ impl embedded_io_async::Write for DirectUartTx {
 
 /// Async UART receiver backed by an ISR-filled ring buffer.
 ///
-/// The ISR reads each byte from the UART data register into a 64-byte
+/// The ISR reads each byte from the UART data register into a 128-byte
 /// [`RingBuffer`] (from `embassy-hal-internal`). The task drains the ring
 /// buffer via `read()`. This decouples the UART's byte-arrival timing
-/// (~521µs at 19200 baud) from task-level processing latency, preventing
+/// (~573µs at 19200 baud) from task-level processing latency, preventing
 /// overruns even when upper-layer stack processing (NL/TL/AL in the same
 /// `join4` task) takes several milliseconds.
 pub struct DirectUartRx {

@@ -411,7 +411,7 @@ async fn main(spawner: Spawner) {
 
     // Create a blocking UART first (handles baud rate, parity, pin muxing),
     // then convert to DirectUart which disables the FIFO and uses per-byte
-    // interrupts with direct register access — no intermediate ring buffers.
+    // interrupts with direct register access and an ISR-fed ring buffer.
     let uart = Uart::new_blocking(
         p.UART0,
         p.PIN_0, // TX = GP0
@@ -521,6 +521,18 @@ async fn main(spawner: Spawner) {
     // interfering with the button's edge detection.
     let mut prog_led = Output::new(p.PIN_16, Level::Low);
     let mut led = Output::new(p.PIN_25, Level::Low);
+
+    // No periodic flash saves here. Flash sector erase on RP2040 stalls
+    // the entire CPU for ~45-73ms (XIP bus stall), which freezes all
+    // interrupt handling — including the UART ISR. At 19200 baud with
+    // FIFO disabled, a single byte time is ~573µs, so a 73ms stall
+    // causes massive UART overruns and frame loss.
+    //
+    // Instead, state is saved exclusively in `restart_task` right before
+    // reboot. ETS always sends A_Restart at the end of programming, so
+    // no configuration data is lost. For unexpected power loss, the
+    // device simply boots with the last saved state.
+
     loop {
         led.toggle();
 
@@ -528,14 +540,6 @@ async fn main(spawner: Spawner) {
             prog_led.set_high();
         } else {
             prog_led.set_low();
-        }
-
-        // Periodically persist any state changes from ETS programming
-        // (table writes, parameter changes, address changes, etc.).
-        // The restart handler also saves before rebooting, but this
-        // catches changes that don't involve a restart.
-        if knx_stack.state().is_dirty() {
-            save_state(knx_stack.state(), storage);
         }
 
         Timer::after(Duration::from_millis(500)).await;
