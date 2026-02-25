@@ -4,13 +4,11 @@ use embassy_time::{Duration, Ticker};
 use env_logger::Env;
 
 use platform::{
-    AsyncSerialPort,
+    AsyncSerialPort, AsyncSerialPortRx, AsyncSerialPortTx,
     serialport::{Options, Parity},
 };
 
 use zweidraehte::{
-    address::IndividualAddress,
-    context::KnxAddressContext,
     layers::{ActorRequest, Layer, LayerOp, linklayers::tpuart::TpUartLinkLayer},
     messages::{
         buffers::{Buffer, BufferManager},
@@ -18,15 +16,6 @@ use zweidraehte::{
         knx::{KnxMessageBuffer, ServiceType},
     },
 };
-
-/// Fixed address context for the test binary.
-struct StaticAddress(IndividualAddress);
-
-impl KnxAddressContext for StaticAddress {
-    fn individual_address(&self) -> IndividualAddress {
-        self.0
-    }
-}
 
 // Fake network layer that just prints received messages
 struct FakeNetworkLayer {
@@ -62,7 +51,7 @@ async fn run_fake_network(mut fake_network: FakeNetworkLayer) {
 
 #[embassy_executor::task]
 async fn run_link_layer(
-    mut ll: TpUartLinkLayer<'static, AsyncSerialPort>,
+    mut ll: TpUartLinkLayer<'static, AsyncSerialPortTx, AsyncSerialPortRx>,
     link_receiver: embassy_sync::channel::Receiver<
         'static,
         NoopRawMutex,
@@ -97,9 +86,10 @@ async fn main(spawner: Spawner) {
     let link_receiver = link_channel.receiver();
 
     let s = AsyncSerialPort::open(Options { baud_rate: 19200, parity: Parity::Even, ..Default::default() }).unwrap();
-    let addr_ctx: &'static StaticAddress =
-        Box::leak(Box::new(StaticAddress(IndividualAddress::new(15, 15, 1))));
-    let ll = TpUartLinkLayer::new(s, bm, network_sender, addr_ctx);
+    let (tx, rx) = s.split().unwrap();
+    // NoAddressChecker — this test binary doesn't ACK any incoming frames.
+    // TODO: Wire up a DeviceAddressChecker once this test needs to receive.
+    let ll = TpUartLinkLayer::new(tx, rx, bm, network_sender);
 
     // Spawn the fake network layer
     let fake_network = FakeNetworkLayer { receiver: network_receiver };

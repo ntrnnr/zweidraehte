@@ -52,6 +52,16 @@ pub struct AsyncSerialPort {
     s: Async<OwnedFd>,
 }
 
+/// Write half of a split [`AsyncSerialPort`].
+pub struct AsyncSerialPortTx {
+    s: Async<OwnedFd>,
+}
+
+/// Read half of a split [`AsyncSerialPort`].
+pub struct AsyncSerialPortRx {
+    s: Async<OwnedFd>,
+}
+
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
 impl AsyncSerialPort {
@@ -70,6 +80,24 @@ impl AsyncSerialPort {
         tcflush(&fd, FlushArg::TCIOFLUSH).unwrap();
 
         Ok(Self { _t: t, s: Async::new(fd)? })
+    }
+
+    /// Split into independent TX and RX halves.
+    ///
+    /// Each half owns a dup'd file descriptor, so reads and writes can proceed
+    /// concurrently. The original `AsyncSerialPort` (and its `TTYPort`) is
+    /// consumed to ensure the serial port settings remain valid for the
+    /// lifetime of both halves.
+    pub fn split(self) -> Result<(AsyncSerialPortTx, AsyncSerialPortRx)> {
+        let dup_owned = nix::unistd::dup(self.s.as_fd())
+            .map_err(std::io::Error::from)?;
+        let tx = AsyncSerialPortTx { s: Async::new(dup_owned)? };
+        // Consume self, keeping _t alive via the rx half's implicit lifetime.
+        // The original fd is owned by self.s which we move into rx.
+        let rx = AsyncSerialPortRx { s: self.s };
+        // Leak _t so the TTYPort stays alive (its Drop would close the fd)
+        core::mem::forget(self._t);
+        Ok((tx, rx))
     }
 }
 
@@ -92,7 +120,7 @@ impl embedded_io_async::Read for AsyncSerialPort {
 
 impl embedded_io_async::Write for AsyncSerialPort {
     async fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, Self::Error> {
-        // NOTE: can't use io.read() directly because serialport tries to poll
+        // NOTE: can't use io.write() directly because serialport tries to poll
         // with a timeout by itself which doesn't work when using epoll
         unsafe {
             self.s
@@ -103,8 +131,40 @@ impl embedded_io_async::Write for AsyncSerialPort {
     }
 
     async fn flush(&mut self) -> std::result::Result<(), Self::Error> {
-        // Serial port writes go directly to the kernel buffer; no additional
-        // flush needed at this level.
         Ok(())
+    }
+}
+
+impl embedded_io_async::ErrorType for AsyncSerialPortTx {
+    type Error = Error;
+}
+
+impl embedded_io_async::Write for AsyncSerialPortTx {
+    async fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, Self::Error> {
+        unsafe {
+            self.s
+                .write_with_mut(|io| nix::unistd::write(io.as_fd(), buf).map_err(|e| e.into()))
+                .await
+                .map_err(|e| e.into())
+        }
+    }
+
+    async fn flush(&mut self) -> std::result::Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+impl embedded_io_async::ErrorType for AsyncSerialPortRx {
+    type Error = Error;
+}
+
+impl embedded_io_async::Read for AsyncSerialPortRx {
+    async fn read(&mut self, buf: &mut [u8]) -> std::result::Result<usize, Self::Error> {
+        unsafe {
+            self.s
+                .read_with_mut(|io| nix::unistd::read(io.as_fd(), buf).map_err(|e| e.into()))
+                .await
+                .map_err(|e| e.into())
+        }
     }
 }

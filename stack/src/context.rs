@@ -106,3 +106,17 @@ pub trait KnxAddressContext {
     }
 }
 
+/// Provides access to the device's address table for ACK decisions.
+///
+/// Used by the TPUART link layer's [`AutoAddressChecker`](crate::layers::linklayers::tpuart::AutoAddressChecker)
+/// to construct a [`DeviceAddressChecker`](crate::layers::linklayers::tpuart::DeviceAddressChecker)
+/// at link layer build time, when the address table is at a stable memory
+/// location inside [`StackResources`](crate::StackResources).
+pub trait AddressTableContext {
+    /// The concrete address table type.
+    type ADT: crate::objects::tables::AddressTable + crate::objects::tables::HasLoadStateMachine;
+
+    /// Get a reference to the address table's RefCell.
+    fn address_table(&self) -> &core::cell::RefCell<Self::ADT>;
+}
+

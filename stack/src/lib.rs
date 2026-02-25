@@ -1048,6 +1048,17 @@ impl<D: StackDefinition> context::KnxAddressContext for StackContext<'_, D> {
     }
 }
 
+impl<D: StackDefinition> context::AddressTableContext for StackContext<'_, D>
+where
+    D::State: objects::tables::HasAddressTable,
+{
+    type ADT = <D::State as objects::tables::HasAddressTable>::ADT;
+
+    fn address_table(&self) -> &core::cell::RefCell<Self::ADT> {
+        self.inner.state.adt()
+    }
+}
+
 fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'a, D> {
     x
 }

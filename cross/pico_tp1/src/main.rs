@@ -12,7 +12,7 @@ use embassy_rp::{
     flash,
     gpio::{Input, Level, Output, Pull},
     peripherals::UART0,
-    uart::{self, BufferedUart, Config as UartConfig, Parity},
+    uart::{self, BufferedUart, BufferedUartRx, BufferedUartTx, Config as UartConfig, Parity},
 };
 use embassy_time::{Duration, Timer};
 use embedded_hal::digital::InputPin;
@@ -80,7 +80,8 @@ impl SystemBTpDeviceDef for PicoTp1LightSwitch {
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
-    type Uart = BufferedUart;
+    type UartTx = BufferedUartTx;
+    type UartRx = BufferedUartRx;
     type State = PicoTp1State;
 }
 
@@ -91,7 +92,7 @@ impl StackDefinition for PicoTp1LightSwitch {
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
-    type LLB = TpUartLinkLayerBuilder<BufferedUart>;
+    type LLB = TpUartLinkLayerBuilder<BufferedUartTx, BufferedUartRx>;
     type State = PicoTp1State;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, PicoTp1State>;
@@ -429,7 +430,8 @@ async fn main(spawner: Spawner) {
     // KNX stack
     // ========================================================================
 
-    let link_layer_builder = TpUartLinkLayerBuilder::new(uart);
+    let (uart_tx, uart_rx) = uart.split();
+    let link_layer_builder = TpUartLinkLayerBuilder::new(uart_tx, uart_rx);
 
     // Allocate stack resources in a static (embassy tasks need 'static).
     static KNX_RESOURCES: StaticCell<

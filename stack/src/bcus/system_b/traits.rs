@@ -205,8 +205,6 @@ impl<T: SystemBIpDeviceDef> KnxIpDevice for T {
 // System B TP1 Device Definition
 // ============================================================================
 
-use crate::layers::linklayers::tpuart::{AddressChecker, NoAddressChecker};
-
 /// Device definition for System B TP1 (TPUART) devices.
 ///
 /// Implement this trait alongside [`StackDefinition`](crate::StackDefinition)
@@ -233,7 +231,8 @@ use crate::layers::linklayers::tpuart::{AddressChecker, NoAddressChecker};
 ///     const DEVICE: &'static DeviceDescriptor = &MY_DESCRIPTOR;
 ///     type P = MyParams;
 ///     type CO = MyComObjects;
-///     type Uart = embassy_stm32::usart::Uart<'static>;
+///     type UartTx = embassy_stm32::usart::UartTx<'static>;
+///     type UartRx = embassy_stm32::usart::UartRx<'static>;
 ///     type State = MyState;
 /// }
 ///
@@ -241,7 +240,7 @@ use crate::layers::linklayers::tpuart::{AddressChecker, NoAddressChecker};
 ///     const DEVICE: &'static DeviceDescriptor = &MY_DESCRIPTOR;
 ///     type P = MyParams;
 ///     type CO = MyComObjects;
-///     type LLB = TpUartLinkLayerBuilder<embassy_stm32::usart::Uart<'static>>;
+///     type LLB = TpUartLinkLayerBuilder<embassy_stm32::usart::UartTx<'static>, embassy_stm32::usart::UartRx<'static>>;
 ///     type State = MyState;
 ///     type Mem = SystemBMemoryMap;
 ///     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, MyState>;
@@ -271,14 +270,14 @@ pub trait SystemBTpDeviceDef: Copy + 'static {
     /// Communication objects type.
     type CO: ComObjects;
 
-    /// UART type for TPUART communication.
-    type Uart: embedded_io_async::Read + embedded_io_async::Write + Send + 'static;
-
-    /// Address checker type for group address ACK filtering.
+    /// UART TX half for TPUART communication.
     ///
-    /// Defaults to [`NoAddressChecker`] (no group ACKs). Override with a
-    /// custom [`AddressChecker`] implementation to ACK group-addressed frames.
-    type Checker: AddressChecker + Send + 'static = NoAddressChecker;
+    /// Split from the full UART so that TX and RX can proceed concurrently
+    /// in the event loop (e.g., `BufferedUart::split()` on Embassy).
+    type UartTx: embedded_io_async::Write + Send + 'static;
+
+    /// UART RX half for TPUART communication.
+    type UartRx: embedded_io_async::Read + Send + 'static;
 
     /// Concrete device state type, pre-parameterized with table sizes.
     ///

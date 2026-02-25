@@ -50,7 +50,7 @@
 //! **Note**: Bus monitor mode is mutually exclusive with normal operation. Once enabled,
 //! a chip reset is required to return to normal mode.
 
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either4, select4};
 use embassy_sync::channel::DynamicSender;
 use embassy_time::{Instant, Timer};
 
@@ -70,62 +70,141 @@ pub mod busmon;
 mod chip;
 mod state_machine;
 
-use crate::encoding::tp1::{knx_to_tp1_message, tp1_to_knx_message};
+use crate::encoding::tp1::{knx_to_tp1_message_no_checksum, tp1_to_knx_message};
 use chip::{ChipType, RetryConfig};
 use state_machine::*;
 
 use crate::address::GroupAddress;
+use crate::objects::tables::{AddressTable, HasLoadStateMachine};
 
 // Re-export for external use
 pub use chip::ChipType as TpUartChipType;
 
-/// Trait for checking if a group address should be acknowledged
+/// Trait for deciding whether to ACK an incoming TP1 frame.
 ///
-/// This is used by the TPUART link layer to determine whether to send an ACK
-/// for incoming frames addressed to group addresses. The link layer will call
-/// this after receiving the destination address (byte 6) to decide whether to
-/// acknowledge the frame.
+/// The TPUART link layer calls [`should_ack`](AddressChecker::should_ack)
+/// after receiving the 6-byte header (control, src_hi, src_lo, dst_hi,
+/// dst_lo, AT+NPCI) of every incoming frame. The implementation decides
+/// whether to send `U_ACK_INF` based on the destination address and address
+/// type (group / individual / broadcast).
+///
+/// Different operating modes need different strategies:
+///
+/// | Mode | Checker | Behaviour |
+/// |------|---------|-----------|
+/// | Normal device | [`DeviceAddressChecker`] | ACK own individual address, loaded group addresses, broadcast |
+/// | KNX/IP tunnel | [`AckAllChecker`] | ACK everything (forward all traffic) |
+/// | Bus monitor / test | [`NoAddressChecker`] | ACK nothing |
 ///
 /// # Implementation Notes
 ///
-/// - Return `true` if the address is in the address table and the table is loaded
-/// - Return `false` if the table is not loaded or the address is not found
 /// - This is called synchronously during frame reception, so implementations
-///   should be fast (e.g., using RefCell, not async)
+///   must be fast (e.g., using `RefCell`, not async).
+/// - The header bytes are raw TP1 wire bytes, not KNX-decoded.
+pub trait AddressChecker {
+    /// Decide whether the link layer should ACK a frame with this header.
+    ///
+    /// `header` layout: `[ctrl, src_hi, src_lo, dst_hi, dst_lo, at_npci]`
+    ///
+    /// The AT flag (bit 7 of `at_npci`) distinguishes group-addressed frames
+    /// (`1`) from individually-addressed frames (`0`).
+    fn should_ack(&self, header: &[u8; 6]) -> bool;
+}
+
+/// A no-op address checker that never ACKs any frames.
+///
+/// Useful for bus monitor mode or testing, where the device must not
+/// interfere with bus traffic.
+pub struct NoAddressChecker;
+
+impl AddressChecker for NoAddressChecker {
+    fn should_ack(&self, _header: &[u8; 6]) -> bool {
+        false
+    }
+}
+
+/// An address checker that ACKs every frame unconditionally.
+///
+/// Used by KNX/IP tunneling gateways that need to forward all bus traffic
+/// to the tunnel client.
+pub struct AckAllChecker;
+
+impl AddressChecker for AckAllChecker {
+    fn should_ack(&self, _header: &[u8; 6]) -> bool {
+        true
+    }
+}
+
+/// Marker type: construct a [`DeviceAddressChecker`] automatically at
+/// link layer build time from the stack context.
+///
+/// This is the default for [`TpUartLinkLayerBuilder::new`]. The builder's
+/// [`build_and_run`](super::super::LinkLayerBuilder::build_and_run) impl
+/// requires the context to provide [`KnxAddressContext`] and
+/// [`AddressTableContext`], and creates a [`DeviceAddressChecker`] that
+/// ACKs the device's own individual address, group addresses from the
+/// loaded address table, and broadcasts.
+///
+/// Use [`TpUartLinkLayerBuilder::with_address_checker`] to supply a
+/// different checker (e.g., [`AckAllChecker`] for tunneling gateways or
+/// [`NoAddressChecker`] for bus monitors).
+pub struct AutoAddressChecker;
+
+/// Address checker for normal KNX devices.
+///
+/// ACKs frames matching:
+/// - The device's own individual address (via [`KnxAddressContext`])
+/// - Additional individual addresses (tunneling addresses)
+/// - Group addresses present in the loaded address table
+/// - Broadcast destination (`0.0.0` / `0/0/0`)
 ///
 /// # Example
 ///
 /// ```ignore
-/// use std::cell::RefCell;
-///
-/// struct MyAddressChecker<'a> {
-///     addr_table: &'a RefCell<AddrTab7>,
-/// }
-///
-/// impl AddressChecker for MyAddressChecker<'_> {
-///     fn should_ack_group_address(&self, address: GroupAddress) -> bool {
-///         let table = self.addr_table.borrow();
-///         table.is_loaded() && table.contains(address)
-///     }
-/// }
+/// let checker = DeviceAddressChecker::new(stack_context, stack_context.adt());
+/// let builder = TpUartLinkLayerBuilder::with_address_checker(uart_tx, uart_rx, checker);
 /// ```
-pub trait AddressChecker {
-    /// Check if a group address should be acknowledged
-    ///
-    /// Returns `true` if the link layer should send an ACK for this group address.
-    fn should_ack_group_address(&self, address: GroupAddress) -> bool;
+pub struct DeviceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine> {
+    address_context: &'a dyn KnxAddressContext,
+    address_table: &'a core::cell::RefCell<ADT>,
 }
 
-/// A no-op address checker that never ACKs group addresses
-///
-/// This is used when no address table is configured, which means the device
-/// will not ACK any group-addressed frames (only individually-addressed frames
-/// matching our address will be ACKed via the TPUART hardware).
-pub struct NoAddressChecker;
+impl<'a, ADT: AddressTable + HasLoadStateMachine> DeviceAddressChecker<'a, ADT> {
+    pub fn new(
+        address_context: &'a dyn KnxAddressContext,
+        address_table: &'a core::cell::RefCell<ADT>,
+    ) -> Self {
+        Self { address_context, address_table }
+    }
+}
 
-impl AddressChecker for NoAddressChecker {
-    fn should_ack_group_address(&self, _address: GroupAddress) -> bool {
-        false
+impl<ADT: AddressTable + HasLoadStateMachine> AddressChecker for DeviceAddressChecker<'_, ADT> {
+    fn should_ack(&self, header: &[u8; 6]) -> bool {
+        let dst_hi = header[3];
+        let dst_lo = header[4];
+        let at_npci = header[5];
+
+        let is_group_address = (at_npci & 0x80) != 0;
+
+        // Broadcast: destination 0x0000 is broadcast regardless of address
+        // type flag. Individual 0.0.0 and group 0/0/0 are both broadcast.
+        if dst_hi == 0 && dst_lo == 0 {
+            return true;
+        }
+
+        if is_group_address {
+            let ga = GroupAddress::from_bytes(&[dst_hi, dst_lo]);
+            let table = self.address_table.borrow();
+            // Loaded + empty table ACKs all group frames.
+            // This covers the ETS programming window where the table is loaded
+            // but entries haven't been written yet.
+            table.is_loaded() && (table.entry_count() == 0 || table.contains(ga))
+        } else {
+            let dst = IndividualAddress::from_bytes(&[dst_hi, dst_lo]);
+            let our_addr = self.address_context.individual_address();
+            dst == our_addr
+                || self.address_context.additional_individual_addresses().contains(&dst)
+        }
     }
 }
 
@@ -136,32 +215,52 @@ impl AddressChecker for NoAddressChecker {
 /// Builder for creating a [`TpUartLinkLayer`] that plugs into the stack's
 /// [`LinkLayerBuilder`](super::super::LinkLayerBuilder) framework.
 ///
-/// The builder owns the UART and (optionally) an [`AddressChecker`]. Everything
-/// else — buffer manager, network layer sender, individual address — comes from
-/// the runtime context and `build_and_run` parameters.
+/// The builder owns split UART TX/RX halves and an [`AddressChecker`]
+/// (or the [`AutoAddressChecker`] marker). The caller is responsible for
+/// splitting the UART before constructing the builder (e.g.,
+/// `BufferedUart::split()` on Embassy).
 ///
-/// # Example
+/// # Default: automatic address checking
+///
+/// [`new`](Self::new) uses [`AutoAddressChecker`], which constructs a
+/// [`DeviceAddressChecker`] from the stack context at build time. This
+/// ACKs the device's own individual address, loaded group addresses, and
+/// broadcasts — the right default for normal KNX TP1 devices.
+///
+/// # Custom checkers
+///
+/// Use [`with_address_checker`](Self::with_address_checker) to supply a
+/// different policy:
 ///
 /// ```ignore
-/// let builder = TpUartLinkLayerBuilder::new(uart);
-/// // ... pass to zweidraehte::new() as the link layer builder
+/// // Tunneling gateway — ACK everything
+/// let builder = TpUartLinkLayerBuilder::with_address_checker(tx, rx, AckAllChecker);
+///
+/// // Bus monitor — ACK nothing
+/// let builder = TpUartLinkLayerBuilder::with_address_checker(tx, rx, NoAddressChecker);
 /// ```
-pub struct TpUartLinkLayerBuilder<U, A: AddressChecker = NoAddressChecker> {
-    uart: U,
+pub struct TpUartLinkLayerBuilder<W, R, A = AutoAddressChecker> {
+    uart_tx: W,
+    uart_rx: R,
     address_checker: A,
 }
 
-impl<U> TpUartLinkLayerBuilder<U, NoAddressChecker> {
-    /// Create a builder with no group address ACK support.
-    pub fn new(uart: U) -> Self {
-        Self { uart, address_checker: NoAddressChecker }
+impl<W, R> TpUartLinkLayerBuilder<W, R, AutoAddressChecker> {
+    /// Create a builder with automatic address checking.
+    ///
+    /// The link layer will ACK frames addressed to the device's own
+    /// individual address, group addresses in the loaded address table,
+    /// and broadcasts. The checker is constructed from the stack context
+    /// at build time.
+    pub fn new(uart_tx: W, uart_rx: R) -> Self {
+        Self { uart_tx, uart_rx, address_checker: AutoAddressChecker }
     }
 }
 
-impl<U, A: AddressChecker> TpUartLinkLayerBuilder<U, A> {
-    /// Create a builder with a custom [`AddressChecker`] for group address ACKs.
-    pub fn with_address_checker(uart: U, address_checker: A) -> Self {
-        Self { uart, address_checker }
+impl<W, R, A: AddressChecker> TpUartLinkLayerBuilder<W, R, A> {
+    /// Create a builder with a custom [`AddressChecker`].
+    pub fn with_address_checker(uart_tx: W, uart_rx: R, address_checker: A) -> Self {
+        Self { uart_tx, uart_rx, address_checker }
     }
 }
 
@@ -170,8 +269,10 @@ impl<U, A: AddressChecker> TpUartLinkLayerBuilder<U, A> {
 /// Empty — TPUART needs no pre-allocated resources beyond the UART itself.
 pub struct TpUartResources;
 
-impl<U: Send + 'static, A: AddressChecker + Send + 'static> super::super::LinkLayerBuilderBase
-    for TpUartLinkLayerBuilder<U, A>
+// -- LinkLayerBuilderBase for explicit AddressChecker --------------------------
+
+impl<W: Send + 'static, R: Send + 'static, A: AddressChecker + Send + 'static>
+    super::super::LinkLayerBuilderBase for TpUartLinkLayerBuilder<W, R, A>
 {
     type Resources = TpUartResources;
 
@@ -180,10 +281,11 @@ impl<U: Send + 'static, A: AddressChecker + Send + 'static> super::super::LinkLa
     }
 }
 
-impl<CTX, U, A> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<U, A>
+impl<CTX, W, R, A> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<W, R, A>
 where
-    CTX: crate::context::BufferManagerContext + KnxAddressContext,
-    U: embedded_io_async::Read + embedded_io_async::Write + Send + 'static,
+    CTX: crate::context::BufferManagerContext,
+    W: embedded_io_async::Write + Send + 'static,
+    R: embedded_io_async::Read + Send + 'static,
     A: AddressChecker + Send + 'static,
 {
     fn build_and_run<'a>(
@@ -195,11 +297,57 @@ where
     ) -> impl core::future::Future<Output = !> + 'a {
         let buffer_manager = context.buffer_manager();
         let mut ll = TpUartLinkLayer::with_address_checker(
-            self.uart,
+            self.uart_tx,
+            self.uart_rx,
             buffer_manager,
             network_layer,
             self.address_checker,
-            context,
+        );
+        async move { ll.process(inbox).await }
+    }
+}
+
+// -- LinkLayerBuilderBase/Builder for AutoAddressChecker ----------------------
+//
+// AutoAddressChecker is NOT an AddressChecker — it's a marker that tells the
+// builder to construct a DeviceAddressChecker from the context at build time.
+// This requires the context to provide KnxAddressContext (individual address)
+// and AddressTableContext (group address table).
+
+impl<W: Send + 'static, R: Send + 'static>
+    super::super::LinkLayerBuilderBase for TpUartLinkLayerBuilder<W, R, AutoAddressChecker>
+{
+    type Resources = TpUartResources;
+
+    fn create_resources(&self) -> Self::Resources {
+        TpUartResources
+    }
+}
+
+impl<CTX, W, R> super::super::LinkLayerBuilder<CTX>
+    for TpUartLinkLayerBuilder<W, R, AutoAddressChecker>
+where
+    CTX: crate::context::BufferManagerContext
+        + crate::context::KnxAddressContext
+        + crate::context::AddressTableContext,
+    W: embedded_io_async::Write + Send + 'static,
+    R: embedded_io_async::Read + Send + 'static,
+{
+    fn build_and_run<'a>(
+        self,
+        _resources: &'a mut Self::Resources,
+        context: &'a CTX,
+        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        inbox: impl Inbox<LayerOp<Buffer<'static>>> + 'a,
+    ) -> impl core::future::Future<Output = !> + 'a {
+        let buffer_manager = context.buffer_manager();
+        let checker = DeviceAddressChecker::new(context, context.address_table());
+        let mut ll = TpUartLinkLayer::with_address_checker(
+            self.uart_tx,
+            self.uart_rx,
+            buffer_manager,
+            network_layer,
+            checker,
         );
         async move { ll.process(inbox).await }
     }
@@ -212,13 +360,15 @@ where
 /// TPUART Link Layer
 ///
 /// Handles communication with TPUART-compatible transceiver chips for KNX TP1.
-pub struct TpUartLinkLayer<'a, U, A = NoAddressChecker>
+pub struct TpUartLinkLayer<'a, W, R, A = NoAddressChecker>
 where
-    U: embedded_io_async::Read + embedded_io_async::Write,
+    W: embedded_io_async::Write,
+    R: embedded_io_async::Read,
     A: AddressChecker,
 {
-    // Hardware interface
-    uart: U,
+    // Hardware interface (split for concurrent TX/RX in the event loop)
+    uart_tx: W,
+    uart_rx: R,
 
     // Buffer management
     buffer_manager: &'a DynBufferManager<'static>,
@@ -230,13 +380,10 @@ where
     main_ctx: StateMachineContext,
     send_ctx: SendContext,
 
-    // Configuration — individual address is read from the context at runtime
-    // so it tracks changes (e.g., ETS programming a new address).
-    address_context: &'a dyn KnxAddressContext,
-    last_configured_addr: IndividualAddress,
     retry_config: RetryConfig,
 
-    // Group address ACK checker
+    // ACK decision — the checker owns all address-matching logic (individual,
+    // group, broadcast). Different checkers implement different policies.
     address_checker: A,
 
     // Receive buffer
@@ -246,8 +393,10 @@ where
     pending_tx: Option<PendingTransmission>,
     current_tx: Option<CurrentTransmission>,
 
-    // Timeout tracking (using Instant for simplicity)
+    // Timeout tracking — main and send state machines use independent deadlines
+    // so that a receive inter-byte timeout doesn't kill the send echo wait.
     timeout_deadline: Option<Instant>,
+    send_timeout_deadline: Option<Instant>,
 
     // Previous control byte for repeat detection
     prev_control_byte: u8,
@@ -269,65 +418,58 @@ struct CurrentTransmission {
     response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
 }
 
-impl<'a, U> TpUartLinkLayer<'a, U, NoAddressChecker>
+impl<'a, W, R> TpUartLinkLayer<'a, W, R, NoAddressChecker>
 where
-    U: embedded_io_async::Read + embedded_io_async::Write,
+    W: embedded_io_async::Write,
+    R: embedded_io_async::Read,
 {
-    /// Create a new TPUART link layer without group address ACK support
+    /// Create a TPUART link layer with [`NoAddressChecker`] (ACKs nothing).
     ///
-    /// This creates a link layer that will not ACK group-addressed frames.
-    /// Only individually-addressed frames matching the configured address
-    /// will be ACKed (via TPUART hardware).
-    ///
-    /// The individual address is read from `address_context` at runtime,
-    /// so changes (e.g., ETS programming) are automatically picked up.
-    ///
-    /// Use [`with_address_checker`](Self::with_address_checker) if you need
-    /// group address ACK support.
+    /// Useful for bus monitor mode or testing. For normal device operation,
+    /// use [`with_address_checker`](Self::with_address_checker) with a
+    /// [`DeviceAddressChecker`].
     pub fn new(
-        uart: U,
+        uart_tx: W,
+        uart_rx: R,
         buffer_manager: &'a DynBufferManager<'static>,
         network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
-        address_context: &'a dyn KnxAddressContext,
     ) -> Self {
-        Self::with_address_checker(uart, buffer_manager, network_layer, NoAddressChecker, address_context)
+        Self::with_address_checker(uart_tx, uart_rx, buffer_manager, network_layer, NoAddressChecker)
     }
 }
 
-impl<'a, U, A> TpUartLinkLayer<'a, U, A>
+impl<'a, W, R, A> TpUartLinkLayer<'a, W, R, A>
 where
-    U: embedded_io_async::Read + embedded_io_async::Write,
+    W: embedded_io_async::Write,
+    R: embedded_io_async::Read,
     A: AddressChecker,
 {
-    /// Create a new TPUART link layer with group address ACK support
+    /// Create a TPUART link layer with a custom [`AddressChecker`].
     ///
-    /// The `address_checker` is called after receiving the destination address
-    /// (byte 6) of incoming frames to determine whether to ACK group-addressed
-    /// frames.
-    ///
-    /// The individual address is read from `address_context` at runtime,
-    /// so changes (e.g., ETS programming) are automatically picked up.
+    /// The checker is called for every incoming frame header to decide
+    /// whether to send `U_ACK_INF`. See [`AddressChecker`] for the
+    /// available implementations.
     pub fn with_address_checker(
-        uart: U,
+        uart_tx: W,
+        uart_rx: R,
         buffer_manager: &'a DynBufferManager<'static>,
         network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
         address_checker: A,
-        address_context: &'a dyn KnxAddressContext,
     ) -> Self {
         Self {
-            uart,
+            uart_tx,
+            uart_rx,
             buffer_manager,
             network_layer,
             main_ctx: StateMachineContext::new(),
             send_ctx: SendContext::new(),
-            address_context,
-            last_configured_addr: IndividualAddress::default(),
             retry_config: RetryConfig::default(),
             address_checker,
             receive_buffer: None,
             pending_tx: None,
             current_tx: None,
             timeout_deadline: None,
+            send_timeout_deadline: None,
             prev_control_byte: 0xFF,
         }
     }
@@ -335,6 +477,12 @@ where
     /// Set the retry configuration
     pub fn set_retry_config(&mut self, config: RetryConfig) {
         self.retry_config = config;
+    }
+
+    /// Write bytes to the UART, logging them at trace level.
+    async fn uart_write(&mut self, bytes: &[u8]) {
+        trace!("TPUART TX: {:?}", crate::fmt::Bytes(bytes));
+        let _ = self.uart_tx.write_all(bytes).await;
     }
 
     /// Check if the bus is operational
@@ -414,7 +562,7 @@ where
                 }
             };
 
-            match embassy_futures::select::select(timeout_future, self.uart.read(&mut buf)).await {
+            match embassy_futures::select::select(timeout_future, self.uart_rx.read(&mut buf)).await {
                 embassy_futures::select::Either::First(_) => {
                     // Timeout
                     let actions = process_main_event(&mut self.main_ctx, MainEvent::Timer);
@@ -488,7 +636,7 @@ where
 
         // Send E981 register write directly
         let buf = [E981_REG_WRITE_REQ, (address >> 8) as u8, (address & 0xFF) as u8, value];
-        let _ = self.uart.write_all(&buf).await;
+        self.uart_write(&buf).await;
 
         // Reset keepalive timer
         self.timeout_deadline = Some(Instant::now() + TIMEOUT_KEEPALIVE);
@@ -510,7 +658,7 @@ where
                     self.timeout_deadline = None;
                 }
                 MainAction::SendByte(byte) => {
-                    let _ = self.uart.write_all(&[byte]).await;
+                    self.uart_write(&[byte]).await;
                 }
                 MainAction::AllocReceiveBuffer => {
                     let buffer = self.buffer_manager.alloc().await;
@@ -544,13 +692,13 @@ where
                     }
                 }
                 MainAction::SendAck => {
-                    let _ = self.uart.write_all(&[U_ACK_INF]).await;
+                    self.uart_write(&[U_ACK_INF]).await;
                 }
                 MainAction::SendNack => {
-                    let _ = self.uart.write_all(&[U_NACK_INF]).await;
+                    self.uart_write(&[U_NACK_INF]).await;
                 }
                 MainAction::SendBusy => {
-                    let _ = self.uart.write_all(&[U_BUSY_INF]).await;
+                    self.uart_write(&[U_BUSY_INF]).await;
                 }
                 MainAction::IndicationToNetwork => {
                     if let Some(buffer) = self.receive_buffer.take() {
@@ -624,29 +772,23 @@ where
                         debug!("TPUART: Send state machine reset due to error");
                     }
                 }
-                MainAction::ConfigureAddress => {
-                    let addr = self.address_context.individual_address();
-                    // Skip programming the chip if no address is configured yet
-                    // (default 0.0.0).
-                    if addr != IndividualAddress::default() {
-                        let mut buf = [U_SET_ADDRESS, 0x00, 0x00];
-                        buf[1..].copy_from_slice(addr.as_bytes());
-                        let _ = self.uart.write_all(&buf).await;
-                        self.last_configured_addr = addr;
-                    }
-                }
                 MainAction::ConfigureRetryCounts => {
                     let buf = [U_MAX_RST_CNT, self.retry_config.encode()];
-                    let _ = self.uart.write_all(&buf).await;
+                    self.uart_write(&buf).await;
                 }
                 MainAction::SendStateRequest => {
-                    let _ = self.uart.write_all(&[U_STATE_REQ]).await;
+                    self.uart_write(&[U_STATE_REQ]).await;
                 }
                 MainAction::SendVersionRequest => {
-                    let _ = self.uart.write_all(&[U_VERSION_REQ]).await;
+                    self.uart_write(&[U_VERSION_REQ]).await;
                 }
                 MainAction::SendNcn5120SysStateRequest => {
-                    let _ = self.uart.write_all(&[NCN5120_SYS_STATE_REQ, U_VERSION_REQ]).await;
+                    // Wire order must be: U_VERSION_REQ first, then NCN5120_SYS_STATE_REQ.
+                    // The LIFO send buffer sends [1] before [0]).
+                    // The NCN5120 ignores 0x20 (undefined command, triggers protocol error)
+                    // but responds to 0x0D with U_SystemStat.ind (0x4B + status).
+                    // A TPUART2 would instead respond to 0x20 with a version indication.
+                    self.uart_write(&[U_VERSION_REQ, NCN5120_SYS_STATE_REQ]).await;
                 }
                 MainAction::InitComplete => {
                     info!("TPUART: Initialization complete, chip: {}", self.main_ctx.chip_type.name());
@@ -654,18 +796,18 @@ where
                 MainAction::SendE981RegRead { address } => {
                     // E981 register read: 3 bytes (cmd, addr_hi, addr_lo)
                     let buf = [E981_REG_READ_REQ, (address >> 8) as u8, (address & 0xFF) as u8];
-                    let _ = self.uart.write_all(&buf).await;
+                    self.uart_write(&buf).await;
                 }
                 MainAction::SendE981RegWrite { address, value } => {
                     // E981 register write: 4 bytes (cmd, addr_hi, addr_lo, value)
                     let buf = [E981_REG_WRITE_REQ, (address >> 8) as u8, (address & 0xFF) as u8, value];
-                    let _ = self.uart.write_all(&buf).await;
+                    self.uart_write(&buf).await;
                 }
                 MainAction::SendNcn5120RegWrite { address, value } => {
                     // NCN5120 register write: 2 bytes (cmd | addr, value)
                     // Address is in lower 3 bits of command
                     let buf = [NCN5120_REG_WRITE_REQ | (address & 0x07), value];
-                    let _ = self.uart.write_all(&buf).await;
+                    self.uart_write(&buf).await;
                 }
                 MainAction::RegisterReadComplete { value } => {
                     // Register read completed - this is handled by the async read_register method
@@ -694,14 +836,13 @@ where
                                 ChipType::E981 if is_long_frame => {
                                     if index == 0 {
                                         // First byte: normal start command
-                                        let _ = self.uart.write_all(&[U_L_DATA_START, byte]).await;
+                                        self.uart_write(&[U_L_DATA_START, byte]).await;
                                     } else if is_last {
                                         // Last byte: E981_LONG_DATA_END + full index
-                                        let _ = self.uart.write_all(&[E981_LONG_DATA_END, index as u8, byte]).await;
+                                        self.uart_write(&[E981_LONG_DATA_END, index as u8, byte]).await;
                                     } else {
                                         // Middle bytes: E981_LONG_DATA_CONTINUE + full index
-                                        let _ =
-                                            self.uart.write_all(&[E981_LONG_DATA_CONTINUE, index as u8, byte]).await;
+                                        self.uart_write(&[E981_LONG_DATA_CONTINUE, index as u8, byte]).await;
                                     }
                                 }
 
@@ -710,7 +851,7 @@ where
                                     // Send offset command at each 64-byte boundary (except 0)
                                     if (index & 0x3F) == 0 && index > 0 {
                                         let offset_cmd = U_L_DATA_OFFSET_REQ | (index >> 6) as u8;
-                                        let _ = self.uart.write_all(&[offset_cmd]).await;
+                                        self.uart_write(&[offset_cmd]).await;
                                     }
                                     // Normal start/end with 6-bit index
                                     let cmd = if is_last {
@@ -718,7 +859,7 @@ where
                                     } else {
                                         U_L_DATA_START | (index & 0x3F) as u8
                                     };
-                                    let _ = self.uart.write_all(&[cmd, byte]).await;
+                                    self.uart_write(&[cmd, byte]).await;
                                 }
 
                                 // Standard frame (<=64 bytes) or TPUART1/2
@@ -728,16 +869,16 @@ where
                                     } else {
                                         U_L_DATA_START | (index & 0x3F) as u8
                                     };
-                                    let _ = self.uart.write_all(&[cmd, byte]).await;
+                                    self.uart_write(&[cmd, byte]).await;
                                 }
                             }
                         }
                 }
                 SendAction::StartSendTimer => {
-                    self.timeout_deadline = Some(Instant::now() + TIMEOUT_SEND);
+                    self.send_timeout_deadline = Some(Instant::now() + TIMEOUT_SEND);
                 }
                 SendAction::StopSendTimer => {
-                    // Timer is shared with main state machine
+                    self.send_timeout_deadline = None;
                 }
                 SendAction::TransmissionComplete { success } => {
                     self.complete_transmission(success).await;
@@ -819,9 +960,6 @@ where
     /// 6. Checks if this is an echo of our transmission
     async fn parse_header_and_check_ack(&mut self, header: &[u8; 6]) {
         let ctrl = header[0];
-        let dst_hi = header[3];
-        let dst_lo = header[4];
-        let at_npci = header[5];
 
         // Determine frame format from control byte
         // Standard frame: bit 7 = 1, extended frame: bit 7 = 0
@@ -837,28 +975,29 @@ where
                 let ctrl_match = ((header[0] ^ tx_buf[0]) & !0x20) == 0;
                 let addr_match = header[1..6] == tx_buf[1..6];
                 if ctrl_match && addr_match {
+                    debug!("TPUART: echo detected, skipping ACK");
                     self.main_ctx.receive_state.is_echo = true;
                     // Don't ACK our own echoes
                     return;
                 }
             }
 
-        // Check if group address (bit 7 of AT/NPCI byte)
-        let is_group_address = (at_npci & 0x80) != 0;
-
-        if is_group_address {
-            // Extract group address from bytes 3-4
-            let ga = GroupAddress::from_bytes(&[dst_hi, dst_lo]);
-
-            // Check if we should ACK this group address
-            if self.address_checker.should_ack_group_address(ga) {
-                // Send ACK
-                let _ = self.uart.write_all(&[U_ACK_INF]).await;
-                self.main_ctx.receive_state.acked = true;
-                trace!("TPUART: ACK sent for group address {}", ga);
-            }
+        // Delegate the full ACK decision to the address checker. Different
+        // checkers implement different policies (normal device, tunneling
+        // gateway, bus monitor). The link layer doesn't have its own opinion.
+        if self.address_checker.should_ack(header) {
+            debug!(
+                "TPUART: ACK frame dst={:02X}.{:02X} at_npci={:02X}",
+                header[3], header[4], header[5]
+            );
+            self.uart_write(&[U_ACK_INF]).await;
+            self.main_ctx.receive_state.acked = true;
+        } else {
+            debug!(
+                "TPUART: no ACK for dst={:02X}.{:02X} at_npci={:02X}",
+                header[3], header[4], header[5]
+            );
         }
-        // Individual addresses are ACKed by the TPUART hardware when our address is set
     }
 
     /// Check if received bytes match our transmitted frame (echo detection) - non-borrowing version
@@ -893,10 +1032,11 @@ where
             tp1_buf.push(byte);
         }
 
-        // Convert KNX format to TP1 format (modifies in place, may add extended control byte)
-        let mut tp1_buffer = knx_to_tp1_message(tp1_buf);
+        // Convert KNX format to TP1 wire format (without checksum — we add our own
+        // using the correct inverted-XOR algorithm from calculate_checksum).
+        let mut tp1_buffer = knx_to_tp1_message_no_checksum(tp1_buf);
 
-        // Add checksum to the buffer
+        // Append the TP1 checksum (0xFF ^ XOR of all data bytes).
         let checksum = calculate_checksum(&tp1_buffer[..]);
         tp1_buffer.push(checksum);
 
@@ -976,7 +1116,7 @@ where
                 }
             };
 
-            match embassy_futures::select::select(timeout_future, self.uart.read(&mut buf)).await {
+            match embassy_futures::select::select(timeout_future, self.uart_rx.read(&mut buf)).await {
                 embassy_futures::select::Either::First(_) => {
                     // Timeout
                     let actions = process_main_event(&mut self.main_ctx, MainEvent::Timer);
@@ -984,6 +1124,7 @@ where
                 }
                 embassy_futures::select::Either::Second(result) => {
                     if result.is_ok() {
+                        trace!("TPUART RX: 0x{:02X}", buf[0]);
                         let actions = process_main_event(&mut self.main_ctx, MainEvent::ReceivedByte(buf[0]));
                         self.execute_main_actions(actions).await;
                     } else {
@@ -1004,9 +1145,10 @@ where
 // Layer Implementation
 // ============================================================================
 
-impl<'a, U, A> Layer<'a> for TpUartLinkLayer<'a, U, A>
+impl<'a, W, R, A> Layer<'a> for TpUartLinkLayer<'a, W, R, A>
 where
-    U: embedded_io_async::Read + embedded_io_async::Write,
+    W: embedded_io_async::Write,
+    R: embedded_io_async::Read,
     A: AddressChecker,
 {
     type Buffer = Buffer<'static>;
@@ -1020,30 +1162,63 @@ where
         loop {
             let mut buf = [0u8];
 
-            // Create timeout future
+            // Compute the earliest deadline across both state machines.
+            // We track which ones fired so we dispatch to the correct SM.
+            let earliest_deadline = match (self.timeout_deadline, self.send_timeout_deadline) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+
             let timeout_future = async {
-                if let Some(deadline) = self.timeout_deadline {
+                if let Some(deadline) = earliest_deadline {
                     Timer::at(deadline).await;
-                    true
                 } else {
-                    core::future::pending::<bool>().await
+                    core::future::pending::<()>().await
                 }
             };
 
-            match select3(timeout_future, self.uart.read(&mut buf), inbox.next()).await {
-                Either3::First(_) => {
-                    // Timeout
-                    trace!("TPUART: Timeout");
-                    let actions = process_main_event(&mut self.main_ctx, MainEvent::Timer);
-                    self.execute_main_actions(actions).await;
+            // Send pump: resolves immediately when there are frame bytes to
+            // transmit, stays pending otherwise. This replaces the hardware
+            // TX-complete interrupt — we yield
+            // back into the select so RX bytes are still processed between TX
+            // byte pairs, preventing the send loop from starving reception.
+            let send_ready_future = async {
+                if self.send_ctx.state == SendState::Sending {
+                    embassy_futures::yield_now().await;
+                } else {
+                    core::future::pending::<()>().await
+                }
+            };
 
-                    // Also check send timeout if in sending state
-                    if self.send_ctx.state != SendState::Idle {
+            match select4(
+                timeout_future,
+                self.uart_rx.read(&mut buf),
+                inbox.next(),
+                send_ready_future,
+            ).await {
+                Either4::First(_) => {
+                    // Timer fired — dispatch to the state machine(s) whose
+                    // deadline has been reached. The main and send SMs use
+                    // independent deadlines so that e.g. a receive inter-byte
+                    // timeout doesn't kill the send echo wait.
+                    let now = Instant::now();
+
+                    if self.timeout_deadline.is_some_and(|d| now >= d) {
+                        trace!("TPUART: Timeout");
+                        let actions = process_main_event(&mut self.main_ctx, MainEvent::Timer);
+                        self.execute_main_actions(actions).await;
+                    }
+
+                    if self.send_timeout_deadline.is_some_and(|d| now >= d) {
+                        trace!("TPUART: Send timeout");
+                        self.send_timeout_deadline = None;
                         let send_actions = process_send_event(&mut self.send_ctx, SendEvent::Timeout);
                         self.execute_send_actions(send_actions).await;
                     }
                 }
-                Either3::Second(result) => {
+                Either4::Second(result) => {
                     match result {
                         Ok(_) => {
                             trace!("TPUART RX: 0x{:02X}", buf[0]);
@@ -1061,7 +1236,7 @@ where
                         }
                     }
                 }
-                Either3::Third(layer_op) => {
+                Either4::Third(layer_op) => {
                     match layer_op {
                         LayerOp::Indication(_) => {
                             error!("TPUART: Unexpected indication from upper layer");
@@ -1079,31 +1254,15 @@ where
                         }
                     }
                 }
+                Either4::Fourth(_) => {
+                    // Send pump: transmit the next frame byte
+                    let actions = process_send_event(&mut self.send_ctx, SendEvent::SendNextByte);
+                    self.execute_send_actions(actions).await;
+                }
             }
 
             // Check for pending transmission
             self.check_pending_transmission().await;
-
-            // Continue sending bytes if in Sending state
-            if self.send_ctx.state == SendState::Sending {
-                let actions = process_send_event(&mut self.send_ctx, SendEvent::SendNextByte);
-                self.execute_send_actions(actions).await;
-            }
-
-            // Re-program the TPUART chip if the individual address changed
-            // (e.g., ETS wrote a new address via A_IndividualAddress_Write).
-            if self.main_ctx.main_state == MainState::Idle {
-                let current_addr = self.address_context.individual_address();
-                if current_addr != self.last_configured_addr
-                    && current_addr != IndividualAddress::default()
-                {
-                    let mut cmd = [U_SET_ADDRESS, 0x00, 0x00];
-                    cmd[1..].copy_from_slice(current_addr.as_bytes());
-                    let _ = self.uart.write_all(&cmd).await;
-                    self.last_configured_addr = current_addr;
-                    debug!("TPUART: Individual address updated to {}", current_addr);
-                }
-            }
         }
     }
 }

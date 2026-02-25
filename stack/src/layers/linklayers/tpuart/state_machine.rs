@@ -30,6 +30,13 @@ pub const TIMEOUT_SEND: Duration = Duration::from_millis(1000);
 /// Timeout waiting for version response during chip detection
 pub const TIMEOUT_VERSION: Duration = Duration::from_millis(5);
 
+/// Timeout waiting for NCN5120 system state response during chip detection.
+/// A hardware-ISR-driven implementation can use 3ms, but that assumes the timer runs concurrently
+/// with byte transmission (ISR-driven TX). Our `uart_write` returns before
+/// bytes are physically on the wire, so we need extra margin to account for
+/// the ~1.2ms it takes to transmit the 2-byte probe at 19200 8E1.
+pub const TIMEOUT_NCN5120_PROBE: Duration = Duration::from_millis(5);
+
 /// Timeout waiting for register read response
 pub const TIMEOUT_REGISTER: Duration = Duration::from_millis(10);
 
@@ -68,16 +75,22 @@ pub const E981_LONG_DATA_CONTINUE: u8 = 0xC0;
 /// E981 long data end command (for last byte in long frames >64 bytes)
 /// Format: E981_LONG_DATA_END followed by full byte index
 pub const E981_LONG_DATA_END: u8 = 0xD0;
-/// Set address command
-pub const U_SET_ADDRESS: u8 = 0x28;
+/// Set address command (4 bytes: 0xF1, addr_hi, addr_lo, dummy).
+/// The NCN5120 datasheet (Table 12) specifies 4 total bytes; the dummy byte
+/// must be sent or the chip will consume the next UART byte as the dummy.
+/// Also activates the auto-acknowledge function (Figure 37).
+pub const U_SET_ADDRESS: u8 = 0xF1;
 /// Set max retry count command
 pub const U_MAX_RST_CNT: u8 = 0x24;
-/// Version request command (TPUART2)
+/// Version request command (TPUART2 only).
+/// This command is NOT recognized by the NCN5120 — it falls in an undefined
+/// range (between U_Configure.req 0x18-0x1F and U_IntRegWr.req 0x28-0x2B per
+/// NCN5120 datasheet Table 12). The NCN5120 responds with U_State.ind (pe=1).
 pub const U_VERSION_REQ: u8 = 0x20;
 /// Version indication mask (TPUART2)
 pub const U_VERSION_IND_MASK: u8 = 0xE0;
-/// Version indication value (TPUART2)
-pub const U_VERSION_IND: u8 = 0x00;
+/// Version indication value (TPUART2): bits [7:5] = 010, bits [4:0] = version number
+pub const U_VERSION_IND: u8 = 0x40;
 
 /// L_Data confirmation mask
 pub const L_DATA_CON_MASK: u8 = 0x7F;
@@ -236,8 +249,6 @@ pub enum MainAction {
     ResetSendStateMachine,
 
     // Configuration
-    /// Set individual address in TPUART
-    ConfigureAddress,
     /// Set retry counts in TPUART
     ConfigureRetryCounts,
     /// Request state from TPUART
@@ -582,13 +593,11 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
             actions.push(MainAction::IncrementResetCounter).unwrap();
         }
         (MainState::Error, MainEvent::ReceivedByte(byte)) => {
-            // Try to recover by processing as idle
+            // Any byte received in Error state recovers to Idle unconditionally,
+            // then processes the byte as a normal idle RX. This follows the
+            // state table: Error + RxByte → {Idle, AIdleRx}.
+            ctx.main_state = MainState::Idle;
             process_idle_byte(ctx, byte, &mut actions);
-            if ctx.main_state == MainState::Idle || ctx.main_state == MainState::ReceiveFrame {
-                // Successfully recovered
-            } else {
-                ctx.main_state = MainState::Error;
-            }
         }
         (MainState::Error, MainEvent::ReceiveError) => {
             // Ignore
@@ -635,11 +644,13 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
 fn process_config_timeout(ctx: &mut StateMachineContext, actions: &mut ActionBuffer) {
     match ctx.config_state {
         ConfigState::ReadVersion => {
-            // No response to version request, try NCN5120 detection
+            // No response to version request, try NCN5120 detection.
+            // SendNcn5120SysStateRequest sends [0x20, 0x0D] on the wire:
+            // U_VERSION_REQ first (ignored by NCN5120, answered by TPUART2),
+            // then NCN5120_SYS_STATE_REQ (answered by NCN5120 with 0x4B).
             ctx.config_state = ConfigState::CheckNCN5120;
             actions.push(MainAction::SendNcn5120SysStateRequest).unwrap();
-            actions.push(MainAction::SendVersionRequest).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_VERSION)).unwrap();
+            actions.push(MainAction::StartTimer(TIMEOUT_NCN5120_PROBE)).unwrap();
         }
         ConfigState::CheckNCN5120 => {
             // No NCN5120 response either, assume TPUART1
@@ -691,17 +702,35 @@ fn process_config_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut Ac
             actions.push(MainAction::StartTimer(TIMEOUT_VERSION)).unwrap();
         }
         ConfigState::CheckNCN5120 => {
-            // NCN5120 system state indication
+            // We sent [0x20, 0x0D] on the wire. Possible responses:
+            // - 0x4B: NCN5120 responded to U_SystemState.req (0x0D)
+            // - 0x40-0x5F: TPUART2 responded to U_VERSION_REQ (0x20)
+            // - 0x17 (U_State.ind with pe=1): NCN5120 protocol error from 0x20
+            // - anything else: restart detection (full link-layer restart)
             if byte == NCN5120_SYS_STATE_IND {
                 ctx.chip_type = ChipType::Ncn5120;
                 ctx.config_state = ConfigState::RcvNCN5120;
                 actions.push(MainAction::SetChipType(ChipType::Ncn5120)).unwrap();
+                actions.push(MainAction::StartTimer(TIMEOUT_NCN5120_PROBE)).unwrap();
+            } else if (byte & U_VERSION_IND_MASK) == U_VERSION_IND {
+                // TPUART2 responded to the 0x20 version request
+                ctx.chip_type = ChipType::TpUart2;
+                ctx.chip_version = byte & 0x1F;
+                ctx.config_state = ConfigState::WaitTimeout;
+                actions.push(MainAction::SetChipType(ChipType::TpUart2)).unwrap();
+                actions.push(MainAction::SetChipVersion(ctx.chip_version)).unwrap();
                 actions.push(MainAction::StartTimer(TIMEOUT_VERSION)).unwrap();
+            } else if (byte & U_STATE_IND_MASK) == U_STATE_IND {
+                // U_State.ind (likely protocol error from NCN5120 reacting to 0x20).
+                // Ignore it and keep waiting for the 0x4B response to 0x0D.
+                actions.push(MainAction::StartTimer(TIMEOUT_NCN5120_PROBE)).unwrap();
             } else {
-                // Not NCN5120, assume TPUART1
-                ctx.chip_type = ChipType::TpUart1;
-                actions.push(MainAction::SetChipType(ChipType::TpUart1)).unwrap();
-                finish_config(ctx, actions);
+                // Unexpected byte — restart detection from scratch
+                // (full link-layer restart on non-0x4B)
+                ctx.main_state = MainState::SendReset;
+                actions.push(MainAction::SendByte(U_RESET_REQ)).unwrap();
+                actions.push(MainAction::StartTimer(TIMEOUT_RESET)).unwrap();
+                actions.push(MainAction::IncrementResetCounter).unwrap();
             }
         }
         ConfigState::RcvNCN5120 => {
@@ -722,7 +751,6 @@ fn finish_config(ctx: &mut StateMachineContext, actions: &mut ActionBuffer) {
     ctx.main_state = MainState::Idle;
     ctx.reset_counter = 0; // Bus is now OK
     actions.push(MainAction::ResetBusFailureCounter).unwrap();
-    actions.push(MainAction::ConfigureAddress).unwrap();
     actions.push(MainAction::ConfigureRetryCounts).unwrap();
     actions.push(MainAction::StartTimer(TIMEOUT_KEEPALIVE)).unwrap();
     actions.push(MainAction::InitComplete).unwrap();
@@ -1296,8 +1324,8 @@ mod tests {
         ctx.main_state = MainState::Config;
         ctx.config_state = ConfigState::ReadVersion;
 
-        // TPUART2 version indication: 0x0x where lower 5 bits are version
-        let version_byte = 0x05; // Version 5
+        // TPUART2 version indication: 0x4x where lower 5 bits are version
+        let version_byte = 0x45; // Version 5
 
         let actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(version_byte));
 
@@ -1392,6 +1420,61 @@ mod tests {
         // U_State.ind with temperature warning (TW=0x08) - should reset send SM
         let actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(U_STATE_IND | 0x08));
         assert!(actions.iter().any(|a| matches!(a, MainAction::ResetSendStateMachine)));
+    }
+
+    #[test]
+    fn test_error_state_recovers_on_state_response() {
+        let mut ctx = StateMachineContext::new();
+        ctx.main_state = MainState::Idle;
+
+        // Keepalive timeout transitions to Error and sends U_State.req
+        let actions = process_main_event(&mut ctx, MainEvent::Timer);
+        assert_eq!(ctx.main_state, MainState::Error);
+        assert!(actions.iter().any(|a| matches!(a, MainAction::SendStateRequest)));
+
+        // Receiving U_State.ind (0x07, no errors) should recover to Idle.
+        // Reference: Error + RxByte → {Idle, AIdleRx}
+        let actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(U_STATE_IND));
+        assert_eq!(ctx.main_state, MainState::Idle);
+        assert!(actions.iter().any(|a| matches!(a, MainAction::StartTimer(TIMEOUT_KEEPALIVE))));
+        assert!(!actions.iter().any(|a| matches!(a, MainAction::ResetSendStateMachine)));
+    }
+
+    #[test]
+    fn test_error_state_recovers_with_error_flags() {
+        let mut ctx = StateMachineContext::new();
+        ctx.main_state = MainState::Error;
+
+        // U_State.ind with protocol error (PE=0x10) should still recover to Idle
+        let actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(U_STATE_IND | 0x10));
+        assert_eq!(ctx.main_state, MainState::Idle);
+        assert!(actions.iter().any(|a| matches!(a, MainAction::StartTimer(TIMEOUT_KEEPALIVE))));
+        assert!(actions.iter().any(|a| matches!(a, MainAction::ResetSendStateMachine)));
+    }
+
+    #[test]
+    fn test_error_state_recovers_on_frame_start() {
+        let mut ctx = StateMachineContext::new();
+        ctx.main_state = MainState::Error;
+
+        // An incoming frame start (0xBC) during Error should also recover.
+        // Reference transitions to Idle first, then AIdleRx processes it as
+        // an L_Data indication, which transitions to ReceiveFrame.
+        let actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(0xBC));
+        assert_eq!(ctx.main_state, MainState::ReceiveFrame);
+        assert!(actions.iter().any(|a| matches!(a, MainAction::AllocReceiveBuffer)));
+    }
+
+    #[test]
+    fn test_error_state_resets_on_timeout() {
+        let mut ctx = StateMachineContext::new();
+        ctx.main_state = MainState::Error;
+
+        // Timeout in Error state (no response to U_State.req) triggers full reset
+        let actions = process_main_event(&mut ctx, MainEvent::Timer);
+        assert_eq!(ctx.main_state, MainState::SendReset);
+        assert!(actions.iter().any(|a| matches!(a, MainAction::SendByte(U_RESET_REQ))));
+        assert!(actions.iter().any(|a| matches!(a, MainAction::IncrementResetCounter)));
     }
 
     #[test]
@@ -1638,6 +1721,108 @@ mod tests {
         let actions = process_main_event(&mut ctx, MainEvent::WriteRegister { address: 0x00, value: 0x00 });
         let action_vec: Vec<_> = actions.iter().collect();
         assert!(action_vec.iter().any(|a| matches!(a, MainAction::RegisterOperationFailed)));
+    }
+
+    // =========================================================================
+    // Chip Detection Tests
+    // =========================================================================
+
+    #[test]
+    fn test_config_ncn5120_detected() {
+        let mut ctx = StateMachineContext::new();
+        ctx.main_state = MainState::Config;
+        ctx.config_state = ConfigState::CheckNCN5120;
+
+        // NCN5120 responds with U_SystemStat.ind (0x4B)
+        let actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(NCN5120_SYS_STATE_IND));
+
+        assert_eq!(ctx.chip_type, ChipType::Ncn5120);
+        assert_eq!(ctx.config_state, ConfigState::RcvNCN5120);
+        assert!(actions.iter().any(|a| matches!(a, MainAction::SetChipType(ChipType::Ncn5120))));
+        assert!(actions.iter().any(|a| matches!(a, MainAction::StartTimer(TIMEOUT_NCN5120_PROBE))));
+
+        // Second byte (status) completes the NCN5120 config
+        let _actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(0x37));
+        assert_eq!(ctx.config_state, ConfigState::WaitTimeout);
+    }
+
+    #[test]
+    fn test_config_tpuart2_via_check_ncn5120() {
+        // When we send [0x20, 0x0D], a TPUART2 responds to 0x20 with a version indication.
+        // We should detect it as TPUART2 even during CheckNCN5120 state.
+        let mut ctx = StateMachineContext::new();
+        ctx.main_state = MainState::Config;
+        ctx.config_state = ConfigState::CheckNCN5120;
+
+        let version_byte = 0x43; // TPUART2 version 3
+        let actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(version_byte));
+
+        assert_eq!(ctx.chip_type, ChipType::TpUart2);
+        assert_eq!(ctx.chip_version, 3);
+        assert_eq!(ctx.config_state, ConfigState::WaitTimeout);
+        assert!(actions.iter().any(|a| matches!(a, MainAction::SetChipType(ChipType::TpUart2))));
+    }
+
+    #[test]
+    fn test_config_check_ncn5120_ignores_state_ind() {
+        // NCN5120 may send U_State.ind (pe=1, i.e. 0x17) in response to
+        // the invalid 0x20 command. We should ignore it and keep waiting.
+        let mut ctx = StateMachineContext::new();
+        ctx.main_state = MainState::Config;
+        ctx.config_state = ConfigState::CheckNCN5120;
+
+        let actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(0x17));
+
+        // Should still be in CheckNCN5120, just restarted the timer
+        assert_eq!(ctx.main_state, MainState::Config);
+        assert_eq!(ctx.config_state, ConfigState::CheckNCN5120);
+        assert!(actions.iter().any(|a| matches!(a, MainAction::StartTimer(TIMEOUT_NCN5120_PROBE))));
+    }
+
+    #[test]
+    fn test_config_check_ncn5120_restarts_on_unknown_byte() {
+        // Any non-0x4B, non-version, non-state byte
+        // should trigger a full link-layer restart, not assume TPUART1.
+        let mut ctx = StateMachineContext::new();
+        ctx.main_state = MainState::Config;
+        ctx.config_state = ConfigState::CheckNCN5120;
+
+        let actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(0xAB));
+
+        assert_eq!(ctx.main_state, MainState::SendReset);
+        assert!(actions.iter().any(|a| matches!(a, MainAction::SendByte(U_RESET_REQ))));
+        assert!(actions.iter().any(|a| matches!(a, MainAction::IncrementResetCounter)));
+    }
+
+    #[test]
+    fn test_config_check_ncn5120_timeout_assumes_tpuart1() {
+        // If neither NCN5120 nor TPUART2 responds within the 3ms timeout,
+        // fall through to TPUART1 (timeout handler).
+        let mut ctx = StateMachineContext::new();
+        ctx.main_state = MainState::Config;
+        ctx.config_state = ConfigState::CheckNCN5120;
+
+        let actions = process_main_event(&mut ctx, MainEvent::Timer);
+
+        assert_eq!(ctx.chip_type, ChipType::TpUart1);
+        assert_eq!(ctx.main_state, MainState::Idle);
+        assert!(actions.iter().any(|a| matches!(a, MainAction::SetChipType(ChipType::TpUart1))));
+        assert!(actions.iter().any(|a| matches!(a, MainAction::InitComplete)));
+    }
+
+    #[test]
+    fn test_config_read_version_timeout_starts_ncn5120_probe() {
+        // When the initial version request times out, we should transition
+        // to CheckNCN5120 with the 3ms timeout.
+        let mut ctx = StateMachineContext::new();
+        ctx.main_state = MainState::Config;
+        ctx.config_state = ConfigState::ReadVersion;
+
+        let actions = process_main_event(&mut ctx, MainEvent::Timer);
+
+        assert_eq!(ctx.config_state, ConfigState::CheckNCN5120);
+        assert!(actions.iter().any(|a| matches!(a, MainAction::SendNcn5120SysStateRequest)));
+        assert!(actions.iter().any(|a| matches!(a, MainAction::StartTimer(TIMEOUT_NCN5120_PROBE))));
     }
 
     // =========================================================================

@@ -2,7 +2,7 @@ mod error;
 pub use error::{Error, Result};
 
 mod serialport;
-pub use self::serialport::AsyncSerialPort;
+pub use self::serialport::{AsyncSerialPort, AsyncSerialPortRx, AsyncSerialPortTx};
 
 mod multicast_socket;
 pub use self::multicast_socket::AsyncUdpMulticastSocket;
