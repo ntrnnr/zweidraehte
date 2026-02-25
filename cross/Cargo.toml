@@ -6,6 +6,7 @@ members = [
     "tpuart_bridge",
     "picow",
     "pico_eth",
+    "pico_tp1",
     "pico_blink",
 ]
 
@@ -34,7 +35,11 @@ embedded-hal-async = { version = "1.0" }
 cortex-m = { version = "0.7" }
 cortex-m-rt = { version = "0.7" }
 embedded-hal = { version = "1.0" }
-embedded-io-async = { version = "0.7" }
+# Pinned to 0.6 to match embassy-rp 0.9 — pico_tp1 passes BufferedUart
+# directly to TpUartLinkLayerBuilder, so the trait version must be consistent.
+# The 0.6→0.7 diff is minimal (flush() became required, defmt feature renamed)
+# and does not affect our usage.
+embedded-io-async = { version = "0.6" }
 defmt = "1.0"
 defmt-rtt = "1.0"
 panic-probe = { version = "1.0" }
