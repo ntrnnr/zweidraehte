@@ -113,29 +113,48 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingRequest {
 }
 
 impl TunnelingRequest {
-    pub fn into_builder(self) -> TunnelingRequestBuilder {
+    pub fn into_builder(self) -> TunnelingRequestBuilder<'static> {
         TunnelingRequestBuilder {
             communication_channel_id: self.communication_channel_id,
             sequence_counter: self.sequence_counter,
+            payload: None,
         }
     }
 }
 
-/// Builder for TunnelingRequest message
-pub struct TunnelingRequestBuilder {
+/// Builder for TunnelingRequest message.
+///
+/// When `payload` is `Some`, the raw cEMI bytes are appended after the header
+/// and the KNXnet/IP total_length accounts for them automatically.
+/// When `None`, only the 10-byte header is serialized.
+pub struct TunnelingRequestBuilder<'a> {
     pub communication_channel_id: u8,
     pub sequence_counter: u8,
+    /// Optional cEMI payload bytes (appended after header).
+    pub payload: Option<&'a [u8]>,
 }
 
-impl TunnelingRequestBuilder {
+impl<'a> TunnelingRequestBuilder<'a> {
+    /// Create a header-only builder (no cEMI payload).
     pub fn new(communication_channel_id: u8, sequence_counter: u8) -> Self {
-        Self { communication_channel_id, sequence_counter }
+        Self { communication_channel_id, sequence_counter, payload: None }
+    }
+
+    /// Create a builder with a cEMI payload (pre-serialized bytes).
+    pub fn with_payload(
+        communication_channel_id: u8,
+        sequence_counter: u8,
+        payload: &'a [u8],
+    ) -> Self {
+        Self { communication_channel_id, sequence_counter, payload: Some(payload) }
     }
 }
 
-impl SerializablePacket for TunnelingRequestBuilder {
+impl SerializablePacket for TunnelingRequestBuilder<'_> {
     fn bytes_len(&self) -> usize {
-        mem::size_of::<KNXnetIPHeader>() + mem::size_of::<raw::TunnelingHeader>()
+        let header_len = mem::size_of::<KNXnetIPHeader>() + mem::size_of::<raw::TunnelingHeader>();
+        let payload_len = self.payload.map_or(0, |p| p.len());
+        header_len + payload_len
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
@@ -154,6 +173,13 @@ impl SerializablePacket for TunnelingRequestBuilder {
             status_or_reserved: 0,
         };
         bv.write_obj_front(&tun_header).expect("too few bytes for tunneling header");
+
+        if let Some(payload) = self.payload {
+            let mut payload_buf = bv
+                .take_front(payload.len())
+                .expect("too few bytes for cEMI payload");
+            payload_buf.deref_mut().copy_from_slice(payload);
+        }
     }
 }
 
@@ -584,33 +610,53 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingFeatureResponse {
 }
 
 impl TunnelingFeatureResponse {
-    pub fn into_builder(self) -> TunnelingFeatureResponseBuilder {
+    pub fn into_builder(self) -> TunnelingFeatureResponseBuilder<'static> {
         TunnelingFeatureResponseBuilder {
             communication_channel_id: self.communication_channel_id,
             sequence_counter: self.sequence_counter,
             feature_identifier: self.feature_identifier,
             return_code: self.return_code,
+            feature_value: &[],
         }
     }
 }
 
-/// Builder for TunnelingFeatureResponse message
-pub struct TunnelingFeatureResponseBuilder {
+/// Builder for TunnelingFeatureResponse message.
+///
+/// The feature value bytes follow the return code. Per the spec, the feature
+/// value is only meaningful when `return_code` is 0 (success).
+pub struct TunnelingFeatureResponseBuilder<'a> {
     pub communication_channel_id: u8,
     pub sequence_counter: u8,
     pub feature_identifier: u8,
     pub return_code: u8,
+    /// Feature value bytes (variable length, typically 1-2 bytes).
+    pub feature_value: &'a [u8],
 }
 
-impl TunnelingFeatureResponseBuilder {
+impl<'a> TunnelingFeatureResponseBuilder<'a> {
     pub fn new(communication_channel_id: u8, sequence_counter: u8, feature_identifier: u8, return_code: u8) -> Self {
-        Self { communication_channel_id, sequence_counter, feature_identifier, return_code }
+        Self { communication_channel_id, sequence_counter, feature_identifier, return_code, feature_value: &[] }
+    }
+
+    /// Create a builder with a feature value payload.
+    pub fn with_value(
+        communication_channel_id: u8,
+        sequence_counter: u8,
+        feature_identifier: u8,
+        return_code: u8,
+        feature_value: &'a [u8],
+    ) -> Self {
+        Self { communication_channel_id, sequence_counter, feature_identifier, return_code, feature_value }
     }
 }
 
-impl SerializablePacket for TunnelingFeatureResponseBuilder {
+impl SerializablePacket for TunnelingFeatureResponseBuilder<'_> {
     fn bytes_len(&self) -> usize {
-        mem::size_of::<KNXnetIPHeader>() + mem::size_of::<raw::TunnelingFeatureHeader>() + 1
+        mem::size_of::<KNXnetIPHeader>()
+            + mem::size_of::<raw::TunnelingFeatureHeader>()
+            + 1
+            + self.feature_value.len()
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
@@ -631,6 +677,144 @@ impl SerializablePacket for TunnelingFeatureResponseBuilder {
         bv.write_obj_front(&feat_header).expect("too few bytes for feature header");
 
         bv.write_obj_front(&self.return_code).expect("too few bytes for return code");
+
+        if !self.feature_value.is_empty() {
+            let mut value_buf = bv
+                .take_front(self.feature_value.len())
+                .expect("too few bytes for feature value");
+            value_buf.deref_mut().copy_from_slice(self.feature_value);
+        }
+    }
+}
+
+// ============================================================================
+// TUNNELING FEATURE SET
+// ============================================================================
+
+/// KNXnet/IP TUNNELING_FEATURE_SET (0x0424)
+///
+/// Sent by the client to set a tunneling feature value on the server.
+/// The feature value follows the 4-byte feature header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TunnelingFeatureSet {
+    pub communication_channel_id: u8,
+    pub sequence_counter: u8,
+    pub feature_identifier: u8,
+}
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingFeatureSet {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
+        let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
+
+        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+            != KNXnetIPServiceType::TunnelingFeatureSet
+        {
+            return Err(ParseError::Format);
+        }
+
+        let feat_header = buffer.take_obj_front::<raw::TunnelingFeatureHeader>().ok_or(ParseError::Format)?;
+
+        // The remaining bytes in the buffer are the feature value — left for
+        // the caller to read since the length is variable.
+
+        Ok(TunnelingFeatureSet {
+            communication_channel_id: feat_header.communication_channel_id,
+            sequence_counter: feat_header.sequence_counter,
+            feature_identifier: feat_header.feature_identifier,
+        })
+    }
+}
+
+// ============================================================================
+// TUNNELING FEATURE INFO
+// ============================================================================
+
+/// KNXnet/IP TUNNELING_FEATURE_INFO (0x0425)
+///
+/// Unsolicited notification sent by the server to all connected tunnel
+/// clients when a feature value changes (e.g., bus connection status).
+/// Wire format: feature header + feature value bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TunnelingFeatureInfo {
+    pub communication_channel_id: u8,
+    pub sequence_counter: u8,
+    pub feature_identifier: u8,
+}
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingFeatureInfo {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
+        let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
+
+        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+            != KNXnetIPServiceType::TunnelingFeatureInfo
+        {
+            return Err(ParseError::Format);
+        }
+
+        let feat_header = buffer.take_obj_front::<raw::TunnelingFeatureHeader>().ok_or(ParseError::Format)?;
+
+        Ok(TunnelingFeatureInfo {
+            communication_channel_id: feat_header.communication_channel_id,
+            sequence_counter: feat_header.sequence_counter,
+            feature_identifier: feat_header.feature_identifier,
+        })
+    }
+}
+
+/// Builder for TunnelingFeatureInfo message
+pub struct TunnelingFeatureInfoBuilder<'a> {
+    pub communication_channel_id: u8,
+    pub sequence_counter: u8,
+    pub feature_identifier: u8,
+    /// Feature value bytes (variable length).
+    pub feature_value: &'a [u8],
+}
+
+impl<'a> TunnelingFeatureInfoBuilder<'a> {
+    pub fn new(
+        communication_channel_id: u8,
+        sequence_counter: u8,
+        feature_identifier: u8,
+        feature_value: &'a [u8],
+    ) -> Self {
+        Self { communication_channel_id, sequence_counter, feature_identifier, feature_value }
+    }
+}
+
+impl SerializablePacket for TunnelingFeatureInfoBuilder<'_> {
+    fn bytes_len(&self) -> usize {
+        mem::size_of::<KNXnetIPHeader>()
+            + mem::size_of::<raw::TunnelingFeatureHeader>()
+            + self.feature_value.len()
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        let header = KNXnetIPHeader {
+            header_size: mem::size_of::<KNXnetIPHeader>() as u8,
+            version: KNXnetIPVersion::Version10.into(),
+            service_type: U16::from(u16::from(KNXnetIPServiceType::TunnelingFeatureInfo)),
+            total_length: (self.bytes_len() as u16).into(),
+        };
+        bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
+
+        let feat_header = raw::TunnelingFeatureHeader {
+            structure_length: mem::size_of::<raw::TunnelingFeatureHeader>() as u8,
+            communication_channel_id: self.communication_channel_id,
+            sequence_counter: self.sequence_counter,
+            feature_identifier: self.feature_identifier,
+        };
+        bv.write_obj_front(&feat_header).expect("too few bytes for feature header");
+
+        if !self.feature_value.is_empty() {
+            let mut value_buf = bv
+                .take_front(self.feature_value.len())
+                .expect("too few bytes for feature value");
+            value_buf.deref_mut().copy_from_slice(self.feature_value);
+        }
     }
 }
 

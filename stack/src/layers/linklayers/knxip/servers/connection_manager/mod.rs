@@ -20,8 +20,10 @@
 //! - [`device_mgmt`] — Device Management (ConnectionType 0x03)
 
 mod device_mgmt;
+mod tunnel;
 
 pub use device_mgmt::DeviceMgmtConnectionHandler;
+pub use tunnel::TunnelConnectionHandler;
 
 use core::net::{Ipv4Addr, SocketAddrV4};
 
@@ -127,19 +129,22 @@ pub trait ConnectionTypeHandler {
 pub enum ConnectionTypeHandlerEnum<'a> {
     /// Device Management connection handler (ConnectionType 0x03)
     DeviceManagement(DeviceMgmtConnectionHandler<'a>),
-    // Future: Tunnel(TunnelConnectionHandler<'a>),
+    /// Tunneling connection handler (ConnectionType 0x04)
+    Tunnel(TunnelConnectionHandler),
 }
 
 impl ConnectionTypeHandler for ConnectionTypeHandlerEnum<'_> {
     fn accept_connection(&mut self, channel_id: u8, cri: &CRI) -> Result<AcceptedConnection, ConnectionStatus> {
         match self {
             ConnectionTypeHandlerEnum::DeviceManagement(h) => h.accept_connection(channel_id, cri),
+            ConnectionTypeHandlerEnum::Tunnel(h) => h.accept_connection(channel_id, cri),
         }
     }
 
     fn close_connection(&mut self, channel_id: u8) {
         match self {
             ConnectionTypeHandlerEnum::DeviceManagement(h) => h.close_connection(channel_id),
+            ConnectionTypeHandlerEnum::Tunnel(h) => h.close_connection(channel_id),
         }
     }
 
@@ -154,18 +159,23 @@ impl ConnectionTypeHandler for ConnectionTypeHandlerEnum<'_> {
             ConnectionTypeHandlerEnum::DeviceManagement(h) => {
                 h.on_data_frame(channel_id, data, conn, buffer_manager).await
             }
+            ConnectionTypeHandlerEnum::Tunnel(h) => {
+                h.on_data_frame(channel_id, data, conn, buffer_manager).await
+            }
         }
     }
 
     fn on_data_ack(&mut self, channel_id: u8, data: &[u8], conn: &mut ConnectionContext) -> Result<(), ServerError> {
         match self {
             ConnectionTypeHandlerEnum::DeviceManagement(h) => h.on_data_ack(channel_id, data, conn),
+            ConnectionTypeHandlerEnum::Tunnel(h) => h.on_data_ack(channel_id, data, conn),
         }
     }
 
     fn handled_service_types(&self) -> &[KNXnetIPServiceType] {
         match self {
             ConnectionTypeHandlerEnum::DeviceManagement(h) => h.handled_service_types(),
+            ConnectionTypeHandlerEnum::Tunnel(h) => h.handled_service_types(),
         }
     }
 }

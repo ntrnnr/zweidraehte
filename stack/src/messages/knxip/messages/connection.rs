@@ -29,6 +29,7 @@ create_protocol_enum!(
         ConnectionTypeNotSupported, 0x22, "Connection type not supported";
         ConnectionOptionsNotSupported, 0x23, "Connection options not supported";
         NoMoreConnections, 0x24, "No more connections possible";
+        NoMoreUniqueConnections, 0x25, "No more unique connections possible";
         DataConnectionError, 0x26, "Data connection error";
         KNXConnectionError, 0x27, "KNX connection error";
         LayerNotSupported, 0x29, "Layer not supported";
