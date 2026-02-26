@@ -876,10 +876,13 @@ fn complete_frame_reception(ctx: &mut StateMachineContext, actions: &mut ActionB
     } else if recv.is_repeated {
         // Repeated telegram, drop it
         actions.push(MainAction::ReleaseReceiveBuffer).unwrap();
-    } else {
-        // Valid new frame, forward to network layer
-        // Checksum validation done by action executor
+    } else if recv.acked {
+        // Frame addressed to us (we ACKed it) — forward to network layer.
+        // Checksum validation done by action executor.
         actions.push(MainAction::IndicationToNetwork).unwrap();
+    } else {
+        // Frame not addressed to us — drop it.
+        actions.push(MainAction::ReleaseReceiveBuffer).unwrap();
     }
 
     ctx.main_state = MainState::Idle;
