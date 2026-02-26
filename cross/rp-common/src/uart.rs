@@ -7,7 +7,7 @@
 //!
 //! This driver:
 //! - Disables the UART FIFO so each received byte triggers an interrupt
-//! - The ISR reads bytes from DR into an embassy `RingBuffer` (128 bytes)
+//! - The ISR reads bytes from DR into an embassy `RingBuffer`
 //!   and wakes the async task — this decouples HW timing from task latency
 //! - The task drains the ring buffer, never missing bytes even if upper
 //!   layer processing (NL/TL/AL in the same `join4` task) takes >573µs
@@ -30,6 +30,7 @@
 //! let (tx, rx) = DirectUart::new::<UART0>(uart, Irqs);
 //! ```
 
+use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::sync::atomic::Ordering;
 use core::task::Poll;
@@ -101,12 +102,24 @@ unsafe fn reg_clear<T: Default + Copy>(
 const RX_BUF_SIZE: usize = 16;
 
 /// Per-instance state shared between the ISR and the async RX/TX tasks.
+///
+/// Each UART instance gets its own `State` via a function-local static
+/// in its [`DirectUartInstance::state()`] impl — no module-level globals.
 struct State {
     rx_waker: AtomicWaker,
     tx_waker: AtomicWaker,
     rx_ring: RingBuffer,
     rx_overrun: portable_atomic::AtomicU32,
+    /// Backing storage for `rx_ring`. Embedded here so that the ring
+    /// buffer and its backing memory share the same `'static` lifetime,
+    /// eliminating the need for separate `static mut` buffers.
+    rx_buf: UnsafeCell<[u8; RX_BUF_SIZE]>,
 }
+
+// Safety: `rx_buf` is only accessed through `RingBuffer`'s atomic
+// reader/writer protocol (ISR writes, task reads — never concurrent
+// writes). All other fields are inherently Sync (atomics).
+unsafe impl Sync for State {}
 
 impl State {
     const fn new() -> Self {
@@ -115,28 +128,8 @@ impl State {
             tx_waker: AtomicWaker::new(),
             rx_ring: RingBuffer::new(),
             rx_overrun: portable_atomic::AtomicU32::new(0),
+            rx_buf: UnsafeCell::new([0; RX_BUF_SIZE]),
         }
-    }
-}
-
-// FIXME: can we get rid of these global states & buffers and store them somewhere else?
-//        Maybe the specific link layer state we allocate anyway?
-
-static UART0_STATE: State = State::new();
-static UART1_STATE: State = State::new();
-
-// Backing buffers for the ring buffers. Separate from State because
-// `RingBuffer::init()` takes a raw pointer — the buffer must be
-// stable in memory (which statics are).
-static mut UART0_RX_BUF: [u8; RX_BUF_SIZE] = [0; RX_BUF_SIZE];
-static mut UART1_RX_BUF: [u8; RX_BUF_SIZE] = [0; RX_BUF_SIZE];
-
-/// Map a UART register base address to its corresponding static state.
-fn state_for_regs(regs: RegBlock) -> &'static State {
-    if regs.as_ptr() == embassy_rp::pac::UART0.as_ptr() {
-        &UART0_STATE
-    } else {
-        &UART1_STATE
     }
 }
 
@@ -144,23 +137,52 @@ fn state_for_regs(regs: RegBlock) -> &'static State {
 // Instance → PAC Register Block Mapping
 // ================================================================================
 
-/// Maps an embassy [`Instance`] type to its PAC register block.
-///
-/// Embassy's `Instance::info()` is private, so this trait bridges the gap.
-pub trait DirectUartInstance: Instance {
-    /// PAC register block for this UART instance.
-    fn regs() -> RegBlock;
+mod sealed {
+    /// Seals [`DirectUartInstance`](super::DirectUartInstance) so it
+    /// cannot be implemented outside this crate.
+    pub trait Sealed {}
+    impl Sealed for embassy_rp::peripherals::UART0 {}
+    impl Sealed for embassy_rp::peripherals::UART1 {}
 }
 
+/// Maps an embassy [`Instance`] type to its PAC register block and
+/// per-instance state.
+///
+/// Embassy's `Instance::info()` is private, so this trait bridges the gap.
+/// Each impl provides its own function-local `static State`, following
+/// embassy's `SealedInstance::buffered_state()` pattern — the state is
+/// associated at the type level, not looked up at runtime.
+///
+/// Sealed — cannot be implemented outside this crate.
+#[allow(private_interfaces)]
+pub trait DirectUartInstance: Instance + sealed::Sealed {
+    /// PAC register block for this UART instance.
+    fn regs() -> RegBlock;
+
+    /// Per-instance shared state (ISR + task).
+    #[doc(hidden)]
+    fn state() -> &'static State;
+}
+
+#[allow(private_interfaces)]
 impl DirectUartInstance for embassy_rp::peripherals::UART0 {
     fn regs() -> RegBlock {
         embassy_rp::pac::UART0
     }
+    fn state() -> &'static State {
+        static STATE: State = State::new();
+        &STATE
+    }
 }
 
+#[allow(private_interfaces)]
 impl DirectUartInstance for embassy_rp::peripherals::UART1 {
     fn regs() -> RegBlock {
         embassy_rp::pac::UART1
+    }
+    fn state() -> &'static State {
+        static STATE: State = State::new();
+        &STATE
     }
 }
 
@@ -181,7 +203,7 @@ impl<T: DirectUartInstance> embassy_rp::interrupt::typelevel::Handler<T::Interru
 {
     unsafe fn on_interrupt() {
         let r = T::regs();
-        let state = state_for_regs(r);
+        let state = T::state();
 
         let mis = r.uartmis().read();
 
@@ -251,23 +273,21 @@ impl DirectUart {
     ///
     /// After this call:
     /// - The UART FIFO is **disabled** so each byte triggers an interrupt
-    /// - The ISR reads bytes into a 128-byte ring buffer
+    /// - The ISR reads bytes into a ring buffer
     /// - RX and TX interrupts are enabled
     pub fn new<T: DirectUartInstance>(
         _uart: Uart<'_, Blocking>,
         _irq: impl Binding<T::Interrupt, DirectInterruptHandler<T>>,
     ) -> (DirectUartTx, DirectUartRx) {
         let r = T::regs();
-        let state = state_for_regs(r);
+        let state = T::state();
 
-        // Initialize the ring buffer with its backing storage.
+        // Initialize the ring buffer with the per-instance backing storage
+        // embedded in State. `UnsafeCell::get()` returns a stable `*mut`
+        // pointer to the static's memory — exactly what `RingBuffer::init()`
+        // needs.
         unsafe {
-            let buf = if r.as_ptr() == embassy_rp::pac::UART0.as_ptr() {
-                core::ptr::addr_of_mut!(UART0_RX_BUF) as *mut u8
-            } else {
-                core::ptr::addr_of_mut!(UART1_RX_BUF) as *mut u8
-            };
-            state.rx_ring.init(buf, RX_BUF_SIZE);
+            state.rx_ring.init(state.rx_buf.get() as *mut u8, RX_BUF_SIZE);
         }
 
         // Disable the FIFO so each received byte triggers an immediate
@@ -275,7 +295,7 @@ impl DirectUart {
         // which would batch bytes and add up to ~2.3ms latency at 19200
         // baud — too much for TPUART ACK timing (U_ACK_INF must be sent
         // within ~1.7ms of receiving the 6th header byte). With FIFO
-        // disabled, each byte triggers an interrupt, and the 128-byte
+        // disabled, each byte triggers an interrupt, and the
         // ring buffer provides overrun protection.
         //
         // The trade-off: without the HW FIFO, any critical section >573us
@@ -393,7 +413,7 @@ impl embedded_io_async::Write for DirectUartTx {
 
 /// Async UART receiver backed by an ISR-filled ring buffer.
 ///
-/// The ISR reads each byte from the UART data register into a 128-byte
+/// The ISR reads each byte from the UART data register into a
 /// [`RingBuffer`] (from `embassy-hal-internal`). The task drains the ring
 /// buffer via `read()`. This decouples the UART's byte-arrival timing
 /// (~573µs at 19200 baud) from task-level processing latency, preventing
