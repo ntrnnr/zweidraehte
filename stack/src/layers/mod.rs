@@ -1,3 +1,5 @@
+// All traits here are crate-internal; `Send` bounds on async trait
+// futures are irrelevant in our single-executor embedded context.
 #![allow(async_fn_in_trait)]
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
@@ -135,7 +137,7 @@ pub trait LinkLayerBuilder<CTX>: LinkLayerBuilderBase {
 /// This is to forbid cancelling a future/request.
 ///
 /// To properly dispose, call the [defuse](Self::defuse) method before this object is dropped.
-#[must_use = "to delay the drop bomb invokation to the end of the scope"]
+#[must_use = "to delay the drop bomb invocation to the end of the scope"]
 struct DropBomb;
 impl DropBomb {
     pub fn new() -> Self {
@@ -150,7 +152,7 @@ impl DropBomb {
 
 impl Drop for DropBomb {
     fn drop(&mut self) {
-        panic!("Dropped before the request completed. You  cannot cancel an ongoing request")
+        panic!("Dropped before the request completed. You cannot cancel an ongoing request")
     }
 }
 
@@ -246,7 +248,7 @@ impl<'a, MUT: RawMutex, M, R> ActorRequest<MUT, M, R> for DynamicSender<'a, Requ
     }
 }
 
-impl<MUT: RawMutex, OUTER_MUT: RawMutex, M, R, const N: usize> ActorRequest<MUT, M, R> for Sender<'static, OUTER_MUT, Request<M, R>, N> {
+impl<MUT: RawMutex, OuterMut: RawMutex, M, R, const N: usize> ActorRequest<MUT, M, R> for Sender<'static, OuterMut, Request<M, R>, N> {
     async fn request(&self, message: M) -> R {
         let channel: Channel<MUT, R, 1> = Channel::new();
         let sender: DynamicSender<'_, R> = channel.sender().into();
