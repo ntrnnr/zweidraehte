@@ -15,6 +15,7 @@ mod fmt;
 #[macro_use]
 mod macros;
 
+pub mod access_policy;
 pub mod address;
 pub mod bcus;
 pub mod config;
@@ -25,7 +26,6 @@ pub mod error;
 pub mod ets;
 pub mod layers;
 pub mod memory;
-pub mod access_policy;
 pub mod messages;
 pub mod objects;
 pub mod prelude;
@@ -54,14 +54,16 @@ use crate::{
         ActorRequest, LinkLayerBuilder, LinkLayerBuilderBase, Request,
         application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
         network::NetworkLayer,
-        transport::{TransportLayer, TlStyle},
+        transport::{TlStyle, TransportLayer},
     },
     memory::MemoryMap,
     messages::buffers::{Buffer, BufferManager, DynBufferManager},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, LifecycleEvent},
         interface::{HasDeviceObject, PropertyServiceHandler},
-        tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine},
+        tables::{
+            HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine,
+        },
     },
 };
 
@@ -799,7 +801,7 @@ pub trait StackDefinition: Copy {
 /// but Rust's `generic_const_exprs` feature is still incomplete and causes
 /// overflow errors when used with static declarations. Until this is fixed,
 /// users must explicitly specify the buffer size.
-pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize = 12> {
+pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize = 8> {
     inner: MaybeUninit<Inner<D>>,
     buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
     buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
@@ -905,8 +907,7 @@ pub(crate) struct Inner<D: StackDefinition> {
     /// Channel for application lifecycle events (started/stopped running)
     pub(crate) lifecycle_channel: PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
     /// Channel for A_Restart requests from application layer to user code
-    pub(crate) restart_channel:
-        Channel<D::Mutex, Request<restart::RestartRequest, restart::RestartResponse>, 1>,
+    pub(crate) restart_channel: Channel<D::Mutex, Request<restart::RestartRequest, restart::RestartResponse>, 1>,
     /// Unified device state containing runtime state, tables, and configuration
     pub(crate) state: D::State,
     /// Hook context for communication object hooks
@@ -954,7 +955,10 @@ impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
 pub struct StackContext<'a, D: StackDefinition> {
     inner: &'a Inner<D>,
     interface_objects: &'a D::InterfaceObjects<'static>,
-    al_sender: embassy_sync::channel::DynamicSender<'a, messages::builder::IndicationMessage<messages::buffers::Buffer<'static>>>,
+    al_sender: embassy_sync::channel::DynamicSender<
+        'a,
+        messages::builder::IndicationMessage<messages::buffers::Buffer<'static>>,
+    >,
 }
 
 impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
@@ -980,7 +984,10 @@ impl<D: StackDefinition> context::PropertyServiceContext for StackContext<'_, D>
 impl<D: StackDefinition> context::ApplicationLayerContext for StackContext<'_, D> {
     fn application_layer_sender(
         &self,
-    ) -> embassy_sync::channel::DynamicSender<'_, messages::builder::IndicationMessage<messages::buffers::Buffer<'static>>> {
+    ) -> embassy_sync::channel::DynamicSender<
+        '_,
+        messages::builder::IndicationMessage<messages::buffers::Buffer<'static>>,
+    > {
         self.al_sender
     }
 }
@@ -999,11 +1006,7 @@ where
 
         DeviceInformation {
             medium: KNXMedium::KNXIP,
-            device_status: if state.is_programming_mode() {
-                DeviceStatus::ProgrammingMode
-            } else {
-                DeviceStatus::None
-            },
+            device_status: if state.is_programming_mode() { DeviceStatus::ProgrammingMode } else { DeviceStatus::None },
             individual_address: state.individual_address(),
             project_installation_identifier: state.project_installation_id(),
             knx_serial_number: *state.serial_number(),
@@ -1050,7 +1053,6 @@ where
             ip_assignment_method: state.current_ip_assignment_method(),
         }
     }
-
 }
 
 // Unconditional — `individual_address()` is on `StackState`, not `IpStackState`,
@@ -1169,12 +1171,8 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     // Initialize link layer resources using the builder
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());
 
-    let stack = Stack {
-        inner,
-        interface_objects,
-        app_request_sender: app_request_sender,
-        restart_receiver: restart_receiver,
-    };
+    let stack =
+        Stack { inner, interface_objects, app_request_sender: app_request_sender, restart_receiver: restart_receiver };
     let runner = Runner {
         stack,
         interface_objects,
@@ -1195,7 +1193,8 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
     //        Problem is all the process() methods in the layers require these traits
     pub async fn run(self) -> !
     where
-        D::State: HasAddressTable + HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
+        D::State:
+            HasAddressTable + HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
         D::InterfaceObjects<'static>: HasDeviceObject,
     {
         // Validate that outgoing connections require Style 3 (which has the
@@ -1373,7 +1372,11 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
 
         self.inner.event_channel.publish_immediate((asap.clone(), ComObjectEvent::LocallyUpdated));
 
-        ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::GroupValueWriteRequest(asap.index())).await;
+        ActorRequest::<D::Mutex, _, _>::request(
+            &self.app_request_sender,
+            ApplicationLayerService::GroupValueWriteRequest(asap.index()),
+        )
+        .await;
         Ok(())
     }
 
@@ -1427,7 +1430,11 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
             return Err(UpdateObjectError::Busy);
         }
 
-        ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::GroupValueWriteRequest(asap)).await;
+        ActorRequest::<D::Mutex, _, _>::request(
+            &self.app_request_sender,
+            ApplicationLayerService::GroupValueWriteRequest(asap),
+        )
+        .await;
         Ok(())
     }
 
@@ -1468,7 +1475,11 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
             return Err(ReadObjectError::Busy);
         }
 
-        ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::GroupValueReadRequest(asap)).await;
+        ActorRequest::<D::Mutex, _, _>::request(
+            &self.app_request_sender,
+            ApplicationLayerService::GroupValueReadRequest(asap),
+        )
+        .await;
         Ok(())
     }
 
@@ -1520,7 +1531,11 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
 
         // If no timeout is specified, just send the request and return immediately
         let Some(timeout_duration) = timeout else {
-            ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::GroupValueReadRequest(asap.index())).await;
+            ActorRequest::<D::Mutex, _, _>::request(
+                &self.app_request_sender,
+                ApplicationLayerService::GroupValueReadRequest(asap.index()),
+            )
+            .await;
             return Ok(());
         };
 
@@ -1528,7 +1543,11 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         let mut event_subscriber = self.events();
 
         // Send the read request
-        ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::GroupValueReadRequest(asap.index())).await;
+        ActorRequest::<D::Mutex, _, _>::request(
+            &self.app_request_sender,
+            ApplicationLayerService::GroupValueReadRequest(asap.index()),
+        )
+        .await;
 
         // Wait for ReadResponse event with timeout
         let wait_for_response = async {
@@ -1671,9 +1690,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// }
     /// # }
     /// ```
-    pub fn lifecycle_events(
-        &self,
-    ) -> embassy_sync::pubsub::DynSubscriber<'_, LifecycleEvent> {
+    pub fn lifecycle_events(&self) -> embassy_sync::pubsub::DynSubscriber<'_, LifecycleEvent> {
         self.inner.lifecycle_channel.dyn_subscriber().unwrap()
     }
 
@@ -1793,9 +1810,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// }
     /// # }
     /// ```
-    pub async fn receive_restart_request(
-        &self,
-    ) -> Request<restart::RestartRequest, restart::RestartResponse> {
+    pub async fn receive_restart_request(&self) -> Request<restart::RestartRequest, restart::RestartResponse> {
         self.restart_receiver.receive().await
     }
 

@@ -98,7 +98,7 @@ unsafe fn reg_clear<T: Default + Copy>(
 //
 // We add an `AtomicWaker` for async notification and an overrun counter.
 
-const RX_BUF_SIZE: usize = 128;
+const RX_BUF_SIZE: usize = 16;
 
 /// Per-instance state shared between the ISR and the async RX/TX tasks.
 struct State {
@@ -118,6 +118,9 @@ impl State {
         }
     }
 }
+
+// FIXME: can we get rid of these global states & buffers and store them somewhere else?
+//        Maybe the specific link layer state we allocate anyway?
 
 static UART0_STATE: State = State::new();
 static UART1_STATE: State = State::new();
