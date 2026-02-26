@@ -34,7 +34,7 @@ mod state_machine;
 pub use connection::{Connection, ConnectionState, ConnectionTable};
 pub use state_machine::{ActionBuffer, MAX_REPETITIONS, ProcessResult, TlAction, TlEvent, TlStyle, process_event};
 
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either4, select4};
 use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant, Timer};
 
@@ -49,7 +49,7 @@ use crate::{
     objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
 };
 
-use super::{ActorRequest, Inbox, Layer, LayerOp};
+use super::Inbox;
 
 // ============================================================================
 // Configuration
@@ -76,10 +76,48 @@ enum TimeoutType {
 // Transport Layer
 // ============================================================================
 
+// ============================================================================
+// Pending NL Request Tracking
+// ============================================================================
+
+/// Tracks what kind of request is pending at the network layer, so the TL
+/// can correctly dispatch the NL confirmation when it arrives.
+///
+/// Since requests to NL are sent fire-and-forget and confirmations arrive
+/// asynchronously on a separate channel, the TL must remember what each
+/// pending confirmation corresponds to. NL processes requests in order, so
+/// confirmations arrive in the same order as requests — a FIFO is sufficient.
+#[derive(Debug)]
+enum PendingNlRequest {
+    /// Connectionless request (group, broadcast, etc.) whose confirmation
+    /// must be transformed and forwarded to the AL.
+    Connectionless {
+        /// The T_*_Con service type to set on the confirmation
+        confirmation_service_type: ServiceType,
+        /// The connection number (TSAP) to restore on the confirmation
+        connection_nr: u16,
+    },
+    /// Connected data (T_Data) whose NL confirmation needs forwarding to AL.
+    ConnectedData,
+    /// Fire-and-forget (ACK, NACK, connect, disconnect, retransmit, queued
+    /// outgoing) — the NL confirmation is consumed and dropped.
+    FireAndForget,
+}
+
 /// Transport layer for the KNX stack
 ///
 /// Handles both connectionless and connection-oriented communication.
 /// The connection table size is configurable via const generics.
+///
+/// # Channel architecture
+///
+/// The TL communicates with its neighbors through typed channels with no
+/// blocking request-response patterns:
+///
+/// - From NL: indications (`ind_rx`) and confirmations (`conf_rx`)
+/// - To NL: requests (`nl_request_tx`)
+/// - To AL: indications (`al_ind_tx`) and confirmations (`al_conf_tx`)
+/// - From AL: requests (`req_rx`)
 ///
 /// # Type Parameters
 /// - `D`: Stack definition providing table types
@@ -90,14 +128,23 @@ pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1,
     buffer_manager: &'a crate::messages::buffers::DynBufferManager<'static>,
     /// Unified device state (contains tables and runtime state)
     state: &'a D::State,
-    /// Channel to send messages to the network layer
-    network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
-    /// Channel to send messages to the application layer
-    application_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+
+    // Outgoing channels (to NL)
+    nl_request_tx: DynamicSender<'a, RequestMessage<Buffer<'static>>>,
+
+    // Outgoing channels (to AL)
+    al_ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+    al_conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
+
     /// Connection table for stateful connections
     connections: ConnectionTable<MAX_INCOMING, MAX_OUTGOING>,
     /// State machine style (determines error recovery behavior)
     style: TlStyle,
+
+    /// FIFO of pending NL requests, matching the order in which confirmations
+    /// will arrive. Capacity 4 covers the worst case of `execute_actions`
+    /// sending multiple PDUs (e.g., ACK + retransmit + queued outgoing).
+    pending_nl: heapless::Deque<PendingNlRequest, 4>,
 }
 
 impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
@@ -107,11 +154,57 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     pub fn new(
         buffer_manager: &'a crate::messages::buffers::DynBufferManager<'static>,
         state: &'a D::State,
-        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
-        application_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        nl_request_tx: DynamicSender<'a, RequestMessage<Buffer<'static>>>,
+        al_ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        al_conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         style: TlStyle,
     ) -> Self {
-        Self { buffer_manager, state, network_layer, application_layer, connections: ConnectionTable::new(), style }
+        Self {
+            buffer_manager,
+            state,
+            nl_request_tx,
+            al_ind_tx,
+            al_conf_tx,
+            connections: ConnectionTable::new(),
+            style,
+            pending_nl: heapless::Deque::new(),
+        }
+    }
+
+    /// Run the transport layer event loop.
+    ///
+    /// Simultaneously awaits:
+    /// - Indications from NL (to dispatch to AL or connection state machine)
+    /// - Requests from AL (to transform and forward to NL)
+    /// - Confirmations from NL (to match against pending requests and forward to AL)
+    /// - Timeout timer (for ACK and connection timeouts)
+    pub async fn run(
+        &mut self,
+        mut ind_rx: impl Inbox<IndicationMessage<Buffer<'static>>>,
+        mut req_rx: impl Inbox<RequestMessage<Buffer<'static>>>,
+        mut conf_rx: impl Inbox<ConfirmationMessage<Buffer<'static>>>,
+    ) -> !
+    where
+        D::State: HasAddressTable + HasConnectionAuth,
+    {
+        loop {
+            let deadline = self.next_timeout_deadline();
+
+            match select4(ind_rx.next(), req_rx.next(), conf_rx.next(), Timer::at(deadline)).await {
+                Either4::First(msg) => {
+                    self.handle_indication(msg).await;
+                }
+                Either4::Second(msg) => {
+                    self.handle_request(msg).await;
+                }
+                Either4::Third(conf) => {
+                    self.handle_nl_confirmation(conf).await;
+                }
+                Either4::Fourth(_) => {
+                    self.check_timeouts().await;
+                }
+            }
+        }
     }
 }
 
@@ -149,7 +242,7 @@ where
                     msg.set_service_type(ServiceType::T_GroupData_Ind);
                     // Connectionless — AccessSource::Default is already set on new messages.
                     debug!("TL -> AL: {:?}", msg);
-                    self.application_layer.send(LayerOp::Indication(msg)).await;
+                    self.al_ind_tx.send(msg).await;
                 }
             }
 
@@ -157,7 +250,7 @@ where
                 if let Some(Tpci::DataBroadcast) = msg.get_tpci() {
                     msg.set_service_type(ServiceType::T_Broadcast_Ind);
                     debug!("TL -> AL: {:?}", msg);
-                    self.application_layer.send(LayerOp::Indication(msg)).await;
+                    self.al_ind_tx.send(msg).await;
                 }
             }
 
@@ -165,7 +258,7 @@ where
                 if let Some(Tpci::DataSystemBroadcast) = msg.get_tpci() {
                     msg.set_service_type(ServiceType::T_SystemBroadcast_Ind);
                     debug!("TL -> AL: {:?}", msg);
-                    self.application_layer.send(LayerOp::Indication(msg)).await;
+                    self.al_ind_tx.send(msg).await;
                 }
             }
 
@@ -240,7 +333,7 @@ where
                 // Unnumbered individual data — forward to application.
                 // Connectionless: AccessSource::Default is already set.
                 msg.set_service_type(ServiceType::T_DataUnack_Ind);
-                self.application_layer.send(LayerOp::Indication(msg)).await;
+                self.al_ind_tx.send(msg).await;
                 return;
             }
             _ => {
@@ -295,11 +388,14 @@ where
     // Request Handling (from Application Layer)
     // ========================================================================
 
-    /// Handle a request from the application layer
-    async fn handle_request(&mut self, msg: RequestMessage<Buffer<'static>>) -> ConfirmationMessage<Buffer<'static>> {
+    /// Handle a request from the application layer.
+    ///
+    /// Transforms T_*_Req into N_*_Req and sends fire-and-forget to NL,
+    /// tracking what kind of confirmation to expect. The actual confirmation
+    /// is forwarded to AL when it arrives via `handle_nl_confirmation`.
+    async fn handle_request(&mut self, msg: RequestMessage<Buffer<'static>>) {
         debug!("TL request: {:?}", msg);
 
-        // Extract inner message for processing
         let msg = msg.into_inner();
 
         match msg.service_type() {
@@ -323,11 +419,11 @@ where
             ServiceType::T_Data_Req => self.handle_data_request(msg).await,
 
             // ─────────────────────────────────────────────────────────────────
-            // Unhandled
+            // Unhandled — send error confirmation directly to AL
             // ─────────────────────────────────────────────────────────────────
             _ => {
                 warn!("TL unhandled request: {:?}", msg.service_type());
-                msg.error().build()
+                self.al_conf_tx.send(msg.error().build()).await;
             }
         }
     }
@@ -336,14 +432,9 @@ where
     // Connectionless Request Handlers
     // ========================================================================
 
-    async fn handle_group_data_request(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> ConfirmationMessage<Buffer<'static>> {
+    async fn handle_group_data_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         trace!("T_GroupData_Req: {:?}", msg);
 
-        // Extract the group address before entering the block to avoid holding
-        // the ADT RefCell borrow across the network layer request await below.
         let dst_addr = {
             let adt = self.state.adt().borrow();
             if adt.is_loaded() { adt.get_address(msg.get_connection_nr()) } else { None }
@@ -357,91 +448,97 @@ where
             msg.set_dest_addr(DestinationAddress::Group(dst_addr));
             msg.set_service_type(ServiceType::N_GroupData_Req);
 
-            debug!("TL -> NL: {:?}", msg);
-            let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
+            // Track that we expect a connectionless confirmation back
+            let _ = self.pending_nl.push_back(PendingNlRequest::Connectionless {
+                confirmation_service_type: ServiceType::T_GroupData_Con,
+                connection_nr: original_conn_nr,
+            });
 
-            confirmation.set_service_type(ServiceType::T_GroupData_Con);
-            confirmation.set_connection_nr(original_conn_nr);
-            confirmation
+            debug!("TL -> NL: {:?}", msg);
+            self.nl_request_tx.send(RequestMessage::request(msg)).await;
         } else {
+            // No valid address — send error confirmation directly to AL
             warn!("TL ADT not loaded or invalid conn_nr: {}", msg.get_connection_nr());
-            msg.error().build()
+            self.al_conf_tx.send(msg.error().build()).await;
         }
     }
 
-    async fn handle_broadcast_request(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> ConfirmationMessage<Buffer<'static>> {
+    async fn handle_broadcast_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         msg.set_tpci(Tpci::DataBroadcast);
         msg.set_service_type(ServiceType::N_Broadcast_Req);
-        debug!("TL -> NL: {:?}", msg);
 
-        let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
-        confirmation.set_service_type(ServiceType::T_Broadcast_Con);
-        confirmation
+        let _ = self.pending_nl.push_back(PendingNlRequest::Connectionless {
+            confirmation_service_type: ServiceType::T_Broadcast_Con,
+            connection_nr: 0,
+        });
+
+        debug!("TL -> NL: {:?}", msg);
+        self.nl_request_tx.send(RequestMessage::request(msg)).await;
     }
 
-    async fn handle_system_broadcast_request(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> ConfirmationMessage<Buffer<'static>> {
+    async fn handle_system_broadcast_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         msg.set_tpci(Tpci::DataSystemBroadcast);
         msg.set_service_type(ServiceType::N_SystemBroadcast_Req);
-        debug!("TL -> NL: {:?}", msg);
 
-        let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
-        confirmation.set_service_type(ServiceType::T_SystemBroadcast_Con);
-        confirmation
+        let _ = self.pending_nl.push_back(PendingNlRequest::Connectionless {
+            confirmation_service_type: ServiceType::T_SystemBroadcast_Con,
+            connection_nr: 0,
+        });
+
+        debug!("TL -> NL: {:?}", msg);
+        self.nl_request_tx.send(RequestMessage::request(msg)).await;
     }
 
-    async fn handle_data_unack_request(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> ConfirmationMessage<Buffer<'static>> {
-        // Connectionless point-to-point data - no connection state needed
+    async fn handle_data_unack_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         msg.set_tpci(Tpci::DataIndividual);
         msg.set_service_type(ServiceType::N_Data_Req);
-        debug!("TL -> NL (unack): {:?}", msg);
 
-        let mut confirmation = self.network_layer.request(RequestMessage::request(msg)).await;
-        confirmation.set_service_type(ServiceType::T_DataUnack_Con);
-        confirmation
+        let _ = self.pending_nl.push_back(PendingNlRequest::Connectionless {
+            confirmation_service_type: ServiceType::T_DataUnack_Con,
+            connection_nr: 0,
+        });
+
+        debug!("TL -> NL (unack): {:?}", msg);
+        self.nl_request_tx.send(RequestMessage::request(msg)).await;
     }
 
     // ========================================================================
     // Connection-Oriented Request Handlers
     // ========================================================================
 
-    async fn handle_connect_request(
-        &mut self,
-        msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> ConfirmationMessage<Buffer<'static>> {
+    async fn handle_connect_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
-            _ => return msg.error().build(),
+            _ => {
+                self.al_conf_tx.send(msg.error().build()).await;
+                return;
+            }
         };
 
         // Allocate an outgoing connection
         let conn = match self.connections.allocate_outgoing(dest) {
             Some(c) => c,
-            None => return msg.error().build(),
+            None => {
+                self.al_conf_tx.send(msg.error().build()).await;
+                return;
+            }
         };
 
         // Process connect request through state machine
         let actions = process_event(conn, TlEvent::RequestConnect { dest }, self.style);
         self.execute_actions(actions, dest, None).await;
 
-        msg.confirm().build()
+        // Send immediate confirmation to AL (connect is locally confirmed)
+        self.al_conf_tx.send(msg.confirm().build()).await;
     }
 
-    async fn handle_disconnect_request(
-        &mut self,
-        msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> ConfirmationMessage<Buffer<'static>> {
+    async fn handle_disconnect_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
-            _ => return msg.error().build(),
+            _ => {
+                self.al_conf_tx.send(msg.error().build()).await;
+                return;
+            }
         };
 
         // Find the connection
@@ -450,27 +547,27 @@ where
             self.execute_actions(actions, dest, None).await;
         }
 
-        msg.confirm().build()
+        // Send immediate confirmation to AL
+        self.al_conf_tx.send(msg.confirm().build()).await;
     }
 
-    async fn handle_data_request(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> ConfirmationMessage<Buffer<'static>> {
+    async fn handle_data_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
-            _ => return msg.error().build(),
+            _ => {
+                self.al_conf_tx.send(msg.error().build()).await;
+                return;
+            }
         };
 
         // Find the connection
         let conn = match self.connections.find_any(dest) {
             Some(c) => c,
-            None => return msg.error().build(),
+            None => {
+                self.al_conf_tx.send(msg.error().build()).await;
+                return;
+            }
         };
-
-        // Access level updates (e.g. A_Authorize) are now written directly
-        // to the shared ConnectionAuthLevels by the AL — no piggybacking
-        // on response messages needed.
 
         let seq_no = conn.seq_no_send;
         let actions = process_event(conn, TlEvent::RequestData { dest }, self.style);
@@ -488,12 +585,11 @@ where
             // Execute remaining actions (state transition, timers)
             self.execute_actions_no_send(actions, dest).await;
 
-            // Return a confirmation (the actual send will happen later).
-            // Allocate a minimal buffer — the confirmation only needs enough
-            // space for the CTRL1 field that .build() writes into.
+            // Send immediate confirmation to AL (the actual send will happen later)
             let confirm_buf = self.buffer_manager.alloc_with_size(7).await;
             let confirmation = KnxMessageBuffer::new(confirm_buf, ServiceType::T_Data_Req);
-            return confirmation.confirm().build();
+            self.al_conf_tx.send(confirmation.confirm().build()).await;
+            return;
         }
 
         // Normal path: prepare and send the message immediately.
@@ -503,9 +599,6 @@ where
 
         // Store the original message for potential retransmission.
         // We keep the original buffer as pending_msg and send a copy.
-        // This order is important to avoid deadlock: we first store the original,
-        // then allocate a copy. If we tried to allocate while still holding
-        // the original for sending, we could exhaust the buffer pool.
         let service_type = msg.service_type();
         if let Some(conn) = self.connections.find_any(dest) {
             conn.pending_msg = Some(msg);
@@ -518,9 +611,9 @@ where
                 self.buffer_manager.alloc_from_slice(pm.buf()).await
             } else {
                 // Should not happen, but handle gracefully
-                return KnxMessageBuffer::new(self.buffer_manager.alloc_with_size(0).await, service_type)
-                    .error()
-                    .build();
+                let err_msg = KnxMessageBuffer::new(self.buffer_manager.alloc_with_size(0).await, service_type);
+                self.al_conf_tx.send(err_msg.error().build()).await;
+                return;
             }
         };
         let send_msg = KnxMessageBuffer::new(send_buffer, service_type);
@@ -528,14 +621,12 @@ where
         // Execute other actions (start timer, etc.)
         self.execute_actions_no_send(actions, dest).await;
 
-        // Send the copy
-        trace!("Transport layer sending data to Network layer: {:?}", send_msg);
-        let mut confirmation = self.network_layer.request(RequestMessage::request(send_msg)).await;
+        // Track that we need to forward this confirmation to AL
+        let _ = self.pending_nl.push_back(PendingNlRequest::ConnectedData);
 
-        // We don't return confirmation immediately - we wait for ACK
-        // For now, return immediate confirmation (TODO: proper async confirmation)
-        confirmation.set_service_type(ServiceType::T_Data_Con);
-        confirmation
+        // Send the copy to NL (fire-and-forget)
+        trace!("Transport layer sending data to Network layer: {:?}", send_msg);
+        self.nl_request_tx.send(RequestMessage::request(send_msg)).await;
     }
 
     // ========================================================================
@@ -655,7 +746,7 @@ where
                         if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
                             msg.set_access_source(AccessSource::Connection(conn.slot_index));
                         }
-                        self.application_layer.send(LayerOp::Indication(msg)).await;
+                        self.al_ind_tx.send(msg).await;
                     }
                 }
                 TlAction::QueueEvent { source: _ } => {
@@ -691,9 +782,7 @@ where
                             queued_msg.set_service_type(ServiceType::T_Data_Ind);
                             queued_msg.set_access_source(AccessSource::Connection(slot));
                             debug!("TL delivering queued data from {}", remote_addr);
-                            self.application_layer
-                                .send(LayerOp::Indication(IndicationMessage::indication(queued_msg)))
-                                .await;
+                            self.al_ind_tx.send(IndicationMessage::indication(queued_msg)).await;
                         }
                     }
                 }
@@ -743,8 +832,8 @@ where
                                 let retransmit_msg =
                                     KnxMessageBuffer::new(retransmit_buffer, pending_msg.service_type());
                                 debug!("TL retransmitting: {:?}", retransmit_msg);
-                                let _confirmation =
-                                    self.network_layer.request(RequestMessage::request(retransmit_msg)).await;
+                                let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
+                                self.nl_request_tx.send(RequestMessage::request(retransmit_msg)).await;
                             }
                             None => {
                                 warn!("TL skipping retransmit to {} (no free buffers)", dest);
@@ -804,7 +893,8 @@ where
             if let Some(ref pending) = conn.pending_msg {
                 let send_buffer = self.buffer_manager.alloc_from_slice(pending.buf()).await;
                 let send_msg = KnxMessageBuffer::new(send_buffer, pending.service_type());
-                let _confirmation = self.network_layer.request(RequestMessage::request(send_msg)).await;
+                let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
+                self.nl_request_tx.send(RequestMessage::request(send_msg)).await;
             }
         }
     }
@@ -818,7 +908,46 @@ where
     // PDU Sending Helpers
     // ========================================================================
 
-    /// Send a T_Connect PDU to establish a connection
+    // ========================================================================
+    // NL Confirmation Handling
+    // ========================================================================
+
+    /// Handle a confirmation from the network layer.
+    ///
+    /// Matches against the pending NL request FIFO to determine whether to
+    /// forward the confirmation to AL or just drop it (fire-and-forget).
+    async fn handle_nl_confirmation(&mut self, conf: ConfirmationMessage<Buffer<'static>>) {
+        debug!("TL NL confirmation: {:?}", conf);
+
+        match self.pending_nl.pop_front() {
+            Some(PendingNlRequest::Connectionless { confirmation_service_type, connection_nr }) => {
+                let mut msg = conf.into_inner();
+                msg.set_service_type(confirmation_service_type);
+                if connection_nr != 0 {
+                    msg.set_connection_nr(connection_nr);
+                }
+                self.al_conf_tx.send(ConfirmationMessage::confirmation(msg)).await;
+            }
+            Some(PendingNlRequest::ConnectedData) => {
+                let mut msg = conf.into_inner();
+                msg.set_service_type(ServiceType::T_Data_Con);
+                self.al_conf_tx.send(ConfirmationMessage::confirmation(msg)).await;
+            }
+            Some(PendingNlRequest::FireAndForget) => {
+                // Confirmation for a fire-and-forget request — just drop it
+                trace!("TL dropping fire-and-forget NL confirmation");
+            }
+            None => {
+                warn!("TL received NL confirmation with no pending request");
+            }
+        }
+    }
+
+    // ========================================================================
+    // PDU Sending Helpers
+    // ========================================================================
+
+    /// Send a T_Connect PDU to establish a connection (fire-and-forget)
     async fn send_connect(&mut self, dest: IndividualAddress) {
         use crate::messages::builder::MessageBuilder;
 
@@ -837,10 +966,11 @@ where
         .build();
 
         debug!("TL sending T_Connect to {}", dest);
-        let _confirmation = self.network_layer.request(msg).await;
+        let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
+        self.nl_request_tx.send(msg).await;
     }
 
-    /// Send a T_Disconnect PDU to close a connection
+    /// Send a T_Disconnect PDU to close a connection (fire-and-forget)
     async fn send_disconnect(&mut self, dest: IndividualAddress) {
         use crate::messages::builder::MessageBuilder;
 
@@ -858,10 +988,11 @@ where
         .build();
 
         debug!("TL sending T_Disconnect to {}", dest);
-        let _confirmation = self.network_layer.request(msg).await;
+        let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
+        self.nl_request_tx.send(msg).await;
     }
 
-    /// Send a T_ACK PDU to acknowledge received data
+    /// Send a T_ACK PDU to acknowledge received data (fire-and-forget)
     async fn send_ack(&mut self, dest: IndividualAddress, seq_no: u8) {
         use crate::messages::builder::MessageBuilder;
 
@@ -879,10 +1010,11 @@ where
         .build();
 
         debug!("TL sending T_ACK({}) to {}", seq_no, dest);
-        let _confirmation = self.network_layer.request(msg).await;
+        let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
+        self.nl_request_tx.send(msg).await;
     }
 
-    /// Send a T_NACK PDU to signal an error in received data
+    /// Send a T_NACK PDU to signal an error in received data (fire-and-forget)
     async fn send_nack(&mut self, dest: IndividualAddress, seq_no: u8) {
         use crate::messages::builder::MessageBuilder;
 
@@ -900,49 +1032,7 @@ where
         .build();
 
         debug!("TL sending T_NACK({}) to {}", seq_no, dest);
-        let _confirmation = self.network_layer.request(msg).await;
-    }
-}
-
-// ============================================================================
-// Layer Implementation
-// ============================================================================
-
-impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> Layer<'a>
-    for TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>
-where
-    D::State: HasAddressTable + HasConnectionAuth,
-{
-    type Buffer = Buffer<'static>;
-
-    async fn process<M>(&mut self, mut inbox: M) -> !
-    where
-        M: Inbox<LayerOp<Self::Buffer>>,
-    {
-        loop {
-            // Calculate next timeout deadline
-            let deadline = self.next_timeout_deadline();
-
-            // Wait for either a message or timeout
-            match select(inbox.next(), Timer::at(deadline)).await {
-                Either::First(layer_op) => {
-                    trace!("TL received: {:?}", layer_op);
-
-                    match layer_op {
-                        LayerOp::Indication(msg) => {
-                            self.handle_indication(msg).await;
-                        }
-                        LayerOp::Request { message: msg, response_tx } => {
-                            let response = self.handle_request(msg).await;
-                            response_tx.send(response).await;
-                        }
-                    }
-                }
-                Either::Second(_) => {
-                    // Timeout occurred - check for expired connections
-                    self.check_timeouts().await;
-                }
-            }
-        }
+        let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
+        self.nl_request_tx.send(msg).await;
     }
 }

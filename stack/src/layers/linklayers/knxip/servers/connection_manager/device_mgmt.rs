@@ -9,7 +9,6 @@ use embassy_sync::channel::{Channel, DynamicSender};
 use embassy_time::Instant;
 
 use crate::encoding::cemi::{self, CemiLocalMgmt, CemiMessageCode, CemiTransportBuilder};
-use crate::layers::LayerOp;
 use crate::messages::buffers::{Buffer, DynBufferManager};
 use crate::messages::builder::{IndicationMessage, RequestMessage};
 use crate::messages::knx::*;
@@ -37,8 +36,8 @@ use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, Connecti
 /// internal format and routing them through the application layer.
 pub struct DeviceMgmtConnectionHandler<'a> {
     property_handler: &'a dyn PropertyServiceHandler,
-    /// Sender to the application layer channel, for cEMI Transport Layer mode.
-    al_sender: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+    /// Sender to the application layer's indication channel, for cEMI Transport Layer mode.
+    al_sender: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
     /// Buffer manager for allocating internal message buffers.
     buffer_manager: &'a DynBufferManager<'static>,
     /// Channel ID of the active Device Management connection, if any.
@@ -50,7 +49,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
     /// Create a new Device Management connection handler.
     pub fn new(
         property_handler: &'a dyn PropertyServiceHandler,
-        al_sender: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        al_sender: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         buffer_manager: &'a DynBufferManager<'static>,
     ) -> Self {
         Self { property_handler, al_sender, buffer_manager, active_channel: None }
@@ -194,7 +193,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         };
 
         let indication = indication.with_response_route(response_route);
-        self.al_sender.send(LayerOp::Indication(indication)).await;
+        self.al_sender.send(indication).await;
 
         let response = response_channel.receive().await;
 

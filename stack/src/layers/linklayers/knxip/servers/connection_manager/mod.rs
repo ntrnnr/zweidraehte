@@ -29,7 +29,6 @@ use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant};
 use heapless::Vec;
 
-use crate::layers::LayerOp;
 use crate::messages::buffers::{Buffer, DynBufferManager};
 use crate::messages::builder::IndicationMessage;
 use crate::messages::knx::{CemiFormat, KnxMessageBuffer};
@@ -304,7 +303,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         data: &[u8],
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
-        network_layer_tx: DynamicSender<'_, LayerOp<Buffer<'static>>>,
+        ind_tx: DynamicSender<'_, IndicationMessage<Buffer<'static>>>,
     ) -> Result<ConnectionManagerResult, ServerError> {
         match service_type {
             // Connection lifecycle — handled directly by the connection manager
@@ -321,7 +320,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
             // Everything else: route to the handler via channel ID lookup
             _ => {
                 let responses =
-                    self.dispatch_to_handler(service_type, data, buffer_manager, network_layer_tx).await?;
+                    self.dispatch_to_handler(service_type, data, buffer_manager, ind_tx).await?;
                 Ok(ConnectionManagerResult::responses_only(responses))
             }
         }
@@ -337,7 +336,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         service_type: KNXnetIPServiceType,
         data: &[u8],
         buffer_manager: &DynBufferManager<'static>,
-        network_layer_tx: DynamicSender<'_, LayerOp<Buffer<'static>>>,
+        ind_tx: DynamicSender<'_, IndicationMessage<Buffer<'static>>>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         // Connection header starts at offset 6 (after KNXnet/IP header).
         // Byte layout: struct_length(1), channel_id(1), sequence_or_reserved(1), status_or_reserved(1)
@@ -401,7 +400,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
                         KnxMessageBuffer::from_cemi(cemi_buffer);
                     let internal_msg = cemi_msg.into_internal();
                     let indication = IndicationMessage::indication(internal_msg);
-                    network_layer_tx.send(LayerOp::Indication(indication)).await;
+                    ind_tx.send(indication).await;
 
                     let mut responses = Vec::new();
                     let _ = responses.push(ack);

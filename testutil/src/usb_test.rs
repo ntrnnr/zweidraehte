@@ -17,36 +17,28 @@ use zweidraehte::{
     address::{GroupAddress, IndividualAddress},
     context::BufferManagerContext,
     layers::{
-        ActorRequest, LayerOp, LinkLayerBuilder,
+        LinkLayerBuilder,
         linklayers::usb::{UsbLinkLayerBuilder, UsbLinkLayerResources},
     },
     messages::buffers::{Buffer, BufferManager, MessageBuffer},
-    messages::builder::RequestMessage,
+    messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
     messages::knx::{KnxMessageBuffer, ServiceType},
 };
 
 /// Group address 2/0/3
 const GROUP_ADDR: GroupAddress = GroupAddress::from_three_level(2, 0, 3);
 
-// Fake network layer that just prints received messages
+// Fake network layer that just prints received indications
 struct FakeNetworkLayer {
-    receiver: embassy_sync::channel::Receiver<'static, NoopRawMutex, LayerOp<Buffer<'static>>, 32>,
+    ind_rx: embassy_sync::channel::Receiver<'static, NoopRawMutex, IndicationMessage<Buffer<'static>>, 32>,
 }
 
 impl FakeNetworkLayer {
     async fn process(&mut self) -> ! {
         loop {
-            let layer_op = self.receiver.receive().await;
-            match layer_op {
-                LayerOp::Indication(msg) => {
-                    let buf = msg.buf();
-                    print_frame(buf);
-                }
-                LayerOp::Request { message: _msg, response_tx: _response_tx } => {
-                    // Network layer doesn't typically receive requests from link layer
-                    println!("Unexpected request from link layer");
-                }
-            }
+            let msg = self.ind_rx.receive().await;
+            let buf = msg.buf();
+            print_frame(buf);
         }
     }
 }
@@ -197,15 +189,20 @@ async fn main(spawner: Spawner) {
     let buffer_manager = Box::leak(Box::new(buffer_manager));
     let bm = Box::leak(Box::new(buffer_manager.dyn_buffer_manager()));
 
-    // Create channels for communication between link layer and fake network layer
-    let network_channel = Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<Buffer<'static>>, 32>::new()));
-    let network_sender = network_channel.sender().into();
-    let network_receiver = network_channel.receiver();
+    // Indication channel: link layer -> fake network layer
+    let ind_channel = Box::leak(Box::new(Channel::<NoopRawMutex, IndicationMessage<Buffer<'static>>, 32>::new()));
+    let ind_tx = ind_channel.sender().into();
+    let ind_rx = ind_channel.receiver();
 
-    // Create channel for sending requests to the link layer
-    let link_channel = Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<Buffer<'static>>, 32>::new()));
-    let link_sender: embassy_sync::channel::DynamicSender<'_, LayerOp<Buffer<'static>>> = link_channel.sender().into();
-    let link_receiver = link_channel.receiver();
+    // Confirmation channel: link layer -> main loop
+    let conf_channel = Box::leak(Box::new(Channel::<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 32>::new()));
+    let conf_tx = conf_channel.sender().into();
+    let conf_rx = conf_channel.receiver();
+
+    // Request channel: main loop -> link layer
+    let req_channel = Box::leak(Box::new(Channel::<NoopRawMutex, RequestMessage<Buffer<'static>>, 32>::new()));
+    let req_tx = req_channel.sender();
+    let req_rx = req_channel.receiver();
 
     // Create USB link layer builder with individual address 1.0.253
     let ll_builder = UsbLinkLayerBuilder::new().with_individual_address(IndividualAddress::new(1, 0, 253));
@@ -217,11 +214,11 @@ async fn main(spawner: Spawner) {
     let context = Box::leak(Box::new(SimpleContext { buffer_manager: bm }));
 
     // Spawn the fake network layer
-    let fake_network = FakeNetworkLayer { receiver: network_receiver };
+    let fake_network = FakeNetworkLayer { ind_rx };
     spawner.spawn(run_fake_network(fake_network)).unwrap();
 
     // Spawn the link layer using the builder
-    spawner.spawn(run_usb_link_layer(ll_builder, ll_resources, context, network_sender, link_receiver)).unwrap();
+    spawner.spawn(run_usb_link_layer(ll_builder, ll_resources, context, ind_tx, conf_tx, req_rx)).unwrap();
 
     // Wait for link layer to initialize
     Timer::after(Duration::from_millis(500)).await;
@@ -243,7 +240,8 @@ async fn main(spawner: Spawner) {
                     let buffer = bm.alloc().await;
                     let msg = build_group_value_write(buffer, GROUP_ADDR, true);
 
-                    let confirmation = link_sender.request(msg).await;
+                    req_tx.send(msg).await;
+                    let confirmation = conf_rx.receive().await;
                     println!("Confirmation: {:02X?}", confirmation.buf());
                 }
                 '0' => {
@@ -253,7 +251,8 @@ async fn main(spawner: Spawner) {
                     let buffer = bm.alloc().await;
                     let msg = build_group_value_write(buffer, GROUP_ADDR, false);
 
-                    let confirmation = link_sender.request(msg).await;
+                    req_tx.send(msg).await;
+                    let confirmation = conf_rx.receive().await;
                     println!("Confirmation: {:02X?}", confirmation.buf());
                 }
                 'q' | 'Q' => {
@@ -274,8 +273,9 @@ async fn run_usb_link_layer(
     builder: UsbLinkLayerBuilder,
     resources: &'static mut UsbLinkLayerResources,
     context: &'static SimpleContext,
-    network_sender: embassy_sync::channel::DynamicSender<'static, LayerOp<Buffer<'static>>>,
-    link_receiver: embassy_sync::channel::Receiver<'static, NoopRawMutex, LayerOp<Buffer<'static>>, 32>,
+    ind_tx: embassy_sync::channel::DynamicSender<'static, IndicationMessage<Buffer<'static>>>,
+    conf_tx: embassy_sync::channel::DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
+    req_rx: embassy_sync::channel::Receiver<'static, NoopRawMutex, RequestMessage<Buffer<'static>>, 32>,
 ) {
-    builder.build_and_run(resources, context, network_sender, link_receiver).await;
+    builder.build_and_run(resources, context, ind_tx, conf_tx, req_rx).await;
 }

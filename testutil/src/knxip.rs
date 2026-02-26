@@ -18,42 +18,35 @@ use std::net::SocketAddrV4;
 use embassy_executor::Spawner;
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
-    channel::{Channel, DynamicSender, Receiver},
+    channel::Channel,
 };
 use embassy_time::{Duration, Ticker};
 use env_logger::Env;
 
 use zweidraehte::{
     layers::{
-        LayerOp, LinkLayerBuilder,
+        LinkLayerBuilder,
         linklayers::knxip::KnxNetIpBuilder,
     },
     messages::{
         buffers::{Buffer, BufferManager},
+        builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
         knxip::substructs::DeviceInformation,
     },
 };
 
 use testutil::util::MockContext;
 
-// Network layer that just prints received messages
+// Network layer that just prints received indications
 struct FakeNetworkLayer {
-    receiver: Receiver<'static, NoopRawMutex, LayerOp<Buffer<'static>>, 32>,
+    ind_rx: embassy_sync::channel::Receiver<'static, NoopRawMutex, IndicationMessage<Buffer<'static>>, 32>,
 }
 
 impl FakeNetworkLayer {
     async fn process(&mut self) -> ! {
         loop {
-            let layer_op = self.receiver.receive().await;
-            match layer_op {
-                LayerOp::Indication(msg) => {
-                    println!("RX: {:x?}", msg.buf());
-                }
-                LayerOp::Request { message: _msg, response_tx: _response_tx } => {
-                    // Network layer doesn't typically receive requests from link layer
-                    println!("Unexpected request from link layer");
-                }
-            }
+            let msg = self.ind_rx.receive().await;
+            println!("RX: {:x?}", msg.buf());
         }
     }
 }
@@ -77,17 +70,21 @@ async fn main(spawner: Spawner) {
     // Create mock context for testing
     let context = Box::leak(Box::new(MockContext::new(*bm.borrow())));
 
-    // Create channels for communication between link layer and network layer
-    let network_channel =
-        Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<Buffer<'static>>, 32>::new()));
-    let network_sender: DynamicSender<'_, LayerOp<Buffer<'static>>> = network_channel.sender().into();
-    let network_receiver = network_channel.receiver();
+    // Indication channel: link layer -> fake network layer
+    let ind_channel =
+        Box::leak(Box::new(Channel::<NoopRawMutex, IndicationMessage<Buffer<'static>>, 32>::new()));
+    let ind_tx = ind_channel.sender().into();
+    let ind_rx = ind_channel.receiver();
 
-    // Create channel for sending requests to the link layer
-    let link_channel =
-        Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<Buffer<'static>>, 32>::new()));
-    let _link_sender: DynamicSender<'_, LayerOp<Buffer<'static>>> = link_channel.sender().into();
-    let link_receiver = link_channel.receiver();
+    // Confirmation channel: link layer -> main loop (drained but unused)
+    let conf_channel =
+        Box::leak(Box::new(Channel::<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 32>::new()));
+    let conf_tx = conf_channel.sender().into();
+
+    // Request channel: main loop -> link layer
+    let req_channel =
+        Box::leak(Box::new(Channel::<NoopRawMutex, RequestMessage<Buffer<'static>>, 32>::new()));
+    let req_rx = req_channel.receiver();
 
     // Create the KNXnet/IP link layer builder
     use platform::address::EthernetAddress;
@@ -121,7 +118,7 @@ async fn main(spawner: Spawner) {
     println!("  - Control endpoint: {:?}", control_endpoint);
 
     // Spawn the network layer
-    let fake_network = FakeNetworkLayer { receiver: network_receiver };
+    let fake_network = FakeNetworkLayer { ind_rx };
     spawner.spawn(run_fake_network(fake_network)).unwrap();
 
     // Create resources for the link layer (2 sockets max, 1 server)
@@ -129,7 +126,7 @@ async fn main(spawner: Spawner) {
     let ll_resources = Box::leak(Box::new(KnxNetIpResources::new()));
 
     // Build and run the link layer using the LinkLayerBuilder trait
-    let link_layer_future = kb.build_and_run(ll_resources, &context, network_sender, link_receiver);
+    let link_layer_future = kb.build_and_run(ll_resources, &context, ind_tx, conf_tx, req_rx);
 
     let test_loop = async {
         // Main test loop - send a test message every second

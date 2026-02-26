@@ -51,7 +51,7 @@ use crate::{
     address::IndividualAddress,
     context::BufferManagerContext,
     layers::{
-        ActorRequest, Layer, LayerOp, LinkLayerBuilder, LinkLayerBuilderBase, Request,
+        ActorRequest, LinkLayerBuilder, LinkLayerBuilderBase, Request,
         application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
         network::NetworkLayer,
         transport::{TransportLayer, TlStyle},
@@ -694,6 +694,16 @@ pub trait StackDefinition: Copy {
     /// explicitly — there is no default.
     const TL_STYLE: TlStyle;
 
+    /// Mutex type for channels shared between the stack runner and user code.
+    ///
+    /// Use [`NoopRawMutex`](embassy_sync::blocking_mutex::raw::NoopRawMutex)
+    /// (default) when the stack runner and user code share the same executor.
+    /// Use [`CriticalSectionRawMutex`](embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex)
+    /// when the stack runs on an `InterruptExecutor` while user code runs on
+    /// the thread executor — the interrupt executor can preempt mid-borrow,
+    /// which requires a real mutex to prevent `BorrowMutError` panics.
+    type Mutex: RawMutex + 'static = NoopRawMutex;
+
     type P: ConstDefault;
     type CO: ComObjects;
     type LLB: layers::LinkLayerBuilderBase + for<'a> layers::LinkLayerBuilder<StackContext<'a, Self>>;
@@ -883,16 +893,20 @@ impl<'d, D: StackDefinition> Clone for Stack<'d, D> {
 
 pub(crate) struct Inner<D: StackDefinition> {
     pub(crate) buffer_manager: DynBufferManager<'static>,
+    // These channels are shared between the stack runner task and user code
+    // (e.g. `Stack::update_object`, `restart_task`). They use `D::Mutex` so
+    // users can pick `CriticalSectionRawMutex` when the stack runs on an
+    // `InterruptExecutor` that can preempt the user's thread executor.
     pub(crate) app_service_channel:
-        Channel<NoopRawMutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
+        Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
     pub(crate) comm_objs: RefCell<D::CO>,
     pub(crate) event_channel:
-        PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
+        PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
     /// Channel for application lifecycle events (started/stopped running)
-    pub(crate) lifecycle_channel: PubSubChannel<NoopRawMutex, LifecycleEvent, 4, 2, 1>,
+    pub(crate) lifecycle_channel: PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
     /// Channel for A_Restart requests from application layer to user code
     pub(crate) restart_channel:
-        Channel<NoopRawMutex, Request<restart::RestartRequest, restart::RestartResponse>, 1>,
+        Channel<D::Mutex, Request<restart::RestartRequest, restart::RestartResponse>, 1>,
     /// Unified device state containing runtime state, tables, and configuration
     pub(crate) state: D::State,
     /// Hook context for communication object hooks
@@ -940,7 +954,7 @@ impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
 pub struct StackContext<'a, D: StackDefinition> {
     inner: &'a Inner<D>,
     interface_objects: &'a D::InterfaceObjects<'static>,
-    al_sender: embassy_sync::channel::DynamicSender<'a, layers::LayerOp<messages::buffers::Buffer<'static>>>,
+    al_sender: embassy_sync::channel::DynamicSender<'a, messages::builder::IndicationMessage<messages::buffers::Buffer<'static>>>,
 }
 
 impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
@@ -966,7 +980,7 @@ impl<D: StackDefinition> context::PropertyServiceContext for StackContext<'_, D>
 impl<D: StackDefinition> context::ApplicationLayerContext for StackContext<'_, D> {
     fn application_layer_sender(
         &self,
-    ) -> embassy_sync::channel::DynamicSender<'_, layers::LayerOp<messages::buffers::Buffer<'static>>> {
+    ) -> embassy_sync::channel::DynamicSender<'_, messages::builder::IndicationMessage<messages::buffers::Buffer<'static>>> {
         self.al_sender
     }
 }
@@ -1145,12 +1159,12 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     // SAFETY: We are creating a static reference to the channel held by the `Inner` struct,
     //         which is safe because it is guaranteed to live as long as the `Stack` or the `Runner`.
     let (app_request_sender, app_request_receiver) =
-        create_request_response_pair::<NoopRawMutex, _, 1>(unsafe { core::mem::transmute(&inner.app_service_channel) });
+        create_request_response_pair::<D::Mutex, _, 1>(unsafe { core::mem::transmute(&inner.app_service_channel) });
 
     // Create restart channel sender/receiver pair.
     // The sender goes to the Runner (passed to ApplicationLayer), receiver goes to Stack (for user code).
     let (restart_sender, restart_receiver) =
-        create_request_response_pair::<NoopRawMutex, _, 1>(unsafe { core::mem::transmute(&inner.restart_channel) });
+        create_request_response_pair::<D::Mutex, _, 1>(unsafe { core::mem::transmute(&inner.restart_channel) });
 
     // Initialize link layer resources using the builder
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());
@@ -1206,26 +1220,44 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             self.stack.inner.lifecycle_channel.publish_immediate(LifecycleEvent::ApplicationStarted);
         }
 
-        // Create all the channels for layer to layer communication.
+        // Create typed channels for layer-to-layer communication.
         //
-        // Capacity 2: each layer can have one request in-flight (waiting for
-        // a confirmation round-trip) while simultaneously accepting one
-        // incoming indication. With capacity 1, a layer blocked on a
-        // request() round-trip cannot receive new indications, which
-        // back-pressures all the way down to the link layer and freezes the
-        // UART event loop — a classic producer-consumer deadlock.
-        let ll_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 2> = Channel::new();
-        let nl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 2> = Channel::new();
-        let tl_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 2> = Channel::new();
-        let al_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 2> = Channel::new();
+        // Each layer pair communicates through three unidirectional channels:
+        // - Request channel (down): upper → lower
+        // - Indication channel (up): lower → upper
+        // - Confirmation channel (up): lower → upper
+        //
+        // This eliminates the deadlock-prone bidirectional LayerOp pattern.
+        // Capacity 1 is sufficient: each layer runs a select loop that always
+        // drains its inboxes promptly, so messages never accumulate.
+        use messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
+
+        // LL ↔ NL channels
+        let ll_req: Channel<NoopRawMutex, RequestMessage<Buffer<'static>>, 1> = Channel::new();
+        let ll_ind: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
+        let ll_conf: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> = Channel::new();
+
+        // NL ↔ TL channels
+        let nl_req: Channel<NoopRawMutex, RequestMessage<Buffer<'static>>, 1> = Channel::new();
+        let nl_ind: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
+        let nl_conf: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> = Channel::new();
+
+        // TL ↔ AL channels
+        let tl_req: Channel<NoopRawMutex, RequestMessage<Buffer<'static>>, 1> = Channel::new();
+        let tl_ind: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
+        let tl_conf: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> = Channel::new();
+
+        // KNX/IP inject channel (LL → AL, bypasses NL/TL)
+        let al_inject: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
 
         // Create a network layer with reference to stack state and interface objects.
         // The routing count (hop count) for outgoing messages is read from the device object.
         let mut network_layer = NetworkLayer::new(
             &self.stack.inner.state,
             self.interface_objects,
-            ll_channel.sender().into(),
-            tl_channel.sender().into(),
+            ll_req.sender().into(),
+            nl_ind.sender().into(),
+            nl_conf.sender().into(),
         );
 
         // Create a transport layer.
@@ -1239,8 +1271,9 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let mut transport_layer = TransportLayer::<'_, D>::new(
             &self.stack.inner.buffer_manager,
             &self.stack.inner.state,
-            nl_channel.sender().into(),
-            al_channel.sender().into(),
+            nl_req.sender().into(),
+            tl_ind.sender().into(),
+            tl_conf.sender().into(),
             D::TL_STYLE,
         );
 
@@ -1256,7 +1289,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             &self.stack.inner.memory_map,
             self.app_request_receiver,
             self.restart_sender,
-            tl_channel.sender().into(),
+            tl_req.sender().into(),
         );
 
         // Build and run the link layer using the provided builder.
@@ -1266,19 +1299,21 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let stack_context = StackContext {
             inner: self.stack.inner,
             interface_objects: self.interface_objects,
-            al_sender: al_channel.sender().into(),
+            al_sender: al_inject.sender().into(),
         };
         let ll_task = self.link_layer_builder.build_and_run(
             self.link_layer_resources,
             &stack_context,
-            nl_channel.sender().into(),
-            ll_channel.receiver(),
+            ll_ind.sender().into(),
+            ll_conf.sender().into(),
+            ll_req.receiver(),
         );
 
-        // Spawn and await all the upper layer tasks
-        let nl_task = network_layer.process(nl_channel.receiver());
-        let tl_task = transport_layer.process(tl_channel.receiver());
-        let al_task = application_layer.process(al_channel.receiver());
+        // Run all layer tasks concurrently. Each layer's select-based event
+        // loop is always responsive to its inbox, eliminating deadlocks.
+        let nl_task = network_layer.run(nl_req.receiver(), ll_ind.receiver(), ll_conf.receiver());
+        let tl_task = transport_layer.run(nl_ind.receiver(), tl_req.receiver(), nl_conf.receiver());
+        let al_task = application_layer.run(tl_ind.receiver(), tl_conf.receiver(), al_inject.receiver());
         let tasks = embassy_futures::join::join4(ll_task, nl_task, tl_task, al_task);
         tasks.await;
 
@@ -1338,7 +1373,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
 
         self.inner.event_channel.publish_immediate((asap.clone(), ComObjectEvent::LocallyUpdated));
 
-        self.app_request_sender.request(ApplicationLayerService::GroupValueWriteRequest(asap.index())).await;
+        ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::GroupValueWriteRequest(asap.index())).await;
         Ok(())
     }
 
@@ -1392,7 +1427,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
             return Err(UpdateObjectError::Busy);
         }
 
-        self.app_request_sender.request(ApplicationLayerService::GroupValueWriteRequest(asap)).await;
+        ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::GroupValueWriteRequest(asap)).await;
         Ok(())
     }
 
@@ -1433,7 +1468,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
             return Err(ReadObjectError::Busy);
         }
 
-        self.app_request_sender.request(ApplicationLayerService::GroupValueReadRequest(asap)).await;
+        ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::GroupValueReadRequest(asap)).await;
         Ok(())
     }
 
@@ -1485,7 +1520,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
 
         // If no timeout is specified, just send the request and return immediately
         let Some(timeout_duration) = timeout else {
-            self.app_request_sender.request(ApplicationLayerService::GroupValueReadRequest(asap.index())).await;
+            ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::GroupValueReadRequest(asap.index())).await;
             return Ok(());
         };
 
@@ -1493,7 +1528,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         let mut event_subscriber = self.events();
 
         // Send the read request
-        self.app_request_sender.request(ApplicationLayerService::GroupValueReadRequest(asap.index())).await;
+        ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::GroupValueReadRequest(asap.index())).await;
 
         // Wait for ReadResponse event with timeout
         let wait_for_response = async {

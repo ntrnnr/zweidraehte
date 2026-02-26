@@ -7,10 +7,10 @@ use embassy_sync::{
 
 use crate::{
     encoding::tp1,
-    layers::{Inbox, Layer, LayerOp, LinkLayerBuilder, LinkLayerBuilderBase},
+    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase},
     messages::{
         buffers::Buffer,
-        builder::ConfirmationExt,
+        builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
         knx::*,
     },
 };
@@ -24,7 +24,8 @@ use crate::{
 /// Optionally, outgoing messages (requests from upper layers) can be captured
 /// and forwarded to a capture channel for test verification.
 pub struct MockLinkLayer<'a, const N: usize, const C: usize = 8> {
-    network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+    ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+    conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     injection_receiver: Receiver<'static, NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, N>,
     capture_sender: Option<Sender<'static, NoopRawMutex, CapturedLinkLayerMessage, C>>,
 }
@@ -41,44 +42,40 @@ pub struct CapturedLinkLayerMessage {
 impl<'a, const N: usize, const C: usize> MockLinkLayer<'a, N, C> {
     /// Create a new Mock Link Layer
     pub fn new(
-        network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         injection_receiver: Receiver<'static, NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, N>,
     ) -> Self {
-        Self { network_layer, injection_receiver, capture_sender: None }
+        Self { ind_tx, conf_tx, injection_receiver, capture_sender: None }
     }
 
     /// Create a new Mock Link Layer with capture support
     pub fn with_capture(
-        network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         injection_receiver: Receiver<'static, NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, N>,
         capture_sender: Sender<'static, NoopRawMutex, CapturedLinkLayerMessage, C>,
     ) -> Self {
-        Self { network_layer, injection_receiver, capture_sender: Some(capture_sender) }
+        Self { ind_tx, conf_tx, injection_receiver, capture_sender: Some(capture_sender) }
     }
-}
 
-impl<'a, const N: usize, const C: usize> Layer<'a> for MockLinkLayer<'a, N, C> {
-    type Message = KnxMessageBuffer<Buffer<'static>>;
-
-    async fn process<M>(&mut self, mut inbox: M) -> !
+    /// Run the mock link layer event loop
+    ///
+    /// Concurrently waits for:
+    /// - Requests from the network layer (via `req_rx`), which are processed
+    ///   and confirmed via `conf_tx`
+    /// - Injected messages (via `injection_receiver`), which are forwarded
+    ///   up to the network layer as indications via `ind_tx`
+    async fn run<M>(&mut self, mut req_rx: M) -> !
     where
-        M: Inbox<LayerOp<Self::Message>>,
+        M: Inbox<RequestMessage<Buffer<'static>>>,
     {
         loop {
-            match select(inbox.next(), self.injection_receiver.receive()).await {
-                Either::First(layer_op) => {
-                    trace!("Mock LL received layer op: {:?}", layer_op);
-
-                    match layer_op {
-                        LayerOp::Indication(_) => {
-                            // Link layer typically doesn't receive indications from upper layers
-                            warn!("Mock Link Layer received unexpected indication");
-                        }
-                        LayerOp::Request { message: msg, response_tx } => {
-                            let response = self.handle_request(msg).await;
-                            response_tx.send(response).await;
-                        }
-                    }
+            match select(req_rx.next(), self.injection_receiver.receive()).await {
+                Either::First(request) => {
+                    trace!("Mock LL received request: {:?}", request);
+                    let response = self.handle_request(request).await;
+                    self.conf_tx.send(response).await;
                 }
                 Either::Second(injection_msg) => {
                     // Convert from TP1-like format (no checksum) to internal format
@@ -88,19 +85,19 @@ impl<'a, const N: usize, const C: usize> Layer<'a> for MockLinkLayer<'a, N, C> {
                     let converted_buf = tp1::tp1_to_knx_message_no_checksum(inner_buf);
                     let internal_msg = KnxMessageBuffer::new(converted_buf, service_type);
                     debug!("Mock LL injecting message: {:?}", internal_msg);
-                    self.network_layer.send(LayerOp::Indication(internal_msg)).await;
+                    self.ind_tx.send(IndicationMessage::indication(internal_msg)).await;
                 }
             }
         }
     }
-}
 
-impl<'a, const N: usize, const C: usize> MockLinkLayer<'a, N, C> {
     async fn handle_request(
         &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> KnxMessageBuffer<Buffer<'static>> {
-        trace!("Mock LL received request: {:?}", msg);
+        request: RequestMessage<Buffer<'static>>,
+    ) -> ConfirmationMessage<Buffer<'static>> {
+        // Unwrap the typed message to get the inner KnxMessageBuffer
+        let msg = request.into_inner();
+        trace!("Mock LL processing request: {:?}", msg);
 
         // Capture the outgoing message if a capture sender is configured
         if let Some(ref capture_sender) = self.capture_sender {
@@ -242,14 +239,15 @@ impl<CTX, const N: usize, const C: usize> LinkLayerBuilder<CTX> for MockLinkLaye
         self,
         _resources: &'a mut Self::Resources,
         _context: &'a CTX,
-        network_layer: DynamicSender<'a, LayerOp<KnxMessageBuffer<Buffer<'static>>>>,
-        inbox: impl Inbox<LayerOp<KnxMessageBuffer<Buffer<'static>>>> + 'a,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
         let mut link_layer = if let Some(capture_channel) = self.capture_channel {
-            MockLinkLayer::with_capture(network_layer, self.injection_channel.receiver(), capture_channel.sender())
+            MockLinkLayer::with_capture(ind_tx, conf_tx, self.injection_channel.receiver(), capture_channel.sender())
         } else {
-            MockLinkLayer::new(network_layer, self.injection_channel.receiver())
+            MockLinkLayer::new(ind_tx, conf_tx, self.injection_channel.receiver())
         };
-        async move { link_layer.process(inbox).await }
+        async move { link_layer.run(req_rx).await }
     }
 }

@@ -6169,6 +6169,7 @@ version = "0.1.0"
 dependencies = [
  "async-hid",
  "const-default",
+ "critical-section",
  "defmt",
  "embassy-futures",
  "embassy-sync",

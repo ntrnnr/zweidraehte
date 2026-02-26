@@ -108,6 +108,12 @@ impl StackDefinition for PicoTp1LightSwitch {
     const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
     const TL_STYLE: TlStyle = TlStyle::Style1;
 
+    // The KNX stack runs on an InterruptExecutor (SWI_IRQ_0) while user
+    // tasks (restart, buttons, lifecycle) run on the main thread executor.
+    // CriticalSectionRawMutex prevents BorrowMutError panics when the
+    // interrupt executor preempts the thread executor mid-channel-borrow.
+    type Mutex = CriticalSectionRawMutex;
+
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
     type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;

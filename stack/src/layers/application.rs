@@ -18,14 +18,13 @@
 
 use core::cell::RefCell;
 
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either, Either4, select, select4};
 use embassy_sync::{
-    blocking_mutex::raw::NoopRawMutex,
     channel::{DynamicReceiver, DynamicSender},
     pubsub::{PubSubBehavior, PubSubChannel},
 };
 
-use super::{ActorRequest, Inbox, Layer, LayerOp, Request};
+use super::{ActorRequest, Inbox, Request};
 
 use crate::{
     AccessContext, AccessSource, HasConnectionAuth, StackDefinition, StackState,
@@ -88,8 +87,8 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     comm_objects: &'a RefCell<D::CO>,
     hook_context: &'a <D::CO as ComObjects>::HookContext,
     event_channel:
-        &'a PubSubChannel<NoopRawMutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
-    lifecycle_channel: &'a PubSubChannel<NoopRawMutex, LifecycleEvent, 4, 2, 1>,
+        &'a PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
+    lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
 
     // --- Interface objects ---
     /// Interface objects container with typed access to device properties.
@@ -105,7 +104,8 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     /// Channel for sending restart requests to user code
     restart_sender: DynamicSender<'a, Request<RestartRequest, RestartResponse>>,
-    transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+    /// Channel for sending requests to the transport layer
+    tl_request_tx: DynamicSender<'a, RequestMessage<Buffer<'static>>>,
 
     /// Per-indication response route for cEMI Transport Layer mode.
     ///
@@ -126,6 +126,19 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     /// update the value; if not, the object simply stays idle with its value
     /// uninitialized — no application-level timeout is needed.
     read_on_init: ReadOnInitState,
+
+    /// Pending group value send awaiting TL confirmation. When set, the next
+    /// TL confirmation updates the communication object status accordingly.
+    pending_group_send: Option<PendingGroupSend>,
+}
+
+/// Tracks a pending group value send for deferred CO status update.
+#[derive(Debug)]
+struct PendingGroupSend {
+    /// The ASAP (communication object index) being sent
+    asap: u16,
+    /// Whether this was a read request (vs write)
+    read: bool,
 }
 
 /// State machine for the read-on-init cycle.
@@ -150,18 +163,18 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         comm_objects: &'a RefCell<D::CO>,
         hook_context: &'a <D::CO as ComObjects>::HookContext,
         event_channel: &'a PubSubChannel<
-            NoopRawMutex,
+            D::Mutex,
             (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent),
             4,
             2,
             1,
         >,
-        lifecycle_channel: &'a PubSubChannel<NoopRawMutex, LifecycleEvent, 4, 2, 1>,
+        lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
         interface_objects: &'a D::InterfaceObjects<'static>,
         memory_map: &'a D::Mem,
         app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
         restart_sender: DynamicSender<'a, Request<RestartRequest, RestartResponse>>,
-        transport_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        tl_request_tx: DynamicSender<'a, RequestMessage<Buffer<'static>>>,
     ) -> Self {
         Self {
             buffer_manager,
@@ -174,9 +187,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             memory_map,
             app_request_receiver,
             restart_sender,
-            transport_layer,
+            tl_request_tx,
             response_route: None,
             read_on_init: ReadOnInitState::Idle,
+            pending_group_send: None,
         }
     }
 
@@ -201,17 +215,24 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 // Layer Implementation (Main Event Loop)
 // ============================================================================
 
-impl<'a, D: StackDefinition> Layer<'a> for ApplicationLayer<'a, D>
+impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
 where
     D::State: HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
     D::InterfaceObjects<'static>: HasDeviceObject,
 {
-    type Buffer = Buffer<'static>;
-
-    async fn process<M>(&mut self, mut inbox: M) -> !
-    where
-        M: Inbox<LayerOp<Self::Buffer>>,
-    {
+    /// Run the application layer event loop.
+    ///
+    /// Simultaneously awaits:
+    /// - Indications from TL or injected directly by LL (e.g. KNX/IP device mgmt)
+    /// - Confirmations from TL (to complete pending group sends)
+    /// - App service requests (from user code via `Stack::update_object`)
+    /// - Read-on-init cycle steps
+    pub async fn run(
+        &mut self,
+        mut ind_rx: impl Inbox<IndicationMessage<Buffer<'static>>>,
+        mut conf_rx: impl Inbox<crate::messages::builder::ConfirmationMessage<Buffer<'static>>>,
+        mut al_inject_rx: impl Inbox<IndicationMessage<Buffer<'static>>>,
+    ) -> ! {
         // If the application is already running at startup (e.g., from
         // persisted state), begin the read-on-init cycle.
         if self.state.app().borrow().is_running() && self.state.ast().borrow().is_loaded() {
@@ -231,19 +252,20 @@ where
                 }
             };
 
-            // select3 polls in argument order: inbox traffic and app requests
-            // take priority over ROI, so normal traffic is never blocked.
-            match select3(inbox.next(), self.app_request_receiver.receive(), roi_future).await {
-                Either3::First(msg) => {
-                    trace!("AL received: {:?}", msg);
+            // Merge indications from TL and direct LL inject (KNX/IP device
+            // management) into one future so the select4 shape is preserved.
+            let any_indication = async {
+                match select(ind_rx.next(), al_inject_rx.next()).await {
+                    Either::First(ind) => ind,
+                    Either::Second(ind) => ind,
+                }
+            };
 
-                    let mut ind = match msg {
-                        LayerOp::Indication(ind) => ind,
-                        LayerOp::Request { .. } => {
-                            warn!("AL received unexpected Request (should only receive indications)");
-                            continue;
-                        }
-                    };
+            // select4 polls in argument order: inbox traffic and app requests
+            // take priority over ROI, so normal traffic is never blocked.
+            match select4(any_indication, conf_rx.next(), self.app_request_receiver.receive(), roi_future).await {
+                Either4::First(mut ind) => {
+                    trace!("AL received indication: {:?}", ind);
 
                     // Store the response route on self for the duration of this
                     // dispatch cycle. When present (cEMI Transport Layer mode),
@@ -343,7 +365,11 @@ where
                         route.send(None).await;
                     }
                 }
-                Either3::Second(request) => match request.get() {
+                Either4::Second(conf) => {
+                    // TL confirmation — complete any pending group send
+                    self.handle_tl_confirmation(conf).await;
+                }
+                Either4::Third(request) => match request.get() {
                     r @ ApplicationLayerService::GroupValueWriteRequest(asap) => {
                         debug!("AL GroupValueWrite.req: {:?}", r);
 
@@ -365,10 +391,36 @@ where
                         request.reply(response).await;
                     }
                 },
-                Either3::Third(()) => {
+                Either4::Fourth(()) => {
                     self.read_on_init_step().await;
                 }
             }
+        }
+    }
+
+    /// Handle a confirmation from the transport layer.
+    ///
+    /// If a group value send is pending, updates the communication object
+    /// status based on the confirmation result. Otherwise the confirmation
+    /// is for a response (e.g., property read reply) and can be dropped.
+    async fn handle_tl_confirmation(&mut self, conf: crate::messages::builder::ConfirmationMessage<Buffer<'static>>) {
+        if let Some(pending) = self.pending_group_send.take() {
+            debug!("AL TL confirmation for ASAP {}: {:?}", pending.asap, conf.service_type());
+
+            if conf.ctrl_field().c() == Confirm::NoError {
+                if pending.read {
+                    self.comm_objects.borrow_mut().set_status(pending.asap, ComObjectStatus::ReadRequest);
+                } else {
+                    self.comm_objects.borrow_mut().set_status(pending.asap, ComObjectStatus::IdleOk);
+                }
+            } else {
+                let new_status =
+                    if pending.read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
+                self.comm_objects.borrow_mut().set_status(pending.asap, new_status);
+            }
+        } else {
+            // Confirmation for a send_response call — just log
+            trace!("AL TL confirmation (response): {:?}", conf.service_type());
         }
     }
 }
@@ -568,8 +620,7 @@ where
             msg.set_apci_code(ApciCode::GroupValueResponse);
 
             // Send the response and wait for confirmation
-            let confirmation = self.send_response(RequestMessage::request(msg)).await;
-            debug!("AL GroupValueResponse confirmation ASAP {} TSAP {}: {:?}", asap, tsap, confirmation.service_type());
+            self.send_response(RequestMessage::request(msg)).await;
 
             trace!(
                 "AL sent GroupValueResponse for ASAP {}: {:?}",
@@ -589,7 +640,7 @@ where
     /// Called when the local application wants to send a group value to the bus.
     /// Returns `true` if the request was processed, `false` if rejected because
     /// the application is not running.
-    async fn send_group_value_request(&self, asap: u16, read: bool) -> bool {
+    async fn send_group_value_request(&mut self, asap: u16, read: bool) -> bool {
         // Check if application is running before sending group data
         if !self.state.app().borrow().is_running() {
             debug!("AL GroupValue request ignored: application not running");
@@ -691,32 +742,13 @@ where
             // Set connection number from sending assoc nr
             msg.set_connection_nr(tsap);
 
-            // Send the request to the transport layer and wait for confirmation
-            let confirmation = self.transport_layer.request(RequestMessage::request(msg)).await;
-            debug!("AL confirmation for ASAP {} TSAP {}: {:?}", asap, tsap, confirmation.service_type());
+            // Store pending state so the TL confirmation (arriving later on
+            // conf_rx) can update the CO status.
+            self.pending_group_send = Some(PendingGroupSend { asap, read });
 
-            // Update communication object status based on confirmation
-            // BCU1/BCU2 behavior: Read request stays pending (waiting for response)
-            // Write request clears after successful transmission
-            if confirmation.ctrl_field().c() == Confirm::NoError {
-                if read {
-                    // Read request: return to ReadRequest (idle + read pending).
-                    // The object was briefly in Busy during transmission; now
-                    // it's back to "idle, awaiting GroupValue_Response". If a
-                    // response arrives, the value gets updated and status
-                    // becomes Updated. If nobody answers, the object stays in
-                    // ReadRequest — still idle, still usable.
-                    self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::ReadRequest);
-                } else {
-                    // Write request: transmission complete → idle.
-                    self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::IdleOk);
-                }
-            } else {
-                // Transmission failed
-                let new_status =
-                    if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
-                self.comm_objects.borrow_mut().set_status(asap, new_status);
-            }
+            // Send fire-and-forget to TL — confirmation handled in handle_tl_confirmation
+            debug!("AL -> TL: GroupValue {} ASAP {} TSAP {}", if read { "Read" } else { "Write" }, asap, tsap);
+            self.tl_request_tx.send(RequestMessage::request(msg)).await;
         } else {
             // No sending TSAP found - error
             let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
@@ -811,14 +843,12 @@ where
                 continue;
             }
 
-            // Found an eligible object — send GroupValueRead.req
+            // Found an eligible object — send GroupValueRead.req.
+            // The CO status update (ReadRequest → IdleOk or error) happens
+            // asynchronously when the TL confirmation arrives on conf_rx.
             info!("AL read-on-init: sending GroupValueRead for ASAP {}", asap);
             self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::ReadRequest);
             self.send_group_value_request(asap, true).await;
-
-            // Log the result of the send attempt
-            let result_status = self.comm_objects.borrow().status(asap);
-            debug!("AL read-on-init: ASAP {} send result: {:?}", asap, result_status);
 
             // Save cursor for next call and return (one object per step)
             self.read_on_init = ReadOnInitState::Scanning(cursor);
@@ -911,8 +941,7 @@ where
                 debug!("AL sending PropertyDescriptionResponse: {:?}", desc);
 
                 // Send the response
-                let confirmation = self.send_response(msg).await;
-                trace!("AL PropertyDescriptionResponse confirmation: {:?}", confirmation.service_type());
+                self.send_response(msg).await;
             }
             Err(e) => {
                 // Send negative response: echo back ObjIdx and PID, set all descriptor fields to 0
@@ -936,8 +965,7 @@ where
                         data[offsets::MSG_APCI + 8] = 0; // Access (ReadAcc=0, WriteAcc=0)
                     });
 
-                let confirmation = self.send_response(msg).await;
-                trace!("AL PropertyDescriptionResponse (error) confirmation: {:?}", confirmation.service_type());
+                self.send_response(msg).await;
             }
         }
     }
@@ -1047,8 +1075,7 @@ where
                 debug!("AL sending PropertyValueResponse: {} bytes", data_len);
 
                 // Send the response
-                let confirmation = self.send_response(msg).await;
-                trace!("AL PropertyValueResponse confirmation: {:?}", confirmation.service_type());
+                self.send_response(msg).await;
             }
             Err(e) => {
                 // Send error response with count = 0
@@ -1069,8 +1096,7 @@ where
                         data[offsets::MSG_APCI + 5] = start_idx as u8;
                     });
 
-                let confirmation = self.send_response(msg).await;
-                trace!("AL PropertyValueResponse (error) confirmation: {:?}", confirmation.service_type());
+                self.send_response(msg).await;
             }
         }
     }
@@ -1198,8 +1224,7 @@ where
 
                 debug!("AL sending PropertyValueResponse (write success): {} bytes", response_data_len);
 
-                let confirmation = self.send_response(msg).await;
-                trace!("AL PropertyValueResponse (write) confirmation: {:?}", confirmation.service_type());
+                self.send_response(msg).await;
             }
             Err(e) => {
                 // Error: respond with count = 0
@@ -1220,8 +1245,7 @@ where
                         response_buf[offsets::MSG_APCI + 5] = start_idx as u8;
                     });
 
-                let confirmation = self.send_response(msg).await;
-                trace!("AL PropertyValueResponse (write error) confirmation: {:?}", confirmation.service_type());
+                self.send_response(msg).await;
             }
         }
     }
@@ -1297,8 +1321,7 @@ where
 
             debug!("AL sending DeviceDescriptorResponse: mask_version={}", D::DEVICE.mask_version);
 
-            let confirmation = self.send_response(msg).await;
-            trace!("AL DeviceDescriptorResponse confirmation: {:?}", confirmation.service_type());
+            self.send_response(msg).await;
         } else if descriptor_type == 2 {
             // Descriptor type 2: respond with extended device info (14 bytes) if supported
             if let Some(dd2) = D::DEVICE_DESCRIPTOR_TYPE2 {
@@ -1317,8 +1340,7 @@ where
 
                 debug!("AL sending DeviceDescriptorResponse (DD2): {:?}", crate::fmt::Bytes(dd2));
 
-                let confirmation = self.send_response(msg).await;
-                trace!("AL DeviceDescriptorResponse (DD2) confirmation: {:?}", confirmation.service_type());
+                self.send_response(msg).await;
             } else {
                 // DD2 not supported: error response with type = 0x3F
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 2;
@@ -1333,8 +1355,7 @@ where
 
                 debug!("AL sending DeviceDescriptorResponse (error, DD2 not supported): descriptor_type=0x3F");
 
-                let confirmation = self.send_response(msg).await;
-                trace!("AL DeviceDescriptorResponse (error) confirmation: {:?}", confirmation.service_type());
+                self.send_response(msg).await;
             }
         } else {
             // Any other descriptor type: error response with type = 0x3F, no data
@@ -1351,8 +1372,7 @@ where
 
             debug!("AL sending DeviceDescriptorResponse (error): descriptor_type=0x3F");
 
-            let confirmation = self.send_response(msg).await;
-            trace!("AL DeviceDescriptorResponse (error) confirmation: {:?}", confirmation.service_type());
+            self.send_response(msg).await;
         }
     }
 
@@ -1406,8 +1426,7 @@ where
 
         debug!("AL sending IndividualAddressResponse");
 
-        let confirmation = self.send_response(msg).await;
-        trace!("AL IndividualAddressResponse confirmation: {:?}", confirmation.service_type());
+        self.send_response(msg).await;
     }
 
     /// Handle `A_IndividualAddress_Write.ind`
@@ -1514,8 +1533,7 @@ where
         msg.buf_mut()[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8].copy_from_slice(self.state.serial_number());
         // Domain address / reserved (4 bytes, zero) - already zeroed by alloc
 
-        let confirmation = self.send_response(msg).await;
-        trace!("AL IndividualAddressSerialNumberResponse confirmation: {:?}", confirmation.service_type());
+        self.send_response(msg).await;
     }
 
     /// Handle `A_IndividualAddressSerialNumber_Write.ind`
@@ -1637,8 +1655,7 @@ where
 
         debug!("AL sending ADC_Response: channel={}, count={}, sum={}", channel, response_count, sum);
 
-        let confirmation = self.send_response(msg).await;
-        trace!("AL ADC_Response confirmation: {:?}", confirmation.service_type());
+        self.send_response(msg).await;
     }
 
     /// Handle `A_Memory_Read.ind`
@@ -1714,8 +1731,7 @@ where
 
         debug!("AL sending Memory_Response: address=0x{:04X}, count={}", address, response_count);
 
-        let confirmation = self.send_response(msg).await;
-        trace!("AL Memory_Response confirmation: {:?}", confirmation.service_type());
+        self.send_response(msg).await;
     }
 
     /// Handle `A_Memory_Write.ind`
@@ -1820,8 +1836,7 @@ where
 
         debug!("AL sending Memory_Response (verify): address=0x{:04X}, count={}", address, response_count);
 
-        let confirmation = self.send_response(msg).await;
-        trace!("AL Memory_Response confirmation: {:?}", confirmation.service_type());
+        self.send_response(msg).await;
     }
 
     /// Handle `A_MemoryBit_Write.ind`
@@ -1981,8 +1996,7 @@ where
 
         debug!("AL sending A_Memory_Response (for MemoryBit_Write): address=0x{:04X}, count={}", address, count);
 
-        let confirmation = self.send_response(msg).await;
-        trace!("AL A_Memory_Response confirmation: {:?}", confirmation.service_type());
+        self.send_response(msg).await;
     }
 
     /// Handle `A_UserMemory_Read.ind`
@@ -2071,8 +2085,7 @@ where
 
         debug!("AL sending UserMemory_Response: address=0x{:05X}, count={}", full_address, response_count);
 
-        let confirmation = self.send_response(msg).await;
-        trace!("AL UserMemory_Response confirmation: {:?}", confirmation.service_type());
+        self.send_response(msg).await;
     }
 
     /// Handle `A_UserMemory_Write.ind`
@@ -2187,8 +2200,7 @@ where
 
         debug!("AL sending UserMemory_Response (verify): address=0x{:05X}, count={}", full_address, response_count);
 
-        let confirmation = self.send_response(msg).await;
-        trace!("AL UserMemory_Response confirmation: {:?}", confirmation.service_type());
+        self.send_response(msg).await;
     }
 
     /// Handle `A_UserManufacturerInfo_Read.ind`
@@ -2235,8 +2247,7 @@ where
 
         debug!("AL sending UserManufacturerInfo_Response: {:?}", crate::fmt::Bytes(info));
 
-        let confirmation = self.send_response(msg).await;
-        trace!("AL UserManufacturerInfo_Response confirmation: {:?}", confirmation.service_type());
+        self.send_response(msg).await;
     }
 
     /// Handle `A_Authorize_Request.ind`
@@ -2303,8 +2314,7 @@ where
 
         debug!("AL sending Authorize_Response: level={}", access_level);
 
-        let confirmation = self.send_response(msg).await;
-        trace!("AL Authorize_Response confirmation: {:?}", confirmation.service_type());
+        self.send_response(msg).await;
     }
 
     /// Handle `A_Key_Write.ind`
@@ -2366,8 +2376,7 @@ where
 
         debug!("AL sending Key_Response: level={}", result_level);
 
-        let confirmation = self.send_response(msg).await;
-        trace!("AL Key_Response confirmation: {:?}", confirmation.service_type());
+        self.send_response(msg).await;
     }
 
     /// Handle `A_Restart.ind`
@@ -2447,7 +2456,7 @@ where
         let request = RestartRequest { erase_code, channel, access_ctx: restart_ctx, needs_response };
 
         debug!("AL Restart: sending request to user code");
-        let response: RestartResponse = self.restart_sender.request(request).await;
+        let response: RestartResponse = ActorRequest::<D::Mutex, _, _>::request(&self.restart_sender, request).await;
         debug!("AL Restart: received response: error={}, process_time={}", response.error, response.process_time_100ms);
 
         // Send A_Restart_Response if needed (master reset)
@@ -2493,8 +2502,7 @@ where
 
         debug!("AL sending Restart_Response: error={}, process_time={}ms", error, process_time_100ms as u32 * 100);
 
-        let confirmation = self.send_response(msg).await;
-        trace!("AL Restart_Response confirmation: {:?}", confirmation.service_type());
+        self.send_response(msg).await;
     }
 }
 
@@ -2519,39 +2527,17 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// on first use; subsequent calls in the same dispatch cycle go through the
     /// transport layer.
     ///
-    /// Returns a confirmation message. When routing through `response_route`, a
-    /// synthetic no-error confirmation is returned since the device management
-    /// handler doesn't use the KNX confirmation protocol.
-    async fn send_response(
-        &mut self,
-        msg: RequestMessage<Buffer<'static>>,
-    ) -> crate::messages::builder::ConfirmationMessage<Buffer<'static>> {
-        use crate::messages::builder::ConfirmationMessage;
-
+    /// In both cases the send is fire-and-forget — the TL confirmation (if any)
+    /// arrives later on `conf_rx` and is handled by `handle_tl_confirmation`.
+    async fn send_response(&mut self, msg: RequestMessage<Buffer<'static>>) {
         if let Some(route) = self.response_route.take() {
             // Routed mode: send response to the device management handler (or similar).
-            // Build a synthetic "no error" confirmation — the handlers only use it for
-            // debug logging, so exact contents don't matter.
-            let service_type = msg.service_type();
             route.send(Some(msg)).await;
-
-            // Allocate a minimal buffer for the synthetic confirmation. Use try_alloc
-            // first because this is the tightest buffer spot in the cEMI path (4th
-            // simultaneous buffer). If the pool is exhausted, fall back to blocking
-            // alloc — the warn from the instrumented alloc() makes the starvation visible.
-            let buf = match self.buffer_manager.try_alloc_with_size(offsets::MSG_CONTROL + 1) {
-                Some(buf) => buf,
-                None => {
-                    warn!("Buffer pool exhausted when allocating synthetic confirmation — potential stall");
-                    self.buffer_manager.alloc_with_size(offsets::MSG_CONTROL + 1).await
-                }
-            };
-            let mut conf = KnxMessageBuffer::new(buf, service_type);
-            conf.ctrl_field_mut().set_c(Confirm::NoError);
-            ConfirmationMessage::confirmation(conf)
         } else {
-            // Normal mode: send through the transport layer
-            self.transport_layer.request(msg).await
+            // Normal mode: send fire-and-forget through the transport layer.
+            // The TL confirmation will arrive on conf_rx and be dropped by
+            // handle_tl_confirmation (no pending_group_send set for responses).
+            self.tl_request_tx.send(msg).await;
         }
     }
 

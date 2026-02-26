@@ -22,13 +22,20 @@ embedded-io-async = { workspace = true }
 heapless = { workspace = true }
 replace_with = { workspace = true }
 
+# critical-section is a transitive dependency (via embassy-sync) but we
+# re-export CriticalSectionRawMutex as the recommended Mutex type for
+# cross-executor use. On std targets, enable "critical-section/std" to
+# provide the platform implementation. On embedded targets, the HAL
+# provides it (e.g. embassy-rp's `critical-section-impl` feature).
+critical-section = { version = "1.2.0", optional = true }
+
 [dev-dependencies]
 test-case = "3.3"
 
 [features]
 defmt = ["dep:defmt", "platform/defmt", "heapless/defmt"]
 log = ["dep:log", "platform/log"]
-std = ["platform/std"]
+std = ["platform/std", "critical-section/std"]
 linux = ["platform/linux", "std"]
 usb = ["std", "dep:async-hid", "dep:futures-lite"]
 

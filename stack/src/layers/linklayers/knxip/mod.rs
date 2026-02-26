@@ -18,7 +18,7 @@ use crate::{
         ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpDiagnosticsContext, KnxAddressContext,
         PropertyServiceContext,
     },
-    layers::{Inbox, Layer, LayerOp, LinkLayerBuilder, LinkLayerBuilderBase},
+    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase},
     messages::{
         buffers::*,
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
@@ -280,8 +280,8 @@ pub struct PendingResponse {
 pub struct ServerContext<'a> {
     /// Buffer manager for allocating message buffers
     buffer_manager: &'a DynBufferManager<'static>,
-    /// Channel to send messages up to the network layer
-    network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+    /// Channel to send indications up to the network layer
+    ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
     /// Maximum APDU length this device can handle
     max_apdu_length: u16,
     /// Device info context for building `DeviceInformation` on demand.
@@ -297,13 +297,13 @@ impl<'a> ServerContext<'a> {
     /// Create a new server context
     pub fn new(
         buffer_manager: &'a DynBufferManager<'static>,
-        network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         max_apdu_length: u16,
         device_info: &'a dyn DeviceInfoContext,
         ip_diagnostics: Option<&'a dyn IpDiagnosticsContext>,
         knx_addresses: &'a dyn KnxAddressContext,
     ) -> Self {
-        Self { buffer_manager, network_layer_tx, max_apdu_length, device_info, ip_diagnostics, knx_addresses }
+        Self { buffer_manager, ind_tx, max_apdu_length, device_info, ip_diagnostics, knx_addresses }
     }
 
     /// Get the maximum APDU length this device can handle
@@ -333,7 +333,7 @@ impl<'a> ServerContext<'a> {
     /// Send an indication to the network layer (L_Data.ind)
     pub async fn send_to_network_layer(&self, message: KnxMessageBuffer<Buffer<'static>>) {
         let indication = IndicationMessage::indication(message);
-        self.network_layer_tx.send(LayerOp::Indication(indication)).await;
+        self.ind_tx.send(indication).await;
     }
 
     /// Allocate a buffer for responses
@@ -505,7 +505,8 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
         self,
         resources: &'res mut KnxNetIpResources,
         context: &'res dyn KnxNetIpContext,
-        network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
+        ind_tx: DynamicSender<'res, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'res, ConfirmationMessage<Buffer<'static>>>,
     ) -> KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS> {
         // ====================================================================
         // Auto-derive supported services from enabled features
@@ -724,7 +725,8 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
             udp_manager,
             server_instances,
             _interface_name: self.interface_name,
-            network_layer_tx,
+            ind_tx,
+            conf_tx,
             retry_queue: Vec::new(),
             connection_manager,
             context,
@@ -756,11 +758,12 @@ impl<
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
-        network_layer: DynamicSender<'a, LayerOp<crate::messages::buffers::Buffer<'static>>>,
-        inbox: impl Inbox<LayerOp<crate::messages::buffers::Buffer<'static>>> + 'a,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
-        let mut link_layer = self.build(resources, context, network_layer);
-        async move { link_layer.process(inbox).await }
+        let mut link_layer = self.build(resources, context, ind_tx, conf_tx);
+        async move { link_layer.run(req_rx).await }
     }
 }
 
@@ -768,8 +771,6 @@ impl<
 struct PendingRequest {
     /// The message to retry
     message: RequestMessage<Buffer<'static>>,
-    /// Channel to send the response back to
-    response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
     /// When to retry sending this message
     retry_after: Instant,
     /// Number of times this message has been retried
@@ -785,16 +786,16 @@ const MAX_RETRY_ATTEMPTS: u8 = 5;
 /// Build a [`ServerContext`] from individual [`KnxNetIp`] fields.
 ///
 /// Free function instead of a method so the borrow checker can see that
-/// `context` and `network_layer_tx` are disjoint from `server_instances`.
+/// `context` and `ind_tx` are disjoint from `server_instances`.
 fn make_server_context<'a>(
     context: &'a dyn KnxNetIpContext,
     enable_remote_config: bool,
-    network_layer_tx: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+    ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
 ) -> ServerContext<'a> {
     let ip_diagnostics: Option<&dyn IpDiagnosticsContext> = if enable_remote_config { Some(context) } else { None };
     ServerContext::new(
         context.buffer_manager(),
-        network_layer_tx,
+        ind_tx,
         context.max_apdu_length(),
         context,
         ip_diagnostics,
@@ -817,8 +818,10 @@ pub struct KnxNetIp<
     server_instances: Vec<servers::ServerInstance, MAX_SERVERS>,
     /// Interface name for logging
     _interface_name: &'static str,
-    /// Channel to send messages to the network layer
-    network_layer_tx: DynamicSender<'res, LayerOp<Buffer<'static>>>,
+    /// Channel to send indications (received frames) up to the network layer.
+    ind_tx: DynamicSender<'res, IndicationMessage<Buffer<'static>>>,
+    /// Channel to send confirmations (transmission results) up to the network layer.
+    conf_tx: DynamicSender<'res, ConfirmationMessage<Buffer<'static>>>,
     /// Queue of messages waiting to be retried after rate limiting
     retry_queue: Vec<PendingRequest, MAX_RETRY_QUEUE_SIZE>,
     /// Connection manager for connection-oriented services.
@@ -860,7 +863,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                 for server in &mut self.server_instances {
                     if server.handler.supports_requests() {
                         let context =
-                            make_server_context(self.context, self.enable_remote_config, self.network_layer_tx);
+                            make_server_context(self.context, self.enable_remote_config, self.ind_tx);
                         match server.handler.on_request(&pending.message, &context).await {
                             Ok(responses) => {
                                 // Success! Send responses and confirmation
@@ -908,14 +911,14 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                 } else if send_success {
                     // Send confirmation
                     let inner = pending.message.into_inner();
-                    pending.response_tx.send(inner.confirm().build()).await;
+                    self.conf_tx.send(inner.confirm().build()).await;
                 } else if send_error {
                     let inner = pending.message.into_inner();
-                    pending.response_tx.send(inner.error().build()).await;
+                    self.conf_tx.send(inner.error().build()).await;
                 } else {
                     // No server could handle it - send error
                     let inner = pending.message.into_inner();
-                    pending.response_tx.send(inner.error().build()).await;
+                    self.conf_tx.send(inner.error().build()).await;
                 }
             } else {
                 // This entry is not expired yet, move to next
@@ -1008,7 +1011,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                                 buffer,
                                 origin,
                                 self.context.buffer_manager(),
-                                self.network_layer_tx,
+                                self.ind_tx,
                             )
                             .await
                         {
@@ -1047,7 +1050,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
     ) {
         for server in &mut self.server_instances {
             if server.handles(service_type, socket_idx) {
-                let context = make_server_context(self.context, self.enable_remote_config, self.network_layer_tx);
+                let context = make_server_context(self.context, self.enable_remote_config, self.ind_tx);
 
                 match server.handler.on_indication(service_type, buffer, source, &context).await {
                     Ok(responses) => {
@@ -1084,13 +1087,20 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
 }
 
 impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
-    Layer<'res> for KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+    KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 {
-    type Buffer = Buffer<'static>;
-
-    async fn process<M>(&mut self, mut inbox: M) -> !
+    /// Run the KNX/IP link layer event loop.
+    ///
+    /// Concurrently waits for:
+    /// - Requests from the network layer (via `req_rx`), which are processed
+    ///   and confirmed via `self.conf_tx`
+    /// - UDP/TCP transport events (received frames), which are dispatched to
+    ///   servers or the connection manager and forwarded up via `self.ind_tx`
+    /// - Queued response channel messages ready to send on the wire
+    /// - Timer events (retry queue, heartbeat, TCP idle)
+    async fn run<M>(&mut self, mut req_rx: M) -> !
     where
-        M: Inbox<LayerOp<Self::Buffer>>,
+        M: Inbox<RequestMessage<Buffer<'static>>>,
     {
         info!(
             "KnxNetIp Link Layer starting with {} server(s), {} socket(s)",
@@ -1154,7 +1164,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
             }
 
             // ================================================================
-            // Main select: UDP + TCP transport, inbox, responses, timer
+            // Main select: UDP + TCP transport, req_rx, responses, timer
             // ================================================================
             //
             // The first arm nests a `select` to combine UDP events with
@@ -1183,9 +1193,9 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
 
             let result = match next_timer {
                 Some(timer_at) => {
-                    select4(transport_future, inbox.next(), response_channel.receive(), Timer::at(timer_at)).await
+                    select4(transport_future, req_rx.next(), response_channel.receive(), Timer::at(timer_at)).await
                 }
-                None => select4(transport_future, inbox.next(), response_channel.receive(), pending::<()>()).await,
+                None => select4(transport_future, req_rx.next(), response_channel.receive(), pending::<()>()).await,
             };
 
             match result {
@@ -1225,91 +1235,81 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                     }
                 },
 
-                // Inbox received a layer operation
-                Either4::Second(layer_op) => {
-                    trace!("KNX/IP received layer op: {:?}", layer_op);
+                // Request from the network layer (L_Data.req)
+                Either4::Second(msg) => {
+                    trace!("KNX/IP received request: {:?}", msg);
 
-                    match layer_op {
-                        LayerOp::Indication(_) => {
-                            // Link layer typically doesn't receive indications from upper layers
-                            error!("KnxNetIp Link Layer received unexpected indication");
-                        }
-                        LayerOp::Request { message: msg, response_tx } => {
-                            // Handle transmission requests
-                            match msg.service_type() {
-                                ServiceType::L_Data_Req => {
-                                    debug!("KnxNetIp Link Layer sending L_Data_Req: {:?}", msg);
+                    match msg.service_type() {
+                        ServiceType::L_Data_Req => {
+                            debug!("KnxNetIp Link Layer sending L_Data_Req: {:?}", msg);
 
-                                    // Find a server that supports outgoing requests
-                                    // Note: The server is responsible for protocol-specific transformations
-                                    // (e.g., routing server converts to L_Data_Ind for cEMI encoding)
-                                    let mut msg_opt = Some(msg);
-                                    let mut handled = false;
-                                    for server in &mut self.server_instances {
-                                        if server.handler.supports_requests() {
-                                            // Create server context with buffer manager and network layer channel
-                                            let context = make_server_context(
-                                                self.context,
-                                                self.enable_remote_config,
-                                                self.network_layer_tx,
-                                            );
-                                            match server.handler.on_request(msg_opt.as_ref().unwrap(), &context).await {
-                                                Ok(responses) => {
-                                                    for response in responses {
-                                                        response_channel.send(response).await;
-                                                    }
-                                                    // Send confirmation
-                                                    let inner = msg_opt.take().unwrap().into_inner();
-                                                    response_tx.send(inner.confirm().build()).await;
+                            // Find a server that supports outgoing requests
+                            // Note: The server is responsible for protocol-specific transformations
+                            // (e.g., routing server converts to L_Data_Ind for cEMI encoding)
+                            let mut msg_opt = Some(msg);
+                            let mut handled = false;
+                            for server in &mut self.server_instances {
+                                if server.handler.supports_requests() {
+                                    // Create server context with buffer manager and indication channel
+                                    let context = make_server_context(
+                                        self.context,
+                                        self.enable_remote_config,
+                                        self.ind_tx,
+                                    );
+                                    match server.handler.on_request(msg_opt.as_ref().unwrap(), &context).await {
+                                        Ok(responses) => {
+                                            for response in responses {
+                                                response_channel.send(response).await;
+                                            }
+                                            // Send confirmation
+                                            let inner = msg_opt.take().unwrap().into_inner();
+                                            self.conf_tx.send(inner.confirm().build()).await;
+                                            handled = true;
+                                            break;
+                                        }
+                                        Err(ServerError::Busy(wait_time)) => {
+                                            // Server is rate-limited, queue for retry
+                                            if self.retry_queue.len() < MAX_RETRY_QUEUE_SIZE {
+                                                let retry_after =
+                                                    Instant::now() + Duration::from_millis(wait_time as u64);
+                                                let pending = PendingRequest {
+                                                    message: msg_opt.take().unwrap(),
+                                                    retry_after,
+                                                    retry_count: 0,
+                                                };
+
+                                                if self.retry_queue.push(pending).is_ok() {
+                                                    debug!(
+                                                        "Queued message for retry in {}ms (queue size: {})",
+                                                        wait_time,
+                                                        self.retry_queue.len()
+                                                    );
                                                     handled = true;
                                                     break;
                                                 }
-                                                Err(ServerError::Busy(wait_time)) => {
-                                                    // Server is rate-limited, queue for retry
-                                                    if self.retry_queue.len() < MAX_RETRY_QUEUE_SIZE {
-                                                        let retry_after =
-                                                            Instant::now() + Duration::from_millis(wait_time as u64);
-                                                        let pending = PendingRequest {
-                                                            message: msg_opt.take().unwrap(),
-                                                            response_tx,
-                                                            retry_after,
-                                                            retry_count: 0,
-                                                        };
-
-                                                        if self.retry_queue.push(pending).is_ok() {
-                                                            debug!(
-                                                                "Queued message for retry in {}ms (queue size: {})",
-                                                                wait_time,
-                                                                self.retry_queue.len()
-                                                            );
-                                                            handled = true;
-                                                            break;
-                                                        }
-                                                    } else {
-                                                        warn!(
-                                                            "Retry queue full ({} messages), cannot queue message",
-                                                            MAX_RETRY_QUEUE_SIZE
-                                                        );
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    error!("Server error sending request: {:?}", e);
-                                                }
+                                            } else {
+                                                warn!(
+                                                    "Retry queue full ({} messages), cannot queue message",
+                                                    MAX_RETRY_QUEUE_SIZE
+                                                );
                                             }
                                         }
+                                        Err(e) => {
+                                            error!("Server error sending request: {:?}", e);
+                                        }
                                     }
-
-                                    if !handled {
-                                        // No server could handle it - send error
-                                        let inner = msg_opt.take().unwrap().into_inner();
-                                        response_tx.send(inner.error().build()).await;
-                                    }
-                                }
-                                _ => {
-                                    // Return error for unsupported service types
-                                    response_tx.send(msg.into_inner().error().build()).await;
                                 }
                             }
+
+                            if !handled {
+                                // No server could handle it - send error
+                                let inner = msg_opt.take().unwrap().into_inner();
+                                self.conf_tx.send(inner.error().build()).await;
+                            }
+                        }
+                        _ => {
+                            // Return error for unsupported service types
+                            self.conf_tx.send(msg.into_inner().error().build()).await;
                         }
                     }
                 }

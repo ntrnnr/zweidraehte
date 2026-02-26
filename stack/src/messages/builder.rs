@@ -76,9 +76,9 @@ pub mod direction {
 ///
 /// This wrapper carries the message direction in the type system, enabling
 /// compile-time enforcement that:
-/// - `LayerOp::Indication` only accepts `IndicationMessage`
-/// - `LayerOp::Request` only accepts `RequestMessage`
-/// - Response channels only accept `ConfirmationMessage`
+/// - Indication channels only accept `IndicationMessage`
+/// - Request channels only accept `RequestMessage`
+/// - Confirmation channels only accept `ConfirmationMessage`
 ///
 /// Uses `Deref`/`DerefMut` for ergonomic transparent access to the inner
 /// `KnxMessageBuffer`, so you can call methods directly without unwrapping.
@@ -362,7 +362,7 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::NetworkRequest> 
     /// Build a network-layer message (no transport/application layer)
     ///
     /// This is used when you only need network layer context.
-    /// Returns a `RequestMessage` which can only be used with `LayerOp::Request`.
+    /// Returns a `RequestMessage` for sending through request channels.
     pub fn build(self) -> RequestMessage<Buffer<'static>> {
         let mut msg = KnxMessageBuffer::new(self.buffer, self.state.service_type);
         msg.ctrl_field_mut().set_priority(self.state.priority);
@@ -433,7 +433,7 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::TransportRequest
     /// Build a transport control PDU
     ///
     /// This finalizes the message with transport layer context (ACK, NACK, Connect, Disconnect).
-    /// Returns a `RequestMessage` which can only be used with `LayerOp::Request`.
+    /// Returns a `RequestMessage` for sending through request channels.
     pub fn build(self) -> RequestMessage<Buffer<'static>> {
         let mut msg = KnxMessageBuffer::new(self.buffer, self.state.network.service_type);
         msg.ctrl_field_mut().set_priority(self.state.network.priority);
@@ -452,7 +452,7 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::ApplicationReque
     ///
     /// The writer function receives mutable access to the buffer to write
     /// application-specific data (descriptor type, property values, etc.).
-    /// Returns a `RequestMessage` which can only be used with `LayerOp::Request`.
+    /// Returns a `RequestMessage` for sending through request channels.
     ///
     /// # Example
     /// ```ignore
@@ -486,7 +486,7 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::ApplicationReque
     /// Build an application message without additional data
     ///
     /// Used when the APCI code is sufficient (e.g., simple read requests).
-    /// Returns a `RequestMessage` which can only be used with `LayerOp::Request`.
+    /// Returns a `RequestMessage` for sending through request channels.
     pub fn build(self) -> RequestMessage<Buffer<'static>> {
         self.with_data(|_| {})
     }

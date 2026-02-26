@@ -1,12 +1,12 @@
 #![allow(async_fn_in_trait)]
 
-use core::ops::Deref;
-
-use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
+use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::channel::{Channel, DynamicSender, Receiver, Sender};
 
-use crate::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
+use crate::messages::builder::{ConfirmationMessage, IndicationMessage};
+use crate::messages::buffers::Buffer;
 
+/// Async message inbox that yields one message per call.
 pub trait Inbox<M> {
     #[must_use = "Must set response for message"]
     async fn next(&mut self) -> M;
@@ -22,55 +22,9 @@ where
     }
 }
 
-/// Layer operation with compile-time direction safety
-///
-/// - `Indication`: Can only contain an `IndicationMessage` (data flowing UP the stack).
-///   The indication may optionally carry a response route (see
-///   [`IndicationMessage::with_response_route`]) for cEMI Transport Layer mode.
-/// - `Request`: Can only contain a `RequestMessage` (request flowing DOWN the stack)
-///   with a response channel that only accepts `ConfirmationMessage`
-///
-/// This prevents accidentally sending a request as an indication or vice versa.
-pub enum LayerOp<B: Deref<Target = [u8]> + 'static> {
-    /// Data received from lower layer, flowing UP the stack
-    Indication(IndicationMessage<B>),
-    /// Request to lower layer, flowing DOWN the stack
-    Request { message: RequestMessage<B>, response_tx: DynamicSender<'static, ConfirmationMessage<B>> },
-}
-
-impl<B> core::fmt::Debug for LayerOp<B>
-where
-    B: Deref<Target = [u8]> + core::fmt::Debug + 'static,
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            LayerOp::Indication(msg) => write!(f, "Indication({:?})", msg),
-            LayerOp::Request { message, response_tx: _ } => write!(f, "Request({:?})", message),
-        }
-    }
-}
-
-#[cfg(feature = "defmt")]
-impl<B> defmt::Format for LayerOp<B>
-where
-    B: Deref<Target = [u8]> + 'static,
-{
-    fn format(&self, f: defmt::Formatter) {
-        match self {
-            LayerOp::Indication(msg) => defmt::write!(f, "Indication({})", msg),
-            LayerOp::Request { message, response_tx: _ } => defmt::write!(f, "Request({})", message),
-        }
-    }
-}
-
-pub trait Layer<'a>: Sized {
-    /// The buffer type used in messages (e.g., `Buffer<'static>`)
-    type Buffer: Deref<Target = [u8]> + 'static;
-
-    async fn process<M>(&mut self, _: M) -> !
-    where
-        M: Inbox<LayerOp<Self::Buffer>>;
-}
+// ============================================================================
+// Link Layer Builder Traits
+// ============================================================================
 
 /// Resource allocation for link layer builders.
 ///
@@ -131,6 +85,17 @@ pub trait LinkLayerBuilderBase: Sized {
 /// At stack level the concrete context is [`StackContext`](crate::StackContext),
 /// which implements both `BufferManagerContext` and `PropertyServiceContext`,
 /// so it satisfies all implementations.
+///
+/// # Channel architecture
+///
+/// Each link layer communicates with the network layer through three
+/// unidirectional typed channels instead of a single bidirectional
+/// `LayerOp` channel. This eliminates deadlocks caused by blocking
+/// request-response patterns through bounded channels.
+///
+/// - `ind_tx`: Send indications (received frames) up to the network layer
+/// - `conf_tx`: Send confirmations (transmission results) up to the network layer
+/// - `req_rx`: Receive transmission requests from the network layer
 pub trait LinkLayerBuilder<CTX>: LinkLayerBuilderBase {
     /// Build the link layer and return a future that runs it indefinitely.
     ///
@@ -142,20 +107,25 @@ pub trait LinkLayerBuilder<CTX>: LinkLayerBuilderBase {
     ///   [`LinkLayerBuilderBase::create_resources`]
     /// * `context` - Runtime context providing access to buffer management
     ///   and (optionally) property services, depending on this impl's bounds
-    /// * `network_layer` - Channel sender for passing indications up to the
+    /// * `ind_tx` - Channel sender for passing received frame indications
+    ///   up to the network layer
+    /// * `conf_tx` - Channel sender for passing transmission confirmations
+    ///   up to the network layer
+    /// * `req_rx` - Channel receiver for transmission requests from the
     ///   network layer
-    /// * `inbox` - Channel receiver for layer operations (requests from the
-    ///   network layer, indications to forward)
     fn build_and_run<'a>(
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
-        network_layer: DynamicSender<'a, LayerOp<crate::messages::buffers::Buffer<'static>>>,
-        inbox: impl Inbox<LayerOp<crate::messages::buffers::Buffer<'static>>> + 'a,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl Inbox<crate::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a;
 }
 
-// ############################################################################
+// ============================================================================
+// Actor-Style Request/Response (for app_service_channel, restart_channel)
+// ============================================================================
 
 // The following part has been taken from `ector`: https://github.com/drogue-iot/ector
 // Original Apache License 2.0 and Copyright of the original authors applies
@@ -235,7 +205,15 @@ impl<M, R> AsMut<M> for Request<M, R> {
     }
 }
 
-pub trait ActorRequest<M, R> {
+/// Send a request and await the response through a temporary channel.
+///
+/// The `MUT` parameter controls the mutex type of the temporary response
+/// channel. Use [`NoopRawMutex`] when requester and replier share the same
+/// executor; use [`CriticalSectionRawMutex`](embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex)
+/// when they may run on different executors (e.g. interrupt vs thread).
+///
+/// Configured via [`StackDefinition::Mutex`](crate::StackDefinition::Mutex).
+pub trait ActorRequest<MUT: RawMutex, M, R> {
     /// Attempts to send a message and wait for the response
     async fn request(&self, message: M) -> R;
 }
@@ -245,9 +223,9 @@ pub trait ActorRequest<M, R> {
 /// This supports both `'static` and non-`'static` channel references,
 /// needed for layers that don't have `'static` references to their channels,
 /// such as the application layer's restart_sender.
-impl<'a, M, R> ActorRequest<M, R> for DynamicSender<'a, Request<M, R>> {
+impl<'a, MUT: RawMutex, M, R> ActorRequest<MUT, M, R> for DynamicSender<'a, Request<M, R>> {
     async fn request(&self, message: M) -> R {
-        let channel: Channel<NoopRawMutex, R, 1> = Channel::new();
+        let channel: Channel<MUT, R, 1> = Channel::new();
         let sender: DynamicSender<'_, R> = channel.sender().into();
         let bomb = DropBomb::new();
 
@@ -268,9 +246,9 @@ impl<'a, M, R> ActorRequest<M, R> for DynamicSender<'a, Request<M, R>> {
     }
 }
 
-impl<M, R, const N: usize> ActorRequest<M, R> for Sender<'static, NoopRawMutex, Request<M, R>, N> {
+impl<MUT: RawMutex, OUTER_MUT: RawMutex, M, R, const N: usize> ActorRequest<MUT, M, R> for Sender<'static, OUTER_MUT, Request<M, R>, N> {
     async fn request(&self, message: M) -> R {
-        let channel: Channel<NoopRawMutex, R, 1> = Channel::new();
+        let channel: Channel<MUT, R, 1> = Channel::new();
         let sender: DynamicSender<'_, R> = channel.sender().into();
         let bomb = DropBomb::new();
 
@@ -284,60 +262,6 @@ impl<M, R, const N: usize> ActorRequest<M, R> for Sender<'static, NoopRawMutex, 
         };
         let message = Request::new(message, reply_to);
         self.send(message).await;
-        let res = channel.receive().await;
-
-        bomb.defuse();
-        res
-    }
-}
-
-/// ActorRequest implementation for LayerOp communication with typed messages.
-///
-/// This allows layers to send `RequestMessage`s and receive `ConfirmationMessage`s.
-/// The type system ensures you can't accidentally send the wrong message type.
-impl<'a, B: Deref<Target = [u8]> + 'static> ActorRequest<RequestMessage<B>, ConfirmationMessage<B>>
-    for DynamicSender<'a, LayerOp<B>>
-{
-    async fn request(&self, message: RequestMessage<B>) -> ConfirmationMessage<B> {
-        let channel: Channel<NoopRawMutex, ConfirmationMessage<B>, 1> = Channel::new();
-        let sender: DynamicSender<'_, ConfirmationMessage<B>> = channel.sender().into();
-        let bomb = DropBomb::new();
-
-        // We guarantee that channel lives until we've been notified on it, at which
-        // point its out of reach for the replier.
-        let response_tx = unsafe {
-            core::mem::transmute::<
-                &embassy_sync::channel::DynamicSender<'_, ConfirmationMessage<B>>,
-                &embassy_sync::channel::DynamicSender<'_, ConfirmationMessage<B>>,
-            >(&sender)
-        };
-        let layer_op = LayerOp::Request { message, response_tx: *response_tx };
-        self.send(layer_op).await;
-        let res = channel.receive().await;
-
-        bomb.defuse();
-        res
-    }
-}
-
-impl<'a, B: Deref<Target = [u8]> + 'static, const N: usize> ActorRequest<RequestMessage<B>, ConfirmationMessage<B>>
-    for Sender<'a, NoopRawMutex, LayerOp<B>, N>
-{
-    async fn request(&self, message: RequestMessage<B>) -> ConfirmationMessage<B> {
-        let channel: Channel<NoopRawMutex, ConfirmationMessage<B>, 1> = Channel::new();
-        let sender: DynamicSender<'_, ConfirmationMessage<B>> = channel.sender().into();
-        let bomb = DropBomb::new();
-
-        // We guarantee that channel lives until we've been notified on it, at which
-        // point its out of reach for the replier.
-        let response_tx = unsafe {
-            core::mem::transmute::<
-                &embassy_sync::channel::DynamicSender<'_, ConfirmationMessage<B>>,
-                &embassy_sync::channel::DynamicSender<'_, ConfirmationMessage<B>>,
-            >(&sender)
-        };
-        let layer_op = LayerOp::Request { message, response_tx: *response_tx };
-        self.send(layer_op).await;
         let res = channel.receive().await;
 
         bomb.defuse();

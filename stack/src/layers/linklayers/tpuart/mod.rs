@@ -64,7 +64,8 @@ use crate::{
     },
 };
 
-use super::super::{Inbox, Layer, LayerOp};
+use crate::layers::Inbox;
+use crate::messages::builder::RequestMessage;
 
 pub mod busmon;
 mod chip;
@@ -170,10 +171,7 @@ pub struct DeviceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine> {
 }
 
 impl<'a, ADT: AddressTable + HasLoadStateMachine> DeviceAddressChecker<'a, ADT> {
-    pub fn new(
-        address_context: &'a dyn KnxAddressContext,
-        address_table: &'a core::cell::RefCell<ADT>,
-    ) -> Self {
+    pub fn new(address_context: &'a dyn KnxAddressContext, address_table: &'a core::cell::RefCell<ADT>) -> Self {
         Self { address_context, address_table }
     }
 }
@@ -202,8 +200,7 @@ impl<ADT: AddressTable + HasLoadStateMachine> AddressChecker for DeviceAddressCh
         } else {
             let dst = IndividualAddress::from_bytes(&[dst_hi, dst_lo]);
             let our_addr = self.address_context.individual_address();
-            dst == our_addr
-                || self.address_context.additional_individual_addresses().contains(&dst)
+            dst == our_addr || self.address_context.additional_individual_addresses().contains(&dst)
         }
     }
 }
@@ -271,8 +268,8 @@ pub struct TpUartResources;
 
 // -- LinkLayerBuilderBase for explicit AddressChecker --------------------------
 
-impl<W: Send + 'static, R: Send + 'static, A: AddressChecker + Send + 'static>
-    super::super::LinkLayerBuilderBase for TpUartLinkLayerBuilder<W, R, A>
+impl<W: Send + 'static, R: Send + 'static, A: AddressChecker + Send + 'static> super::super::LinkLayerBuilderBase
+    for TpUartLinkLayerBuilder<W, R, A>
 {
     type Resources = TpUartResources;
 
@@ -292,18 +289,20 @@ where
         self,
         _resources: &'a mut Self::Resources,
         context: &'a CTX,
-        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
-        inbox: impl Inbox<LayerOp<Buffer<'static>>> + 'a,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
         let buffer_manager = context.buffer_manager();
         let mut ll = TpUartLinkLayer::with_address_checker(
             self.uart_tx,
             self.uart_rx,
             buffer_manager,
-            network_layer,
+            ind_tx,
+            conf_tx,
             self.address_checker,
         );
-        async move { ll.process(inbox).await }
+        async move { ll.run(req_rx).await }
     }
 }
 
@@ -314,8 +313,8 @@ where
 // This requires the context to provide KnxAddressContext (individual address)
 // and AddressTableContext (group address table).
 
-impl<W: Send + 'static, R: Send + 'static>
-    super::super::LinkLayerBuilderBase for TpUartLinkLayerBuilder<W, R, AutoAddressChecker>
+impl<W: Send + 'static, R: Send + 'static> super::super::LinkLayerBuilderBase
+    for TpUartLinkLayerBuilder<W, R, AutoAddressChecker>
 {
     type Resources = TpUartResources;
 
@@ -324,12 +323,9 @@ impl<W: Send + 'static, R: Send + 'static>
     }
 }
 
-impl<CTX, W, R> super::super::LinkLayerBuilder<CTX>
-    for TpUartLinkLayerBuilder<W, R, AutoAddressChecker>
+impl<CTX, W, R> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<W, R, AutoAddressChecker>
 where
-    CTX: crate::context::BufferManagerContext
-        + crate::context::KnxAddressContext
-        + crate::context::AddressTableContext,
+    CTX: crate::context::BufferManagerContext + crate::context::KnxAddressContext + crate::context::AddressTableContext,
     W: embedded_io_async::Write + Send + 'static,
     R: embedded_io_async::Read + Send + 'static,
 {
@@ -337,19 +333,15 @@ where
         self,
         _resources: &'a mut Self::Resources,
         context: &'a CTX,
-        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
-        inbox: impl Inbox<LayerOp<Buffer<'static>>> + 'a,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
         let buffer_manager = context.buffer_manager();
         let checker = DeviceAddressChecker::new(context, context.address_table());
-        let mut ll = TpUartLinkLayer::with_address_checker(
-            self.uart_tx,
-            self.uart_rx,
-            buffer_manager,
-            network_layer,
-            checker,
-        );
-        async move { ll.process(inbox).await }
+        let mut ll =
+            TpUartLinkLayer::with_address_checker(self.uart_tx, self.uart_rx, buffer_manager, ind_tx, conf_tx, checker);
+        async move { ll.run(req_rx).await }
     }
 }
 
@@ -373,8 +365,9 @@ where
     // Buffer management
     buffer_manager: &'a DynBufferManager<'static>,
 
-    // Upper layer connection
-    network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+    // Upper layer channels — indications and confirmations flow UP to NL
+    ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+    conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
 
     // State machines
     main_ctx: StateMachineContext,
@@ -405,7 +398,6 @@ where
 /// Pending transmission waiting for link layer to become idle
 struct PendingTransmission {
     buffer: Buffer<'static>,
-    response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
 }
 
 /// Current active transmission
@@ -414,8 +406,6 @@ struct CurrentTransmission {
     knx_buffer: Buffer<'static>,
     /// TP1 format buffer (with checksum)
     tp1_buffer: Buffer<'static>,
-    /// Channel to send confirmation
-    response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
 }
 
 impl<'a, W, R> TpUartLinkLayer<'a, W, R, NoAddressChecker>
@@ -432,9 +422,10 @@ where
         uart_tx: W,
         uart_rx: R,
         buffer_manager: &'a DynBufferManager<'static>,
-        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     ) -> Self {
-        Self::with_address_checker(uart_tx, uart_rx, buffer_manager, network_layer, NoAddressChecker)
+        Self::with_address_checker(uart_tx, uart_rx, buffer_manager, ind_tx, conf_tx, NoAddressChecker)
     }
 }
 
@@ -453,14 +444,16 @@ where
         uart_tx: W,
         uart_rx: R,
         buffer_manager: &'a DynBufferManager<'static>,
-        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         address_checker: A,
     ) -> Self {
         Self {
             uart_tx,
             uart_rx,
             buffer_manager,
-            network_layer,
+            ind_tx,
+            conf_tx,
             main_ctx: StateMachineContext::new(),
             send_ctx: SendContext::new(),
             retry_config: RetryConfig::default(),
@@ -708,7 +701,7 @@ where
                             let knx_buffer = tp1_to_knx_message(buffer);
                             let msg = KnxMessageBuffer::new(knx_buffer, ServiceType::L_Data_Ind);
                             let indication = IndicationMessage::indication(msg);
-                            self.network_layer.send(LayerOp::Indication(indication)).await;
+                            self.ind_tx.send(indication).await;
                         } else {
                             warn!("TPUART: Invalid checksum on received frame");
                         }
@@ -746,13 +739,14 @@ where
                     // Check if this is an echo of our transmission
                     if let Some(ref tx) = self.current_tx
                         && let Some(ref buf) = self.receive_buffer
-                            && buf.len() >= 4 && self.is_echo(&tx.tp1_buffer, buf) {
-                                self.main_ctx.receive_state.is_echo = true;
-                                let actions = process_send_event(&mut self.send_ctx, SendEvent::FrameStartReceived {
-                                    is_echo: true,
-                                });
-                                self.execute_send_actions(actions).await;
-                            }
+                        && buf.len() >= 4
+                        && self.is_echo(&tx.tp1_buffer, buf)
+                    {
+                        self.main_ctx.receive_state.is_echo = true;
+                        let actions =
+                            process_send_event(&mut self.send_ctx, SendEvent::FrameStartReceived { is_echo: true });
+                        self.execute_send_actions(actions).await;
+                    }
                 }
                 MainAction::SendSmFrameComplete => {
                     let actions = process_send_event(&mut self.send_ctx, SendEvent::EchoReceived);
@@ -827,52 +821,53 @@ where
             match action {
                 SendAction::SendByte { index, is_last } => {
                     if let Some(ref tx) = self.current_tx
-                        && index < tx.tp1_buffer.len() {
-                            let byte = tx.tp1_buffer[index];
-                            let is_long_frame = tx.tp1_buffer.len() > 64;
+                        && index < tx.tp1_buffer.len()
+                    {
+                        let byte = tx.tp1_buffer[index];
+                        let is_long_frame = tx.tp1_buffer.len() > 64;
 
-                            match self.main_ctx.chip_type {
-                                // E981: Uses special long frame commands for frames >64 bytes
-                                ChipType::E981 if is_long_frame => {
-                                    if index == 0 {
-                                        // First byte: normal start command
-                                        self.uart_write(&[U_L_DATA_START, byte]).await;
-                                    } else if is_last {
-                                        // Last byte: E981_LONG_DATA_END + full index
-                                        self.uart_write(&[E981_LONG_DATA_END, index as u8, byte]).await;
-                                    } else {
-                                        // Middle bytes: E981_LONG_DATA_CONTINUE + full index
-                                        self.uart_write(&[E981_LONG_DATA_CONTINUE, index as u8, byte]).await;
-                                    }
-                                }
-
-                                // NCN5120: Uses offset command at 64-byte boundaries
-                                ChipType::Ncn5120 if is_long_frame => {
-                                    // Send offset command at each 64-byte boundary (except 0)
-                                    if (index & 0x3F) == 0 && index > 0 {
-                                        let offset_cmd = U_L_DATA_OFFSET_REQ | (index >> 6) as u8;
-                                        self.uart_write(&[offset_cmd]).await;
-                                    }
-                                    // Normal start/end with 6-bit index
-                                    let cmd = if is_last {
-                                        U_L_DATA_END | (index & 0x3F) as u8
-                                    } else {
-                                        U_L_DATA_START | (index & 0x3F) as u8
-                                    };
-                                    self.uart_write(&[cmd, byte]).await;
-                                }
-
-                                // Standard frame (<=64 bytes) or TPUART1/2
-                                _ => {
-                                    let cmd = if is_last {
-                                        U_L_DATA_END | (index & 0x3F) as u8
-                                    } else {
-                                        U_L_DATA_START | (index & 0x3F) as u8
-                                    };
-                                    self.uart_write(&[cmd, byte]).await;
+                        match self.main_ctx.chip_type {
+                            // E981: Uses special long frame commands for frames >64 bytes
+                            ChipType::E981 if is_long_frame => {
+                                if index == 0 {
+                                    // First byte: normal start command
+                                    self.uart_write(&[U_L_DATA_START, byte]).await;
+                                } else if is_last {
+                                    // Last byte: E981_LONG_DATA_END + full index
+                                    self.uart_write(&[E981_LONG_DATA_END, index as u8, byte]).await;
+                                } else {
+                                    // Middle bytes: E981_LONG_DATA_CONTINUE + full index
+                                    self.uart_write(&[E981_LONG_DATA_CONTINUE, index as u8, byte]).await;
                                 }
                             }
+
+                            // NCN5120: Uses offset command at 64-byte boundaries
+                            ChipType::Ncn5120 if is_long_frame => {
+                                // Send offset command at each 64-byte boundary (except 0)
+                                if (index & 0x3F) == 0 && index > 0 {
+                                    let offset_cmd = U_L_DATA_OFFSET_REQ | (index >> 6) as u8;
+                                    self.uart_write(&[offset_cmd]).await;
+                                }
+                                // Normal start/end with 6-bit index
+                                let cmd = if is_last {
+                                    U_L_DATA_END | (index & 0x3F) as u8
+                                } else {
+                                    U_L_DATA_START | (index & 0x3F) as u8
+                                };
+                                self.uart_write(&[cmd, byte]).await;
+                            }
+
+                            // Standard frame (<=64 bytes) or TPUART1/2
+                            _ => {
+                                let cmd = if is_last {
+                                    U_L_DATA_END | (index & 0x3F) as u8
+                                } else {
+                                    U_L_DATA_START | (index & 0x3F) as u8
+                                };
+                                self.uart_write(&[cmd, byte]).await;
+                            }
                         }
+                    }
                 }
                 SendAction::StartSendTimer => {
                     self.send_timeout_deadline = Some(Instant::now() + TIMEOUT_SEND);
@@ -900,7 +895,7 @@ where
                 msg.ctrl_field_mut().set_c(Confirm::Err);
             }
             let confirmation = ConfirmationMessage::confirmation(msg);
-            tx.response_tx.send(confirmation).await;
+            self.conf_tx.send(confirmation).await;
         }
         self.send_ctx.reset();
     }
@@ -970,33 +965,28 @@ where
         // Check if this is an echo of our transmission
         // Compare control byte (ignoring repeat bit) and addresses
         if let Some(ref tx) = self.current_tx
-            && tx.tp1_buffer.len() >= 6 {
-                let tx_buf = &tx.tp1_buffer;
-                let ctrl_match = ((header[0] ^ tx_buf[0]) & !0x20) == 0;
-                let addr_match = header[1..6] == tx_buf[1..6];
-                if ctrl_match && addr_match {
-                    debug!("TPUART: echo detected, skipping ACK");
-                    self.main_ctx.receive_state.is_echo = true;
-                    // Don't ACK our own echoes
-                    return;
-                }
+            && tx.tp1_buffer.len() >= 6
+        {
+            let tx_buf = &tx.tp1_buffer;
+            let ctrl_match = ((header[0] ^ tx_buf[0]) & !0x20) == 0;
+            let addr_match = header[1..6] == tx_buf[1..6];
+            if ctrl_match && addr_match {
+                debug!("TPUART: echo detected, skipping ACK");
+                self.main_ctx.receive_state.is_echo = true;
+                // Don't ACK our own echoes
+                return;
             }
+        }
 
         // Delegate the full ACK decision to the address checker. Different
         // checkers implement different policies (normal device, tunneling
         // gateway, bus monitor). The link layer doesn't have its own opinion.
         if self.address_checker.should_ack(header) {
-            debug!(
-                "TPUART: ACK frame dst={:02X}.{:02X} at_npci={:02X}",
-                header[3], header[4], header[5]
-            );
+            debug!("TPUART: ACK frame dst={:02X}.{:02X} at_npci={:02X}", header[3], header[4], header[5]);
             self.uart_write(&[U_ACK_INF]).await;
             self.main_ctx.receive_state.acked = true;
         } else {
-            debug!(
-                "TPUART: no ACK for dst={:02X}.{:02X} at_npci={:02X}",
-                header[3], header[4], header[5]
-            );
+            debug!("TPUART: no ACK for dst={:02X}.{:02X} at_npci={:02X}", header[3], header[4], header[5]);
         }
     }
 
@@ -1010,11 +1000,7 @@ where
     }
 
     /// Start a new transmission
-    async fn start_transmission(
-        &mut self,
-        msg: Buffer<'static>,
-        response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
-    ) {
+    async fn start_transmission(&mut self, msg: Buffer<'static>) {
         // Check frame size
         let tp1_size = self.calculate_tp1_frame_size(&msg);
         if tp1_size > self.main_ctx.chip_type.max_frame_size() {
@@ -1022,7 +1008,7 @@ where
             warn!("TPUART: Frame too large ({} > {})", tp1_size, self.main_ctx.chip_type.max_frame_size());
             let mut error_msg = KnxMessageBuffer::new(msg, ServiceType::L_Data_Con);
             error_msg.ctrl_field_mut().set_c(Confirm::Err);
-            response_tx.send(ConfirmationMessage::confirmation(error_msg)).await;
+            self.conf_tx.send(ConfirmationMessage::confirmation(error_msg)).await;
             return;
         }
 
@@ -1041,7 +1027,7 @@ where
         tp1_buffer.push(checksum);
 
         self.send_ctx.total_bytes = tp1_buffer.len();
-        self.current_tx = Some(CurrentTransmission { knx_buffer: msg, tp1_buffer, response_tx });
+        self.current_tx = Some(CurrentTransmission { knx_buffer: msg, tp1_buffer });
 
         // Start transmission
         let actions = process_send_event(&mut self.send_ctx, SendEvent::StartTransmission);
@@ -1060,33 +1046,31 @@ where
     }
 
     /// Queue a frame for transmission
-    async fn queue_transmission(
-        &mut self,
-        msg: Buffer<'static>,
-        response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
-    ) {
+    async fn queue_transmission(&mut self, msg: Buffer<'static>) {
         // If idle and nothing pending, start immediately
         if self.main_ctx.main_state == MainState::Idle && self.pending_tx.is_none() && self.current_tx.is_none() {
-            self.start_transmission(msg, response_tx).await;
+            self.start_transmission(msg).await;
             return;
         }
 
-        // Replace any pending transmission
+        // Replace any pending transmission — send error confirmation for the displaced one
         if let Some(old) = self.pending_tx.take() {
             let mut error_msg = KnxMessageBuffer::new(old.buffer, ServiceType::L_Data_Con);
             error_msg.ctrl_field_mut().set_c(Confirm::Err);
-            old.response_tx.send(ConfirmationMessage::confirmation(error_msg)).await;
+            self.conf_tx.send(ConfirmationMessage::confirmation(error_msg)).await;
         }
 
-        self.pending_tx = Some(PendingTransmission { buffer: msg, response_tx });
+        self.pending_tx = Some(PendingTransmission { buffer: msg });
     }
 
     /// Check and start pending transmission if idle
     async fn check_pending_transmission(&mut self) {
-        if self.main_ctx.main_state == MainState::Idle && self.current_tx.is_none()
-            && let Some(pending) = self.pending_tx.take() {
-                self.start_transmission(pending.buffer, pending.response_tx).await;
-            }
+        if self.main_ctx.main_state == MainState::Idle
+            && self.current_tx.is_none()
+            && let Some(pending) = self.pending_tx.take()
+        {
+            self.start_transmission(pending.buffer).await;
+        }
     }
 
     // ========================================================================
@@ -1142,21 +1126,20 @@ where
 }
 
 // ============================================================================
-// Layer Implementation
+// Event Loop
 // ============================================================================
 
-impl<'a, W, R, A> Layer<'a> for TpUartLinkLayer<'a, W, R, A>
+impl<'a, W, R, A> TpUartLinkLayer<'a, W, R, A>
 where
     W: embedded_io_async::Write,
     R: embedded_io_async::Read,
     A: AddressChecker,
 {
-    type Buffer = Buffer<'static>;
-
-    async fn process<M>(&mut self, mut inbox: M) -> !
-    where
-        M: Inbox<LayerOp<Self::Buffer>>,
-    {
+    /// Run the TPUART link layer event loop.
+    ///
+    /// Receives request messages from the network layer via `req_rx`,
+    /// sends indications and confirmations up via `self.ind_tx` / `self.conf_tx`.
+    pub async fn run(&mut self, mut req_rx: impl Inbox<RequestMessage<Buffer<'static>>>) -> ! {
         self.initialize().await;
 
         loop {
@@ -1192,12 +1175,7 @@ where
                 }
             };
 
-            match select4(
-                timeout_future,
-                self.uart_rx.read(&mut buf),
-                inbox.next(),
-                send_ready_future,
-            ).await {
+            match select4(timeout_future, self.uart_rx.read(&mut buf), req_rx.next(), send_ready_future).await {
                 Either4::First(_) => {
                     // Timer fired — dispatch to the state machine(s) whose
                     // deadline has been reached. The main and send SMs use
@@ -1236,21 +1214,14 @@ where
                         }
                     }
                 }
-                Either4::Third(layer_op) => {
-                    match layer_op {
-                        LayerOp::Indication(_) => {
-                            error!("TPUART: Unexpected indication from upper layer");
+                Either4::Third(msg) => {
+                    match msg.service_type() {
+                        ServiceType::L_Data_Req => {
+                            self.queue_transmission(msg.into_inner().into_inner()).await;
                         }
-                        LayerOp::Request { message, response_tx } => {
-                            match message.service_type() {
-                                ServiceType::L_Data_Req => {
-                                    self.queue_transmission(message.into_inner().into_inner(), response_tx).await;
-                                }
-                                _ => {
-                                    // Unsupported service type
-                                    response_tx.send(message.into_inner().error().build()).await;
-                                }
-                            }
+                        _ => {
+                            // Unsupported service type — send error confirmation
+                            self.conf_tx.send(msg.into_inner().error().build()).await;
                         }
                     }
                 }

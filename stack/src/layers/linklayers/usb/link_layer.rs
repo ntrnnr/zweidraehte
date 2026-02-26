@@ -29,9 +29,9 @@ use embassy_time::{Duration, Instant, Timer};
 use crate::address::IndividualAddress;
 use crate::context::BufferManagerContext;
 use crate::encoding::cemi::CemiMessageCode; // Still needed for RX path
-use crate::layers::{Inbox, Layer, LayerOp, LinkLayerBuilder, LinkLayerBuilderBase};
+use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase};
 use crate::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
-use crate::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage};
+use crate::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage};
 use crate::messages::knx::{CemiFormat, Confirm, KnxMessageBuffer, ServiceType};
 
 use super::device::{DeviceSelector, UsbHidDevice};
@@ -179,8 +179,9 @@ impl<CTX: BufferManagerContext> LinkLayerBuilder<CTX> for UsbLinkLayerBuilder {
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
-        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
-        inbox: impl Inbox<LayerOp<Buffer<'static>>> + 'a,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
         async move {
             // Initialize transport resources
@@ -284,13 +285,14 @@ impl<CTX: BufferManagerContext> LinkLayerBuilder<CTX> for UsbLinkLayerBuilder {
             let mut link_layer = UsbLinkLayer {
                 transport,
                 buffer_manager: context.buffer_manager(),
-                network_layer,
+                ind_tx,
+                conf_tx,
                 pending_tx: None,
                 timeout_deadline: None,
                 max_apdu_length,
             };
 
-            link_layer.process(inbox).await
+            link_layer.process(req_rx).await
         }
     }
 }
@@ -298,7 +300,6 @@ impl<CTX: BufferManagerContext> LinkLayerBuilder<CTX> for UsbLinkLayerBuilder {
 /// Pending transmission waiting for confirmation
 struct PendingTransmission {
     buffer: Buffer<'static>,
-    response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
     #[allow(dead_code)]
     sent_at: Instant,
 }
@@ -307,7 +308,10 @@ struct PendingTransmission {
 struct UsbLinkLayer<'a, D: UsbHidDevice> {
     transport: UsbCemiTransport<'a, D>,
     buffer_manager: &'a DynBufferManager<'static>,
-    network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+    /// Channel for sending indications (received frames) up to the network layer
+    ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+    /// Channel for sending confirmations (transmission results) up to the network layer
+    conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     pending_tx: Option<PendingTransmission>,
     timeout_deadline: Option<Instant>,
     /// Maximum APDU length supported by the USB interface
@@ -342,7 +346,7 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
                         msg.ctrl_field_mut().set_c(Confirm::Err);
                     }
 
-                    pending.response_tx.send(ConfirmationMessage::confirmation(msg)).await;
+                    self.conf_tx.send(ConfirmationMessage::confirmation(msg)).await;
                 }
                 self.timeout_deadline = None;
                 return;
@@ -361,16 +365,12 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
             let internal_msg = cemi_msg.into_internal();
 
             let indication = IndicationMessage::indication(internal_msg);
-            self.network_layer.send(LayerOp::Indication(indication)).await;
+            self.ind_tx.send(indication).await;
         }
     }
 
     /// Handle a request from the network layer
-    async fn handle_request(
-        &mut self,
-        message: Buffer<'static>,
-        response_tx: DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
-    ) {
+    async fn handle_request(&mut self, message: Buffer<'static>) {
         // Log internal KNX format before conversion
         debug!("USB Link Layer: TX internal KNX format: {:02X?}", &message[..]);
 
@@ -395,7 +395,7 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
                 );
                 let mut msg = KnxMessageBuffer::new(cemi_buffer, ServiceType::L_Data_Con);
                 msg.ctrl_field_mut().set_c(Confirm::Err);
-                response_tx.send(ConfirmationMessage::confirmation(msg)).await;
+                self.conf_tx.send(ConfirmationMessage::confirmation(msg)).await;
                 return;
             }
         }
@@ -407,14 +407,14 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
             Ok(()) => {
                 // Store pending transmission, wait for confirmation
                 self.pending_tx =
-                    Some(PendingTransmission { buffer: cemi_buffer, response_tx, sent_at: Instant::now() });
+                    Some(PendingTransmission { buffer: cemi_buffer, sent_at: Instant::now() });
                 self.timeout_deadline = Some(Instant::now() + TUNNEL_TIMEOUT);
             }
             Err(e) => {
                 error!("USB Link Layer: Failed to send frame: {:?}", e);
                 let mut msg = KnxMessageBuffer::new(cemi_buffer, ServiceType::L_Data_Con);
                 msg.ctrl_field_mut().set_c(Confirm::Err);
-                response_tx.send(ConfirmationMessage::confirmation(msg)).await;
+                self.conf_tx.send(ConfirmationMessage::confirmation(msg)).await;
             }
         }
     }
@@ -425,18 +425,16 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
             warn!("USB Link Layer: Transmission timeout");
             let mut msg = KnxMessageBuffer::new(pending.buffer, ServiceType::L_Data_Con);
             msg.ctrl_field_mut().set_c(Confirm::Err);
-            pending.response_tx.send(ConfirmationMessage::confirmation(msg)).await;
+            self.conf_tx.send(ConfirmationMessage::confirmation(msg)).await;
         }
         self.timeout_deadline = None;
     }
-}
 
-impl<'a, D: UsbHidDevice> Layer<'a> for UsbLinkLayer<'a, D> {
-    type Buffer = Buffer<'static>;
-
-    async fn process<M>(&mut self, mut inbox: M) -> !
+    /// Main event loop: receives requests from the network layer, USB data
+    /// from the transport, and handles transmission timeouts.
+    async fn process<M>(&mut self, mut req_rx: M) -> !
     where
-        M: Inbox<LayerOp<Self::Buffer>>,
+        M: Inbox<RequestMessage<Buffer<'static>>>,
     {
         loop {
             trace!("USB Link Layer: Main loop iteration, waiting for events...");
@@ -451,7 +449,7 @@ impl<'a, D: UsbHidDevice> Layer<'a> for UsbLinkLayer<'a, D> {
                 }
             };
 
-            match select3(timeout_fut, self.transport.try_recv_cemi(), inbox.next()).await {
+            match select3(timeout_fut, self.transport.try_recv_cemi(), req_rx.next()).await {
                 Either3::First(_) => {
                     // Timeout
                     self.handle_timeout().await;
@@ -470,24 +468,16 @@ impl<'a, D: UsbHidDevice> Layer<'a> for UsbLinkLayer<'a, D> {
                         }
                     }
                 }
-                Either3::Third(layer_op) => {
+                Either3::Third(request) => {
                     // Request from network layer
-                    match layer_op {
-                        LayerOp::Indication(_) => {
-                            error!("USB Link Layer: Unexpected indication from upper layer");
+                    match request.service_type() {
+                        ServiceType::L_Data_Req => {
+                            self.handle_request(request.into_inner().into_inner()).await;
                         }
-                        LayerOp::Request { message, response_tx } => {
-                            // Link layer only handles L_Data.req
-                            match message.service_type() {
-                                ServiceType::L_Data_Req => {
-                                    self.handle_request(message.into_inner().into_inner(), response_tx).await;
-                                }
-                                _ => {
-                                    // Unsupported service type
-                                    warn!("USB Link Layer: Unsupported service type {:?}", message.service_type());
-                                    response_tx.send(message.into_inner().error().build()).await;
-                                }
-                            }
+                        _ => {
+                            // Unsupported service type
+                            warn!("USB Link Layer: Unsupported service type {:?}", request.service_type());
+                            self.conf_tx.send(request.into_inner().error().build()).await;
                         }
                     }
                 }

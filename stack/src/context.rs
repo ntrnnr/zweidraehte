@@ -6,8 +6,8 @@
 
 use embassy_sync::channel::DynamicSender;
 
-use crate::layers::LayerOp;
 use crate::messages::buffers::{Buffer, DynBufferManager};
+use crate::messages::builder::IndicationMessage;
 use crate::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
 use crate::objects::interface::PropertyServiceHandler;
 
@@ -68,8 +68,8 @@ pub trait DeviceInfoContext {
 /// inject synthetic indications directly into the application layer,
 /// bypassing the bus transport/network layers.
 pub trait ApplicationLayerContext {
-    /// Get a sender to the application layer channel.
-    fn application_layer_sender(&self) -> DynamicSender<'_, LayerOp<Buffer<'static>>>;
+    /// Get a sender to the application layer's indication channel.
+    fn application_layer_sender(&self) -> DynamicSender<'_, IndicationMessage<Buffer<'static>>>;
 }
 
 /// Provides IP diagnostics data for remote configuration responses.

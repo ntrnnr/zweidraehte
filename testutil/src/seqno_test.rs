@@ -25,12 +25,12 @@ use zweidraehte::{
     context::BufferManagerContext,
     encoding::tp1::tp1_to_knx_message_no_checksum,
     layers::{
-        ActorRequest, LayerOp, LinkLayerBuilder,
+        LinkLayerBuilder,
         linklayers::usb::{UsbLinkLayerBuilder, UsbLinkLayerResources},
     },
     messages::{
         buffers::{Buffer, BufferManager, MessageBuffer},
-        builder::RequestMessage,
+        builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
         knx::{KnxMessageBuffer, ServiceType},
     },
 };
@@ -44,24 +44,17 @@ const MEM_ADDR: u16 = 0x4040;
 
 // Fake network layer that receives indications and stores them for later inspection
 struct TestNetworkLayer {
-    receiver: embassy_sync::channel::Receiver<'static, NoopRawMutex, LayerOp<Buffer<'static>>, 32>,
+    ind_rx: embassy_sync::channel::Receiver<'static, NoopRawMutex, IndicationMessage<Buffer<'static>>, 32>,
     received: &'static RefCell<Vec<Vec<u8>>>,
 }
 
 impl TestNetworkLayer {
     async fn process(&mut self) -> ! {
         loop {
-            let layer_op = self.receiver.receive().await;
-            match layer_op {
-                LayerOp::Indication(msg) => {
-                    let buf = msg.buf().to_vec();
-                    print_frame("RX", &buf);
-                    self.received.borrow_mut().push(buf);
-                }
-                LayerOp::Request { message: _msg, response_tx: _response_tx } => {
-                    println!("Unexpected request from link layer");
-                }
-            }
+            let msg = self.ind_rx.receive().await;
+            let buf = msg.buf().to_vec();
+            print_frame("RX", &buf);
+            self.received.borrow_mut().push(buf);
         }
     }
 }
@@ -318,7 +311,8 @@ async fn clear_received(received: &RefCell<Vec<Vec<u8>>>) {
 
 async fn run_seqno_test(
     bm: &'static zweidraehte::messages::buffers::DynBufferManager<'static>,
-    link_sender: embassy_sync::channel::DynamicSender<'static, LayerOp<Buffer<'static>>>,
+    req_tx: &embassy_sync::channel::Sender<'static, NoopRawMutex, RequestMessage<Buffer<'static>>, 32>,
+    conf_rx: &embassy_sync::channel::Receiver<'static, NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 32>,
     received: &'static RefCell<Vec<Vec<u8>>>,
 ) {
     println!("\n=== Sequence Number Behavior Test ===");
@@ -334,7 +328,8 @@ async fn run_seqno_test(
         let buffer = bm.alloc().await;
         let msg = build_t_connect(buffer, TESTER_ADDR, DUT_ADDR);
         print_frame("TX", msg.buf());
-        let _conf = link_sender.request(msg).await;
+        req_tx.send(msg).await;
+        let _conf = conf_rx.receive().await;
     }
     Timer::after(Duration::from_millis(300)).await;
     clear_received(received).await;
@@ -347,7 +342,8 @@ async fn run_seqno_test(
         // count=3, but only 2 bytes of data (AA BB)
         let msg = build_user_memory_write(buffer, TESTER_ADDR, DUT_ADDR, 0, MEM_ADDR, 3, &[0xAA, 0xBB]);
         print_frame("TX", msg.buf());
-        let _conf = link_sender.request(msg).await;
+        req_tx.send(msg).await;
+        let _conf = conf_rx.receive().await;
     }
 
     // Wait for T_ACK
@@ -370,7 +366,8 @@ async fn run_seqno_test(
         // First try seqno=0 to see if device accepts it
         let msg = build_user_memory_write(buffer, TESTER_ADDR, DUT_ADDR, 0, MEM_ADDR, 2, &[0x01, 0x02, 0x03]);
         print_frame("TX (seqno=0)", msg.buf());
-        let _conf = link_sender.request(msg).await;
+        req_tx.send(msg).await;
+        let _conf = conf_rx.receive().await;
     }
 
     if let Some(resp) = wait_for_response(received, 1000).await {
@@ -391,7 +388,8 @@ async fn run_seqno_test(
             let buffer = bm.alloc().await;
             let msg = build_user_memory_write(buffer, TESTER_ADDR, DUT_ADDR, 1, MEM_ADDR, 2, &[0x01, 0x02, 0x03]);
             print_frame("TX (seqno=1)", msg.buf());
-            let _conf = link_sender.request(msg).await;
+            req_tx.send(msg).await;
+        let _conf = conf_rx.receive().await;
         }
 
         if let Some(resp) = wait_for_response(received, 1000).await {
@@ -417,7 +415,8 @@ async fn run_seqno_test(
         // Use seqno that matches expected state
         let msg = build_user_memory_read(buffer, TESTER_ADDR, DUT_ADDR, 1, MEM_ADDR, 3);
         print_frame("TX", msg.buf());
-        let _conf = link_sender.request(msg).await;
+        req_tx.send(msg).await;
+        let _conf = conf_rx.receive().await;
     }
 
     // Should get ACK then Response
@@ -441,7 +440,8 @@ async fn run_seqno_test(
         let buffer = bm.alloc().await;
         let msg = build_t_ack(buffer, TESTER_ADDR, DUT_ADDR, 0);
         print_frame("TX", msg.buf());
-        let _conf = link_sender.request(msg).await;
+        req_tx.send(msg).await;
+        let _conf = conf_rx.receive().await;
     }
     Timer::after(Duration::from_millis(100)).await;
 
@@ -451,7 +451,8 @@ async fn run_seqno_test(
         let buffer = bm.alloc().await;
         let msg = build_t_disconnect(buffer, TESTER_ADDR, DUT_ADDR);
         print_frame("TX", msg.buf());
-        let _conf = link_sender.request(msg).await;
+        req_tx.send(msg).await;
+        let _conf = conf_rx.receive().await;
     }
     Timer::after(Duration::from_millis(200)).await;
 
@@ -493,14 +494,20 @@ async fn main(spawner: Spawner) {
 
     let received: &'static RefCell<Vec<Vec<u8>>> = Box::leak(Box::new(RefCell::new(Vec::new())));
 
-    // Create channels
-    let network_channel = Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<Buffer<'static>>, 32>::new()));
-    let network_sender = network_channel.sender().into();
-    let network_receiver = network_channel.receiver();
+    // Indication channel: link layer -> test network layer
+    let ind_channel = Box::leak(Box::new(Channel::<NoopRawMutex, IndicationMessage<Buffer<'static>>, 32>::new()));
+    let ind_tx = ind_channel.sender().into();
+    let ind_rx = ind_channel.receiver();
 
-    let link_channel = Box::leak(Box::new(Channel::<NoopRawMutex, LayerOp<Buffer<'static>>, 32>::new()));
-    let link_sender: embassy_sync::channel::DynamicSender<'_, LayerOp<Buffer<'static>>> = link_channel.sender().into();
-    let link_receiver = link_channel.receiver();
+    // Confirmation channel: link layer -> main loop
+    let conf_channel = Box::leak(Box::new(Channel::<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 32>::new()));
+    let conf_tx = conf_channel.sender().into();
+    let conf_rx = conf_channel.receiver();
+
+    // Request channel: main loop -> link layer
+    let req_channel = Box::leak(Box::new(Channel::<NoopRawMutex, RequestMessage<Buffer<'static>>, 32>::new()));
+    let req_tx = req_channel.sender();
+    let req_rx = req_channel.receiver();
 
     // Create USB link layer with our tester address
     let ll_builder = UsbLinkLayerBuilder::new().with_individual_address(TESTER_ADDR);
@@ -508,18 +515,18 @@ async fn main(spawner: Spawner) {
     let context = Box::leak(Box::new(SimpleContext { buffer_manager: bm }));
 
     // Spawn network layer
-    let network = TestNetworkLayer { receiver: network_receiver, received };
+    let network = TestNetworkLayer { ind_rx, received };
     spawner.spawn(run_network(network)).unwrap();
 
     // Spawn link layer
-    spawner.spawn(run_usb_link_layer(ll_builder, ll_resources, context, network_sender, link_receiver)).unwrap();
+    spawner.spawn(run_usb_link_layer(ll_builder, ll_resources, context, ind_tx, conf_tx, req_rx)).unwrap();
 
     // Wait for link layer to initialize
     Timer::after(Duration::from_millis(500)).await;
 
     // Main loop
     loop {
-        run_seqno_test(bm, link_sender, received).await;
+        run_seqno_test(bm, &req_tx, &conf_rx, received).await;
 
         // Wait for user input
         loop {
@@ -542,8 +549,9 @@ async fn run_usb_link_layer(
     builder: UsbLinkLayerBuilder,
     resources: &'static mut UsbLinkLayerResources,
     context: &'static SimpleContext,
-    network_sender: embassy_sync::channel::DynamicSender<'static, LayerOp<Buffer<'static>>>,
-    link_receiver: embassy_sync::channel::Receiver<'static, NoopRawMutex, LayerOp<Buffer<'static>>, 32>,
+    ind_tx: embassy_sync::channel::DynamicSender<'static, IndicationMessage<Buffer<'static>>>,
+    conf_tx: embassy_sync::channel::DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
+    req_rx: embassy_sync::channel::Receiver<'static, NoopRawMutex, RequestMessage<Buffer<'static>>, 32>,
 ) {
-    builder.build_and_run(resources, context, network_sender, link_receiver).await;
+    builder.build_and_run(resources, context, ind_tx, conf_tx, req_rx).await;
 }

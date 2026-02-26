@@ -1,5 +1,5 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "probe-rs run --chip RP2040 --no-catch-reset"
+runner = "probe-rs run --chip RP2040 --no-catch-reset --probe 2e8a:000c:E6633861A32F1A38"
 
 [build]
 target = "thumbv6m-none-eabi"

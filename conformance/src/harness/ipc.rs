@@ -30,10 +30,10 @@ use embassy_sync::channel::DynamicSender;
 
 use zweidraehte::{
     encoding::tp1,
-    layers::{Inbox, Layer, LayerOp, LinkLayerBuilder, LinkLayerBuilderBase},
+    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase},
     messages::{
         buffers::{Buffer, MessageBuffer},
-        builder::{ConfirmationMessage, IndicationMessage},
+        builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
         knx::*,
     },
 };
@@ -416,7 +416,8 @@ pub enum IpcCommand {
 /// format and writes `TAG_CAPTURED` frames to the socket, then sends an
 /// immediate L_Data_Con confirmation back to the stack.
 pub struct IpcLinkLayer<'a> {
-    network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+    ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+    conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     socket: Async<UnixStream>,
     buffer_manager: zweidraehte::messages::buffers::DynBufferManager<'static>,
     command_tx: DynamicSender<'a, IpcCommand>,
@@ -424,24 +425,20 @@ pub struct IpcLinkLayer<'a> {
 
 impl<'a> IpcLinkLayer<'a> {
     fn new(
-        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         socket: Async<UnixStream>,
         buffer_manager: zweidraehte::messages::buffers::DynBufferManager<'static>,
         command_tx: DynamicSender<'a, IpcCommand>,
     ) -> Self {
-        Self { network_layer, socket, buffer_manager, command_tx }
+        Self { ind_tx, conf_tx, socket, buffer_manager, command_tx }
     }
 }
 
-impl<'a> Layer<'a> for IpcLinkLayer<'a> {
-    type Buffer = Buffer<'static>;
-
-    async fn process<M>(&mut self, mut inbox: M) -> !
-    where
-        M: Inbox<LayerOp<Self::Buffer>>,
-    {
+impl<'a> IpcLinkLayer<'a> {
+    async fn process(&mut self, mut req_rx: impl Inbox<RequestMessage<Buffer<'static>>>) -> ! {
         loop {
-            match select(read_frame_async(&self.socket), inbox.next()).await {
+            match select(read_frame_async(&self.socket), req_rx.next()).await {
                 // Frame from parent (injected telegram or command)
                 Either::First(Ok(Some(frame))) => {
                     match frame.tag {
@@ -453,8 +450,8 @@ impl<'a> Layer<'a> for IpcLinkLayer<'a> {
                             let converted_buf = tp1::tp1_to_knx_message_no_checksum(msg.into_inner());
                             let internal_msg = KnxMessageBuffer::new(converted_buf, ServiceType::L_Data_Ind);
                             log::debug!("IPC LL injecting message: {:x?}", internal_msg);
-                            self.network_layer.send(
-                                LayerOp::Indication(IndicationMessage::indication(internal_msg))
+                            self.ind_tx.send(
+                                IndicationMessage::indication(internal_msg)
                             ).await;
                         }
                         TAG_SET_PROGRAMMING_MODE => {
@@ -499,41 +496,34 @@ impl<'a> Layer<'a> for IpcLinkLayer<'a> {
                 }
 
                 // Request from upper layers (outgoing message)
-                Either::Second(layer_op) => {
-                    match layer_op {
-                        LayerOp::Request { message: msg, response_tx } => {
-                            log::trace!("IPC LL received request: {:?}", msg);
+                Either::Second(msg) => {
+                    log::trace!("IPC LL received request: {:?}", msg);
 
-                            // Capture the outgoing message and send to parent
-                            let data = knx_to_tp1_vec_no_checksum(&msg.buf()[..msg.len()]);
-                            let service_type = msg.service_type();
+                    // Capture the outgoing message and send to parent
+                    let data = knx_to_tp1_vec_no_checksum(&msg.buf()[..msg.len()]);
+                    let service_type = msg.service_type();
 
-                            // Build captured frame: service_type byte + TP1 data
-                            let mut payload = Vec::with_capacity(1 + data.len());
-                            payload.push(service_type.into());
-                            payload.extend_from_slice(&data);
+                    // Build captured frame: service_type byte + TP1 data
+                    let mut payload = Vec::with_capacity(1 + data.len());
+                    payload.push(service_type.into());
+                    payload.extend_from_slice(&data);
 
-                            if let Err(e) = write_frame_async(&self.socket, TAG_CAPTURED, &payload).await {
-                                log::error!("IPC LL failed to write captured frame: {}", e);
-                            }
+                    if let Err(e) = write_frame_async(&self.socket, TAG_CAPTURED, &payload).await {
+                        log::error!("IPC LL failed to write captured frame: {}", e);
+                    }
 
-                            // Send confirmation back to stack (simulate successful transmission)
-                            let mut inner = msg.into_inner();
-                            match inner.service_type() {
-                                ServiceType::L_Data_Req => {
-                                    inner.ctrl_field_mut().set_c(Confirm::NoError);
-                                    inner.set_service_type(ServiceType::L_Data_Con);
-                                    response_tx.send(ConfirmationMessage::confirmation(inner)).await;
-                                }
-                                _ => {
-                                    log::warn!("IPC LL: unhandled request service type: {:?}", inner.service_type());
-                                    inner.ctrl_field_mut().set_c(Confirm::Err);
-                                    response_tx.send(ConfirmationMessage::confirmation(inner)).await;
-                                }
-                            }
+                    // Send confirmation back to stack (simulate successful transmission)
+                    let mut inner = msg.into_inner();
+                    match inner.service_type() {
+                        ServiceType::L_Data_Req => {
+                            inner.ctrl_field_mut().set_c(Confirm::NoError);
+                            inner.set_service_type(ServiceType::L_Data_Con);
+                            self.conf_tx.send(ConfirmationMessage::confirmation(inner)).await;
                         }
-                        LayerOp::Indication(_) => {
-                            log::warn!("IPC LL received unexpected indication from upper layers");
+                        _ => {
+                            log::warn!("IPC LL: unhandled request service type: {:?}", inner.service_type());
+                            inner.ctrl_field_mut().set_c(Confirm::Err);
+                            self.conf_tx.send(ConfirmationMessage::confirmation(inner)).await;
                         }
                     }
                 }
@@ -634,15 +624,17 @@ impl<CTX> LinkLayerBuilder<CTX> for IpcLinkLayerBuilder {
         self,
         _resources: &'a mut Self::Resources,
         _context: &'a CTX,
-        network_layer: DynamicSender<'a, LayerOp<Buffer<'static>>>,
-        inbox: impl Inbox<LayerOp<Buffer<'static>>> + 'a,
+        ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl Future<Output = !> + 'a {
         let mut link_layer = IpcLinkLayer::new(
-            network_layer,
+            ind_tx,
+            conf_tx,
             self.socket,
             self.buffer_manager,
             self.command_tx,
         );
-        async move { link_layer.process(inbox).await }
+        async move { link_layer.process(req_rx).await }
     }
 }

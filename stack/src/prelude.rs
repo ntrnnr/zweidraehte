@@ -49,3 +49,6 @@ pub use crate::memory::{MemoryMap, MemoryError, NoMemoryMap};
 
 // Transport layer
 pub use crate::layers::transport::TlStyle;
+
+// Mutex types for StackDefinition::Mutex
+pub use embassy_sync::blocking_mutex::raw::{NoopRawMutex, CriticalSectionRawMutex};

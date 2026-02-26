@@ -9,8 +9,8 @@ use zweidraehte::context::{
     ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpDiagnosticsContext,
     KnxAddressContext, PropertyServiceContext,
 };
-use zweidraehte::layers::LayerOp;
 use zweidraehte::messages::buffers::{Buffer, DynBufferManager};
+use zweidraehte::messages::builder::IndicationMessage;
 use zweidraehte::messages::knxip::substructs::DeviceInformation;
 use zweidraehte::objects::interface::PropertyServiceHandler;
 
@@ -23,7 +23,7 @@ pub struct MockContext {
     max_apdu_length: Cell<u16>,
     device_info: Cell<Option<DeviceInformation>>,
     /// Dummy AL channel for ApplicationLayerContext. Messages sent here are dropped.
-    al_channel: Channel<NoopRawMutex, LayerOp<Buffer<'static>>, 1>,
+    al_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1>,
 }
 
 impl MockContext {
@@ -184,13 +184,13 @@ impl KnxAddressContext for &mut MockContext {
 }
 
 impl ApplicationLayerContext for &MockContext {
-    fn application_layer_sender(&self) -> DynamicSender<'_, LayerOp<Buffer<'static>>> {
+    fn application_layer_sender(&self) -> DynamicSender<'_, IndicationMessage<Buffer<'static>>> {
         self.al_channel.sender().into()
     }
 }
 
 impl ApplicationLayerContext for &mut MockContext {
-    fn application_layer_sender(&self) -> DynamicSender<'_, LayerOp<Buffer<'static>>> {
+    fn application_layer_sender(&self) -> DynamicSender<'_, IndicationMessage<Buffer<'static>>> {
         self.al_channel.sender().into()
     }
 }
