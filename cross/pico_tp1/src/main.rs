@@ -11,7 +11,6 @@ use embassy_rp::{
     bind_interrupts,
     flash,
     gpio::{Input, Level, Output, Pull},
-    interrupt,
     peripherals::UART0,
     uart::{Config as UartConfig, Parity, Uart},
 };
@@ -47,22 +46,6 @@ use rp_common::{FlashIdentityData, RpFlashStorage};
 bind_interrupts!(struct Irqs {
     UART0_IRQ => DirectInterruptHandler<UART0>;
 });
-
-// ================================================================================
-// High-Priority KNX Executor
-// ================================================================================
-
-// The KNX stack (TPUART event loop) runs on a dedicated interrupt executor
-// at elevated priority. This preempts the main thread executor so the UART
-// byte reader is never starved by application-layer processing. Without
-// this, NL/TL/AL work on the main executor can hold off the TPUART read
-// loop for >521µs, causing UART overruns.
-static EXECUTOR_KNX: embassy_executor::InterruptExecutor = embassy_executor::InterruptExecutor::new();
-
-#[interrupt]
-unsafe fn SWI_IRQ_0() {
-    unsafe { EXECUTOR_KNX.on_interrupt() }
-}
 
 // ================================================================================
 // Device Definition
@@ -108,11 +91,10 @@ impl StackDefinition for PicoTp1LightSwitch {
     const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
     const TL_STYLE: TlStyle = TlStyle::Style1;
 
-    // The KNX stack runs on an InterruptExecutor (SWI_IRQ_0) while user
-    // tasks (restart, buttons, lifecycle) run on the main thread executor.
-    // CriticalSectionRawMutex prevents BorrowMutError panics when the
-    // interrupt executor preempts the thread executor mid-channel-borrow.
-    type Mutex = CriticalSectionRawMutex;
+    // Everything runs on the same single-threaded executor, so NoopRawMutex
+    // (the default) is sufficient. CriticalSectionRawMutex would only be
+    // needed if the KNX stack ran on a separate InterruptExecutor.
+    // type Mutex = NoopRawMutex;  // (default, no override needed)
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
@@ -152,19 +134,9 @@ impl StackDefinition for PicoTp1LightSwitch {
 // Embassy tasks
 // ================================================================================
 
-/// Newtype wrapper to assert `Send` for `Runner` on single-core Cortex-M0+.
-///
-/// `Runner` contains `DynamicReceiver`/`DynamicSender` whose `&dyn` trait
-/// objects aren't `Sync`, preventing auto-`Send`. On a single-core MCU
-/// (no real threads, only interrupt priorities sharing the same memory),
-/// this is safe — the `critical-section` implementation guarantees mutual
-/// exclusion between interrupt levels.
-struct SendRunner(Runner<'static, PicoTp1LightSwitch>);
-unsafe impl Send for SendRunner {}
-
 #[embassy_executor::task]
-async fn knx_task(runner: SendRunner) -> ! {
-    runner.0.run().await
+async fn knx_task(runner: Runner<'static, PicoTp1LightSwitch>) -> ! {
+    runner.run().await
 }
 
 // ================================================================================
@@ -481,17 +453,11 @@ async fn main(spawner: Spawner) {
         PicoTp1LightSwitch::memory_map(),
     );
 
-    // Start the KNX executor on SWI_IRQ_0 at elevated priority so the
-    // TPUART byte reader preempts application-layer processing. On
-    // Cortex-M0+ (2 priority bits), P2 is the second-highest level.
-    use embassy_rp::interrupt::InterruptExt;
-    interrupt::SWI_IRQ_0.set_priority(interrupt::Priority::P2);
-    let knx_spawner = EXECUTOR_KNX.start(interrupt::SWI_IRQ_0);
-    knx_spawner
-        .spawn(knx_task(SendRunner(knx_runner)))
+    spawner
+        .spawn(knx_task(knx_runner))
         .expect("knx_task spawnable once");
 
-    info!("KNX TP1 stack started (high-priority executor)");
+    info!("KNX TP1 stack started");
     info!("  Manufacturer: {:04x}", LightSwitchDevice::MANUFACTURER_ID);
     info!("  Application:  {:04x} v{:02x}", LightSwitchDevice::APPLICATION_ID_TP1, LightSwitchDevice::APPLICATION_VERSION);
     info!("  Mask version: 07B0 (System B TP1)");
