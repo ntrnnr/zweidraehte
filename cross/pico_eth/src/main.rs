@@ -31,7 +31,7 @@ use devices::light_switch::{
 
 use zweidraehte::{
     bcus::system_b::*,
-    layers::linklayers::knxip::KnxNetIpBuilder,
+    layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpRouterFeatures},
     prelude::*,
     restart::{RestartError, RestartResponse},
     storage::DeviceStorage,
@@ -86,7 +86,7 @@ impl StackDefinition for PicoEthLightSwitch {
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
-    type LLB = KnxNetIpBuilder<EmbassyIpTransport, 2>;
+    type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpRouterFeatures, 2>;
     type State = PicoEthState;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, PicoEthState>;
@@ -496,7 +496,7 @@ async fn main(spawner: Spawner) {
     // The embassy-net stack handle is passed as socket context — when the
     // KNX/IP servers call EmbassyUdpSocket::bind(), they receive it directly.
     let link_layer_builder =
-        KnxNetIpBuilder::<EmbassyIpTransport, 2>::new("eth0", local_ip, control_endpoint, stack)
+        KnxNetIpBuilder::<EmbassyIpTransport, _, 2>::new("eth0", local_ip, control_endpoint, stack)
             .enable_routing_server()
             .enable_remote_config_server();
 

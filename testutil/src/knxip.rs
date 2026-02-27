@@ -108,7 +108,7 @@ async fn main(spawner: Spawner) {
 
     let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
     let kb =
-        KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new("knxdevbridgeif", interface_addr, control_endpoint, ())
+        KnxNetIpBuilder::<platform::LinuxIpTransport, _, 2>::new("knxdevbridgeif", interface_addr, control_endpoint, ())
             .enable_routing_server();
 
     println!("Starting KNXnet/IP link layer with Discovery and Routing Servers");

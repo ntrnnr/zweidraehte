@@ -40,7 +40,7 @@ use zweidraehte::{
     config::MAX_APDU_LENGTH_EXTENDED,
     layers::linklayers::{
         ip_interface::IpInterfaceLinkLayerBuilder,
-        knxip::KnxNetIpBuilder,
+        knxip::{KnxNetIpBuilder, features::KnxIpInterfaceFeatures},
     },
     prelude::*,
     restart::{RestartError, RestartResponse},
@@ -112,7 +112,7 @@ impl StackDefinition for PicoIpInterface {
 
     type P = IpInterfaceParams;
     type CO = IpInterfaceComObjects;
-    type LLB = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, EmbassyIpTransport, 2, 1, 1>;
+    type LLB = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, EmbassyIpTransport, KnxIpInterfaceFeatures, 2, 1, 1>;
     type State = IpIfState;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, IpIfState, (TunnelingAugment, ())>;
@@ -410,7 +410,7 @@ async fn main(spawner: Spawner) {
 
     // Build the KNX/IP part — tunneling + remote config (no routing).
     let knxip_builder =
-        KnxNetIpBuilder::<EmbassyIpTransport, 2>::new("eth0", local_ip, control_endpoint, stack)
+        KnxNetIpBuilder::<EmbassyIpTransport, _, 2>::new("eth0", local_ip, control_endpoint, stack)
             .enable_tunneling()
             .enable_remote_config_server();
 

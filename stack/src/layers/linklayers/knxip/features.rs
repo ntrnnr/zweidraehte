@@ -1,0 +1,443 @@
+//! Compile-time feature traits for the KNX/IP link layer.
+//!
+//! Each optional feature (routing, remote config, tunneling, TCP) is
+//! represented by a trait with two marker-type implementations: an
+//! enabled variant that delegates to the real server/handler/manager,
+//! and a disabled variant whose associated types are zero-size and whose
+//! methods are trivial no-ops that LLVM eliminates entirely.
+//!
+//! The [`Features`] struct bundles all four feature selections into a
+//! single type parameter `F` on [`KnxNetIpBuilder`] and [`KnxNetIp`],
+//! keeping the generic signatures manageable.
+//!
+//! # Binary size impact
+//!
+//! When a feature is disabled, its `Server`/`Handler`/`Manager` type is
+//! `()` (zero bytes). All dispatch methods return empty results or
+//! `pending()` futures with `Infallible` event types. The compiler
+//! monomorphizes the containing structs and event loops per-configuration,
+//! so disabled feature code is never linked into the final binary.
+
+use core::marker::PhantomData;
+use core::net::{Ipv4Addr, SocketAddrV4};
+
+use heapless::Vec;
+
+use crate::messages::buffers::Buffer;
+use crate::messages::knx::KnxMessageBuffer;
+use crate::messages::knxip::substructs::{self, SupportedService};
+use crate::messages::knxip::KNXnetIPServiceType;
+
+use super::servers::routing::RoutingServer;
+use super::servers::remote_config::RemoteConfigurationServer;
+use super::{EndpointType, PendingResponse, ServerContext, ServerError};
+
+// ============================================================================
+// Feature Set Trait + Features Bundle
+// ============================================================================
+
+/// Bundles all four feature selections into associated types.
+///
+/// Implemented by [`Features<R, RC, TUN, TCP>`] for all valid
+/// combinations of feature markers.
+pub trait FeatureSet {
+    type Routing: RoutingFeature;
+    type RemoteConfig: RemoteConfigFeature;
+    type Tunneling: TunnelingFeature;
+    type Tcp: TcpFeature;
+}
+
+/// Bundle of feature marker types, parameterizing the KNX/IP link layer.
+///
+/// All four type parameters default to the disabled variant, so
+/// `Features` (with no arguments) means "everything off."
+pub struct Features<
+    R: RoutingFeature = NoRouting,
+    RC: RemoteConfigFeature = NoRemoteConfig,
+    TUN: TunnelingFeature = NoTunneling,
+    TCP: TcpFeature = NoTcp,
+> {
+    _phantom: PhantomData<(R, RC, TUN, TCP)>,
+}
+
+impl<R: RoutingFeature, RC: RemoteConfigFeature, TUN: TunnelingFeature, TCP: TcpFeature> FeatureSet
+    for Features<R, RC, TUN, TCP>
+{
+    type Routing = R;
+    type RemoteConfig = RC;
+    type Tunneling = TUN;
+    type Tcp = TCP;
+}
+
+/// All features disabled.
+pub type DefaultFeatures = Features<NoRouting, NoRemoteConfig, NoTunneling, NoTcp>;
+
+// ============================================================================
+// Common Feature Configurations
+// ============================================================================
+
+/// KNX/IP Router: routing + remote config, no tunneling or TCP.
+pub type KnxIpRouterFeatures = Features<WithRouting, WithRemoteConfig, NoTunneling, NoTcp>;
+
+/// KNX/IP Interface: tunneling + remote config, no routing or TCP.
+pub type KnxIpInterfaceFeatures = Features<NoRouting, WithRemoteConfig, WithTunneling, NoTcp>;
+
+/// KNX/IP Router with TCP support: routing + remote config + TCP, no tunneling.
+pub type KnxIpRouterTcpFeatures = Features<WithRouting, WithRemoteConfig, NoTunneling, WithTcp>;
+
+/// Minimal routing-only configuration (e.g. for testing).
+pub type KnxIpRoutingOnlyFeatures = Features<WithRouting, NoRemoteConfig, NoTunneling, NoTcp>;
+
+// ============================================================================
+// Routing Feature
+// ============================================================================
+
+/// Compile-time feature slot for KNX/IP Routing.
+///
+/// The enabled variant ([`WithRouting`]) stores a [`RoutingServer`] and
+/// delegates all dispatch calls. The disabled variant ([`NoRouting`])
+/// uses `Server = ()` and returns empty results from all methods.
+pub trait RoutingFeature: 'static {
+    type Server;
+
+    fn create_server(multicast_addr: Ipv4Addr, port: u16) -> Self::Server;
+    fn supported_service() -> Option<SupportedService>;
+    fn endpoints(multicast_addr: Ipv4Addr) -> Vec<EndpointType, 4>;
+    fn service_types() -> Vec<KNXnetIPServiceType, 4>;
+    fn supports_requests() -> bool;
+
+    // Dispatch: receiving frames from the network.
+    fn on_indication(
+        server: &mut Self::Server,
+        service_type: KNXnetIPServiceType,
+        data: &[u8],
+        source: SocketAddrV4,
+        context: &ServerContext<'_>,
+    ) -> impl core::future::Future<Output = Result<Vec<PendingResponse, 4>, ServerError>>;
+
+    // Dispatch: sending frames from the stack to the network.
+    fn on_request(
+        server: &mut Self::Server,
+        message: &KnxMessageBuffer<Buffer<'static>>,
+        context: &ServerContext<'_>,
+    ) -> impl core::future::Future<Output = Result<Vec<PendingResponse, 4>, ServerError>>;
+
+    /// Whether the server handles this service type on this socket.
+    fn handles(service_type: KNXnetIPServiceType, socket_idx: usize, server_socket_indices: &[usize]) -> bool;
+}
+
+/// Routing is enabled — delegates to [`RoutingServer`].
+pub struct WithRouting;
+
+impl RoutingFeature for WithRouting {
+    type Server = RoutingServer;
+
+    fn create_server(multicast_addr: Ipv4Addr, port: u16) -> Self::Server {
+        RoutingServer::new(multicast_addr, port)
+    }
+
+    fn supported_service() -> Option<SupportedService> {
+        Some(SupportedService { family: substructs::ServiceFamily::Routing, version: 1 })
+    }
+
+    fn endpoints(multicast_addr: Ipv4Addr) -> Vec<EndpointType, 4> {
+        let mut eps = Vec::new();
+        let _ = eps.push(EndpointType::new_udp(multicast_addr, crate::KNX_PORT));
+        eps
+    }
+
+    fn service_types() -> Vec<KNXnetIPServiceType, 4> {
+        let mut st = Vec::new();
+        let _ = st.push(KNXnetIPServiceType::RoutingIndication);
+        let _ = st.push(KNXnetIPServiceType::RoutingBusy);
+        let _ = st.push(KNXnetIPServiceType::RoutingLostMessage);
+        let _ = st.push(KNXnetIPServiceType::RoutingSystemBroadcast);
+        st
+    }
+
+    fn supports_requests() -> bool {
+        true
+    }
+
+    async fn on_indication(
+        server: &mut Self::Server,
+        service_type: KNXnetIPServiceType,
+        data: &[u8],
+        source: SocketAddrV4,
+        context: &ServerContext<'_>,
+    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+        use super::servers::KnxNetIpServer;
+        server.on_indication(service_type, data, source, context).await
+    }
+
+    async fn on_request(
+        server: &mut Self::Server,
+        message: &KnxMessageBuffer<Buffer<'static>>,
+        context: &ServerContext<'_>,
+    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+        use super::servers::KnxNetIpServer;
+        server.on_request(message, context).await
+    }
+
+    fn handles(service_type: KNXnetIPServiceType, socket_idx: usize, server_socket_indices: &[usize]) -> bool {
+        Self::service_types().contains(&service_type) && server_socket_indices.contains(&socket_idx)
+    }
+}
+
+/// Routing is disabled — zero-cost no-op.
+pub struct NoRouting;
+
+impl RoutingFeature for NoRouting {
+    type Server = ();
+
+    fn create_server(_multicast_addr: Ipv4Addr, _port: u16) -> Self::Server {}
+    fn supported_service() -> Option<SupportedService> {
+        None
+    }
+    fn endpoints(_multicast_addr: Ipv4Addr) -> Vec<EndpointType, 4> {
+        Vec::new()
+    }
+    fn service_types() -> Vec<KNXnetIPServiceType, 4> {
+        Vec::new()
+    }
+    fn supports_requests() -> bool {
+        false
+    }
+
+    async fn on_indication(
+        _server: &mut Self::Server,
+        _service_type: KNXnetIPServiceType,
+        _data: &[u8],
+        _source: SocketAddrV4,
+        _context: &ServerContext<'_>,
+    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+        Ok(Vec::new())
+    }
+
+    async fn on_request(
+        _server: &mut Self::Server,
+        _message: &KnxMessageBuffer<Buffer<'static>>,
+        _context: &ServerContext<'_>,
+    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+        Err(ServerError::Unsupported)
+    }
+
+    fn handles(_service_type: KNXnetIPServiceType, _socket_idx: usize, _server_socket_indices: &[usize]) -> bool {
+        false
+    }
+}
+
+// ============================================================================
+// Remote Config Feature
+// ============================================================================
+
+/// Compile-time feature slot for Remote Diagnostics & Configuration.
+pub trait RemoteConfigFeature: 'static {
+    type Server;
+
+    fn create_server() -> Self::Server;
+    fn supported_service() -> Option<SupportedService>;
+    fn endpoints() -> Vec<EndpointType, 4>;
+    fn service_types() -> Vec<KNXnetIPServiceType, 4>;
+
+    /// Whether ip_diagnostics context should be exposed to servers.
+    fn exposes_diagnostics() -> bool;
+
+    fn on_indication(
+        server: &mut Self::Server,
+        service_type: KNXnetIPServiceType,
+        data: &[u8],
+        source: SocketAddrV4,
+        context: &ServerContext<'_>,
+    ) -> impl core::future::Future<Output = Result<Vec<PendingResponse, 4>, ServerError>>;
+
+    fn handles(service_type: KNXnetIPServiceType, socket_idx: usize, server_socket_indices: &[usize]) -> bool;
+}
+
+/// Remote config is enabled — delegates to [`RemoteConfigurationServer`].
+pub struct WithRemoteConfig;
+
+impl RemoteConfigFeature for WithRemoteConfig {
+    type Server = RemoteConfigurationServer;
+
+    fn create_server() -> Self::Server {
+        RemoteConfigurationServer::new()
+    }
+
+    fn supported_service() -> Option<SupportedService> {
+        Some(SupportedService { family: substructs::ServiceFamily::RemoteConfigAndDiag, version: 1 })
+    }
+
+    fn endpoints() -> Vec<EndpointType, 4> {
+        let mut eps = Vec::new();
+        let _ = eps.push(EndpointType::new_udp(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));
+        eps
+    }
+
+    fn service_types() -> Vec<KNXnetIPServiceType, 4> {
+        let mut st = Vec::new();
+        let _ = st.push(KNXnetIPServiceType::RemoteDiagnosticRequest);
+        let _ = st.push(KNXnetIPServiceType::RemoteBasicConfigurationRequest);
+        let _ = st.push(KNXnetIPServiceType::RemoteResetRequest);
+        st
+    }
+
+    fn exposes_diagnostics() -> bool {
+        true
+    }
+
+    async fn on_indication(
+        server: &mut Self::Server,
+        service_type: KNXnetIPServiceType,
+        data: &[u8],
+        source: SocketAddrV4,
+        context: &ServerContext<'_>,
+    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+        use super::servers::KnxNetIpServer;
+        server.on_indication(service_type, data, source, context).await
+    }
+
+    fn handles(service_type: KNXnetIPServiceType, socket_idx: usize, server_socket_indices: &[usize]) -> bool {
+        Self::service_types().contains(&service_type) && server_socket_indices.contains(&socket_idx)
+    }
+}
+
+/// Remote config is disabled — zero-cost no-op.
+pub struct NoRemoteConfig;
+
+impl RemoteConfigFeature for NoRemoteConfig {
+    type Server = ();
+
+    fn create_server() -> Self::Server {}
+    fn supported_service() -> Option<SupportedService> {
+        None
+    }
+    fn endpoints() -> Vec<EndpointType, 4> {
+        Vec::new()
+    }
+    fn service_types() -> Vec<KNXnetIPServiceType, 4> {
+        Vec::new()
+    }
+    fn exposes_diagnostics() -> bool {
+        false
+    }
+
+    async fn on_indication(
+        _server: &mut Self::Server,
+        _service_type: KNXnetIPServiceType,
+        _data: &[u8],
+        _source: SocketAddrV4,
+        _context: &ServerContext<'_>,
+    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+        Ok(Vec::new())
+    }
+
+    fn handles(_service_type: KNXnetIPServiceType, _socket_idx: usize, _server_socket_indices: &[usize]) -> bool {
+        false
+    }
+}
+
+// ============================================================================
+// Tunneling Feature
+// ============================================================================
+
+/// Compile-time feature slot for KNX/IP Tunneling.
+///
+/// Controls whether the connection manager includes a
+/// [`TunnelConnectionHandler`] and whether tunneling connections can
+/// be accepted. The associated `Handlers` type selects the concrete
+/// [`ConnectionHandlers`] implementation used by the connection manager.
+#[allow(private_interfaces)] // build_handlers takes &dyn KnxNetIpContext (pub(crate)), but that's fine — only called internally
+pub trait TunnelingFeature: 'static {
+    type Handlers<'a>: super::servers::ConnectionHandlers;
+
+    fn supported_service() -> Option<SupportedService>;
+
+    /// Build the connection handler collection for the connection manager.
+    fn build_handlers<'a>(context: &'a dyn super::KnxNetIpContext) -> Self::Handlers<'a>;
+}
+
+/// Tunneling is enabled.
+pub struct WithTunneling;
+
+#[allow(private_interfaces)]
+impl TunnelingFeature for WithTunneling {
+    type Handlers<'a> = super::servers::DevMgmtAndTunnel<'a>;
+
+    fn supported_service() -> Option<SupportedService> {
+        Some(SupportedService { family: substructs::ServiceFamily::Tunneling, version: 1 })
+    }
+
+    fn build_handlers<'a>(context: &'a dyn super::KnxNetIpContext) -> Self::Handlers<'a> {
+        let dev_mgmt = super::servers::DeviceMgmtConnectionHandler::new(
+            context.property_handler(),
+            context.application_layer_sender(),
+            context.buffer_manager(),
+        );
+
+        let additional_addresses = context.additional_individual_addresses();
+        let ext_info = context.extended_device_information();
+        let tunnel = super::servers::TunnelConnectionHandler::new(
+            additional_addresses.as_slice(),
+            ext_info.device_descriptor_type0,
+            context.manufacturer_code(),
+            ext_info.max_local_apdu_len,
+        );
+
+        super::servers::DevMgmtAndTunnel::new(dev_mgmt, tunnel)
+    }
+}
+
+/// Tunneling is disabled.
+pub struct NoTunneling;
+
+#[allow(private_interfaces)]
+impl TunnelingFeature for NoTunneling {
+    type Handlers<'a> = super::servers::DevMgmtOnly<'a>;
+
+    fn supported_service() -> Option<SupportedService> {
+        None
+    }
+
+    fn build_handlers<'a>(context: &'a dyn super::KnxNetIpContext) -> Self::Handlers<'a> {
+        let dev_mgmt = super::servers::DeviceMgmtConnectionHandler::new(
+            context.property_handler(),
+            context.application_layer_sender(),
+            context.buffer_manager(),
+        );
+
+        super::servers::DevMgmtOnly::new(dev_mgmt)
+    }
+}
+
+// ============================================================================
+// TCP Feature
+// ============================================================================
+
+/// Compile-time feature slot for TCP transport.
+///
+/// Controls whether a TCP listener is bound and whether TCP connections
+/// can be accepted. When disabled, the TCP manager type is `()` and the
+/// TCP event loop arm uses `pending()` with `Infallible` events.
+pub trait TcpFeature: 'static {
+    /// Whether TCP is enabled (affects Core service family version).
+    fn is_enabled() -> bool;
+}
+
+/// TCP is enabled.
+pub struct WithTcp;
+
+impl TcpFeature for WithTcp {
+    fn is_enabled() -> bool {
+        true
+    }
+}
+
+/// TCP is disabled.
+pub struct NoTcp;
+
+impl TcpFeature for NoTcp {
+    fn is_enabled() -> bool {
+        false
+    }
+}

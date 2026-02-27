@@ -118,7 +118,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use zweidraehte::prelude::*;
 use zweidraehte::{
     dpt::{DPT_Switch, InterfaceObjectType},
-    layers::linklayers::knxip::KnxNetIpBuilder,
+    layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpRouterFeatures},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
         IpParameterObject,
@@ -738,7 +738,7 @@ impl StackDefinition for MyKnxStackWithKnxIp {
     const TL_STYLE: TlStyle = TlStyle::Style1;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
-    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, 2>;
+    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, KnxIpRouterFeatures, 2>;
     type State = MyState;
     type Mem = NoMemoryMap;
 
@@ -778,7 +778,7 @@ async fn main(spawner: Spawner) {
 
     let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
     let link_layer_builder =
-        KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new("knxdevbridgeif", interface_addr, control_endpoint, ())
+        KnxNetIpBuilder::<platform::LinuxIpTransport, _, 2>::new("knxdevbridgeif", interface_addr, control_endpoint, ())
             .enable_routing_server()
             .enable_remote_config_server();
 

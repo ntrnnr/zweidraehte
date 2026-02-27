@@ -207,7 +207,7 @@ async fn main(spawner: Spawner) {
 
     let interface_addr = platform::get_interface_address(INTERFACE_NAME).expect("Failed to get interface address");
     let link_layer_builder =
-        KnxNetIpBuilder::<platform::LinuxIpTransport, 2>::new(INTERFACE_NAME, interface_addr, control_endpoint, ())
+        KnxNetIpBuilder::<platform::LinuxIpTransport, _, 2>::new(INTERFACE_NAME, interface_addr, control_endpoint, ())
             .enable_routing_server()
             .enable_remote_config_server()
             .enable_tcp();

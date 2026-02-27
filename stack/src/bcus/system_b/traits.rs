@@ -103,7 +103,7 @@ use super::memory_map::{MemoryLayout, SystemBMemoryMap};
 ///     const DEVICE: &'static DeviceDescriptor = &MY_DESCRIPTOR;
 ///     type P = MyParams;
 ///     type CO = MyComObjects;
-///     type LLB = KnxNetIpBuilder<LinuxIpTransport, 2>;
+///     type LLB = KnxNetIpBuilder<LinuxIpTransport, KnxIpRouterFeatures, 2>;
 ///     type State = MyState;
 ///     type Mem = SystemBMemoryMap;
 ///     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, MyState>;
@@ -123,9 +123,9 @@ use super::memory_map::{MemoryLayout, SystemBMemoryMap};
 ///
 /// # Limitations
 ///
-/// The `KnxNetIpBuilder` socket count is fixed at 2 by convention. Devices
-/// needing more sockets specify a different `KnxNetIpBuilder<T, N>` in their
-/// `StackDefinition::LLB`.
+/// The `KnxNetIpBuilder` socket count is fixed at 2 by convention. The
+/// feature type parameter selects which optional servers to include at
+/// compile time (e.g., `KnxIpRouterFeatures`, `KnxIpInterfaceFeatures`).
 pub trait SystemBIpDeviceDef: Copy + 'static {
     /// Device descriptor — single source of truth for hardware identity
     /// and table capacities.

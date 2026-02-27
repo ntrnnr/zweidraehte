@@ -59,7 +59,10 @@ use crate::{
 };
 
 use super::{
-    knxip::{KnxNetIpBuilder, KnxNetIpContext, KnxNetIpResources, SubnetIndication, SubnetLink},
+    knxip::{
+        KnxNetIpBuilder, KnxNetIpContext, KnxNetIpResources, SubnetIndication, SubnetLink,
+        features,
+    },
     tpuart::{AddressChecker, DeviceAddressChecker, TpUartLinkLayer},
 };
 
@@ -139,19 +142,20 @@ pub struct IpInterfaceLinkLayerBuilder<
     W,
     R,
     T: IpTransport,
-    const MAX_SOCKETS: usize,
+    F: features::FeatureSet = features::DefaultFeatures,
+    const MAX_SOCKETS: usize = 4,
     const MAX_TCP_STREAMS: usize = 1,
     const MAX_CHANNELS: usize = 1,
 > {
     tpuart_tx: W,
     tpuart_rx: R,
-    knxip_builder: KnxNetIpBuilder<T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>,
+    knxip_builder: KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>,
 }
 
-impl<W, R, T: IpTransport, const MS: usize, const MTS: usize, const MC: usize>
-    IpInterfaceLinkLayerBuilder<W, R, T, MS, MTS, MC>
+impl<W, R, T: IpTransport, F: features::FeatureSet, const MS: usize, const MTS: usize, const MC: usize>
+    IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
 {
-    pub fn new(tpuart_tx: W, tpuart_rx: R, knxip_builder: KnxNetIpBuilder<T, MS, MTS, MC>) -> Self {
+    pub fn new(tpuart_tx: W, tpuart_rx: R, knxip_builder: KnxNetIpBuilder<T, F, MS, MTS, MC>) -> Self {
         Self { tpuart_tx, tpuart_rx, knxip_builder }
     }
 }
@@ -170,8 +174,8 @@ impl IpInterfaceResources {
 
 // -- LinkLayerBuilderBase -----------------------------------------------------
 
-impl<W: Send + 'static, R: Send + 'static, T: IpTransport + 'static, const MS: usize, const MTS: usize, const MC: usize>
-    LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, T, MS, MTS, MC>
+impl<W: Send + 'static, R: Send + 'static, T: IpTransport + 'static, F: features::FeatureSet + 'static, const MS: usize, const MTS: usize, const MC: usize>
+    LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
 {
     type Resources = IpInterfaceResources;
 
@@ -186,13 +190,14 @@ impl<W: Send + 'static, R: Send + 'static, T: IpTransport + 'static, const MS: u
 // - `KnxNetIpContext` for the KNX/IP server
 // - `AddressTableContext` for the address checker (group ACK decisions)
 
-impl<CTX, W, R, T, const MS: usize, const MTS: usize, const MC: usize> LinkLayerBuilder<CTX>
-    for IpInterfaceLinkLayerBuilder<W, R, T, MS, MTS, MC>
+impl<CTX, W, R, T, F, const MS: usize, const MTS: usize, const MC: usize> LinkLayerBuilder<CTX>
+    for IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
 where
     CTX: KnxNetIpContext + AddressTableContext,
     W: embedded_io_async::Write + Send + 'static,
     R: embedded_io_async::Read + Send + 'static,
     T: IpTransport + 'static,
+    F: features::FeatureSet + 'static,
 {
     fn build_and_run<'a>(
         self,

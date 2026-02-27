@@ -63,7 +63,7 @@ use zweidraehte::bcus::system_b::{
     create_knxip_objects,
 };
 use zweidraehte::dpt::*;
-use zweidraehte::layers::linklayers::knxip::KnxNetIpBuilder;
+use zweidraehte::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpRouterTcpFeatures};
 use zweidraehte::layers::transport::TlStyle;
 use zweidraehte::prelude::*;
 
@@ -564,7 +564,7 @@ impl StackDefinition for DemoStack {
 
     type P = DemoParams;
     type CO = comm_objs::DemoComObjects;
-    type LLB = KnxNetIpBuilder<LinuxIpTransport, 2>;
+    type LLB = KnxNetIpBuilder<LinuxIpTransport, KnxIpRouterTcpFeatures, 2>;
     type State = DemoState;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, DemoState>;
