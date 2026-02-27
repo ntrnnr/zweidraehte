@@ -3,10 +3,10 @@ use core::{
     net::{Ipv4Addr, SocketAddrV4},
 };
 
-use embassy_futures::select::{Either, Either4, select, select4};
+use embassy_futures::select::{Either3, Either4, select3, select4};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
-    channel::{Channel, DynamicSender},
+    channel::{Channel, DynamicReceiver, DynamicSender},
 };
 use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
@@ -408,6 +408,36 @@ impl KnxNetIpResources {
     }
 }
 
+// ============================================================================
+// Subnet Link (IP Interface composite mode)
+// ============================================================================
+
+/// A cEMI subnetwork indication to forward to tunnel clients.
+///
+/// The composite bridge loop converts TPUART indications to cEMI and
+/// sends them here; the KNX/IP run loop calls
+/// [`ConnectionManager::forward_bus_indication()`] to deliver them to
+/// matching tunnel connections.
+pub struct SubnetIndication {
+    pub cemi_data: Buffer<'static>,
+}
+
+/// KNX/IP server's link to the KNX subnetwork for IP Interface composite mode.
+///
+/// When a KNX/IP server runs as part of a composite IP Interface link
+/// layer, it needs bidirectional communication with the subnetwork:
+///
+/// - **`subnet_ind_rx`**: Receive subnetwork indications (cEMI) from the
+///   bridge loop. KNX/IP forwards these to matching tunnel clients.
+/// - **`subnet_inject_tx`**: Send tunnel-injected frames back to the bridge
+///   loop for subnetwork TX. This replaces `ind_tx` for `AckAndInject` so
+///   that tunnel-originated frames go to the physical bus instead of the
+///   device's own network layer.
+pub struct SubnetLink<'a> {
+    pub subnet_ind_rx: DynamicReceiver<'a, SubnetIndication>,
+    pub subnet_inject_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+}
+
 /// Maximum number of connectionless servers (discovery + routing)
 const MAX_SERVERS: usize = 3;
 
@@ -559,12 +589,13 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
     /// 3. Deduplicates and creates UDP sockets
     /// 4. Creates the connection manager with device management handler
     /// 5. Returns the final KnxNetIp instance
-    fn build<'res>(
+    pub(crate) fn build<'res>(
         self,
         resources: &'res mut KnxNetIpResources,
         context: &'res dyn KnxNetIpContext,
         ind_tx: DynamicSender<'res, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'res, ConfirmationMessage<Buffer<'static>>>,
+        subnet_link: Option<SubnetLink<'res>>,
     ) -> KnxNetIp<'res, T, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS> {
         // ====================================================================
         // Auto-derive supported services from enabled features
@@ -812,6 +843,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
             context,
             enable_remote_config: self.enable_remote_config,
             tcp_manager,
+            subnet_link,
         }
     }
 }
@@ -842,7 +874,7 @@ impl<
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
-        let mut link_layer = self.build(resources, context, ind_tx, conf_tx);
+        let mut link_layer = self.build(resources, context, ind_tx, conf_tx, None);
         async move { link_layer.run(req_rx).await }
     }
 }
@@ -924,6 +956,13 @@ pub struct KnxNetIp<
     /// TCP connection manager. Always present; without a bound listener
     /// it is a no-op.
     tcp_manager: TcpManager<T, MAX_TCP_STREAMS, MAX_CHANNELS>,
+    /// Bus bridge for IP Interface composite mode.
+    ///
+    /// When `Some`, this KNX/IP instance is part of a composite link layer
+    /// bridging to a TP1 bus. `AckAndInject` frames are routed to
+    /// `subnet_inject_tx` instead of the real `ind_tx`, and bus indications
+    /// arrive via `subnet_ind_rx` for forwarding to tunnel clients.
+    subnet_link: Option<SubnetLink<'res>>,
 }
 
 impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
@@ -1096,9 +1135,19 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                     // Connection lifecycle and connection-oriented data go
                     // to the connection manager.
                     ServiceCategory::ConnectionLifecycle | ServiceCategory::ConnectionData => {
+                        // In composite (IP Interface) mode, tunnel-injected
+                        // frames (`AckAndInject`) must go to the physical bus
+                        // via `subnet_inject_tx` rather than the device's own
+                        // network layer. Device management frames use
+                        // `Responses` (not `AckAndInject`), so swapping for
+                        // all connection data is safe.
+                        let inject_tx = match &self.subnet_link {
+                            Some(bridge) => bridge.subnet_inject_tx,
+                            None => self.ind_tx,
+                        };
                         match self
                             .connection_manager
-                            .on_indication(service_type, buffer, origin, self.context.buffer_manager(), self.ind_tx)
+                            .on_indication(service_type, buffer, origin, self.context.buffer_manager(), inject_tx)
                             .await
                         {
                             Ok(result) => {
@@ -1186,7 +1235,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
     ///   servers or the connection manager and forwarded up via `self.ind_tx`
     /// - Queued response channel messages ready to send on the wire
     /// - Timer events (retry queue, heartbeat, TCP idle)
-    async fn run<M>(&mut self, mut req_rx: M) -> !
+    pub(crate) async fn run<M>(&mut self, mut req_rx: M) -> !
     where
         M: Inbox<RequestMessage<Buffer<'static>>>,
     {
@@ -1276,8 +1325,20 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                 (None, None) => None,
             };
 
-            let transport_future =
-                select(self.udp_manager.next_event(buffer_manager), self.tcp_manager.next_event(buffer_manager));
+            // Third transport arm: bus bridge indications from the TP1 bus.
+            // In standalone mode (no bridge), this pends forever.
+            let subnet_ind_future = async {
+                match &mut self.subnet_link {
+                    Some(bridge) => bridge.subnet_ind_rx.receive().await,
+                    None => pending::<SubnetIndication>().await,
+                }
+            };
+
+            let transport_future = select3(
+                self.udp_manager.next_event(buffer_manager),
+                self.tcp_manager.next_event(buffer_manager),
+                subnet_ind_future,
+            );
 
             let result = match next_timer {
                 Some(timer_at) => {
@@ -1294,22 +1355,22 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                 }
 
                 // ============================================================
-                // Transport events (UDP or TCP)
+                // Transport events (UDP, TCP, or bus bridge indication)
                 // ============================================================
                 Either4::First(transport_event) => match transport_event {
                     // UDP datagram received (multicast echoes already filtered)
-                    Either::First(UdpEvent::Frame { socket_idx, source, destination, buffer }) => {
+                    Either3::First(UdpEvent::Frame { socket_idx, source, destination, buffer }) => {
                         let origin = PacketOrigin::Udp { source, socket_idx, destination };
                         self.dispatch_frame(&buffer, origin, response_channel).await;
                     }
 
                     // UDP socket receive error
-                    Either::First(UdpEvent::Error { socket_idx }) => {
+                    Either3::First(UdpEvent::Error { socket_idx }) => {
                         error!("Socket {} receive error", socket_idx);
                     }
 
                     // TCP frame received
-                    Either::Second(TcpEvent::Frame { tcp_idx, peer, buffer }) => {
+                    Either3::Second(TcpEvent::Frame { tcp_idx, peer, buffer }) => {
                         debug!("TCP connection {}: received {} byte frame from {}", tcp_idx, buffer.len(), peer);
 
                         let origin = PacketOrigin::Tcp { peer, tcp_idx };
@@ -1317,9 +1378,20 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                     }
 
                     // TCP connection closed
-                    Either::Second(TcpEvent::Closed { tcp_idx, .. }) => {
+                    Either3::Second(TcpEvent::Closed { tcp_idx, .. }) => {
                         info!("TCP connection {} closed, tearing down KNX/IP channels", tcp_idx);
                         self.connection_manager.on_tcp_closed(tcp_idx);
+                    }
+
+                    // Bus bridge: TP1 bus indication to forward to tunnel clients
+                    Either3::Third(subnet_indication) => {
+                        let forwarded = self
+                            .connection_manager
+                            .forward_bus_indication(&subnet_indication.cemi_data, self.context.buffer_manager());
+
+                        for response in forwarded {
+                            response_channel.send(response).await;
+                        }
                     }
                 },
 
