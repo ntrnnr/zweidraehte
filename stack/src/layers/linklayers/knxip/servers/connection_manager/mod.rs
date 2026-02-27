@@ -481,6 +481,70 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         None
     }
 
+    /// Forward a bus indication (cEMI L_Data.ind) to matching tunnel clients.
+    ///
+    /// Called by the composite link layer when a frame is received from
+    /// the TP1 bus. The tunnel handler determines which active connections
+    /// should receive the frame based on the cEMI destination:
+    /// - Group-addressed / broadcast → all active tunnel connections
+    /// - Individually-addressed → only the connection whose assigned IA
+    ///   matches the destination
+    ///
+    /// Each matching connection gets a `TunnelingRequest` with the
+    /// per-connection server-side send sequence counter. The returned
+    /// responses should be sent on the wire by the caller.
+    pub fn forward_bus_indication(
+        &mut self,
+        cemi_data: &[u8],
+        buffer_manager: &DynBufferManager<'static>,
+    ) -> Vec<PendingResponse, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }> {
+        let mut responses = Vec::new();
+
+        // Find the tunnel handler to determine target channels.
+        let target_channels = {
+            let tunnel_handler = self.handlers.iter().find_map(|(ct, handler)| {
+                if *ct == ConnectionType::Tunnel {
+                    if let ConnectionTypeHandlerEnum::Tunnel(h) = handler {
+                        return Some(h);
+                    }
+                }
+                None
+            });
+
+            let Some(handler) = tunnel_handler else {
+                return responses;
+            };
+
+            handler.channels_for_bus_indication(cemi_data)
+        };
+
+        // For each target channel, build a TunnelingRequest with the
+        // connection's send sequence counter.
+        for channel_id in target_channels {
+            let Some(conn) = self.find_connection_mut(channel_id) else {
+                continue;
+            };
+
+            let send_seq = conn.send_sequence_counter;
+            conn.send_sequence_counter = send_seq.wrapping_add(1);
+            let target = conn.response_target();
+
+            if let Some(response) = TunnelConnectionHandler::build_tunneling_request(
+                channel_id,
+                send_seq,
+                cemi_data,
+                target,
+                buffer_manager,
+            ) {
+                let _ = responses.push(response);
+            } else {
+                warn!("No buffer for bus→tunnel forward (channel {})", channel_id);
+            }
+        }
+
+        responses
+    }
+
     /// Called when a TCP connection is closed (peer disconnect or I/O error).
     ///
     /// Tears down all KNX/IP connections that were running over this TCP

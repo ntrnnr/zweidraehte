@@ -45,11 +45,11 @@ use crate::messages::buffers::DynBufferManager;
 use crate::messages::knxip::substructs::{CRD, CRI, TunnelingCRD, TunnelingLayer, TunnelingSlotInfo};
 use crate::messages::knxip::{
     ConnectionStatus, KNXnetIPServiceType, TunnelingAck, TunnelingAckBuilder, TunnelingFeatureGet,
-    TunnelingFeatureResponseBuilder, TunnelingFeatureSet, TunnelingRequest,
+    TunnelingFeatureResponseBuilder, TunnelingFeatureSet, TunnelingRequest, TunnelingRequestBuilder,
 };
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
-use super::super::{PendingResponse, ServerError};
+use super::super::{PendingResponse, ResponseTarget, ServerError};
 use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction};
 
 // ============================================================================
@@ -176,6 +176,82 @@ impl TunnelConnectionHandler {
                 .push(TunnelingSlotInfo { individual_address: slot.individual_address, status: status_word.into() });
         }
         (self.max_apdu_length, infos)
+    }
+
+    /// Determine which active tunnel channels should receive a forwarded
+    /// bus indication, based on the cEMI destination address.
+    ///
+    /// Returns channel IDs for all matching connections:
+    /// - Group-addressed / broadcast frames → all active connections
+    /// - Individually-addressed frames → only the connection whose
+    ///   assigned IA matches the destination
+    ///
+    /// The `cemi_data` must be a raw cEMI L_Data.ind frame. The destination
+    /// address is extracted from the cEMI header:
+    ///   `[mc(1) + add_info_len(1) + add_info(N) + ctrl1(1) + ctrl2(1) + src(2) + dst(2)]`
+    /// where `ctrl2` bit 7 is the address type flag (1 = group).
+    pub fn channels_for_bus_indication(
+        &self,
+        cemi_data: &[u8],
+    ) -> heapless::Vec<u8, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES> {
+        let mut channels = heapless::Vec::new();
+
+        // Parse cEMI to extract destination address type and address.
+        // We need at least: mc(1) + add_info_len(1) + ctrl1(1) + ctrl2(1) + src(2) + dst(2) = 8 bytes
+        // (with add_info_len = 0).
+        if cemi_data.len() < 2 {
+            return channels;
+        }
+        let add_info_len = cemi_data[1] as usize;
+        let ctrl2_offset = 2 + add_info_len + 1; // skip mc + add_info_len + add_info + ctrl1
+        let dst_offset = ctrl2_offset + 1 + 2; // skip ctrl2 + src(2)
+
+        if cemi_data.len() < dst_offset + 2 {
+            return channels;
+        }
+
+        let ctrl2 = cemi_data[ctrl2_offset];
+        let is_group_addressed = (ctrl2 & 0x80) != 0;
+        let dst_hi = cemi_data[dst_offset];
+        let dst_lo = cemi_data[dst_offset + 1];
+
+        if is_group_addressed || (dst_hi == 0 && dst_lo == 0) {
+            // Group address or broadcast: forward to all active connections.
+            for slot in &self.slots {
+                if let Some(channel_id) = slot.active_channel {
+                    let _ = channels.push(channel_id);
+                }
+            }
+        } else {
+            // Individual address: forward only to the connection whose IA matches.
+            let dst_addr = IndividualAddress::from_bytes(&[dst_hi, dst_lo]);
+            for slot in &self.slots {
+                if slot.individual_address == dst_addr {
+                    if let Some(channel_id) = slot.active_channel {
+                        let _ = channels.push(channel_id);
+                    }
+                    break;
+                }
+            }
+        }
+
+        channels
+    }
+
+    /// Build a `TunnelingRequest` wrapping a cEMI frame for a specific
+    /// channel. The caller must supply and increment the send sequence
+    /// counter from the `ConnectionContext`.
+    pub fn build_tunneling_request(
+        channel_id: u8,
+        sequence_counter: u8,
+        cemi_data: &[u8],
+        target: ResponseTarget,
+        buffer_manager: &DynBufferManager<'static>,
+    ) -> Option<PendingResponse> {
+        let builder = TunnelingRequestBuilder::with_payload(channel_id, sequence_counter, cemi_data);
+        let mut buffer = buffer_manager.try_alloc()?;
+        buffer.serialize(&builder);
+        Some(PendingResponse { buffer, target })
     }
 
     /// Find a slot by channel ID.
