@@ -1172,16 +1172,7 @@ impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, co
                     // Connection lifecycle and connection-oriented data go
                     // to the connection manager.
                     ServiceCategory::ConnectionLifecycle | ServiceCategory::ConnectionData => {
-                        // In composite (IP Interface) mode, tunnel-injected
-                        // frames (`AckAndInject`) must go to the physical bus
-                        // via `subnet_inject_tx` rather than the device's own
-                        // network layer. Device management frames use
-                        // `Responses` (not `AckAndInject`), so swapping for
-                        // all connection data is safe.
-                        let inject_tx = match &self.subnet_link {
-                            Some(bridge) => bridge.subnet_inject_tx,
-                            None => self.ind_tx,
-                        };
+                        let inject_tx = self.subnet_inject_tx();
                         match self
                             .connection_manager
                             .on_indication(service_type, buffer, origin, self.context.buffer_manager(), inject_tx)
@@ -1191,7 +1182,7 @@ impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, co
                                 for response in result.responses {
                                     response_channel.send(response).await;
                                 }
-                                self.apply_tcp_channel_events(result.tcp_events);
+                                self.apply_tcp_channel_events(&result.tcp_events);
                             }
                             Err(e) => {
                                 debug!("Connection manager error for {:?}: {:?}", service_type, e);
@@ -1290,21 +1281,56 @@ impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, co
     }
 
     /// Apply TCP channel tracking events to the TCP manager.
-    fn apply_tcp_channel_events(&mut self, events: Vec<servers::TcpChannelEvent, 2>) {
+    fn apply_tcp_channel_events(&mut self, events: &[servers::TcpChannelEvent]) {
         use servers::TcpChannelEvent;
         for event in events {
             match event {
                 TcpChannelEvent::Added { tcp_idx, channel_id } => {
-                    if let Some(tcp_conn) = self.tcp_manager.connection_mut(tcp_idx) {
-                        tcp_conn.add_channel(channel_id);
+                    if let Some(tcp_conn) = self.tcp_manager.connection_mut(*tcp_idx) {
+                        tcp_conn.add_channel(*channel_id);
                     }
                 }
                 TcpChannelEvent::Removed { tcp_idx, channel_id } => {
-                    if let Some(tcp_conn) = self.tcp_manager.connection_mut(tcp_idx) {
-                        tcp_conn.remove_channel(channel_id);
+                    if let Some(tcp_conn) = self.tcp_manager.connection_mut(*tcp_idx) {
+                        tcp_conn.remove_channel(*channel_id);
                     }
                 }
             }
+        }
+    }
+
+    /// Send a pending response over the appropriate transport (UDP or TCP).
+    ///
+    /// On TCP write failure, the connection is closed and all KNX/IP
+    /// channels on that TCP connection are torn down.
+    async fn send_response(&mut self, response: PendingResponse) {
+        let data = &response.buffer[..];
+
+        match response.target {
+            ResponseTarget::Udp { destination, socket_idx } => {
+                debug!("Sending {} byte response to {} on socket {}", data.len(), destination, socket_idx);
+                let _ = self.udp_manager.send_to(socket_idx, data, destination).await;
+            }
+            ResponseTarget::Tcp { tcp_idx } => {
+                debug!("Sending {} byte response on TCP connection {}", data.len(), tcp_idx);
+                if self.tcp_manager.write_to(tcp_idx, data).await.is_err() {
+                    warn!("TCP write failed on connection {}, closing", tcp_idx);
+                    self.tcp_manager.close(tcp_idx);
+                    self.connection_manager.on_tcp_closed(tcp_idx);
+                }
+            }
+        }
+    }
+
+    /// Get the injection TX channel for tunnel-originated frames.
+    ///
+    /// In composite (IP Interface) mode, tunnel-injected frames go to the
+    /// physical bus via `subnet_inject_tx`. In standalone mode, they go to
+    /// the device's own network layer via `ind_tx`.
+    fn subnet_inject_tx(&self) -> DynamicSender<'res, IndicationMessage<Buffer<'static>>> {
+        match &self.subnet_link {
+            Some(bridge) => bridge.subnet_inject_tx,
+            None => self.ind_tx,
         }
     }
 }
@@ -1336,28 +1362,7 @@ impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, co
             // First, drain any pending responses to free their buffers
             // This is important because retry queue processing may need these buffers
             while let Ok(pending_response) = response_channel.try_receive() {
-                let data = &pending_response.buffer[..];
-
-                match pending_response.target {
-                    ResponseTarget::Udp { destination, socket_idx } => {
-                        debug!(
-                            "Sending {} byte response to {} on socket {} (drain)",
-                            data.len(),
-                            destination,
-                            socket_idx
-                        );
-                        let _ = self.udp_manager.send_to(socket_idx, data, destination).await;
-                    }
-                    ResponseTarget::Tcp { tcp_idx } => {
-                        debug!("Sending {} byte response on TCP connection {} (drain)", data.len(), tcp_idx);
-                        if self.tcp_manager.write_to(tcp_idx, data).await.is_err() {
-                            warn!("TCP write failed on connection {}, closing", tcp_idx);
-                            self.tcp_manager.close(tcp_idx);
-                            self.connection_manager.on_tcp_closed(tcp_idx);
-                        }
-                    }
-                }
-                // pending_response is dropped here, freeing its buffer
+                self.send_response(pending_response).await;
             }
 
             // Process any expired retry requests
@@ -1366,13 +1371,7 @@ impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, co
             // Run connection manager heartbeat check if connections are active
             if self.connection_manager.has_active_connections() {
                 let tcp_events = self.connection_manager.on_tick();
-                for event in tcp_events {
-                    if let servers::TcpChannelEvent::Removed { tcp_idx, channel_id } = event
-                        && let Some(tcp_conn) = self.tcp_manager.connection_mut(tcp_idx)
-                    {
-                        tcp_conn.remove_channel(channel_id);
-                    }
-                }
+                self.apply_tcp_channel_events(&tcp_events);
             }
 
             // Check TCP idle timeouts alongside the heartbeat.
@@ -1547,22 +1546,7 @@ impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, co
 
                 // Response ready to send
                 Either4::Third(pending_response) => {
-                    let data = &pending_response.buffer[..];
-
-                    match pending_response.target {
-                        ResponseTarget::Udp { destination, socket_idx } => {
-                            debug!("Sending {} byte response to {} on socket {}", data.len(), destination, socket_idx);
-                            let _ = self.udp_manager.send_to(socket_idx, data, destination).await;
-                        }
-                        ResponseTarget::Tcp { tcp_idx } => {
-                            debug!("Sending {} byte response on TCP connection {}", data.len(), tcp_idx);
-                            if self.tcp_manager.write_to(tcp_idx, data).await.is_err() {
-                                warn!("TCP write failed on connection {}, closing", tcp_idx);
-                                self.tcp_manager.close(tcp_idx);
-                                self.connection_manager.on_tcp_closed(tcp_idx);
-                            }
-                        }
-                    }
+                    self.send_response(pending_response).await;
                 }
             }
         }
