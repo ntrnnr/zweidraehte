@@ -39,9 +39,10 @@
 
 use embassy_time::Instant;
 
+use crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES;
 use crate::address::IndividualAddress;
 use crate::messages::buffers::DynBufferManager;
-use crate::messages::knxip::substructs::{CRD, CRI, TunnelingCRD, TunnelingLayer};
+use crate::messages::knxip::substructs::{CRD, CRI, TunnelingCRD, TunnelingLayer, TunnelingSlotInfo};
 use crate::messages::knxip::{
     ConnectionStatus, KNXnetIPServiceType, TunnelingAck, TunnelingAckBuilder, TunnelingFeatureGet,
     TunnelingFeatureResponseBuilder, TunnelingFeatureSet, TunnelingRequest,
@@ -100,7 +101,7 @@ mod feature_id {
 pub struct TunnelConnectionHandler {
     /// Fixed array of tunnel slots, one per additional IA.
     /// Allocated at construction time from the device's additional addresses.
-    slots: heapless::Vec<TunnelSlot, 8>,
+    slots: heapless::Vec<TunnelSlot, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>,
 
     /// Device Descriptor Type 0 for feature responses.
     device_descriptor_type_0: u16,
@@ -114,7 +115,7 @@ pub struct TunnelConnectionHandler {
     /// Per-connection feature info enable bitmask.
     /// Bit N = feature N is enabled for unsolicited notifications.
     /// Indexed by slot index. Stored as a simple array parallel to `slots`.
-    feature_info_enable: [u8; 8],
+    feature_info_enable: [u8; MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES],
 
     /// Bus connection status: true = bus is connected.
     /// This would be updated by the composite link layer when the bus
@@ -137,10 +138,7 @@ impl TunnelConnectionHandler {
     ) -> Self {
         let mut slots = heapless::Vec::new();
         for &addr in additional_addresses {
-            let _ = slots.push(TunnelSlot {
-                individual_address: addr,
-                active_channel: None,
-            });
+            let _ = slots.push(TunnelSlot { individual_address: addr, active_channel: None });
         }
 
         Self {
@@ -148,7 +146,7 @@ impl TunnelConnectionHandler {
             device_descriptor_type_0,
             manufacturer_code,
             max_apdu_length,
-            feature_info_enable: [0u8; 8],
+            feature_info_enable: [0u8; MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES],
             bus_connected: true,
         }
     }
@@ -157,6 +155,27 @@ impl TunnelConnectionHandler {
     /// clients that enabled feature info for bus status should be notified.
     pub fn set_bus_connected(&mut self, connected: bool) {
         self.bus_connected = connected;
+    }
+
+    /// Return a snapshot of the current tunneling slot status for use in
+    /// the TunnelingInfo DIB (SearchResponseExtended).
+    ///
+    /// Each slot produces a `TunnelingSlotInfo` with:
+    /// - The slot's individual address
+    /// - A 16-bit status word where bit 0 = 1 means "slot is not free"
+    ///   (i.e., currently occupied by an active connection)
+    ///
+    /// Also returns the device's max APDU length (needed by the DIB header).
+    pub fn slot_info(&self) -> (u16, heapless::Vec<TunnelingSlotInfo, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>) {
+        let mut infos = heapless::Vec::new();
+        for slot in &self.slots {
+            let occupied = slot.active_channel.is_some();
+            // Bit 0: 1 = not free (occupied), 0 = free
+            let status_word: u16 = if occupied { 0x0001 } else { 0x0000 };
+            let _ = infos
+                .push(TunnelingSlotInfo { individual_address: slot.individual_address, status: status_word.into() });
+        }
+        (self.max_apdu_length, infos)
     }
 
     /// Find a slot by channel ID.
@@ -185,10 +204,7 @@ impl TunnelConnectionHandler {
         let builder = TunnelingAckBuilder::new(channel_id, sequence_counter, status);
         let mut buffer = buffer_manager.try_alloc()?;
         buffer.serialize(&builder);
-        Some(PendingResponse {
-            buffer,
-            target: conn.response_target(),
-        })
+        Some(PendingResponse { buffer, target: conn.response_target() })
     }
 
     /// Handle a tunneling feature GET request.
@@ -263,23 +279,15 @@ impl TunnelConnectionHandler {
         buffer_manager: &DynBufferManager<'static>,
     ) -> Option<PendingResponse> {
         let (return_code, value) = match self.get_feature_value(feature_id, slot_idx) {
-            Some(v) => (0x00u8, v), // success
+            Some(v) => (0x00u8, v),                 // success
             None => (0x01u8, heapless::Vec::new()), // unknown feature
         };
 
-        let builder = TunnelingFeatureResponseBuilder::with_value(
-            channel_id,
-            sequence_counter,
-            feature_id,
-            return_code,
-            &value,
-        );
+        let builder =
+            TunnelingFeatureResponseBuilder::with_value(channel_id, sequence_counter, feature_id, return_code, &value);
         let mut buffer = buffer_manager.try_alloc()?;
         buffer.serialize(&builder);
-        Some(PendingResponse {
-            buffer,
-            target: conn.response_target(),
-        })
+        Some(PendingResponse { buffer, target: conn.response_target() })
     }
 
     /// Process a `TunnelingFeatureSet` request and build the response.
@@ -299,18 +307,10 @@ impl TunnelConnectionHandler {
             0x01u8 // error (read-only or unknown)
         };
 
-        let builder = TunnelingFeatureResponseBuilder::new(
-            channel_id,
-            sequence_counter,
-            feature_id,
-            return_code,
-        );
+        let builder = TunnelingFeatureResponseBuilder::new(channel_id, sequence_counter, feature_id, return_code);
         let mut buffer = buffer_manager.try_alloc()?;
         buffer.serialize(&builder);
-        Some(PendingResponse {
-            buffer,
-            target: conn.response_target(),
-        })
+        Some(PendingResponse { buffer, target: conn.response_target() })
     }
 }
 
@@ -332,20 +332,14 @@ impl ConnectionTypeHandler for TunnelConnectionHandler {
         let slot_idx = if let Some(requested_addr) = tunnel_cri.individual_address {
             // Extended CRI: client wants a specific address.
             let idx = self.slot_index_for_address(requested_addr).ok_or_else(|| {
-                debug!(
-                    "Rejecting tunnel connection: requested IA {} not configured",
-                    requested_addr
-                );
+                debug!("Rejecting tunnel connection: requested IA {} not configured", requested_addr);
                 // Per spec: E_CONNECTION_OPTION if the IA is not in our pool.
                 ConnectionStatus::ConnectionOptionsNotSupported
             })?;
 
             // Check if that specific slot is already in use.
             if self.slots[idx].active_channel.is_some() {
-                debug!(
-                    "Rejecting tunnel connection: IA {} already in use",
-                    requested_addr
-                );
+                debug!("Rejecting tunnel connection: IA {} already in use", requested_addr);
                 // Per spec §4.3: E_NO_MORE_UNIQUE_CONNECTIONS when the
                 // requested IA is already assigned to another connection.
                 return Err(ConnectionStatus::NoMoreUniqueConnections);
@@ -365,14 +359,9 @@ impl ConnectionTypeHandler for TunnelConnectionHandler {
         self.slots[slot_idx].active_channel = Some(channel_id);
         self.feature_info_enable[slot_idx] = 0;
 
-        info!(
-            "Accepted tunneling connection: channel={}, IA={}, slot={}",
-            channel_id, assigned_addr, slot_idx
-        );
+        info!("Accepted tunneling connection: channel={}, IA={}, slot={}", channel_id, assigned_addr, slot_idx);
 
-        Ok(AcceptedConnection {
-            crd: CRD::Tunnel(TunnelingCRD::new(assigned_addr)),
-        })
+        Ok(AcceptedConnection { crd: CRD::Tunnel(TunnelingCRD::new(assigned_addr)) })
     }
 
     fn close_connection(&mut self, channel_id: u8) {
@@ -397,19 +386,12 @@ impl ConnectionTypeHandler for TunnelConnectionHandler {
             return Err(ServerError::InvalidMessage);
         }
         let service_type_raw = u16::from_be_bytes([data[2], data[3]]);
-        let service_type = KNXnetIPServiceType::try_from(service_type_raw)
-            .map_err(|_| ServerError::InvalidMessage)?;
+        let service_type = KNXnetIPServiceType::try_from(service_type_raw).map_err(|_| ServerError::InvalidMessage)?;
 
         match service_type {
-            KNXnetIPServiceType::TunnelingRequest => {
-                self.handle_tunneling_request(data, conn, buffer_manager).await
-            }
-            KNXnetIPServiceType::TunnelingFeatureGet => {
-                self.handle_feature_get_request(data, conn, buffer_manager)
-            }
-            KNXnetIPServiceType::TunnelingFeatureSet => {
-                self.handle_feature_set_request(data, conn, buffer_manager)
-            }
+            KNXnetIPServiceType::TunnelingRequest => self.handle_tunneling_request(data, conn, buffer_manager).await,
+            KNXnetIPServiceType::TunnelingFeatureGet => self.handle_feature_get_request(data, conn, buffer_manager),
+            KNXnetIPServiceType::TunnelingFeatureSet => self.handle_feature_set_request(data, conn, buffer_manager),
             _ => {
                 debug!("Unexpected service type in tunnel handler: {:?}", service_type);
                 Err(ServerError::InvalidMessage)
@@ -524,13 +506,8 @@ impl TunnelConnectionHandler {
             }
 
             // Build ACK
-            let ack = Self::build_ack(
-                conn.channel_id,
-                sequence_counter,
-                ConnectionStatus::NoError,
-                conn,
-                buffer_manager,
-            );
+            let ack =
+                Self::build_ack(conn.channel_id, sequence_counter, ConnectionStatus::NoError, conn, buffer_manager);
             let Some(ack) = ack else {
                 warn!("Tunnel: no buffer for ACK (channel {})", conn.channel_id);
                 return Err(ServerError::InternalError);
@@ -539,13 +516,8 @@ impl TunnelConnectionHandler {
             Ok(DataFrameAction::AckAndInject { ack, cemi_buffer })
         } else {
             // Retransmission: just re-ACK, don't re-process.
-            let ack = Self::build_ack(
-                conn.channel_id,
-                sequence_counter,
-                ConnectionStatus::NoError,
-                conn,
-                buffer_manager,
-            );
+            let ack =
+                Self::build_ack(conn.channel_id, sequence_counter, ConnectionStatus::NoError, conn, buffer_manager);
             match ack {
                 Some(ack) => Ok(DataFrameAction::AckOnly(ack)),
                 None => {
@@ -602,8 +574,7 @@ impl TunnelConnectionHandler {
 
         conn.last_activity = Instant::now();
 
-        let slot_idx = self.slot_index_for_channel(conn.channel_id)
-            .ok_or(ServerError::InvalidMessage)?;
+        let slot_idx = self.slot_index_for_channel(conn.channel_id).ok_or(ServerError::InvalidMessage)?;
 
         let mut responses = heapless::Vec::<_, 4>::new();
 
@@ -638,8 +609,7 @@ impl TunnelConnectionHandler {
 
         conn.last_activity = Instant::now();
 
-        let slot_idx = self.slot_index_for_channel(conn.channel_id)
-            .ok_or(ServerError::InvalidMessage)?;
+        let slot_idx = self.slot_index_for_channel(conn.channel_id).ok_or(ServerError::InvalidMessage)?;
 
         // Feature value: everything after KNXnet/IP header (6) + feature header (4).
         let value_offset = 6 + 4;

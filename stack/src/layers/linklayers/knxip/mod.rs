@@ -14,6 +14,7 @@ use heapless::Vec;
 use platform::{IpTransport, TcpListenerOptions};
 
 use crate::{
+    MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES,
     context::{
         ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpAdditionalIndividualAddressContext,
         IpDiagnosticsContext, KnxIndividualAddressContext, PropertyServiceContext,
@@ -295,6 +296,11 @@ pub struct ServerContext<'a> {
     ip_additional_addresses: &'a dyn IpAdditionalIndividualAddressContext,
     /// KNX address context for primary + tunneling addresses.
     knx_addresses: &'a dyn KnxIndividualAddressContext,
+    /// Snapshot of tunneling slot status from the connection manager.
+    /// Present when a tunneling handler is registered. Used by the
+    /// discovery server to build the TunnelingInfo DIB.
+    tunneling_slot_info:
+        Option<(u16, heapless::Vec<substructs::TunnelingSlotInfo, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>)>,
 }
 
 impl<'a> ServerContext<'a> {
@@ -307,6 +313,10 @@ impl<'a> ServerContext<'a> {
         ip_diagnostics: Option<&'a dyn IpDiagnosticsContext>,
         ip_additional_addresses: &'a dyn IpAdditionalIndividualAddressContext,
         knx_addresses: &'a dyn KnxIndividualAddressContext,
+        tunneling_slot_info: Option<(
+            u16,
+            heapless::Vec<substructs::TunnelingSlotInfo, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>,
+        )>,
     ) -> Self {
         Self {
             buffer_manager,
@@ -316,6 +326,7 @@ impl<'a> ServerContext<'a> {
             ip_diagnostics,
             ip_additional_addresses,
             knx_addresses,
+            tunneling_slot_info,
         }
     }
 
@@ -346,6 +357,16 @@ impl<'a> ServerContext<'a> {
     /// Get the KNX address context for primary and tunneling addresses.
     pub fn knx_addresses(&self) -> &dyn KnxIndividualAddressContext {
         self.knx_addresses
+    }
+
+    /// Get the tunneling slot info snapshot, if tunneling is enabled.
+    ///
+    /// Returns `(max_apdu_len, slots)` where each slot has an address
+    /// and a status word (bit 0 = occupied).
+    pub fn tunneling_slot_info(
+        &self,
+    ) -> Option<&(u16, heapless::Vec<substructs::TunnelingSlotInfo, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>)> {
+        self.tunneling_slot_info.as_ref()
     }
 
     /// Send an indication to the network layer (L_Data.ind)
@@ -420,6 +441,7 @@ pub struct KnxNetIpBuilder<
     control_endpoint: SocketAddrV4,
     enable_routing: bool,
     enable_remote_config: bool,
+    enable_tunneling: bool,
     enable_tcp: bool,
     routing_multicast_addr: Ipv4Addr,
     socket_ctx: <T::UdpSocket as platform::AsyncUdpSocket>::Context,
@@ -458,6 +480,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
             control_endpoint,
             enable_routing: false,
             enable_remote_config: false,
+            enable_tunneling: false,
             enable_tcp: false,
             routing_multicast_addr: crate::DEFAULT_MULTICAST_ADDR,
             socket_ctx,
@@ -496,6 +519,23 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
     /// The server listens on the KNX multicast address (`224.0.23.12:3671`).
     pub fn enable_remote_config_server(mut self) -> Self {
         self.enable_remote_config = true;
+        self
+    }
+
+    /// Enable tunneling connections (ConnectionType 0x04).
+    ///
+    /// When enabled, KNX/IP clients can establish tunneling connections
+    /// to transparently access the KNX bus. Each connection is assigned
+    /// one of the device's additional individual addresses (from
+    /// `PID_ADDITIONAL_INDIVIDUAL_ADDRESSES`). The number of concurrent
+    /// tunneling connections equals the number of configured additional
+    /// addresses.
+    ///
+    /// Requires `IpAdditionalIndividualAddressContext` on the stack
+    /// context (provided automatically when the state implements
+    /// `IpStackState`).
+    pub fn enable_tunneling(mut self) -> Self {
+        self.enable_tunneling = true;
         self
     }
 
@@ -547,6 +587,11 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
         if self.enable_routing {
             let _ = supported_services
                 .push(substructs::SupportedService { family: substructs::ServiceFamily::Routing, version: 1 });
+        }
+
+        if self.enable_tunneling {
+            let _ = supported_services
+                .push(substructs::SupportedService { family: substructs::ServiceFamily::Tunneling, version: 1 });
         }
 
         if self.enable_remote_config {
@@ -719,6 +764,23 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
             servers::ConnectionTypeHandlerEnum::DeviceManagement(handler),
         );
 
+        // Tunneling handler — one slot per additional individual address.
+        // Only registered when explicitly enabled via `enable_tunneling()`.
+        if self.enable_tunneling {
+            let additional_addresses = context.additional_individual_addresses();
+            let ext_info = context.extended_device_information();
+            let tunnel_handler = servers::TunnelConnectionHandler::new(
+                additional_addresses.as_slice(),
+                ext_info.device_descriptor_type0,
+                context.manufacturer_code(),
+                ext_info.max_local_apdu_len,
+            );
+            connection_manager.add_handler(
+                crate::messages::knxip::substructs::ConnectionType::Tunnel,
+                servers::ConnectionTypeHandlerEnum::Tunnel(tunnel_handler),
+            );
+        }
+
         // ====================================================================
         // TCP manager
         // ====================================================================
@@ -809,6 +871,10 @@ fn make_server_context<'a>(
     context: &'a dyn KnxNetIpContext,
     enable_remote_config: bool,
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+    tunneling_slot_info: Option<(
+        u16,
+        heapless::Vec<substructs::TunnelingSlotInfo, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>,
+    )>,
 ) -> ServerContext<'a> {
     let ip_diagnostics: Option<&dyn IpDiagnosticsContext> = if enable_remote_config { Some(context) } else { None };
     let ip_additional_addresses: &dyn IpAdditionalIndividualAddressContext = context;
@@ -820,6 +886,7 @@ fn make_server_context<'a>(
         ip_diagnostics,
         ip_additional_addresses,
         context,
+        tunneling_slot_info,
     )
 }
 
@@ -880,9 +947,15 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                 let mut send_error = false;
                 let mut send_success = false;
 
+                let tunnel_slots = self.connection_manager.tunneling_slot_info();
                 for server in &mut self.server_instances {
                     if server.handler.supports_requests() {
-                        let context = make_server_context(self.context, self.enable_remote_config, self.ind_tx);
+                        let context = make_server_context(
+                            self.context,
+                            self.enable_remote_config,
+                            self.ind_tx,
+                            tunnel_slots.clone(),
+                        );
                         match server.handler.on_request(&pending.message, &context).await {
                             Ok(responses) => {
                                 // Success! Send responses and confirmation
@@ -1061,9 +1134,11 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
         socket_idx: usize,
         response_channel: &Channel<NoopRawMutex, PendingResponse, 16>,
     ) {
+        let tunnel_slots = self.connection_manager.tunneling_slot_info();
         for server in &mut self.server_instances {
             if server.handles(service_type, socket_idx) {
-                let context = make_server_context(self.context, self.enable_remote_config, self.ind_tx);
+                let context =
+                    make_server_context(self.context, self.enable_remote_config, self.ind_tx, tunnel_slots.clone());
 
                 match server.handler.on_indication(service_type, buffer, source, &context).await {
                     Ok(responses) => {
@@ -1261,11 +1336,16 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                             // (e.g., routing server converts to L_Data_Ind for cEMI encoding)
                             let mut msg_opt = Some(msg);
                             let mut handled = false;
+                            let tunnel_slots = self.connection_manager.tunneling_slot_info();
                             for server in &mut self.server_instances {
                                 if server.handler.supports_requests() {
                                     // Create server context with buffer manager and indication channel
-                                    let context =
-                                        make_server_context(self.context, self.enable_remote_config, self.ind_tx);
+                                    let context = make_server_context(
+                                        self.context,
+                                        self.enable_remote_config,
+                                        self.ind_tx,
+                                        tunnel_slots.clone(),
+                                    );
                                     match server.handler.on_request(msg_opt.as_ref().unwrap(), &context).await {
                                         Ok(responses) => {
                                             for response in responses {

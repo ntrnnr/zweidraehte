@@ -1042,6 +1042,10 @@ where
             device_descriptor_type0: D::DEVICE.mask_version.as_u16(),
         }
     }
+
+    fn manufacturer_code(&self) -> u16 {
+        D::DEVICE.manufacturer_id
+    }
 }
 
 impl<D: StackDefinition> context::IpDiagnosticsContext for StackContext<'_, D>

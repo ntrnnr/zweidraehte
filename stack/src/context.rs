@@ -60,6 +60,11 @@ pub trait DeviceInfoContext {
     /// Used in `SearchResponseExtended` (spec §7.6.3.6). Contains medium status,
     /// max local APDU length, and device descriptor type 0.
     fn extended_device_information(&self) -> ExtendedDeviceInformation;
+
+    /// The KNX manufacturer code (big-endian, 2 bytes).
+    ///
+    /// Used by tunneling feature responses (spec 03/08/04 §4.6).
+    fn manufacturer_code(&self) -> u16;
 }
 
 /// Provides a sender to the application layer's incoming channel.

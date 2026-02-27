@@ -215,7 +215,7 @@ impl DiscoveryServer {
         let mut include_ip_config = false;
         let mut include_ip_current_config = false;
         let mut include_knx_addresses = false;
-        // TODO: TunnelingInfo needs cross-server state from connection manager
+        let mut include_tunneling_info = false;
         // TODO: ManufacturerData not required for Core v2 certification
 
         if has_request_dibs {
@@ -229,6 +229,7 @@ impl DiscoveryServer {
                     KNXnetIPServiceFamily::IPConfig => include_ip_config = true,
                     KNXnetIPServiceFamily::IPCurrentConfig => include_ip_current_config = true,
                     KNXnetIPServiceFamily::KNXAddresses => include_knx_addresses = true,
+                    KNXnetIPServiceFamily::TunnelingInfo => include_tunneling_info = true,
 
                     // Unknown or unsupported DIB types are silently ignored
                     _ => {
@@ -274,6 +275,15 @@ impl DiscoveryServer {
                 knx_addr_ctx.individual_address(),
                 additional_addresses.as_ref().map(heapless::Vec::as_slice).unwrap_or(&[]),
             )));
+        }
+
+        if include_tunneling_info {
+            if let Some((max_apdu_len, slots)) = context.tunneling_slot_info() {
+                let _ = dibs.push(DescriptionInformationBlockBuilder::TunnelingInfo(TunnelingInfoBuilder::new(
+                    *max_apdu_len,
+                    slots.as_slice(),
+                )));
+            }
         }
 
         // ----------------------------------------------------------------

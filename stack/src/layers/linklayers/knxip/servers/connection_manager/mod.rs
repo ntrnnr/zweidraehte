@@ -159,9 +159,7 @@ impl ConnectionTypeHandler for ConnectionTypeHandlerEnum<'_> {
             ConnectionTypeHandlerEnum::DeviceManagement(h) => {
                 h.on_data_frame(channel_id, data, conn, buffer_manager).await
             }
-            ConnectionTypeHandlerEnum::Tunnel(h) => {
-                h.on_data_frame(channel_id, data, conn, buffer_manager).await
-            }
+            ConnectionTypeHandlerEnum::Tunnel(h) => h.on_data_frame(channel_id, data, conn, buffer_manager).await,
         }
     }
 
@@ -317,9 +315,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
     ) -> Result<ConnectionManagerResult, ServerError> {
         match service_type {
             // Connection lifecycle — handled directly by the connection manager
-            KNXnetIPServiceType::ConnectRequest => {
-                self.handle_connect_request(data, origin, buffer_manager).await
-            }
+            KNXnetIPServiceType::ConnectRequest => self.handle_connect_request(data, origin, buffer_manager).await,
             KNXnetIPServiceType::ConnectionstateRequest => {
                 self.handle_connectionstate_request(data, origin, buffer_manager).await
             }
@@ -329,8 +325,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
 
             // Everything else: route to the handler via channel ID lookup
             _ => {
-                let responses =
-                    self.dispatch_to_handler(service_type, data, buffer_manager, ind_tx).await?;
+                let responses = self.dispatch_to_handler(service_type, data, buffer_manager, ind_tx).await?;
                 Ok(ConnectionManagerResult::responses_only(responses))
             }
         }
@@ -431,26 +426,27 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
 
         for slot in &mut self.connections {
             if let Some(ctx) = slot
-                && now - ctx.last_activity > self.heartbeat_timeout {
-                    info!(
-                        "Connection {} timed out (no heartbeat for {}s), closing",
-                        ctx.channel_id,
-                        self.heartbeat_timeout.as_secs()
-                    );
-                    let channel_id = ctx.channel_id;
-                    let connection_type = ctx.connection_type;
-                    let transport = ctx.transport;
-                    *slot = None;
+                && now - ctx.last_activity > self.heartbeat_timeout
+            {
+                info!(
+                    "Connection {} timed out (no heartbeat for {}s), closing",
+                    ctx.channel_id,
+                    self.heartbeat_timeout.as_secs()
+                );
+                let channel_id = ctx.channel_id;
+                let connection_type = ctx.connection_type;
+                let transport = ctx.transport;
+                *slot = None;
 
-                    // Notify the handler
-                    if let Some((_, handler)) = self.handlers.iter_mut().find(|(ct, _)| *ct == connection_type) {
-                        handler.close_connection(channel_id);
-                    }
-
-                    if let ConnectionTransport::Tcp { tcp_idx } = transport {
-                        let _ = tcp_events.push(TcpChannelEvent::Removed { tcp_idx, channel_id });
-                    }
+                // Notify the handler
+                if let Some((_, handler)) = self.handlers.iter_mut().find(|(ct, _)| *ct == connection_type) {
+                    handler.close_connection(channel_id);
                 }
+
+                if let ConnectionTransport::Tcp { tcp_idx } = transport {
+                    let _ = tcp_events.push(TcpChannelEvent::Removed { tcp_idx, channel_id });
+                }
+            }
         }
 
         tcp_events
@@ -462,6 +458,29 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         self.connections.iter().any(|slot| slot.is_some())
     }
 
+    /// Snapshot the current tunneling slot status for use in DIBs.
+    ///
+    /// Returns `Some((max_apdu_len, slots))` if a tunneling handler is
+    /// registered, `None` otherwise.
+    pub fn tunneling_slot_info(
+        &self,
+    ) -> Option<(
+        u16,
+        heapless::Vec<
+            crate::messages::knxip::substructs::TunnelingSlotInfo,
+            { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES },
+        >,
+    )> {
+        for (ct, handler) in &self.handlers {
+            if *ct == ConnectionType::Tunnel {
+                if let ConnectionTypeHandlerEnum::Tunnel(h) = handler {
+                    return Some(h.slot_info());
+                }
+            }
+        }
+        None
+    }
+
     /// Called when a TCP connection is closed (peer disconnect or I/O error).
     ///
     /// Tears down all KNX/IP connections that were running over this TCP
@@ -469,9 +488,9 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
     /// closed, all inner KNX/IP connections are considered terminated.
     pub fn on_tcp_closed(&mut self, tcp_idx: usize) {
         for slot in &mut self.connections {
-            let should_close = slot.as_ref().is_some_and(|ctx| {
-                matches!(ctx.transport, ConnectionTransport::Tcp { tcp_idx: idx } if idx == tcp_idx)
-            });
+            let should_close = slot.as_ref().is_some_and(
+                |ctx| matches!(ctx.transport, ConnectionTransport::Tcp { tcp_idx: idx } if idx == tcp_idx),
+            );
 
             if should_close {
                 let ctx = slot.take().expect("just checked Some");
@@ -515,13 +534,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         let Some(handler_idx) = handler_idx else {
             debug!("No handler registered for connection type {:?}", cri_connection_type);
             return self
-                .send_connect_response(
-                    0,
-                    ConnectionStatus::ConnectionTypeNotSupported,
-                    None,
-                    origin,
-                    buffer_manager,
-                )
+                .send_connect_response(0, ConnectionStatus::ConnectionTypeNotSupported, None, origin, buffer_manager)
                 .await;
         };
 
@@ -640,10 +653,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
         buffer.serialize(&builder);
 
         let mut responses = Vec::new();
-        let _ = responses.push(PendingResponse {
-            buffer,
-            target: origin.reply_target(),
-        });
+        let _ = responses.push(PendingResponse { buffer, target: origin.reply_target() });
         Ok(ConnectionManagerResult::responses_only(responses))
     }
 
@@ -721,9 +731,7 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
 
                 let target = ctx.response_target();
                 let tcp_event = match ctx.transport {
-                    ConnectionTransport::Tcp { tcp_idx } => {
-                        Some(TcpChannelEvent::Removed { tcp_idx, channel_id })
-                    }
+                    ConnectionTransport::Tcp { tcp_idx } => Some(TcpChannelEvent::Removed { tcp_idx, channel_id }),
                     ConnectionTransport::Udp => None,
                 };
                 (ConnectionStatus::NoError, target, tcp_event)
@@ -764,9 +772,10 @@ impl<'a, const MAX_CONNECTIONS: usize> ConnectionManager<'a, MAX_CONNECTIONS> {
     fn remove_connection(&mut self, channel_id: u8) -> Option<ConnectionContext> {
         for slot in &mut self.connections {
             if let Some(ctx) = slot
-                && ctx.channel_id == channel_id {
-                    return slot.take();
-                }
+                && ctx.channel_id == channel_id
+            {
+                return slot.take();
+            }
         }
         None
     }

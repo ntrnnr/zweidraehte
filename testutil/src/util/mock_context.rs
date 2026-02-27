@@ -6,8 +6,8 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Channel, DynamicSender};
 
 use zweidraehte::context::{
-    ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpDiagnosticsContext,
-    KnxAddressContext, PropertyServiceContext,
+    ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpAdditionalIndividualAddressContext,
+    IpDiagnosticsContext, KnxIndividualAddressContext, PropertyServiceContext,
 };
 use zweidraehte::messages::buffers::{Buffer, DynBufferManager};
 use zweidraehte::messages::builder::IndicationMessage;
@@ -107,6 +107,10 @@ impl DeviceInfoContext for &MockContext {
             device_descriptor_type0: 0x091A, // System B TP1
         }
     }
+
+    fn manufacturer_code(&self) -> u16 {
+        0x00FA // Test manufacturer code
+    }
 }
 
 impl DeviceInfoContext for &mut MockContext {
@@ -120,6 +124,10 @@ impl DeviceInfoContext for &mut MockContext {
             max_local_apdu_len: self.max_apdu_length.get(),
             device_descriptor_type0: 0x091A, // System B TP1
         }
+    }
+
+    fn manufacturer_code(&self) -> u16 {
+        0x00FA // Test manufacturer code
     }
 }
 
@@ -171,15 +179,27 @@ impl IpDiagnosticsContext for &mut MockContext {
     }
 }
 
-impl KnxAddressContext for &MockContext {
+impl KnxIndividualAddressContext for &MockContext {
     fn individual_address(&self) -> zweidraehte::address::IndividualAddress {
         zweidraehte::address::IndividualAddress::new(0, 0, 0)
     }
 }
 
-impl KnxAddressContext for &mut MockContext {
+impl KnxIndividualAddressContext for &mut MockContext {
     fn individual_address(&self) -> zweidraehte::address::IndividualAddress {
         zweidraehte::address::IndividualAddress::new(0, 0, 0)
+    }
+}
+
+impl IpAdditionalIndividualAddressContext for &MockContext {
+    fn additional_individual_addresses(&self) -> zweidraehte::AdditionalIndividualAddresses {
+        zweidraehte::AdditionalIndividualAddresses::new()
+    }
+}
+
+impl IpAdditionalIndividualAddressContext for &mut MockContext {
+    fn additional_individual_addresses(&self) -> zweidraehte::AdditionalIndividualAddresses {
+        zweidraehte::AdditionalIndividualAddresses::new()
     }
 }
 
