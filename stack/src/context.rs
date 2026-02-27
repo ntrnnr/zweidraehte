@@ -89,21 +89,16 @@ pub trait IpDiagnosticsContext {
     fn ip_current_config(&self) -> crate::messages::knxip::substructs::IpCurrentConfig;
 }
 
-/// Provides KNX individual and additional (tunneling) addresses.
-///
-/// Separated from [`IpDiagnosticsContext`] because the individual address
-/// is a device-wide concept, not specific to IP diagnostics. The
-/// additional addresses will be populated once tunneling is implemented.
-pub trait KnxAddressContext {
+/// Provides additional KNX individual addresses for IP tunneling use-cases.
+pub trait IpAdditionalIndividualAddressContext {
+    /// Additional individual addresses assigned to tunneling connections.
+    fn additional_individual_addresses(&self) -> crate::AdditionalIndividualAddresses;
+}
+
+/// Provides the KNX primary individual address.
+pub trait KnxIndividualAddressContext {
     /// The device's primary individual address.
     fn individual_address(&self) -> crate::address::IndividualAddress;
-
-    /// Additional individual addresses assigned to tunneling connections.
-    ///
-    /// Returns an empty slice when tunneling is not active or configured.
-    fn additional_individual_addresses(&self) -> &[crate::address::IndividualAddress] {
-        &[]
-    }
 }
 
 /// Provides access to the device's address table for ACK decisions.
@@ -119,4 +114,3 @@ pub trait AddressTableContext {
     /// Get a reference to the address table's RefCell.
     fn address_table(&self) -> &core::cell::RefCell<Self::ADT>;
 }
-

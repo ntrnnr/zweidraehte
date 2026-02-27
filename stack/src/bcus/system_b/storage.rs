@@ -13,6 +13,7 @@ use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES,
     address::IndividualAddress,
     objects::tables::{
         Table,
@@ -129,10 +130,7 @@ impl LinkLayerState for () {
 ///
 /// Use [`table_sizes`] to calculate the const generics from max entry counts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "P: Serialize",
-    deserialize = "P: Deserialize<'de>",
-))]
+#[serde(bound(serialize = "P: Serialize", deserialize = "P: Deserialize<'de>",))]
 pub struct PersistedState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
@@ -190,13 +188,8 @@ pub struct PersistedState<
     pub link_layer_config: L,
 }
 
-impl<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    P: ConstDefault,
-    L: LinkLayerConfig,
-> PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, L: LinkLayerConfig>
+    PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, L>
 {
     /// Current version of the persisted state format.
     pub const VERSION: u8 = 1;
@@ -275,6 +268,12 @@ pub struct PersistedIpConfig {
 
     /// Project installation ID.
     pub project_installation_id: u16,
+
+    /// Additional individual addresses for tunneling-capable profiles.
+    pub additional_individual_addresses: [[u8; 2]; MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES],
+
+    /// Number of valid entries in `additional_individual_addresses`.
+    pub additional_individual_addresses_len: u8,
 }
 
 impl Default for PersistedIpConfig {
@@ -289,6 +288,8 @@ impl Default for PersistedIpConfig {
             routing_multicast: [224, 0, 23, 12],
             ttl: 16,
             project_installation_id: 0,
+            additional_individual_addresses: [[0; 2]; MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES],
+            additional_individual_addresses_len: 0,
         }
     }
 }
@@ -306,4 +307,3 @@ impl PersistedIpConfig {
         Ipv4Addr::from(self.routing_multicast)
     }
 }
-

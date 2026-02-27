@@ -15,8 +15,8 @@ use platform::{IpTransport, TcpListenerOptions};
 
 use crate::{
     context::{
-        ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpDiagnosticsContext, KnxAddressContext,
-        PropertyServiceContext,
+        ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpAdditionalIndividualAddressContext,
+        IpDiagnosticsContext, KnxIndividualAddressContext, PropertyServiceContext,
     },
     layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase},
     messages::{
@@ -47,7 +47,8 @@ pub(crate) trait KnxNetIpContext:
     + PropertyServiceContext
     + DeviceInfoContext
     + IpDiagnosticsContext
-    + KnxAddressContext
+    + IpAdditionalIndividualAddressContext
+    + KnxIndividualAddressContext
     + ApplicationLayerContext
 {
 }
@@ -57,7 +58,8 @@ impl<T> KnxNetIpContext for T where
         + PropertyServiceContext
         + DeviceInfoContext
         + IpDiagnosticsContext
-        + KnxAddressContext
+        + IpAdditionalIndividualAddressContext
+        + KnxIndividualAddressContext
         + ApplicationLayerContext
 {
 }
@@ -289,8 +291,10 @@ pub struct ServerContext<'a> {
     /// IP diagnostics context for remote config responses.
     /// Present when remote config server is enabled.
     ip_diagnostics: Option<&'a dyn IpDiagnosticsContext>,
+    /// Additional-address context for KNX_ADDRESSES DIB data.
+    ip_additional_addresses: &'a dyn IpAdditionalIndividualAddressContext,
     /// KNX address context for primary + tunneling addresses.
-    knx_addresses: &'a dyn KnxAddressContext,
+    knx_addresses: &'a dyn KnxIndividualAddressContext,
 }
 
 impl<'a> ServerContext<'a> {
@@ -301,9 +305,18 @@ impl<'a> ServerContext<'a> {
         max_apdu_length: u16,
         device_info: &'a dyn DeviceInfoContext,
         ip_diagnostics: Option<&'a dyn IpDiagnosticsContext>,
-        knx_addresses: &'a dyn KnxAddressContext,
+        ip_additional_addresses: &'a dyn IpAdditionalIndividualAddressContext,
+        knx_addresses: &'a dyn KnxIndividualAddressContext,
     ) -> Self {
-        Self { buffer_manager, ind_tx, max_apdu_length, device_info, ip_diagnostics, knx_addresses }
+        Self {
+            buffer_manager,
+            ind_tx,
+            max_apdu_length,
+            device_info,
+            ip_diagnostics,
+            ip_additional_addresses,
+            knx_addresses,
+        }
     }
 
     /// Get the maximum APDU length this device can handle
@@ -325,8 +338,13 @@ impl<'a> ServerContext<'a> {
         self.ip_diagnostics
     }
 
+    /// Get additional-address context.
+    pub fn ip_additional_individual_addresses(&self) -> &dyn IpAdditionalIndividualAddressContext {
+        self.ip_additional_addresses
+    }
+
     /// Get the KNX address context for primary and tunneling addresses.
-    pub fn knx_addresses(&self) -> &dyn KnxAddressContext {
+    pub fn knx_addresses(&self) -> &dyn KnxIndividualAddressContext {
         self.knx_addresses
     }
 
@@ -793,12 +811,14 @@ fn make_server_context<'a>(
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
 ) -> ServerContext<'a> {
     let ip_diagnostics: Option<&dyn IpDiagnosticsContext> = if enable_remote_config { Some(context) } else { None };
+    let ip_additional_addresses: &dyn IpAdditionalIndividualAddressContext = context;
     ServerContext::new(
         context.buffer_manager(),
         ind_tx,
         context.max_apdu_length(),
         context,
         ip_diagnostics,
+        ip_additional_addresses,
         context,
     )
 }
@@ -862,8 +882,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
 
                 for server in &mut self.server_instances {
                     if server.handler.supports_requests() {
-                        let context =
-                            make_server_context(self.context, self.enable_remote_config, self.ind_tx);
+                        let context = make_server_context(self.context, self.enable_remote_config, self.ind_tx);
                         match server.handler.on_request(&pending.message, &context).await {
                             Ok(responses) => {
                                 // Success! Send responses and confirmation
@@ -1006,13 +1025,7 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                     ServiceCategory::ConnectionLifecycle | ServiceCategory::ConnectionData => {
                         match self
                             .connection_manager
-                            .on_indication(
-                                service_type,
-                                buffer,
-                                origin,
-                                self.context.buffer_manager(),
-                                self.ind_tx,
-                            )
+                            .on_indication(service_type, buffer, origin, self.context.buffer_manager(), self.ind_tx)
                             .await
                         {
                             Ok(result) => {
@@ -1251,11 +1264,8 @@ impl<'res, T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usiz
                             for server in &mut self.server_instances {
                                 if server.handler.supports_requests() {
                                     // Create server context with buffer manager and indication channel
-                                    let context = make_server_context(
-                                        self.context,
-                                        self.enable_remote_config,
-                                        self.ind_tx,
-                                    );
+                                    let context =
+                                        make_server_context(self.context, self.enable_remote_config, self.ind_tx);
                                     match server.handler.on_request(msg_opt.as_ref().unwrap(), &context).await {
                                         Ok(responses) => {
                                             for response in responses {

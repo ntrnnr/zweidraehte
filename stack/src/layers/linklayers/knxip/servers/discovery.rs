@@ -90,10 +90,7 @@ impl DiscoveryServer {
 
         let destination = resolve_hpai(&request.discovery_endpoint, source);
 
-        Ok(PendingResponse {
-            buffer: response_buffer,
-            target: ResponseTarget::Udp { destination, socket_idx: 0 },
-        })
+        Ok(PendingResponse { buffer: response_buffer, target: ResponseTarget::Udp { destination, socket_idx: 0 } })
     }
 
     // ========================================================================
@@ -248,7 +245,11 @@ impl DiscoveryServer {
         let ip_current_config =
             if include_ip_current_config { context.ip_diagnostics().map(|d| d.ip_current_config()) } else { None };
 
-        let knx_addr_ctx = context.knx_addresses();
+        let additional_addresses = if include_knx_addresses {
+            Some(context.ip_additional_individual_addresses().additional_individual_addresses())
+        } else {
+            None
+        };
 
         // Build the DIB list. Mandatory DIBs first, then optional.
         let mut dibs: Vec<DescriptionInformationBlockBuilder<'_>, MAX_RESPONSE_DIBS> = Vec::new();
@@ -268,9 +269,10 @@ impl DiscoveryServer {
         }
 
         if include_knx_addresses {
+            let knx_addr_ctx = context.knx_addresses();
             let _ = dibs.push(DescriptionInformationBlockBuilder::KnxAddresses(KnxAddressesBuilder::new(
                 knx_addr_ctx.individual_address(),
-                knx_addr_ctx.additional_individual_addresses(),
+                additional_addresses.as_ref().map(heapless::Vec::as_slice).unwrap_or(&[]),
             )));
         }
 
@@ -340,6 +342,7 @@ impl DiscoveryServer {
         let ip_config = context.ip_diagnostics().map(|d| d.ip_config());
         let ip_current_config = context.ip_diagnostics().map(|d| d.ip_current_config());
         let knx_addr_ctx = context.knx_addresses();
+        let additional_addresses = context.ip_additional_individual_addresses().additional_individual_addresses();
 
         let mut additional_dibs: Vec<DescriptionInformationBlockBuilder<'_>, 4> = Vec::new();
 
@@ -353,7 +356,7 @@ impl DiscoveryServer {
 
         let _ = additional_dibs.push(DescriptionInformationBlockBuilder::KnxAddresses(KnxAddressesBuilder::new(
             knx_addr_ctx.individual_address(),
-            knx_addr_ctx.additional_individual_addresses(),
+            additional_addresses.as_slice(),
         )));
 
         // Allocate a buffer for the response
@@ -373,10 +376,7 @@ impl DiscoveryServer {
 
         let destination = resolve_hpai(&request.control_endpoint, source);
 
-        Ok(PendingResponse {
-            buffer: response_buffer,
-            target: ResponseTarget::Udp { destination, socket_idx: 0 },
-        })
+        Ok(PendingResponse { buffer: response_buffer, target: ResponseTarget::Udp { destination, socket_idx: 0 } })
     }
 }
 

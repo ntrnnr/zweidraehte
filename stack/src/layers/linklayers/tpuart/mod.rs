@@ -56,7 +56,7 @@ use embassy_time::{Instant, Timer};
 
 use crate::{
     address::IndividualAddress,
-    context::KnxAddressContext,
+    context::KnxIndividualAddressContext,
     messages::{
         buffers::{Buffer, DynBufferManager, MessageBuffer},
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage},
@@ -141,7 +141,7 @@ impl AddressChecker for AckAllChecker {
 ///
 /// This is the default for [`TpUartLinkLayerBuilder::new`]. The builder's
 /// [`build_and_run`](super::super::LinkLayerBuilder::build_and_run) impl
-/// requires the context to provide [`KnxAddressContext`] and
+/// requires the context to provide [`KnxIndividualAddressContext`] and
 /// [`AddressTableContext`], and creates a [`DeviceAddressChecker`] that
 /// ACKs the device's own individual address, group addresses from the
 /// loaded address table, and broadcasts.
@@ -154,8 +154,7 @@ pub struct AutoAddressChecker;
 /// Address checker for normal KNX devices.
 ///
 /// ACKs frames matching:
-/// - The device's own individual address (via [`KnxAddressContext`])
-/// - Additional individual addresses (tunneling addresses)
+/// - The device's own individual address (via [`KnxIndividualAddressContext`])
 /// - Group addresses present in the loaded address table
 /// - Broadcast destination (`0.0.0` / `0/0/0`)
 ///
@@ -166,12 +165,15 @@ pub struct AutoAddressChecker;
 /// let builder = TpUartLinkLayerBuilder::with_address_checker(uart_tx, uart_rx, checker);
 /// ```
 pub struct DeviceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine> {
-    address_context: &'a dyn KnxAddressContext,
+    address_context: &'a dyn KnxIndividualAddressContext,
     address_table: &'a core::cell::RefCell<ADT>,
 }
 
 impl<'a, ADT: AddressTable + HasLoadStateMachine> DeviceAddressChecker<'a, ADT> {
-    pub fn new(address_context: &'a dyn KnxAddressContext, address_table: &'a core::cell::RefCell<ADT>) -> Self {
+    pub fn new(
+        address_context: &'a dyn KnxIndividualAddressContext,
+        address_table: &'a core::cell::RefCell<ADT>,
+    ) -> Self {
         Self { address_context, address_table }
     }
 }
@@ -200,7 +202,7 @@ impl<ADT: AddressTable + HasLoadStateMachine> AddressChecker for DeviceAddressCh
         } else {
             let dst = IndividualAddress::from_bytes(&[dst_hi, dst_lo]);
             let our_addr = self.address_context.individual_address();
-            dst == our_addr || self.address_context.additional_individual_addresses().contains(&dst)
+            dst == our_addr
         }
     }
 }
@@ -310,7 +312,7 @@ where
 //
 // AutoAddressChecker is NOT an AddressChecker — it's a marker that tells the
 // builder to construct a DeviceAddressChecker from the context at build time.
-// This requires the context to provide KnxAddressContext (individual address)
+// This requires the context to provide KnxIndividualAddressContext (individual address)
 // and AddressTableContext (group address table).
 
 impl<W: Send + 'static, R: Send + 'static> super::super::LinkLayerBuilderBase
@@ -325,7 +327,9 @@ impl<W: Send + 'static, R: Send + 'static> super::super::LinkLayerBuilderBase
 
 impl<CTX, W, R> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<W, R, AutoAddressChecker>
 where
-    CTX: crate::context::BufferManagerContext + crate::context::KnxAddressContext + crate::context::AddressTableContext,
+    CTX: crate::context::BufferManagerContext
+        + crate::context::KnxIndividualAddressContext
+        + crate::context::AddressTableContext,
     W: embedded_io_async::Write + Send + 'static,
     R: embedded_io_async::Read + Send + 'static,
 {

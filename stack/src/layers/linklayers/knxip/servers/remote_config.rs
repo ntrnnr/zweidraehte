@@ -19,9 +19,7 @@ use crate::messages::{
     knx::KnxMessageBuffer,
     knxip::{
         KNXnetIPServiceType,
-        substructs::{
-            DescriptionInformationBlockBuilder, KnxAddressesBuilder,
-        },
+        substructs::{DescriptionInformationBlockBuilder, KnxAddressesBuilder},
     },
 };
 
@@ -93,10 +91,8 @@ impl RemoteConfigurationServer {
         let ip_config = ip_diag.ip_config();
         let ip_current = ip_diag.ip_current_config();
         let addrs = context.knx_addresses();
-        let knx_addresses = KnxAddressesBuilder::new(
-            addrs.individual_address(),
-            addrs.additional_individual_addresses(),
-        );
+        let additional_addresses = context.ip_additional_individual_addresses().additional_individual_addresses();
+        let knx_addresses = KnxAddressesBuilder::new(addrs.individual_address(), additional_addresses.as_slice());
 
         let dibs = [
             DescriptionInformationBlockBuilder::IpConfig(&ip_config),
@@ -104,21 +100,14 @@ impl RemoteConfigurationServer {
             DescriptionInformationBlockBuilder::KnxAddresses(knx_addresses),
         ];
 
-        let response_builder = crate::messages::knxip::RemoteDiagnosticResponseBuilder::new(
-            request.selector,
-            &dibs,
-        );
+        let response_builder = crate::messages::knxip::RemoteDiagnosticResponseBuilder::new(request.selector, &dibs);
 
         let mut response_buffer = context.alloc_buffer().await;
         response_buffer.serialize(&response_builder);
 
         let destination = resolve_hpai(&request.discovery_endpoint, source);
 
-        debug!(
-            "Sending {} byte RemoteDiagnosticResponse to {}",
-            response_buffer.len(),
-            destination
-        );
+        debug!("Sending {} byte RemoteDiagnosticResponse to {}", response_buffer.len(), destination);
 
         let mut responses = Vec::new();
         let _ = responses.push(PendingResponse {
@@ -179,10 +168,8 @@ impl RemoteConfigurationServer {
         let ip_config = ip_diag.ip_config();
         let ip_current = ip_diag.ip_current_config();
         let addrs = context.knx_addresses();
-        let knx_addresses = KnxAddressesBuilder::new(
-            addrs.individual_address(),
-            addrs.additional_individual_addresses(),
-        );
+        let additional_addresses = context.ip_additional_individual_addresses().additional_individual_addresses();
+        let knx_addresses = KnxAddressesBuilder::new(addrs.individual_address(), additional_addresses.as_slice());
 
         let dibs = [
             DescriptionInformationBlockBuilder::IpConfig(&ip_config),
@@ -190,21 +177,14 @@ impl RemoteConfigurationServer {
             DescriptionInformationBlockBuilder::KnxAddresses(knx_addresses),
         ];
 
-        let response_builder = crate::messages::knxip::RemoteDiagnosticResponseBuilder::new(
-            request.selector,
-            &dibs,
-        );
+        let response_builder = crate::messages::knxip::RemoteDiagnosticResponseBuilder::new(request.selector, &dibs);
 
         let mut response_buffer = context.alloc_buffer().await;
         response_buffer.serialize(&response_builder);
 
         let destination = resolve_hpai(&request.discovery_endpoint, source);
 
-        debug!(
-            "Sending {} byte RemoteDiagnosticResponse (config ack) to {}",
-            response_buffer.len(),
-            destination
-        );
+        debug!("Sending {} byte RemoteDiagnosticResponse (config ack) to {}", response_buffer.len(), destination);
 
         let mut responses = Vec::new();
         let _ = responses.push(PendingResponse {
@@ -235,10 +215,7 @@ impl RemoteConfigurationServer {
             ServerError::ParseError
         })?;
 
-        debug!(
-            "Received RemoteResetRequest, selector: {:?}, command: {:?}",
-            request.selector, request.command
-        );
+        debug!("Received RemoteResetRequest, selector: {:?}, command: {:?}", request.selector, request.command);
 
         // Check if we match the selector
         let device_info = context.device_info().device_information();
@@ -278,20 +255,13 @@ impl KnxNetIpServer for RemoteConfigurationServer {
         debug!("Remote config server handling {:?}", service_type);
 
         match service_type {
-            KNXnetIPServiceType::RemoteDiagnosticRequest => {
-                self.handle_diagnostic_request(data, source, context).await
-            }
+            KNXnetIPServiceType::RemoteDiagnosticRequest => self.handle_diagnostic_request(data, source, context).await,
             KNXnetIPServiceType::RemoteBasicConfigurationRequest => {
                 self.handle_basic_configuration_request(data, source, context).await
             }
-            KNXnetIPServiceType::RemoteResetRequest => {
-                self.handle_reset_request(data, context).await
-            }
+            KNXnetIPServiceType::RemoteResetRequest => self.handle_reset_request(data, context).await,
             _ => {
-                debug!(
-                    "Remote config server received unexpected service type: {:?}",
-                    service_type
-                );
+                debug!("Remote config server received unexpected service type: {:?}", service_type);
                 Err(ServerError::Unsupported)
             }
         }

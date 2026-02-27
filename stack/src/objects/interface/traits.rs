@@ -6,10 +6,10 @@
 use core::net::Ipv4Addr;
 
 use super::{PropertyDescriptionResponse, PropertyDescriptor, PropertyError};
-use crate::AccessContext;
 use crate::dpt::{
     InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong,
 };
+use crate::{AccessContext, StackState};
 
 // ============================================================================
 // Write Response
@@ -386,6 +386,216 @@ pub trait PropertyServiceHandler {
         data: &[u8],
         ctx: AccessContext,
     ) -> Result<WriteResponse, PropertyError>;
+}
+
+// ============================================================================
+// Interface Object Augmentation
+// ============================================================================
+
+/// Extension hooks for augmenting interface object property handling.
+///
+/// Implementations can intercept selected PIDs and provide custom
+/// description/read/write behavior. Returning `None` delegates handling to the
+/// next augment (or the base object implementation).
+pub trait InterfaceObjectAugment<S: StackState> {
+    /// Optional override for `A_PropertyDescription_Read`.
+    fn property_description_read(
+        &self,
+        _state: &S,
+        _object_type: InterfaceObjectType,
+        _object_idx: u16,
+        _prop_id: u8,
+        _prop_idx: u8,
+    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+        None
+    }
+
+    /// Optional override for `A_PropertyValue_Read`.
+    fn property_value_read(
+        &self,
+        _state: &S,
+        _object_type: InterfaceObjectType,
+        _object_idx: u16,
+        _prop_id: u8,
+        _start_idx: u16,
+        _count: u16,
+        _buf: &mut [u8],
+        _ctx: AccessContext,
+    ) -> Option<Result<usize, PropertyError>> {
+        None
+    }
+
+    /// Optional override for `A_PropertyValue_Write`.
+    fn property_value_write(
+        &self,
+        _state: &S,
+        _object_type: InterfaceObjectType,
+        _object_idx: u16,
+        _prop_id: u8,
+        _start_idx: u16,
+        _data: &[u8],
+        _ctx: AccessContext,
+    ) -> Option<Result<WriteResponse, PropertyError>> {
+        None
+    }
+}
+
+impl<S: StackState> InterfaceObjectAugment<S> for () {}
+
+impl<S, Head, Tail> InterfaceObjectAugment<S> for (Head, Tail)
+where
+    S: StackState,
+    Head: InterfaceObjectAugment<S>,
+    Tail: InterfaceObjectAugment<S>,
+{
+    fn property_description_read(
+        &self,
+        state: &S,
+        object_type: InterfaceObjectType,
+        object_idx: u16,
+        prop_id: u8,
+        prop_idx: u8,
+    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+        self.0
+            .property_description_read(state, object_type, object_idx, prop_id, prop_idx)
+            .or_else(|| self.1.property_description_read(state, object_type, object_idx, prop_id, prop_idx))
+    }
+
+    fn property_value_read(
+        &self,
+        state: &S,
+        object_type: InterfaceObjectType,
+        object_idx: u16,
+        prop_id: u8,
+        start_idx: u16,
+        count: u16,
+        buf: &mut [u8],
+        ctx: AccessContext,
+    ) -> Option<Result<usize, PropertyError>> {
+        self.0
+            .property_value_read(state, object_type, object_idx, prop_id, start_idx, count, buf, ctx)
+            .or_else(|| self.1.property_value_read(state, object_type, object_idx, prop_id, start_idx, count, buf, ctx))
+    }
+
+    fn property_value_write(
+        &self,
+        state: &S,
+        object_type: InterfaceObjectType,
+        object_idx: u16,
+        prop_id: u8,
+        start_idx: u16,
+        data: &[u8],
+        ctx: AccessContext,
+    ) -> Option<Result<WriteResponse, PropertyError>> {
+        self.0
+            .property_value_write(state, object_type, object_idx, prop_id, start_idx, data, ctx)
+            .or_else(|| self.1.property_value_write(state, object_type, object_idx, prop_id, start_idx, data, ctx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        StackState,
+        address::IndividualAddress,
+        dpt::PDT_UnsignedInt,
+        objects::interface::{PropertyAccess, PropertyDescriptor},
+    };
+
+    struct DummyState;
+
+    impl StackState for DummyState {
+        fn individual_address(&self) -> IndividualAddress {
+            IndividualAddress::new(1, 1, 1)
+        }
+
+        fn set_individual_address(&self, _addr: IndividualAddress) {}
+
+        fn serial_number(&self) -> &[u8; 6] {
+            static SERIAL: [u8; 6] = [0; 6];
+            &SERIAL
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct DeviceOnlyAugment {
+        max_elements: u16,
+    }
+
+    impl<S: StackState> InterfaceObjectAugment<S> for DeviceOnlyAugment {
+        fn property_description_read(
+            &self,
+            _state: &S,
+            object_type: InterfaceObjectType,
+            object_idx: u16,
+            prop_id: u8,
+            _prop_idx: u8,
+        ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+            if object_type != InterfaceObjectType::Device || prop_id != 42 {
+                return None;
+            }
+
+            let desc =
+                PropertyDescriptor::array::<PDT_UnsignedInt>(42, self.max_elements, PropertyAccess::ReadOnly, 3, 3);
+            Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &desc)))
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct IpOnlyAugment {
+        max_elements: u16,
+    }
+
+    impl<S: StackState> InterfaceObjectAugment<S> for IpOnlyAugment {
+        fn property_description_read(
+            &self,
+            _state: &S,
+            object_type: InterfaceObjectType,
+            object_idx: u16,
+            prop_id: u8,
+            _prop_idx: u8,
+        ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+            if object_type != InterfaceObjectType::IPParameter || prop_id != 42 {
+                return None;
+            }
+
+            let desc =
+                PropertyDescriptor::array::<PDT_UnsignedInt>(42, self.max_elements, PropertyAccess::ReadOnly, 3, 3);
+            Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &desc)))
+        }
+    }
+
+    #[test]
+    fn augment_chain_uses_first_matching_handler() {
+        let state = DummyState;
+        let chain = (DeviceOnlyAugment { max_elements: 1 }, DeviceOnlyAugment { max_elements: 9 });
+
+        let response = chain
+            .property_description_read(&state, InterfaceObjectType::Device, 0, 42, 0)
+            .expect("first augment should handle")
+            .expect("handler should succeed");
+
+        assert_eq!(response.max_elements, 1);
+    }
+
+    #[test]
+    fn augment_chain_scopes_by_object_type_and_delegates() {
+        let state = DummyState;
+        let chain = (DeviceOnlyAugment { max_elements: 2 }, IpOnlyAugment { max_elements: 7 });
+
+        let device_response = chain
+            .property_description_read(&state, InterfaceObjectType::Device, 0, 42, 0)
+            .expect("device augment should handle")
+            .expect("handler should succeed");
+        assert_eq!(device_response.max_elements, 2);
+
+        let ip_response = chain
+            .property_description_read(&state, InterfaceObjectType::IPParameter, 0, 42, 0)
+            .expect("ip augment should handle after delegation")
+            .expect("handler should succeed");
+        assert_eq!(ip_response.max_elements, 7);
+    }
 }
 
 // ============================================================================

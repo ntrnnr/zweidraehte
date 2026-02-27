@@ -85,6 +85,13 @@ pub enum UpdateObjectError {
     Busy,
 }
 
+/// Maximum number of additional individual addresses supported for optional
+/// tunneling/capability features.
+pub const MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES: usize = 8;
+
+/// Shared additional individual-address collection type.
+pub type AdditionalIndividualAddresses = heapless::Vec<IndividualAddress, { MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }>;
+
 /// Trait for stack state types.
 ///
 /// Stack state holds runtime configuration that can be shared between
@@ -560,6 +567,16 @@ pub trait IpStackState {
 
     /// Set the project installation ID.
     fn set_project_installation_id(&self, id: u16);
+
+    /// Get additional individual addresses used for tunneling-capable profiles.
+    fn additional_individual_addresses(&self) -> AdditionalIndividualAddresses {
+        AdditionalIndividualAddresses::new()
+    }
+
+    /// Replace additional individual addresses.
+    fn set_additional_individual_addresses(&self, _addresses: &[IndividualAddress]) -> Result<(), ()> {
+        Err(())
+    }
 }
 
 /// Default KNX multicast address: 224.0.23.12
@@ -1055,10 +1072,18 @@ where
     }
 }
 
-// Unconditional — `individual_address()` is on `StackState`, not `IpStackState`,
-// so this works for both IP and TP1 devices. `additional_individual_addresses()`
-// returns `&[]` by default until tunneling is implemented.
-impl<D: StackDefinition> context::KnxAddressContext for StackContext<'_, D> {
+impl<D: StackDefinition> context::IpAdditionalIndividualAddressContext for StackContext<'_, D>
+where
+    D::State: IpStackState,
+{
+    fn additional_individual_addresses(&self) -> AdditionalIndividualAddresses {
+        self.inner.state.additional_individual_addresses()
+    }
+}
+
+// Unconditional — `individual_address()` is on `StackState`, so this works
+// for both IP and TP1 devices.
+impl<D: StackDefinition> context::KnxIndividualAddressContext for StackContext<'_, D> {
     fn individual_address(&self) -> address::IndividualAddress {
         self.inner.state.individual_address()
     }

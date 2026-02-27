@@ -29,13 +29,13 @@
 use core::cell::RefCell;
 
 use crate::{
-    AccessContext, IpStackState, StackState,
+    AccessContext, IpStackState, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES, StackState,
     dpt::{DeviceControl, InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
-        GroupObjectTableObject, HasDeviceObject, InterfaceObject, IpParameterObject, PeiProgramObject,
-        PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyServiceHandler, WriteResponse,
-        pid,
+        GroupObjectTableObject, HasDeviceObject, InterfaceObject, InterfaceObjectAugment, IpParameterObject,
+        PeiProgramObject, PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError,
+        PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -334,6 +334,231 @@ where
 // IpObjects - IP Parameter Object
 // ============================================================================
 
+/// Augment that adds tunneling-related IP properties.
+///
+/// - PID 53: Additional Individual Addresses
+/// - PID 79: Tunnelling Addresses (device-part view of PID 53 entries)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TunnelingAugment;
+
+impl TunnelingAugment {
+    const MAX_ADDRS: u16 = MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES as u16;
+    const KNXNETIP_CAP_TUNNELING_BIT: u16 = 1 << 1;
+
+    fn enabled(state: &impl IpStackState) -> bool {
+        (state.knxnetip_device_capabilities() & Self::KNXNETIP_CAP_TUNNELING_BIT) != 0
+    }
+
+    fn descriptor(prop_id: u8) -> Option<PropertyDescriptor> {
+        match prop_id {
+            pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => Some(PropertyDescriptor::array::<crate::dpt::PDT_UnsignedInt>(
+                prop_id,
+                Self::MAX_ADDRS,
+                PropertyAccess::ReadWrite,
+                3,
+                3,
+            )),
+            pid::TUNNELLING_ADDRESSES => Some(PropertyDescriptor::array::<crate::dpt::PDT_UnsignedChar>(
+                prop_id,
+                Self::MAX_ADDRS,
+                PropertyAccess::ReadOnly,
+                3,
+                3,
+            )),
+            _ => None,
+        }
+    }
+
+    fn encode_addrs(
+        state: &impl IpStackState,
+        start_idx: u16,
+        count: u16,
+        buf: &mut [u8],
+    ) -> Result<usize, PropertyError> {
+        let addrs = state.additional_individual_addresses();
+
+        if start_idx == 0 {
+            if buf.len() < 2 {
+                return Err(PropertyError::BufferTooSmall);
+            }
+            buf[..2].copy_from_slice(&(addrs.len() as u16).to_be_bytes());
+            return Ok(2);
+        }
+
+        if count == 0 {
+            return Err(PropertyError::InvalidElementCount);
+        }
+
+        let start = (start_idx - 1) as usize;
+        if start >= addrs.len() {
+            return Err(PropertyError::InvalidStartIndex);
+        }
+
+        let end = (start + count as usize).min(addrs.len());
+        let needed = (end - start) * 2;
+        if buf.len() < needed {
+            return Err(PropertyError::BufferTooSmall);
+        }
+
+        let mut out = 0usize;
+        for addr in addrs.iter().skip(start).take(end - start) {
+            let raw = addr.as_bytes();
+            buf[out..out + 2].copy_from_slice(raw);
+            out += 2;
+        }
+
+        Ok(out)
+    }
+
+    fn decode_addrs(state: &impl IpStackState, start_idx: u16, data: &[u8]) -> Result<WriteResponse, PropertyError> {
+        if start_idx != 1 {
+            return Err(PropertyError::InvalidStartIndex);
+        }
+        if !data.len().is_multiple_of(2) {
+            return Err(PropertyError::TypeMismatch);
+        }
+
+        let mut addrs = heapless::Vec::<crate::address::IndividualAddress, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>::new();
+        for chunk in data.chunks_exact(2) {
+            addrs
+                .push(crate::address::IndividualAddress::from_bytes(chunk))
+                .map_err(|_| PropertyError::ValueOutOfRange)?;
+        }
+
+        state.set_additional_individual_addresses(addrs.as_slice()).map_err(|_| PropertyError::WriteNotAllowed)?;
+        Ok(WriteResponse::Echo)
+    }
+
+    fn encode_tunnelling_devices(
+        state: &impl IpStackState,
+        start_idx: u16,
+        count: u16,
+        buf: &mut [u8],
+    ) -> Result<usize, PropertyError> {
+        let addrs = state.additional_individual_addresses();
+
+        if start_idx == 0 {
+            if buf.len() < 2 {
+                return Err(PropertyError::BufferTooSmall);
+            }
+            buf[..2].copy_from_slice(&(addrs.len() as u16).to_be_bytes());
+            return Ok(2);
+        }
+
+        if count == 0 {
+            return Err(PropertyError::InvalidElementCount);
+        }
+
+        let start = (start_idx - 1) as usize;
+        if start >= addrs.len() {
+            return Err(PropertyError::InvalidStartIndex);
+        }
+
+        let end = (start + count as usize).min(addrs.len());
+        let needed = end - start;
+        if buf.len() < needed {
+            return Err(PropertyError::BufferTooSmall);
+        }
+
+        let mut out = 0usize;
+        for addr in addrs.iter().skip(start).take(end - start) {
+            buf[out] = addr.device();
+            out += 1;
+        }
+
+        Ok(out)
+    }
+}
+
+impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugment {
+    fn property_description_read(
+        &self,
+        _state: &S,
+        object_type: InterfaceObjectType,
+        object_idx: u16,
+        prop_id: u8,
+        _prop_idx: u8,
+    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+        if object_type != InterfaceObjectType::IPParameter {
+            return None;
+        }
+
+        if !Self::enabled(_state) {
+            return None;
+        }
+
+        if prop_id == 0 {
+            return None;
+        }
+
+        let desc = Self::descriptor(prop_id)?;
+        Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &desc)))
+    }
+
+    fn property_value_read(
+        &self,
+        state: &S,
+        object_type: InterfaceObjectType,
+        _object_idx: u16,
+        prop_id: u8,
+        start_idx: u16,
+        count: u16,
+        buf: &mut [u8],
+        ctx: AccessContext,
+    ) -> Option<Result<usize, PropertyError>> {
+        if object_type != InterfaceObjectType::IPParameter {
+            return None;
+        }
+
+        if !Self::enabled(state) {
+            return None;
+        }
+
+        let desc = Self::descriptor(prop_id)?;
+
+        if !desc.can_read(ctx) {
+            return Some(Err(PropertyError::AccessDenied));
+        }
+
+        Some(match prop_id {
+            pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => Self::encode_addrs(state, start_idx, count, buf),
+            pid::TUNNELLING_ADDRESSES => Self::encode_tunnelling_devices(state, start_idx, count, buf),
+            _ => Err(PropertyError::InvalidPropertyId),
+        })
+    }
+
+    fn property_value_write(
+        &self,
+        state: &S,
+        object_type: InterfaceObjectType,
+        _object_idx: u16,
+        prop_id: u8,
+        start_idx: u16,
+        data: &[u8],
+        ctx: AccessContext,
+    ) -> Option<Result<WriteResponse, PropertyError>> {
+        if object_type != InterfaceObjectType::IPParameter {
+            return None;
+        }
+
+        if !Self::enabled(state) {
+            return None;
+        }
+
+        let desc = Self::descriptor(prop_id)?;
+
+        if !desc.can_write(ctx) {
+            return Some(Err(PropertyError::AccessDenied));
+        }
+
+        Some(match prop_id {
+            pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => Self::decode_addrs(state, start_idx, data),
+            pid::TUNNELLING_ADDRESSES => Err(PropertyError::WriteNotAllowed),
+            _ => Err(PropertyError::InvalidPropertyId),
+        })
+    }
+}
+
 /// IP interface objects for KNX/IP devices (index 6).
 ///
 /// Contains only the IP Parameter Object. Compose with [`SystemBObjects`]
@@ -346,27 +571,40 @@ where
 ///
 /// The tuple's `PropertyServiceHandler` implementation automatically handles
 /// index offsetting - IpObjects receives index 0 for what is logically index 6.
-pub struct IpObjects<'a, S: StackState + IpStackState> {
+pub struct IpObjects<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S> = ()> {
     state: &'a S,
     ip_parameter: RefCell<IpParameterObject<'a, S>>,
+    augment: A,
 }
 
-impl<'a, S: StackState + IpStackState> IpObjects<'a, S> {
+impl<'a, S: StackState + IpStackState> IpObjects<'a, S, ()> {
+    /// Create new IP objects with no augmentation.
+    pub fn new(state: &'a S) -> Self {
+        Self::with_augment(state, ())
+    }
+}
+
+impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> IpObjects<'a, S, A> {
     /// Number of interface objects in this container.
     pub const OBJECT_COUNT: u16 = 1;
 
-    /// Create new IP objects.
-    pub fn new(state: &'a S) -> Self {
-        Self { state, ip_parameter: RefCell::new(IpParameterObject::with_state(state)) }
+    /// Create new IP objects with an augment chain.
+    pub fn with_augment(state: &'a S, augment: A) -> Self {
+        Self { state, ip_parameter: RefCell::new(IpParameterObject::with_state(state)), augment }
     }
 
     /// Get a reference to the IP Parameter Object.
     pub fn ip_parameter(&self) -> &RefCell<IpParameterObject<'a, S>> {
         &self.ip_parameter
     }
+
+    /// Get the configured augment chain.
+    pub fn augment(&self) -> &A {
+        &self.augment
+    }
 }
 
-impl<'a, S: StackState + IpStackState> PropertyServiceHandler for IpObjects<'a, S> {
+impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> PropertyServiceHandler for IpObjects<'a, S, A> {
     fn object_count(&self) -> u16 {
         Self::OBJECT_COUNT
     }
@@ -385,6 +623,15 @@ impl<'a, S: StackState + IpStackState> PropertyServiceHandler for IpObjects<'a, 
         prop_idx: u8,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
         if object_idx == 0 {
+            if let Some(result) = self.augment.property_description_read(
+                self.state,
+                InterfaceObjectType::IPParameter,
+                object_idx,
+                prop_id,
+                prop_idx,
+            ) {
+                return result;
+            }
             // Note: We need to report the actual object index (5) in the response,
             // but the tuple impl calls us with 0. The caller handles this.
             self.ip_parameter.borrow().property_description(object_idx, prop_id, prop_idx)
@@ -403,6 +650,18 @@ impl<'a, S: StackState + IpStackState> PropertyServiceHandler for IpObjects<'a, 
         ctx: AccessContext,
     ) -> Result<usize, PropertyError> {
         if object_idx == 0 {
+            if let Some(result) = self.augment.property_value_read(
+                self.state,
+                InterfaceObjectType::IPParameter,
+                object_idx,
+                prop_id,
+                start_idx,
+                count,
+                buf,
+                ctx,
+            ) {
+                return result;
+            }
             // Check access level
             if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(prop_id) {
                 if !desc.can_read(ctx) {
@@ -426,6 +685,20 @@ impl<'a, S: StackState + IpStackState> PropertyServiceHandler for IpObjects<'a, 
         ctx: AccessContext,
     ) -> Result<WriteResponse, PropertyError> {
         if object_idx == 0 {
+            if let Some(result) = self.augment.property_value_write(
+                self.state,
+                InterfaceObjectType::IPParameter,
+                object_idx,
+                prop_id,
+                start_idx,
+                data,
+                ctx,
+            ) {
+                if result.is_ok() {
+                    self.state.mark_dirty();
+                }
+                return result;
+            }
             // Check access level
             if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(prop_id) {
                 if !desc.can_write(ctx) {
@@ -463,8 +736,8 @@ impl<'a, S: StackState + IpStackState> PropertyServiceHandler for IpObjects<'a, 
 /// - Application Program Object (index 4)
 /// - PEI Program Object (index 5)
 /// - IP Parameter Object (index 6)
-pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP, PEI> =
-    (SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>, IpObjects<'a, S>);
+pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP, PEI, A = ()> =
+    (SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>, IpObjects<'a, S, A>);
 
 /// Convenience alias that fills in the GAT projections automatically.
 ///
@@ -472,7 +745,7 @@ pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP, PEI> =
 /// from `S`'s `Has*Table` implementations. Use this in
 /// [`StackDefinition::InterfaceObjects`](crate::StackDefinition) to avoid
 /// spelling out 5 associated type projections manually.
-pub type DefaultKnxIpInterfaceObjects<'a, S> = KnxIpInterfaceObjects<
+pub type DefaultKnxIpInterfaceObjects<'a, S, A = ()> = KnxIpInterfaceObjects<
     'a,
     S,
     <S as HasAddressTable>::ADT,
@@ -480,6 +753,7 @@ pub type DefaultKnxIpInterfaceObjects<'a, S> = KnxIpInterfaceObjects<
     <S as HasCommunicationObjectTable>::COT,
     <S as HasApplication>::APP,
     <S as HasPeiApplication>::PEI,
+    A,
 >;
 
 /// Type alias for [`SystemBObjects`] that auto-fills the associated type projections.
@@ -611,4 +885,56 @@ where
     let base = create_system_b_objects::<D, S>(state, layout);
     let ip = IpObjects::new(state);
     (base, ip)
+}
+
+/// Create KNX/IP interface objects with an explicit augment chain.
+pub fn create_knxip_objects_with_augment<'a, D, S, A>(
+    state: &'a S,
+    layout: &super::memory_map::MemoryLayout,
+    augment: A,
+) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI, A>
+where
+    D: StackDefinition,
+    S: StackState
+        + IpStackState
+        + HasAddressTable
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasApplication
+        + HasPeiApplication
+        + HasRoutingCount,
+    S::ADT: HasLoadStateMachine,
+    S::AST: HasLoadStateMachine,
+    S::COT: HasLoadStateMachine,
+    S::APP: HasLoadStateMachine + HasRunStateMachine,
+    S::PEI: HasLoadStateMachine + HasRunStateMachine,
+    A: InterfaceObjectAugment<S>,
+{
+    let base = create_system_b_objects::<D, S>(state, layout);
+    let ip = IpObjects::with_augment(state, augment);
+    (base, ip)
+}
+
+/// Create KNX/IP interface objects with built-in tunneling property augmentation.
+pub fn create_knxip_tunneling_objects<'a, D, S>(
+    state: &'a S,
+    layout: &super::memory_map::MemoryLayout,
+) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI, (TunnelingAugment, ())>
+where
+    D: StackDefinition,
+    S: StackState
+        + IpStackState
+        + HasAddressTable
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasApplication
+        + HasPeiApplication
+        + HasRoutingCount,
+    S::ADT: HasLoadStateMachine,
+    S::AST: HasLoadStateMachine,
+    S::COT: HasLoadStateMachine,
+    S::APP: HasLoadStateMachine + HasRunStateMachine,
+    S::PEI: HasLoadStateMachine + HasRunStateMachine,
+{
+    create_knxip_objects_with_augment::<D, S, _>(state, layout, (TunnelingAugment, ()))
 }
