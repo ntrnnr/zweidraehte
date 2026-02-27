@@ -105,6 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         modules: None,
         baggages: None,
         translations: Some(MDT_TRANSLATIONS_DE),
+        bus_interfaces: None,
     };
 
     // Output directory: out/<device>/

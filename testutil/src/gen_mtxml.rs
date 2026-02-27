@@ -47,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         modules: None,
         baggages: None,
         translations: None,
+        bus_interfaces: None,
     };
 
     // Output directory: out/<device>/

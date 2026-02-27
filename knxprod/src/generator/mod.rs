@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 use crate::definition::module::ModuleCollection;
 use crate::definition::page_layout::PageStructure;
-use crate::schema::{BaggageDef, MaskFamily};
+use crate::schema::{BaggageDef, BusAccessType, MaskFamily};
 
 use zweidraehte::ets::{
     DeviceDescriptor, EtsCommObjectDef, EtsCommObjectRefDef, EtsParamDefExt, EtsTranslation, EtsUnionFieldInfo,
@@ -188,6 +188,27 @@ pub struct ApplicationProgramDef<'a> {
     pub baggages: Option<&'a [BaggageDef<'a>]>,
     /// Translations for non-default languages.
     pub translations: Option<&'a [EtsTranslation]>,
+    /// Bus interface definitions for IP Interface devices.
+    ///
+    /// Each entry declares one tunneling/USB/routing channel that ETS can
+    /// assign an additional individual address to. Typically 4 entries for
+    /// an IP Interface with 4 tunneling channels.
+    pub bus_interfaces: Option<&'a [BusInterfaceDef]>,
+}
+
+/// Definition of a single bus interface channel.
+///
+/// Used in [`ApplicationProgramDef::bus_interfaces`] to declare
+/// tunneling, USB, or routing channels for ETS.
+#[derive(Debug, Clone)]
+pub struct BusInterfaceDef {
+    /// Slot index in the device's additional IA table (PID 53).
+    /// Typically 1-based (1, 2, 3, ...).
+    pub address_index: u8,
+    /// Access type for this channel.
+    pub access_type: BusAccessType,
+    /// Human-readable label shown in ETS (e.g., "Tunneling Channel 1").
+    pub text: Option<&'static str>,
 }
 
 /// A product variant within a hardware definition.
@@ -347,6 +368,8 @@ pub(crate) struct ApplicationProgramConfig<'a> {
     /// Translations are generated into a `<Languages>` section at the Manufacturer level
     /// in the ApplicationProgram MTXML file. Use the `ets_translations!` macro to define translations.
     pub translations: Option<&'a [EtsTranslation]>,
+    /// Bus interface definitions for IP Interface devices.
+    pub bus_interfaces: Option<&'a [BusInterfaceDef]>,
 }
 
 impl<'a> ApplicationProgramConfig<'a> {

@@ -69,6 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         modules: None,
         baggages: None,
         translations: Some(LIGHT_SWITCH_TRANSLATIONS),
+        bus_interfaces: None,
     };
 
     let app_tp1 = ApplicationProgramDef {
@@ -91,6 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         modules: None,
         baggages: None,
         translations: Some(LIGHT_SWITCH_TRANSLATIONS),
+        bus_interfaces: None,
     };
 
     // Build a multi-device package: two application programs, two hardware

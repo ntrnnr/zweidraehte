@@ -67,6 +67,7 @@ use super::{
 // IpInterfaceAddressChecker
 // ============================================================================
 
+// FIXME: I think we have to ACK all group address and other broadcast traffic, at least if at least one tunnel connection is established
 /// Address checker for IP Interface devices.
 ///
 /// Extends [`DeviceAddressChecker`] to also ACK frames addressed to
@@ -82,10 +83,7 @@ pub struct IpInterfaceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine
 }
 
 impl<'a, ADT: AddressTable + HasLoadStateMachine> IpInterfaceAddressChecker<'a, ADT> {
-    pub fn new(
-        inner: DeviceAddressChecker<'a, ADT>,
-        additional_addresses: AdditionalIndividualAddresses,
-    ) -> Self {
+    pub fn new(inner: DeviceAddressChecker<'a, ADT>, additional_addresses: AdditionalIndividualAddresses) -> Self {
         Self { inner, additional_addresses }
     }
 }
@@ -153,11 +151,7 @@ pub struct IpInterfaceLinkLayerBuilder<
 impl<W, R, T: IpTransport, const MS: usize, const MTS: usize, const MC: usize>
     IpInterfaceLinkLayerBuilder<W, R, T, MS, MTS, MC>
 {
-    pub fn new(
-        tpuart_tx: W,
-        tpuart_rx: R,
-        knxip_builder: KnxNetIpBuilder<T, MS, MTS, MC>,
-    ) -> Self {
+    pub fn new(tpuart_tx: W, tpuart_rx: R, knxip_builder: KnxNetIpBuilder<T, MS, MTS, MC>) -> Self {
         Self { tpuart_tx, tpuart_rx, knxip_builder }
     }
 }
@@ -176,14 +170,8 @@ impl IpInterfaceResources {
 
 // -- LinkLayerBuilderBase -----------------------------------------------------
 
-impl<
-    W: Send + 'static,
-    R: Send + 'static,
-    T: IpTransport + 'static,
-    const MS: usize,
-    const MTS: usize,
-    const MC: usize,
-> LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, T, MS, MTS, MC>
+impl<W: Send + 'static, R: Send + 'static, T: IpTransport + 'static, const MS: usize, const MTS: usize, const MC: usize>
+    LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, T, MS, MTS, MC>
 {
     type Resources = IpInterfaceResources;
 
@@ -198,8 +186,8 @@ impl<
 // - `KnxNetIpContext` for the KNX/IP server
 // - `AddressTableContext` for the address checker (group ACK decisions)
 
-impl<CTX, W, R, T, const MS: usize, const MTS: usize, const MC: usize>
-    LinkLayerBuilder<CTX> for IpInterfaceLinkLayerBuilder<W, R, T, MS, MTS, MC>
+impl<CTX, W, R, T, const MS: usize, const MTS: usize, const MC: usize> LinkLayerBuilder<CTX>
+    for IpInterfaceLinkLayerBuilder<W, R, T, MS, MTS, MC>
 where
     CTX: KnxNetIpContext + AddressTableContext,
     W: embedded_io_async::Write + Send + 'static,
@@ -227,32 +215,27 @@ where
             // ==============================================================
 
             // TPUART → bridge: bus frame indications
-            let tpuart_ind_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 4> =
-                Channel::new();
+            let tpuart_ind_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 4> = Channel::new();
 
             // Bridge → TPUART: transmission requests (from stack or tunnel inject)
-            let tpuart_req_channel: Channel<NoopRawMutex, RequestMessage<Buffer<'static>>, 4> =
-                Channel::new();
+            let tpuart_req_channel: Channel<NoopRawMutex, RequestMessage<Buffer<'static>>, 4> = Channel::new();
 
             // Bridge → KNX/IP: bus indications for tunnel forwarding (cEMI)
             let subnet_ind_channel: Channel<NoopRawMutex, SubnetIndication, 4> = Channel::new();
 
             // KNX/IP → bridge: tunnel-injected frames for bus TX
-            let subnet_inject_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 4> =
-                Channel::new();
+            let subnet_inject_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 4> = Channel::new();
 
             // KNX/IP indication channel (device management indications that
             // must reach the device's own stack — currently unused since device
             // management `Responses` go directly to the UDP/TCP response channel,
             // not through `ind_tx`). Capacity 1 is sufficient.
-            let knxip_ind_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> =
-                Channel::new();
+            let knxip_ind_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
 
             // Discard channel for KNX/IP confirmations — the KNX/IP server in
             // composite mode never receives stack requests, so it never sends
             // confirmations. Capacity 1 to avoid panic on accidental send.
-            let knxip_conf_channel: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> =
-                Channel::new();
+            let knxip_conf_channel: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> = Channel::new();
 
             // ==============================================================
             // Build TPUART link layer
@@ -289,10 +272,8 @@ where
             join3(
                 // Task 1: TPUART — drives UART RX/TX
                 tpuart.run(tpuart_req_channel.receiver()),
-
                 // Task 2: KNX/IP — handles UDP/TCP, tunneling, discovery
                 knxip.run(NeverInbox),
-
                 // Task 3: Bridge loop — routes frames between the three
                 bridge_loop(
                     ind_tx,
@@ -434,9 +415,7 @@ fn internal_to_cemi(
 
 /// Convert a tunnel-injected indication (internal format) into a request
 /// for TPUART transmission.
-fn indication_to_request(
-    indication: IndicationMessage<Buffer<'static>>,
-) -> RequestMessage<Buffer<'static>> {
+fn indication_to_request(indication: IndicationMessage<Buffer<'static>>) -> RequestMessage<Buffer<'static>> {
     use crate::messages::knx::ServiceType;
 
     // Re-wrap the inner message buffer as a request. The message content

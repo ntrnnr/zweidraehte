@@ -7,6 +7,7 @@ members = [
     "picow",
     "pico_eth",
     "pico_tp1",
+    "pico_ip_interface",
     "pico_blink",
 ]
 

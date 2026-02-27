@@ -667,6 +667,7 @@ impl<'a> KnxprodBuilder<'a> {
             modules: app.modules.clone(),
             baggages: app.baggages,
             translations: app.translations,
+            bus_interfaces: app.bus_interfaces,
         }
     }
 

@@ -23,3 +23,8 @@ log = ["zweidraehte/log"]
 name = "gen_light_switch_mtxml"
 path = "src/gen_light_switch_mtxml.rs"
 required-features = ["gen"]
+
+[[bin]]
+name = "gen_ip_interface_mtxml"
+path = "src/gen_ip_interface_mtxml.rs"
+required-features = ["gen"]

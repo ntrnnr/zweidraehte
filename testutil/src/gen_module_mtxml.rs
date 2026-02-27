@@ -57,6 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         baggages: Some(BAGGAGES),
         // Combined German and English translations
         translations: Some(&all_translations),
+        bus_interfaces: None,
     };
 
     // Output directory: out/<device>/

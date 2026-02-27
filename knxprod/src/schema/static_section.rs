@@ -36,6 +36,8 @@ pub struct StaticSection {
     pub extension: Option<Extension>,
     #[serde(rename = "Messages", skip_serializing_if = "Option::is_none")]
     pub messages: Option<Messages>,
+    #[serde(rename = "BusInterfaces", skip_serializing_if = "Option::is_none")]
+    pub bus_interfaces: Option<BusInterfaces>,
     #[serde(rename = "Options", skip_serializing_if = "Option::is_none")]
     pub options: Option<Options>,
 }
@@ -136,6 +138,47 @@ pub struct Message {
     pub name: String,
     #[serde(rename = "@Text")]
     pub text: String,
+}
+
+// ============================================================================
+// Bus Interfaces
+// ============================================================================
+
+/// Container for bus interface definitions.
+///
+/// ETS uses `BusInterfaces` to identify tunneling channels, USB
+/// connections, and routing endpoints exposed by an IP Interface or
+/// similar device. Each [`BusInterface`] maps to an additional
+/// individual address slot.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BusInterfaces {
+    #[serde(rename = "BusInterface", default, skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<BusInterface>,
+}
+
+/// Access type for a bus interface (XSD `AccessType` enum).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BusAccessType {
+    Tunneling,
+    USB,
+    Routing,
+}
+
+/// A single bus interface entry.
+///
+/// Declares one tunneling/USB/routing channel that ETS can assign an
+/// additional individual address to. The `address_index` corresponds
+/// to the slot index in the device's additional IA table (PID 53).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BusInterface {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@AddressIndex")]
+    pub address_index: u8,
+    #[serde(rename = "@AccessType")]
+    pub access_type: BusAccessType,
+    #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 // ============================================================================

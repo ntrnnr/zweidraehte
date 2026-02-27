@@ -756,6 +756,20 @@ impl MtxmlGenerator {
                 baggages: config.baggages.map_or(Vec::new(), |b| baggages_to_refs(config.device.manufacturer_id, b)),
             }),
             messages: None,
+            bus_interfaces: config.bus_interfaces.map(|defs| {
+                BusInterfaces {
+                    interfaces: defs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, def)| BusInterface {
+                            id: format!("{}_BI-{}", app_id, i + 1),
+                            address_index: def.address_index,
+                            access_type: def.access_type,
+                            text: def.text.map(|s| s.to_string()),
+                        })
+                        .collect(),
+                }
+            }),
             options: Some(Options { comparable: Some(true), reconstructable: Some(true) }),
         }, param_ref_ids))
     }
