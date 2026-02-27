@@ -29,7 +29,7 @@ use zweidraehte::{
         DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, SystemBIpDeviceDef,
         SystemBMemoryMap, create_knxip_objects,
     },
-    layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpRouterFeatures},
+    layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
     restart::{RestartError, RestartResponse},
     storage::DeviceStorage,
@@ -79,7 +79,7 @@ impl StackDefinition for PicoWLightSwitch {
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
-    type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpRouterFeatures, 2>;
+    type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
     type State = PicoWState;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, PicoWState>;

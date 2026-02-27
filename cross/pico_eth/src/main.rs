@@ -31,7 +31,7 @@ use devices::light_switch::{
 
 use zweidraehte::{
     bcus::system_b::*,
-    layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpRouterFeatures},
+    layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
     restart::{RestartError, RestartResponse},
     storage::DeviceStorage,
@@ -86,7 +86,7 @@ impl StackDefinition for PicoEthLightSwitch {
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
-    type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpRouterFeatures, 2>;
+    type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
     type State = PicoEthState;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, PicoEthState>;

@@ -21,7 +21,7 @@ use zweidraehte::bcus::system_b::{
 };
 use zweidraehte::dpt::*;
 use zweidraehte::ets::ets_range_enum;
-use zweidraehte::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpRouterFeatures};
+use zweidraehte::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp};
 use zweidraehte::layers::transport::TlStyle;
 use zweidraehte::prelude::*;
 
@@ -3235,7 +3235,7 @@ impl StackDefinition for MdtStack {
 
     type P = MdtParams;
     type CO = comm_objs::MdtComObjects;
-    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, KnxIpRouterFeatures, 2>;
+    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, KnxIpDeviceUdp, 2>;
     type State = MdtState;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, MdtState>;

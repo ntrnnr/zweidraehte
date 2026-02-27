@@ -118,7 +118,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use zweidraehte::prelude::*;
 use zweidraehte::{
     dpt::{DPT_Switch, InterfaceObjectType},
-    layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpRouterFeatures},
+    layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
         IpParameterObject,
@@ -738,7 +738,7 @@ impl StackDefinition for MyKnxStackWithKnxIp {
     const TL_STYLE: TlStyle = TlStyle::Style1;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
-    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, KnxIpRouterFeatures, 2>;
+    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, KnxIpDeviceUdp, 2>;
     type State = MyState;
     type Mem = NoMemoryMap;
 

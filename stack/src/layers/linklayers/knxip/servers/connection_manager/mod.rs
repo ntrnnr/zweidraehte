@@ -11,10 +11,18 @@
 //! ## Compile-time handler selection
 //!
 //! The connection manager is parameterized on `H: ConnectionHandlers`, which
-//! determines at compile time which connection types are supported:
+//! determines at compile time which connection types are supported.
 //!
-//! - [`DevMgmtOnly`] — Device Management only (no tunneling code linked)
-//! - [`DevMgmtAndTunnel`] — Device Management + Tunneling
+//! Each connection type slot is independently selectable via the
+//! [`ConnectedHandler`] trait pattern — enabled variants delegate to real
+//! handlers, disabled variants are zero-size no-ops that LLVM eliminates:
+//!
+//! - Device Management: [`WithDevMgmt`] / [`NoDevMgmt`]
+//! - Tunneling: [`WithTunnel`] / [`NoTunnel`]
+//!
+//! These are composed into [`CompositeHandlers<DM, TUN>`], which implements
+//! [`ConnectionHandlers`] with a single dispatch that routes by connection
+//! type to the appropriate slot.
 //!
 //! Individual connection type handlers implement [`ConnectionTypeHandler`]:
 //! - [`device_mgmt`] — Device Management (ConnectionType 0x03)
@@ -124,11 +132,10 @@ pub trait ConnectionTypeHandler {
 
 /// Trait for the handler collection held by [`ConnectionManager`].
 ///
-/// Replaces the former `ConnectionTypeHandlerEnum` enum dispatch with
-/// compile-time monomorphized dispatch. Two implementations:
-///
-/// - [`DevMgmtOnly`]: Device Management only (no tunneling code linked).
-/// - [`DevMgmtAndTunnel`]: Device Management + Tunneling.
+/// Dispatches connection lifecycle and data frame operations to the
+/// appropriate handler based on connection type. Implemented by
+/// [`CompositeHandlers`], which composes independently selectable
+/// [`ConnectedHandler`] slots.
 pub trait ConnectionHandlers {
     fn accept_connection(
         &mut self,
@@ -191,80 +198,263 @@ pub trait ConnectionHandlers {
     ) -> Option<PendingResponse>;
 }
 
-/// Handler collection containing only Device Management.
+// ============================================================================
+// ConnectedHandler: Per-Slot Compile-Time Handler Selection
+// ============================================================================
+
+/// Compile-time slot for a single connection type handler.
 ///
-/// When the tunneling feature is disabled, `ConnectionManager` is
-/// parameterized with this type. All tunneling-related methods return
-/// `None` / empty, and LLVM eliminates the tunnel handler code entirely
-/// since `TunnelConnectionHandler` is never instantiated.
-pub struct DevMgmtOnly<'a> {
-    dev_mgmt: DeviceMgmtConnectionHandler<'a>,
+/// Each connection type (Device Management, Tunneling, etc.) has an enabled
+/// variant that delegates to the real handler and a disabled variant whose
+/// `Handler` is `()` and whose methods are no-ops that LLVM eliminates.
+///
+/// The `Handler<'a>` GAT carries the handler's lifetime — for example,
+/// `DeviceMgmtConnectionHandler<'a>` borrows the property service context.
+pub trait ConnectedHandler: 'static {
+    type Handler<'a>;
+    const CONNECTION_TYPE: ConnectionType;
+
+    fn accept_connection(h: &mut Self::Handler<'_>, channel_id: u8, cri: &CRI)
+        -> Result<AcceptedConnection, ConnectionStatus>;
+
+    fn close_connection(h: &mut Self::Handler<'_>, channel_id: u8);
+
+    fn on_data_frame<'a>(
+        h: &mut Self::Handler<'a>,
+        channel_id: u8,
+        data: &[u8],
+        conn: &mut ConnectionContext,
+        buffer_manager: &DynBufferManager<'static>,
+    ) -> impl core::future::Future<Output = Result<DataFrameAction, ServerError>>;
+
+    fn on_data_ack(
+        h: &mut Self::Handler<'_>,
+        channel_id: u8,
+        data: &[u8],
+        conn: &mut ConnectionContext,
+    ) -> Result<(), ServerError>;
+
+    fn handled_service_types<'h>(h: &'h Self::Handler<'_>) -> &'h [KNXnetIPServiceType];
 }
 
-impl<'a> DevMgmtOnly<'a> {
-    pub fn new(handler: DeviceMgmtConnectionHandler<'a>) -> Self {
-        Self { dev_mgmt: handler }
-    }
+/// Extension of [`ConnectedHandler`] for the tunneling slot.
+///
+/// Tunneling has three additional "bridge" methods that other connection
+/// types don't need. Both [`WithTunnel`] and [`NoTunnel`] implement this;
+/// the disabled variant returns `None`/empty.
+pub trait TunnelingConnectedHandler: ConnectedHandler {
+    fn tunneling_slot_info(
+        h: &Self::Handler<'_>,
+    ) -> Option<(
+        u16,
+        heapless::Vec<
+            crate::messages::knxip::substructs::TunnelingSlotInfo,
+            { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES },
+        >,
+    )>;
+
+    fn channels_for_bus_indication(
+        h: &Self::Handler<'_>,
+        cemi_data: &[u8],
+    ) -> heapless::Vec<u8, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }>;
+
+    fn build_tunneling_request(
+        channel_id: u8,
+        sequence_counter: u8,
+        cemi_data: &[u8],
+        target: ResponseTarget,
+        buffer_manager: &DynBufferManager<'static>,
+    ) -> Option<PendingResponse>;
 }
 
-impl ConnectionHandlers for DevMgmtOnly<'_> {
+// ---- Device Management slot ------------------------------------------------
+
+/// Device Management is enabled — delegates to [`DeviceMgmtConnectionHandler`].
+pub struct WithDevMgmt;
+
+impl ConnectedHandler for WithDevMgmt {
+    type Handler<'a> = DeviceMgmtConnectionHandler<'a>;
+    const CONNECTION_TYPE: ConnectionType = ConnectionType::DeviceManagement;
+
     fn accept_connection(
-        &mut self,
-        channel_id: u8,
-        connection_type: ConnectionType,
-        cri: &CRI,
+        h: &mut Self::Handler<'_>, channel_id: u8, cri: &CRI,
     ) -> Result<AcceptedConnection, ConnectionStatus> {
-        match connection_type {
-            ConnectionType::DeviceManagement => self.dev_mgmt.accept_connection(channel_id, cri),
-            _ => Err(ConnectionStatus::ConnectionTypeNotSupported),
-        }
+        ConnectionTypeHandler::accept_connection(h, channel_id, cri)
     }
 
-    fn close_connection(&mut self, channel_id: u8, connection_type: ConnectionType) {
-        match connection_type {
-            ConnectionType::DeviceManagement => self.dev_mgmt.close_connection(channel_id),
-            _ => {}
-        }
+    fn close_connection(h: &mut Self::Handler<'_>, channel_id: u8) {
+        ConnectionTypeHandler::close_connection(h, channel_id);
     }
 
-    async fn on_data_frame(
-        &mut self,
+    async fn on_data_frame<'a>(
+        h: &mut Self::Handler<'a>,
         channel_id: u8,
-        connection_type: ConnectionType,
-        _service_type: KNXnetIPServiceType,
         data: &[u8],
         conn: &mut ConnectionContext,
         buffer_manager: &DynBufferManager<'static>,
     ) -> Result<DataFrameAction, ServerError> {
-        match connection_type {
-            ConnectionType::DeviceManagement => self.dev_mgmt.on_data_frame(channel_id, data, conn, buffer_manager).await,
-            _ => Err(ServerError::Unsupported),
-        }
+        ConnectionTypeHandler::on_data_frame(h, channel_id, data, conn, buffer_manager).await
     }
 
     fn on_data_ack(
-        &mut self,
+        h: &mut Self::Handler<'_>, channel_id: u8, data: &[u8], conn: &mut ConnectionContext,
+    ) -> Result<(), ServerError> {
+        ConnectionTypeHandler::on_data_ack(h, channel_id, data, conn)
+    }
+
+    fn handled_service_types<'h>(h: &'h Self::Handler<'_>) -> &'h [KNXnetIPServiceType] {
+        ConnectionTypeHandler::handled_service_types(h)
+    }
+}
+
+/// Device Management is disabled — zero-size no-op.
+pub struct NoDevMgmt;
+
+impl ConnectedHandler for NoDevMgmt {
+    type Handler<'a> = ();
+    const CONNECTION_TYPE: ConnectionType = ConnectionType::DeviceManagement;
+
+    fn accept_connection(
+        _h: &mut Self::Handler<'_>, _channel_id: u8, _cri: &CRI,
+    ) -> Result<AcceptedConnection, ConnectionStatus> {
+        Err(ConnectionStatus::ConnectionTypeNotSupported)
+    }
+
+    fn close_connection(_h: &mut Self::Handler<'_>, _channel_id: u8) {}
+
+    async fn on_data_frame<'a>(
+        _h: &mut Self::Handler<'a>,
+        _channel_id: u8,
+        _data: &[u8],
+        _conn: &mut ConnectionContext,
+        _buffer_manager: &DynBufferManager<'static>,
+    ) -> Result<DataFrameAction, ServerError> {
+        Err(ServerError::Unsupported)
+    }
+
+    fn on_data_ack(
+        _h: &mut Self::Handler<'_>, _channel_id: u8, _data: &[u8], _conn: &mut ConnectionContext,
+    ) -> Result<(), ServerError> {
+        Err(ServerError::Unsupported)
+    }
+
+    fn handled_service_types<'h>(_h: &'h Self::Handler<'_>) -> &'h [KNXnetIPServiceType] {
+        &[]
+    }
+}
+
+// ---- Tunneling slot --------------------------------------------------------
+
+/// Tunneling is enabled — delegates to [`TunnelConnectionHandler`].
+pub struct WithTunnel;
+
+impl ConnectedHandler for WithTunnel {
+    type Handler<'a> = TunnelConnectionHandler;
+    const CONNECTION_TYPE: ConnectionType = ConnectionType::Tunnel;
+
+    fn accept_connection(
+        h: &mut Self::Handler<'_>, channel_id: u8, cri: &CRI,
+    ) -> Result<AcceptedConnection, ConnectionStatus> {
+        ConnectionTypeHandler::accept_connection(h, channel_id, cri)
+    }
+
+    fn close_connection(h: &mut Self::Handler<'_>, channel_id: u8) {
+        ConnectionTypeHandler::close_connection(h, channel_id);
+    }
+
+    async fn on_data_frame<'a>(
+        h: &mut Self::Handler<'a>,
         channel_id: u8,
-        connection_type: ConnectionType,
-        _service_type: KNXnetIPServiceType,
         data: &[u8],
         conn: &mut ConnectionContext,
+        buffer_manager: &DynBufferManager<'static>,
+    ) -> Result<DataFrameAction, ServerError> {
+        ConnectionTypeHandler::on_data_frame(h, channel_id, data, conn, buffer_manager).await
+    }
+
+    fn on_data_ack(
+        h: &mut Self::Handler<'_>, channel_id: u8, data: &[u8], conn: &mut ConnectionContext,
     ) -> Result<(), ServerError> {
-        match connection_type {
-            ConnectionType::DeviceManagement => self.dev_mgmt.on_data_ack(channel_id, data, conn),
-            _ => Err(ServerError::Unsupported),
-        }
+        ConnectionTypeHandler::on_data_ack(h, channel_id, data, conn)
     }
 
-    fn handles_service_type(&self, connection_type: ConnectionType, service_type: KNXnetIPServiceType) -> bool {
-        match connection_type {
-            ConnectionType::DeviceManagement => self.dev_mgmt.handled_service_types().contains(&service_type),
-            _ => false,
-        }
+    fn handled_service_types<'h>(h: &'h Self::Handler<'_>) -> &'h [KNXnetIPServiceType] {
+        ConnectionTypeHandler::handled_service_types(h)
     }
+}
 
+impl TunnelingConnectedHandler for WithTunnel {
     fn tunneling_slot_info(
-        &self,
+        h: &Self::Handler<'_>,
+    ) -> Option<(
+        u16,
+        heapless::Vec<
+            crate::messages::knxip::substructs::TunnelingSlotInfo,
+            { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES },
+        >,
+    )> {
+        Some(h.slot_info())
+    }
+
+    fn channels_for_bus_indication(
+        h: &Self::Handler<'_>,
+        cemi_data: &[u8],
+    ) -> heapless::Vec<u8, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }> {
+        h.channels_for_bus_indication(cemi_data)
+    }
+
+    fn build_tunneling_request(
+        channel_id: u8,
+        sequence_counter: u8,
+        cemi_data: &[u8],
+        target: ResponseTarget,
+        buffer_manager: &DynBufferManager<'static>,
+    ) -> Option<PendingResponse> {
+        TunnelConnectionHandler::build_tunneling_request(
+            channel_id, sequence_counter, cemi_data, target, buffer_manager,
+        )
+    }
+}
+
+/// Tunneling is disabled — zero-size no-op.
+pub struct NoTunnel;
+
+impl ConnectedHandler for NoTunnel {
+    type Handler<'a> = ();
+    const CONNECTION_TYPE: ConnectionType = ConnectionType::Tunnel;
+
+    fn accept_connection(
+        _h: &mut Self::Handler<'_>, _channel_id: u8, _cri: &CRI,
+    ) -> Result<AcceptedConnection, ConnectionStatus> {
+        Err(ConnectionStatus::ConnectionTypeNotSupported)
+    }
+
+    fn close_connection(_h: &mut Self::Handler<'_>, _channel_id: u8) {}
+
+    async fn on_data_frame<'a>(
+        _h: &mut Self::Handler<'a>,
+        _channel_id: u8,
+        _data: &[u8],
+        _conn: &mut ConnectionContext,
+        _buffer_manager: &DynBufferManager<'static>,
+    ) -> Result<DataFrameAction, ServerError> {
+        Err(ServerError::Unsupported)
+    }
+
+    fn on_data_ack(
+        _h: &mut Self::Handler<'_>, _channel_id: u8, _data: &[u8], _conn: &mut ConnectionContext,
+    ) -> Result<(), ServerError> {
+        Err(ServerError::Unsupported)
+    }
+
+    fn handled_service_types<'h>(_h: &'h Self::Handler<'_>) -> &'h [KNXnetIPServiceType] {
+        &[]
+    }
+}
+
+impl TunnelingConnectedHandler for NoTunnel {
+    fn tunneling_slot_info(
+        _h: &Self::Handler<'_>,
     ) -> Option<(
         u16,
         heapless::Vec<
@@ -276,7 +466,7 @@ impl ConnectionHandlers for DevMgmtOnly<'_> {
     }
 
     fn channels_for_bus_indication(
-        &self,
+        _h: &Self::Handler<'_>,
         _cemi_data: &[u8],
     ) -> heapless::Vec<u8, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }> {
         heapless::Vec::new()
@@ -289,30 +479,39 @@ impl ConnectionHandlers for DevMgmtOnly<'_> {
         _target: ResponseTarget,
         _buffer_manager: &DynBufferManager<'static>,
     ) -> Option<PendingResponse> {
-        // Tunneling not available — this is unreachable when
-        // channels_for_bus_indication returns empty, but provides
-        // a no-op implementation for type correctness.
         None
     }
 }
 
-/// Handler collection containing Device Management + Tunneling.
+// ============================================================================
+// CompositeHandlers: Composable Handler Collection
+// ============================================================================
+
+/// Composable handler collection parameterized on independent handler slots.
 ///
-/// When the tunneling feature is enabled, `ConnectionManager` is
-/// parameterized with this type. Both handlers are stored directly
-/// (no enum dispatch overhead).
-pub struct DevMgmtAndTunnel<'a> {
-    dev_mgmt: DeviceMgmtConnectionHandler<'a>,
-    tunnel: TunnelConnectionHandler,
+/// Each slot is either enabled (delegates to a real handler) or disabled
+/// (`Handler = ()`, zero-size no-op). Adding a new connection type means
+/// adding a new type parameter — no combinatorial explosion.
+///
+/// Defaults to `WithDevMgmt` + `NoTunnel` (Device Management only).
+pub struct CompositeHandlers<
+    'a,
+    DM: ConnectedHandler = WithDevMgmt,
+    TUN: TunnelingConnectedHandler = NoTunnel,
+> {
+    dev_mgmt: DM::Handler<'a>,
+    tunnel: TUN::Handler<'a>,
 }
 
-impl<'a> DevMgmtAndTunnel<'a> {
-    pub fn new(dev_mgmt: DeviceMgmtConnectionHandler<'a>, tunnel: TunnelConnectionHandler) -> Self {
+impl<'a, DM: ConnectedHandler, TUN: TunnelingConnectedHandler> CompositeHandlers<'a, DM, TUN> {
+    pub fn new(dev_mgmt: DM::Handler<'a>, tunnel: TUN::Handler<'a>) -> Self {
         Self { dev_mgmt, tunnel }
     }
 }
 
-impl ConnectionHandlers for DevMgmtAndTunnel<'_> {
+impl<DM: ConnectedHandler, TUN: TunnelingConnectedHandler> ConnectionHandlers
+    for CompositeHandlers<'_, DM, TUN>
+{
     fn accept_connection(
         &mut self,
         channel_id: u8,
@@ -320,16 +519,16 @@ impl ConnectionHandlers for DevMgmtAndTunnel<'_> {
         cri: &CRI,
     ) -> Result<AcceptedConnection, ConnectionStatus> {
         match connection_type {
-            ConnectionType::DeviceManagement => self.dev_mgmt.accept_connection(channel_id, cri),
-            ConnectionType::Tunnel => self.tunnel.accept_connection(channel_id, cri),
+            ct if ct == DM::CONNECTION_TYPE => DM::accept_connection(&mut self.dev_mgmt, channel_id, cri),
+            ct if ct == TUN::CONNECTION_TYPE => TUN::accept_connection(&mut self.tunnel, channel_id, cri),
             _ => Err(ConnectionStatus::ConnectionTypeNotSupported),
         }
     }
 
     fn close_connection(&mut self, channel_id: u8, connection_type: ConnectionType) {
         match connection_type {
-            ConnectionType::DeviceManagement => self.dev_mgmt.close_connection(channel_id),
-            ConnectionType::Tunnel => self.tunnel.close_connection(channel_id),
+            ct if ct == DM::CONNECTION_TYPE => DM::close_connection(&mut self.dev_mgmt, channel_id),
+            ct if ct == TUN::CONNECTION_TYPE => TUN::close_connection(&mut self.tunnel, channel_id),
             _ => {}
         }
     }
@@ -344,8 +543,12 @@ impl ConnectionHandlers for DevMgmtAndTunnel<'_> {
         buffer_manager: &DynBufferManager<'static>,
     ) -> Result<DataFrameAction, ServerError> {
         match connection_type {
-            ConnectionType::DeviceManagement => self.dev_mgmt.on_data_frame(channel_id, data, conn, buffer_manager).await,
-            ConnectionType::Tunnel => self.tunnel.on_data_frame(channel_id, data, conn, buffer_manager).await,
+            ct if ct == DM::CONNECTION_TYPE => {
+                DM::on_data_frame(&mut self.dev_mgmt, channel_id, data, conn, buffer_manager).await
+            }
+            ct if ct == TUN::CONNECTION_TYPE => {
+                TUN::on_data_frame(&mut self.tunnel, channel_id, data, conn, buffer_manager).await
+            }
             _ => Err(ServerError::Unsupported),
         }
     }
@@ -359,16 +562,16 @@ impl ConnectionHandlers for DevMgmtAndTunnel<'_> {
         conn: &mut ConnectionContext,
     ) -> Result<(), ServerError> {
         match connection_type {
-            ConnectionType::DeviceManagement => self.dev_mgmt.on_data_ack(channel_id, data, conn),
-            ConnectionType::Tunnel => self.tunnel.on_data_ack(channel_id, data, conn),
+            ct if ct == DM::CONNECTION_TYPE => DM::on_data_ack(&mut self.dev_mgmt, channel_id, data, conn),
+            ct if ct == TUN::CONNECTION_TYPE => TUN::on_data_ack(&mut self.tunnel, channel_id, data, conn),
             _ => Err(ServerError::Unsupported),
         }
     }
 
     fn handles_service_type(&self, connection_type: ConnectionType, service_type: KNXnetIPServiceType) -> bool {
         match connection_type {
-            ConnectionType::DeviceManagement => self.dev_mgmt.handled_service_types().contains(&service_type),
-            ConnectionType::Tunnel => self.tunnel.handled_service_types().contains(&service_type),
+            ct if ct == DM::CONNECTION_TYPE => DM::handled_service_types(&self.dev_mgmt).contains(&service_type),
+            ct if ct == TUN::CONNECTION_TYPE => TUN::handled_service_types(&self.tunnel).contains(&service_type),
             _ => false,
         }
     }
@@ -382,14 +585,14 @@ impl ConnectionHandlers for DevMgmtAndTunnel<'_> {
             { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES },
         >,
     )> {
-        Some(self.tunnel.slot_info())
+        TUN::tunneling_slot_info(&self.tunnel)
     }
 
     fn channels_for_bus_indication(
         &self,
         cemi_data: &[u8],
     ) -> heapless::Vec<u8, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }> {
-        self.tunnel.channels_for_bus_indication(cemi_data)
+        TUN::channels_for_bus_indication(&self.tunnel, cemi_data)
     }
 
     fn build_tunneling_request(
@@ -399,13 +602,7 @@ impl ConnectionHandlers for DevMgmtAndTunnel<'_> {
         target: ResponseTarget,
         buffer_manager: &DynBufferManager<'static>,
     ) -> Option<PendingResponse> {
-        TunnelConnectionHandler::build_tunneling_request(
-            channel_id,
-            sequence_counter,
-            cemi_data,
-            target,
-            buffer_manager,
-        )
+        TUN::build_tunneling_request(channel_id, sequence_counter, cemi_data, target, buffer_manager)
     }
 }
 
@@ -497,9 +694,10 @@ impl ConnectionManagerResult {
 /// data frames to the [`ConnectionHandlers`] implementation. Lives as a
 /// standalone field on `KnxNetIp`, bypassing the server dispatch.
 ///
-/// The `H` type parameter determines which connection types are supported:
-/// - [`DevMgmtOnly`]: Device Management only (no tunneling code linked)
-/// - [`DevMgmtAndTunnel`]: Device Management + Tunneling
+/// The `H` type parameter determines which connection types are supported.
+/// Typically this is [`CompositeHandlers<DM, TUN>`] with independently
+/// selected handler slots (e.g. `WithDevMgmt`/`NoDevMgmt`,
+/// `WithTunnel`/`NoTunnel`).
 ///
 /// Created inside [`KnxNetIpBuilder::build()`] using the property handler
 /// obtained from the [`PropertyServiceContext`].

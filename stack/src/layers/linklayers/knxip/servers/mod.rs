@@ -4,9 +4,10 @@ pub mod remote_config;
 pub mod routing;
 
 pub use connection_manager::{
-    ConnectionHandlers, ConnectionManager, ConnectionManagerResult, ConnectionTransport,
-    ConnectionTypeHandler, DevMgmtAndTunnel, DevMgmtOnly, DeviceMgmtConnectionHandler,
-    TcpChannelEvent, TunnelConnectionHandler,
+    CompositeHandlers, ConnectedHandler, ConnectionHandlers, ConnectionManager,
+    ConnectionManagerResult, ConnectionTransport, ConnectionTypeHandler,
+    DeviceMgmtConnectionHandler, NoDevMgmt, NoTunnel, TcpChannelEvent,
+    TunnelConnectionHandler, TunnelingConnectedHandler, WithDevMgmt, WithTunnel,
 };
 pub use discovery::DiscoveryServer;
 pub use remote_config::RemoteConfigurationServer;

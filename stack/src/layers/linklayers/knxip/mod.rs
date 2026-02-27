@@ -1000,9 +1000,14 @@ pub struct KnxNetIp<
     /// Queue of messages waiting to be retried after rate limiting.
     retry_queue: Vec<PendingRequest, MAX_RETRY_QUEUE_SIZE>,
     /// Connection manager for connection-oriented services.
-    /// The handler type `H` is selected by `TunnelingFeature::Handlers`.
+    /// The handler collection is a `CompositeHandlers` with the tunneling
+    /// slot selected by `TunnelingFeature::Tunnel`.
     connection_manager: servers::ConnectionManager<
-        <F::Tunneling as features::TunnelingFeature>::Handlers<'res>,
+        servers::CompositeHandlers<
+            'res,
+            servers::WithDevMgmt,
+            <F::Tunneling as features::TunnelingFeature>::Tunnel,
+        >,
         MAX_CHANNELS,
     >,
     /// Type-erased stack context providing buffer management, device info,

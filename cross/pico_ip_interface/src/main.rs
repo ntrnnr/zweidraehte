@@ -40,7 +40,7 @@ use zweidraehte::{
     config::MAX_APDU_LENGTH_EXTENDED,
     layers::linklayers::{
         ip_interface::IpInterfaceLinkLayerBuilder,
-        knxip::{KnxNetIpBuilder, features::KnxIpInterfaceFeatures},
+        knxip::{KnxNetIpBuilder, features::KnxIpInterfaceUdp},
     },
     prelude::*,
     restart::{RestartError, RestartResponse},
@@ -112,7 +112,7 @@ impl StackDefinition for PicoIpInterface {
 
     type P = IpInterfaceParams;
     type CO = IpInterfaceComObjects;
-    type LLB = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, EmbassyIpTransport, KnxIpInterfaceFeatures, 2, 1, 1>;
+    type LLB = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, EmbassyIpTransport, KnxIpInterfaceUdp, 2, 1, 1>;
     type State = IpIfState;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, IpIfState, (TunnelingAugment, ())>;

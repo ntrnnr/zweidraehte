@@ -76,17 +76,27 @@ pub type DefaultFeatures = Features<NoRouting, NoRemoteConfig, NoTunneling, NoTc
 // Common Feature Configurations
 // ============================================================================
 
-/// KNX/IP Router: routing + remote config, no tunneling or TCP.
-pub type KnxIpRouterFeatures = Features<WithRouting, WithRemoteConfig, NoTunneling, NoTcp>;
+/// KNX/IP Device (UDP only): routing + remote config.
+///
+/// Standard feature set for a KNX/IP routing device without TCP support.
+pub type KnxIpDeviceUdp = Features<WithRouting, WithRemoteConfig, NoTunneling, NoTcp>;
 
-/// KNX/IP Interface: tunneling + remote config, no routing or TCP.
-pub type KnxIpInterfaceFeatures = Features<NoRouting, WithRemoteConfig, WithTunneling, NoTcp>;
+/// KNX/IP Device (UDP + TCP): routing + remote config + TCP.
+///
+/// Standard feature set for a KNX/IP routing device with TCP support
+/// (Core service family v2).
+pub type KnxIpDeviceTcp = Features<WithRouting, WithRemoteConfig, NoTunneling, WithTcp>;
 
-/// KNX/IP Router with TCP support: routing + remote config + TCP, no tunneling.
-pub type KnxIpRouterTcpFeatures = Features<WithRouting, WithRemoteConfig, NoTunneling, WithTcp>;
+/// KNX/IP Interface (UDP only): tunneling + remote config.
+///
+/// Standard feature set for a KNX/IP tunneling interface without TCP.
+pub type KnxIpInterfaceUdp = Features<NoRouting, WithRemoteConfig, WithTunneling, NoTcp>;
 
-/// Minimal routing-only configuration (e.g. for testing).
-pub type KnxIpRoutingOnlyFeatures = Features<WithRouting, NoRemoteConfig, NoTunneling, NoTcp>;
+/// KNX/IP Interface (UDP + TCP): tunneling + remote config + TCP.
+///
+/// Standard feature set for a KNX/IP tunneling interface with TCP support
+/// (Core service family v2).
+pub type KnxIpInterfaceTcp = Features<NoRouting, WithRemoteConfig, WithTunneling, WithTcp>;
 
 // ============================================================================
 // Routing Feature
@@ -345,16 +355,22 @@ impl RemoteConfigFeature for NoRemoteConfig {
 ///
 /// Controls whether the connection manager includes a
 /// [`TunnelConnectionHandler`] and whether tunneling connections can
-/// be accepted. The associated `Handlers` type selects the concrete
-/// [`ConnectionHandlers`] implementation used by the connection manager.
+/// be accepted. The associated `Tunnel` type selects the concrete
+/// [`TunnelingConnectedHandler`] implementation for the tunneling slot
+/// in [`CompositeHandlers`].
 #[allow(private_interfaces)] // build_handlers takes &dyn KnxNetIpContext (pub(crate)), but that's fine — only called internally
 pub trait TunnelingFeature: 'static {
-    type Handlers<'a>: super::servers::ConnectionHandlers;
+    type Tunnel: super::servers::TunnelingConnectedHandler;
 
     fn supported_service() -> Option<SupportedService>;
 
-    /// Build the connection handler collection for the connection manager.
-    fn build_handlers<'a>(context: &'a dyn super::KnxNetIpContext) -> Self::Handlers<'a>;
+    /// Build the composite handler collection for the connection manager.
+    ///
+    /// Device Management is always enabled (`WithDevMgmt`); the tunneling
+    /// slot is selected by `Self::Tunnel`.
+    fn build_handlers<'a>(
+        context: &'a dyn super::KnxNetIpContext,
+    ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel>;
 }
 
 /// Tunneling is enabled.
@@ -362,13 +378,15 @@ pub struct WithTunneling;
 
 #[allow(private_interfaces)]
 impl TunnelingFeature for WithTunneling {
-    type Handlers<'a> = super::servers::DevMgmtAndTunnel<'a>;
+    type Tunnel = super::servers::WithTunnel;
 
     fn supported_service() -> Option<SupportedService> {
         Some(SupportedService { family: substructs::ServiceFamily::Tunneling, version: 1 })
     }
 
-    fn build_handlers<'a>(context: &'a dyn super::KnxNetIpContext) -> Self::Handlers<'a> {
+    fn build_handlers<'a>(
+        context: &'a dyn super::KnxNetIpContext,
+    ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel> {
         let dev_mgmt = super::servers::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.application_layer_sender(),
@@ -384,7 +402,7 @@ impl TunnelingFeature for WithTunneling {
             ext_info.max_local_apdu_len,
         );
 
-        super::servers::DevMgmtAndTunnel::new(dev_mgmt, tunnel)
+        super::servers::CompositeHandlers::new(dev_mgmt, tunnel)
     }
 }
 
@@ -393,20 +411,22 @@ pub struct NoTunneling;
 
 #[allow(private_interfaces)]
 impl TunnelingFeature for NoTunneling {
-    type Handlers<'a> = super::servers::DevMgmtOnly<'a>;
+    type Tunnel = super::servers::NoTunnel;
 
     fn supported_service() -> Option<SupportedService> {
         None
     }
 
-    fn build_handlers<'a>(context: &'a dyn super::KnxNetIpContext) -> Self::Handlers<'a> {
+    fn build_handlers<'a>(
+        context: &'a dyn super::KnxNetIpContext,
+    ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel> {
         let dev_mgmt = super::servers::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.application_layer_sender(),
             context.buffer_manager(),
         );
 
-        super::servers::DevMgmtOnly::new(dev_mgmt)
+        super::servers::CompositeHandlers::new(dev_mgmt, ())
     }
 }
 
