@@ -12,24 +12,89 @@ use crate::dpt::{
 use crate::{AccessContext, StackState};
 
 // ============================================================================
-// Write Response
+// Inline Property Buffer
 // ============================================================================
 
 /// Maximum size for transformed write response data.
 ///
-/// This is sized for the largest transformed response (LOAD_STATE_CONTROL returns 1 byte).
-/// If larger responses are needed in the future, increase this value.
+/// Sized for the largest transformed response (LOAD_STATE_CONTROL returns 1 byte,
+/// but we leave room for future use).
 pub const MAX_WRITE_RESPONSE_DATA: usize = 4;
+
+/// Fixed-capacity inline buffer for small property data.
+///
+/// Used in [`WriteResponse`] for transformed write results (e.g.,
+/// `LOAD_STATE_CONTROL` returns the resulting state byte). Unlike
+/// `heapless::Vec`, this is `Copy` and has no external dependency.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct PropertyBuf<const N: usize> {
+    buf: [u8; N],
+    len: u8,
+}
+
+impl<const N: usize> PropertyBuf<N> {
+    /// Create from a byte slice.
+    ///
+    /// # Panics
+    /// Panics if `src.len() > N`.
+    #[inline]
+    pub fn new(src: &[u8]) -> Self {
+        assert!(src.len() <= N, "PropertyBuf overflow: {} > {}", src.len(), N);
+        let mut buf = [0u8; N];
+        buf[..src.len()].copy_from_slice(src);
+        Self { buf, len: src.len() as u8 }
+    }
+
+    /// Create from a single byte.
+    #[inline]
+    pub fn from_byte(b: u8) -> Self {
+        let mut buf = [0u8; N];
+        buf[0] = b;
+        Self { buf, len: 1 }
+    }
+
+    /// View the stored data as a slice.
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        &self.buf[..self.len as usize]
+    }
+
+    /// Number of bytes stored.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// Whether the buffer is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl<const N: usize> AsRef<[u8]> for PropertyBuf<N> {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl<const N: usize> core::fmt::Debug for PropertyBuf<N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("PropertyBuf").field(&self.as_slice()).finish()
+    }
+}
+
+// ============================================================================
+// Write Response
+// ============================================================================
 
 /// Response from a property write operation.
 ///
 /// Most property writes simply echo the written data back. However, some special
 /// properties (like `LOAD_STATE_CONTROL` and `RUN_STATE_CONTROL`) transform the
 /// input and return different data (e.g., the resulting state machine state).
-///
-/// This enum avoids the need for a separate response buffer by allowing the
-/// response to either echo the input or provide inline transformed data.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteResponse {
     /// Echo the input data back (the common case for most properties).
     /// The caller should use the original write data as the response.
@@ -38,7 +103,7 @@ pub enum WriteResponse {
     /// Return transformed data inline.
     /// Used by properties like `LOAD_STATE_CONTROL` that transform the input
     /// and return the resulting state.
-    Data(heapless::Vec<u8, MAX_WRITE_RESPONSE_DATA>),
+    Data(PropertyBuf<MAX_WRITE_RESPONSE_DATA>),
 }
 
 impl WriteResponse {
@@ -48,27 +113,121 @@ impl WriteResponse {
     /// Panics if the slice is longer than `MAX_WRITE_RESPONSE_DATA`.
     #[inline]
     pub fn data(slice: &[u8]) -> Self {
-        WriteResponse::Data(heapless::Vec::from_slice(slice).expect("Write response data too large"))
+        WriteResponse::Data(PropertyBuf::new(slice))
     }
 
     /// Create a `WriteResponse::Data` containing a single byte.
     #[inline]
     pub fn byte(b: u8) -> Self {
-        let mut v = heapless::Vec::new();
-        v.push(b).unwrap();
-        WriteResponse::Data(v)
+        WriteResponse::Data(PropertyBuf::from_byte(b))
     }
 
     /// Get the response data as a slice.
     ///
-    /// For `Echo`, this returns `None` - the caller should use the original input data.
+    /// For `Echo`, this returns `None` — the caller should use the original input data.
     /// For `Data`, this returns `Some(&[u8])` with the transformed data.
     #[inline]
     pub fn as_slice(&self) -> Option<&[u8]> {
         match self {
             WriteResponse::Echo => None,
-            WriteResponse::Data(v) => Some(v.as_slice()),
+            WriteResponse::Data(buf) => Some(buf.as_slice()),
         }
+    }
+}
+
+// ============================================================================
+// Property Request Types
+// ============================================================================
+
+/// Parameters for a property read at the [`InterfaceObject`] level.
+///
+/// Bundles `pid`, `start_idx`, and `count` — the parameters that every
+/// `read_property` call needs.
+#[derive(Debug, Clone, Copy)]
+pub struct PropertyReadRequest {
+    /// Property ID to read.
+    pub pid: u8,
+    /// 1-based start index for array properties (0 = query element count).
+    pub start_idx: u16,
+    /// Number of elements to read.
+    pub count: u16,
+}
+
+/// Parameters for a property write at the [`InterfaceObject`] level.
+///
+/// Bundles `pid`, `start_idx`, and the write payload.
+#[derive(Debug, Clone, Copy)]
+pub struct PropertyWriteRequest<'a> {
+    /// Property ID to write.
+    pub pid: u8,
+    /// 1-based start index for array properties.
+    pub start_idx: u16,
+    /// Data to write.
+    pub data: &'a [u8],
+}
+
+/// Full property read request including object routing and access control.
+///
+/// Used at the [`PropertyServiceHandler`] and [`InterfaceObjectAugment`] level
+/// where the caller specifies which object to address and under what access
+/// context.
+#[derive(Debug, Clone, Copy)]
+pub struct FullPropertyReadRequest {
+    /// Object index (0-based).
+    pub object_idx: u16,
+    /// Property ID to read.
+    pub pid: u8,
+    /// 1-based start index for array properties (0 = query element count).
+    pub start_idx: u16,
+    /// Number of elements to read.
+    pub count: u16,
+    /// Caller's access context.
+    pub ctx: AccessContext,
+}
+
+impl FullPropertyReadRequest {
+    /// Extract the [`PropertyReadRequest`] portion (without object routing / access).
+    #[inline]
+    pub fn property_request(&self) -> PropertyReadRequest {
+        PropertyReadRequest { pid: self.pid, start_idx: self.start_idx, count: self.count }
+    }
+
+    /// Create a copy with a different `object_idx` (used by tuple dispatch
+    /// to offset the index before forwarding to a sub-handler).
+    #[inline]
+    pub fn with_object_idx(&self, object_idx: u16) -> Self {
+        Self { object_idx, ..*self }
+    }
+}
+
+/// Full property write request including object routing and access control.
+///
+/// Used at the [`PropertyServiceHandler`] and [`InterfaceObjectAugment`] level.
+#[derive(Debug, Clone, Copy)]
+pub struct FullPropertyWriteRequest<'a> {
+    /// Object index (0-based).
+    pub object_idx: u16,
+    /// Property ID to write.
+    pub pid: u8,
+    /// 1-based start index for array properties.
+    pub start_idx: u16,
+    /// Data to write.
+    pub data: &'a [u8],
+    /// Caller's access context.
+    pub ctx: AccessContext,
+}
+
+impl<'a> FullPropertyWriteRequest<'a> {
+    /// Extract the [`PropertyWriteRequest`] portion (without object routing / access).
+    #[inline]
+    pub fn property_request(&self) -> PropertyWriteRequest<'a> {
+        PropertyWriteRequest { pid: self.pid, start_idx: self.start_idx, data: self.data }
+    }
+
+    /// Create a copy with a different `object_idx`.
+    #[inline]
+    pub fn with_object_idx(&self, object_idx: u16) -> Self {
+        Self { object_idx, ..*self }
     }
 }
 
@@ -261,12 +420,12 @@ impl StatePropertyValue for Ipv4Property {
 // Property Service Handler
 // ============================================================================
 
-/// Trait for handling property service requests
+/// Trait for handling property service requests.
 ///
-/// This trait provides the interface needed by ApplicationLayer to handle
-/// management protocol requests. Interface object containers implement this
-/// trait directly, dispatching requests to the appropriate object based on
-/// the object index.
+/// This is the top-level interface used by the application layer and KNX/IP
+/// device management to read and write interface object properties. Containers
+/// of interface objects implement this trait, dispatching requests to the
+/// appropriate object based on `object_idx`.
 ///
 /// # Example
 ///
@@ -278,16 +437,12 @@ impl StatePropertyValue for Ipv4Property {
 ///
 ///     fn property_value_read(
 ///         &self,
-///         object_idx: u16,
-///         prop_id: u8,
-///         start_idx: u16,
-///         count: u16,
+///         req: &FullPropertyReadRequest,
 ///         buf: &mut [u8],
 ///     ) -> Result<usize, PropertyError> {
-///         match object_idx {
-///             0 => self.device.borrow().read_property(prop_id, start_idx, count, buf),
-///             1 => self.addr_table.borrow().read_property(prop_id, start_idx, count, buf),
-///             2 => self.app_program.borrow().read_property(prop_id, start_idx, count, buf),
+///         match req.object_idx {
+///             0 => self.device.borrow().read_property(req.property_request(), buf),
+///             1 => self.addr_table.borrow().read_property(req.property_request(), buf),
 ///             _ => Err(PropertyError::InvalidObjectIndex),
 ///         }
 ///     }
@@ -295,7 +450,7 @@ impl StatePropertyValue for Ipv4Property {
 /// }
 /// ```
 pub trait PropertyServiceHandler {
-    /// Get the number of interface objects
+    /// Get the number of interface objects.
     fn object_count(&self) -> u16;
 
     /// Get the object type for a given index.
@@ -324,7 +479,7 @@ pub trait PropertyServiceHandler {
         None
     }
 
-    /// Handle A_PropertyDescription_Read request
+    /// Handle A_PropertyDescription_Read request.
     ///
     /// Returns property metadata including type, max elements, and access rights.
     ///
@@ -339,52 +494,23 @@ pub trait PropertyServiceHandler {
         prop_idx: u8,
     ) -> Result<PropertyDescriptionResponse, PropertyError>;
 
-    /// Handle A_PropertyValue_Read request
+    /// Handle A_PropertyValue_Read request.
     ///
     /// Reads property data into the provided buffer.
-    ///
-    /// # Arguments
-    /// * `object_idx` - Object index (0-based)
-    /// * `prop_id` - Property ID to read
-    /// * `start_idx` - 1-based start index for array properties
-    /// * `count` - Number of elements to read
-    /// * `buf` - Buffer to write data into
-    /// * `ctx` - Caller's access context
-    ///
-    /// # Returns
-    /// Number of bytes written or error (including `AccessDenied` if insufficient access)
     fn property_value_read(
         &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        count: u16,
+        req: &FullPropertyReadRequest,
         buf: &mut [u8],
-        ctx: AccessContext,
     ) -> Result<usize, PropertyError>;
 
-    /// Handle A_PropertyValue_Write request
+    /// Handle A_PropertyValue_Write request.
     ///
-    /// Writes data to a property.
-    ///
-    /// # Arguments
-    /// * `object_idx` - Object index (0-based)
-    /// * `prop_id` - Property ID to write
-    /// * `start_idx` - 1-based start index for array properties
-    /// * `data` - Data to write
-    /// * `ctx` - Caller's access context
-    ///
-    /// # Returns
-    /// * `Ok(WriteResponse::Echo)` - The write succeeded; response should echo the input data
-    /// * `Ok(WriteResponse::Data(&[u8]))` - The write succeeded; response is transformed data
-    /// Returns `AccessDenied` if insufficient access level.
+    /// Writes data to a property. Returns [`WriteResponse::Echo`] on success
+    /// (caller echoes the input data) or [`WriteResponse::Data`] when the
+    /// property transforms the input (e.g., `LOAD_STATE_CONTROL`).
     fn property_value_write(
         &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        data: &[u8],
-        ctx: AccessContext,
+        req: &FullPropertyWriteRequest<'_>,
     ) -> Result<WriteResponse, PropertyError>;
 }
 
@@ -415,12 +541,8 @@ pub trait InterfaceObjectAugment<S: StackState> {
         &self,
         _state: &S,
         _object_type: InterfaceObjectType,
-        _object_idx: u16,
-        _prop_id: u8,
-        _start_idx: u16,
-        _count: u16,
+        _req: &FullPropertyReadRequest,
         _buf: &mut [u8],
-        _ctx: AccessContext,
     ) -> Option<Result<usize, PropertyError>> {
         None
     }
@@ -430,11 +552,7 @@ pub trait InterfaceObjectAugment<S: StackState> {
         &self,
         _state: &S,
         _object_type: InterfaceObjectType,
-        _object_idx: u16,
-        _prop_id: u8,
-        _start_idx: u16,
-        _data: &[u8],
-        _ctx: AccessContext,
+        _req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
         None
     }
@@ -465,31 +583,23 @@ where
         &self,
         state: &S,
         object_type: InterfaceObjectType,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        count: u16,
+        req: &FullPropertyReadRequest,
         buf: &mut [u8],
-        ctx: AccessContext,
     ) -> Option<Result<usize, PropertyError>> {
         self.0
-            .property_value_read(state, object_type, object_idx, prop_id, start_idx, count, buf, ctx)
-            .or_else(|| self.1.property_value_read(state, object_type, object_idx, prop_id, start_idx, count, buf, ctx))
+            .property_value_read(state, object_type, req, buf)
+            .or_else(|| self.1.property_value_read(state, object_type, req, buf))
     }
 
     fn property_value_write(
         &self,
         state: &S,
         object_type: InterfaceObjectType,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        data: &[u8],
-        ctx: AccessContext,
+        req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
         self.0
-            .property_value_write(state, object_type, object_idx, prop_id, start_idx, data, ctx)
-            .or_else(|| self.1.property_value_write(state, object_type, object_idx, prop_id, start_idx, data, ctx))
+            .property_value_write(state, object_type, req)
+            .or_else(|| self.1.property_value_write(state, object_type, req))
     }
 }
 
@@ -638,59 +748,38 @@ mod tests {
 /// }
 /// ```
 pub trait InterfaceObject {
-    /// Get the object type identifier
+    /// Get the object type identifier.
     fn object_type(&self) -> InterfaceObjectType;
 
-    /// Get the total number of properties in this object
+    /// Get the total number of properties in this object.
     ///
     /// This includes the implicit OBJECT_TYPE property (PID 1).
     fn property_count(&self) -> u16;
 
-    /// Get property descriptor by 0-based property index
+    /// Get property descriptor by 0-based property index.
     ///
     /// Property index 0 should always return the OBJECT_TYPE property.
     /// Returns `None` if the index is out of range.
     fn property_descriptor_by_index(&self, prop_idx: u16) -> Option<PropertyDescriptor>;
 
-    /// Get property descriptor and index by Property ID (PID)
+    /// Get property descriptor and index by Property ID (PID).
     ///
     /// Returns `Some((prop_idx, descriptor))` if found, `None` otherwise.
     fn property_descriptor_by_id(&self, pid: u8) -> Option<(u16, PropertyDescriptor)>;
 
-    /// Read property value
-    ///
-    /// # Arguments
-    /// * `pid` - Property ID to read
-    /// * `start_idx` - 1-based start index for array properties (use 1 for single values)
-    /// * `count` - Number of elements to read (use 1 for single values)
-    /// * `buf` - Buffer to write the property data into
-    ///
-    /// # Returns
-    /// * `Ok(bytes_written)` - Number of bytes written to buffer
-    /// * `Err(PropertyError)` - If the read fails
-    fn read_property(&self, pid: u8, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError>;
+    /// Read property value into a buffer.
+    fn read_property(&self, req: PropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError>;
 
-    /// Write property value
-    ///
-    /// # Arguments
-    /// * `pid` - Property ID to write
-    /// * `start_idx` - 1-based start index for array properties (use 1 for single values)
-    /// * `data` - Data to write
-    ///
-    /// # Returns
-    /// * `Ok(WriteResponse::Echo)` - The write succeeded; response should echo the input data
-    /// * `Ok(WriteResponse::Data(&[u8]))` - The write succeeded; response is transformed data
-    ///   (e.g., LOAD_STATE_CONTROL returns the resulting state, not the command)
-    /// * `Err(PropertyError)` - If the write fails
-    fn write_property(&mut self, pid: u8, start_idx: u16, data: &[u8]) -> Result<WriteResponse, PropertyError>;
+    /// Write property value.
+    fn write_property(&mut self, req: PropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError>;
 
-    /// Get current element count for an array property
+    /// Get current element count for an array property.
     ///
     /// For single-value properties, this returns 1.
     /// For array properties, returns the current number of elements.
     fn property_element_count(&self, pid: u8) -> Result<u16, PropertyError>;
 
-    /// Handle property description request
+    /// Handle property description request.
     ///
     /// This is a convenience method that handles the A_PropertyDescription_Read logic.
     /// If `prop_id` is non-zero, searches by PID. Otherwise, searches by `prop_idx`.
@@ -761,23 +850,15 @@ impl PropertyServiceHandler for () {
 
     fn property_value_read(
         &self,
-        _object_idx: u16,
-        _prop_id: u8,
-        _start_idx: u16,
-        _count: u16,
+        _req: &FullPropertyReadRequest,
         _buf: &mut [u8],
-        _ctx: AccessContext,
     ) -> Result<usize, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
     }
 
     fn property_value_write(
         &self,
-        _object_idx: u16,
-        _prop_id: u8,
-        _start_idx: u16,
-        _data: &[u8],
-        _ctx: AccessContext,
+        _req: &FullPropertyWriteRequest<'_>,
     ) -> Result<WriteResponse, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
     }
@@ -859,34 +940,26 @@ where
 
     fn property_value_read(
         &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        count: u16,
+        req: &FullPropertyReadRequest,
         buf: &mut [u8],
-        ctx: AccessContext,
     ) -> Result<usize, PropertyError> {
         let base_count = self.0.object_count();
-        if object_idx < base_count {
-            self.0.property_value_read(object_idx, prop_id, start_idx, count, buf, ctx)
+        if req.object_idx < base_count {
+            self.0.property_value_read(req, buf)
         } else {
-            self.1.property_value_read(object_idx - base_count, prop_id, start_idx, count, buf, ctx)
+            self.1.property_value_read(&req.with_object_idx(req.object_idx - base_count), buf)
         }
     }
 
     fn property_value_write(
         &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        data: &[u8],
-        ctx: AccessContext,
+        req: &FullPropertyWriteRequest<'_>,
     ) -> Result<WriteResponse, PropertyError> {
         let base_count = self.0.object_count();
-        if object_idx < base_count {
-            self.0.property_value_write(object_idx, prop_id, start_idx, data, ctx)
+        if req.object_idx < base_count {
+            self.0.property_value_write(req)
         } else {
-            self.1.property_value_write(object_idx - base_count, prop_id, start_idx, data, ctx)
+            self.1.property_value_write(&req.with_object_idx(req.object_idx - base_count))
         }
     }
 }

@@ -27,8 +27,10 @@ pub use crate::objects::comm::{
 
 // Interface objects (traits + response/error types)
 pub use crate::objects::interface::{
-    InterfaceObject, PropertyServiceHandler, HasDeviceObject, HasRoutingCount,
-    PropertyError, WriteResponse, PropertyDescriptionResponse,
+    FullPropertyReadRequest, FullPropertyWriteRequest, InterfaceObject,
+    PropertyServiceHandler, HasDeviceObject, HasRoutingCount,
+    PropertyError, PropertyReadRequest, PropertyWriteRequest, WriteResponse,
+    PropertyDescriptionResponse,
 };
 
 // Table accessor traits

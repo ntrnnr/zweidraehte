@@ -36,7 +36,7 @@ use crate::{
     },
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, LifecycleEvent},
-        interface::{HasDeviceObject, PropertyServiceHandler, pid},
+        interface::{FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, PropertyServiceHandler, pid},
         tables::{
             AssociationTable, CommunicationObjectTable, HasApplication, HasAssociationTable,
             HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine,
@@ -1032,14 +1032,8 @@ where
         let mut data_buf = [0u8; MAX_PROPERTY_DATA];
 
         // Query the interface object server
-        let result = self.interface_objects.property_value_read(
-            object_idx,
-            prop_id,
-            start_idx,
-            count,
-            &mut data_buf,
-            access_ctx,
-        );
+        let req = FullPropertyReadRequest { object_idx, pid: prop_id, start_idx, count, ctx: access_ctx };
+        let result = self.interface_objects.property_value_read(&req, &mut data_buf);
 
         match result {
             Ok(data_len) => {
@@ -1173,7 +1167,8 @@ where
         };
 
         // Perform the write - the response may differ from written data (e.g., LOAD_STATE_CONTROL)
-        let result = self.interface_objects.property_value_write(object_idx, prop_id, start_idx, data, access_ctx);
+        let req = FullPropertyWriteRequest { object_idx, pid: prop_id, start_idx, data, ctx: access_ctx };
+        let result = self.interface_objects.property_value_write(&req);
 
         // Sync DeviceControl.user_stopped and publish lifecycle events on run state transitions.
         if let Some(was_running) = was_running

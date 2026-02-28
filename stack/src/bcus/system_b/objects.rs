@@ -31,13 +31,13 @@ use core::cell::RefCell;
 use zerocopy::FromBytes;
 
 use crate::{
-    AccessContext, IpStackState, StackState,
+    IpStackState, StackState,
     dpt::{DeviceControl, InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
-        GroupObjectTableObject, HasDeviceObject, InterfaceObject, InterfaceObjectAugment, IpParameterObject,
-        PeiProgramObject, PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError,
-        PropertyServiceHandler, WriteResponse, pid,
+        FullPropertyReadRequest, FullPropertyWriteRequest, GroupObjectTableObject, HasDeviceObject, InterfaceObject,
+        InterfaceObjectAugment, IpParameterObject, PeiProgramObject, PropertyAccess, PropertyDescriptionResponse,
+        PropertyDescriptor, PropertyError, PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -226,55 +226,42 @@ where
         }
     }
 
-    fn property_value_read(
-        &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        count: u16,
-        buf: &mut [u8],
-        ctx: AccessContext,
-    ) -> Result<usize, PropertyError> {
+    fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
         // Check access level
-        let desc = self.get_descriptor(object_idx, prop_id).ok_or(PropertyError::InvalidPropertyId)?;
-        if !desc.can_read(ctx) {
+        let desc = self.get_descriptor(req.object_idx, req.pid).ok_or(PropertyError::InvalidPropertyId)?;
+        if !desc.can_read(req.ctx) {
             return Err(PropertyError::AccessDenied);
         }
 
         // Dispatch to the appropriate object
-        match object_idx {
-            0 => self.device.borrow().read_property(prop_id, start_idx, count, buf),
-            1 => self.address_table.borrow().read_property(prop_id, start_idx, count, buf),
-            2 => self.association_table.borrow().read_property(prop_id, start_idx, count, buf),
-            3 => self.group_object_table.borrow().read_property(prop_id, start_idx, count, buf),
-            4 => self.application_program.borrow().read_property(prop_id, start_idx, count, buf),
-            5 => self.pei_program.borrow().read_property(prop_id, start_idx, count, buf),
+        let prop_req = req.property_request();
+        match req.object_idx {
+            0 => self.device.borrow().read_property(prop_req, buf),
+            1 => self.address_table.borrow().read_property(prop_req, buf),
+            2 => self.association_table.borrow().read_property(prop_req, buf),
+            3 => self.group_object_table.borrow().read_property(prop_req, buf),
+            4 => self.application_program.borrow().read_property(prop_req, buf),
+            5 => self.pei_program.borrow().read_property(prop_req, buf),
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }
 
-    fn property_value_write(
-        &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        data: &[u8],
-        ctx: AccessContext,
-    ) -> Result<WriteResponse, PropertyError> {
+    fn property_value_write(&self, req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
         // Check access level
-        let desc = self.get_descriptor(object_idx, prop_id).ok_or(PropertyError::InvalidPropertyId)?;
-        if !desc.can_write(ctx) {
+        let desc = self.get_descriptor(req.object_idx, req.pid).ok_or(PropertyError::InvalidPropertyId)?;
+        if !desc.can_write(req.ctx) {
             return Err(PropertyError::AccessDenied);
         }
 
         // Dispatch to the appropriate object using borrow_mut for interior mutability
-        let result = match object_idx {
-            0 => self.device.borrow_mut().write_property(prop_id, start_idx, data),
-            1 => self.address_table.borrow_mut().write_property(prop_id, start_idx, data),
-            2 => self.association_table.borrow_mut().write_property(prop_id, start_idx, data),
-            3 => self.group_object_table.borrow_mut().write_property(prop_id, start_idx, data),
-            4 => self.application_program.borrow_mut().write_property(prop_id, start_idx, data),
-            5 => self.pei_program.borrow_mut().write_property(prop_id, start_idx, data),
+        let prop_req = req.property_request();
+        let result = match req.object_idx {
+            0 => self.device.borrow_mut().write_property(prop_req),
+            1 => self.address_table.borrow_mut().write_property(prop_req),
+            2 => self.association_table.borrow_mut().write_property(prop_req),
+            3 => self.group_object_table.borrow_mut().write_property(prop_req),
+            4 => self.application_program.borrow_mut().write_property(prop_req),
+            5 => self.pei_program.borrow_mut().write_property(prop_req),
             _ => Err(PropertyError::InvalidObjectIndex),
         };
 
@@ -283,7 +270,7 @@ where
         // execution state). These are transient and re-derived on boot.
         if result.is_ok() {
             let volatile = matches!(
-                (object_idx, prop_id),
+                (req.object_idx, req.pid),
                 (0, pid::DEVICE_CONTROL)
                     | (0, pid::PROGMODE)
                     | (4, pid::RUN_STATE_CONTROL)
@@ -509,12 +496,8 @@ impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugmen
         &self,
         state: &S,
         object_type: InterfaceObjectType,
-        _object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        count: u16,
+        req: &FullPropertyReadRequest,
         buf: &mut [u8],
-        ctx: AccessContext,
     ) -> Option<Result<usize, PropertyError>> {
         if object_type != InterfaceObjectType::IPParameter {
             return None;
@@ -524,15 +507,15 @@ impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugmen
             return None;
         }
 
-        let desc = Self::descriptor(state, prop_id)?;
+        let desc = Self::descriptor(state, req.pid)?;
 
-        if !desc.can_read(ctx) {
+        if !desc.can_read(req.ctx) {
             return Some(Err(PropertyError::AccessDenied));
         }
 
-        Some(match prop_id {
-            pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => Self::encode_addrs(state, start_idx, count, buf),
-            pid::TUNNELLING_ADDRESSES => Self::encode_tunnelling_devices(state, start_idx, count, buf),
+        Some(match req.pid {
+            pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => Self::encode_addrs(state, req.start_idx, req.count, buf),
+            pid::TUNNELLING_ADDRESSES => Self::encode_tunnelling_devices(state, req.start_idx, req.count, buf),
             _ => Err(PropertyError::InvalidPropertyId),
         })
     }
@@ -541,11 +524,7 @@ impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugmen
         &self,
         state: &S,
         object_type: InterfaceObjectType,
-        _object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        data: &[u8],
-        ctx: AccessContext,
+        req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
         if object_type != InterfaceObjectType::IPParameter {
             return None;
@@ -555,14 +534,14 @@ impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugmen
             return None;
         }
 
-        let desc = Self::descriptor(state, prop_id)?;
+        let desc = Self::descriptor(state, req.pid)?;
 
-        if !desc.can_write(ctx) {
+        if !desc.can_write(req.ctx) {
             return Some(Err(PropertyError::AccessDenied));
         }
 
-        Some(match prop_id {
-            pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => Self::decode_addrs(state, start_idx, data),
+        Some(match req.pid {
+            pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => Self::decode_addrs(state, req.start_idx, req.data),
             pid::TUNNELLING_ADDRESSES => Err(PropertyError::WriteNotAllowed),
             _ => Err(PropertyError::InvalidPropertyId),
         })
@@ -650,74 +629,44 @@ impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> PropertySer
         }
     }
 
-    fn property_value_read(
-        &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        count: u16,
-        buf: &mut [u8],
-        ctx: AccessContext,
-    ) -> Result<usize, PropertyError> {
-        if object_idx == 0 {
-            if let Some(result) = self.augment.property_value_read(
-                self.state,
-                InterfaceObjectType::IPParameter,
-                object_idx,
-                prop_id,
-                start_idx,
-                count,
-                buf,
-                ctx,
-            ) {
+    fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
+        if req.object_idx == 0 {
+            if let Some(result) =
+                self.augment.property_value_read(self.state, InterfaceObjectType::IPParameter, req, buf)
+            {
                 return result;
             }
             // Check access level
-            if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(prop_id) {
-                if !desc.can_read(ctx) {
+            if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(req.pid) {
+                if !desc.can_read(req.ctx) {
                     return Err(PropertyError::AccessDenied);
                 }
             } else {
                 return Err(PropertyError::InvalidPropertyId);
             }
-            self.ip_parameter.borrow().read_property(prop_id, start_idx, count, buf)
+            self.ip_parameter.borrow().read_property(req.property_request(), buf)
         } else {
             Err(PropertyError::InvalidObjectIndex)
         }
     }
 
-    fn property_value_write(
-        &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        data: &[u8],
-        ctx: AccessContext,
-    ) -> Result<WriteResponse, PropertyError> {
-        if object_idx == 0 {
-            if let Some(result) = self.augment.property_value_write(
-                self.state,
-                InterfaceObjectType::IPParameter,
-                object_idx,
-                prop_id,
-                start_idx,
-                data,
-                ctx,
-            ) {
+    fn property_value_write(&self, req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
+        if req.object_idx == 0 {
+            if let Some(result) = self.augment.property_value_write(self.state, InterfaceObjectType::IPParameter, req) {
                 if result.is_ok() {
                     self.state.mark_dirty();
                 }
                 return result;
             }
             // Check access level
-            if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(prop_id) {
-                if !desc.can_write(ctx) {
+            if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(req.pid) {
+                if !desc.can_write(req.ctx) {
                     return Err(PropertyError::AccessDenied);
                 }
             } else {
                 return Err(PropertyError::InvalidPropertyId);
             }
-            let result = self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data);
+            let result = self.ip_parameter.borrow_mut().write_property(req.property_request());
             if result.is_ok() {
                 self.state.mark_dirty();
             }

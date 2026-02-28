@@ -267,15 +267,13 @@ macro_rules! define_interface_object {
 
             fn read_property(
                 &self,
-                pid: u8,
-                start_idx: u16,
-                count: u16,
+                req: $crate::objects::interface::PropertyReadRequest,
                 buf: &mut [u8],
             ) -> Result<usize, $crate::objects::interface::PropertyError> {
                 // Validate start_idx and count for single-element properties
                 // Special case: start_idx=0 means query element count (regardless of count value)
                 // Per KNX spec, when start_idx=0, return the current number of elements
-                if start_idx == 0 {
+                if req.start_idx == 0 {
                     // Return 1 for single-element properties (2 bytes, big-endian)
                     if buf.len() >= 2 {
                         buf[0] = 0;
@@ -286,11 +284,11 @@ macro_rules! define_interface_object {
                 }
 
                 // For single-element properties, only start_idx=1, count=1 is valid
-                if start_idx != 1 || count != 1 {
+                if req.start_idx != 1 || req.count != 1 {
                     return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
                 }
 
-                match pid {
+                match req.pid {
                     $crate::objects::interface::pid::OBJECT_TYPE => {
                         let obj_type: u16 = <$crate::dpt::InterfaceObjectType as Into<u16>>::into($crate::dpt::$obj_type::$obj_variant);
                         if buf.len() < 2 {
@@ -315,17 +313,15 @@ macro_rules! define_interface_object {
 
             fn write_property(
                 &mut self,
-                pid: u8,
-                start_idx: u16,
-                data: &[u8],
+                req: $crate::objects::interface::PropertyWriteRequest<'_>,
             ) -> Result<$crate::objects::interface::WriteResponse, $crate::objects::interface::PropertyError> {
-                match pid {
+                match req.pid {
                     $crate::objects::interface::pid::OBJECT_TYPE => {
                         Err($crate::objects::interface::PropertyError::WriteNotAllowed)
                     }
                     $(
                         $pid_path => {
-                            $crate::define_interface_object!(@write_static $access, self.$field_name, start_idx, data)?;
+                            $crate::define_interface_object!(@write_static $access, self.$field_name, req.start_idx, req.data)?;
                             Ok($crate::objects::interface::WriteResponse::Echo)
                         }
                     )*
@@ -501,23 +497,21 @@ macro_rules! define_interface_object {
 
             fn read_property(
                 &self,
-                pid: u8,
-                start_idx: u16,
-                count: u16,
+                req: $crate::objects::interface::PropertyReadRequest,
                 buf: &mut [u8],
             ) -> Result<usize, $crate::objects::interface::PropertyError> {
-                match pid {
+                match req.pid {
                     $crate::objects::interface::pid::OBJECT_TYPE => {
                         let obj_type: u16 = <$crate::dpt::InterfaceObjectType as Into<u16>>::into($crate::dpt::$obj_type::$obj_variant);
                         $crate::objects::interface::PropertyRead::read_property(
-                            &obj_type.to_be_bytes(), start_idx, count, buf,
+                            &obj_type.to_be_bytes(), req.start_idx, req.count, buf,
                         )
                     }
                     // Static properties
                     $(
                         $pid_path => {
                             $crate::objects::interface::PropertyRead::read_property(
-                                &self.$field_name, start_idx, count, buf,
+                                &self.$field_name, req.start_idx, req.count, buf,
                             )
                         }
                     )*
@@ -527,20 +521,20 @@ macro_rules! define_interface_object {
                             let $read_state = self.state;
                             let data = $read_expr;
                             $crate::objects::interface::PropertyRead::read_property(
-                                &data, start_idx, count, buf,
+                                &data, req.start_idx, req.count, buf,
                             )
                         }
                     )*)?
                     // Shorthand ReadWrite properties
                     $($(
                         $rw_pid_path => {
-                            $crate::define_interface_object!(@read_shorthand self.state, $rw_getter, $rw_pdt, start_idx, count, buf)
+                            $crate::define_interface_object!(@read_shorthand self.state, $rw_getter, $rw_pdt, req.start_idx, req.count, buf)
                         }
                     )*)?
                     // Shorthand ReadOnly properties
                     $($(
                         $ro_pid_path => {
-                            $crate::define_interface_object!(@read_shorthand self.state, $ro_getter, $ro_pdt, start_idx, count, buf)
+                            $crate::define_interface_object!(@read_shorthand self.state, $ro_getter, $ro_pdt, req.start_idx, req.count, buf)
                         }
                     )*)?
                     _ => Err($crate::objects::interface::PropertyError::InvalidPropertyId),
@@ -549,32 +543,30 @@ macro_rules! define_interface_object {
 
             fn write_property(
                 &mut self,
-                pid: u8,
-                start_idx: u16,
-                data: &[u8],
+                req: $crate::objects::interface::PropertyWriteRequest<'_>,
             ) -> Result<$crate::objects::interface::WriteResponse, $crate::objects::interface::PropertyError> {
-                match pid {
+                match req.pid {
                     $crate::objects::interface::pid::OBJECT_TYPE => {
                         Err($crate::objects::interface::PropertyError::WriteNotAllowed)
                     }
                     // Static properties
                     $(
                         $pid_path => {
-                            $crate::define_interface_object!(@write_static $access, self.$field_name, start_idx, data)?;
+                            $crate::define_interface_object!(@write_static $access, self.$field_name, req.start_idx, req.data)?;
                             Ok($crate::objects::interface::WriteResponse::Echo)
                         }
                     )*
                     // State-backed properties (closure-based)
                     $($(
                         $state_pid_path => {
-                            $crate::define_interface_object!(@write_state_property $state_access, self.state, start_idx, data, $write_state, $write_data, $write_expr)?;
+                            $crate::define_interface_object!(@write_state_property $state_access, self.state, req.start_idx, req.data, $write_state, $write_data, $write_expr)?;
                             Ok($crate::objects::interface::WriteResponse::Echo)
                         }
                     )*)?
                     // Shorthand ReadWrite properties
                     $($(
                         $rw_pid_path => {
-                            $crate::define_interface_object!(@write_shorthand self.state, $rw_getter, $rw_pdt, start_idx, data)?;
+                            $crate::define_interface_object!(@write_shorthand self.state, $rw_getter, $rw_pdt, req.start_idx, req.data)?;
                             Ok($crate::objects::interface::WriteResponse::Echo)
                         }
                     )*)?
@@ -693,9 +685,11 @@ pub trait HasProperty<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::dpt::*;
-    use crate::objects::interface::{InterfaceObject, PropertyAccess, PropertyError, pid};
+    use crate::objects::interface::{
+        InterfaceObject, PropertyAccess, PropertyError, PropertyReadRequest, PropertyWriteRequest,
+        pid,
+    };
 
     define_interface_object! {
         /// Test device object
@@ -741,7 +735,8 @@ mod tests {
         let obj = TestDeviceObject::new();
         let mut buf = [0u8; 4];
 
-        let len = obj.read_property(pid::OBJECT_TYPE, 1, 1, &mut buf).unwrap();
+        let req = PropertyReadRequest { pid: pid::OBJECT_TYPE, start_idx: 1, count: 1 };
+        let len = obj.read_property(req, &mut buf).unwrap();
         assert_eq!(len, 2);
         // Device = 0x0000
         assert_eq!(&buf[0..2], &[0x00, 0x00]);
@@ -752,11 +747,17 @@ mod tests {
         let mut obj = TestDeviceObject::new();
 
         // Write serial number
-        obj.write_property(pid::SERIAL_NUMBER, 1, &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]).unwrap();
+        let req = PropertyWriteRequest {
+            pid: pid::SERIAL_NUMBER,
+            start_idx: 1,
+            data: &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
+        };
+        obj.write_property(req).unwrap();
 
         // Read it back
         let mut buf = [0u8; 8];
-        let len = obj.read_property(pid::SERIAL_NUMBER, 1, 1, &mut buf).unwrap();
+        let req = PropertyReadRequest { pid: pid::SERIAL_NUMBER, start_idx: 1, count: 1 };
+        let len = obj.read_property(req, &mut buf).unwrap();
         assert_eq!(len, 6);
         assert_eq!(&buf[0..6], &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
     }
@@ -766,12 +767,12 @@ mod tests {
         let mut obj = TestDeviceObject::new();
 
         // Try to write read-only property
-        let result = obj.write_property(pid::MANUFACTURER_ID, 1, &[0x12, 0x34]);
-        assert_eq!(result, Err(PropertyError::WriteNotAllowed));
+        let req = PropertyWriteRequest { pid: pid::MANUFACTURER_ID, start_idx: 1, data: &[0x12, 0x34] };
+        assert_eq!(obj.write_property(req), Err(PropertyError::WriteNotAllowed));
 
         // Object type should also be read-only
-        let result = obj.write_property(pid::OBJECT_TYPE, 1, &[0x00, 0x01]);
-        assert_eq!(result, Err(PropertyError::WriteNotAllowed));
+        let req = PropertyWriteRequest { pid: pid::OBJECT_TYPE, start_idx: 1, data: &[0x00, 0x01] };
+        assert_eq!(obj.write_property(req), Err(PropertyError::WriteNotAllowed));
     }
 
     #[test]
@@ -779,7 +780,8 @@ mod tests {
         let obj = TestDeviceObject::new();
         let mut buf = [0u8; 4];
 
-        let len = obj.read_property(pid::MANUFACTURER_ID, 1, 1, &mut buf).unwrap();
+        let req = PropertyReadRequest { pid: pid::MANUFACTURER_ID, start_idx: 1, count: 1 };
+        let len = obj.read_property(req, &mut buf).unwrap();
         assert_eq!(len, 2);
         assert_eq!(&buf[0..2], &[0xBE, 0xEF]);
     }

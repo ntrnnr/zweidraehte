@@ -18,7 +18,9 @@ use crate::messages::knxip::{
     DeviceConfigurationRequestBuilder, KNXnetIPServiceType,
 };
 use crate::{AccessContext, AccessSource};
-use crate::objects::interface::PropertyServiceHandler;
+use crate::objects::interface::{
+    FullPropertyReadRequest, FullPropertyWriteRequest, PropertyServiceHandler,
+};
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::super::{PendingResponse, ServerError};
@@ -254,14 +256,14 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         let mut data_buf = [0u8; 52]; // Leave room for the 7-byte header
         // Full access for ETS device management connections.
         // TODO: Revisit when secure tunneling is implemented.
-        let response_builder = match self.property_handler.property_value_read(
+        let req = FullPropertyReadRequest {
             object_idx,
-            frame.property_id,
-            frame.start_index,
-            frame.count,
-            &mut data_buf,
-            AccessContext::MAX_ACCESS,
-        ) {
+            pid: frame.property_id,
+            start_idx: frame.start_index,
+            count: frame.count,
+            ctx: AccessContext::MAX_ACCESS,
+        };
+        let response_builder = match self.property_handler.property_value_read(&req, &mut data_buf) {
             Ok(bytes_read) => {
                 // Success: echo count + start_index from request, append read data
                 frame.response_builder(frame.count, frame.start_index, &data_buf[..bytes_read])
@@ -286,13 +288,14 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         object_idx: u16,
         out: &mut Buffer<'_>,
     ) -> Result<(), ConnectionStatus> {
-        let response_builder = match self.property_handler.property_value_write(
+        let req = FullPropertyWriteRequest {
             object_idx,
-            frame.property_id,
-            frame.start_index,
-            frame.data,
-            AccessContext::MAX_ACCESS,
-        ) {
+            pid: frame.property_id,
+            start_idx: frame.start_index,
+            data: frame.data,
+            ctx: AccessContext::MAX_ACCESS,
+        };
+        let response_builder = match self.property_handler.property_value_write(&req) {
             Ok(_write_response) => {
                 // Success: echo back the count + start index and the written data
                 frame.response_builder(frame.count, frame.start_index, frame.data)

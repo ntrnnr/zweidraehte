@@ -399,48 +399,48 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
         Self::property_descriptors().iter().enumerate().find(|(_, d)| d.pid == pid).map(|(i, d)| (i as u16, *d))
     }
 
-    fn read_property(&self, pid: u8, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
-        match pid {
+    fn read_property(&self, req: super::PropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
+        match req.pid {
             super::pid::OBJECT_TYPE => {
                 let obj_type: u16 = InterfaceObjectType::ApplicationProgram.into();
-                obj_type.to_be_bytes().read_property(start_idx, count, buf)
+                obj_type.to_be_bytes().read_property(req.start_idx, req.count, buf)
             }
-            super::pid::LOAD_STATE_CONTROL => self.app.borrow().read_lsm().read_property(start_idx, count, buf),
-            super::pid::RUN_STATE_CONTROL => self.app.borrow().read_rsm().read_property(start_idx, count, buf),
+            super::pid::LOAD_STATE_CONTROL => self.app.borrow().read_lsm().read_property(req.start_idx, req.count, buf),
+            super::pid::RUN_STATE_CONTROL => self.app.borrow().read_rsm().read_property(req.start_idx, req.count, buf),
             super::pid::TABLE_REFERENCE => {
-                self.app.borrow().table_reference().to_be_bytes().read_property(start_idx, count, buf)
+                self.app.borrow().table_reference().to_be_bytes().read_property(req.start_idx, req.count, buf)
             }
-            super::pid::PROGRAM_VERSION => self.program_version.read_property(start_idx, count, buf),
-            super::pid::PEI_TYPE => self.pei_type.read_property(start_idx, count, buf),
+            super::pid::PROGRAM_VERSION => self.program_version.read_property(req.start_idx, req.count, buf),
+            super::pid::PEI_TYPE => self.pei_type.read_property(req.start_idx, req.count, buf),
             super::pid::MCB_TABLE => {
                 // Memory Control Block - 8 bytes (PDT_GENERIC_08)
                 let app = self.app.borrow();
-                app.mcb_bytes().read_property(start_idx, count, buf)
+                app.mcb_bytes().read_property(req.start_idx, req.count, buf)
             }
             _ => Err(PropertyError::InvalidPropertyId),
         }
     }
 
-    fn write_property(&mut self, pid: u8, _start_idx: u16, data: &[u8]) -> Result<WriteResponse, PropertyError> {
-        match pid {
+    fn write_property(&mut self, req: super::PropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
+        match req.pid {
             super::pid::OBJECT_TYPE | super::pid::PEI_TYPE => Err(PropertyError::WriteNotAllowed),
             super::pid::PROGRAM_VERSION => {
                 // ETS writes the program version during programming
-                if data.len() < 5 {
+                if req.data.len() < 5 {
                     return Err(PropertyError::BufferTooSmall);
                 }
-                self.program_version = PDT_Generic05::from_slice(data);
+                self.program_version = PDT_Generic05::from_slice(req.data);
                 Ok(WriteResponse::Echo)
             }
             super::pid::LOAD_STATE_CONTROL => {
                 // Write the load event to the state machine, providing the allocation address
-                self.app.borrow_mut().write_lsm(data, Some(self.alloc_address));
+                self.app.borrow_mut().write_lsm(req.data, Some(self.alloc_address));
                 // Response contains the resulting load state (1 byte)
                 Ok(WriteResponse::byte(self.app.borrow().read_lsm()[0]))
             }
             super::pid::RUN_STATE_CONTROL => {
                 // Write the run event to the state machine
-                self.app.borrow_mut().write_rsm(data);
+                self.app.borrow_mut().write_rsm(req.data);
                 // Response contains the resulting run state (1 byte)
                 Ok(WriteResponse::byte(self.app.borrow().read_rsm()[0]))
             }
@@ -534,31 +534,31 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for PeiPro
         Self::property_descriptors().iter().enumerate().find(|(_, d)| d.pid == pid).map(|(i, d)| (i as u16, *d))
     }
 
-    fn read_property(&self, pid: u8, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
-        match pid {
+    fn read_property(&self, req: super::PropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
+        match req.pid {
             super::pid::OBJECT_TYPE => {
                 let obj_type: u16 = InterfaceObjectType::InterfaceProgram.into();
-                obj_type.to_be_bytes().read_property(start_idx, count, buf)
+                obj_type.to_be_bytes().read_property(req.start_idx, req.count, buf)
             }
-            super::pid::LOAD_STATE_CONTROL => self.pei.borrow().read_lsm().read_property(start_idx, count, buf),
-            super::pid::RUN_STATE_CONTROL => self.pei.borrow().read_rsm().read_property(start_idx, count, buf),
-            super::pid::PROGRAM_VERSION => self.program_version.read_property(start_idx, count, buf),
+            super::pid::LOAD_STATE_CONTROL => self.pei.borrow().read_lsm().read_property(req.start_idx, req.count, buf),
+            super::pid::RUN_STATE_CONTROL => self.pei.borrow().read_rsm().read_property(req.start_idx, req.count, buf),
+            super::pid::PROGRAM_VERSION => self.program_version.read_property(req.start_idx, req.count, buf),
             _ => Err(PropertyError::InvalidPropertyId),
         }
     }
 
-    fn write_property(&mut self, pid: u8, _start_idx: u16, data: &[u8]) -> Result<WriteResponse, PropertyError> {
-        match pid {
+    fn write_property(&mut self, req: super::PropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
+        match req.pid {
             super::pid::OBJECT_TYPE | super::pid::PROGRAM_VERSION => Err(PropertyError::WriteNotAllowed),
             super::pid::LOAD_STATE_CONTROL => {
                 // Write the load event to the state machine, providing the allocation address
-                self.pei.borrow_mut().write_lsm(data, Some(self.alloc_address));
+                self.pei.borrow_mut().write_lsm(req.data, Some(self.alloc_address));
                 // Response contains the resulting load state (1 byte)
                 Ok(WriteResponse::byte(self.pei.borrow().read_lsm()[0]))
             }
             super::pid::RUN_STATE_CONTROL => {
                 // Write the run event to the state machine
-                self.pei.borrow_mut().write_rsm(data);
+                self.pei.borrow_mut().write_rsm(req.data);
                 // Response contains the resulting run state (1 byte)
                 Ok(WriteResponse::byte(self.pei.borrow().read_rsm()[0]))
             }
@@ -714,45 +714,45 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableIn
         })
     }
 
-    fn read_property(&self, pid: u8, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
-        match pid {
+    fn read_property(&self, req: super::PropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
+        match req.pid {
             super::pid::OBJECT_TYPE => {
                 let obj_type: u16 = S::OBJECT_TYPE.into();
-                obj_type.to_be_bytes().read_property(start_idx, count, buf)
+                obj_type.to_be_bytes().read_property(req.start_idx, req.count, buf)
             }
-            super::pid::LOAD_STATE_CONTROL => self.table.borrow().read_lsm().read_property(start_idx, count, buf),
+            super::pid::LOAD_STATE_CONTROL => self.table.borrow().read_lsm().read_property(req.start_idx, req.count, buf),
             super::pid::TABLE_REFERENCE => {
                 // Base address of the allocated table memory for memory read/write operations
                 // Set during RelativeData allocation, cleared on unload
-                self.table.borrow().table_reference().to_be_bytes().read_property(start_idx, count, buf)
+                self.table.borrow().table_reference().to_be_bytes().read_property(req.start_idx, req.count, buf)
             }
             super::pid::TABLE => {
                 // Array property - use appropriate trait based on table format
                 let table = self.table.borrow();
                 if S::HAS_COUNT_PREFIX {
-                    table.data_ref().read_array_with_prefix(start_idx, count, S::ENTRY_SIZE, buf)
+                    table.data_ref().read_array_with_prefix(req.start_idx, req.count, S::ENTRY_SIZE, buf)
                 } else {
                     use super::ArrayPropertyRead;
-                    table.data_ref().read_array_property(start_idx, count, S::ENTRY_SIZE, buf)
+                    table.data_ref().read_array_property(req.start_idx, req.count, S::ENTRY_SIZE, buf)
                 }
             }
             super::pid::MCB_TABLE => {
                 // Memory Control Block - 8 bytes (PDT_GENERIC_08)
                 // The MCB is populated during load (RelativeData segment) and CRC calculated on LoadEnd
-                self.table.borrow().mcb_bytes().read_property(start_idx, count, buf)
+                self.table.borrow().mcb_bytes().read_property(req.start_idx, req.count, buf)
             }
             _ => Err(PropertyError::InvalidPropertyId),
         }
     }
 
-    fn write_property(&mut self, pid: u8, start_idx: u16, data: &[u8]) -> Result<WriteResponse, PropertyError> {
-        match pid {
+    fn write_property(&mut self, req: super::PropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
+        match req.pid {
             super::pid::OBJECT_TYPE | super::pid::TABLE_REFERENCE | super::pid::MCB_TABLE => {
                 Err(PropertyError::WriteNotAllowed)
             }
             super::pid::LOAD_STATE_CONTROL => {
                 // Write the load event to the state machine, providing the allocation address
-                self.table.borrow_mut().write_lsm(data, Some(self.alloc_address));
+                self.table.borrow_mut().write_lsm(req.data, Some(self.alloc_address));
                 // Response contains the resulting load state (1 byte), not the echoed data
                 Ok(WriteResponse::byte(self.table.borrow().read_lsm()[0]))
             }
@@ -760,10 +760,10 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableIn
                 // Array property - use appropriate trait based on table format
                 let mut table = self.table.borrow_mut();
                 let _written = if S::HAS_COUNT_PREFIX {
-                    table.data_ref_mut().write_array_with_prefix(start_idx, data, S::ENTRY_SIZE)?
+                    table.data_ref_mut().write_array_with_prefix(req.start_idx, req.data, S::ENTRY_SIZE)?
                 } else {
                     use super::ArrayPropertyWrite;
-                    table.data_ref_mut().write_array_property(start_idx, data, S::ENTRY_SIZE)?
+                    table.data_ref_mut().write_array_property(req.start_idx, req.data, S::ENTRY_SIZE)?
                 };
 
                 // Echo back written data
@@ -853,6 +853,8 @@ pub type GroupObjectTableObject<'a, T> = TableInterfaceObject<'a, T, GroupObject
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::objects::interface::PropertyReadRequest;
+    use crate::objects::interface::PropertyWriteRequest;
     use crate::objects::tables::addr7::AddrTab7;
     use crate::objects::tables::asso6::AssoTab6;
     use crate::objects::tables::co7::CoTab7;
@@ -867,7 +869,7 @@ mod tests {
 
         // Read OBJECT_TYPE property
         let mut buf = [0u8; 4];
-        let len = obj.read_property(pid::OBJECT_TYPE, 1, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::OBJECT_TYPE, start_idx: 1, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 2);
         assert_eq!(&buf[0..2], &[0x00, 0x01]); // AddressTable = 1
     }
@@ -879,14 +881,14 @@ mod tests {
 
         // Should start unloaded
         let mut buf = [0u8; 4];
-        let len = obj.read_property(pid::LOAD_STATE_CONTROL, 1, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 1);
         assert_eq!(buf[0], 0x00); // Unloaded
 
         // Start loading
-        obj.write_property(pid::LOAD_STATE_CONTROL, 1, &[LoadEvent::StartLoading.into()]).unwrap();
+        obj.write_property(PropertyWriteRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, data: &[LoadEvent::StartLoading.into()] }).unwrap();
 
-        let len = obj.read_property(pid::LOAD_STATE_CONTROL, 1, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 1);
         assert_eq!(buf[0], 0x02); // Loading
     }
@@ -909,17 +911,17 @@ mod tests {
 
         // Read element count (start_idx = 0)
         let mut buf = [0u8; 10];
-        let len = obj.read_property(pid::TABLE, 0, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE, start_idx: 0, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 2);
         assert_eq!(&buf[0..2], &[0x00, 0x03]); // 3 entries
 
         // Read first entry (start_idx = 1)
-        let len = obj.read_property(pid::TABLE, 1, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE, start_idx: 1, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 2);
         assert_eq!(&buf[0..2], &[0x00, 0x01]); // GA 0/0/1
 
         // Read all 3 entries
-        let len = obj.read_property(pid::TABLE, 1, 3, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE, start_idx: 1, count: 3 }, &mut buf).unwrap();
         assert_eq!(len, 6);
         assert_eq!(&buf[0..6], &[0x00, 0x01, 0x00, 0x02, 0x00, 0x03]);
     }
@@ -964,12 +966,12 @@ mod tests {
 
         // Read element count
         let mut buf = [0u8; 10];
-        let len = obj.read_property(pid::TABLE, 0, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE, start_idx: 0, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 2);
         assert_eq!(&buf[0..2], &[0x00, 0x02]); // 2 entries
 
         // Read first entry (4 bytes: TSAP + ASAP)
-        let len = obj.read_property(pid::TABLE, 1, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE, start_idx: 1, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0x01, 0x00, 0x01]);
     }
@@ -993,17 +995,17 @@ mod tests {
 
         // Read element count
         let mut buf = [0u8; 10];
-        let len = obj.read_property(pid::TABLE, 0, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE, start_idx: 0, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 2);
         assert_eq!(&buf[0..2], &[0x00, 0x02]); // 2 entries
 
         // Read first entry (2 bytes: type + flags)
-        let len = obj.read_property(pid::TABLE, 1, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE, start_idx: 1, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 2);
         assert_eq!(&buf[0..2], &[0x00, 0xDC]);
 
         // Read both entries
-        let len = obj.read_property(pid::TABLE, 1, 2, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE, start_idx: 1, count: 2 }, &mut buf).unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0xDC, 0x08, 0x44]);
     }
@@ -1014,15 +1016,15 @@ mod tests {
         let mut obj = AddressTableObject::new(&addr_table, 0x100);
 
         // OBJECT_TYPE should not be writable
-        let result = obj.write_property(pid::OBJECT_TYPE, 1, &[0x00, 0x00]);
+        let result = obj.write_property(PropertyWriteRequest { pid: pid::OBJECT_TYPE, start_idx: 1, data: &[0x00, 0x00] });
         assert!(matches!(result, Err(PropertyError::WriteNotAllowed)));
 
         // TABLE_REFERENCE should not be writable
-        let result = obj.write_property(pid::TABLE_REFERENCE, 1, &[0x00, 0x00, 0x00, 0x00]);
+        let result = obj.write_property(PropertyWriteRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, data: &[0x00, 0x00, 0x00, 0x00] });
         assert!(matches!(result, Err(PropertyError::WriteNotAllowed)));
 
         // MCB_TABLE should not be writable
-        let result = obj.write_property(pid::MCB_TABLE, 1, &[0x00; 8]);
+        let result = obj.write_property(PropertyWriteRequest { pid: pid::MCB_TABLE, start_idx: 1, data: &[0x00; 8] });
         assert!(matches!(result, Err(PropertyError::WriteNotAllowed)));
     }
 
@@ -1032,11 +1034,11 @@ mod tests {
         let mut obj = AddressTableObject::new(&addr_table, 0x100);
 
         // Write count and entries via TABLE property
-        obj.write_property(pid::TABLE, 0, &[0x00, 0x02]).unwrap(); // count = 2
+        obj.write_property(PropertyWriteRequest { pid: pid::TABLE, start_idx: 0, data: &[0x00, 0x02] }).unwrap(); // count = 2
 
         // Verify it was written
         let mut buf = [0u8; 10];
-        let len = obj.read_property(pid::TABLE, 0, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE, start_idx: 0, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 2);
         assert_eq!(&buf[0..2], &[0x00, 0x02]);
     }
@@ -1050,12 +1052,12 @@ mod tests {
 
         // TABLE_REFERENCE should be 0 initially (unloaded)
         let mut buf = [0u8; 10];
-        let len = obj.read_property(pid::TABLE_REFERENCE, 1, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0x00, 0x00, 0x00]);
 
         // Start loading
-        obj.write_property(pid::LOAD_STATE_CONTROL, 1, &[LoadEvent::StartLoading.into()]).unwrap();
+        obj.write_property(PropertyWriteRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, data: &[LoadEvent::StartLoading.into()] }).unwrap();
 
         // Allocate via RelativeData segment - this sets the TABLE_REFERENCE
         // Format: [event][segment_type][mcb_data...]
@@ -1072,24 +1074,24 @@ mod tests {
             0x00,
             0x00, // CRC placeholder
         ];
-        obj.write_property(pid::LOAD_STATE_CONTROL, 1, &alloc_data).unwrap();
+        obj.write_property(PropertyWriteRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, data: &alloc_data }).unwrap();
 
         // Now TABLE_REFERENCE should be set to 0x1234
-        let len = obj.read_property(pid::TABLE_REFERENCE, 1, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0x00, 0x12, 0x34]);
 
         // Complete loading
-        obj.write_property(pid::LOAD_STATE_CONTROL, 1, &[LoadEvent::LoadCompleted.into()]).unwrap();
+        obj.write_property(PropertyWriteRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, data: &[LoadEvent::LoadCompleted.into()] }).unwrap();
 
         // TABLE_REFERENCE should still be 0x1234
-        let len = obj.read_property(pid::TABLE_REFERENCE, 1, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0x00, 0x12, 0x34]);
 
         // Unload - TABLE_REFERENCE should be cleared to 0
-        obj.write_property(pid::LOAD_STATE_CONTROL, 1, &[LoadEvent::Unload.into()]).unwrap();
-        let len = obj.read_property(pid::TABLE_REFERENCE, 1, 1, &mut buf).unwrap();
+        obj.write_property(PropertyWriteRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, data: &[LoadEvent::Unload.into()] }).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0x00, 0x00, 0x00]);
     }
@@ -1109,7 +1111,7 @@ mod tests {
 
         // TABLE_REFERENCE should be 0xABCD (from with_data)
         let mut buf = [0u8; 10];
-        let len = obj.read_property(pid::TABLE_REFERENCE, 1, 1, &mut buf).unwrap();
+        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0x00, 0xAB, 0xCD]);
     }

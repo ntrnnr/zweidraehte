@@ -385,73 +385,67 @@ where
 
     fn property_value_read(
         &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        count: u16,
+        req: &FullPropertyReadRequest,
         buf: &mut [u8],
-        ctx: AccessContext,
     ) -> Result<usize, PropertyError> {
         // Check access level first (in separate scope to release borrow)
         {
-            let desc = match object_idx {
-                0 => self.device.borrow().property_descriptor_by_id(prop_id),
-                1 => self.addr_table.borrow().property_descriptor_by_id(prop_id),
-                2 => self.asso_table.borrow().property_descriptor_by_id(prop_id),
-                3 => self.app_program.borrow().property_descriptor_by_id(prop_id),
-                4 => self.group_object_table.borrow().property_descriptor_by_id(prop_id),
-                5 => self.ip_parameter.borrow().property_descriptor_by_id(prop_id),
+            let desc = match req.object_idx {
+                0 => self.device.borrow().property_descriptor_by_id(req.pid),
+                1 => self.addr_table.borrow().property_descriptor_by_id(req.pid),
+                2 => self.asso_table.borrow().property_descriptor_by_id(req.pid),
+                3 => self.app_program.borrow().property_descriptor_by_id(req.pid),
+                4 => self.group_object_table.borrow().property_descriptor_by_id(req.pid),
+                5 => self.ip_parameter.borrow().property_descriptor_by_id(req.pid),
                 _ => return Err(PropertyError::InvalidObjectIndex),
             };
             if let Some((_, desc)) = desc
-                && !desc.can_read(ctx) {
+                && !desc.can_read(req.ctx) {
                     return Err(PropertyError::AccessDenied);
                 }
         }
 
-        match object_idx {
-            0 => self.device.borrow().read_property(prop_id, start_idx, count, buf),
-            1 => self.addr_table.borrow().read_property(prop_id, start_idx, count, buf),
-            2 => self.asso_table.borrow().read_property(prop_id, start_idx, count, buf),
-            3 => self.app_program.borrow().read_property(prop_id, start_idx, count, buf),
-            4 => self.group_object_table.borrow().read_property(prop_id, start_idx, count, buf),
-            5 => self.ip_parameter.borrow().read_property(prop_id, start_idx, count, buf),
+        let prop_req = req.property_request();
+        match req.object_idx {
+            0 => self.device.borrow().read_property(prop_req, buf),
+            1 => self.addr_table.borrow().read_property(prop_req, buf),
+            2 => self.asso_table.borrow().read_property(prop_req, buf),
+            3 => self.app_program.borrow().read_property(prop_req, buf),
+            4 => self.group_object_table.borrow().read_property(prop_req, buf),
+            5 => self.ip_parameter.borrow().read_property(prop_req, buf),
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }
 
     fn property_value_write(
         &self,
-        object_idx: u16,
-        prop_id: u8,
-        start_idx: u16,
-        data: &[u8],
-        ctx: AccessContext,
+        req: &FullPropertyWriteRequest<'_>,
     ) -> Result<WriteResponse, PropertyError> {
         // Check access level first (in separate scope to release borrow)
         {
-            let desc = match object_idx {
-                0 => self.device.borrow().property_descriptor_by_id(prop_id),
-                1 => self.addr_table.borrow().property_descriptor_by_id(prop_id),
-                2 => self.asso_table.borrow().property_descriptor_by_id(prop_id),
-                3 => self.app_program.borrow().property_descriptor_by_id(prop_id),
-                4 => self.group_object_table.borrow().property_descriptor_by_id(prop_id),
-                5 => self.ip_parameter.borrow().property_descriptor_by_id(prop_id),
+            let desc = match req.object_idx {
+                0 => self.device.borrow().property_descriptor_by_id(req.pid),
+                1 => self.addr_table.borrow().property_descriptor_by_id(req.pid),
+                2 => self.asso_table.borrow().property_descriptor_by_id(req.pid),
+                3 => self.app_program.borrow().property_descriptor_by_id(req.pid),
+                4 => self.group_object_table.borrow().property_descriptor_by_id(req.pid),
+                5 => self.ip_parameter.borrow().property_descriptor_by_id(req.pid),
                 _ => return Err(PropertyError::InvalidObjectIndex),
             };
             if let Some((_, desc)) = desc
-                && !desc.can_write(ctx) {
+                && !desc.can_write(req.ctx) {
                     return Err(PropertyError::AccessDenied);
                 }
         }
 
-        match object_idx {
-            0 => self.device.borrow_mut().write_property(prop_id, start_idx, data),
-            1 => self.addr_table.borrow_mut().write_property(prop_id, start_idx, data),
-            2 => self.asso_table.borrow_mut().write_property(prop_id, start_idx, data),
-            3 => self.app_program.borrow_mut().write_property(prop_id, start_idx, data),
-            4 => self.group_object_table.borrow_mut().write_property(prop_id, start_idx, data),
-            5 => self.ip_parameter.borrow_mut().write_property(prop_id, start_idx, data),
+        let prop_req = req.property_request();
+        match req.object_idx {
+            0 => self.device.borrow_mut().write_property(prop_req),
+            1 => self.addr_table.borrow_mut().write_property(prop_req),
+            2 => self.asso_table.borrow_mut().write_property(prop_req),
+            3 => self.app_program.borrow_mut().write_property(prop_req),
+            4 => self.group_object_table.borrow_mut().write_property(prop_req),
+            5 => self.ip_parameter.borrow_mut().write_property(prop_req),
             _ => Err(PropertyError::InvalidObjectIndex),
         }
     }
