@@ -162,11 +162,6 @@ impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
         }
     }
 
-    /// Get the local endpoint the listener is bound to, if any.
-    pub fn local_endpoint(&self) -> Option<SocketAddrV4> {
-        self.listener.as_ref().map(|l| l.local_endpoint())
-    }
-
     /// Find the connection state for a given TCP index.
     pub fn connection_mut(&mut self, tcp_idx: usize) -> Option<&mut TcpConnectionState<T::TcpStream, MAX_CHANNELS>> {
         self.connections.get_mut(tcp_idx).and_then(|slot| slot.as_mut())
@@ -197,82 +192,6 @@ impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
         }
 
         events
-    }
-
-    /// Read from a specific TCP connection and extract frames.
-    ///
-    /// Returns `Some(TcpEvent)` if a frame was extracted or the connection
-    /// was closed. Returns `None` if more data is needed (caller should
-    /// re-poll).
-    ///
-    /// This method reads once from the stream and processes all complete
-    /// frames in the read buffer. The caller should call this in a loop
-    /// until it returns `None` or a `Closed` event.
-    pub async fn read_from(
-        &mut self,
-        tcp_idx: usize,
-        buffer_manager: &DynBufferManager<'static>,
-    ) -> Option<TcpEvent<MAX_CHANNELS>> {
-        let conn = self.connections[tcp_idx].as_mut()?;
-
-        let mut read_buf = [0u8; TCP_READ_BUF_SIZE];
-
-        // Read from the stream
-        let n = match embedded_io_async::Read::read(&mut conn.stream, &mut read_buf).await {
-            Ok(0) => {
-                // Clean close
-                info!("TCP connection {} from {} closed by peer", tcp_idx, conn.peer_addr);
-                let conn = self.connections[tcp_idx].take().expect("just checked Some");
-                return Some(TcpEvent::Closed { tcp_idx, channel_ids: conn.channel_ids });
-            }
-            Ok(n) => n,
-            Err(_e) => {
-                #[cfg(feature = "log")]
-                log::error!("TCP connection {} read error: {:?}", tcp_idx, _e);
-                #[cfg(feature = "defmt")]
-                defmt::error!("TCP connection {} read error", tcp_idx);
-                let conn = self.connections[tcp_idx].take().expect("just checked Some");
-                return Some(TcpEvent::Closed { tcp_idx, channel_ids: conn.channel_ids });
-            }
-        };
-
-        conn.last_activity = Instant::now();
-
-        // Process the read data through the frame reader
-        let mut pos = 0;
-        let mut frame_output = [0u8; FRAME_OUTPUT_BUF_SIZE];
-
-        while pos < n {
-            let (consumed, event) = conn.framer.feed(&read_buf[pos..n], &mut frame_output);
-            pos += consumed;
-
-            match event {
-                FrameEvent::Frame(frame_len) => {
-                    // Copy the complete frame into a buffer for dispatch
-                    let mut buffer = buffer_manager.alloc().await;
-                    buffer.push_slice(&frame_output[..frame_len]);
-
-                    let peer = conn.peer_addr;
-                    return Some(TcpEvent::Frame { tcp_idx, peer, buffer });
-                }
-                FrameEvent::NeedMoreData => {
-                    // Need more bytes from the stream
-                    break;
-                }
-                FrameEvent::FrameSkipped { total_length } => {
-                    warn!("TCP connection {}: skipped oversized frame ({} bytes)", tcp_idx, total_length);
-                    // Continue processing remaining bytes in the read buffer
-                }
-                FrameEvent::ProtocolError => {
-                    error!("TCP connection {}: protocol error, closing", tcp_idx);
-                    let conn = self.connections[tcp_idx].take().expect("just checked Some");
-                    return Some(TcpEvent::Closed { tcp_idx, channel_ids: conn.channel_ids });
-                }
-            }
-        }
-
-        // All bytes consumed, no complete frame yet
-        None
     }
 
     /// Write data to a specific TCP connection.
@@ -333,22 +252,6 @@ impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
     /// decide whether to poll TCP futures).
     pub fn has_active_connections(&self) -> bool {
         self.connections.iter().any(|s| s.is_some())
-    }
-
-    /// Number of active TCP connections.
-    pub fn active_count(&self) -> usize {
-        self.connections.iter().filter(|s| s.is_some()).count()
-    }
-
-    /// Whether the TCP manager has a bound listener.
-    pub fn has_listener(&self) -> bool {
-        self.listener.is_some()
-    }
-
-    /// Whether the TCP manager has anything to poll (listener or active
-    /// connections). When `false`, the main loop can skip the TCP branch.
-    pub fn is_active(&self) -> bool {
-        self.listener.is_some() || self.has_active_connections()
     }
 
     /// Wait for the next TCP event: either a new connection is accepted

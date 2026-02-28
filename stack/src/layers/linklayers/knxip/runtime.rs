@@ -105,8 +105,6 @@ pub struct KnxNetIp<
     /// Socket indices for the remote config server (empty when disabled).
     pub(super) remote_config_socket_indices: Vec<usize, 4>,
 
-    /// Interface name for logging.
-    pub(super) _interface_name: &'static str,
     /// Channel to send indications (received frames) up to the network layer.
     pub(super) ind_tx: DynamicSender<'res, IndicationMessage<Buffer<'static>>>,
     /// Channel to send confirmations (transmission results) up to the network layer.

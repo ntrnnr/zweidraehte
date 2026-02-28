@@ -306,8 +306,8 @@ impl<
         let mut all_endpoints = Vec::<EndpointType, 8>::new();
 
         // Discovery endpoints (always present)
-        let _ = all_endpoints.push(EndpointType::new_udp(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));
-        let _ = all_endpoints.push(EndpointType::new_udp_any(crate::KNX_PORT));
+        let _ = all_endpoints.push(EndpointType::new(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));
+        let _ = all_endpoints.push(EndpointType::new_any(crate::KNX_PORT));
 
         // Routing endpoints (empty vec when disabled)
         for ep in F::Routing::endpoints(self.routing_multicast_addr) {
@@ -337,7 +337,7 @@ impl<
                     socket_descriptors[idx].enable_broadcast();
                 }
             } else {
-                let bind_addr = EndpointType::new_udp(Ipv4Addr::UNSPECIFIED, port);
+                let bind_addr = EndpointType::new(Ipv4Addr::UNSPECIFIED, port);
                 let mut desc = SocketDescriptor::new(bind_addr);
 
                 if endpoint.is_multicast() {
@@ -449,7 +449,6 @@ impl<
             routing_socket_indices,
             remote_config,
             remote_config_socket_indices,
-            _interface_name: self.interface_name,
             ind_tx,
             conf_tx,
             retry_queue: Vec::new(),

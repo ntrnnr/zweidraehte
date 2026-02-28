@@ -152,7 +152,7 @@ impl RoutingFeature for WithRouting {
 
     fn endpoints(multicast_addr: Ipv4Addr) -> Vec<EndpointType, 4> {
         let mut eps = Vec::new();
-        let _ = eps.push(EndpointType::new_udp(multicast_addr, crate::KNX_PORT));
+        let _ = eps.push(EndpointType::new(multicast_addr, crate::KNX_PORT));
         eps
     }
 
@@ -280,7 +280,7 @@ impl RemoteConfigFeature for WithRemoteConfig {
 
     fn endpoints() -> Vec<EndpointType, 4> {
         let mut eps = Vec::new();
-        let _ = eps.push(EndpointType::new_udp(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));
+        let _ = eps.push(EndpointType::new(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));
         eps
     }
 

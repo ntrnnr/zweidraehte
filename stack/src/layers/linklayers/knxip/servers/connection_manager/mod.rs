@@ -57,6 +57,12 @@ use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::{PacketOrigin, PendingResponse, ResponseTarget, ServerError};
 
+/// Maximum responses from a single data frame dispatch: ACK (1) +
+/// forwarded TunnelingRequests to other tunnel clients (up to
+/// MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES - 1). We round up to the full
+/// count to keep the constant simple.
+const MAX_DATA_RESPONSES: usize = 1 + crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES;
+
 // ============================================================================
 // Connection Type Handler Trait
 // ============================================================================
@@ -271,12 +277,12 @@ pub enum TcpChannelEvent {
 /// Bundles responses to send with optional TCP channel tracking events
 /// that the main loop must apply to the TCP manager.
 pub struct ConnectionManagerResult {
-    pub responses: Vec<PendingResponse, 4>,
+    pub responses: Vec<PendingResponse, { MAX_DATA_RESPONSES }>,
     pub tcp_events: Vec<TcpChannelEvent, 2>,
 }
 
 impl ConnectionManagerResult {
-    fn responses_only(responses: Vec<PendingResponse, 4>) -> Self {
+    fn responses_only(responses: Vec<PendingResponse, { MAX_DATA_RESPONSES }>) -> Self {
         Self { responses, tcp_events: Vec::new() }
     }
 }
@@ -362,7 +368,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         data: &[u8],
         buffer_manager: &DynBufferManager<'static>,
         ind_tx: DynamicSender<'_, IndicationMessage<Buffer<'static>>>,
-    ) -> Result<Vec<PendingResponse, 4>, ServerError> {
+    ) -> Result<Vec<PendingResponse, { MAX_DATA_RESPONSES }>, ServerError> {
         // Connection header starts at offset 6 (after KNXnet/IP header).
         // Byte layout: struct_length(1), channel_id(1), sequence_or_reserved(1), status_or_reserved(1)
         if data.len() < 6 + 4 {
@@ -405,13 +411,31 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
                 self.handlers.on_data_frame(channel_id, connection_type, service_type, data, conn, buffer_manager).await?;
 
             match action {
-                DataFrameAction::Responses(responses) => Ok(responses),
+                DataFrameAction::Responses(handler_responses) => {
+                    let mut responses = Vec::new();
+                    for r in handler_responses {
+                        let _ = responses.push(r);
+                    }
+                    Ok(responses)
+                }
                 DataFrameAction::AckOnly(ack) => {
                     let mut responses = Vec::new();
                     let _ = responses.push(ack);
                     Ok(responses)
                 }
                 DataFrameAction::AckAndInject { ack, cemi_buffer } => {
+                    // Save cEMI data for cross-client forwarding before
+                    // `from_cemi()` consumes the buffer. The forwarded copy
+                    // has its message code changed from L_Data.req (0x11) to
+                    // L_Data.ind (0x29) since other clients receive it as an
+                    // indication, not a request.
+                    let mut forwarding_cemi = [0u8; 256];
+                    let cemi_len = cemi_buffer.len().min(forwarding_cemi.len());
+                    forwarding_cemi[..cemi_len].copy_from_slice(&cemi_buffer[..cemi_len]);
+                    if cemi_len > 0 {
+                        forwarding_cemi[0] = 0x29; // L_Data.ind
+                    }
+
                     // Convert cEMI buffer to internal format and inject into
                     // the network layer as an indication — same pattern as
                     // the routing server (routing.rs).
@@ -423,6 +447,20 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
 
                     let mut responses = Vec::new();
                     let _ = responses.push(ack);
+
+                    // Forward to other active tunnel clients so they see
+                    // frames originated by sibling connections. Without this,
+                    // the TPUART echo filter would prevent them from ever
+                    // seeing the frame.
+                    let forwarded = self.forward_bus_indication_excluding(
+                        &forwarding_cemi[..cemi_len],
+                        channel_id,
+                        buffer_manager,
+                    );
+                    for response in forwarded {
+                        let _ = responses.push(response);
+                    }
+
                     Ok(responses)
                 }
             }
@@ -535,6 +573,58 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
                 let _ = responses.push(response);
             } else {
                 warn!("No buffer for bus→tunnel forward (channel {})", channel_id);
+            }
+        }
+
+        responses
+    }
+
+    /// Forward a cEMI indication to matching tunnel clients, excluding the
+    /// originating channel.
+    ///
+    /// Used for cross-client forwarding: when tunnel client A sends a group
+    /// write, the frame is injected to the TP1 bus, but the TPUART echo
+    /// filter prevents it from returning as a `SubnetIndication`. This
+    /// method ensures sibling tunnel clients (B, C, ...) still see the frame.
+    ///
+    /// The cEMI data should already have its message code set to L_Data.ind
+    /// (0x29) by the caller.
+    fn forward_bus_indication_excluding(
+        &mut self,
+        cemi_data: &[u8],
+        exclude_channel: u8,
+        buffer_manager: &DynBufferManager<'static>,
+    ) -> Vec<PendingResponse, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }> {
+        let mut responses = Vec::new();
+
+        let target_channels = self.handlers.channels_for_bus_indication(cemi_data);
+        if target_channels.is_empty() {
+            return responses;
+        }
+
+        for channel_id in target_channels {
+            if channel_id == exclude_channel {
+                continue;
+            }
+
+            let Some(conn) = self.find_connection_mut(channel_id) else {
+                continue;
+            };
+
+            let send_seq = conn.send_sequence_counter;
+            conn.send_sequence_counter = send_seq.wrapping_add(1);
+            let target = conn.response_target();
+
+            if let Some(response) = H::build_tunneling_request(
+                channel_id,
+                send_seq,
+                cemi_data,
+                target,
+                buffer_manager,
+            ) {
+                let _ = responses.push(response);
+            } else {
+                warn!("No buffer for cross-client tunnel forward (channel {})", channel_id);
             }
         }
 
