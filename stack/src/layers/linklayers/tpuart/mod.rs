@@ -71,7 +71,9 @@ pub mod busmon;
 mod chip;
 mod state_machine;
 
-use crate::encoding::tp1::{knx_to_tp1_message_no_checksum, tp1_to_knx_message};
+use crate::encoding::tp1::{
+    knx_to_tp1_message, tp1_to_knx_message_no_checksum, validate_tp1_checksum,
+};
 use chip::{ChipType, RetryConfig};
 use state_machine::*;
 
@@ -698,11 +700,15 @@ where
                     self.uart_write(&[U_BUSY_INF]).await;
                 }
                 MainAction::IndicationToNetwork => {
-                    if let Some(buffer) = self.receive_buffer.take() {
+                    if let Some(mut buffer) = self.receive_buffer.take() {
                         // Validate checksum
-                        if validate_checksum(&buffer[..]) {
-                            // Convert TP1 to KNX format and send indication
-                            let knx_buffer = tp1_to_knx_message(buffer);
+                        if validate_tp1_checksum(&buffer[..]) {
+                            // Strip the check octet and convert TP1 to KNX format.
+                            // Checksum already validated above, so use the no-checksum
+                            // variant to avoid redundant validation.
+                            let new_len = buffer.len() - 1;
+                            buffer.set_len(new_len);
+                            let knx_buffer = tp1_to_knx_message_no_checksum(buffer);
                             let msg = KnxMessageBuffer::new(knx_buffer, ServiceType::L_Data_Ind);
                             let indication = IndicationMessage::indication(msg);
                             self.ind_tx.send(indication).await;
@@ -1022,13 +1028,8 @@ where
             tp1_buf.push(byte);
         }
 
-        // Convert KNX format to TP1 wire format (without checksum — we add our own
-        // using the correct inverted-XOR algorithm from calculate_checksum).
-        let mut tp1_buffer = knx_to_tp1_message_no_checksum(tp1_buf);
-
-        // Append the TP1 checksum (0xFF ^ XOR of all data bytes).
-        let checksum = calculate_checksum(&tp1_buffer[..]);
-        tp1_buffer.push(checksum);
+        // Convert KNX format to TP1 wire format (including check octet).
+        let tp1_buffer = knx_to_tp1_message(tp1_buf);
 
         self.send_ctx.total_bytes = tp1_buffer.len();
         self.current_tx = Some(CurrentTransmission { knx_buffer: msg, tp1_buffer });

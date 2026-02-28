@@ -1067,24 +1067,6 @@ pub fn is_repeated_telegram(prev_ctrl: u8, new_ctrl: u8) -> bool {
     ((prev_ctrl ^ new_ctrl) & !0x20) == 0
 }
 
-/// Calculate TP1 frame checksum (XOR of all bytes, then XOR with 0xFF)
-pub fn calculate_checksum(data: &[u8]) -> u8 {
-    let mut checksum = 0xFFu8;
-    for &b in data {
-        checksum ^= b;
-    }
-    checksum
-}
-
-/// Validate TP1 frame checksum
-pub fn validate_checksum(data: &[u8]) -> bool {
-    let mut checksum = 0u8;
-    for &b in data {
-        checksum ^= b;
-    }
-    checksum == 0xFF
-}
-
 // ============================================================================
 // Bus Monitor State Machine
 // ============================================================================
@@ -1293,6 +1275,7 @@ pub fn process_busmon_event(ctx: &mut BusMonitorContext, event: BusMonitorEvent)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::tp1::{calculate_tp1_checksum, validate_tp1_checksum};
 
     #[test]
     fn test_init_to_reset() {
@@ -1350,11 +1333,11 @@ mod tests {
     #[test]
     fn test_checksum() {
         let data = [0xBC, 0x11, 0x01, 0x00, 0x01, 0xE1, 0x00, 0x80];
-        let checksum = calculate_checksum(&data);
+        let checksum = calculate_tp1_checksum(&data);
 
         let mut full_frame = data.to_vec();
         full_frame.push(checksum);
-        assert!(validate_checksum(&full_frame));
+        assert!(validate_tp1_checksum(&full_frame));
     }
 
     #[test]

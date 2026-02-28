@@ -94,16 +94,21 @@
 
 use crate::messages::buffers::MessageBuffer;
 
-/// Calculate TP1 checksum for a message (excluding the checksum byte itself)
+/// Calculate TP1 checksum for a message (excluding the checksum byte itself).
+///
+/// Per KNX spec 03/02/02 §2.2.4.6, the check octet is a logical NOT XOR over
+/// all preceding octets — equivalently, XOR all bytes with a 0xFF seed.
 pub fn calculate_tp1_checksum(data: &[u8]) -> u8 {
-    let mut checksum = 0u8;
+    let mut checksum = 0xFFu8;
     for &byte in data {
         checksum ^= byte;
     }
     checksum
 }
 
-/// Validate TP1 checksum for a complete message (including checksum byte)
+/// Validate TP1 checksum for a complete message (including checksum byte).
+///
+/// XOR of all bytes (data + check octet) must equal 0xFF for a valid frame.
 pub fn validate_tp1_checksum(data: &[u8]) -> bool {
     if data.is_empty() {
         return false;
@@ -113,7 +118,7 @@ pub fn validate_tp1_checksum(data: &[u8]) -> bool {
     for &byte in data {
         checksum ^= byte;
     }
-    checksum == 0
+    checksum == 0xFF
 }
 
 /// Convert a TP1 wire-format message to internal KNX message format.
@@ -297,22 +302,21 @@ mod tests {
 
     #[test]
     fn test_checksum_calculation() {
-        // Test checksum calculation
         let data = [0xBC, 0x11, 0x22, 0x11, 0x01, 0xE1, 0x00, 0x81u8];
         let checksum = calculate_tp1_checksum(&data);
 
-        // Verify that XOR of all bytes including checksum equals 0
+        // XOR of all bytes including the check octet must equal 0xFF (odd parity).
         let mut verify = data.into_iter().reduce(|a, b| a ^ b).unwrap();
         verify ^= checksum;
-        assert_eq!(verify, 0, "Checksum verification failed");
+        assert_eq!(verify, 0xFF, "Checksum verification failed");
     }
 
     #[test]
     fn test_checksum_validation() {
-        let valid_data = &[0xBC, 0x11, 0x22, 0x11, 0x01, 0xE1, 0x00, 0x81, 0xFF]; // 0xFF is correct checksum
+        let valid_data = &[0xBC, 0x11, 0x22, 0x11, 0x01, 0xE1, 0x00, 0x81, 0x00]; // 0x00 = NOT XOR
         assert!(validate_tp1_checksum(valid_data), "Valid checksum should pass");
 
-        let invalid_data = &[0xBC, 0x11, 0x22, 0x11, 0x01, 0xE1, 0x00, 0x81, 0x00]; // Wrong checksum
+        let invalid_data = &[0xBC, 0x11, 0x22, 0x11, 0x01, 0xE1, 0x00, 0x81, 0xFF]; // Wrong checksum
         assert!(!validate_tp1_checksum(invalid_data), "Invalid checksum should fail");
 
         assert!(!validate_tp1_checksum(&[]), "Empty data should fail");
@@ -328,7 +332,7 @@ mod tests {
             0x11, 0x01, // Destination address: 1/1/1 (group address)
             0xE1, // NPDU: 11100001 (hop count 7, group address)
             0x00, 0x81, // TPCI/APCI + Data: GroupValue.Write with data 0x01
-            0xFF, // Checksum
+            0x00, // Checksum (NOT XOR)
         ];
 
         let buffer = TestBuffer::new(tp1_data);
@@ -399,7 +403,7 @@ mod tests {
         assert_eq!(result[5], 0xE1, "NPDU: 0xE1");
         assert_eq!(result[6], 0x00, "TPCI data");
         assert_eq!(result[7], 0x81, "Application data");
-        assert_eq!(result[8], 0xFF, "Checksum");
+        assert_eq!(result[8], 0x00, "Checksum (NOT XOR)");
     }
 
     #[test]
@@ -442,7 +446,7 @@ mod tests {
             0x11, 0x01, // Dest
             0xE1, // NPDU
             0x00, 0x81, // Data
-            0xFF, // Checksum
+            0x00, // Checksum (NOT XOR)
         ];
 
         let buffer1 = TestBuffer::new(original_tp1);
@@ -557,7 +561,7 @@ mod tests {
             0x11, 0x01, // Dest
             0x01, // Length
             0x00, 0x81, // TPCI/APCI + data
-            0xA3, // Checksum
+            0xA0, // Checksum (NOT XOR)
         ];
 
         // TP1 → KNX: extended frame processing
