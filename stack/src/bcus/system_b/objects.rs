@@ -28,6 +28,8 @@
 
 use core::cell::RefCell;
 
+use zerocopy::FromBytes;
+
 use crate::{
     AccessContext, IpStackState, StackState,
     dpt::{DeviceControl, InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
@@ -342,25 +344,10 @@ where
 pub struct TunnelingAugment;
 
 impl TunnelingAugment {
-    /// Transient buffer for property read/write operations.
-    ///
-    /// Not a device limit — just the maximum number of addresses we can handle
-    /// in a single property access. The actual device capacity is N on the
-    /// storage types. 32 addresses = 64 bytes, allocated on the stack only
-    /// during property access.
-    const PROP_BUF_CAP: usize = 32;
-
     const KNXNETIP_CAP_TUNNELING_BIT: u16 = 1 << 1;
 
     fn enabled(state: &impl IpStackState) -> bool {
         (state.knxnetip_device_capabilities() & Self::KNXNETIP_CAP_TUNNELING_BIT) != 0
-    }
-
-    /// Read additional individual addresses from state into a local buffer.
-    fn read_addrs(state: &impl IpStackState) -> ([crate::address::IndividualAddress; Self::PROP_BUF_CAP], usize) {
-        let mut addrs = [crate::address::IndividualAddress::default(); Self::PROP_BUF_CAP];
-        let count = state.write_additional_individual_addresses(&mut addrs);
-        (addrs, count)
     }
 
     fn descriptor(state: &impl IpStackState, prop_id: u8) -> Option<PropertyDescriptor> {
@@ -390,8 +377,14 @@ impl TunnelingAugment {
         count: u16,
         buf: &mut [u8],
     ) -> Result<usize, PropertyError> {
-        let (addrs, addr_count) = Self::read_addrs(state);
-        let addrs = &addrs[..addr_count];
+        // Reinterpret the byte buffer as an address buffer (round to even length)
+        // and write addresses directly into it — no intermediate stack buffer.
+        // IndividualAddress is repr(transparent) over [u8; 2] with Unaligned,
+        // so this reinterpretation is always valid.
+        let addr_cap = buf.len() / 2;
+        let addr_buf = <[crate::address::IndividualAddress]>::mut_from_bytes(&mut buf[..addr_cap * 2])
+            .expect("IndividualAddress is Unaligned; length rounded to even");
+        let addr_count = state.write_additional_individual_addresses(addr_buf);
 
         if start_idx == 0 {
             if buf.len() < 2 {
@@ -416,34 +409,27 @@ impl TunnelingAugment {
             return Err(PropertyError::BufferTooSmall);
         }
 
-        let mut out = 0usize;
-        for addr in addrs[start..end].iter() {
-            let raw = addr.as_bytes();
-            buf[out..out + 2].copy_from_slice(raw);
-            out += 2;
-        }
-
-        Ok(out)
+        // Shift the requested range to the front of the buffer. The addresses
+        // were written starting at offset 0, so range [start..end] lives at
+        // byte offsets [start*2 .. end*2].
+        buf.copy_within(start * 2..end * 2, 0);
+        Ok(needed)
     }
 
     fn decode_addrs(state: &impl IpStackState, start_idx: u16, data: &[u8]) -> Result<WriteResponse, PropertyError> {
         if start_idx != 1 {
             return Err(PropertyError::InvalidStartIndex);
         }
-        if !data.len().is_multiple_of(2) {
-            return Err(PropertyError::TypeMismatch);
-        }
 
-        // Collect parsed addresses into a local buffer. The actual device
-        // capacity (N) is enforced by set_additional_individual_addresses().
-        let mut addrs = heapless::Vec::<crate::address::IndividualAddress, { Self::PROP_BUF_CAP }>::new();
-        for chunk in data.chunks_exact(2) {
-            addrs
-                .push(crate::address::IndividualAddress::from_bytes(chunk))
-                .map_err(|_| PropertyError::ValueOutOfRange)?;
-        }
+        // Reinterpret the raw bytes as a slice of IndividualAddress directly —
+        // no intermediate heapless::Vec needed. IndividualAddress is
+        // repr(transparent) over [u8; 2] with FromBytes + Unaligned.
+        // ref_from_bytes fails if data.len() is not a multiple of 2.
+        let addrs =
+            <[crate::address::IndividualAddress]>::ref_from_bytes(data).map_err(|_| PropertyError::TypeMismatch)?;
 
-        state.set_additional_individual_addresses(addrs.as_slice()).map_err(|_| PropertyError::WriteNotAllowed)?;
+        // The actual device capacity (N) is enforced by set_additional_individual_addresses().
+        state.set_additional_individual_addresses(addrs).map_err(|_| PropertyError::WriteNotAllowed)?;
         Ok(WriteResponse::Echo)
     }
 
@@ -453,8 +439,12 @@ impl TunnelingAugment {
         count: u16,
         buf: &mut [u8],
     ) -> Result<usize, PropertyError> {
-        let (addrs, addr_count) = Self::read_addrs(state);
-        let addrs = &addrs[..addr_count];
+        // Write all addresses into buf as raw [IndividualAddress] (2 bytes each),
+        // then compact in-place to extract only the device byte from each.
+        let addr_cap = buf.len() / 2;
+        let addr_buf = <[crate::address::IndividualAddress]>::mut_from_bytes(&mut buf[..addr_cap * 2])
+            .expect("IndividualAddress is Unaligned; length rounded to even");
+        let addr_count = state.write_additional_individual_addresses(addr_buf);
 
         if start_idx == 0 {
             if buf.len() < 2 {
@@ -479,13 +469,14 @@ impl TunnelingAugment {
             return Err(PropertyError::BufferTooSmall);
         }
 
-        let mut out = 0usize;
-        for addr in addrs[start..end].iter() {
-            buf[out] = addr.device();
-            out += 1;
+        // Compact in-place: extract the device byte (offset 1 of each 2-byte
+        // IndividualAddress). Source index ((start+i)*2 + 1) is always ahead of
+        // dest index (i), so reads never alias with prior writes.
+        for i in 0..needed {
+            buf[i] = buf[(start + i) * 2 + 1];
         }
 
-        Ok(out)
+        Ok(needed)
     }
 }
 
