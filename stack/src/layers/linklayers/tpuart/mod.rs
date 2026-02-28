@@ -27,7 +27,7 @@
 //! - NCN5120/E981: 248 bytes (256 byte buffer - 8 bytes overhead)
 //!
 //! Use [`TpUartLinkLayer::max_apdu_length()`] after initialization to get this value,
-//! and update your stack state via [`StackState::set_max_apdu_length()`] so that
+//! and update your stack state via [`BufferManagerContext::set_max_apdu_length()`](crate::context::BufferManagerContext::set_max_apdu_length) so that
 //! PID 56 (MAX_APDU_LENGTH) reports the correct hardware capability.
 //!
 //! ## Architecture
@@ -142,7 +142,7 @@ impl AddressChecker for AckAllChecker {
 /// This is the default for [`TpUartLinkLayerBuilder::new`]. The builder's
 /// [`build_and_run`](super::super::LinkLayerBuilder::build_and_run) impl
 /// requires the context to provide [`KnxIndividualAddressContext`] and
-/// [`AddressTableContext`], and creates a [`DeviceAddressChecker`] that
+/// [`AddressTableContext`](crate::context::AddressTableContext), and creates a [`DeviceAddressChecker`] that
 /// ACKs the device's own individual address, group addresses from the
 /// loaded address table, and broadcasts.
 ///

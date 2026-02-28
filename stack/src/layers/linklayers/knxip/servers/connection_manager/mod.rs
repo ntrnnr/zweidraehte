@@ -25,8 +25,8 @@
 //! type to the appropriate slot.
 //!
 //! Individual connection type handlers implement [`ConnectionTypeHandler`]:
-//! - [`device_mgmt`] — Device Management (ConnectionType 0x03)
-//! - [`tunnel`] — Tunneling (ConnectionType 0x04)
+//! - `device_mgmt` — Device Management (ConnectionType 0x03)
+//! - `tunnel` — Tunneling (ConnectionType 0x04)
 
 mod device_mgmt;
 mod handlers;
@@ -334,12 +334,12 @@ pub struct AckTimeoutResult<const MAX_CONNECTIONS: usize> {
 /// standalone field on `KnxNetIp`, bypassing the server dispatch.
 ///
 /// The `H` type parameter determines which connection types are supported.
-/// Typically this is [`CompositeHandlers<DM, TUN>`] with independently
-/// selected handler slots (e.g. `WithDevMgmt`/`NoDevMgmt`,
-/// `WithTunnel`/`NoTunnel`).
+/// Typically this is [`CompositeHandlers`]`<DM, TUN>` with independently
+/// selected handler slots (e.g. [`WithDevMgmt`]/[`NoDevMgmt`],
+/// [`WithTunnel`]/[`NoTunnel`]).
 ///
-/// Created inside [`KnxNetIpBuilder::build()`] using the property handler
-/// obtained from the [`PropertyServiceContext`].
+/// Created inside `KnxNetIpBuilder::build()` using the property handler
+/// obtained from the [`PropertyServiceContext`](crate::context::PropertyServiceContext).
 pub struct ConnectionManager<H: ConnectionHandlers, const MAX_CONNECTIONS: usize = 1> {
     connections: [Option<ConnectionContext>; MAX_CONNECTIONS],
     handlers: H,
@@ -361,7 +361,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
     /// Handle an incoming KNX/IP message for a connection-oriented service.
     ///
     /// The caller must only pass service types with category
-    /// [`ServiceCategory::ConnectionLifecycle`] or [`ServiceCategory::ConnectionData`].
+    /// [`ServiceCategory::ConnectionLifecycle`](crate::messages::knxip::ServiceCategory::ConnectionLifecycle) or [`ServiceCategory::ConnectionData`](crate::messages::knxip::ServiceCategory::ConnectionData).
     /// Connectionless service types are handled separately by the server instances.
     ///
     /// Connection lifecycle messages (Connect, Disconnect, Connectionstate) are

@@ -184,7 +184,7 @@ impl PropertyDescriptionResponse {
 
     /// Encode to bytes for transmission
     /// Format per KNX spec 3/5/1:
-    /// [ObjectIndex(1)][PropertyId(1)][PropertyIndex(1)][Type+MaxElements(2)][Access(1)]
+    /// `[ObjectIndex(1)][PropertyId(1)][PropertyIndex(1)][Type+MaxElements(2)][Access(1)]`
     /// Where Type+MaxElements: bit 15 = writeable, bits 13-8 = PDT, bits 11-0 = MaxElements
     pub fn encode(&self, buf: &mut [u8]) -> usize {
         if buf.len() < 7 {
@@ -409,7 +409,7 @@ impl<T: AsMut<[u8]>> ArrayPropertyWrite for T {
 
 /// Trait for reading an array property that has a 2-byte count prefix.
 ///
-/// Many KNX table properties store data as: [count:2][entry1][entry2]...
+/// Many KNX table properties store data as: `[count:2][entry1][entry2]...`
 /// This trait handles that format, reading the count from the first 2 bytes.
 pub trait ArrayPropertyWithPrefixRead {
     /// Read array property with count prefix.

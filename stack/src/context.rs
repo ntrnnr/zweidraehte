@@ -87,10 +87,10 @@ pub trait ApplicationLayerContext {
 /// Only relevant for KNX/IP devices. Implementations should query the
 /// device state and platform for current network configuration.
 pub trait IpDiagnosticsContext {
-    /// Build an [`IpConfig`] DIB from configured (ETS-programmed) values.
+    /// Build an [`IpConfig`](crate::messages::knxip::substructs::IpConfig) DIB from configured (ETS-programmed) values.
     fn ip_config(&self) -> crate::messages::knxip::substructs::IpConfig;
 
-    /// Build an [`IpCurrentConfig`] DIB from the platform's current state.
+    /// Build an [`IpCurrentConfig`](crate::messages::knxip::substructs::IpCurrentConfig) DIB from the platform's current state.
     fn ip_current_config(&self) -> crate::messages::knxip::substructs::IpCurrentConfig;
 }
 

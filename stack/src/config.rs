@@ -8,7 +8,7 @@
 //!
 //! The stack uses a two-tier approach for APDU sizes:
 //!
-//! 1. **Compile-time allocation** ([`StackDefinition::MAX_APDU_LENGTH`]):
+//! 1. **Compile-time allocation** ([`StackDefinition::MAX_APDU_LENGTH`](crate::StackDefinition::MAX_APDU_LENGTH)):
 //!    Determines the buffer size allocated in [`StackResources`](crate::StackResources).
 //!    This is the maximum APDU size that can ever be handled by the stack.
 //!

@@ -6,7 +6,7 @@
 //! # Design
 //!
 //! The memory map is part of the [`StackDefinition`](crate::StackDefinition) and stored
-//! in [`Inner`](crate::Inner). Users define their own tables struct (`MemoryTables`)
+//! in `Inner`. Users define their own tables struct (`MemoryTables`)
 //! that contains whatever tables they need, and implement `MemoryMap` to dispatch
 //! reads/writes to the appropriate tables.
 //!

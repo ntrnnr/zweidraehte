@@ -83,7 +83,7 @@ impl ChipType {
     ///
     /// For unknown chips, we conservatively assume no EFF support.
     ///
-    /// Note: This is different from [`supports_long_frames`], which indicates
+    /// Note: This is different from [`Self::supports_long_frames`], which indicates
     /// support for frames longer than 64 bytes.
     pub const fn supports_extended_frame_format(&self) -> bool {
         // Unknown chip: conservatively assume no EFF support
@@ -109,7 +109,7 @@ impl ChipType {
 
     /// Whether this chip supports extended frames (>64 bytes)
     ///
-    /// Alias for [`supports_long_frames`] for backwards compatibility.
+    /// Alias for [`Self::supports_long_frames`] for backwards compatibility.
     pub const fn supports_extended_frames(&self) -> bool {
         self.supports_long_frames()
     }

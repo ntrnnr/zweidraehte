@@ -7,7 +7,7 @@
 //! methods are trivial no-ops that LLVM eliminates entirely.
 //!
 //! The [`Features`] struct bundles all four feature selections into a
-//! single type parameter `F` on [`KnxNetIpBuilder`] and [`KnxNetIp`],
+//! single type parameter `F` on [`KnxNetIpBuilder`](super::KnxNetIpBuilder) and [`KnxNetIp`](super::KnxNetIp),
 //! keeping the generic signatures manageable.
 //!
 //! # Binary size impact
@@ -354,10 +354,10 @@ impl RemoteConfigFeature for NoRemoteConfig {
 /// Compile-time feature slot for KNX/IP Tunneling.
 ///
 /// Controls whether the connection manager includes a
-/// [`TunnelConnectionHandler`] and whether tunneling connections can
+/// [`TunnelConnectionHandler`](super::servers::TunnelConnectionHandler) and whether tunneling connections can
 /// be accepted. The associated `Tunnel` type selects the concrete
-/// [`TunnelingConnectedHandler`] implementation for the tunneling slot
-/// in [`CompositeHandlers`].
+/// [`TunnelingConnectedHandler`](super::servers::TunnelingConnectedHandler) implementation for the tunneling slot
+/// in [`CompositeHandlers`](super::servers::CompositeHandlers).
 #[allow(private_interfaces)] // build_handlers takes &dyn KnxNetIpContext (pub(crate)), but that's fine — only called internally
 pub trait TunnelingFeature: 'static {
     type Tunnel: super::servers::TunnelingConnectedHandler;

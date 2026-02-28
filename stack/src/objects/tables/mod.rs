@@ -98,7 +98,7 @@ pub trait HasLoadStateMachine: TableMemory {
     fn is_loaded(&self) -> bool;
 
     /// Get a reference to the MCB (Memory Control Block) data.
-    /// The MCB is 8 bytes: [requested_memory_size:4][mode:1][fill:1][crc:2]
+    /// The MCB is 8 bytes: `[requested_memory_size:4][mode:1][fill:1][crc:2]`
     fn mcb_bytes(&self) -> &[u8];
 
     /// Get the table reference (base address in the KNX device's virtual address space).

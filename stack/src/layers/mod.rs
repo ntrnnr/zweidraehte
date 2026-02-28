@@ -210,7 +210,7 @@ impl<M, R> AsMut<M> for Request<M, R> {
 /// Send a request and await the response through a temporary channel.
 ///
 /// The `MUT` parameter controls the mutex type of the temporary response
-/// channel. Use [`NoopRawMutex`] when requester and replier share the same
+/// channel. Use [`NoopRawMutex`](embassy_sync::blocking_mutex::raw::NoopRawMutex) when requester and replier share the same
 /// executor; use [`CriticalSectionRawMutex`](embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex)
 /// when they may run on different executors (e.g. interrupt vs thread).
 ///

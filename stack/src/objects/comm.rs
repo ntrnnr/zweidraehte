@@ -410,7 +410,7 @@ pub enum ComObjectEvent {
 
 /// Events emitted when the application lifecycle state changes.
 ///
-/// These events are published through [`Stack::lifecycle_events()`] whenever the
+/// These events are published through [`Stack::lifecycle_events()`](crate::Stack::lifecycle_events) whenever the
 /// run state machine transitions into or out of the RUNNING state, including
 /// transitions caused by load state machine cascades (e.g., ETS programming
 /// completing and automatically starting the application).

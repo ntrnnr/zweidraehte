@@ -114,7 +114,7 @@ pub struct PendingResponse {
 
 /// Context provided to servers for accessing stack resources.
 ///
-/// Constructed fresh on every server dispatch from [`KnxNetIp`]'s context
+/// Constructed fresh on every server dispatch from [`KnxNetIp`](super::KnxNetIp)'s context
 /// reference. Servers access device information, IP diagnostics, and
 /// KNX addresses through the individual context trait accessors.
 pub struct ServerContext<'a> {
@@ -174,7 +174,7 @@ impl<'a> ServerContext<'a> {
 
     /// Get the device info context. Servers can call
     /// `device_info().device_information()` to build a fresh
-    /// [`DeviceInformation`] reflecting the current device state.
+    /// [`DeviceInformation`](crate::messages::knxip::substructs::DeviceInformation) reflecting the current device state.
     pub fn device_info(&self) -> &dyn DeviceInfoContext {
         self.device_info
     }

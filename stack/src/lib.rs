@@ -243,7 +243,7 @@ pub trait StackState {
     /// explicit authorization. It corresponds to the first level that has
     /// the default key (`0xFFFFFFFF`).
     ///
-    /// For a device with keys[0]=0x00, keys[1]=0x12345678, keys[2]=0xFF..FF, keys[3]=0xFF..FF,
+    /// For a device with `keys[0]`=0x00, `keys[1]`=0x12345678, `keys[2]`=0xFF..FF, `keys[3]`=0xFF..FF,
     /// this would return 2 (the first match for 0xFFFFFFFF when walking from level 0 upward).
     ///
     /// Default implementation: returns level 3 (minimum access, "access for everyone").
@@ -434,7 +434,7 @@ use core::net::Ipv4Addr;
 /// Extended stack state for KNXnet/IP devices.
 ///
 /// This trait extends [`StackState`] with IP-specific configuration and
-/// platform queries needed by [`IpParameterObject`].
+/// platform queries needed by [`IpParameterObject`](crate::objects::interface::IpParameterObject).
 ///
 /// The trait separates:
 /// - **Current values** (read from platform/OS): `current_ip_address()`, `current_subnet_mask()`, etc.
@@ -601,7 +601,7 @@ pub use platform::{IpConfig, NetworkConfig as IpPlatformConfig};
 /// [`IpStackState`].
 ///
 /// This exists because `define_interface_object!` only accepts a single
-/// trait bound, so [`IpParameterObject`] uses `S: IpDevice` instead of
+/// trait bound, so [`IpParameterObject`](crate::objects::interface::IpParameterObject) uses `S: IpDevice` instead of
 /// `S: StackState + IpStackState`.
 pub trait IpDevice: StackState + IpStackState {}
 impl<T: StackState + IpStackState> IpDevice for T {}
@@ -715,7 +715,7 @@ pub trait StackDefinition: Copy {
 
     /// Mutex type for channels shared between the stack runner and user code.
     ///
-    /// Use [`NoopRawMutex`](embassy_sync::blocking_mutex::raw::NoopRawMutex)
+    /// Use [`NoopRawMutex`]
     /// (default) when the stack runner and user code share the same executor.
     /// Use [`CriticalSectionRawMutex`](embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex)
     /// when the stack runs on an `InterruptExecutor` while user code runs on
@@ -735,9 +735,9 @@ pub trait StackDefinition: Copy {
     ///
     /// Must implement [`StackState`] for runtime state access, and may implement
     /// table accessor traits for group object communication:
-    /// - [`HasAddressTable`](objects::tables::HasAddressTable)
-    /// - [`HasAssociationTable`](objects::tables::HasAssociationTable)
-    /// - [`HasCommunicationObjectTable`](objects::tables::HasCommunicationObjectTable)
+    /// - [`HasAddressTable`]
+    /// - [`HasAssociationTable`]
+    /// - [`HasCommunicationObjectTable`]
     ///
     /// For System B devices, use [`SystemBDeviceState`](bcus::system_b::SystemBDeviceState)
     /// or [`IpSystemBDeviceState`](bcus::system_b::IpSystemBDeviceState).
@@ -966,7 +966,7 @@ impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
 ///
 /// This is an opaque wrapper combining buffer management and property service
 /// access. Link layers receive a `&StackContext` through
-/// [`LinkLayerBuilder::build_and_run`](layers::LinkLayerBuilder::build_and_run)
+/// [`LinkLayerBuilder::build_and_run`]
 /// and access its capabilities via the [`BufferManagerContext`] and
 /// [`PropertyServiceContext`](context::PropertyServiceContext) trait impls.
 pub struct StackContext<'a, D: StackDefinition> {
@@ -1801,7 +1801,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// 1. Call this method to receive the request
     /// 2. Execute the appropriate reset based on [`restart::EraseCode`]
     /// 3. Flush storage to persist any changes
-    /// 4. Call [`Self::reply_to_restart`] to send the response
+    /// 4. Call [`Request::reply()`](layers::Request::reply) to send the response
     /// 5. Trigger platform restart after the response is sent
     ///
     /// # Example

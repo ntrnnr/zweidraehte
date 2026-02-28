@@ -73,7 +73,7 @@ pub struct Records<B, R: RecordsImplLayout> {
 /// `RecordsRaw` represents a not-yet-parsed and not-yet-validated sequence of
 /// records, whose structure is enforced by the impl in `R`.
 ///
-/// [`Records`] provides an implementation of [`FromRaw`] that can be used to
+/// [`Records`] provides an implementation of `FromRaw` that can be used to
 /// validate a `RecordsRaw`.
 #[derive(Debug)]
 pub struct RecordsRaw<B, R: RecordsImplLayout> {
@@ -116,9 +116,9 @@ where
     ///
     /// `parse_raw_with_mut_context` performs a single pass over all of the
     /// records to be able to find the end of the records list and update
-    /// `bytes` accordingly. Upon return with [`MaybeParsed::Complete`],
+    /// `bytes` accordingly. Upon return with `MaybeParsed::Complete`,
     /// `bytes` will include only those bytes which are not part of the records
-    /// list. Upon return with [`MaybeParsed::Incomplete`], `bytes` will still
+    /// list. Upon return with `MaybeParsed::Incomplete`, `bytes` will still
     /// contain the bytes which could not be parsed, and all subsequent bytes.
     pub fn parse_raw_with_mut_context<BV: BufferView<B>>(
         bytes: &mut BV,

@@ -72,7 +72,7 @@ pub struct Connection {
     /// pending message is acknowledged (A8).
     pub queued_outgoing: Option<KnxMessageBuffer<Buffer<'static>>>,
     /// Slot index for looking up this connection's access level in the
-    /// shared [`ConnectionAuthLevels`]. Set once on allocation.
+    /// shared [`ConnectionAuthLevels`](crate::ConnectionAuthLevels). Set once on allocation.
     pub slot_index: u8,
 }
 

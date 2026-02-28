@@ -63,7 +63,7 @@ impl<T> KnxNetIpContext for T where
 ///
 /// Used during builder setup to collect and deduplicate the UDP sockets
 /// needed by all enabled features. TCP is handled separately by
-/// [`TcpManager`] and does not use this type.
+/// `TcpManager` and does not use this type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndpointType {
     socket_addr: SocketAddrV4,
@@ -136,7 +136,7 @@ impl KnxNetIpResources {
 ///
 /// The composite bridge loop converts TPUART indications to cEMI and
 /// sends them here; the KNX/IP run loop calls
-/// [`ConnectionManager::forward_bus_indication()`] to deliver them to
+/// `ConnectionManager::forward_bus_indication()` to deliver them to
 /// matching tunnel connections.
 pub struct SubnetIndication {
     pub cemi_data: Buffer<'static>,

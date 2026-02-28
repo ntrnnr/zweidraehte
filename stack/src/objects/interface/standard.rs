@@ -213,7 +213,7 @@ crate::define_interface_object! {
     /// | 66 | Routing Multicast Address | PDT_UNSIGNED_LONG | RW |
     /// | 67 | TTL | PDT_UNSIGNED_CHAR | RW |
     /// | 68 | KNXnet/IP Device Capabilities | PDT_BITSET16 | RO |
-    /// | 76 | Friendly Name | PDT_UNSIGNED_CHAR[30] | RW |
+    /// | 76 | Friendly Name | `PDT_UNSIGNED_CHAR[30]` | RW |
     pub struct IpParameterObject<'a, S: IpDevice>: InterfaceObjectType::IPParameter
         with state: &'a S
     {
@@ -833,20 +833,20 @@ impl TableObjectSpec for GroupObjectTableSpec {
 
 /// Address Table Object - Object Type 1
 ///
-/// Wraps an existing [`AddressTable`] implementation to provide the
+/// Wraps an existing [`AddressTable`](crate::objects::tables::AddressTable) implementation to provide the
 /// Interface Object API. Contains the group address table with entries
 /// that can be looked up by TSAP.
 pub type AddressTableObject<'a, T> = TableInterfaceObject<'a, T, AddressTableSpec>;
 
 /// Association Table Object - Object Type 2
 ///
-/// Wraps an existing [`AssociationTable`] implementation. Contains the
+/// Wraps an existing [`AssociationTable`](crate::objects::tables::AssociationTable) implementation. Contains the
 /// TSAP/ASAP mapping table for routing group communication.
 pub type AssociationTableObject<'a, T> = TableInterfaceObject<'a, T, AssociationTableSpec>;
 
 /// Group Object Table Object - Object Type 9
 ///
-/// Wraps a [`CommunicationObjectTable`] implementation. Contains the
+/// Wraps a [`CommunicationObjectTable`](crate::objects::tables::CommunicationObjectTable) implementation. Contains the
 /// communication object descriptors (type + flags for each object).
 pub type GroupObjectTableObject<'a, T> = TableInterfaceObject<'a, T, GroupObjectTableSpec>;
 
