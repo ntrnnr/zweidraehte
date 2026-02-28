@@ -223,6 +223,27 @@ pub enum ConnectionTransport {
     Tcp { tcp_idx: usize },
 }
 
+/// Tracks a server→client frame waiting for an ACK (UDP only).
+///
+/// When the server sends a `DeviceConfigurationRequest` or `TunnelingRequest`
+/// to a client, it stores a copy here for potential retransmission. The ACK
+/// timeout and retry limits differ by connection type:
+///
+/// - Tunneling: 1s timeout, 1 retry (spec 03/08/04 §2.6.1)
+/// - Device Management: 10s timeout, 3 retries (spec 03/08/03 §2.3.2)
+pub struct PendingAck {
+    /// The sequence counter we sent — the ACK must echo this value.
+    pub sequence_counter: u8,
+    /// Serialized frame for retransmission.
+    pub buffer: Buffer<'static>,
+    /// Where to send the retransmission.
+    pub target: ResponseTarget,
+    /// When the frame was (last) sent.
+    pub sent_at: Instant,
+    /// How many times we've already sent this frame (0 = first send).
+    pub attempt: u8,
+}
+
 /// Per-connection state tracked by the connection manager.
 ///
 /// Exposed to [`ConnectionTypeHandler`] implementations so they can
@@ -238,6 +259,9 @@ pub struct ConnectionContext {
     pub socket_idx: usize,
     /// Which transport this connection uses.
     pub transport: ConnectionTransport,
+    /// Server→client frame awaiting an ACK. `None` when no frame is
+    /// in flight or when the connection uses TCP (which has no ACKs).
+    pub pending_ack: Option<PendingAck>,
 }
 
 impl ConnectionContext {
@@ -285,6 +309,18 @@ impl ConnectionManagerResult {
     fn responses_only(responses: Vec<PendingResponse, { MAX_DATA_RESPONSES }>) -> Self {
         Self { responses, tcp_events: Vec::new() }
     }
+}
+
+/// Result of [`ConnectionManager::check_ack_timeouts`].
+pub struct AckTimeoutResult<const MAX_CONNECTIONS: usize> {
+    /// Frames to retransmit (timed-out but under max retries).
+    pub retransmissions: Vec<PendingResponse, MAX_CONNECTIONS>,
+    /// Channels to disconnect (exceeded max retries).
+    /// Each entry is (channel_id, control_endpoint target for the
+    /// DISCONNECT_REQUEST).
+    pub disconnects: Vec<(u8, ResponseTarget), MAX_CONNECTIONS>,
+    /// TCP channel tracking events from disconnected connections.
+    pub tcp_events: Vec<TcpChannelEvent, MAX_CONNECTIONS>,
 }
 
 // ============================================================================
@@ -502,6 +538,104 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         tcp_events
     }
 
+    /// Check for ACK timeouts on all connections.
+    ///
+    /// For each connection with a pending server→client frame:
+    /// - If the ACK timeout has elapsed and retries remain, queue a
+    ///   retransmission and reset the timer.
+    /// - If retries are exhausted, send a DISCONNECT_REQUEST and tear
+    ///   down the connection.
+    ///
+    /// Timeout and retry limits per connection type (KNX spec):
+    /// - Tunneling: 1s timeout, 1 retry (03/08/04 §2.6.1)
+    /// - Device Management: 10s timeout, 3 retries (03/08/03 §2.3.2)
+    ///
+    /// TCP connections are skipped — they have no ACK mechanism.
+    pub fn check_ack_timeouts(
+        &mut self,
+        buffer_manager: &DynBufferManager<'static>,
+    ) -> AckTimeoutResult<MAX_CONNECTIONS> {
+        let now = Instant::now();
+        let mut retransmissions = Vec::new();
+        let mut disconnects = Vec::new();
+        // ACK timeouts only affect UDP connections, so no TCP events are
+        // produced here. (TCP connections skip ACKs entirely.)
+        let tcp_events = Vec::new();
+
+        for slot in &mut self.connections {
+            let Some(ctx) = slot.as_mut() else { continue };
+
+            // TCP connections have no ACK mechanism.
+            if matches!(ctx.transport, ConnectionTransport::Tcp { .. }) {
+                continue;
+            }
+
+            let Some(pending) = &mut ctx.pending_ack else { continue };
+
+            let (timeout, max_retries) = match ctx.connection_type {
+                ConnectionType::Tunnel => (Duration::from_secs(1), 1u8),
+                ConnectionType::DeviceManagement => (Duration::from_secs(10), 3u8),
+                _ => continue,
+            };
+
+            if now - pending.sent_at < timeout {
+                continue;
+            }
+
+            if pending.attempt < max_retries {
+                // Retransmit: clone the buffer and resend.
+                if let Some(retransmit_buffer) = buffer_manager.try_alloc_from_slice(&pending.buffer) {
+                    pending.attempt += 1;
+                    pending.sent_at = now;
+                    info!(
+                        "ACK timeout: channel={}, seq={}, attempt {}/{} — retransmitting",
+                        ctx.channel_id,
+                        pending.sequence_counter,
+                        pending.attempt,
+                        max_retries,
+                    );
+                    let _ = retransmissions.push(PendingResponse {
+                        buffer: retransmit_buffer,
+                        target: pending.target,
+                    });
+                } else {
+                    warn!(
+                        "ACK timeout: channel={}, seq={} — no buffer for retransmit, giving up",
+                        ctx.channel_id, pending.sequence_counter,
+                    );
+                    // Can't retransmit without a buffer. Treat as exhausted
+                    // to avoid silently stalling the connection forever.
+                    pending.attempt = max_retries;
+                    pending.sent_at = now;
+                }
+            } else {
+                // Retries exhausted — disconnect.
+                warn!(
+                    "ACK timeout: channel={}, seq={} — {} retries exhausted, disconnecting",
+                    ctx.channel_id, pending.sequence_counter, max_retries,
+                );
+
+                let channel_id = ctx.channel_id;
+                let connection_type = ctx.connection_type;
+                let control_endpoint = ctx.control_endpoint;
+                let socket_idx = ctx.socket_idx;
+
+                // Build DISCONNECT_REQUEST to the client's control endpoint.
+                let control_target = ResponseTarget::Udp {
+                    destination: control_endpoint,
+                    socket_idx,
+                };
+                let _ = disconnects.push((channel_id, control_target));
+
+                // Tear down the connection.
+                *slot = None;
+                self.handlers.close_connection(channel_id, connection_type);
+            }
+        }
+
+        AckTimeoutResult { retransmissions, disconnects, tcp_events }
+    }
+
     /// Check if there are any active connections (used by main loop to
     /// decide whether to run the heartbeat timer).
     pub fn has_active_connections(&self) -> bool {
@@ -555,25 +689,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         // For each target channel, build a TunnelingRequest with the
         // connection's send sequence counter.
         for channel_id in target_channels {
-            let Some(conn) = self.find_connection_mut(channel_id) else {
-                continue;
-            };
-
-            let send_seq = conn.send_sequence_counter;
-            conn.send_sequence_counter = send_seq.wrapping_add(1);
-            let target = conn.response_target();
-
-            if let Some(response) = H::build_tunneling_request(
-                channel_id,
-                send_seq,
-                cemi_data,
-                target,
-                buffer_manager,
-            ) {
-                let _ = responses.push(response);
-            } else {
-                warn!("No buffer for bus→tunnel forward (channel {})", channel_id);
-            }
+            self.send_tunneling_request(channel_id, cemi_data, buffer_manager, &mut responses);
         }
 
         responses
@@ -607,28 +723,56 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
                 continue;
             }
 
-            let Some(conn) = self.find_connection_mut(channel_id) else {
-                continue;
-            };
-
-            let send_seq = conn.send_sequence_counter;
-            conn.send_sequence_counter = send_seq.wrapping_add(1);
-            let target = conn.response_target();
-
-            if let Some(response) = H::build_tunneling_request(
-                channel_id,
-                send_seq,
-                cemi_data,
-                target,
-                buffer_manager,
-            ) {
-                let _ = responses.push(response);
-            } else {
-                warn!("No buffer for cross-client tunnel forward (channel {})", channel_id);
-            }
+            self.send_tunneling_request(channel_id, cemi_data, buffer_manager, &mut responses);
         }
 
         responses
+    }
+
+    /// Build and send a `TunnelingRequest` to a single tunnel client,
+    /// recording a retransmit copy for UDP connections.
+    fn send_tunneling_request(
+        &mut self,
+        channel_id: u8,
+        cemi_data: &[u8],
+        buffer_manager: &DynBufferManager<'static>,
+        responses: &mut Vec<PendingResponse, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }>,
+    ) {
+        let Some(conn) = self.find_connection_mut(channel_id) else {
+            return;
+        };
+
+        let send_seq = conn.send_sequence_counter;
+        conn.send_sequence_counter = send_seq.wrapping_add(1);
+        let target = conn.response_target();
+        let is_udp = matches!(conn.transport, ConnectionTransport::Udp);
+
+        if let Some(response) = H::build_tunneling_request(
+            channel_id,
+            send_seq,
+            cemi_data,
+            target,
+            buffer_manager,
+        ) {
+            // For UDP connections, save a copy for retransmission if the
+            // client doesn't ACK within the timeout.
+            if is_udp
+                && let Some(retransmit_buffer) = buffer_manager.try_alloc_from_slice(&response.buffer)
+            {
+                let conn = self.find_connection_mut(channel_id).expect("connection verified above");
+                conn.pending_ack = Some(PendingAck {
+                    sequence_counter: send_seq,
+                    buffer: retransmit_buffer,
+                    target,
+                    sent_at: Instant::now(),
+                    attempt: 0,
+                });
+            }
+
+            let _ = responses.push(response);
+        } else {
+            warn!("No buffer for tunnel forward (channel {})", channel_id);
+        }
     }
 
     /// Called when a TCP connection is closed (peer disconnect or I/O error).
@@ -750,6 +894,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
             last_activity: Instant::now(),
             socket_idx,
             transport,
+            pending_ack: None,
         });
 
         // Build ConnectResponse with success

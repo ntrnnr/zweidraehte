@@ -22,7 +22,7 @@ use crate::objects::interface::PropertyServiceHandler;
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::super::{PendingResponse, ServerError};
-use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction};
+use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction, PendingAck};
 
 // ============================================================================
 // Handler
@@ -423,9 +423,26 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
 
             if let Some(mut resp_buffer) = buffer_manager.try_alloc() {
                 resp_buffer.serialize(&req_builder);
+                let target = conn.response_target();
+
+                // For UDP connections, save a copy for retransmission if the
+                // client doesn't ACK within the timeout. If no buffer is
+                // available for the copy, fall back to fire-and-forget.
+                if matches!(conn.transport, ConnectionTransport::Udp)
+                    && let Some(retransmit_buffer) = buffer_manager.try_alloc_from_slice(&resp_buffer)
+                {
+                    conn.pending_ack = Some(PendingAck {
+                        sequence_counter: send_seq,
+                        buffer: retransmit_buffer,
+                        target,
+                        sent_at: Instant::now(),
+                        attempt: 0,
+                    });
+                }
+
                 let _ = responses.push(PendingResponse {
                     buffer: resp_buffer,
-                    target: conn.response_target(),
+                    target,
                 });
             } else {
                 warn!("DevMgmt: skipping data response for channel {} (no free buffers)", conn.channel_id);
@@ -443,13 +460,37 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         };
 
         conn.last_activity = Instant::now();
-        // TODO: Implement retransmission tracking — verify this ACK matches
-        // our last sent sequence number, and handle timeout/retransmission
-        // if the ACK doesn't arrive.
-        trace!(
-            "DeviceConfigurationAck: channel={}, seq={}, status={:?}",
-            ack.communication_channel_id, ack.sequence_counter, ack.status
-        );
+
+        // Verify the ACK matches our pending outgoing frame.
+        if let Some(pending) = &conn.pending_ack {
+            if ack.sequence_counter == pending.sequence_counter {
+                if ack.status == ConnectionStatus::NoError {
+                    trace!(
+                        "DeviceConfigurationAck: channel={}, seq={} — acknowledged",
+                        ack.communication_channel_id, ack.sequence_counter
+                    );
+                } else {
+                    warn!(
+                        "DeviceConfigurationAck: channel={}, seq={}, error status {:?}",
+                        ack.communication_channel_id, ack.sequence_counter, ack.status
+                    );
+                }
+                // Clear the pending frame — either successfully ACKed or
+                // explicitly rejected (don't retransmit a rejected frame).
+                conn.pending_ack = None;
+            } else {
+                warn!(
+                    "DeviceConfigurationAck: channel={}, seq={} doesn't match pending seq {}",
+                    ack.communication_channel_id, ack.sequence_counter, pending.sequence_counter
+                );
+            }
+        } else {
+            trace!(
+                "DeviceConfigurationAck: channel={}, seq={} (no pending frame)",
+                ack.communication_channel_id, ack.sequence_counter
+            );
+        }
+
         Ok(())
     }
 

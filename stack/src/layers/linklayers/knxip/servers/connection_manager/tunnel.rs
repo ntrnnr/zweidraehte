@@ -483,13 +483,35 @@ impl ConnectionTypeHandler for TunnelConnectionHandler {
         };
 
         conn.last_activity = Instant::now();
-        // TODO: Implement retransmission tracking — verify this ACK matches
-        // our last sent sequence number, and handle timeout/retransmission
-        // if the ACK doesn't arrive.
-        trace!(
-            "TunnelingAck: channel={}, seq={}, status={:?}",
-            ack.communication_channel_id, ack.sequence_counter, ack.status
-        );
+
+        // Verify the ACK matches our pending outgoing frame.
+        if let Some(pending) = &conn.pending_ack {
+            if ack.sequence_counter == pending.sequence_counter {
+                if ack.status == ConnectionStatus::NoError {
+                    trace!(
+                        "TunnelingAck: channel={}, seq={} — acknowledged",
+                        ack.communication_channel_id, ack.sequence_counter
+                    );
+                } else {
+                    warn!(
+                        "TunnelingAck: channel={}, seq={}, error status {:?}",
+                        ack.communication_channel_id, ack.sequence_counter, ack.status
+                    );
+                }
+                conn.pending_ack = None;
+            } else {
+                warn!(
+                    "TunnelingAck: channel={}, seq={} doesn't match pending seq {}",
+                    ack.communication_channel_id, ack.sequence_counter, pending.sequence_counter
+                );
+            }
+        } else {
+            trace!(
+                "TunnelingAck: channel={}, seq={} (no pending frame)",
+                ack.communication_channel_id, ack.sequence_counter
+            );
+        }
+
         Ok(())
     }
 

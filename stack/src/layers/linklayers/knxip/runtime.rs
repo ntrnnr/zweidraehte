@@ -480,10 +480,39 @@ impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, co
             // Process any expired retry requests
             self.process_retry_queue(response_channel).await;
 
-            // Run connection manager heartbeat check if connections are active
+            // Run connection manager heartbeat and ACK timeout checks if
+            // connections are active.
             if self.connection_manager.has_active_connections() {
                 let tcp_events = self.connection_manager.on_tick();
                 self.apply_tcp_channel_events(&tcp_events);
+
+                // Check for unacknowledged server→client frames and
+                // retransmit or disconnect as needed.
+                let buffer_manager = self.context.buffer_manager();
+                let ack_result = self.connection_manager.check_ack_timeouts(buffer_manager);
+
+                for retransmit in ack_result.retransmissions {
+                    self.send_response(retransmit).await;
+                }
+
+                for (channel_id, target) in ack_result.disconnects {
+                    // Build and send DISCONNECT_REQUEST to the client's
+                    // control endpoint.
+                    use crate::messages::knxip::substructs::HPAI;
+                    use crate::util::packets::SerializeBuffer;
+
+                    if let Some(mut buffer) = buffer_manager.try_alloc() {
+                        let control_hpai = HPAI::ipv4_udp(
+                            core::net::Ipv4Addr::UNSPECIFIED,
+                            0,
+                        );
+                        let builder = DisconnectRequestBuilder::new(channel_id, control_hpai);
+                        buffer.serialize(&builder);
+                        self.send_response(PendingResponse { buffer, target }).await;
+                    }
+                }
+
+                self.apply_tcp_channel_events(&ack_result.tcp_events);
             }
 
             // Check TCP idle timeouts alongside the heartbeat.
@@ -509,7 +538,7 @@ impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, co
             // idle timeout (10s when idle TCP connections exist).
             let heartbeat_time =
                 if self.connection_manager.has_active_connections() || self.tcp_manager.has_active_connections() {
-                    Some(Instant::now() + Duration::from_secs(10))
+                    Some(Instant::now() + Duration::from_secs(1))
                 } else {
                     None
                 };
