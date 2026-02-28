@@ -47,7 +47,6 @@ use embassy_sync::{
 use platform::IpTransport;
 
 use crate::{
-    AdditionalIndividualAddresses,
     address::IndividualAddress,
     context::AddressTableContext,
     layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase},
@@ -80,18 +79,18 @@ use super::{
 ///
 /// The additional addresses are snapshotted at build time — they only
 /// change during ETS programming (which requires a device restart).
-pub struct IpInterfaceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine> {
+pub struct IpInterfaceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine, const N: usize> {
     inner: DeviceAddressChecker<'a, ADT>,
-    additional_addresses: AdditionalIndividualAddresses,
+    additional_addresses: heapless::Vec<IndividualAddress, N>,
 }
 
-impl<'a, ADT: AddressTable + HasLoadStateMachine> IpInterfaceAddressChecker<'a, ADT> {
-    pub fn new(inner: DeviceAddressChecker<'a, ADT>, additional_addresses: AdditionalIndividualAddresses) -> Self {
+impl<'a, ADT: AddressTable + HasLoadStateMachine, const N: usize> IpInterfaceAddressChecker<'a, ADT, N> {
+    pub fn new(inner: DeviceAddressChecker<'a, ADT>, additional_addresses: heapless::Vec<IndividualAddress, N>) -> Self {
         Self { inner, additional_addresses }
     }
 }
 
-impl<ADT: AddressTable + HasLoadStateMachine> AddressChecker for IpInterfaceAddressChecker<'_, ADT> {
+impl<ADT: AddressTable + HasLoadStateMachine, const N: usize> AddressChecker for IpInterfaceAddressChecker<'_, ADT, N> {
     fn should_ack(&self, header: &[u8; 6]) -> bool {
         // Delegate to inner checker first (primary IA, group, broadcast).
         if self.inner.should_ack(header) {
@@ -198,6 +197,8 @@ where
     R: embedded_io_async::Read + Send + 'static,
     T: IpTransport + 'static,
     F: features::FeatureSet + 'static,
+    <F::Tunneling as features::TunnelingFeature>::Tunnel:
+        super::knxip::servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     fn build_and_run<'a>(
         self,
@@ -211,7 +212,15 @@ where
             // ==============================================================
             // Snapshot additional IAs and build address checker
             // ==============================================================
-            let additional_ias = context.additional_individual_addresses();
+            let mut addr_buf = [IndividualAddress::default();
+                <F::Tunneling as features::TunnelingFeature>::CAPACITY];
+            let addr_count = crate::context::IpAdditionalIndividualAddressContext
+                ::write_additional_individual_addresses(context, &mut addr_buf);
+            let mut additional_ias = heapless::Vec::<IndividualAddress,
+                { <F::Tunneling as features::TunnelingFeature>::CAPACITY }>::new();
+            for &addr in &addr_buf[..addr_count] {
+                let _ = additional_ias.push(addr);
+            }
             let inner_checker = DeviceAddressChecker::new(context, context.address_table());
             let address_checker = IpInterfaceAddressChecker::new(inner_checker, additional_ias);
 

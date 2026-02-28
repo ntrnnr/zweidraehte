@@ -29,7 +29,7 @@
 use core::cell::RefCell;
 
 use crate::{
-    AccessContext, IpStackState, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES, StackState,
+    AccessContext, IpStackState, StackState,
     dpt::{DeviceControl, InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
@@ -342,25 +342,40 @@ where
 pub struct TunnelingAugment;
 
 impl TunnelingAugment {
-    const MAX_ADDRS: u16 = MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES as u16;
+    /// Transient buffer for property read/write operations.
+    ///
+    /// Not a device limit — just the maximum number of addresses we can handle
+    /// in a single property access. The actual device capacity is N on the
+    /// storage types. 32 addresses = 64 bytes, allocated on the stack only
+    /// during property access.
+    const PROP_BUF_CAP: usize = 32;
+
     const KNXNETIP_CAP_TUNNELING_BIT: u16 = 1 << 1;
 
     fn enabled(state: &impl IpStackState) -> bool {
         (state.knxnetip_device_capabilities() & Self::KNXNETIP_CAP_TUNNELING_BIT) != 0
     }
 
-    fn descriptor(prop_id: u8) -> Option<PropertyDescriptor> {
+    /// Read additional individual addresses from state into a local buffer.
+    fn read_addrs(state: &impl IpStackState) -> ([crate::address::IndividualAddress; Self::PROP_BUF_CAP], usize) {
+        let mut addrs = [crate::address::IndividualAddress::default(); Self::PROP_BUF_CAP];
+        let count = state.write_additional_individual_addresses(&mut addrs);
+        (addrs, count)
+    }
+
+    fn descriptor(state: &impl IpStackState, prop_id: u8) -> Option<PropertyDescriptor> {
+        let max_addrs = state.additional_individual_address_capacity() as u16;
         match prop_id {
             pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => Some(PropertyDescriptor::array::<crate::dpt::PDT_UnsignedInt>(
                 prop_id,
-                Self::MAX_ADDRS,
+                max_addrs,
                 PropertyAccess::ReadWrite,
                 3,
                 3,
             )),
             pid::TUNNELLING_ADDRESSES => Some(PropertyDescriptor::array::<crate::dpt::PDT_UnsignedChar>(
                 prop_id,
-                Self::MAX_ADDRS,
+                max_addrs,
                 PropertyAccess::ReadOnly,
                 3,
                 3,
@@ -375,13 +390,14 @@ impl TunnelingAugment {
         count: u16,
         buf: &mut [u8],
     ) -> Result<usize, PropertyError> {
-        let addrs = state.additional_individual_addresses();
+        let (addrs, addr_count) = Self::read_addrs(state);
+        let addrs = &addrs[..addr_count];
 
         if start_idx == 0 {
             if buf.len() < 2 {
                 return Err(PropertyError::BufferTooSmall);
             }
-            buf[..2].copy_from_slice(&(addrs.len() as u16).to_be_bytes());
+            buf[..2].copy_from_slice(&(addr_count as u16).to_be_bytes());
             return Ok(2);
         }
 
@@ -390,18 +406,18 @@ impl TunnelingAugment {
         }
 
         let start = (start_idx - 1) as usize;
-        if start >= addrs.len() {
+        if start >= addr_count {
             return Err(PropertyError::InvalidStartIndex);
         }
 
-        let end = (start + count as usize).min(addrs.len());
+        let end = (start + count as usize).min(addr_count);
         let needed = (end - start) * 2;
         if buf.len() < needed {
             return Err(PropertyError::BufferTooSmall);
         }
 
         let mut out = 0usize;
-        for addr in addrs.iter().skip(start).take(end - start) {
+        for addr in addrs[start..end].iter() {
             let raw = addr.as_bytes();
             buf[out..out + 2].copy_from_slice(raw);
             out += 2;
@@ -418,7 +434,9 @@ impl TunnelingAugment {
             return Err(PropertyError::TypeMismatch);
         }
 
-        let mut addrs = heapless::Vec::<crate::address::IndividualAddress, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>::new();
+        // Collect parsed addresses into a local buffer. The actual device
+        // capacity (N) is enforced by set_additional_individual_addresses().
+        let mut addrs = heapless::Vec::<crate::address::IndividualAddress, { Self::PROP_BUF_CAP }>::new();
         for chunk in data.chunks_exact(2) {
             addrs
                 .push(crate::address::IndividualAddress::from_bytes(chunk))
@@ -435,13 +453,14 @@ impl TunnelingAugment {
         count: u16,
         buf: &mut [u8],
     ) -> Result<usize, PropertyError> {
-        let addrs = state.additional_individual_addresses();
+        let (addrs, addr_count) = Self::read_addrs(state);
+        let addrs = &addrs[..addr_count];
 
         if start_idx == 0 {
             if buf.len() < 2 {
                 return Err(PropertyError::BufferTooSmall);
             }
-            buf[..2].copy_from_slice(&(addrs.len() as u16).to_be_bytes());
+            buf[..2].copy_from_slice(&(addr_count as u16).to_be_bytes());
             return Ok(2);
         }
 
@@ -450,18 +469,18 @@ impl TunnelingAugment {
         }
 
         let start = (start_idx - 1) as usize;
-        if start >= addrs.len() {
+        if start >= addr_count {
             return Err(PropertyError::InvalidStartIndex);
         }
 
-        let end = (start + count as usize).min(addrs.len());
+        let end = (start + count as usize).min(addr_count);
         let needed = end - start;
         if buf.len() < needed {
             return Err(PropertyError::BufferTooSmall);
         }
 
         let mut out = 0usize;
-        for addr in addrs.iter().skip(start).take(end - start) {
+        for addr in addrs[start..end].iter() {
             buf[out] = addr.device();
             out += 1;
         }
@@ -473,7 +492,7 @@ impl TunnelingAugment {
 impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugment {
     fn property_description_read(
         &self,
-        _state: &S,
+        state: &S,
         object_type: InterfaceObjectType,
         object_idx: u16,
         prop_id: u8,
@@ -483,7 +502,7 @@ impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugmen
             return None;
         }
 
-        if !Self::enabled(_state) {
+        if !Self::enabled(state) {
             return None;
         }
 
@@ -491,7 +510,7 @@ impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugmen
             return None;
         }
 
-        let desc = Self::descriptor(prop_id)?;
+        let desc = Self::descriptor(state, prop_id)?;
         Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &desc)))
     }
 
@@ -514,7 +533,7 @@ impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugmen
             return None;
         }
 
-        let desc = Self::descriptor(prop_id)?;
+        let desc = Self::descriptor(state, prop_id)?;
 
         if !desc.can_read(ctx) {
             return Some(Err(PropertyError::AccessDenied));
@@ -545,7 +564,7 @@ impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugmen
             return None;
         }
 
-        let desc = Self::descriptor(prop_id)?;
+        let desc = Self::descriptor(state, prop_id)?;
 
         if !desc.can_write(ctx) {
             return Some(Err(PropertyError::AccessDenied));

@@ -85,12 +85,6 @@ pub enum UpdateObjectError {
     Busy,
 }
 
-/// Maximum number of additional individual addresses supported for optional
-/// tunneling/capability features.
-pub const MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES: usize = 8;
-
-/// Shared additional individual-address collection type.
-pub type AdditionalIndividualAddresses = heapless::Vec<IndividualAddress, { MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }>;
 
 /// Trait for stack state types.
 ///
@@ -568,9 +562,19 @@ pub trait IpStackState {
     /// Set the project installation ID.
     fn set_project_installation_id(&self, id: u16);
 
-    /// Get additional individual addresses used for tunneling-capable profiles.
-    fn additional_individual_addresses(&self) -> AdditionalIndividualAddresses {
-        AdditionalIndividualAddresses::new()
+    /// Maximum number of additional individual addresses this device supports.
+    ///
+    /// Returns 0 for devices that don't support tunneling. Used by property
+    /// descriptors to report the array capacity.
+    fn additional_individual_address_capacity(&self) -> usize {
+        0
+    }
+
+    /// Write additional individual addresses into `buf`.
+    ///
+    /// Returns the number of addresses written (`<= buf.len()`).
+    fn write_additional_individual_addresses(&self, _buf: &mut [IndividualAddress]) -> usize {
+        0
     }
 
     /// Replace additional individual addresses.
@@ -1080,8 +1084,8 @@ impl<D: StackDefinition> context::IpAdditionalIndividualAddressContext for Stack
 where
     D::State: IpStackState,
 {
-    fn additional_individual_addresses(&self) -> AdditionalIndividualAddresses {
-        self.inner.state.additional_individual_addresses()
+    fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize {
+        self.inner.state.write_additional_individual_addresses(buf)
     }
 }
 

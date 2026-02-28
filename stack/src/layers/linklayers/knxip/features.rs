@@ -90,13 +90,15 @@ pub type KnxIpDeviceTcp = Features<WithRouting, WithRemoteConfig, NoTunneling, W
 /// KNX/IP Interface (UDP only): tunneling + remote config.
 ///
 /// Standard feature set for a KNX/IP tunneling interface without TCP.
-pub type KnxIpInterfaceUdp = Features<NoRouting, WithRemoteConfig, WithTunneling, NoTcp>;
+/// `N` is the maximum number of tunneling slots (additional individual addresses).
+pub type KnxIpInterfaceUdp<const N: usize> = Features<NoRouting, WithRemoteConfig, WithTunneling<N>, NoTcp>;
 
 /// KNX/IP Interface (UDP + TCP): tunneling + remote config + TCP.
 ///
 /// Standard feature set for a KNX/IP tunneling interface with TCP support
 /// (Core service family v2).
-pub type KnxIpInterfaceTcp = Features<NoRouting, WithRemoteConfig, WithTunneling, WithTcp>;
+/// `N` is the maximum number of tunneling slots (additional individual addresses).
+pub type KnxIpInterfaceTcp<const N: usize> = Features<NoRouting, WithRemoteConfig, WithTunneling<N>, WithTcp>;
 
 // ============================================================================
 // Routing Feature
@@ -360,7 +362,13 @@ impl RemoteConfigFeature for NoRemoteConfig {
 /// in [`CompositeHandlers`](super::servers::CompositeHandlers).
 #[allow(private_interfaces)] // build_handlers takes &dyn KnxNetIpContext (pub(crate)), but that's fine — only called internally
 pub trait TunnelingFeature: 'static {
-    type Tunnel: super::servers::TunnelingConnectedHandler;
+    /// Maximum number of tunneling slots (additional individual addresses).
+    ///
+    /// Used to size Vecs in the connection manager and server context.
+    /// `0` when tunneling is disabled.
+    const CAPACITY: usize;
+
+    type Tunnel: super::servers::ConnectedHandler;
 
     fn supported_service() -> Option<SupportedService>;
 
@@ -374,11 +382,15 @@ pub trait TunnelingFeature: 'static {
 }
 
 /// Tunneling is enabled.
-pub struct WithTunneling;
+///
+/// The const generic `N` is the maximum number of tunneling slots
+/// (additional individual addresses).
+pub struct WithTunneling<const N: usize>;
 
 #[allow(private_interfaces)]
-impl TunnelingFeature for WithTunneling {
-    type Tunnel = super::servers::WithTunnel;
+impl<const N: usize> TunnelingFeature for WithTunneling<N> {
+    const CAPACITY: usize = N;
+    type Tunnel = super::servers::WithTunnel<N>;
 
     fn supported_service() -> Option<SupportedService> {
         Some(SupportedService { family: substructs::ServiceFamily::Tunneling, version: 1 })
@@ -393,10 +405,11 @@ impl TunnelingFeature for WithTunneling {
             context.buffer_manager(),
         );
 
-        let additional_addresses = context.additional_individual_addresses();
+        let mut additional_addresses = [crate::address::IndividualAddress::default(); N];
+        let addr_count = context.write_additional_individual_addresses(&mut additional_addresses);
         let ext_info = context.extended_device_information();
-        let tunnel = super::servers::TunnelConnectionHandler::new(
-            additional_addresses.as_slice(),
+        let tunnel = super::servers::TunnelConnectionHandler::<N>::new(
+            &additional_addresses[..addr_count],
             ext_info.device_descriptor_type0,
             context.manufacturer_code(),
             ext_info.max_local_apdu_len,
@@ -411,6 +424,7 @@ pub struct NoTunneling;
 
 #[allow(private_interfaces)]
 impl TunnelingFeature for NoTunneling {
+    const CAPACITY: usize = 0;
     type Tunnel = super::servers::NoTunnel;
 
     fn supported_service() -> Option<SupportedService> {

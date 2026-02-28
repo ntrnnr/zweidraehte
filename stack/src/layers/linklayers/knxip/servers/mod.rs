@@ -18,8 +18,8 @@ use heapless::Vec;
 
 use embassy_sync::channel::DynamicSender;
 
-use crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES;
-use crate::context::{DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext, KnxIndividualAddressContext};
+use crate::address::IndividualAddress;
+use crate::context::{DeviceInfoContext, IpDiagnosticsContext, KnxIndividualAddressContext};
 use crate::messages::{
     buffers::{Buffer, DynBufferManager},
     builder::IndicationMessage,
@@ -129,15 +129,15 @@ pub struct ServerContext<'a> {
     /// IP diagnostics context for remote config responses.
     /// Present when remote config server is enabled.
     ip_diagnostics: Option<&'a dyn IpDiagnosticsContext>,
-    /// Additional-address context for KNX_ADDRESSES DIB data.
-    ip_additional_addresses: &'a dyn IpAdditionalIndividualAddressContext,
+    /// Additional individual addresses (tunneling slots), borrowed from
+    /// a caller-owned buffer with the correct capacity `N`.
+    additional_addresses: &'a [IndividualAddress],
     /// KNX address context for primary + tunneling addresses.
     knx_addresses: &'a dyn KnxIndividualAddressContext,
     /// Snapshot of tunneling slot status from the connection manager.
     /// Present when a tunneling handler is registered. Used by the
     /// discovery server to build the TunnelingInfo DIB.
-    tunneling_slot_info:
-        Option<(u16, heapless::Vec<substructs::TunnelingSlotInfo, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>)>,
+    tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
 }
 
 impl<'a> ServerContext<'a> {
@@ -148,12 +148,9 @@ impl<'a> ServerContext<'a> {
         max_apdu_length: u16,
         device_info: &'a dyn DeviceInfoContext,
         ip_diagnostics: Option<&'a dyn IpDiagnosticsContext>,
-        ip_additional_addresses: &'a dyn IpAdditionalIndividualAddressContext,
+        additional_addresses: &'a [IndividualAddress],
         knx_addresses: &'a dyn KnxIndividualAddressContext,
-        tunneling_slot_info: Option<(
-            u16,
-            heapless::Vec<substructs::TunnelingSlotInfo, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>,
-        )>,
+        tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
     ) -> Self {
         Self {
             buffer_manager,
@@ -161,7 +158,7 @@ impl<'a> ServerContext<'a> {
             max_apdu_length,
             device_info,
             ip_diagnostics,
-            ip_additional_addresses,
+            additional_addresses,
             knx_addresses,
             tunneling_slot_info,
         }
@@ -186,9 +183,9 @@ impl<'a> ServerContext<'a> {
         self.ip_diagnostics
     }
 
-    /// Get additional-address context.
-    pub fn ip_additional_individual_addresses(&self) -> &dyn IpAdditionalIndividualAddressContext {
-        self.ip_additional_addresses
+    /// Get additional individual addresses (tunneling slots).
+    pub fn additional_individual_addresses(&self) -> &[IndividualAddress] {
+        self.additional_addresses
     }
 
     /// Get the KNX address context for primary and tunneling addresses.
@@ -200,10 +197,8 @@ impl<'a> ServerContext<'a> {
     ///
     /// Returns `(max_apdu_len, slots)` where each slot has an address
     /// and a status word (bit 0 = occupied).
-    pub fn tunneling_slot_info(
-        &self,
-    ) -> Option<&(u16, heapless::Vec<substructs::TunnelingSlotInfo, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>)> {
-        self.tunneling_slot_info.as_ref()
+    pub fn tunneling_slot_info(&self) -> Option<(u16, &[substructs::TunnelingSlotInfo])> {
+        self.tunneling_slot_info.map(|(len, slots)| (len, slots))
     }
 
     /// Send an indication to the network layer (L_Data.ind)

@@ -57,11 +57,6 @@ use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::{PacketOrigin, PendingResponse, ResponseTarget, ServerError};
 
-/// Maximum responses from a single data frame dispatch: ACK (1) +
-/// forwarded TunnelingRequests to other tunnel clients (up to
-/// MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES - 1). We round up to the full
-/// count to keep the constant simple.
-const MAX_DATA_RESPONSES: usize = 1 + crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES;
 
 // ============================================================================
 // Connection Type Handler Trait
@@ -146,7 +141,11 @@ pub trait ConnectionTypeHandler {
 /// appropriate handler based on connection type. Implemented by
 /// [`CompositeHandlers`], which composes independently selectable
 /// [`ConnectedHandler`] slots.
-pub trait ConnectionHandlers {
+///
+/// The const generic `N` is the maximum number of tunneling slots
+/// (additional individual addresses). Used for Vec capacities in
+/// tunneling-related return types.
+pub trait ConnectionHandlers<const N: usize = 0> {
     fn accept_connection(
         &mut self,
         channel_id: u8,
@@ -183,10 +182,7 @@ pub trait ConnectionHandlers {
         &self,
     ) -> Option<(
         u16,
-        heapless::Vec<
-            crate::messages::knxip::substructs::TunnelingSlotInfo,
-            { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES },
-        >,
+        heapless::Vec<crate::messages::knxip::substructs::TunnelingSlotInfo, N>,
     )>;
 
     /// Determine which active tunnel channels should receive a forwarded
@@ -194,7 +190,7 @@ pub trait ConnectionHandlers {
     fn channels_for_bus_indication(
         &self,
         cemi_data: &[u8],
-    ) -> heapless::Vec<u8, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }>;
+    ) -> heapless::Vec<u8, N>;
 
     /// Build a TunnelingRequest frame for forwarding a bus indication to
     /// a tunnel client. Returns `None` when tunneling is not available or
@@ -300,13 +296,16 @@ pub enum TcpChannelEvent {
 ///
 /// Bundles responses to send with optional TCP channel tracking events
 /// that the main loop must apply to the TCP manager.
-pub struct ConnectionManagerResult {
-    pub responses: Vec<PendingResponse, { MAX_DATA_RESPONSES }>,
+///
+/// The `MAX_CONNECTIONS` capacity covers the worst case: one ACK plus
+/// forwarded TunnelingRequests to sibling tunnel clients.
+pub struct ConnectionManagerResult<const MAX_CONNECTIONS: usize> {
+    pub responses: Vec<PendingResponse, MAX_CONNECTIONS>,
     pub tcp_events: Vec<TcpChannelEvent, 2>,
 }
 
-impl ConnectionManagerResult {
-    fn responses_only(responses: Vec<PendingResponse, { MAX_DATA_RESPONSES }>) -> Self {
+impl<const MAX_CONNECTIONS: usize> ConnectionManagerResult<MAX_CONNECTIONS> {
+    fn responses_only(responses: Vec<PendingResponse, MAX_CONNECTIONS>) -> Self {
         Self { responses, tcp_events: Vec::new() }
     }
 }
@@ -338,16 +337,24 @@ pub struct AckTimeoutResult<const MAX_CONNECTIONS: usize> {
 /// selected handler slots (e.g. [`WithDevMgmt`]/[`NoDevMgmt`],
 /// [`WithTunnel`]/[`NoTunnel`]).
 ///
+/// `N` is the maximum number of tunneling slots (additional individual
+/// addresses). Used for sizing response Vecs in tunneling-related methods.
+///
 /// Created inside `KnxNetIpBuilder::build()` using the property handler
 /// obtained from the [`PropertyServiceContext`](crate::context::PropertyServiceContext).
-pub struct ConnectionManager<H: ConnectionHandlers, const MAX_CONNECTIONS: usize = 1> {
+pub struct ConnectionManager<H, const N: usize = 0, const MAX_CONNECTIONS: usize = 1>
+where
+    H: ConnectionHandlers<N>,
+{
     connections: [Option<ConnectionContext>; MAX_CONNECTIONS],
     handlers: H,
     heartbeat_timeout: Duration,
     next_channel_id: u8,
 }
 
-impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, MAX_CONNECTIONS> {
+impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
+    ConnectionManager<H, N, MAX_CONNECTIONS>
+{
     /// Create a new connection manager with the given handler collection.
     pub fn new(handlers: H) -> Self {
         Self {
@@ -374,7 +381,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
         ind_tx: DynamicSender<'_, IndicationMessage<Buffer<'static>>>,
-    ) -> Result<ConnectionManagerResult, ServerError> {
+    ) -> Result<ConnectionManagerResult<MAX_CONNECTIONS>, ServerError> {
         match service_type {
             // Connection lifecycle — handled directly by the connection manager
             KNXnetIPServiceType::ConnectRequest => self.handle_connect_request(data, origin, buffer_manager).await,
@@ -388,7 +395,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
             // Everything else: route to the handler via channel ID lookup
             _ => {
                 let responses = self.dispatch_to_handler(service_type, data, buffer_manager, ind_tx).await?;
-                Ok(ConnectionManagerResult::responses_only(responses))
+                Ok(ConnectionManagerResult::<MAX_CONNECTIONS>::responses_only(responses))
             }
         }
     }
@@ -404,7 +411,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         data: &[u8],
         buffer_manager: &DynBufferManager<'static>,
         ind_tx: DynamicSender<'_, IndicationMessage<Buffer<'static>>>,
-    ) -> Result<Vec<PendingResponse, { MAX_DATA_RESPONSES }>, ServerError> {
+    ) -> Result<Vec<PendingResponse, MAX_CONNECTIONS>, ServerError> {
         // Connection header starts at offset 6 (after KNXnet/IP header).
         // Byte layout: struct_length(1), channel_id(1), sequence_or_reserved(1), status_or_reserved(1)
         if data.len() < 6 + 4 {
@@ -651,10 +658,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         &self,
     ) -> Option<(
         u16,
-        heapless::Vec<
-            crate::messages::knxip::substructs::TunnelingSlotInfo,
-            { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES },
-        >,
+        heapless::Vec<crate::messages::knxip::substructs::TunnelingSlotInfo, N>,
     )> {
         self.handlers.tunneling_slot_info()
     }
@@ -678,7 +682,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         &mut self,
         cemi_data: &[u8],
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Vec<PendingResponse, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }> {
+    ) -> Vec<PendingResponse, N> {
         let mut responses = Vec::new();
 
         let target_channels = self.handlers.channels_for_bus_indication(cemi_data);
@@ -710,7 +714,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         cemi_data: &[u8],
         exclude_channel: u8,
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Vec<PendingResponse, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }> {
+    ) -> Vec<PendingResponse, N> {
         let mut responses = Vec::new();
 
         let target_channels = self.handlers.channels_for_bus_indication(cemi_data);
@@ -736,7 +740,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         channel_id: u8,
         cemi_data: &[u8],
         buffer_manager: &DynBufferManager<'static>,
-        responses: &mut Vec<PendingResponse, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }>,
+        responses: &mut Vec<PendingResponse, N>,
     ) {
         let Some(conn) = self.find_connection_mut(channel_id) else {
             return;
@@ -804,7 +808,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         data: &[u8],
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<ConnectionManagerResult, ServerError> {
+    ) -> Result<ConnectionManagerResult<MAX_CONNECTIONS>, ServerError> {
         let mut buf = data;
         let request = match buf.parse::<ConnectRequest>() {
             Ok(req) => req,
@@ -925,7 +929,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         crd: Option<CRD>,
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<ConnectionManagerResult, ServerError> {
+    ) -> Result<ConnectionManagerResult<MAX_CONNECTIONS>, ServerError> {
         let data_endpoint = match origin {
             PacketOrigin::Tcp { .. } => HPAI::ipv4_tcp(Ipv4Addr::UNSPECIFIED, 0),
             PacketOrigin::Udp { .. } => HPAI::ipv4_udp(Ipv4Addr::UNSPECIFIED, 0),
@@ -937,7 +941,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
 
         let mut responses = Vec::new();
         let _ = responses.push(PendingResponse { buffer, target: origin.reply_target() });
-        Ok(ConnectionManagerResult::responses_only(responses))
+        Ok(ConnectionManagerResult::<MAX_CONNECTIONS>::responses_only(responses))
     }
 
     // ========================================================================
@@ -949,7 +953,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         data: &[u8],
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<ConnectionManagerResult, ServerError> {
+    ) -> Result<ConnectionManagerResult<MAX_CONNECTIONS>, ServerError> {
         let mut buf = data;
         let request = match buf.parse::<ConnectionstateRequest>() {
             Ok(req) => req,
@@ -981,7 +985,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         } else {
             warn!("Buffer pool exhausted — skipping ConnectionstateResponse for channel {}", channel_id);
         }
-        Ok(ConnectionManagerResult::responses_only(responses))
+        Ok(ConnectionManagerResult::<MAX_CONNECTIONS>::responses_only(responses))
     }
 
     // ========================================================================
@@ -993,7 +997,7 @@ impl<H: ConnectionHandlers, const MAX_CONNECTIONS: usize> ConnectionManager<H, M
         data: &[u8],
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<ConnectionManagerResult, ServerError> {
+    ) -> Result<ConnectionManagerResult<MAX_CONNECTIONS>, ServerError> {
         let mut buf = data;
         let request = match buf.parse::<DisconnectRequest>() {
             Ok(req) => req,

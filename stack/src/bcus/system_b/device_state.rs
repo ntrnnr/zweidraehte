@@ -16,7 +16,7 @@ use const_default::ConstDefault;
 
 use crate::{
     AccessContext, IpConfig, IpPlatform, IpPlatformConfig, IpStackState, MAX_ACCESS_LEVELS,
-    MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES, NUM_AUTH_KEYS, StackState,
+    NUM_AUTH_KEYS, StackState,
     address::IndividualAddress,
     objects::interface::HasRoutingCount,
     objects::tables::{
@@ -629,7 +629,11 @@ impl<
 ///
 /// The platform `P` is used to query current network state
 /// (actual IP address, MAC address, etc.) from the operating system.
-pub struct IpLinkLayerState<P: IpPlatform + IpPlatformConfig> {
+///
+/// The const generic `N` is the maximum number of additional individual
+/// addresses (tunneling slots). Non-tunneling devices use the default
+/// `N = 0`, paying zero storage for addresses they never use.
+pub struct IpLinkLayerState<P: IpPlatform + IpPlatformConfig, const N: usize = 0> {
     /// Platform for querying current network values and applying config.
     platform: P,
 
@@ -645,19 +649,19 @@ pub struct IpLinkLayerState<P: IpPlatform + IpPlatformConfig> {
     routing_multicast: Cell<Ipv4Addr>,
     ttl: Cell<u8>,
     project_installation_id: Cell<u16>,
-    additional_individual_addresses: RefCell<heapless::Vec<IndividualAddress, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>>,
+    additional_individual_addresses: RefCell<heapless::Vec<IndividualAddress, N>>,
 }
 
-impl<P: IpPlatform + IpPlatformConfig> IpLinkLayerState<P> {
+impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpLinkLayerState<P, N> {
     /// Get the platform (for querying current network state).
     pub fn platform(&self) -> &P {
         &self.platform
     }
 
     /// Build the IP config for persistence.
-    pub fn build_ip_config(&self) -> PersistedIpConfig {
+    pub fn build_ip_config(&self) -> PersistedIpConfig<N> {
         let additional = self.additional_individual_addresses.borrow();
-        let mut additional_raw = [[0u8; 2]; MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES];
+        let mut additional_raw = [[0u8; 2]; N];
         for (idx, addr) in additional.iter().enumerate() {
             additional_raw[idx].copy_from_slice(addr.as_bytes());
         }
@@ -699,15 +703,15 @@ impl<P: IpPlatform + IpPlatformConfig> IpLinkLayerState<P> {
     }
 }
 
-impl<P: IpPlatform + IpPlatformConfig + Default> LinkLayerState for IpLinkLayerState<P> {
-    type Config = PersistedIpConfig;
+impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> LinkLayerState for IpLinkLayerState<P, N> {
+    type Config = PersistedIpConfig<N>;
 
-    fn from_config(config: PersistedIpConfig) -> Self {
-        let mut additional = heapless::Vec::<IndividualAddress, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>::new();
+    fn from_config(config: PersistedIpConfig<N>) -> Self {
+        let mut additional = heapless::Vec::<IndividualAddress, N>::new();
         for raw in config
             .additional_individual_addresses
             .iter()
-            .take((config.additional_individual_addresses_len as usize).min(MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES))
+            .take((config.additional_individual_addresses_len as usize).min(N))
         {
             let _ = additional.push(IndividualAddress::from_bytes(raw));
         }
@@ -730,12 +734,12 @@ impl<P: IpPlatform + IpPlatformConfig + Default> LinkLayerState for IpLinkLayerS
         state
     }
 
-    fn to_config(&self) -> PersistedIpConfig {
+    fn to_config(&self) -> PersistedIpConfig<N> {
         self.build_ip_config()
     }
 
     fn factory_reset(&self) {
-        let defaults = PersistedIpConfig::default();
+        let defaults: PersistedIpConfig<N> = PersistedIpConfig::default();
         *self.friendly_name.borrow_mut() = defaults.friendly_name;
         self.friendly_name_len.set(defaults.friendly_name_len as usize);
         self.configured_ip.set(Ipv4Addr::from(defaults.configured_ip));
@@ -765,6 +769,8 @@ impl<P: IpPlatform + IpPlatformConfig + Default> LinkLayerState for IpLinkLayerS
 /// - `ADT_SIZE`, `AST_SIZE`, `COT_SIZE`: Table sizes (see [`SystemBDeviceState`])
 /// - `P`: Application parameters type
 /// - `Plat`: Platform type implementing [`IpPlatform`] for network queries
+/// - `N`: Maximum number of additional individual addresses (tunneling slots).
+///   Non-tunneling devices use the default `N = 0`.
 ///
 /// # Example
 ///
@@ -775,14 +781,21 @@ impl<P: IpPlatform + IpPlatformConfig + Default> LinkLayerState for IpLinkLayerS
 ///
 /// const SERIAL: [u8; 6] = [0x00, 0xFA, 0xDE, 0xAD, 0xBE, 0xEF];
 /// let identity = StaticIdentity::new(SERIAL);
+/// // Non-tunneling device (N defaults to 0):
 /// let state: IpSystemBDeviceState<ADT, AST, COT, Params, MyPlatform> =
 ///     IpSystemBDeviceState::new(&identity);
-///
-/// // Access IP config through link_layer_state():
-/// let platform = state.link_layer_state().platform();
+/// // Tunneling device with 4 slots:
+/// let state: IpSystemBDeviceState<ADT, AST, COT, Params, MyPlatform, 4> =
+///     IpSystemBDeviceState::new(&identity);
 /// ```
-pub type IpSystemBDeviceState<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P, Plat> =
-    SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpLinkLayerState<Plat>>;
+pub type IpSystemBDeviceState<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P,
+    Plat,
+    const N: usize = 0,
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpLinkLayerState<Plat, N>>;
 
 // ============================================================================
 // IpStackState Implementation for IP Devices
@@ -801,8 +814,9 @@ impl<
     const COT_SIZE: usize,
     P: ConstDefault,
     Plat: IpPlatform + IpPlatformConfig + Default,
+    const N: usize,
     const MAX_CONN: usize,
-> IpStackState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpLinkLayerState<Plat>, MAX_CONN>
+> IpStackState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpLinkLayerState<Plat, N>, MAX_CONN>
 {
     fn current_ip_address(&self) -> Ipv4Addr {
         self.link_layer_state.platform.current_ip_address()
@@ -919,15 +933,22 @@ impl<
         self.mark_dirty();
     }
 
-    fn additional_individual_addresses(&self) -> crate::AdditionalIndividualAddresses {
-        self.link_layer_state.additional_individual_addresses.borrow().clone()
+    fn additional_individual_address_capacity(&self) -> usize {
+        N
+    }
+
+    fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize {
+        let stored = self.link_layer_state.additional_individual_addresses.borrow();
+        let count = stored.len().min(buf.len());
+        buf[..count].copy_from_slice(&stored[..count]);
+        count
     }
 
     fn set_additional_individual_addresses(&self, addresses: &[IndividualAddress]) -> Result<(), ()> {
-        if addresses.len() > MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES {
+        if addresses.len() > N {
             return Err(());
         }
-        let mut vec = heapless::Vec::<IndividualAddress, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>::new();
+        let mut vec = heapless::Vec::<IndividualAddress, N>::new();
         for &addr in addresses {
             vec.push(addr).map_err(|_| ())?;
         }

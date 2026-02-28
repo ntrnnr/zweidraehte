@@ -63,21 +63,22 @@ pub trait ConnectedHandler: 'static {
 /// Tunneling has three additional "bridge" methods that other connection
 /// types don't need. Both [`WithTunnel`] and [`NoTunnel`] implement this;
 /// the disabled variant returns `None`/empty.
-pub trait TunnelingConnectedHandler: ConnectedHandler {
+///
+/// The const generic `N` is the maximum number of tunneling slots
+/// (additional individual addresses). Vec capacities in return types
+/// use `N` directly, so there is no wasted capacity.
+pub trait TunnelingConnectedHandler<const N: usize = 0>: ConnectedHandler {
     fn tunneling_slot_info(
         h: &Self::Handler<'_>,
     ) -> Option<(
         u16,
-        heapless::Vec<
-            crate::messages::knxip::substructs::TunnelingSlotInfo,
-            { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES },
-        >,
+        heapless::Vec<crate::messages::knxip::substructs::TunnelingSlotInfo, N>,
     )>;
 
     fn channels_for_bus_indication(
         h: &Self::Handler<'_>,
         cemi_data: &[u8],
-    ) -> heapless::Vec<u8, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }>;
+    ) -> heapless::Vec<u8, N>;
 
     fn build_tunneling_request(
         channel_id: u8,
@@ -167,10 +168,13 @@ impl ConnectedHandler for NoDevMgmt {
 // ---- Tunneling slot --------------------------------------------------------
 
 /// Tunneling is enabled — delegates to [`TunnelConnectionHandler`].
-pub struct WithTunnel;
+///
+/// The const generic `N` is the maximum number of tunneling slots
+/// (additional individual addresses).
+pub struct WithTunnel<const N: usize>;
 
-impl ConnectedHandler for WithTunnel {
-    type Handler<'a> = TunnelConnectionHandler;
+impl<const N: usize> ConnectedHandler for WithTunnel<N> {
+    type Handler<'a> = TunnelConnectionHandler<N>;
     const CONNECTION_TYPE: ConnectionType = ConnectionType::Tunnel;
 
     fn accept_connection(
@@ -204,23 +208,21 @@ impl ConnectedHandler for WithTunnel {
     }
 }
 
-impl TunnelingConnectedHandler for WithTunnel {
+impl<const N: usize> TunnelingConnectedHandler<N> for WithTunnel<N> {
     fn tunneling_slot_info(
         h: &Self::Handler<'_>,
     ) -> Option<(
         u16,
-        heapless::Vec<
-            crate::messages::knxip::substructs::TunnelingSlotInfo,
-            { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES },
-        >,
+        heapless::Vec<crate::messages::knxip::substructs::TunnelingSlotInfo, N>,
     )> {
-        Some(h.slot_info())
+        let (apdu_len, slots) = h.slot_info();
+        Some((apdu_len, slots))
     }
 
     fn channels_for_bus_indication(
         h: &Self::Handler<'_>,
         cemi_data: &[u8],
-    ) -> heapless::Vec<u8, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }> {
+    ) -> heapless::Vec<u8, N> {
         h.channels_for_bus_indication(cemi_data)
     }
 
@@ -231,7 +233,7 @@ impl TunnelingConnectedHandler for WithTunnel {
         target: ResponseTarget,
         buffer_manager: &DynBufferManager<'static>,
     ) -> Option<PendingResponse> {
-        TunnelConnectionHandler::build_tunneling_request(
+        TunnelConnectionHandler::<N>::build_tunneling_request(
             channel_id, sequence_counter, cemi_data, target, buffer_manager,
         )
     }
@@ -273,15 +275,12 @@ impl ConnectedHandler for NoTunnel {
     }
 }
 
-impl TunnelingConnectedHandler for NoTunnel {
+impl TunnelingConnectedHandler<0> for NoTunnel {
     fn tunneling_slot_info(
         _h: &Self::Handler<'_>,
     ) -> Option<(
         u16,
-        heapless::Vec<
-            crate::messages::knxip::substructs::TunnelingSlotInfo,
-            { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES },
-        >,
+        heapless::Vec<crate::messages::knxip::substructs::TunnelingSlotInfo, 0>,
     )> {
         None
     }
@@ -289,7 +288,7 @@ impl TunnelingConnectedHandler for NoTunnel {
     fn channels_for_bus_indication(
         _h: &Self::Handler<'_>,
         _cemi_data: &[u8],
-    ) -> heapless::Vec<u8, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }> {
+    ) -> heapless::Vec<u8, 0> {
         heapless::Vec::new()
     }
 
@@ -314,23 +313,25 @@ impl TunnelingConnectedHandler for NoTunnel {
 /// (`Handler = ()`, zero-size no-op). Adding a new connection type means
 /// adding a new type parameter — no combinatorial explosion.
 ///
-/// Defaults to `WithDevMgmt` + `NoTunnel` (Device Management only).
+/// The const generic `N` is the maximum number of tunneling slots.
+///
+/// Defaults to `WithDevMgmt` + `NoTunnel` (Device Management only, N=0).
 pub struct CompositeHandlers<
     'a,
     DM: ConnectedHandler = WithDevMgmt,
-    TUN: TunnelingConnectedHandler = NoTunnel,
+    TUN: ConnectedHandler = NoTunnel,
 > {
     dev_mgmt: DM::Handler<'a>,
     tunnel: TUN::Handler<'a>,
 }
 
-impl<'a, DM: ConnectedHandler, TUN: TunnelingConnectedHandler> CompositeHandlers<'a, DM, TUN> {
+impl<'a, DM: ConnectedHandler, TUN: ConnectedHandler> CompositeHandlers<'a, DM, TUN> {
     pub fn new(dev_mgmt: DM::Handler<'a>, tunnel: TUN::Handler<'a>) -> Self {
         Self { dev_mgmt, tunnel }
     }
 }
 
-impl<DM: ConnectedHandler, TUN: TunnelingConnectedHandler> ConnectionHandlers
+impl<const N: usize, DM: ConnectedHandler, TUN: TunnelingConnectedHandler<N>> ConnectionHandlers<N>
     for CompositeHandlers<'_, DM, TUN>
 {
     fn accept_connection(
@@ -401,10 +402,7 @@ impl<DM: ConnectedHandler, TUN: TunnelingConnectedHandler> ConnectionHandlers
         &self,
     ) -> Option<(
         u16,
-        heapless::Vec<
-            crate::messages::knxip::substructs::TunnelingSlotInfo,
-            { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES },
-        >,
+        heapless::Vec<crate::messages::knxip::substructs::TunnelingSlotInfo, N>,
     )> {
         TUN::tunneling_slot_info(&self.tunnel)
     }
@@ -412,7 +410,7 @@ impl<DM: ConnectedHandler, TUN: TunnelingConnectedHandler> ConnectionHandlers
     fn channels_for_bus_indication(
         &self,
         cemi_data: &[u8],
-    ) -> heapless::Vec<u8, { crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES }> {
+    ) -> heapless::Vec<u8, N> {
         TUN::channels_for_bus_indication(&self.tunnel, cemi_data)
     }
 

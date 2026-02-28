@@ -12,8 +12,7 @@ use heapless::Vec;
 use platform::IpTransport;
 
 use crate::{
-    MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES,
-    context::{IpAdditionalIndividualAddressContext, IpDiagnosticsContext},
+    context::IpDiagnosticsContext,
     layers::Inbox,
     messages::{
         buffers::Buffer,
@@ -52,24 +51,24 @@ const MAX_RETRY_ATTEMPTS: u8 = 5;
 /// Free function instead of a method so the borrow checker can see that
 /// server fields are disjoint from the context and channel fields.
 /// The `RC` type parameter controls whether IP diagnostics are exposed.
+///
+/// The caller materialises the additional-address and tunneling-slot data
+/// into local buffers (with the correct capacity `N`) and passes slices.
 fn make_server_context<'a, RC: RemoteConfigFeature>(
     context: &'a dyn KnxNetIpContext,
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
-    tunneling_slot_info: Option<(
-        u16,
-        heapless::Vec<substructs::TunnelingSlotInfo, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>,
-    )>,
+    additional_addresses: &'a [crate::address::IndividualAddress],
+    tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
 ) -> ServerContext<'a> {
     let ip_diagnostics: Option<&dyn IpDiagnosticsContext> =
         if RC::exposes_diagnostics() { Some(context) } else { None };
-    let ip_additional_addresses: &dyn IpAdditionalIndividualAddressContext = context;
     ServerContext::new(
         context.buffer_manager(),
         ind_tx,
         context.max_apdu_length(),
         context,
         ip_diagnostics,
-        ip_additional_addresses,
+        additional_addresses,
         context,
         tunneling_slot_info,
     )
@@ -82,7 +81,12 @@ pub struct KnxNetIp<
     const MAX_SOCKETS: usize = 4,
     const MAX_TCP_STREAMS: usize = 1,
     const MAX_CHANNELS: usize = 1,
-> {
+>
+where
+    [(); <F::Tunneling as features::TunnelingFeature>::CAPACITY]:,
+    <F::Tunneling as features::TunnelingFeature>::Tunnel:
+        servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+{
     /// Reference to externally-owned resources (response channel).
     pub(super) resources: &'res KnxNetIpResources,
     /// UDP socket manager. Owns sockets and their descriptors.
@@ -120,6 +124,7 @@ pub struct KnxNetIp<
             servers::WithDevMgmt,
             <F::Tunneling as features::TunnelingFeature>::Tunnel,
         >,
+        { <F::Tunneling as features::TunnelingFeature>::CAPACITY },
         MAX_CHANNELS,
     >,
     /// Type-erased stack context providing buffer management, device info,
@@ -140,6 +145,11 @@ pub struct KnxNetIp<
 
 impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
     KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+where
+    <F::Tunneling as features::TunnelingFeature>::Tunnel:
+        servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    servers::CompositeHandlers<'res, servers::WithDevMgmt, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
+        servers::ConnectionHandlers<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     /// Process expired retry requests.
     ///
@@ -163,11 +173,19 @@ impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, co
 
                 debug!("Retrying message (attempt {}/{})", pending.retry_count + 1, MAX_RETRY_ATTEMPTS);
 
+                let mut addr_buf = [crate::address::IndividualAddress::default();
+                    <F::Tunneling as features::TunnelingFeature>::CAPACITY];
+                let addr_count =
+                    crate::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
+                        self.context, &mut addr_buf,
+                    );
                 let tunnel_slots = self.connection_manager.tunneling_slot_info();
+                let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
                 let context = make_server_context::<F::RemoteConfig>(
                     self.context,
                     self.ind_tx,
-                    tunnel_slots,
+                    &addr_buf[..addr_count],
+                    tunnel_ref,
                 );
 
                 match F::Routing::on_request(&mut self.routing, &pending.message, &context).await {
@@ -327,12 +345,20 @@ impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, co
         socket_idx: usize,
         response_channel: &Channel<NoopRawMutex, PendingResponse, 16>,
     ) {
+        let mut addr_buf = [crate::address::IndividualAddress::default();
+            <F::Tunneling as features::TunnelingFeature>::CAPACITY];
+        let addr_count =
+            crate::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
+                self.context, &mut addr_buf,
+            );
+        let additional_addresses = &addr_buf[..addr_count];
         let tunnel_slots = self.connection_manager.tunneling_slot_info();
+        let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
 
         // Helper closure to build server context — captures immutable fields
         // that are disjoint from the mutable server fields.
         let make_ctx = |ind_tx| {
-            make_server_context::<F::RemoteConfig>(self.context, ind_tx, tunnel_slots.clone())
+            make_server_context::<F::RemoteConfig>(self.context, ind_tx, additional_addresses, tunnel_ref)
         };
 
         // Discovery server (always present)
@@ -449,6 +475,11 @@ impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, co
 
 impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
     KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+where
+    <F::Tunneling as features::TunnelingFeature>::Tunnel:
+        servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    servers::CompositeHandlers<'res, servers::WithDevMgmt, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
+        servers::ConnectionHandlers<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     /// Run the KNX/IP link layer event loop.
     ///
@@ -628,11 +659,19 @@ impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, co
                         ServiceType::L_Data_Req if F::Routing::supports_requests() => {
                             debug!("KnxNetIp Link Layer sending L_Data_Req: {:?}", msg);
 
+                            let mut addr_buf2 = [crate::address::IndividualAddress::default();
+                                <F::Tunneling as features::TunnelingFeature>::CAPACITY];
+                            let addr_count2 =
+                                crate::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
+                                    self.context, &mut addr_buf2,
+                                );
                             let tunnel_slots = self.connection_manager.tunneling_slot_info();
+                            let tunnel_ref2 = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
                             let context = make_server_context::<F::RemoteConfig>(
                                 self.context,
                                 self.ind_tx,
-                                tunnel_slots,
+                                &addr_buf2[..addr_count2],
+                                tunnel_ref2,
                             );
 
                             match F::Routing::on_request(&mut self.routing, &msg, &context).await {

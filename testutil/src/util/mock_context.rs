@@ -192,14 +192,20 @@ impl KnxIndividualAddressContext for &mut MockContext {
 }
 
 impl IpAdditionalIndividualAddressContext for &MockContext {
-    fn additional_individual_addresses(&self) -> zweidraehte::AdditionalIndividualAddresses {
-        zweidraehte::AdditionalIndividualAddresses::new()
+    fn write_additional_individual_addresses(
+        &self,
+        _buf: &mut [zweidraehte::address::IndividualAddress],
+    ) -> usize {
+        0
     }
 }
 
 impl IpAdditionalIndividualAddressContext for &mut MockContext {
-    fn additional_individual_addresses(&self) -> zweidraehte::AdditionalIndividualAddresses {
-        zweidraehte::AdditionalIndividualAddresses::new()
+    fn write_additional_individual_addresses(
+        &self,
+        _buf: &mut [zweidraehte::address::IndividualAddress],
+    ) -> usize {
+        0
     }
 }
 

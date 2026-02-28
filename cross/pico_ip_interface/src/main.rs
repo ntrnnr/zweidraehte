@@ -75,7 +75,10 @@ const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 /// Uses `IpSystemBDeviceState` even though the mask is TP1 (07B0) — the state
 /// type is mask-agnostic. The IP link-layer state stores additional individual
 /// addresses for tunneling connections and IP configuration.
-type IpIfState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, IpInterfaceParams, EmbassyNetworkInfo>;
+/// Maximum number of concurrent tunneling connections (additional individual addresses).
+const MAX_TUNNEL_CONNECTIONS: usize = 4;
+
+type IpIfState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, IpInterfaceParams, EmbassyNetworkInfo, MAX_TUNNEL_CONNECTIONS>;
 
 type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 
@@ -112,7 +115,7 @@ impl StackDefinition for PicoIpInterface {
 
     type P = IpInterfaceParams;
     type CO = IpInterfaceComObjects;
-    type LLB = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, EmbassyIpTransport, KnxIpInterfaceUdp, 2, 1, 1>;
+    type LLB = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, EmbassyIpTransport, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>, 2, 1, 1>;
     type State = IpIfState;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, IpIfState, (TunnelingAugment, ())>;
@@ -411,7 +414,7 @@ async fn main(spawner: Spawner) {
     // Build the KNX/IP part — tunneling + remote config (no routing).
     let knxip_builder =
         KnxNetIpBuilder::<EmbassyIpTransport, _, 2>::new("eth0", local_ip, control_endpoint, stack)
-            .enable_tunneling()
+            .enable_tunneling::<MAX_TUNNEL_CONNECTIONS>()
             .enable_remote_config_server();
 
     // Wrap TPUART + KNX/IP into a single composite link layer.

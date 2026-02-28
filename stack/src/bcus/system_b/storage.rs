@@ -11,9 +11,9 @@ use core::net::Ipv4Addr;
 
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 use crate::{
-    MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES,
     address::IndividualAddress,
     objects::tables::{
         Table,
@@ -240,8 +240,13 @@ pub const fn table_sizes(max_addr: usize, max_asso: usize, max_co: usize) -> (us
 /// All IP-specific settings that can be configured via ETS or
 /// the IP Parameter Object. Implements [`LinkLayerConfig`] so it
 /// can be used as the `L` parameter of [`PersistedState`].
+///
+/// The const generic `N` is the maximum number of additional individual
+/// addresses (tunneling slots). Non-tunneling devices use the default
+/// `N = 0`, paying zero storage for addresses they never use.
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedIpConfig {
+pub struct PersistedIpConfig<const N: usize = 0> {
     /// Friendly name for discovery (up to 30 bytes).
     pub friendly_name: [u8; 30],
 
@@ -270,13 +275,14 @@ pub struct PersistedIpConfig {
     pub project_installation_id: u16,
 
     /// Additional individual addresses for tunneling-capable profiles.
-    pub additional_individual_addresses: [[u8; 2]; MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES],
+    #[serde_as(as = "[[_; 2]; N]")]
+    pub additional_individual_addresses: [[u8; 2]; N],
 
     /// Number of valid entries in `additional_individual_addresses`.
     pub additional_individual_addresses_len: u8,
 }
 
-impl Default for PersistedIpConfig {
+impl<const N: usize> Default for PersistedIpConfig<N> {
     fn default() -> Self {
         Self {
             friendly_name: [0; 30],
@@ -288,15 +294,15 @@ impl Default for PersistedIpConfig {
             routing_multicast: [224, 0, 23, 12],
             ttl: 16,
             project_installation_id: 0,
-            additional_individual_addresses: [[0; 2]; MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES],
+            additional_individual_addresses: [[0; 2]; N],
             additional_individual_addresses_len: 0,
         }
     }
 }
 
-impl LinkLayerConfig for PersistedIpConfig {}
+impl<const N: usize> LinkLayerConfig for PersistedIpConfig<N> {}
 
-impl PersistedIpConfig {
+impl<const N: usize> PersistedIpConfig<N> {
     /// Get the configured IP address as an Ipv4Addr.
     pub fn configured_ip_addr(&self) -> Ipv4Addr {
         Ipv4Addr::from(self.configured_ip)

@@ -39,7 +39,6 @@
 
 use embassy_time::Instant;
 
-use crate::MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES;
 use crate::address::IndividualAddress;
 use crate::messages::buffers::DynBufferManager;
 use crate::messages::knxip::substructs::{CRD, CRI, TunnelingCRD, TunnelingLayer, TunnelingSlotInfo};
@@ -98,10 +97,13 @@ mod feature_id {
 /// Manages a fixed set of tunneling slots, one per additional individual
 /// address configured on the device. Each slot can be bound to at most one
 /// active connection. Only Data Link Layer tunneling (0x02) is supported.
-pub struct TunnelConnectionHandler {
+///
+/// The const generic `N` is the maximum number of tunneling slots
+/// (additional individual addresses).
+pub struct TunnelConnectionHandler<const N: usize> {
     /// Fixed array of tunnel slots, one per additional IA.
     /// Allocated at construction time from the device's additional addresses.
-    slots: heapless::Vec<TunnelSlot, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>,
+    slots: heapless::Vec<TunnelSlot, N>,
 
     /// Device Descriptor Type 0 for feature responses.
     device_descriptor_type_0: u16,
@@ -113,9 +115,9 @@ pub struct TunnelConnectionHandler {
     max_apdu_length: u16,
 
     /// Per-connection feature info enable bitmask.
-    /// Bit N = feature N is enabled for unsolicited notifications.
+    /// Bit M = feature M is enabled for unsolicited notifications.
     /// Indexed by slot index. Stored as a simple array parallel to `slots`.
-    feature_info_enable: [u8; MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES],
+    feature_info_enable: [u8; N],
 
     /// Bus connection status: true = bus is connected.
     /// This would be updated by the composite link layer when the bus
@@ -123,7 +125,7 @@ pub struct TunnelConnectionHandler {
     bus_connected: bool,
 }
 
-impl TunnelConnectionHandler {
+impl<const N: usize> TunnelConnectionHandler<N> {
     /// Create a new tunneling handler for the given set of additional
     /// individual addresses.
     ///
@@ -146,7 +148,7 @@ impl TunnelConnectionHandler {
             device_descriptor_type_0,
             manufacturer_code,
             max_apdu_length,
-            feature_info_enable: [0u8; MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES],
+            feature_info_enable: [0u8; N],
             bus_connected: true,
         }
     }
@@ -166,7 +168,7 @@ impl TunnelConnectionHandler {
     ///   (i.e., currently occupied by an active connection)
     ///
     /// Also returns the device's max APDU length (needed by the DIB header).
-    pub fn slot_info(&self) -> (u16, heapless::Vec<TunnelingSlotInfo, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES>) {
+    pub fn slot_info(&self) -> (u16, heapless::Vec<TunnelingSlotInfo, N>) {
         let mut infos = heapless::Vec::new();
         for slot in &self.slots {
             let occupied = slot.active_channel.is_some();
@@ -193,7 +195,7 @@ impl TunnelConnectionHandler {
     pub fn channels_for_bus_indication(
         &self,
         cemi_data: &[u8],
-    ) -> heapless::Vec<u8, MAX_ADDITIONAL_INDIVIDUAL_ADDRESSES> {
+    ) -> heapless::Vec<u8, N> {
         let mut channels = heapless::Vec::new();
 
         // Parse cEMI to extract destination address type and address.
@@ -390,7 +392,7 @@ impl TunnelConnectionHandler {
     }
 }
 
-impl ConnectionTypeHandler for TunnelConnectionHandler {
+impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<N> {
     fn accept_connection(&mut self, channel_id: u8, cri: &CRI) -> Result<AcceptedConnection, ConnectionStatus> {
         let CRI::Tunnel(tunnel_cri) = cri else {
             return Err(ConnectionStatus::ConnectionTypeNotSupported);
@@ -529,7 +531,7 @@ impl ConnectionTypeHandler for TunnelConnectionHandler {
 // Private: Frame Handling
 // ============================================================================
 
-impl TunnelConnectionHandler {
+impl<const N: usize> TunnelConnectionHandler<N> {
     /// Handle a `TunnelingRequest` containing a cEMI L_Data frame.
     ///
     /// The cEMI frame is extracted, source address substitution is applied

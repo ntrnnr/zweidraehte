@@ -6,6 +6,7 @@
 
 use embassy_sync::channel::DynamicSender;
 
+use crate::address::IndividualAddress;
 use crate::messages::buffers::{Buffer, DynBufferManager};
 use crate::messages::builder::IndicationMessage;
 use crate::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
@@ -95,9 +96,15 @@ pub trait IpDiagnosticsContext {
 }
 
 /// Provides additional KNX individual addresses for IP tunneling use-cases.
+///
+/// Uses a write-to-buffer pattern instead of returning a fixed-capacity Vec,
+/// so the caller controls the buffer size (typically `N` from the tunnel
+/// connection handler's const generic).
 pub trait IpAdditionalIndividualAddressContext {
-    /// Additional individual addresses assigned to tunneling connections.
-    fn additional_individual_addresses(&self) -> crate::AdditionalIndividualAddresses;
+    /// Write additional individual addresses into `buf`.
+    ///
+    /// Returns the number of addresses written (`<= buf.len()`).
+    fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize;
 }
 
 /// Provides the KNX primary individual address.

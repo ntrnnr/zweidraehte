@@ -247,9 +247,9 @@ impl DiscoveryServer {
             if include_ip_current_config { context.ip_diagnostics().map(|d| d.ip_current_config()) } else { None };
 
         let additional_addresses = if include_knx_addresses {
-            Some(context.ip_additional_individual_addresses().additional_individual_addresses())
+            context.additional_individual_addresses()
         } else {
-            None
+            &[]
         };
 
         // Build the DIB list. Mandatory DIBs first, then optional.
@@ -273,15 +273,15 @@ impl DiscoveryServer {
             let knx_addr_ctx = context.knx_addresses();
             let _ = dibs.push(DescriptionInformationBlockBuilder::KnxAddresses(KnxAddressesBuilder::new(
                 knx_addr_ctx.individual_address(),
-                additional_addresses.as_ref().map(heapless::Vec::as_slice).unwrap_or(&[]),
+                additional_addresses,
             )));
         }
 
         if include_tunneling_info {
             if let Some((max_apdu_len, slots)) = context.tunneling_slot_info() {
                 let _ = dibs.push(DescriptionInformationBlockBuilder::TunnelingInfo(TunnelingInfoBuilder::new(
-                    *max_apdu_len,
-                    slots.as_slice(),
+                    max_apdu_len,
+                    slots,
                 )));
             }
         }
@@ -352,7 +352,7 @@ impl DiscoveryServer {
         let ip_config = context.ip_diagnostics().map(|d| d.ip_config());
         let ip_current_config = context.ip_diagnostics().map(|d| d.ip_current_config());
         let knx_addr_ctx = context.knx_addresses();
-        let additional_addresses = context.ip_additional_individual_addresses().additional_individual_addresses();
+        let additional_addresses = context.additional_individual_addresses();
 
         let mut additional_dibs: Vec<DescriptionInformationBlockBuilder<'_>, 4> = Vec::new();
 
@@ -366,7 +366,7 @@ impl DiscoveryServer {
 
         let _ = additional_dibs.push(DescriptionInformationBlockBuilder::KnxAddresses(KnxAddressesBuilder::new(
             knx_addr_ctx.individual_address(),
-            additional_addresses.as_slice(),
+            additional_addresses,
         )));
 
         // Allocate a buffer for the response

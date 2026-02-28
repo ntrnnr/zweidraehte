@@ -196,9 +196,18 @@ impl<
     /// `PID_ADDITIONAL_INDIVIDUAL_ADDRESSES`). The number of concurrent
     /// tunneling connections equals the number of configured additional
     /// addresses.
-    pub fn enable_tunneling(
+    ///
+    /// The const generic `N` sets the maximum number of tunneling slots.
+    /// This must match the `N` on `IpLinkLayerState` / `IpSystemBDeviceState`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// builder.enable_tunneling::<4>()
+    /// ```
+    pub fn enable_tunneling<const N: usize>(
         self,
-    ) -> KnxNetIpBuilder<T, features::Features<R, RC, features::WithTunneling, TCP>, MS, MTS, MC> {
+    ) -> KnxNetIpBuilder<T, features::Features<R, RC, features::WithTunneling<N>, TCP>, MS, MTS, MC> {
         KnxNetIpBuilder {
             interface_name: self.interface_name,
             local_addr: self.local_addr,
@@ -252,6 +261,9 @@ impl<
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
 > KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+where
+    <F::Tunneling as features::TunnelingFeature>::Tunnel:
+        servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     /// Build the KnxNetIp link layer.
     ///
@@ -483,6 +495,9 @@ impl<
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
 > LinkLayerBuilder<CTX> for KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+where
+    <F::Tunneling as features::TunnelingFeature>::Tunnel:
+        servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     fn build_and_run<'a>(
         self,
