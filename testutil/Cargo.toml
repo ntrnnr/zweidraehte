@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-zweidraehte = { path = "../stack", features = ["log", "linux", "usb"] }
+zweidraehte = { path = "../stack", features = ["log", "linux", "knxip", "tp1", "usb"] }
 knx-conformance = { path = "../conformance" }
 platform = { path = "../platform", features = ["log", "linux"] }
 knxprod = { path = "../knxprod" }

@@ -21,7 +21,7 @@ panic-probe = { workspace = true, features = ["print-defmt"] }
 static_cell = { workspace = true }
 
 # KNX stack and device definitions
-zweidraehte = { path = "../../stack", default-features = false, features = ["defmt"] }
+zweidraehte = { path = "../../stack", default-features = false, features = ["defmt", "tp1"] }
 platform = { path = "../../platform", default-features = false, features = ["defmt"] }
 devices = { path = "../../devices", default-features = false, features = ["defmt"] }
 
