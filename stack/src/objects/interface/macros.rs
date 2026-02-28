@@ -319,18 +319,13 @@ macro_rules! define_interface_object {
                 start_idx: u16,
                 data: &[u8],
             ) -> Result<$crate::objects::interface::WriteResponse, $crate::objects::interface::PropertyError> {
-                // For single-element properties, only start_idx=1 is valid for writes
-                if start_idx != 1 {
-                    return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
-                }
-
                 match pid {
                     $crate::objects::interface::pid::OBJECT_TYPE => {
                         Err($crate::objects::interface::PropertyError::WriteNotAllowed)
                     }
                     $(
                         $pid_path => {
-                            $crate::define_interface_object!(@write_static $access, self.$field_name, data)?;
+                            $crate::define_interface_object!(@write_static $access, self.$field_name, start_idx, data)?;
                             Ok($crate::objects::interface::WriteResponse::Echo)
                         }
                     )*
@@ -511,66 +506,41 @@ macro_rules! define_interface_object {
                 count: u16,
                 buf: &mut [u8],
             ) -> Result<usize, $crate::objects::interface::PropertyError> {
-                // Validate start_idx and count for single-element properties
-                // Special case: start_idx=0 means query element count (regardless of count value)
-                // Per KNX spec, when start_idx=0, return the current number of elements
-                if start_idx == 0 {
-                    // Return 1 for single-element properties (2 bytes, big-endian)
-                    if buf.len() >= 2 {
-                        buf[0] = 0;
-                        buf[1] = 1;
-                        return Ok(2);
-                    }
-                    return Err($crate::objects::interface::PropertyError::BufferTooSmall);
-                }
-
-                // For single-element properties, only start_idx=1, count=1 is valid
-                if start_idx != 1 || count != 1 {
-                    return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
-                }
-
                 match pid {
                     $crate::objects::interface::pid::OBJECT_TYPE => {
                         let obj_type: u16 = <$crate::dpt::InterfaceObjectType as Into<u16>>::into($crate::dpt::$obj_type::$obj_variant);
-                        if buf.len() < 2 {
-                            return Err($crate::objects::interface::PropertyError::BufferTooSmall);
-                        }
-                        buf[0..2].copy_from_slice(&obj_type.to_be_bytes());
-                        Ok(2)
+                        $crate::objects::interface::PropertyRead::read_property(
+                            &obj_type.to_be_bytes(), start_idx, count, buf,
+                        )
                     }
                     // Static properties
                     $(
                         $pid_path => {
-                            let data: &[u8] = self.$field_name.as_ref();
-                            if buf.len() < data.len() {
-                                return Err($crate::objects::interface::PropertyError::BufferTooSmall);
-                            }
-                            buf[..data.len()].copy_from_slice(data);
-                            Ok(data.len())
+                            $crate::objects::interface::PropertyRead::read_property(
+                                &self.$field_name, start_idx, count, buf,
+                            )
                         }
                     )*
                     // State-backed properties (closure-based)
                     $($(
                         $state_pid_path => {
                             let $read_state = self.state;
-                            let data: &[u8] = &$read_expr;
-                            if buf.len() < data.len() {
-                                return Err($crate::objects::interface::PropertyError::BufferTooSmall);
-                            }
-                            buf[..data.len()].copy_from_slice(data);
-                            Ok(data.len())
+                            let data = $read_expr;
+                            $crate::objects::interface::PropertyRead::read_property(
+                                &data, start_idx, count, buf,
+                            )
                         }
                     )*)?
                     // Shorthand ReadWrite properties
                     $($(
                         $rw_pid_path => {
-                            $crate::define_interface_object!(@read_shorthand self.state, $rw_getter, $rw_pdt, buf)
+                            $crate::define_interface_object!(@read_shorthand self.state, $rw_getter, $rw_pdt, start_idx, count, buf)
                         }
                     )*)?
                     // Shorthand ReadOnly properties
                     $($(
                         $ro_pid_path => {
-                            $crate::define_interface_object!(@read_shorthand self.state, $ro_getter, $ro_pdt, buf)
+                            $crate::define_interface_object!(@read_shorthand self.state, $ro_getter, $ro_pdt, start_idx, count, buf)
                         }
                     )*)?
                     _ => Err($crate::objects::interface::PropertyError::InvalidPropertyId),
@@ -583,11 +553,6 @@ macro_rules! define_interface_object {
                 start_idx: u16,
                 data: &[u8],
             ) -> Result<$crate::objects::interface::WriteResponse, $crate::objects::interface::PropertyError> {
-                // For single-element properties, only start_idx=1 is valid for writes
-                if start_idx != 1 {
-                    return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
-                }
-
                 match pid {
                     $crate::objects::interface::pid::OBJECT_TYPE => {
                         Err($crate::objects::interface::PropertyError::WriteNotAllowed)
@@ -595,21 +560,21 @@ macro_rules! define_interface_object {
                     // Static properties
                     $(
                         $pid_path => {
-                            $crate::define_interface_object!(@write_static $access, self.$field_name, data)?;
+                            $crate::define_interface_object!(@write_static $access, self.$field_name, start_idx, data)?;
                             Ok($crate::objects::interface::WriteResponse::Echo)
                         }
                     )*
                     // State-backed properties (closure-based)
                     $($(
                         $state_pid_path => {
-                            $crate::define_interface_object!(@write_state_property $state_access, self.state, data, $write_state, $write_data, $write_expr)?;
+                            $crate::define_interface_object!(@write_state_property $state_access, self.state, start_idx, data, $write_state, $write_data, $write_expr)?;
                             Ok($crate::objects::interface::WriteResponse::Echo)
                         }
                     )*)?
                     // Shorthand ReadWrite properties
                     $($(
                         $rw_pid_path => {
-                            $crate::define_interface_object!(@write_shorthand self.state, $rw_getter, $rw_pdt, data)?;
+                            $crate::define_interface_object!(@write_shorthand self.state, $rw_getter, $rw_pdt, start_idx, data)?;
                             Ok($crate::objects::interface::WriteResponse::Echo)
                         }
                     )*)?
@@ -648,36 +613,38 @@ macro_rules! define_interface_object {
     };
 
     // Helper: write static property (handles ReadOnly without generating unreachable code)
-    (@write_static ReadOnly, $target:expr, $data:expr) => {
+    (@write_static ReadOnly, $target:expr, $start_idx:expr, $data:expr) => {
         Err($crate::objects::interface::PropertyError::WriteNotAllowed)
     };
-    (@write_static ReadWrite, $target:expr, $data:expr) => {{
-        let target: &mut [u8] = $target.as_mut();
-        if $data.len() > target.len() {
-            return Err($crate::objects::interface::PropertyError::BufferTooSmall);
-        }
-        target[..$data.len()].copy_from_slice($data);
+    (@write_static ReadWrite, $target:expr, $start_idx:expr, $data:expr) => {{
+        $crate::objects::interface::PropertyWrite::write_property(
+            &mut $target, $start_idx, $data,
+        )?;
         Ok(())
     }};
-    (@write_static WriteOnly, $target:expr, $data:expr) => {{
-        let target: &mut [u8] = $target.as_mut();
-        if $data.len() > target.len() {
-            return Err($crate::objects::interface::PropertyError::BufferTooSmall);
-        }
-        target[..$data.len()].copy_from_slice($data);
+    (@write_static WriteOnly, $target:expr, $start_idx:expr, $data:expr) => {{
+        $crate::objects::interface::PropertyWrite::write_property(
+            &mut $target, $start_idx, $data,
+        )?;
         Ok(())
     }};
 
     // Helper: write state-backed property (handles ReadOnly without generating unreachable code)
-    (@write_state_property ReadOnly, $state:expr, $data_in:expr, $write_state:ident, $write_data:ident, $write_expr:expr) => {
+    (@write_state_property ReadOnly, $state:expr, $start_idx:expr, $data_in:expr, $write_state:ident, $write_data:ident, $write_expr:expr) => {
         Err($crate::objects::interface::PropertyError::WriteNotAllowed)
     };
-    (@write_state_property ReadWrite, $state:expr, $data_in:expr, $write_state:ident, $write_data:ident, $write_expr:expr) => {{
+    (@write_state_property ReadWrite, $state:expr, $start_idx:expr, $data_in:expr, $write_state:ident, $write_data:ident, $write_expr:expr) => {{
+        if $start_idx != 1 {
+            return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
+        }
         let $write_state = $state;
         let $write_data = $data_in;
         $write_expr
     }};
-    (@write_state_property WriteOnly, $state:expr, $data_in:expr, $write_state:ident, $write_data:ident, $write_expr:expr) => {{
+    (@write_state_property WriteOnly, $state:expr, $start_idx:expr, $data_in:expr, $write_state:ident, $write_data:ident, $write_expr:expr) => {{
+        if $start_idx != 1 {
+            return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
+        }
         let $write_state = $state;
         let $write_data = $data_in;
         $write_expr
@@ -689,20 +656,20 @@ macro_rules! define_interface_object {
     // These helpers use the StatePropertyValue trait to convert between
     // property values and their byte representations.
 
-    // Read shorthand: calls state.getter() and converts to bytes via StatePropertyValue
-    (@read_shorthand $state:expr, $getter:ident, $pdt:ty, $buf:expr) => {{
+    // Read shorthand: calls state.getter() and converts to bytes via StatePropertyValue,
+    // then delegates to PropertyRead for KNX semantics (element count, bounds check).
+    (@read_shorthand $state:expr, $getter:ident, $pdt:ty, $start_idx:expr, $count:expr, $buf:expr) => {{
         let value = $state.$getter();
         let data = <$pdt as $crate::objects::interface::StatePropertyValue>::to_bytes(&value);
-        let data_ref: &[u8] = data.as_ref();
-        if $buf.len() < data_ref.len() {
-            return Err($crate::objects::interface::PropertyError::BufferTooSmall);
-        }
-        $buf[..data_ref.len()].copy_from_slice(data_ref);
-        Ok(data_ref.len())
+        $crate::objects::interface::PropertyRead::read_property(&data, $start_idx, $count, $buf)
     }};
 
-    // Write shorthand: converts bytes to value via StatePropertyValue and calls state.set_getter()
-    (@write_shorthand $state:expr, $getter:ident, $pdt:ty, $data:expr) => {{
+    // Write shorthand: validates start_idx, converts bytes to value via StatePropertyValue,
+    // and calls state.set_getter().
+    (@write_shorthand $state:expr, $getter:ident, $pdt:ty, $start_idx:expr, $data:expr) => {{
+        if $start_idx != 1 {
+            return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
+        }
         match <$pdt as $crate::objects::interface::StatePropertyValue>::from_bytes($data) {
             Ok(value) => {
                 $crate::paste::paste! {
@@ -728,7 +695,7 @@ pub trait HasProperty<T> {
 mod tests {
     use super::*;
     use crate::dpt::*;
-    use crate::objects::interface::{pid, InterfaceObject, PropertyAccess, PropertyError};
+    use crate::objects::interface::{InterfaceObject, PropertyAccess, PropertyError, pid};
 
     define_interface_object! {
         /// Test device object
@@ -774,9 +741,7 @@ mod tests {
         let obj = TestDeviceObject::new();
         let mut buf = [0u8; 4];
 
-        let len = obj
-            .read_property(pid::OBJECT_TYPE, 1, 1, &mut buf)
-            .unwrap();
+        let len = obj.read_property(pid::OBJECT_TYPE, 1, 1, &mut buf).unwrap();
         assert_eq!(len, 2);
         // Device = 0x0000
         assert_eq!(&buf[0..2], &[0x00, 0x00]);
@@ -787,14 +752,11 @@ mod tests {
         let mut obj = TestDeviceObject::new();
 
         // Write serial number
-        obj.write_property(pid::SERIAL_NUMBER, 1, &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
-            .unwrap();
+        obj.write_property(pid::SERIAL_NUMBER, 1, &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]).unwrap();
 
         // Read it back
         let mut buf = [0u8; 8];
-        let len = obj
-            .read_property(pid::SERIAL_NUMBER, 1, 1, &mut buf)
-            .unwrap();
+        let len = obj.read_property(pid::SERIAL_NUMBER, 1, 1, &mut buf).unwrap();
         assert_eq!(len, 6);
         assert_eq!(&buf[0..6], &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
     }
@@ -817,9 +779,7 @@ mod tests {
         let obj = TestDeviceObject::new();
         let mut buf = [0u8; 4];
 
-        let len = obj
-            .read_property(pid::MANUFACTURER_ID, 1, 1, &mut buf)
-            .unwrap();
+        let len = obj.read_property(pid::MANUFACTURER_ID, 1, 1, &mut buf).unwrap();
         assert_eq!(len, 2);
         assert_eq!(&buf[0..2], &[0xBE, 0xEF]);
     }
