@@ -145,6 +145,11 @@ impl zweidraehte::HasConnectionAuth for MyState {
     }
 }
 
+impl HasRoutingCount for MyState {
+    fn routing_count(&self) -> u8 { 6 }
+    fn set_routing_count(&self, _value: u8) { /* demo device — not persisted */ }
+}
+
 impl HasApplication for MyState {
     type APP = Application<()>;
     fn app(&self) -> &RefCell<Self::APP> {

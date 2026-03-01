@@ -62,7 +62,7 @@ use crate::{
     messages::buffers::{Buffer, BufferManager, DynBufferManager},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, LifecycleEvent},
-        interface::{HasDeviceObject, PropertyServiceHandler},
+        interface::{HasDeviceObject, HasRoutingCount, PropertyServiceHandler},
         tables::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine,
         },
@@ -86,7 +86,6 @@ pub enum UpdateObjectError {
     /// The object is busy (already transmitting)
     Busy,
 }
-
 
 /// Trait for stack state types.
 ///
@@ -1198,8 +1197,11 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
 
     // SAFETY: We are creating a static reference to the channel held by the `Inner` struct,
     //         which is safe because it is guaranteed to live as long as the `Stack` or the `Runner`.
-    let app_request_sender: DynamicSender<'static, _> =
-        unsafe { core::mem::transmute::<DynamicSender<'_, _>, DynamicSender<'static, _>>(inner.app_service_channel.sender().into()) };
+    let app_request_sender: DynamicSender<'static, _> = unsafe {
+        core::mem::transmute::<DynamicSender<'_, _>, DynamicSender<'static, _>>(
+            inner.app_service_channel.sender().into(),
+        )
+    };
 
     // Create restart channel sender/receiver pair.
     // The sender goes to the Runner (passed to ApplicationLayer), receiver goes to Stack (for user code).
@@ -1209,15 +1211,8 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     // Initialize link layer resources using the builder
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());
 
-    let stack =
-        Stack { inner, interface_objects, app_request_sender, restart_receiver };
-    let runner = Runner {
-        stack,
-        interface_objects,
-        restart_sender,
-        link_layer_builder,
-        link_layer_resources,
-    };
+    let stack = Stack { inner, interface_objects, app_request_sender, restart_receiver };
+    let runner = Runner { stack, interface_objects, restart_sender, link_layer_builder, link_layer_resources };
 
     (stack, runner)
 }
@@ -1230,8 +1225,12 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
     //        Problem is all the process() methods in the layers require these traits
     pub async fn run(self) -> !
     where
-        D::State:
-            HasAddressTable + HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
+        D::State: HasAddressTable
+            + HasApplication
+            + HasAssociationTable
+            + HasCommunicationObjectTable
+            + HasConnectionAuth
+            + HasRoutingCount,
         D::InterfaceObjects<'static>: HasDeviceObject,
     {
         // Validate that outgoing connections require Style 3 (which has the
@@ -1281,19 +1280,13 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Synchronous message handlers
         // ================================================================
 
-        let network_layer = NetworkLayer::new(
-            &self.stack.inner.state,
-            self.interface_objects,
-        );
+        let network_layer = NetworkLayer::<'_, D>::new(&self.stack.inner.state, self.interface_objects);
 
         // TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
         // generics here once `generic_const_exprs` no longer overflows for trait
         // consts forwarded through where-clauses.
-        let transport_layer = TransportLayer::<'_, D>::new(
-            &self.stack.inner.buffer_manager,
-            &self.stack.inner.state,
-            D::TL_STYLE,
-        );
+        let transport_layer =
+            TransportLayer::<'_, D>::new(&self.stack.inner.buffer_manager, &self.stack.inner.state, D::TL_STYLE);
 
         let application_layer = ApplicationLayer::<'_, D>::new(
             &self.stack.inner.buffer_manager,
@@ -1310,11 +1303,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Compose the handler set. The dispatch table is built at compile
         // time from each handler's HANDLES constant.
         let mut handlers = (network_layer, transport_layer, application_layer);
-        type Handlers<'a, D> = (
-            NetworkLayer<'a, <D as StackDefinition>::State, <D as StackDefinition>::InterfaceObjects<'static>>,
-            TransportLayer<'a, D>,
-            ApplicationLayer<'a, D>,
-        );
+        type Handlers<'a, D> = (NetworkLayer<'a, D>, TransportLayer<'a, D>, ApplicationLayer<'a, D>);
 
         // Initialize read-on-init cycle if the application is already running.
         handlers.2.init_read_on_init();
@@ -1369,17 +1358,14 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                 match select3(
                     ll_ind.receive(),
                     ll_conf.receive(),
-                    select(
-                        select(al_inject.receive(), self.stack.inner.app_service_channel.receive()),
-                        async {
-                            match handler_deadline {
-                                Some(deadline) => Timer::at(deadline).await,
-                                // No deadline → sleep forever (select will pick
-                                // another branch).
-                                None => core::future::pending().await,
-                            }
-                        },
-                    ),
+                    select(select(al_inject.receive(), self.stack.inner.app_service_channel.receive()), async {
+                        match handler_deadline {
+                            Some(deadline) => Timer::at(deadline).await,
+                            // No deadline → sleep forever (select will pick
+                            // another branch).
+                            None => core::future::pending().await,
+                        }
+                    }),
                 )
                 .await
                 {

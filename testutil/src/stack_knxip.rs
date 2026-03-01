@@ -688,6 +688,11 @@ impl<P: IpPlatform> HasCommunicationObjectTable for KnxIpState<P> {
     }
 }
 
+impl<P: IpPlatform> HasRoutingCount for KnxIpState<P> {
+    fn routing_count(&self) -> u8 { 6 }
+    fn set_routing_count(&self, _value: u8) { /* demo device — not persisted */ }
+}
+
 impl<P: IpPlatform> HasApplication for KnxIpState<P> {
     type APP = Application<()>;
     fn app(&self) -> &RefCell<Self::APP> {

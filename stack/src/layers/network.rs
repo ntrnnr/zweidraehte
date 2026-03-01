@@ -1,10 +1,10 @@
 use heapless::Deque;
 
+use crate::{StackDefinition, StackState};
 use crate::messages::knx::*;
 use crate::messages::buffers::Buffer;
-use crate::objects::interface::HasDeviceObject;
+use crate::objects::interface::{HasDeviceObject, HasRoutingCount};
 use crate::router::{MessageHandler, Outbox};
-use crate::StackState;
 
 /// Network layer for the KNX stack.
 ///
@@ -15,9 +15,9 @@ use crate::StackState;
 /// In the router architecture, NL is a synchronous [`MessageHandler`]. The
 /// router dispatches messages to it based on ServiceType, and NL pushes
 /// transformed messages to the [`Outbox`] for further routing.
-pub struct NetworkLayer<'a, S: StackState, IO: HasDeviceObject> {
-    state: &'a S,
-    interface_objects: &'a IO,
+pub struct NetworkLayer<'a, D: StackDefinition> {
+    state: &'a D::State,
+    interface_objects: &'a D::InterfaceObjects<'static>,
 
     /// FIFO of address types from outgoing requests, needed to transform each
     /// LL confirmation's service type back to the correct N_*_Con form.
@@ -26,23 +26,21 @@ pub struct NetworkLayer<'a, S: StackState, IO: HasDeviceObject> {
     pending_addr_types: Deque<AddressType, 4>,
 }
 
-impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
+impl<'a, D: StackDefinition> NetworkLayer<'a, D> {
     /// Create a new Network Layer.
     pub fn new(
-        state: &'a S,
-        interface_objects: &'a IO,
+        state: &'a D::State,
+        interface_objects: &'a D::InterfaceObjects<'static>,
     ) -> Self {
         Self { state, interface_objects, pending_addr_types: Deque::new() }
     }
-
-    /// Get the current routing count from the device object.
-    #[inline]
-    fn routing_count(&self) -> u8 {
-        self.interface_objects.routing_count_value()
-    }
 }
 
-impl<S: StackState, IO: HasDeviceObject> MessageHandler for NetworkLayer<'_, S, IO> {
+impl<D: StackDefinition> MessageHandler for NetworkLayer<'_, D>
+where
+    D::State: HasRoutingCount,
+    D::InterfaceObjects<'static>: HasDeviceObject,
+{
     const HANDLES: &'static [ServiceType] = &[
         // Indications from LL (upward)
         ServiceType::L_Data_Ind,
@@ -113,7 +111,7 @@ impl<S: StackState, IO: HasDeviceObject> MessageHandler for NetworkLayer<'_, S, 
                 ctrl.set_a(AckType::AckDontCare);
                 ctrl.set_c(Confirm::NoError);
 
-                msg.convert_hop_count_type_to_hop_count(self.routing_count());
+                msg.convert_hop_count_type_to_hop_count(self.state.routing_count());
                 msg.set_source_addr(self.state.individual_address());
                 msg.set_service_type(ServiceType::L_Data_Req);
 

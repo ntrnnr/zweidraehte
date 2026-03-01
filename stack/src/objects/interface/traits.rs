@@ -1014,6 +1014,9 @@ use crate::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
 pub trait HasRoutingCount {
     /// Get the routing count.
     fn routing_count(&self) -> u8;
+
+    /// Set the routing count (clamped to 0-7 by convention).
+    fn set_routing_count(&self, value: u8);
 }
 
 /// Trait for containers that provide access to DeviceObject properties.

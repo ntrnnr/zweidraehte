@@ -592,6 +592,11 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     fn routing_count(&self) -> u8 {
         self.routing_count.get()
     }
+
+    fn set_routing_count(&self, value: u8) {
+        self.routing_count.set(value);
+        self.mark_dirty();
+    }
 }
 
 impl<

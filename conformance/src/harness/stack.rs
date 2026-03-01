@@ -842,6 +842,7 @@ impl HasPeiApplication for ConformanceState {
 
 impl HasRoutingCount for ConformanceState {
     fn routing_count(&self) -> u8 { self.inner.routing_count() }
+    fn set_routing_count(&self, value: u8) { self.inner.set_routing_count(value) }
 }
 
 impl zweidraehte::HasConnectionAuth for ConformanceState {

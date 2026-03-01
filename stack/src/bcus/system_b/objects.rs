@@ -287,7 +287,7 @@ where
 
 impl<'a, S, ADT, AST, COT, APP, PEI> HasDeviceObject for SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>
 where
-    S: StackState,
+    S: StackState + HasRoutingCount,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
@@ -316,6 +316,9 @@ where
 
     fn set_routing_count(&self, value: RoutingCount) {
         self.device.borrow_mut().routing_count = value;
+        // Sync to state so the network layer (which reads routing count
+        // from state via HasRoutingCount) stays in sync with ETS property writes.
+        self.state.set_routing_count(value.value());
     }
 }
 
