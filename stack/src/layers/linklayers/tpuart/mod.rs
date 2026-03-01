@@ -86,10 +86,18 @@ pub use chip::ChipType as TpUartChipType;
 /// Trait for deciding whether to ACK an incoming TP1 frame.
 ///
 /// The TPUART link layer calls [`should_ack`](AddressChecker::should_ack)
-/// after receiving the 6-byte header (control, src_hi, src_lo, dst_hi,
-/// dst_lo, AT+NPCI) of every incoming frame. The implementation decides
-/// whether to send `U_ACK_INF` based on the destination address and address
-/// type (group / individual / broadcast).
+/// after receiving the 6-byte header of every incoming frame. The
+/// implementation decides whether to send `U_ACK_INF` based on the
+/// destination address and address type (group / individual / broadcast).
+///
+/// The header layout depends on the frame type (determined by bit 7 of
+/// the control byte):
+///
+/// - **Standard** (ctrl bit 7 = 1): `[ctrl, src_hi, src_lo, dst_hi, dst_lo, at_npci]`
+/// - **Extended** (ctrl bit 7 = 0): `[ctrl, ext_ctrl, src_hi, src_lo, dst_hi, dst_lo]`
+///
+/// Use [`extract_tp1_header_fields`] to get destination and AT flag from
+/// either format.
 ///
 /// Different operating modes need different strategies:
 ///
@@ -107,11 +115,32 @@ pub use chip::ChipType as TpUartChipType;
 pub trait AddressChecker {
     /// Decide whether the link layer should ACK a frame with this header.
     ///
-    /// `header` layout: `[ctrl, src_hi, src_lo, dst_hi, dst_lo, at_npci]`
-    ///
-    /// The AT flag (bit 7 of `at_npci`) distinguishes group-addressed frames
-    /// (`1`) from individually-addressed frames (`0`).
+    /// See [`extract_tp1_header_fields`] for extracting destination and
+    /// address type from both standard and extended frame headers.
     fn should_ack(&self, header: &[u8; 6]) -> bool;
+}
+
+/// Extract destination address and address-type flag from a raw 6-byte
+/// TP1 header, handling both standard and extended frame formats.
+///
+/// Returns `(dst_hi, dst_lo, is_group_address)`.
+fn extract_tp1_header_fields(header: &[u8; 6]) -> (u8, u8, bool) {
+    let is_extended = (header[0] & 0x80) == 0;
+    if is_extended {
+        // Extended: [ctrl, ext_ctrl, src_hi, src_lo, dst_hi, dst_lo]
+        // AT flag is in ext_ctrl (header[1]) bit 7.
+        let dst_hi = header[4];
+        let dst_lo = header[5];
+        let is_group = (header[1] & 0x80) != 0;
+        (dst_hi, dst_lo, is_group)
+    } else {
+        // Standard: [ctrl, src_hi, src_lo, dst_hi, dst_lo, at_npci]
+        // AT flag is in at_npci (header[5]) bit 7.
+        let dst_hi = header[3];
+        let dst_lo = header[4];
+        let is_group = (header[5] & 0x80) != 0;
+        (dst_hi, dst_lo, is_group)
+    }
 }
 
 /// A no-op address checker that never ACKs any frames.
@@ -182,11 +211,7 @@ impl<'a, ADT: AddressTable + HasLoadStateMachine> DeviceAddressChecker<'a, ADT> 
 
 impl<ADT: AddressTable + HasLoadStateMachine> AddressChecker for DeviceAddressChecker<'_, ADT> {
     fn should_ack(&self, header: &[u8; 6]) -> bool {
-        let dst_hi = header[3];
-        let dst_lo = header[4];
-        let at_npci = header[5];
-
-        let is_group_address = (at_npci & 0x80) != 0;
+        let (dst_hi, dst_lo, is_group_address) = extract_tp1_header_fields(header);
 
         // Broadcast: destination 0x0000 is broadcast regardless of address
         // type flag. Individual 0.0.0 and group 0/0/0 are both broadcast.
@@ -991,12 +1016,14 @@ where
         // Delegate the full ACK decision to the address checker. Different
         // checkers implement different policies (normal device, tunneling
         // gateway, bus monitor). The link layer doesn't have its own opinion.
+        let (dst_hi, dst_lo, is_group) = extract_tp1_header_fields(header);
+        let dst = IndividualAddress::from_bytes(&[dst_hi, dst_lo]);
         if self.address_checker.should_ack(header) {
-            debug!("TPUART: ACK frame dst={:02X}.{:02X} at_npci={:02X}", header[3], header[4], header[5]);
+            debug!("TPUART: ACK frame dst={} group={}", dst, is_group);
             self.uart_write(&[U_ACK_INF]).await;
             self.main_ctx.receive_state.acked = true;
         } else {
-            debug!("TPUART: no ACK for dst={:02X}.{:02X} at_npci={:02X}", header[3], header[4], header[5]);
+            debug!("TPUART: no ACK for dst={} group={}", dst, is_group);
         }
     }
 
@@ -1240,5 +1267,72 @@ where
             // Check for pending transmission
             self.check_pending_transmission().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // extract_tp1_header_fields
+    // =========================================================================
+
+    #[test]
+    fn standard_individual_frame() {
+        // Standard frame to individual address 1.0.200 (0x10, 0xC8)
+        // AT bit = 0 (individual), hop count = 6
+        let header: [u8; 6] = [0xB0, 0x10, 0x02, 0x10, 0xC8, 0x60];
+        let (dst_hi, dst_lo, is_group) = extract_tp1_header_fields(&header);
+        assert_eq!(dst_hi, 0x10);
+        assert_eq!(dst_lo, 0xC8);
+        assert!(!is_group);
+    }
+
+    #[test]
+    fn standard_group_frame() {
+        // Standard frame to group address 1/2/3 (0x0A, 0x03)
+        // AT bit = 1 (group), hop count = 6, length = 1
+        let header: [u8; 6] = [0xB0, 0x10, 0x02, 0x0A, 0x03, 0xE1];
+        let (dst_hi, dst_lo, is_group) = extract_tp1_header_fields(&header);
+        assert_eq!(dst_hi, 0x0A);
+        assert_eq!(dst_lo, 0x03);
+        assert!(is_group);
+    }
+
+    #[test]
+    fn extended_individual_frame() {
+        // Extended frame to individual address 1.0.200 (0x10, 0xC8)
+        // Ctrl byte bit 7 = 0 → extended frame
+        // ExtCtrl: AT=0 (individual), hop count = 6, EFF = 0
+        let header: [u8; 6] = [0x30, 0x60, 0x10, 0x02, 0x10, 0xC8];
+        let (dst_hi, dst_lo, is_group) = extract_tp1_header_fields(&header);
+        assert_eq!(dst_hi, 0x10);
+        assert_eq!(dst_lo, 0xC8);
+        assert!(!is_group);
+    }
+
+    #[test]
+    fn extended_group_frame() {
+        // Extended frame to group address 1/2/3 (0x0A, 0x03)
+        // Ctrl byte bit 7 = 0 → extended frame
+        // ExtCtrl: AT=1 (group), hop count = 6, EFF = 0
+        let header: [u8; 6] = [0x30, 0xE0, 0x10, 0x02, 0x0A, 0x03];
+        let (dst_hi, dst_lo, is_group) = extract_tp1_header_fields(&header);
+        assert_eq!(dst_hi, 0x0A);
+        assert_eq!(dst_lo, 0x03);
+        assert!(is_group);
+    }
+
+    #[test]
+    fn extended_frame_reproduces_bug_scenario() {
+        // Reproduce the exact scenario from the bug trace:
+        // ETS at 1.0.2 sends an extended frame to our device at 1.0.200
+        // Without the fix, this was parsed as dst=0x02.0x10 (wrong)
+        let header: [u8; 6] = [0x30, 0x60, 0x10, 0x02, 0x10, 0xC8];
+        let (dst_hi, dst_lo, is_group) = extract_tp1_header_fields(&header);
+        let dst = IndividualAddress::from_bytes(&[dst_hi, dst_lo]);
+        assert_eq!(dst, IndividualAddress::from_bytes(&[0x10, 0xC8]));
+        assert!(!is_group);
     }
 }
