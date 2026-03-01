@@ -782,6 +782,167 @@ pub trait StackDefinition: Copy {
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a;
+
+    /// Composed layer stack for the protocol stack.
+    ///
+    /// Determines the layer composition (NL, TL, AL, etc.) for this device.
+    /// Use [`InsecureDeviceLayers`] for the standard `(NetworkLayer, TransportLayer,
+    /// ApplicationLayer)` stack, or implement [`LayerStack`](router::LayerStack)
+    /// on a custom type to compose a different set of layers.
+    type Layers<'a>: router::LayerStack
+    where
+        Self: 'a;
+
+    /// Construct the layer stack from a [`LayerContext`].
+    ///
+    /// Called by [`Runner::run()`] to create the protocol layers.
+    /// The default for [`InsecureDeviceLayers`] is:
+    ///
+    /// ```rust,ignore
+    /// fn build_layers<'a>(ctx: &'a LayerContext<'a, Self>) -> Self::Layers<'a> {
+    ///     InsecureDeviceLayers::new(ctx)
+    /// }
+    /// ```
+    fn build_layers<'a>(ctx: &'a LayerContext<'a, Self>) -> Self::Layers<'a>
+    where
+        Self: 'a;
+}
+
+// ============================================================================
+// Layer composition
+// ============================================================================
+
+/// Context passed to [`StackDefinition::build_layers`] for constructing
+/// the layer stack.
+///
+/// Bundles all shared stack resources that protocol layers may need.
+/// Custom layer stacks can pick the fields they care about and ignore
+/// the rest.
+pub struct LayerContext<'a, D: StackDefinition> {
+    /// Buffer allocator for building outgoing messages.
+    pub buffer_manager: &'a DynBufferManager<'static>,
+    /// Unified device state (tables + runtime configuration).
+    pub state: &'a D::State,
+    /// Communication objects (group objects).
+    pub comm_objs: &'a RefCell<D::CO>,
+    /// Hook context for communication object hooks.
+    pub hook_context: &'a <D::CO as ComObjects>::HookContext,
+    /// Pub/sub channel for communication object events.
+    pub event_channel:
+        &'a PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
+    /// Pub/sub channel for application lifecycle events.
+    pub lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
+    /// Interface objects container for property service handling.
+    pub interface_objects: &'a D::InterfaceObjects<'static>,
+    /// Memory map for A_Memory_Read/Write services.
+    pub memory_map: &'a D::Mem,
+    /// Sender for restart requests from AL to user code.
+    pub restart_sender: DynamicSender<'a, restart::RestartRequest>,
+    /// Receiver for application service requests from user code
+    /// (GroupValueWrite/Read via [`Stack::update_object`]).
+    pub app_service_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+}
+
+/// Standard layer stack: `(NetworkLayer, TransportLayer, ApplicationLayer)`.
+///
+/// This is the default layer composition for typical KNX devices.
+/// It wraps the three standard protocol layers and manages the
+/// application service channel as a side input.
+///
+/// Custom layer stacks can be created by implementing [`LayerStack`]
+/// directly on a different type and returning it from
+/// [`StackDefinition::build_layers`].
+pub struct InsecureDeviceLayers<'a, D: StackDefinition> {
+    layers: (NetworkLayer<'a, D>, TransportLayer<'a, D>, ApplicationLayer<'a, D>),
+    app_service_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+    pending_app_request: Cell<Option<Request<ApplicationLayerService, ApplicationLayerServiceResponse>>>,
+}
+
+impl<'a, D: StackDefinition> InsecureDeviceLayers<'a, D>
+where
+    D::State: HasAddressTable
+        + HasApplication
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasConnectionAuth
+        + HasRoutingCount,
+    D::InterfaceObjects<'static>: HasDeviceObject,
+{
+    /// Construct the standard `(NL, TL, AL)` layer stack from a
+    /// [`LayerContext`].
+    pub fn new(ctx: &'a LayerContext<'a, D>) -> Self {
+        let network_layer = NetworkLayer::new(ctx.state, ctx.interface_objects);
+
+        // TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
+        // generics here once `generic_const_exprs` no longer overflows for trait
+        // consts forwarded through where-clauses.
+        let transport_layer = TransportLayer::new(ctx.buffer_manager, ctx.state, D::TL_STYLE);
+
+        let application_layer = ApplicationLayer::new(
+            ctx.buffer_manager,
+            ctx.state,
+            ctx.comm_objs,
+            ctx.hook_context,
+            ctx.event_channel,
+            ctx.lifecycle_channel,
+            ctx.interface_objects,
+            ctx.memory_map,
+            ctx.restart_sender,
+        );
+
+        Self {
+            layers: (network_layer, transport_layer, application_layer),
+            app_service_receiver: ctx.app_service_receiver,
+            pending_app_request: Cell::new(None),
+        }
+    }
+}
+
+use router::LayerStack;
+
+impl<D: StackDefinition> LayerStack for InsecureDeviceLayers<'_, D>
+where
+    D::State: HasAddressTable
+        + HasApplication
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasConnectionAuth
+        + HasRoutingCount,
+    D::InterfaceObjects<'static>: HasDeviceObject,
+{
+    const DISPATCH_TABLE: router::DispatchTable = {
+        type Inner<'a, D> = (NetworkLayer<'a, D>, TransportLayer<'a, D>, ApplicationLayer<'a, D>);
+        <Inner<'_, D> as LayerStack>::DISPATCH_TABLE
+    };
+
+    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut router::Outbox) {
+        self.layers.dispatch(layer_idx, msg, outbox);
+    }
+
+    fn next_deadline(&self) -> Option<embassy_time::Instant> {
+        self.layers.next_deadline()
+    }
+
+    fn poll(&mut self, outbox: &mut router::Outbox) {
+        self.layers.poll(outbox);
+    }
+
+    fn init(&mut self) {
+        self.layers.init();
+    }
+
+    fn recv_side_input(&self) -> impl core::future::Future<Output = ()> + '_ {
+        async {
+            let req = self.app_service_receiver.receive().await;
+            self.pending_app_request.set(Some(req));
+        }
+    }
+
+    fn handle_side_input(&mut self, outbox: &mut router::Outbox) {
+        if let Some(req) = self.pending_app_request.take() {
+            self.layers.2.handle_app_request(&req, outbox);
+        }
+    }
 }
 
 /// Pre-allocated resources for the KNX stack.
@@ -980,10 +1141,6 @@ impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
 pub struct StackContext<'a, D: StackDefinition> {
     inner: &'a Inner<D>,
     interface_objects: &'a D::InterfaceObjects<'static>,
-    al_sender: embassy_sync::channel::DynamicSender<
-        'a,
-        messages::builder::IndicationMessage<messages::buffers::Buffer<'static>>,
-    >,
 }
 
 impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
@@ -1003,17 +1160,6 @@ impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
 impl<D: StackDefinition> context::PropertyServiceContext for StackContext<'_, D> {
     fn property_handler(&self) -> &dyn objects::interface::PropertyServiceHandler {
         self.interface_objects
-    }
-}
-
-impl<D: StackDefinition> context::ApplicationLayerContext for StackContext<'_, D> {
-    fn application_layer_sender(
-        &self,
-    ) -> embassy_sync::channel::DynamicSender<
-        '_,
-        messages::builder::IndicationMessage<messages::buffers::Buffer<'static>>,
-    > {
-        self.al_sender
     }
 }
 
@@ -1259,7 +1405,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         use embassy_time::Timer;
         use messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
         use messages::knx::ServiceType;
-        use router::{HandlerSet, Outbox};
+        use router::{LayerStack, Outbox};
 
         // ================================================================
         // Link layer channels
@@ -1273,50 +1419,42 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let ll_ind: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
         let ll_conf: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> = Channel::new();
 
-        // KNX/IP inject channel (LL → router, bypasses NL/TL)
-        let al_inject: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
-
         // ================================================================
-        // Synchronous message handlers
+        // Layer construction (fully generic via StackDefinition)
         // ================================================================
 
-        let network_layer = NetworkLayer::<'_, D>::new(&self.stack.inner.state, self.interface_objects);
+        // SAFETY: We are creating a static reference to the channel held by the `Inner` struct.
+        // This is safe because `Inner` lives in `StackResources` which outlives this function.
+        let app_service_receiver: DynamicReceiver<'static, _> = unsafe {
+            core::mem::transmute::<DynamicReceiver<'_, _>, DynamicReceiver<'static, _>>(
+                self.stack.inner.app_service_channel.receiver().into(),
+            )
+        };
 
-        // TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
-        // generics here once `generic_const_exprs` no longer overflows for trait
-        // consts forwarded through where-clauses.
-        let transport_layer =
-            TransportLayer::<'_, D>::new(&self.stack.inner.buffer_manager, &self.stack.inner.state, D::TL_STYLE);
+        let layer_context = LayerContext {
+            buffer_manager: &self.stack.inner.buffer_manager,
+            state: &self.stack.inner.state,
+            comm_objs: &self.stack.inner.comm_objs,
+            hook_context: &self.stack.inner.hook_context,
+            event_channel: &self.stack.inner.event_channel,
+            lifecycle_channel: &self.stack.inner.lifecycle_channel,
+            interface_objects: self.interface_objects,
+            memory_map: &self.stack.inner.memory_map,
+            restart_sender: self.restart_sender,
+            app_service_receiver,
+        };
 
-        let application_layer = ApplicationLayer::<'_, D>::new(
-            &self.stack.inner.buffer_manager,
-            &self.stack.inner.state,
-            &self.stack.inner.comm_objs,
-            &self.stack.inner.hook_context,
-            &self.stack.inner.event_channel,
-            &self.stack.inner.lifecycle_channel,
-            self.interface_objects,
-            &self.stack.inner.memory_map,
-            self.restart_sender,
-        );
+        let mut layers = D::build_layers(&layer_context);
 
-        // Compose the handler set. The dispatch table is built at compile
-        // time from each handler's HANDLES constant.
-        let mut handlers = (network_layer, transport_layer, application_layer);
-        type Handlers<'a, D> = (NetworkLayer<'a, D>, TransportLayer<'a, D>, ApplicationLayer<'a, D>);
-
-        // Initialize read-on-init cycle if the application is already running.
-        handlers.2.init_read_on_init();
+        // Initialize all layers (e.g., AL starts read-on-init cycle if
+        // the application is already running).
+        layers.init();
 
         // ================================================================
         // Link layer task
         // ================================================================
 
-        let stack_context = StackContext {
-            inner: self.stack.inner,
-            interface_objects: self.interface_objects,
-            al_sender: al_inject.sender().into(),
-        };
+        let stack_context = StackContext { inner: self.stack.inner, interface_objects: self.interface_objects };
         let ll_task = self.link_layer_builder.build_and_run(
             self.link_layer_resources,
             &stack_context,
@@ -1335,31 +1473,30 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         //   LL → (L_Data_Ind) → NL → (N_*_Ind) → TL → (T_*_Ind) → AL
         //   AL → (T_*_Req)    → TL → (N_*_Req) → NL → (L_Data_Req) → LL
         //
-        // Each ServiceType maps to exactly one handler. The outbox collects
+        // Each ServiceType maps to exactly one layer. The outbox collects
         // outputs; the drain loop re-dispatches until all messages are
         // consumed or sent to the LL.
+        //
+        // The router is fully generic: it only uses the `LayerStack` trait.
+        // Side inputs (e.g., app service requests from user code) are
+        // handled through `recv_side_input` / `handle_side_input`.
 
         let router_task = async {
             loop {
                 let mut outbox = Outbox::new();
 
-                // Compute the earliest handler deadline for timer-driven
-                // events (TL connection timeouts, AL read-on-init).
-                let deadline = <Handlers<'_, D> as HandlerSet>::DISPATCH_TABLE;
-                let _ = deadline; // just to name the type for clarity below
-
-                let handler_deadline = handlers.next_deadline();
-                if handler_deadline.is_some() {
-                    debug!("Router: handler_deadline is Some, will poll on timer");
+                let layer_deadline = layers.next_deadline();
+                if layer_deadline.is_some() {
+                    debug!("Router: layer_deadline is Some, will poll on timer");
                 }
 
                 // Wait for the next event: LL indication, LL confirmation,
-                // AL inject, app request, or handler timer.
+                // layer side input, or layer timer.
                 match select3(
                     ll_ind.receive(),
                     ll_conf.receive(),
-                    select(select(al_inject.receive(), self.stack.inner.app_service_channel.receive()), async {
-                        match handler_deadline {
+                    select(layers.recv_side_input(), async {
+                        match layer_deadline {
                             Some(deadline) => Timer::at(deadline).await,
                             // No deadline → sleep forever (select will pick
                             // another branch).
@@ -1379,20 +1516,14 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                     }
                     embassy_futures::select::Either3::Third(third) => {
                         match third {
-                            Either::First(inner) => match inner {
-                                // AL inject (cEMI TL bypass) → dispatch through table
-                                Either::First(inject) => {
-                                    outbox.push(inject.into_inner());
-                                }
-                                // App request (GroupValueWrite/Read from user code)
-                                Either::Second(app_req) => {
-                                    handlers.2.handle_app_request(&app_req, &mut outbox);
-                                }
-                            },
-                            // Timer expired → poll handlers with expired deadlines
+                            // Side input resolved → let layers process it
+                            Either::First(()) => {
+                                layers.handle_side_input(&mut outbox);
+                            }
+                            // Timer expired → poll layers with expired deadlines
                             Either::Second(_) => {
-                                debug!("Router: timer expired, polling handlers");
-                                handlers.poll(&mut outbox);
+                                debug!("Router: timer expired, polling layers");
+                                layers.poll(&mut outbox);
                             }
                         }
                     }
@@ -1405,10 +1536,10 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                     if st == ServiceType::L_Data_Req {
                         // Terminal: send to link layer
                         ll_req.send(RequestMessage::request(msg)).await;
-                    } else if let Some(handler_idx) = <Handlers<'_, D> as HandlerSet>::DISPATCH_TABLE.get(st) {
-                        handlers.dispatch(handler_idx, msg, &mut outbox);
+                    } else if let Some(layer_idx) = <D::Layers<'_> as LayerStack>::DISPATCH_TABLE.get(st) {
+                        layers.dispatch(layer_idx, msg, &mut outbox);
                     } else {
-                        warn!("Router: no handler for {:?}, dropping", st);
+                        warn!("Router: no layer for {:?}, dropping", st);
                         // Buffer is dropped, returned to pool
                     }
                 }

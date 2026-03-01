@@ -4,7 +4,7 @@ use crate::{StackDefinition, StackState};
 use crate::messages::knx::*;
 use crate::messages::buffers::Buffer;
 use crate::objects::interface::{HasDeviceObject, HasRoutingCount};
-use crate::router::{MessageHandler, Outbox};
+use crate::router::{Layer, Outbox};
 
 /// Network layer for the KNX stack.
 ///
@@ -12,8 +12,8 @@ use crate::router::{MessageHandler, Outbox};
 /// layer (N_Data, N_GroupData, etc.), handles hop count conversion, source
 /// address injection, and individual address duplication detection.
 ///
-/// In the router architecture, NL is a synchronous [`MessageHandler`]. The
-/// router dispatches messages to it based on ServiceType, and NL pushes
+/// In the router architecture, NL is a synchronous [`Layer`] that the
+/// router dispatches messages to based on ServiceType. NL pushes
 /// transformed messages to the [`Outbox`] for further routing.
 pub struct NetworkLayer<'a, D: StackDefinition> {
     state: &'a D::State,
@@ -36,7 +36,7 @@ impl<'a, D: StackDefinition> NetworkLayer<'a, D> {
     }
 }
 
-impl<D: StackDefinition> MessageHandler for NetworkLayer<'_, D>
+impl<D: StackDefinition> Layer for NetworkLayer<'_, D>
 where
     D::State: HasRoutingCount,
     D::InterfaceObjects<'static>: HasDeviceObject,

@@ -4,11 +4,8 @@
 //! Layers depend only on the specific context traits they need, making them
 //! easier to test and more modular.
 
-use embassy_sync::channel::DynamicSender;
-
 use crate::address::IndividualAddress;
-use crate::messages::buffers::{Buffer, DynBufferManager};
-use crate::messages::builder::IndicationMessage;
+use crate::messages::buffers::DynBufferManager;
 use crate::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
 use crate::objects::interface::PropertyServiceHandler;
 
@@ -66,16 +63,6 @@ pub trait DeviceInfoContext {
     ///
     /// Used by tunneling feature responses (spec 03/08/04 §4.6).
     fn manufacturer_code(&self) -> u16;
-}
-
-/// Provides a sender to the application layer's incoming channel.
-///
-/// Used by cEMI Transport Layer mode (Device Management connections) to
-/// inject synthetic indications directly into the application layer,
-/// bypassing the bus transport/network layers.
-pub trait ApplicationLayerContext {
-    /// Get a sender to the application layer's indication channel.
-    fn application_layer_sender(&self) -> DynamicSender<'_, IndicationMessage<Buffer<'static>>>;
 }
 
 /// Provides IP diagnostics data for remote configuration responses.

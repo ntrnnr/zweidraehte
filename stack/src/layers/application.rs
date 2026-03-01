@@ -41,7 +41,7 @@ use crate::{
         },
     },
     restart::{EraseCode, RestartError, RestartRequest},
-    router::{MessageHandler, Outbox},
+    router::{Layer, Outbox},
 };
 
 // ============================================================================
@@ -200,10 +200,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 // ============================================================================
 
 // ============================================================================
-// MessageHandler Implementation
+// Layer Trait Implementation
 // ============================================================================
 
-impl<D: StackDefinition> MessageHandler for ApplicationLayer<'_, D>
+impl<D: StackDefinition> Layer for ApplicationLayer<'_, D>
 where
     D::State: HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
     D::InterfaceObjects<'static>: HasDeviceObject,
@@ -346,6 +346,10 @@ where
     fn poll(&mut self, outbox: &mut Outbox) {
         debug!("AL poll called, ROI state: {:?}", self.read_on_init);
         self.read_on_init_step(outbox);
+    }
+
+    fn init(&mut self) {
+        self.init_read_on_init();
     }
 }
 

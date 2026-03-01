@@ -2,15 +2,11 @@
 
 use core::cell::Cell;
 
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::{Channel, DynamicSender};
-
 use zweidraehte::context::{
-    ApplicationLayerContext, BufferManagerContext, DeviceInfoContext, IpAdditionalIndividualAddressContext,
+    BufferManagerContext, DeviceInfoContext, IpAdditionalIndividualAddressContext,
     IpDiagnosticsContext, KnxIndividualAddressContext, PropertyServiceContext,
 };
-use zweidraehte::messages::buffers::{Buffer, DynBufferManager};
-use zweidraehte::messages::builder::IndicationMessage;
+use zweidraehte::messages::buffers::DynBufferManager;
 use zweidraehte::messages::knxip::substructs::DeviceInformation;
 use zweidraehte::objects::interface::PropertyServiceHandler;
 
@@ -22,8 +18,6 @@ pub struct MockContext {
     buffer_manager: DynBufferManager<'static>,
     max_apdu_length: Cell<u16>,
     device_info: Cell<Option<DeviceInformation>>,
-    /// Dummy AL channel for ApplicationLayerContext. Messages sent here are dropped.
-    al_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1>,
 }
 
 impl MockContext {
@@ -33,7 +27,6 @@ impl MockContext {
             buffer_manager,
             max_apdu_length: Cell::new(zweidraehte::config::MAX_APDU_LENGTH_EXTENDED),
             device_info: Cell::new(None),
-            al_channel: Channel::new(),
         }
     }
 
@@ -43,7 +36,6 @@ impl MockContext {
             buffer_manager,
             max_apdu_length: Cell::new(max_apdu_length),
             device_info: Cell::new(None),
-            al_channel: Channel::new(),
         }
     }
 
@@ -209,14 +201,3 @@ impl IpAdditionalIndividualAddressContext for &mut MockContext {
     }
 }
 
-impl ApplicationLayerContext for &MockContext {
-    fn application_layer_sender(&self) -> DynamicSender<'_, IndicationMessage<Buffer<'static>>> {
-        self.al_channel.sender().into()
-    }
-}
-
-impl ApplicationLayerContext for &mut MockContext {
-    fn application_layer_sender(&self) -> DynamicSender<'_, IndicationMessage<Buffer<'static>>> {
-        self.al_channel.sender().into()
-    }
-}

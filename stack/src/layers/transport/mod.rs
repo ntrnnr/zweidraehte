@@ -45,7 +45,7 @@ use crate::{
         knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
     },
     objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
-    router::{MessageHandler, Outbox},
+    router::{Layer, Outbox},
 };
 
 // ============================================================================
@@ -101,11 +101,11 @@ enum PendingNlRequest {
 /// Handles both connectionless and connection-oriented communication.
 /// The connection table size is configurable via const generics.
 ///
-/// In the router architecture, TL is a synchronous [`MessageHandler`]. The
-/// router dispatches messages to it based on ServiceType, and TL pushes
+/// In the router architecture, TL is a synchronous [`Layer`] that the
+/// router dispatches messages to based on ServiceType. TL pushes
 /// transformed messages to the [`Outbox`] for further routing. Timer-driven
-/// timeout handling is integrated via [`next_deadline`](MessageHandler::next_deadline)
-/// and [`poll`](MessageHandler::poll).
+/// timeout handling is integrated via [`next_deadline`](Layer::next_deadline)
+/// and [`poll`](Layer::poll).
 ///
 /// # Type Parameters
 /// - `D`: Stack definition providing table types
@@ -148,7 +148,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 }
 
 impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
-    MessageHandler for TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
+    Layer for TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
 where
     D::State: HasAddressTable + HasConnectionAuth,
 {

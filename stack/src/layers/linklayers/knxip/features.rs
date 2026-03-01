@@ -401,7 +401,6 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
     ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel> {
         let dev_mgmt = super::servers::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
-            context.application_layer_sender(),
             context.buffer_manager(),
         );
 
@@ -436,7 +435,6 @@ impl TunnelingFeature for NoTunneling {
     ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel> {
         let dev_mgmt = super::servers::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
-            context.application_layer_sender(),
             context.buffer_manager(),
         );
 

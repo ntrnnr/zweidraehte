@@ -2,11 +2,11 @@
 //!
 //! The router replaces the previous architecture of independent async layer
 //! tasks connected by channels. Instead, NL, TL, and AL are synchronous
-//! [`MessageHandler`] implementations dispatched by a single async loop.
+//! [`Layer`] implementations dispatched by a single async loop.
 //!
-//! Messages are routed based on their [`ServiceType`]. Each handler declares
-//! which ServiceTypes it handles via [`MessageHandler::HANDLES`], and the
-//! router builds a compile-time dispatch table mapping ServiceType → handler.
+//! Messages are routed based on their [`ServiceType`]. Each layer declares
+//! which ServiceTypes it handles via [`Layer::HANDLES`], and the
+//! router builds a compile-time dispatch table mapping ServiceType → layer.
 //!
 //! The link layer remains a separate async task, connected to the router via
 //! the existing 3-channel interface (req/ind/conf).
@@ -17,19 +17,19 @@ use crate::messages::buffers::Buffer;
 use crate::messages::knx::{KnxMessageBuffer, ServiceType};
 
 // ============================================================================
-// MessageHandler Trait
+// Layer Trait
 // ============================================================================
 
-/// A synchronous message handler registered for specific ServiceTypes.
+/// A synchronous protocol layer registered for specific ServiceTypes.
 ///
-/// Handlers process messages and produce outputs via the [`Outbox`]. The
-/// router calls handlers based on the message's ServiceType, then dispatches
+/// Layers process messages and produce outputs via the [`Outbox`]. The
+/// router calls layers based on the message's ServiceType, then dispatches
 /// any outputs through the table again.
 ///
-/// Each ServiceType maps to exactly one handler. Routing ambiguity is resolved
+/// Each ServiceType maps to exactly one layer. Routing ambiguity is resolved
 /// by using distinct ServiceTypes (e.g., `CemiTl_Data_Ind` vs `T_Data_Ind`).
-pub trait MessageHandler {
-    /// ServiceTypes this handler wants to receive.
+pub trait Layer {
+    /// ServiceTypes this layer wants to receive.
     ///
     /// This is an associated const so that the dispatch table can be built
     /// at compile time.
@@ -38,18 +38,18 @@ pub trait MessageHandler {
     /// Process a message. Push any output messages to the outbox.
     ///
     /// The outbox messages carry their own ServiceType, which the router
-    /// uses to dispatch them to the next handler in the chain.
+    /// uses to dispatch them to the next layer in the chain.
     fn process(
         &mut self,
         msg: KnxMessageBuffer<Buffer<'static>>,
         outbox: &mut Outbox,
     );
 
-    /// Earliest deadline at which this handler wants a [`poll`](Self::poll)
+    /// Earliest deadline at which this layer wants a [`poll`](Self::poll)
     /// call. Returns `None` if no timer is needed.
     ///
-    /// The router computes `min(all handlers' deadlines)` and uses it as
-    /// the timeout for its event loop. When the timer fires, all handlers
+    /// The router computes `min(all layers' deadlines)` and uses it as
+    /// the timeout for its event loop. When the timer fires, all layers
     /// whose deadline has passed are polled.
     fn next_deadline(&self) -> Option<Instant> {
         None
@@ -59,6 +59,14 @@ pub trait MessageHandler {
     ///
     /// Push any timer-triggered messages to the outbox.
     fn poll(&mut self, _outbox: &mut Outbox) {}
+
+    /// One-time initialization called after layer construction but before
+    /// the router loop starts.
+    ///
+    /// Use this for setup that depends on runtime state (e.g., checking
+    /// whether the application is already running and starting a read-on-init
+    /// cycle). Default is a no-op.
+    fn init(&mut self) {}
 }
 
 // ============================================================================
@@ -68,14 +76,14 @@ pub trait MessageHandler {
 /// Maximum number of messages that can be in the outbox at once.
 ///
 /// A full indication→response chain is about 6 hops (LL→NL→TL→AL→TL→NL→LL).
-/// 8 provides headroom for side-outputs (e.g., TL pushing both an ACK and
-/// a data indication simultaneously).
+/// 8 provides headroom for side-outputs (e.g., TL pushing both an ACK and a
+/// data indication simultaneously).
 const OUTBOX_CAPACITY: usize = 8;
 
-/// Collects output messages from handlers.
+/// Collects output messages from layers.
 ///
 /// Messages pushed here are dispatched by the router after the current
-/// handler returns. Each message carries its own ServiceType, which
+/// layer returns. Each message carries its own ServiceType, which
 /// determines where it goes next.
 pub struct Outbox {
     // Simple inline ring buffer to avoid heapless dependency for this.
@@ -130,40 +138,40 @@ impl Outbox {
 // DispatchTable
 // ============================================================================
 
-/// Fixed-size lookup table: ServiceType → handler index.
+/// Fixed-size lookup table: ServiceType → layer index.
 ///
-/// Built at compile time from each handler's [`MessageHandler::HANDLES`]
-/// constant. Each ServiceType maps to exactly one handler (or none).
+/// Built at compile time from each layer's [`Layer::HANDLES`]
+/// constant. Each ServiceType maps to exactly one layer (or none).
 pub struct DispatchTable {
-    /// Maps ServiceType discriminant (u8) → handler index.
-    /// `0xFF` means no handler is registered for that ServiceType.
+    /// Maps ServiceType discriminant (u8) → layer index.
+    /// `0xFF` means no layer is registered for that ServiceType.
     table: [u8; 256],
 }
 
 impl DispatchTable {
-    /// Create an empty dispatch table with no registered handlers.
+    /// Create an empty dispatch table with no registered layers.
     pub const fn empty() -> Self {
         Self { table: [0xFF; 256] }
     }
 
-    /// Register a handler index for a ServiceType value.
+    /// Register a layer index for a ServiceType value.
     ///
     /// This is const-callable, enabling compile-time table construction.
-    pub const fn register(&mut self, service_type: u8, handler_idx: u8) {
+    pub const fn register(&mut self, service_type: u8, layer_idx: u8) {
         // Catch duplicate registrations at compile time.
         // Must use `core::assert!` directly — the crate's `fmt.rs` remaps
         // `assert!`/`debug_assert!` to defmt equivalents on embedded targets,
         // which aren't const-compatible.
         core::assert!(
             self.table[service_type as usize] == 0xFF,
-            "Duplicate handler registration for ServiceType"
+            "Duplicate layer registration for ServiceType"
         );
-        self.table[service_type as usize] = handler_idx;
+        self.table[service_type as usize] = layer_idx;
     }
 
-    /// Look up the handler index for a ServiceType.
+    /// Look up the layer index for a ServiceType.
     ///
-    /// Returns `None` if no handler is registered.
+    /// Returns `None` if no layer is registered.
     pub fn get(&self, st: ServiceType) -> Option<u8> {
         let raw: u8 = st.into();
         let idx = self.table[raw as usize];
@@ -172,50 +180,73 @@ impl DispatchTable {
 }
 
 // ============================================================================
-// HandlerSet Trait
+// LayerStack Trait
 // ============================================================================
 
-/// A composed set of [`MessageHandler`]s with a compile-time dispatch table.
+/// A composed set of [`Layer`]s with a compile-time dispatch table.
 ///
-/// Implemented for tuples of `MessageHandler` via the
-/// [`impl_handler_set!`] macro. The `StackDefinition::Handlers` associated
+/// Implemented for tuples of `Layer` via the
+/// [`impl_layer_stack!`] macro. The `StackDefinition::Layers` associated
 /// type determines which tuple is used for a given device.
-pub trait HandlerSet {
-    /// Dispatch table mapping ServiceType → handler index, built at
-    /// compile time from all handlers' [`MessageHandler::HANDLES`].
+pub trait LayerStack {
+    /// Dispatch table mapping ServiceType → layer index, built at
+    /// compile time from all layers' [`Layer::HANDLES`].
     const DISPATCH_TABLE: DispatchTable;
 
-    /// Dispatch a message to the handler at the given index.
+    /// Dispatch a message to the layer at the given index.
     fn dispatch(
         &mut self,
-        handler_idx: u8,
+        layer_idx: u8,
         msg: KnxMessageBuffer<Buffer<'static>>,
         outbox: &mut Outbox,
     );
 
-    /// Earliest deadline across all handlers.
+    /// Earliest deadline across all layers.
     fn next_deadline(&self) -> Option<Instant>;
 
-    /// Poll all handlers that have a pending deadline.
+    /// Poll all layers that have a pending deadline.
     ///
     /// Called by the router when the earliest deadline has elapsed. Since the
     /// router only reaches the timer arm when `Timer::at(earliest_deadline)`
-    /// fires, all handlers with deadlines at or before now are eligible.
+    /// fires, all layers with deadlines at or before now are eligible.
     fn poll(&mut self, outbox: &mut Outbox);
+
+    /// Initialize all layers. Called once before the router loop starts.
+    fn init(&mut self);
+
+    /// Wait for external (non-dispatch-table) input.
+    ///
+    /// The router `select`s on this future alongside LL events and
+    /// layer timers. When it resolves, the router calls
+    /// [`handle_side_input`](Self::handle_side_input).
+    ///
+    /// Default: pends forever (no external input).
+    fn recv_side_input(&self) -> impl core::future::Future<Output = ()> + '_ {
+        core::future::pending()
+    }
+
+    /// Process the external input that [`recv_side_input`](Self::recv_side_input)
+    /// signaled.
+    ///
+    /// Called immediately after `recv_side_input` resolves. Push any
+    /// resulting messages to the outbox.
+    ///
+    /// Default: no-op.
+    fn handle_side_input(&mut self, _outbox: &mut Outbox) {}
 }
 
 // ============================================================================
-// HandlerSet tuple implementations
+// LayerStack tuple implementations
 // ============================================================================
 
-/// Helper to build the dispatch table const for a set of handler types.
+/// Helper to build the dispatch table const for a set of layer types.
 ///
-/// Each handler type's `HANDLES` array is iterated at compile time, and
-/// the handler's positional index is recorded in the table.
-macro_rules! impl_handler_set {
-    // Base case: single handler.
+/// Each layer type's `HANDLES` array is iterated at compile time, and
+/// the layer's positional index is recorded in the table.
+macro_rules! impl_layer_stack {
+    // Base case: single layer.
     ($($idx:tt : $T:ident),+) => {
-        impl<$($T: MessageHandler),+> HandlerSet for ($($T,)+) {
+        impl<$($T: Layer),+> LayerStack for ($($T,)+) {
             const DISPATCH_TABLE: DispatchTable = {
                 let mut table = DispatchTable::empty();
                 $(
@@ -233,11 +264,11 @@ macro_rules! impl_handler_set {
 
             fn dispatch(
                 &mut self,
-                handler_idx: u8,
+                layer_idx: u8,
                 msg: KnxMessageBuffer<Buffer<'static>>,
                 outbox: &mut Outbox,
             ) {
-                match handler_idx {
+                match layer_idx {
                     $($idx => self.$idx.process(msg, outbox),)+
                     _ => unreachable!(),
                 }
@@ -257,17 +288,17 @@ macro_rules! impl_handler_set {
             }
 
             fn poll(&mut self, outbox: &mut Outbox) {
-                // Poll every handler that has a pending deadline.
+                // Poll every layer that has a pending deadline.
                 //
-                // We don't compare against a captured `now` because handlers
+                // We don't compare against a captured `now` because layers
                 // that want immediate polling return `Instant::now()` from
                 // `next_deadline()`. If we compared that against a `now`
                 // captured earlier, the fresh `Instant::now()` would always
                 // be slightly *after* the stale one, and the `d <= now` check
                 // would never pass.
                 //
-                // Instead, simply poll every handler that has *any* deadline.
-                // Handlers with future deadlines (e.g. TL timeouts) won't
+                // Instead, simply poll every layer that has *any* deadline.
+                // Layers with future deadlines (e.g. TL timeouts) won't
                 // reach this point because the router's `Timer::at(deadline)`
                 // hasn't fired yet — the select only reaches the timer arm
                 // when the earliest deadline has actually elapsed.
@@ -277,19 +308,23 @@ macro_rules! impl_handler_set {
                     }
                 )+
             }
+
+            fn init(&mut self) {
+                $(self.$idx.init();)+
+            }
         }
     };
 }
 
-// Generate HandlerSet impls for tuple sizes 1 through 8.
-impl_handler_set!(0: A);
-impl_handler_set!(0: A, 1: B);
-impl_handler_set!(0: A, 1: B, 2: C);
-impl_handler_set!(0: A, 1: B, 2: C, 3: D);
-impl_handler_set!(0: A, 1: B, 2: C, 3: D, 4: E);
-impl_handler_set!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F);
-impl_handler_set!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G);
-impl_handler_set!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H);
+// Generate LayerStack impls for tuple sizes 1 through 8.
+impl_layer_stack!(0: A);
+impl_layer_stack!(0: A, 1: B);
+impl_layer_stack!(0: A, 1: B, 2: C);
+impl_layer_stack!(0: A, 1: B, 2: C, 3: D);
+impl_layer_stack!(0: A, 1: B, 2: C, 3: D, 4: E);
+impl_layer_stack!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F);
+impl_layer_stack!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G);
+impl_layer_stack!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H);
 
 // ============================================================================
 // Tests
@@ -300,7 +335,7 @@ mod tests {
     use super::*;
 
     struct NlHandler;
-    impl MessageHandler for NlHandler {
+    impl Layer for NlHandler {
         const HANDLES: &'static [ServiceType] = &[
             ServiceType::L_Data_Ind,
         ];
@@ -316,7 +351,7 @@ mod tests {
     }
 
     struct TlHandler;
-    impl MessageHandler for TlHandler {
+    impl Layer for TlHandler {
         const HANDLES: &'static [ServiceType] = &[
             ServiceType::N_Data_Ind,
         ];
@@ -334,7 +369,7 @@ mod tests {
     struct AlHandler {
         received: usize,
     }
-    impl MessageHandler for AlHandler {
+    impl Layer for AlHandler {
         const HANDLES: &'static [ServiceType] = &[
             ServiceType::T_Data_Ind,
         ];

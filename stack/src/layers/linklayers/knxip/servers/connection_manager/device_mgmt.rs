@@ -4,20 +4,16 @@
 //! delegating to a [`PropertyServiceHandler`]. Uses a trait object reference
 //! so that no generics leak out of this module.
 
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::{Channel, DynamicSender};
 use embassy_time::Instant;
 
-use crate::encoding::cemi::{self, CemiLocalMgmt, CemiMessageCode, CemiTransportBuilder};
+use crate::encoding::cemi::{CemiLocalMgmt, CemiMessageCode};
 use crate::messages::buffers::{Buffer, DynBufferManager};
-use crate::messages::builder::{IndicationMessage, RequestMessage};
-use crate::messages::knx::*;
 use crate::messages::knxip::substructs::{CRD, CRI, DeviceManagementCRD};
 use crate::messages::knxip::{
     ConnectionStatus, DeviceConfigurationAck, DeviceConfigurationAckBuilder, DeviceConfigurationRequest,
     DeviceConfigurationRequestBuilder, KNXnetIPServiceType,
 };
-use crate::{AccessContext, AccessSource};
+use crate::AccessContext;
 use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, PropertyServiceHandler,
 };
@@ -33,13 +29,16 @@ use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, Connecti
 /// Handler for Device Management connections (ConnectionType 0x03).
 ///
 /// Processes cEMI Local Management frames (M_PropRead/M_PropWrite) by
-/// delegating to a [`PropertyServiceHandler`], and cEMI Transport Layer
-/// frames (T_Data_Connected/T_Data_Individual) by converting them to
-/// internal format and routing them through the application layer.
+/// delegating to a [`PropertyServiceHandler`].
+///
+/// cEMI Transport Layer frames (T_Data_Connected/T_Data_Individual) are
+/// currently rejected. These will be supported once a `CemiTransportLayer`
+/// handler is implemented as part of the generic handler composition.
+// TODO: Implement CemiTransportLayer handler to restore cEMI transport
+// support for Device Management connections (replaces the removed
+// al_inject bypass channel).
 pub struct DeviceMgmtConnectionHandler<'a> {
     property_handler: &'a dyn PropertyServiceHandler,
-    /// Sender to the application layer's indication channel, for cEMI Transport Layer mode.
-    al_sender: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
     /// Buffer manager for allocating internal message buffers.
     buffer_manager: &'a DynBufferManager<'static>,
     /// Channel ID of the active Device Management connection, if any.
@@ -51,10 +50,9 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
     /// Create a new Device Management connection handler.
     pub fn new(
         property_handler: &'a dyn PropertyServiceHandler,
-        al_sender: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         buffer_manager: &'a DynBufferManager<'static>,
     ) -> Self {
-        Self { property_handler, al_sender, buffer_manager, active_channel: None }
+        Self { property_handler, buffer_manager, active_channel: None }
     }
 
     /// Parse and process a cEMI frame from a DeviceConfigurationRequest.
@@ -113,119 +111,18 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
 
     /// Handle a cEMI Transport Layer frame (T_Data_Connected.req / T_Data_Individual.req).
     ///
-    /// These frames carry APCI services (DeviceDescriptorRead, MemoryRead/Write,
-    /// Authorize, etc.) from ETS via the Device Management connection. They are
-    /// NOT full TL connections — no T_Connect/T_Disconnect, no sequence numbering.
-    ///
-    /// The flow is:
-    /// 1. Convert cEMI transport frame to internal KNX message format using
-    ///    `cemi_to_knx_message` (the 6 reserved zero bytes map to CTRL/SRC/DST/NPDU)
-    /// 2. Apply post-fixups (CTRL, DST, address type, access level, service type)
-    /// 3. Send as `Indication` (with response route) to the application layer
-    /// 4. Await response on the local channel
-    /// 5. Convert response back to cEMI transport format using `CemiTransportBuilder`
+    /// Currently unsupported — returns an error. These frames carry APCI services
+    /// (DeviceDescriptorRead, MemoryRead/Write, Authorize, etc.) from ETS and
+    /// require a `CemiTransportLayer` handler to process them through the
+    /// generic handler composition.
     async fn handle_cemi_transport(
         &self,
-        payload: &[u8],
+        _payload: &[u8],
         message_code: CemiMessageCode,
     ) -> Result<Option<Buffer<'static>>, ConnectionStatus> {
-        debug!("cEMI Transport Layer frame: {:?} ({} bytes)", message_code, payload.len());
-
-        // Determine the internal service type based on the cEMI message code.
-        // T_Data_Connected.req → T_Data_Ind (connection-oriented APCI services)
-        // T_Data_Individual.req → T_DataUnack_Ind (connectionless APCI services)
-        let service_type = match message_code {
-            CemiMessageCode::TDataConnectedReq => ServiceType::T_Data_Ind,
-            CemiMessageCode::TDataIndividualReq => ServiceType::T_DataUnack_Ind,
-            _ => {
-                debug!("Unexpected transport message code: {:?}", message_code);
-                return Ok(None);
-            }
-        };
-
-        // ================================================================
-        // Inbound: cEMI transport → internal format
-        // ================================================================
-
-        // Allocate a buffer and copy the raw cEMI payload into it.
-        // cemi_to_knx_message works in-place, converting the cEMI format
-        // to internal format. The 6 reserved zero bytes in the cEMI transport
-        // frame occupy the same positions as CTRL1+CTRL2+SRC+DST in cEMI L_Data,
-        // so the conversion produces zeroed CTRL/SRC/DST/NPDU fields which we
-        // then fix up below.
-        let mut buf = self.buffer_manager.alloc_zeroed(payload.len()).await;
-        buf[..payload.len()].copy_from_slice(payload);
-
-        let buf = cemi::cemi_to_knx_message(buf);
-        let mut msg = KnxMessageBuffer::new(buf, service_type);
-
-        // Post-fixups: the conversion produced zeroed control fields, so set
-        // the fields that matter for internal routing.
-
-        // Set CTRL: standard frame, system priority (management traffic)
-        msg.ctrl_field_mut().set_ft(FrameType::Standard);
-        msg.ctrl_field_mut().set_priority(Priority::System);
-
-        // Individual address type (these are point-to-point management services)
-        msg.set_address_type(AddressType::Individual);
-
-        // Full access for ETS Device Management connections.
-        // TODO: Revisit when secure tunneling is implemented.
-        msg.set_access_source(AccessSource::Explicit(AccessContext::MAX_ACCESS));
-
-        let indication = IndicationMessage::indication(msg);
-
-        // ================================================================
-        // Route to AL with response route and await response
-        // ================================================================
-
-        // Create a stack-local channel for the response. Same transmute pattern
-        // as ActorRequest::request() — the channel lives on this stack frame
-        // and we guarantee it outlives the sender.
-        let response_channel: Channel<NoopRawMutex, Option<RequestMessage<Buffer<'static>>>, 1> = Channel::new();
-        let sender: DynamicSender<'_, Option<RequestMessage<Buffer<'static>>>> = response_channel.sender().into();
-
-        // Safety: the channel lives on this stack frame and we await the
-        // response before returning, so the sender cannot outlive the channel.
-        let response_route = *unsafe {
-            core::mem::transmute::<
-                &DynamicSender<'_, Option<RequestMessage<Buffer<'static>>>>,
-                &DynamicSender<'static, Option<RequestMessage<Buffer<'static>>>>,
-            >(&sender)
-        };
-
-        let indication = indication.with_response_route(response_route);
-        self.al_sender.send(indication).await;
-
-        let response = response_channel.receive().await;
-
-        // ================================================================
-        // Outbound: internal format → cEMI transport
-        // ================================================================
-
-        let Some(response_msg) = response else {
-            // No response generated (unrecognized APCI, write-only service, etc.)
-            debug!("cEMI Transport: no response from AL");
-            return Ok(None);
-        };
-
-        // Determine the .ind message code for the response
-        let response_mc = message_code.to_indication().ok_or_else(|| {
-            error!("No indication message code for {:?}", message_code);
-            ConnectionStatus::DataConnectionError
-        })?;
-
-        // Extract TPDU from internal format: everything from offset MSG_TPCI onwards
-        let tpdu = &response_msg.buf()[offsets::MSG_TPCI..];
-
-        // Serialize using CemiTransportBuilder directly into a pool Buffer
-        let builder = CemiTransportBuilder { message_code: response_mc, tpdu };
-
-        let mut out = self.buffer_manager.alloc_no_headroom().await;
-        out.serialize(&builder);
-
-        debug!("cEMI Transport response: {:?} ({} bytes)", response_mc, out.len());
-        Ok(Some(out))
+        // TODO: Route through CemiTransportLayer handler once implemented.
+        warn!("cEMI Transport Layer frames not yet supported (code: {:?})", message_code);
+        Err(ConnectionStatus::DataConnectionError)
     }
 
     /// Build a DeviceConfigurationAck as a `PendingResponse`.

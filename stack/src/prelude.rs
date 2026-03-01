@@ -7,6 +7,7 @@
 // Core stack
 pub use crate::{
     Stack, Runner, StackResources, StackDefinition,
+    LayerContext, InsecureDeviceLayers,
     StackState, IpStackState, IpDevice, IpPlatform, IpPlatformConfig,
     ReadObjectError, UpdateObjectError,
     AccessContext,

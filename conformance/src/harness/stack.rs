@@ -1147,6 +1147,14 @@ impl StackDefinition for IpcConformanceTestStack {
             &CONFORMANCE_MEMORY_LAYOUT,
         )
     }
+
+    type Layers<'a> = InsecureDeviceLayers<'a, Self>;
+    fn build_layers<'a>(ctx: &'a LayerContext<'a, Self>) -> Self::Layers<'a>
+    where
+        Self: 'a,
+    {
+        InsecureDeviceLayers::new(ctx)
+    }
 }
 
 // ============================================================================
