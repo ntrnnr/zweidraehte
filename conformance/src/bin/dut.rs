@@ -26,7 +26,7 @@ use knx_conformance::harness::stack::{
 use zweidraehte::messages::buffers::{BufferManager, DynBufferManager};
 use zweidraehte::objects::comm::ComObjects;
 use zweidraehte::objects::interface::HasDeviceObject;
-use zweidraehte::restart::{EraseCode, RestartError, RestartResponse};
+use zweidraehte::restart::EraseCode;
 use zweidraehte::{Runner, Stack, StackResources};
 
 // ============================================================================
@@ -98,8 +98,8 @@ async fn handle_commands(
 // ============================================================================
 //
 // On restart, the child:
-// 1. Executes the appropriate reset on device state
-// 2. Replies to the stack (which sends the A_Restart_Response)
+// 1. Receives the restart request (the stack already sent A_Restart_Response)
+// 2. Executes the appropriate reset on device state
 // 3. Flushes all persistent state to shared memory
 // 4. Exits the process
 //
@@ -115,24 +115,13 @@ async fn handle_restarts(
     loop {
         let request = stack.receive_restart_request().await;
         let state = stack.state();
-        let erase_code = request.get().erase_code;
+        let erase_code = request.erase_code;
 
-        // Validate the erase code. Unknown codes are rejected without restart.
-        let supported = !matches!(erase_code, EraseCode::Other(_));
-        let response = if supported {
-            RestartResponse::success()
-        } else {
-            RestartResponse::error(RestartError::UnsupportedEraseCode)
-        };
-
-        let success = response.error == RestartError::NoError;
-
-        // Reply first so the stack can send the A_Restart_Response while the
-        // device state (especially the individual address) is still intact.
-        // State changes happen *after* the response is transmitted.
-        request.reply(response).await;
-
-        if !success {
+        // The stack already sent the A_Restart_Response on the bus before
+        // delivering this request. Unknown erase codes are rejected by the
+        // application layer and never reach us.
+        // Validate anyway: skip restart for unsupported codes.
+        if matches!(erase_code, EraseCode::Other(_)) {
             continue;
         }
 

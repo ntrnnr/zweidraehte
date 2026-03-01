@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), no_std)]
 #![feature(const_trait_impl)]
+#![feature(const_convert)]
 #![feature(adt_const_params)]
 #![feature(generic_const_exprs)]
 #![feature(type_alias_impl_trait)]
@@ -30,6 +31,7 @@ pub mod messages;
 pub mod objects;
 pub mod prelude;
 pub mod restart;
+pub mod router;
 pub mod storage;
 pub mod util;
 
@@ -854,8 +856,7 @@ impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResour
 pub struct Runner<'d, D: StackDefinition> {
     stack: Stack<'d, D>,
     interface_objects: &'d D::InterfaceObjects<'static>,
-    app_request_receiver: DynamicReceiver<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
-    restart_sender: DynamicSender<'static, Request<restart::RestartRequest, restart::RestartResponse>>,
+    restart_sender: DynamicSender<'static, restart::RestartRequest>,
     link_layer_builder: D::LLB,
     link_layer_resources: &'d mut <D::LLB as LinkLayerBuilderBase>::Resources,
 }
@@ -903,7 +904,7 @@ pub struct Stack<'d, D: StackDefinition> {
     inner: &'d Inner<D>,
     interface_objects: &'d D::InterfaceObjects<'static>,
     app_request_sender: DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
-    restart_receiver: DynamicReceiver<'static, Request<restart::RestartRequest, restart::RestartResponse>>,
+    restart_receiver: DynamicReceiver<'static, restart::RestartRequest>,
 }
 
 impl<'d, D: StackDefinition> Copy for Stack<'d, D> {}
@@ -927,8 +928,12 @@ pub(crate) struct Inner<D: StackDefinition> {
         PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
     /// Channel for application lifecycle events (started/stopped running)
     pub(crate) lifecycle_channel: PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
-    /// Channel for A_Restart requests from application layer to user code
-    pub(crate) restart_channel: Channel<D::Mutex, Request<restart::RestartRequest, restart::RestartResponse>, 1>,
+    /// Channel for A_Restart requests from application layer to user code.
+    ///
+    /// In the synchronous router model, AL sends the bus response immediately
+    /// and fires off the request to user code. User code receives it and
+    /// performs the actual restart/reset — no response channel needed.
+    pub(crate) restart_channel: Channel<D::Mutex, restart::RestartRequest, 1>,
     /// Unified device state containing runtime state, tables, and configuration
     pub(crate) state: D::State,
     /// Hook context for communication object hooks
@@ -1193,8 +1198,8 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
 
     // SAFETY: We are creating a static reference to the channel held by the `Inner` struct,
     //         which is safe because it is guaranteed to live as long as the `Stack` or the `Runner`.
-    let (app_request_sender, app_request_receiver) =
-        create_request_response_pair::<D::Mutex, _, 1>(unsafe { core::mem::transmute(&inner.app_service_channel) });
+    let app_request_sender: DynamicSender<'static, _> =
+        unsafe { core::mem::transmute::<DynamicSender<'_, _>, DynamicSender<'static, _>>(inner.app_service_channel.sender().into()) };
 
     // Create restart channel sender/receiver pair.
     // The sender goes to the Runner (passed to ApplicationLayer), receiver goes to Stack (for user code).
@@ -1205,12 +1210,11 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());
 
     let stack =
-        Stack { inner, interface_objects, app_request_sender: app_request_sender, restart_receiver: restart_receiver };
+        Stack { inner, interface_objects, app_request_sender, restart_receiver };
     let runner = Runner {
         stack,
         interface_objects,
-        app_request_receiver: app_request_receiver,
-        restart_sender: restart_sender,
+        restart_sender,
         link_layer_builder,
         link_layer_resources,
     };
@@ -1252,65 +1256,46 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             self.stack.inner.lifecycle_channel.publish_immediate(LifecycleEvent::ApplicationStarted);
         }
 
-        // Create typed channels for layer-to-layer communication.
-        //
-        // Each layer pair communicates through three unidirectional channels:
-        // - Request channel (down): upper → lower
-        // - Indication channel (up): lower → upper
-        // - Confirmation channel (up): lower → upper
-        //
-        // This eliminates the deadlock-prone bidirectional LayerOp pattern.
-        // Capacity 1 is sufficient: each layer runs a select loop that always
-        // drains its inboxes promptly, so messages never accumulate.
+        use embassy_futures::select::{Either, select, select3};
+        use embassy_time::Timer;
         use messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
+        use messages::knx::ServiceType;
+        use router::{HandlerSet, Outbox};
 
-        // LL ↔ NL channels
+        // ================================================================
+        // Link layer channels
+        // ================================================================
+        //
+        // The link layer stays as a separate async task connected via three
+        // channels. The router replaces the inter-layer channels (NL↔TL,
+        // TL↔AL) with a synchronous dispatch table.
+
         let ll_req: Channel<NoopRawMutex, RequestMessage<Buffer<'static>>, 1> = Channel::new();
         let ll_ind: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
         let ll_conf: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> = Channel::new();
 
-        // NL ↔ TL channels
-        let nl_req: Channel<NoopRawMutex, RequestMessage<Buffer<'static>>, 1> = Channel::new();
-        let nl_ind: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
-        let nl_conf: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> = Channel::new();
-
-        // TL ↔ AL channels
-        let tl_req: Channel<NoopRawMutex, RequestMessage<Buffer<'static>>, 1> = Channel::new();
-        let tl_ind: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
-        let tl_conf: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> = Channel::new();
-
-        // KNX/IP inject channel (LL → AL, bypasses NL/TL)
+        // KNX/IP inject channel (LL → router, bypasses NL/TL)
         let al_inject: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
 
-        // Create a network layer with reference to stack state and interface objects.
-        // The routing count (hop count) for outgoing messages is read from the device object.
-        let mut network_layer = NetworkLayer::new(
+        // ================================================================
+        // Synchronous message handlers
+        // ================================================================
+
+        let network_layer = NetworkLayer::new(
             &self.stack.inner.state,
             self.interface_objects,
-            ll_req.sender().into(),
-            nl_ind.sender().into(),
-            nl_conf.sender().into(),
         );
 
-        // Create a transport layer.
-        //
         // TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
         // generics here once `generic_const_exprs` no longer overflows for trait
-        // consts forwarded through where-clauses. Until then the TL uses its own
-        // defaults (1 incoming, 0 outgoing) which match the `StackDefinition`
-        // defaults. Override by instantiating `TransportLayer` with explicit const
-        // generics in a custom runner.
-        let mut transport_layer = TransportLayer::<'_, D>::new(
+        // consts forwarded through where-clauses.
+        let transport_layer = TransportLayer::<'_, D>::new(
             &self.stack.inner.buffer_manager,
             &self.stack.inner.state,
-            nl_req.sender().into(),
-            tl_ind.sender().into(),
-            tl_conf.sender().into(),
             D::TL_STYLE,
         );
 
-        // Create an application layer
-        let mut application_layer = ApplicationLayer::<'_, D>::new(
+        let application_layer = ApplicationLayer::<'_, D>::new(
             &self.stack.inner.buffer_manager,
             &self.stack.inner.state,
             &self.stack.inner.comm_objs,
@@ -1319,15 +1304,25 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             &self.stack.inner.lifecycle_channel,
             self.interface_objects,
             &self.stack.inner.memory_map,
-            self.app_request_receiver,
             self.restart_sender,
-            tl_req.sender().into(),
         );
 
-        // Build and run the link layer using the provided builder.
-        // The StackContext provides both buffer management and property service
-        // access, allowing the link layer to handle connection-oriented protocols
-        // (e.g., KNX/IP Device Management) that need to read/write properties.
+        // Compose the handler set. The dispatch table is built at compile
+        // time from each handler's HANDLES constant.
+        let mut handlers = (network_layer, transport_layer, application_layer);
+        type Handlers<'a, D> = (
+            NetworkLayer<'a, <D as StackDefinition>::State, <D as StackDefinition>::InterfaceObjects<'static>>,
+            TransportLayer<'a, D>,
+            ApplicationLayer<'a, D>,
+        );
+
+        // Initialize read-on-init cycle if the application is already running.
+        handlers.2.init_read_on_init();
+
+        // ================================================================
+        // Link layer task
+        // ================================================================
+
         let stack_context = StackContext {
             inner: self.stack.inner,
             interface_objects: self.interface_objects,
@@ -1341,13 +1336,101 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             ll_req.receiver(),
         );
 
-        // Run all layer tasks concurrently. Each layer's select-based event
-        // loop is always responsive to its inbox, eliminating deadlocks.
-        let nl_task = network_layer.run(nl_req.receiver(), ll_ind.receiver(), ll_conf.receiver());
-        let tl_task = transport_layer.run(nl_ind.receiver(), tl_req.receiver(), nl_conf.receiver());
-        let al_task = application_layer.run(tl_ind.receiver(), tl_conf.receiver(), al_inject.receiver());
-        let tasks = embassy_futures::join::join4(ll_task, nl_task, tl_task, al_task);
-        tasks.await;
+        // ================================================================
+        // Router dispatch loop
+        // ================================================================
+        //
+        // A single async loop replaces the previous 3 concurrent layer
+        // tasks. Messages flow through the synchronous dispatch table:
+        //
+        //   LL → (L_Data_Ind) → NL → (N_*_Ind) → TL → (T_*_Ind) → AL
+        //   AL → (T_*_Req)    → TL → (N_*_Req) → NL → (L_Data_Req) → LL
+        //
+        // Each ServiceType maps to exactly one handler. The outbox collects
+        // outputs; the drain loop re-dispatches until all messages are
+        // consumed or sent to the LL.
+
+        let router_task = async {
+            loop {
+                let mut outbox = Outbox::new();
+
+                // Compute the earliest handler deadline for timer-driven
+                // events (TL connection timeouts, AL read-on-init).
+                let deadline = <Handlers<'_, D> as HandlerSet>::DISPATCH_TABLE;
+                let _ = deadline; // just to name the type for clarity below
+
+                let handler_deadline = handlers.next_deadline();
+                if handler_deadline.is_some() {
+                    debug!("Router: handler_deadline is Some, will poll on timer");
+                }
+
+                // Wait for the next event: LL indication, LL confirmation,
+                // AL inject, app request, or handler timer.
+                match select3(
+                    ll_ind.receive(),
+                    ll_conf.receive(),
+                    select(
+                        select(al_inject.receive(), self.stack.inner.app_service_channel.receive()),
+                        async {
+                            match handler_deadline {
+                                Some(deadline) => Timer::at(deadline).await,
+                                // No deadline → sleep forever (select will pick
+                                // another branch).
+                                None => core::future::pending().await,
+                            }
+                        },
+                    ),
+                )
+                .await
+                {
+                    // LL indication → push to outbox for dispatch
+                    embassy_futures::select::Either3::First(ind) => {
+                        outbox.push(ind.into_inner());
+                    }
+                    // LL confirmation → push to outbox for dispatch
+                    embassy_futures::select::Either3::Second(conf) => {
+                        outbox.push(conf.into_inner());
+                    }
+                    embassy_futures::select::Either3::Third(third) => {
+                        match third {
+                            Either::First(inner) => match inner {
+                                // AL inject (cEMI TL bypass) → dispatch through table
+                                Either::First(inject) => {
+                                    outbox.push(inject.into_inner());
+                                }
+                                // App request (GroupValueWrite/Read from user code)
+                                Either::Second(app_req) => {
+                                    handlers.2.handle_app_request(&app_req, &mut outbox);
+                                }
+                            },
+                            // Timer expired → poll handlers with expired deadlines
+                            Either::Second(_) => {
+                                debug!("Router: timer expired, polling handlers");
+                                handlers.poll(&mut outbox);
+                            }
+                        }
+                    }
+                }
+
+                // Drain the outbox: dispatch each message through the table
+                // until all messages are consumed or sent to the LL.
+                while let Some(msg) = outbox.take_next() {
+                    let st = msg.service_type();
+                    if st == ServiceType::L_Data_Req {
+                        // Terminal: send to link layer
+                        ll_req.send(RequestMessage::request(msg)).await;
+                    } else if let Some(handler_idx) = <Handlers<'_, D> as HandlerSet>::DISPATCH_TABLE.get(st) {
+                        handlers.dispatch(handler_idx, msg, &mut outbox);
+                    } else {
+                        warn!("Router: no handler for {:?}, dropping", st);
+                        // Buffer is dropped, returned to pool
+                    }
+                }
+            }
+        };
+
+        // Run link layer and router concurrently
+        embassy_futures::join::join(ll_task, router_task).await;
 
         unreachable!();
     }
@@ -1799,51 +1882,45 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
 
     /// Receive the next restart request from the application layer.
     ///
-    /// When the stack receives an A_Restart message from the KNX bus, it validates the request
-    /// and sends a [`restart::RestartRequest`] through this channel. User code should:
+    /// When the stack receives an A_Restart message from the KNX bus, it validates
+    /// the request, sends the bus response immediately, and forwards the request
+    /// here for user code to act on. User code should:
     ///
     /// 1. Call this method to receive the request
     /// 2. Execute the appropriate reset based on [`restart::EraseCode`]
     /// 3. Flush storage to persist any changes
-    /// 4. Call [`Request::reply()`](layers::Request::reply) to send the response
-    /// 5. Trigger platform restart after the response is sent
+    /// 4. Trigger platform restart
+    ///
+    /// The bus response (A_Restart_Response) is sent by the application layer
+    /// before this request arrives — no response channel is needed.
     ///
     /// # Example
     /// ```rust,ignore
     /// # async fn handle_restart(stack: zweidraehte::Stack<'_, MyDevice>) {
-    /// use zweidraehte::restart::{RestartRequest, RestartResponse, RestartError, EraseCode};
+    /// use zweidraehte::restart::{RestartRequest, EraseCode};
     ///
     /// loop {
     ///     let request = stack.receive_restart_request().await;
     ///
     ///     // Execute reset based on erase code
-    ///     let response = match request.erase_code {
-    ///         EraseCode::Basic | EraseCode::Confirmed => {
-    ///             RestartResponse::success()
-    ///         }
+    ///     match request.erase_code {
+    ///         EraseCode::Basic | EraseCode::Confirmed => {}
     ///         EraseCode::FactoryReset => {
-    ///             // Perform factory reset
     ///             device_state.factory_reset();
-    ///             RestartResponse::success()
     ///         }
-    ///         _ => RestartResponse::error(RestartError::UnsupportedEraseCode),
-    ///     };
-    ///
-    ///     // Send response back to stack (this will send A_Restart_Response if needed)
-    ///     request.reply(response).await;
-    ///
-    ///     // Trigger platform restart via SystemControl trait
-    ///     if response.error == RestartError::NoError {
-    ///         embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
-    ///         use platform::SystemControl;
-    ///         let mut system = platform::LinuxSystem;
-    ///         let Err(e) = system.restart().await;
-    ///         panic!("Failed to restart: {:?}", e);
+    ///         _ => continue, // Unsupported erase code — AL already rejected on bus
     ///     }
+    ///
+    ///     // Trigger platform restart
+    ///     embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
+    ///     use platform::SystemControl;
+    ///     let mut system = platform::LinuxSystem;
+    ///     let Err(e) = system.restart().await;
+    ///     panic!("Failed to restart: {:?}", e);
     /// }
     /// # }
     /// ```
-    pub async fn receive_restart_request(&self) -> Request<restart::RestartRequest, restart::RestartResponse> {
+    pub async fn receive_restart_request(&self) -> restart::RestartRequest {
         self.restart_receiver.receive().await
     }
 

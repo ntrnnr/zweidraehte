@@ -1,13 +1,10 @@
-use embassy_futures::select::{Either3, select3};
-use embassy_sync::channel::DynamicSender;
 use heapless::Deque;
 
-use crate::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage};
 use crate::messages::knx::*;
+use crate::messages::buffers::Buffer;
 use crate::objects::interface::HasDeviceObject;
-use crate::{StackState, messages::buffers::Buffer};
-
-use super::Inbox;
+use crate::router::{MessageHandler, Outbox};
+use crate::StackState;
 
 /// Network layer for the KNX stack.
 ///
@@ -15,25 +12,12 @@ use super::Inbox;
 /// layer (N_Data, N_GroupData, etc.), handles hop count conversion, source
 /// address injection, and individual address duplication detection.
 ///
-/// # Channel architecture
-///
-/// The NL communicates with its neighbors through three pairs of typed channels
-/// (one pair per neighbor), with no blocking request-response patterns:
-///
-/// - From LL: indications (`ind_rx`) and confirmations (`conf_rx`)
-/// - To LL: requests (`ll_request_tx`)
-/// - To TL: indications (`tl_ind_tx`) and confirmations (`tl_conf_tx`)
-/// - From TL: requests (`req_rx`)
+/// In the router architecture, NL is a synchronous [`MessageHandler`]. The
+/// router dispatches messages to it based on ServiceType, and NL pushes
+/// transformed messages to the [`Outbox`] for further routing.
 pub struct NetworkLayer<'a, S: StackState, IO: HasDeviceObject> {
     state: &'a S,
     interface_objects: &'a IO,
-
-    // Outgoing channels (to LL)
-    ll_request_tx: DynamicSender<'a, RequestMessage<Buffer<'static>>>,
-
-    // Outgoing channels (to TL)
-    tl_ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
-    tl_conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
 
     /// FIFO of address types from outgoing requests, needed to transform each
     /// LL confirmation's service type back to the correct N_*_Con form.
@@ -47,11 +31,8 @@ impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
     pub fn new(
         state: &'a S,
         interface_objects: &'a IO,
-        ll_request_tx: DynamicSender<'a, RequestMessage<Buffer<'static>>>,
-        tl_ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
-        tl_conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     ) -> Self {
-        Self { state, interface_objects, ll_request_tx, tl_ind_tx, tl_conf_tx, pending_addr_types: Deque::new() }
+        Self { state, interface_objects, pending_addr_types: Deque::new() }
     }
 
     /// Get the current routing count from the device object.
@@ -59,91 +40,73 @@ impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
     fn routing_count(&self) -> u8 {
         self.interface_objects.routing_count_value()
     }
-
-    /// Run the network layer event loop.
-    ///
-    /// Simultaneously awaits:
-    /// - Requests from TL (to transform and forward to LL)
-    /// - Indications from LL (to transform and forward to TL)
-    /// - Confirmations from LL (to transform and forward to TL)
-    pub async fn run(
-        &mut self,
-        mut req_rx: impl Inbox<RequestMessage<Buffer<'static>>>,
-        mut ind_rx: impl Inbox<IndicationMessage<Buffer<'static>>>,
-        mut conf_rx: impl Inbox<ConfirmationMessage<Buffer<'static>>>,
-    ) -> ! {
-        loop {
-            match select3(req_rx.next(), ind_rx.next(), conf_rx.next()).await {
-                Either3::First(msg) => {
-                    self.handle_request(msg).await;
-                }
-                Either3::Second(msg) => {
-                    self.handle_indication(msg).await;
-                }
-                Either3::Third(conf) => {
-                    self.handle_ll_confirmation(conf).await;
-                }
-            }
-        }
-    }
 }
 
-impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
-    async fn handle_indication(&mut self, mut msg: IndicationMessage<Buffer<'static>>) {
-        debug!("NL indication: {:?}", msg);
+impl<S: StackState, IO: HasDeviceObject> MessageHandler for NetworkLayer<'_, S, IO> {
+    const HANDLES: &'static [ServiceType] = &[
+        // Indications from LL (upward)
+        ServiceType::L_Data_Ind,
+        // Confirmations from LL (upward)
+        ServiceType::L_Data_Con,
+        // Requests from TL (downward)
+        ServiceType::N_Data_Req,
+        ServiceType::N_GroupData_Req,
+        ServiceType::N_Broadcast_Req,
+        ServiceType::N_SystemBroadcast_Req,
+    ];
 
+    fn process(
+        &mut self,
+        mut msg: KnxMessageBuffer<Buffer<'static>>,
+        outbox: &mut Outbox,
+    ) {
         match msg.service_type() {
-            // Incoming indication message from link layer
+            // =================================================================
+            // Indications from link layer (upward: L_Data_Ind → N_*_Ind)
+            // =================================================================
             ServiceType::L_Data_Ind => {
+                debug!("NL indication: {:?}", msg);
                 trace!("NL L_Data_Ind addr_typ: {:?}", msg.get_address_type());
 
                 // Check for individual address duplication.
                 // If we receive a message with our own individual address as source,
-                // another device on the bus has the same address - set the duplication flag.
-                // This is a "sticky" flag that stays set until device reset.
+                // another device on the bus has the same address — set the
+                // duplication flag. This is a "sticky" flag that stays set until
+                // device reset.
                 if msg.get_source_addr() == self.state.individual_address()
-                    && !self.interface_objects.device_control().address_duplication() {
-                        warn!("NL: Individual address duplication detected!");
-                        self.interface_objects.set_address_duplication(true);
-                    }
+                    && !self.interface_objects.device_control().address_duplication()
+                {
+                    warn!("NL: Individual address duplication detected!");
+                    self.interface_objects.set_address_duplication(true);
+                }
 
                 match msg.get_address_type() {
                     AddressType::Group => msg.set_service_type(ServiceType::N_GroupData_Ind),
                     AddressType::Broadcast => msg.set_service_type(ServiceType::N_Broadcast_Ind),
                     AddressType::Individual => msg.set_service_type(ServiceType::N_Data_Ind),
-                    AddressType::SystemBroadcast => msg.set_service_type(ServiceType::N_SystemBroadcast_Ind),
+                    AddressType::SystemBroadcast => {
+                        msg.set_service_type(ServiceType::N_SystemBroadcast_Ind)
+                    }
                     _ => unreachable!(),
                 }
 
                 msg.convert_hop_count_to_hop_count_type();
 
-                // Send message up to transport layer
                 debug!("NL -> TL: {:?}", msg);
-                self.tl_ind_tx.send(msg).await;
+                outbox.push(msg);
             }
 
-            // Everything else is unhandled
-            _ => {}
-        }
-    }
-
-    /// Handle a request from the transport layer.
-    ///
-    /// Transforms the N_*_Req into an L_Data_Req and sends it to the LL
-    /// (fire-and-forget). The confirmation will arrive later on `conf_rx`
-    /// and be forwarded back to TL via `handle_ll_confirmation`.
-    async fn handle_request(&mut self, msg: RequestMessage<Buffer<'static>>) {
-        debug!("NL request: {:?}", msg);
-
-        let mut msg = msg.into_inner();
-
-        match msg.service_type() {
-            // Incoming requests from transport layer
+            // =================================================================
+            // Requests from transport layer (downward: N_*_Req → L_Data_Req)
+            // =================================================================
             s @ (ServiceType::N_Data_Req
             | ServiceType::N_GroupData_Req
             | ServiceType::N_Broadcast_Req
             | ServiceType::N_SystemBroadcast_Req) => {
-                // Build a proper control field, this essentially only leaves the priority untouched
+                debug!("NL request: {:?}", msg);
+
+                // Build a proper control field — only the priority is preserved
+                // from the incoming message.
                 let ctrl = msg.ctrl_field_mut();
                 ctrl.set_ft(FrameType::Standard);
                 ctrl.set_r(Repetition::AllowRepetition);
@@ -154,8 +117,9 @@ impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
                 msg.set_source_addr(self.state.individual_address());
                 msg.set_service_type(ServiceType::L_Data_Req);
 
-                // This also sets the SBC flag in CTRL and the
-                // destination address to 0 for the broadcasts
+                // Set address type and destination address. For broadcasts,
+                // also sets the SBC flag in CTRL and the destination address
+                // to 0.
                 let addr_type = match s {
                     ServiceType::N_Data_Req => {
                         msg.set_address_type(AddressType::Individual);
@@ -185,45 +149,44 @@ impl<'a, S: StackState, IO: HasDeviceObject> NetworkLayer<'a, S, IO> {
                 }
 
                 debug!("NL -> LL: {:?}", msg);
-                self.ll_request_tx.send(RequestMessage::request(msg)).await;
+                outbox.push(msg);
             }
 
-            // Everything else is unhandled - return error confirmation directly
-            _ => {
-                warn!("NL unhandled service type: {:?}", msg.service_type());
-                let conf = msg.error().build();
-                self.tl_conf_tx.send(conf).await;
-            }
-        }
-    }
+            // =================================================================
+            // Confirmations from link layer (upward: L_Data_Con → N_*_Con)
+            // =================================================================
+            ServiceType::L_Data_Con => {
+                debug!("NL LL confirmation: {:?}", msg);
 
-    /// Handle a confirmation from the link layer.
-    ///
-    /// Transforms the L_Data_Con back into the appropriate N_*_Con and
-    /// forwards it to the transport layer.
-    async fn handle_ll_confirmation(&mut self, conf: ConfirmationMessage<Buffer<'static>>) {
-        debug!("NL LL confirmation: {:?}", conf);
+                // Pop the address type from the FIFO — confirmations arrive in
+                // the same order as the requests that produced them.
+                if let Some(addr_type) = self.pending_addr_types.pop_front() {
+                    match addr_type {
+                        AddressType::Group => {
+                            msg.set_service_type(ServiceType::N_GroupData_Con)
+                        }
+                        AddressType::Broadcast => {
+                            msg.set_service_type(ServiceType::N_Broadcast_Con)
+                        }
+                        AddressType::Individual => {
+                            msg.set_service_type(ServiceType::N_Data_Con)
+                        }
+                        AddressType::SystemBroadcast => {
+                            msg.set_service_type(ServiceType::N_SystemBroadcast_Con)
+                        }
+                        _ => unreachable!(),
+                    }
 
-        let mut msg = conf.into_inner();
-
-        // Pop the address type from the FIFO — confirmations arrive in the same
-        // order as the requests that produced them.
-        if let Some(addr_type) = self.pending_addr_types.pop_front() {
-            match addr_type {
-                AddressType::Group => msg.set_service_type(ServiceType::N_GroupData_Con),
-                AddressType::Broadcast => msg.set_service_type(ServiceType::N_Broadcast_Con),
-                AddressType::Individual => msg.set_service_type(ServiceType::N_Data_Con),
-                AddressType::SystemBroadcast => {
-                    msg.set_service_type(ServiceType::N_SystemBroadcast_Con)
+                    msg.convert_hop_count_to_hop_count_type();
+                } else {
+                    warn!("NL received LL confirmation with no pending request");
                 }
-                _ => unreachable!(),
+
+                outbox.push(msg);
             }
 
-            msg.convert_hop_count_to_hop_count_type();
-        } else {
-            warn!("NL received LL confirmation with no pending request");
+            // Unreachable: the dispatch table only routes HANDLES to us.
+            _ => unreachable!(),
         }
-
-        self.tl_conf_tx.send(ConfirmationMessage::confirmation(msg)).await;
     }
 }

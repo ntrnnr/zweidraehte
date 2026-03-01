@@ -184,6 +184,14 @@ impl<M, R> Request<M, R> {
         self.reply_to.send(value).await
     }
 
+    /// Reply to the request synchronously (non-blocking).
+    ///
+    /// Uses `try_send` on the underlying channel. Returns `Ok(())` if the
+    /// reply was delivered, or `Err` if the channel was full.
+    pub fn try_reply(&self, value: R) -> Result<(), embassy_sync::channel::TrySendError<R>> {
+        self.reply_to.try_send(value)
+    }
+
     /// Get a reference to the underlying message
     pub fn get(&self) -> &M {
         self.message.as_ref().unwrap()

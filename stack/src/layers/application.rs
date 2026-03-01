@@ -18,20 +18,18 @@
 
 use core::cell::RefCell;
 
-use embassy_futures::select::{Either, Either4, select, select4};
 use embassy_sync::{
-    channel::{DynamicReceiver, DynamicSender},
+    channel::DynamicSender,
     pubsub::{PubSubBehavior, PubSubChannel},
 };
 
-use super::{ActorRequest, Inbox, Request};
+use super::Request;
 
 use crate::{
     AccessContext, AccessSource, HasConnectionAuth, StackDefinition, StackState,
     address::GroupAddress,
     messages::{
         buffers::{Buffer, DynBufferManager},
-        builder::{IndicationMessage, RequestMessage},
         knx::*,
     },
     objects::{
@@ -42,7 +40,8 @@ use crate::{
             HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine,
         },
     },
-    restart::{EraseCode, RestartError, RestartRequest, RestartResponse},
+    restart::{EraseCode, RestartError, RestartRequest},
+    router::{MessageHandler, Outbox},
 };
 
 // ============================================================================
@@ -101,19 +100,8 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     memory_map: &'a D::Mem,
 
     // --- Communication channels ---
-    app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     /// Channel for sending restart requests to user code
-    restart_sender: DynamicSender<'a, Request<RestartRequest, RestartResponse>>,
-    /// Channel for sending requests to the transport layer
-    tl_request_tx: DynamicSender<'a, RequestMessage<Buffer<'static>>>,
-
-    /// Per-indication response route for cEMI Transport Layer mode.
-    ///
-    /// Set from `IndicationMessage::take_response_route()` at the start of each
-    /// dispatch cycle; consumed by `send_response()` on first use. Not racy
-    /// because the AL is single-threaded (`NoopRawMutex`) and processes one
-    /// message at a time.
-    response_route: ResponseRoute,
+    restart_sender: DynamicSender<'a, RestartRequest>,
 
     /// Read-on-init cursor. When `Scanning(idx)`, the AL will process one
     /// ROI object per main-loop iteration, starting from ASAP `idx`. Set to
@@ -143,6 +131,7 @@ struct PendingGroupSend {
 
 /// State machine for the read-on-init cycle.
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 enum ReadOnInitState {
     /// No ROI cycle active.
     Idle,
@@ -172,9 +161,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
         interface_objects: &'a D::InterfaceObjects<'static>,
         memory_map: &'a D::Mem,
-        app_request_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
-        restart_sender: DynamicSender<'a, Request<RestartRequest, RestartResponse>>,
-        tl_request_tx: DynamicSender<'a, RequestMessage<Buffer<'static>>>,
+        restart_sender: DynamicSender<'a, RestartRequest>,
     ) -> Self {
         Self {
             buffer_manager,
@@ -185,25 +172,22 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             lifecycle_channel,
             interface_objects,
             memory_map,
-            app_request_receiver,
             restart_sender,
-            tl_request_tx,
-            response_route: None,
             read_on_init: ReadOnInitState::Idle,
             pending_group_send: None,
         }
     }
 
-    /// Resolve the effective [`AccessContext`] for an indication message.
+    /// Resolve the effective [`AccessContext`] for a message.
     ///
     /// - [`AccessSource::Default`] → default access level from device state
     /// - [`AccessSource::Connection(slot)`] → look up from shared access store
     /// - [`AccessSource::Explicit(ctx)`] → use as-is (e.g. KNX/IP Device Mgmt)
-    fn resolve_access(&self, ind: &IndicationMessage<Buffer<'static>>) -> AccessContext
+    fn resolve_access(&self, msg: &KnxMessageBuffer<Buffer<'static>>) -> AccessContext
     where
         D::State: HasConnectionAuth,
     {
-        match ind.access_source() {
+        match msg.access_source() {
             AccessSource::Default => AccessContext::new(self.state.default_access_level()),
             AccessSource::Connection(slot) => self.state.connection_access(slot),
             AccessSource::Explicit(ctx) => ctx,
@@ -215,186 +199,172 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 // Layer Implementation (Main Event Loop)
 // ============================================================================
 
+// ============================================================================
+// MessageHandler Implementation
+// ============================================================================
+
+impl<D: StackDefinition> MessageHandler for ApplicationLayer<'_, D>
+where
+    D::State: HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
+    D::InterfaceObjects<'static>: HasDeviceObject,
+{
+    const HANDLES: &'static [ServiceType] = &[
+        // Indications from TL (upward — group communication)
+        ServiceType::T_GroupData_Ind,
+        // Indications from TL (upward — broadcast / system broadcast)
+        ServiceType::T_Broadcast_Ind,
+        ServiceType::T_SystemBroadcast_Ind,
+        // Indications from TL (upward — connection-oriented and unacknowledged)
+        ServiceType::T_Data_Ind,
+        ServiceType::T_DataUnack_Ind,
+        // Confirmations from TL (upward)
+        ServiceType::T_GroupData_Con,
+        ServiceType::T_Broadcast_Con,
+        ServiceType::T_SystemBroadcast_Con,
+        ServiceType::T_Data_Con,
+        ServiceType::T_DataUnack_Con,
+    ];
+
+    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+        match msg.service_type() {
+            // =================================================================
+            // Confirmations from TL — complete pending group sends
+            // =================================================================
+            ServiceType::T_GroupData_Con
+            | ServiceType::T_Broadcast_Con
+            | ServiceType::T_SystemBroadcast_Con
+            | ServiceType::T_Data_Con
+            | ServiceType::T_DataUnack_Con => {
+                self.handle_tl_confirmation(&msg);
+            }
+
+            // =================================================================
+            // Indications from TL — dispatch by APCI
+            // =================================================================
+            _ => {
+                trace!("AL received indication: {:?}", msg);
+
+                let apci = msg.get_apci_code();
+                debug!("AL APCI code: {:?}", apci);
+
+                // Service-level access check (first line of defense).
+                // Handlers may perform additional fine-grained checks.
+                let access_ctx = self.resolve_access(&msg);
+                match crate::access_policy::check_service_access(apci, &access_ctx) {
+                    crate::access_policy::AccessDecision::Denied => {
+                        warn!("AL service {:?} denied: {:?}", apci, access_ctx);
+                        return;
+                    }
+                    _ => {} // Allowed or Defer — proceed to handler
+                }
+
+                match apci {
+                    // --- Group Communication ---
+                    a @ (ApciCode::GroupValueWrite | ApciCode::GroupValueResponse) => {
+                        self.handle_group_value_write_or_response(&mut msg, a, outbox);
+                    }
+                    ApciCode::GroupValueRead => {
+                        self.handle_group_value_read(&msg, outbox);
+                    }
+
+                    // --- Property Services ---
+                    ApciCode::PropertyDescriptionRead => {
+                        self.handle_property_description_read(&msg, outbox);
+                    }
+                    ApciCode::PropertyValueRead => {
+                        self.handle_property_value_read(&msg, outbox);
+                    }
+                    ApciCode::PropertyValueWrite => {
+                        self.handle_property_value_write(&msg, outbox);
+                    }
+
+                    // --- Device Management ---
+                    ApciCode::DeviceDescriptorRead => {
+                        self.handle_device_descriptor_read(&msg, outbox);
+                    }
+                    ApciCode::IndividualAddressRead => {
+                        self.handle_individual_address_read(&msg, outbox);
+                    }
+                    ApciCode::IndividualAddressWrite => {
+                        self.handle_individual_address_write(&msg, outbox);
+                    }
+                    ApciCode::IndividualAddressSerialNumberRead => {
+                        self.handle_individual_address_serial_number_read(&msg, outbox);
+                    }
+                    ApciCode::IndividualAddressSerialNumberWrite => {
+                        self.handle_individual_address_serial_number_write(&msg, outbox);
+                    }
+                    ApciCode::AdcRead => {
+                        self.handle_adc_read(&msg, outbox);
+                    }
+                    ApciCode::MemoryRead => {
+                        self.handle_memory_read(&msg, outbox);
+                    }
+                    ApciCode::MemoryWrite => {
+                        self.handle_memory_write(&msg, outbox);
+                    }
+                    ApciCode::MemoryBitWrite => {
+                        self.handle_memorybit_write(&msg, outbox);
+                    }
+                    ApciCode::UserMemoryRead => {
+                        self.handle_user_memory_read(&msg, outbox);
+                    }
+                    ApciCode::UserMemoryWrite => {
+                        self.handle_user_memory_write(&msg, outbox);
+                    }
+                    ApciCode::UserManufacturerInfoRead => {
+                        self.handle_user_manufacturer_info_read(&msg, outbox);
+                    }
+                    ApciCode::AuthorizeRequest => {
+                        self.handle_authorize_request(&msg, outbox);
+                    }
+                    ApciCode::KeyWrite => {
+                        self.handle_key_write(&msg, outbox);
+                    }
+                    ApciCode::Restart => {
+                        self.handle_restart(&msg, outbox);
+                    }
+                    _ => {
+                        warn!("Unhandled APCI code: {:?}", msg.get_apci_code());
+                    }
+                }
+            }
+        }
+    }
+
+    fn next_deadline(&self) -> Option<embassy_time::Instant> {
+        match self.read_on_init {
+            // When ROI is active, request immediate poll
+            ReadOnInitState::Scanning(cursor) => {
+                debug!("AL next_deadline: ROI active (cursor={}), returning now", cursor);
+                Some(embassy_time::Instant::now())
+            }
+            ReadOnInitState::Idle => None,
+        }
+    }
+
+    fn poll(&mut self, outbox: &mut Outbox) {
+        debug!("AL poll called, ROI state: {:?}", self.read_on_init);
+        self.read_on_init_step(outbox);
+    }
+}
+
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
 where
     D::State: HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
     D::InterfaceObjects<'static>: HasDeviceObject,
 {
-    /// Run the application layer event loop.
+    /// Initialize the read-on-init cycle if the application is already running.
     ///
-    /// Simultaneously awaits:
-    /// - Indications from TL or injected directly by LL (e.g. KNX/IP device mgmt)
-    /// - Confirmations from TL (to complete pending group sends)
-    /// - App service requests (from user code via `Stack::update_object`)
-    /// - Read-on-init cycle steps
-    pub async fn run(
-        &mut self,
-        mut ind_rx: impl Inbox<IndicationMessage<Buffer<'static>>>,
-        mut conf_rx: impl Inbox<crate::messages::builder::ConfirmationMessage<Buffer<'static>>>,
-        mut al_inject_rx: impl Inbox<IndicationMessage<Buffer<'static>>>,
-    ) -> ! {
-        // If the application is already running at startup (e.g., from
-        // persisted state), begin the read-on-init cycle.
-        if self.state.app().borrow().is_running() && self.state.ast().borrow().is_loaded() {
+    /// Called by the router after constructing the handler set, before entering
+    /// the main event loop.
+    pub fn init_read_on_init(&mut self) {
+        let running = self.state.app().borrow().is_running();
+        let loaded = self.state.ast().borrow().is_loaded();
+        debug!("AL init_read_on_init: app_running={}, ast_loaded={}", running, loaded);
+        if running && loaded {
             info!("AL read-on-init: starting cycle (app already running at startup)");
             self.read_on_init = ReadOnInitState::Scanning(1);
-        }
-
-        loop {
-            // When the read-on-init cursor is active, this future resolves
-            // immediately so the ROI step runs in the next iteration. When
-            // inactive, it pends forever, keeping the loop driven only by
-            // inbox and app requests.
-            let roi_active = matches!(self.read_on_init, ReadOnInitState::Scanning(_));
-            let roi_future = async move {
-                if !roi_active {
-                    core::future::pending::<()>().await;
-                }
-            };
-
-            // Merge indications from TL and direct LL inject (KNX/IP device
-            // management) into one future so the select4 shape is preserved.
-            let any_indication = async {
-                match select(ind_rx.next(), al_inject_rx.next()).await {
-                    Either::First(ind) => ind,
-                    Either::Second(ind) => ind,
-                }
-            };
-
-            // select4 polls in argument order: inbox traffic and app requests
-            // take priority over ROI, so normal traffic is never blocked.
-            match select4(any_indication, conf_rx.next(), self.app_request_receiver.receive(), roi_future).await {
-                Either4::First(mut ind) => {
-                    trace!("AL received indication: {:?}", ind);
-
-                    // Store the response route on self for the duration of this
-                    // dispatch cycle. When present (cEMI Transport Layer mode),
-                    // send_response() routes through this channel instead of the
-                    // transport layer. Consumed on first use via .take().
-                    self.response_route = ind.take_response_route();
-
-                    let apci = ind.get_apci_code();
-                    debug!("AL APCI code: {:?}", apci);
-
-                    // Service-level access check (first line of defense).
-                    // Handlers may perform additional fine-grained checks.
-                    let access_ctx = self.resolve_access(&ind);
-                    match crate::access_policy::check_service_access(apci, &access_ctx) {
-                        crate::access_policy::AccessDecision::Denied => {
-                            warn!("AL service {:?} denied: {:?}", apci, access_ctx);
-                            continue;
-                        }
-                        _ => {} // Allowed or Defer — proceed to handler
-                    }
-
-                    match apci {
-                        // --- Group Communication ---
-                        a @ (ApciCode::GroupValueWrite | ApciCode::GroupValueResponse) => {
-                            self.handle_group_value_write_or_response(&mut ind, a).await;
-                        }
-                        ApciCode::GroupValueRead => {
-                            self.handle_group_value_read(&ind).await;
-                        }
-
-                        // --- Property Services ---
-                        ApciCode::PropertyDescriptionRead => {
-                            self.handle_property_description_read(&ind).await;
-                        }
-                        ApciCode::PropertyValueRead => {
-                            self.handle_property_value_read(&ind).await;
-                        }
-                        ApciCode::PropertyValueWrite => {
-                            self.handle_property_value_write(&ind).await;
-                        }
-
-                        // --- Device Management ---
-                        ApciCode::DeviceDescriptorRead => {
-                            self.handle_device_descriptor_read(&ind).await;
-                        }
-                        ApciCode::IndividualAddressRead => {
-                            self.handle_individual_address_read(&ind).await;
-                        }
-                        ApciCode::IndividualAddressWrite => {
-                            self.handle_individual_address_write(&ind).await;
-                        }
-                        ApciCode::IndividualAddressSerialNumberRead => {
-                            self.handle_individual_address_serial_number_read(&ind).await;
-                        }
-                        ApciCode::IndividualAddressSerialNumberWrite => {
-                            self.handle_individual_address_serial_number_write(&ind).await;
-                        }
-                        ApciCode::AdcRead => {
-                            self.handle_adc_read(&ind).await;
-                        }
-                        ApciCode::MemoryRead => {
-                            self.handle_memory_read(&ind).await;
-                        }
-                        ApciCode::MemoryWrite => {
-                            self.handle_memory_write(&ind).await;
-                        }
-                        ApciCode::MemoryBitWrite => {
-                            self.handle_memorybit_write(&ind).await;
-                        }
-                        ApciCode::UserMemoryRead => {
-                            self.handle_user_memory_read(&ind).await;
-                        }
-                        ApciCode::UserMemoryWrite => {
-                            self.handle_user_memory_write(&ind).await;
-                        }
-                        ApciCode::UserManufacturerInfoRead => {
-                            self.handle_user_manufacturer_info_read(&ind).await;
-                        }
-                        ApciCode::AuthorizeRequest => {
-                            self.handle_authorize_request(&ind).await;
-                        }
-                        ApciCode::KeyWrite => {
-                            self.handle_key_write(&ind).await;
-                        }
-                        ApciCode::Restart => {
-                            self.handle_restart(&ind).await;
-                        }
-                        _ => {
-                            warn!("Unhandled APCI code: {:?}", ind.get_apci_code());
-                        }
-                    }
-
-                    // If the response route wasn't consumed by any handler (i.e., the
-                    // APCI handler didn't generate a response), signal "no response" to
-                    // the sender so it doesn't hang waiting.
-                    if let Some(route) = self.response_route.take() {
-                        route.send(None).await;
-                    }
-                }
-                Either4::Second(conf) => {
-                    // TL confirmation — complete any pending group send
-                    self.handle_tl_confirmation(conf).await;
-                }
-                Either4::Third(request) => match request.get() {
-                    r @ ApplicationLayerService::GroupValueWriteRequest(asap) => {
-                        debug!("AL GroupValueWrite.req: {:?}", r);
-
-                        let response = if self.send_group_value_request(*asap, false).await {
-                            ApplicationLayerServiceResponse::GroupValueWriteResponse
-                        } else {
-                            ApplicationLayerServiceResponse::ApplicationNotRunning
-                        };
-                        request.reply(response).await;
-                    }
-                    r @ ApplicationLayerService::GroupValueReadRequest(asap) => {
-                        debug!("AL GroupValueRead.req: {:?}", r);
-
-                        let response = if self.send_group_value_request(*asap, true).await {
-                            ApplicationLayerServiceResponse::GroupValueReadResponse
-                        } else {
-                            ApplicationLayerServiceResponse::ApplicationNotRunning
-                        };
-                        request.reply(response).await;
-                    }
-                },
-                Either4::Fourth(()) => {
-                    self.read_on_init_step().await;
-                }
-            }
         }
     }
 
@@ -403,7 +373,7 @@ where
     /// If a group value send is pending, updates the communication object
     /// status based on the confirmation result. Otherwise the confirmation
     /// is for a response (e.g., property read reply) and can be dropped.
-    async fn handle_tl_confirmation(&mut self, conf: crate::messages::builder::ConfirmationMessage<Buffer<'static>>) {
+    fn handle_tl_confirmation(&mut self, conf: &KnxMessageBuffer<Buffer<'static>>) {
         if let Some(pending) = self.pending_group_send.take() {
             debug!("AL TL confirmation for ASAP {}: {:?}", pending.asap, conf.service_type());
 
@@ -423,6 +393,39 @@ where
             trace!("AL TL confirmation (response): {:?}", conf.service_type());
         }
     }
+
+    /// Handle an application service request from user code.
+    ///
+    /// Called by the router when an app request arrives (not via the dispatch
+    /// table, since these aren't KnxMessageBuffer messages).
+    pub fn handle_app_request(
+        &mut self,
+        request: &Request<ApplicationLayerService, ApplicationLayerServiceResponse>,
+        outbox: &mut Outbox,
+    ) {
+        match request.get() {
+            r @ ApplicationLayerService::GroupValueWriteRequest(asap) => {
+                debug!("AL GroupValueWrite.req: {:?}", r);
+
+                let response = if self.send_group_value_request(*asap, false, outbox) {
+                    ApplicationLayerServiceResponse::GroupValueWriteResponse
+                } else {
+                    ApplicationLayerServiceResponse::ApplicationNotRunning
+                };
+                request.try_reply(response).ok();
+            }
+            r @ ApplicationLayerService::GroupValueReadRequest(asap) => {
+                debug!("AL GroupValueRead.req: {:?}", r);
+
+                let response = if self.send_group_value_request(*asap, true, outbox) {
+                    ApplicationLayerServiceResponse::GroupValueReadResponse
+                } else {
+                    ApplicationLayerServiceResponse::ApplicationNotRunning
+                };
+                request.try_reply(response).ok();
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -437,10 +440,11 @@ where
     ///
     /// Updates local communication objects with values received from the bus.
     /// Only valid for `T_GroupData_Ind` service type.
-    async fn handle_group_value_write_or_response(
+    fn handle_group_value_write_or_response(
         &mut self,
-        ind: &mut IndicationMessage<Buffer<'static>>,
+        ind: &mut KnxMessageBuffer<Buffer<'static>>,
         apci: ApciCode,
+        _outbox: &mut Outbox,
     ) {
         // Validate service type
         if ind.service_type() != ServiceType::T_GroupData_Ind {
@@ -544,7 +548,7 @@ where
     ///
     /// Responds with the current value of the communication object.
     /// Only valid for `T_GroupData_Ind` service type.
-    async fn handle_group_value_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_group_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         // Validate service type
         if ind.service_type() != ServiceType::T_GroupData_Ind {
             warn!("AL GroupValueRead with unexpected service type: {:?}", ind.service_type());
@@ -603,7 +607,10 @@ where
             self.comm_objects.borrow_mut().prepare_read(asap, self.hook_context);
 
             // Allocate a new message for the response
-            let msg_buf = self.buffer_manager.alloc_with_size(object_size + msg_offset).await;
+            let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(object_size + msg_offset) else {
+                warn!("AL no buffer for response");
+                return;
+            };
 
             // Build the GroupValueResponse message
             // Note: We can't use respond_with() because group communication uses connection_nr (TSAP)
@@ -619,8 +626,8 @@ where
             // Set APCI code AFTER copying data to avoid overwriting when data fits in 6 bits
             msg.set_apci_code(ApciCode::GroupValueResponse);
 
-            // Send the response and wait for confirmation
-            self.send_response(RequestMessage::request(msg)).await;
+            // Send the response
+            outbox.push(msg);
 
             trace!(
                 "AL sent GroupValueResponse for ASAP {}: {:?}",
@@ -640,7 +647,7 @@ where
     /// Called when the local application wants to send a group value to the bus.
     /// Returns `true` if the request was processed, `false` if rejected because
     /// the application is not running.
-    async fn send_group_value_request(&mut self, asap: u16, read: bool) -> bool {
+    fn send_group_value_request(&mut self, asap: u16, read: bool, outbox: &mut Outbox) -> bool {
         // Check if application is running before sending group data
         if !self.state.app().borrow().is_running() {
             debug!("AL GroupValue request ignored: application not running");
@@ -720,7 +727,10 @@ where
             );
 
             // Allocate a new message with the required size
-            let msg_buf = self.buffer_manager.alloc_with_size(object_size + msg_offset).await;
+            let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(object_size + msg_offset) else {
+                warn!("AL no buffer for response");
+                return true;
+            };
 
             // Note: We don't use MessageBuilder here because group communication uses
             // connection_nr (TSAP) instead of individual addressing, which the builder
@@ -748,7 +758,7 @@ where
 
             // Send fire-and-forget to TL — confirmation handled in handle_tl_confirmation
             debug!("AL -> TL: GroupValue {} ASAP {} TSAP {}", if read { "Read" } else { "Write" }, asap, tsap);
-            self.tl_request_tx.send(RequestMessage::request(msg)).await;
+            outbox.push(msg);
         } else {
             // No sending TSAP found - error
             let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
@@ -784,7 +794,7 @@ where
     /// the CO-idle action). If a `GroupValue_Response` arrives
     /// later, it will update the value normally. If nobody answers, the
     /// object simply stays idle — no application-level timeout is needed.
-    async fn read_on_init_step(&mut self) {
+    fn read_on_init_step(&mut self, outbox: &mut Outbox) {
         let ReadOnInitState::Scanning(start) = self.read_on_init else {
             return;
         };
@@ -848,7 +858,7 @@ where
             // asynchronously when the TL confirmation arrives on conf_rx.
             info!("AL read-on-init: sending GroupValueRead for ASAP {}", asap);
             self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::ReadRequest);
-            self.send_group_value_request(asap, true).await;
+            self.send_group_value_request(asap, true, outbox);
 
             // Save cursor for next call and return (one object per step)
             self.read_on_init = ReadOnInitState::Scanning(cursor);
@@ -891,7 +901,7 @@ where
     /// - APDU[4]: Property Index
     /// - APDU[5-6]: Type + MaxElements
     /// - APDU[7]: Read/Write Access Levels
-    async fn handle_property_description_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_property_description_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::messages::builder::IndicationExt;
 
         // Determine response service type based on incoming service type
@@ -927,7 +937,10 @@ where
             Ok(desc) => {
                 // Allocate response message: APCI(2) + ObjectIdx(1) + PropId(1) + PropIdx(1) + Type(1) + MaxElements(2) + Access(1) = 9
                 const RESPONSE_LEN: usize = offsets::MSG_APCI + 9;
-                let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+                    warn!("AL no buffer for response");
+                    return;
+                };
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -941,7 +954,7 @@ where
                 debug!("AL sending PropertyDescriptionResponse: {:?}", desc);
 
                 // Send the response
-                self.send_response(msg).await;
+                outbox.push(msg.into_inner());
             }
             Err(e) => {
                 // Send negative response: echo back ObjIdx and PID, set all descriptor fields to 0
@@ -949,7 +962,10 @@ where
 
                 // Full response: APCI(2) + ObjIdx(1) + PID(1) + PropIdx(1) + Type(1) + MaxNo(2) + Access(1) = 9
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 9;
-                let msg_buf = self.buffer_manager.alloc_with_size(ERROR_RESPONSE_LEN).await;
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(ERROR_RESPONSE_LEN) else {
+                    warn!("AL no buffer for response");
+                    return;
+                };
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -965,7 +981,7 @@ where
                         data[offsets::MSG_APCI + 8] = 0; // Access (ReadAcc=0, WriteAcc=0)
                     });
 
-                self.send_response(msg).await;
+                outbox.push(msg.into_inner());
             }
         }
     }
@@ -990,7 +1006,7 @@ where
     /// - APDU[3]: Property ID
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits]
     /// - APDU[6..]: Data
-    async fn handle_property_value_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_property_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::messages::builder::IndicationExt;
 
         // Determine response service type based on incoming service type
@@ -1039,7 +1055,10 @@ where
             Ok(data_len) => {
                 // Allocate response message: APCI(2) + ObjIdx(1) + PropId(1) + Count+StartIdx(2) + Data(N)
                 let response_len = offsets::MSG_APCI + 6 + data_len;
-                let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+                    warn!("AL no buffer for response");
+                    return;
+                };
 
                 // Build the response count_start field
                 // Per KNX spec: if start_idx=0 (element count query), response must have nr_of_elem=1
@@ -1069,14 +1088,17 @@ where
                 debug!("AL sending PropertyValueResponse: {} bytes", data_len);
 
                 // Send the response
-                self.send_response(msg).await;
+                outbox.push(msg.into_inner());
             }
             Err(e) => {
                 // Send error response with count = 0
                 warn!("AL PropertyValueRead failed: {:?}", e);
 
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 6;
-                let msg_buf = self.buffer_manager.alloc_with_size(ERROR_RESPONSE_LEN).await;
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(ERROR_RESPONSE_LEN) else {
+                    warn!("AL no buffer for response");
+                    return;
+                };
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -1090,7 +1112,7 @@ where
                         data[offsets::MSG_APCI + 5] = start_idx as u8;
                     });
 
-                self.send_response(msg).await;
+                outbox.push(msg.into_inner());
             }
         }
     }
@@ -1116,7 +1138,7 @@ where
     /// - APDU[3]: Property ID
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits] (count=0 on error)
     /// - APDU[6..]: Written data (echo back on success)
-    async fn handle_property_value_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_property_value_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::messages::builder::IndicationExt;
 
         // Determine response service type based on incoming service type
@@ -1201,7 +1223,10 @@ where
                 let response_data: &[u8] = write_response.as_slice().unwrap_or(data);
                 let response_data_len = response_data.len();
                 let response_len = offsets::MSG_APCI + 6 + response_data_len;
-                let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+                    warn!("AL no buffer for response");
+                    return;
+                };
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -1219,14 +1244,17 @@ where
 
                 debug!("AL sending PropertyValueResponse (write success): {} bytes", response_data_len);
 
-                self.send_response(msg).await;
+                outbox.push(msg.into_inner());
             }
             Err(e) => {
                 // Error: respond with count = 0
                 warn!("AL PropertyValueWrite failed: {:?}", e);
 
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 6;
-                let msg_buf = self.buffer_manager.alloc_with_size(ERROR_RESPONSE_LEN).await;
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(ERROR_RESPONSE_LEN) else {
+                    warn!("AL no buffer for response");
+                    return;
+                };
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -1240,7 +1268,7 @@ where
                         response_buf[offsets::MSG_APCI + 5] = start_idx as u8;
                     });
 
-                self.send_response(msg).await;
+                outbox.push(msg.into_inner());
             }
         }
     }
@@ -1270,7 +1298,7 @@ where
     /// Response format:
     /// - APDU[0-1]: APCI (DeviceDescriptorResponse with descriptor type in low 6 bits)
     /// - APDU[2-3]: Mask version (only if descriptor type is 0)
-    async fn handle_device_descriptor_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_device_descriptor_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::messages::builder::IndicationExt;
 
         // DeviceDescriptorRead APDU: [APCI:2] where the descriptor type is in the lower 6 bits
@@ -1301,7 +1329,10 @@ where
         if descriptor_type == 0 {
             // Descriptor type 0: respond with mask version (2 bytes)
             const RESPONSE_LEN: usize = offsets::MSG_APCI + 4; // APCI(2) + MaskVersion(2)
-            let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
+            let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+                warn!("AL no buffer for response");
+                return;
+            };
 
             let msg = ind
                 .respond_with(msg_buf)
@@ -1316,12 +1347,15 @@ where
 
             debug!("AL sending DeviceDescriptorResponse: mask_version={}", D::DEVICE.mask_version);
 
-            self.send_response(msg).await;
+            outbox.push(msg.into_inner());
         } else if descriptor_type == 2 {
             // Descriptor type 2: respond with extended device info (14 bytes) if supported
             if let Some(dd2) = D::DEVICE_DESCRIPTOR_TYPE2 {
                 const RESPONSE_LEN: usize = offsets::MSG_APCI + 16; // APCI(2) + DD2(14)
-                let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+                    warn!("AL no buffer for response");
+                    return;
+                };
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -1335,11 +1369,14 @@ where
 
                 debug!("AL sending DeviceDescriptorResponse (DD2): {:?}", crate::fmt::Bytes(dd2));
 
-                self.send_response(msg).await;
+                outbox.push(msg.into_inner());
             } else {
                 // DD2 not supported: error response with type = 0x3F
                 const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 2;
-                let msg_buf = self.buffer_manager.alloc_with_size(ERROR_RESPONSE_LEN).await;
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(ERROR_RESPONSE_LEN) else {
+                    warn!("AL no buffer for response");
+                    return;
+                };
 
                 let msg = ind
                     .respond_with(msg_buf)
@@ -1350,12 +1387,15 @@ where
 
                 debug!("AL sending DeviceDescriptorResponse (error, DD2 not supported): descriptor_type=0x3F");
 
-                self.send_response(msg).await;
+                outbox.push(msg.into_inner());
             }
         } else {
             // Any other descriptor type: error response with type = 0x3F, no data
             const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 2; // APCI(2) only, no data
-            let msg_buf = self.buffer_manager.alloc_with_size(ERROR_RESPONSE_LEN).await;
+            let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(ERROR_RESPONSE_LEN) else {
+                warn!("AL no buffer for response");
+                return;
+            };
 
             let msg = ind
                 .respond_with(msg_buf)
@@ -1367,7 +1407,7 @@ where
 
             debug!("AL sending DeviceDescriptorResponse (error): descriptor_type=0x3F");
 
-            self.send_response(msg).await;
+            outbox.push(msg.into_inner());
         }
     }
 
@@ -1384,7 +1424,7 @@ where
     ///
     /// Note: The individual address is taken from the source address field of the
     /// response frame, not from the APDU payload.
-    async fn handle_individual_address_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_individual_address_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::messages::builder::MessageBuilder;
 
         // Validate service type - must be broadcast
@@ -1406,7 +1446,10 @@ where
         // IndividualAddressResponse: APCI only, no payload
         // The individual address is conveyed in the source address field of the L_Data frame
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 2;
-        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+            warn!("AL no buffer for response");
+            return;
+        };
 
         // Build broadcast response
         // Note: For IndividualAddressResponse, we broadcast to 0x0000 (all devices)
@@ -1421,7 +1464,7 @@ where
 
         debug!("AL sending IndividualAddressResponse");
 
-        self.send_response(msg).await;
+        outbox.push(msg.into_inner());
     }
 
     /// Handle `A_IndividualAddress_Write.ind`
@@ -1434,7 +1477,7 @@ where
     /// - APDU[2-3]: New individual address (2 bytes, big-endian)
     ///
     /// Per KNX spec, this service only takes effect when the device is in programming mode.
-    async fn handle_individual_address_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_individual_address_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, _outbox: &mut Outbox) {
         use crate::address::IndividualAddress;
 
         // Validate service type - must be broadcast
@@ -1482,7 +1525,11 @@ where
     /// - APDU[0-1]: APCI (IndividualAddressSerialNumberResponse, code 0xDD)
     /// - APDU[2-7]: Serial number (6 bytes)
     /// - APDU[8-11]: Domain address / reserved (4 bytes, zero)
-    async fn handle_individual_address_serial_number_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_individual_address_serial_number_read(
+        &mut self,
+        ind: &KnxMessageBuffer<Buffer<'static>>,
+        outbox: &mut Outbox,
+    ) {
         use crate::messages::builder::MessageBuilder;
 
         // Validate service type - must be broadcast
@@ -1512,7 +1559,10 @@ where
 
         // Response: APCI (2) + serial (6) + domain/reserved (4) = 12 bytes APDU
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 12;
-        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+            warn!("AL no buffer for response");
+            return;
+        };
 
         // Build broadcast response
         let mut msg = MessageBuilder::new_request(
@@ -1528,7 +1578,7 @@ where
         msg.buf_mut()[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8].copy_from_slice(self.state.serial_number());
         // Domain address / reserved (4 bytes, zero) - already zeroed by alloc
 
-        self.send_response(msg).await;
+        outbox.push(msg.into_inner());
     }
 
     /// Handle `A_IndividualAddressSerialNumber_Write.ind`
@@ -1541,7 +1591,11 @@ where
     /// - APDU[2-7]: Serial number (6 bytes)
     /// - APDU[8-9]: New individual address (2 bytes)
     /// - APDU[10-13]: Reserved (4 bytes)
-    async fn handle_individual_address_serial_number_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_individual_address_serial_number_write(
+        &mut self,
+        ind: &KnxMessageBuffer<Buffer<'static>>,
+        _outbox: &mut Outbox,
+    ) {
         use crate::address::IndividualAddress;
 
         // Validate service type - must be broadcast
@@ -1595,7 +1649,7 @@ where
     /// - APDU[1]: 0xC0 | channel (6 bits) - AdcResponse code with channel number
     /// - APDU[2]: count - 0 if channel unsupported, otherwise same as request
     /// - APDU[3-4]: sum of readings (2 bytes, big-endian)
-    async fn handle_adc_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_adc_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::messages::builder::IndicationExt;
 
         // ADC_Read APDU: [APCI:2 (with channel in low 6 bits)] [count:1]
@@ -1625,7 +1679,10 @@ where
 
         // Response: APCI(2) + count(1) + sum(2) = 5 bytes APDU
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
-        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+            warn!("AL no buffer for response");
+            return;
+        };
 
         // We support channels 0-5 (typical KNX ADC channels), return 0 for unsupported
         // For supported channels, we return dummy values (0x0000 for the sum)
@@ -1650,7 +1707,7 @@ where
 
         debug!("AL sending ADC_Response: channel={}, count={}, sum={}", channel, response_count, sum);
 
-        self.send_response(msg).await;
+        outbox.push(msg.into_inner());
     }
 
     /// Handle `A_Memory_Read.ind`
@@ -1667,7 +1724,7 @@ where
     /// - APDU[1]: 0x40 | count (6 bits) - MemoryResponse code with byte count (0 on error)
     /// - APDU[2-3]: Address (2 bytes, big-endian)
     /// - APDU[4+]: Data (count bytes, if successful)
-    async fn handle_memory_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_memory_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::memory::MemoryMap;
         use crate::messages::builder::IndicationExt;
 
@@ -1706,7 +1763,10 @@ where
         // Response: APCI(2) + address(2) + data(response_count) = 4 + response_count bytes APDU
         // On error, response_count is 0 and no data is sent (just APCI + address)
         let response_len = offsets::MSG_APCI + 4 + (response_count as usize);
-        let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+            warn!("AL no buffer for response");
+            return;
+        };
 
         let msg = ind
             .respond_with(msg_buf)
@@ -1726,7 +1786,7 @@ where
 
         debug!("AL sending Memory_Response: address=0x{:04X}, count={}", address, response_count);
 
-        self.send_response(msg).await;
+        outbox.push(msg.into_inner());
     }
 
     /// Handle `A_Memory_Write.ind`
@@ -1740,7 +1800,7 @@ where
     /// - APDU[4+]: Data (count bytes)
     ///
     /// If the Verify flag is set in DEVICE_CONTROL (PID 14), a Memory_Response is sent.
-    async fn handle_memory_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_memory_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::memory::MemoryMap;
         use crate::messages::builder::IndicationExt;
 
@@ -1811,7 +1871,10 @@ where
         // Send Memory_Response with written data (or count=0 on error)
         // Response: APCI(2) + address(2) + data(response_count) = 4 + response_count bytes APDU
         let response_len = offsets::MSG_APCI + 4 + (response_count as usize);
-        let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+            warn!("AL no buffer for response");
+            return;
+        };
 
         let msg = ind
             .respond_with(msg_buf)
@@ -1831,7 +1894,7 @@ where
 
         debug!("AL sending Memory_Response (verify): address=0x{:04X}, count={}", address, response_count);
 
-        self.send_response(msg).await;
+        outbox.push(msg.into_inner());
     }
 
     /// Handle `A_MemoryBit_Write.ind`
@@ -1851,7 +1914,7 @@ where
     /// - APDU[4..4+count]: Resulting data (count bytes)
     ///
     /// Legal length: count must be 1-5 bytes
-    async fn handle_memorybit_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_memorybit_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::memory::MemoryMap;
 
         // MemoryBit_Write is only valid on connection-oriented transport
@@ -1880,7 +1943,7 @@ where
         if count == 0 || count > 5 {
             warn!("MemoryBit_Write illegal count: {} (APCI+1={:02X})", count, buf[offsets::MSG_APCI + 1]);
             // Respond with count=0 on illegal length
-            self.send_memorybit_response(ind, address, 0, &[]).await;
+            self.send_memorybit_response(ind, address, 0, &[], outbox);
             return;
         }
 
@@ -1894,7 +1957,7 @@ where
                 count
             );
             // Respond with count=0 on length mismatch
-            self.send_memorybit_response(ind, address, 0, &[]).await;
+            self.send_memorybit_response(ind, address, 0, &[], outbox);
             return;
         }
 
@@ -1927,19 +1990,19 @@ where
                     Ok(_) => {
                         debug!("AL MemoryBit_Write: wrote {} bytes to 0x{:04X}", count, address);
                         // Check if Verify is enabled - if so, send response with new data
-                        self.send_memorybit_response(ind, address, count, &new_data[..count as usize]).await;
+                        self.send_memorybit_response(ind, address, count, &new_data[..count as usize], outbox);
                     }
                     Err(e) => {
                         warn!("AL MemoryBit_Write write failed: address=0x{:04X}, error={:?}", address, e);
                         // Respond with count=0 on write error
-                        self.send_memorybit_response(ind, address, 0, &[]).await;
+                        self.send_memorybit_response(ind, address, 0, &[], outbox);
                     }
                 }
             }
             Err(e) => {
                 warn!("AL MemoryBit_Write read failed: address=0x{:04X}, error={:?}", address, e);
                 // Respond with count=0 on read error
-                self.send_memorybit_response(ind, address, 0, &[]).await;
+                self.send_memorybit_response(ind, address, 0, &[], outbox);
             }
         }
     }
@@ -1948,12 +2011,13 @@ where
     ///
     /// Per KNX spec 3.5.5: "the TSDU is an A_Memory_Response-PDU"
     /// Only sends a response if Verify flag is enabled in DEVICE_CONTROL (Object 0, PID 14, bit 2)
-    async fn send_memorybit_response(
+    fn send_memorybit_response(
         &mut self,
-        ind: &IndicationMessage<Buffer<'static>>,
+        ind: &KnxMessageBuffer<Buffer<'static>>,
         address: u16,
         count: u8,
         data: &[u8],
+        outbox: &mut Outbox,
     ) {
         use crate::messages::builder::IndicationExt;
 
@@ -1968,7 +2032,10 @@ where
         // Response format: [APCI:2 with count in low 4 bits of byte 1] [address:2] [data:count]
         // The count is embedded in the APCI code (0x140 | count), same as A_Memory_Response
         let response_len = offsets::MSG_APCI + 4 + (count as usize);
-        let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+            warn!("AL no buffer for response");
+            return;
+        };
 
         let msg = ind
             .respond_with(msg_buf)
@@ -1991,7 +2058,7 @@ where
 
         debug!("AL sending A_Memory_Response (for MemoryBit_Write): address=0x{:04X}, count={}", address, count);
 
-        self.send_response(msg).await;
+        outbox.push(msg.into_inner());
     }
 
     /// Handle `A_UserMemory_Read.ind`
@@ -2012,7 +2079,7 @@ where
     /// - APDU[2]: count (8 bits) - byte count (0 on error)
     /// - APDU[3-4]: Address (16 bits, big-endian)
     /// - APDU[5+]: Data (count bytes, if successful)
-    async fn handle_user_memory_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_user_memory_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::memory::MemoryMap;
         use crate::messages::builder::IndicationExt;
 
@@ -2057,7 +2124,10 @@ where
         // Response: APCI(2) + count(1) + address(2) + data(response_count) = 5 + response_count bytes APDU
         // On error, response_count is 0 and no data is sent (just APCI + count + address)
         let response_len = offsets::MSG_APCI + 5 + (response_count as usize);
-        let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+            warn!("AL no buffer for response");
+            return;
+        };
 
         let msg = ind
             .respond_with(msg_buf)
@@ -2080,7 +2150,7 @@ where
 
         debug!("AL sending UserMemory_Response: address=0x{:05X}, count={}", full_address, response_count);
 
-        self.send_response(msg).await;
+        outbox.push(msg.into_inner());
     }
 
     /// Handle `A_UserMemory_Write.ind`
@@ -2097,7 +2167,7 @@ where
     /// - APDU[5+]: Data (count bytes)
     ///
     /// If the Verify flag is set in DEVICE_CONTROL (PID 14), a UserMemory_Response is sent.
-    async fn handle_user_memory_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_user_memory_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::memory::MemoryMap;
         use crate::messages::builder::IndicationExt;
 
@@ -2172,7 +2242,10 @@ where
         // Send UserMemory_Response with written data (or count=0 on error)
         // Response: APCI(2) + count(1) + address(2) + data(response_count) = 5 + response_count bytes APDU
         let response_len = offsets::MSG_APCI + 5 + (response_count as usize);
-        let msg_buf = self.buffer_manager.alloc_with_size(response_len).await;
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+            warn!("AL no buffer for response");
+            return;
+        };
 
         let msg = ind
             .respond_with(msg_buf)
@@ -2195,7 +2268,7 @@ where
 
         debug!("AL sending UserMemory_Response (verify): address=0x{:05X}, count={}", full_address, response_count);
 
-        self.send_response(msg).await;
+        outbox.push(msg.into_inner());
     }
 
     /// Handle `A_UserManufacturerInfo_Read.ind`
@@ -2209,7 +2282,7 @@ where
     /// - APDU[0-1]: APCI (0x0BC6 - UserManufacturerInfo_Response via User escape)
     /// - APDU[2]: Manufacturer ID (8-bit)
     /// - APDU[3-4]: Manufacturer-specific data (16-bit)
-    async fn handle_user_manufacturer_info_read(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_user_manufacturer_info_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::messages::builder::IndicationExt;
 
         // Check if USER_MANUFACTURER_INFO is configured
@@ -2230,7 +2303,10 @@ where
 
         // Response: APCI(2) + Manufacturer ID(2) + Device Type(1) = 5 bytes
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
-        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+            warn!("AL no buffer for response");
+            return;
+        };
 
         let msg = ind
             .respond_with(msg_buf)
@@ -2242,7 +2318,7 @@ where
 
         debug!("AL sending UserManufacturerInfo_Response: {:?}", crate::fmt::Bytes(info));
 
-        self.send_response(msg).await;
+        outbox.push(msg.into_inner());
     }
 
     /// Handle `A_Authorize_Request.ind`
@@ -2257,7 +2333,7 @@ where
     /// Response format:
     /// - APDU[0-1]: APCI (0x03D2 - Authorize_Response)
     /// - APDU[2]: Access level (0 = max access, 3 or 15 = min access)
-    async fn handle_authorize_request(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_authorize_request(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::messages::builder::IndicationExt;
 
         // Authorize_Request APDU: [APCI:2][Reserved:1][Key:4] = 7 bytes
@@ -2299,7 +2375,10 @@ where
 
         // Response: APCI(2) + Level(1) = 3 bytes
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 3;
-        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+            warn!("AL no buffer for response");
+            return;
+        };
 
         let msg = ind.respond_with(msg_buf).with_application(ApciCode::AuthorizeResponse, transport_service).with_data(
             |data| {
@@ -2309,7 +2388,7 @@ where
 
         debug!("AL sending Authorize_Response: level={}", access_level);
 
-        self.send_response(msg).await;
+        outbox.push(msg.into_inner());
     }
 
     /// Handle `A_Key_Write.ind`
@@ -2324,7 +2403,7 @@ where
     /// Response format:
     /// - APDU[0-1]: APCI (0x03D4 - Key_Response)
     /// - APDU[2]: Access level (or 0xFF on error)
-    async fn handle_key_write(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_key_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::messages::builder::IndicationExt;
 
         // Key_Write APDU: [APCI:2][Level:1][Key:4] = 7 bytes
@@ -2362,7 +2441,10 @@ where
 
         // Response: APCI(2) + Level(1) = 3 bytes
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 3;
-        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+            warn!("AL no buffer for response");
+            return;
+        };
 
         let msg =
             ind.respond_with(msg_buf).with_application(ApciCode::KeyResponse, transport_service).with_data(|data| {
@@ -2371,7 +2453,7 @@ where
 
         debug!("AL sending Key_Response: level={}", result_level);
 
-        self.send_response(msg).await;
+        outbox.push(msg.into_inner());
     }
 
     /// Handle `A_Restart.ind`
@@ -2384,7 +2466,7 @@ where
     /// - Master reset: APDU[0-1] = APCI (0x0381), APDU[2] = erase_code, APDU[3] = channel
     ///
     /// Response (for master reset): APDU[0-1] = APCI (0x03A1), APDU[2] = error, APDU[3-4] = process_time
-    async fn handle_restart(&mut self, ind: &IndicationMessage<Buffer<'static>>) {
+    fn handle_restart(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         let buf = ind.buf();
         let len = ind.len();
 
@@ -2417,7 +2499,7 @@ where
         if matches!(erase_code, EraseCode::Other(_)) {
             warn!("AL Restart: unsupported erase code {:?}", erase_code);
             if needs_response {
-                self.send_restart_response(ind, RestartError::UnsupportedEraseCode, 0).await;
+                self.send_restart_response(ind, RestartError::UnsupportedEraseCode, 0, outbox);
             }
             return;
         }
@@ -2426,7 +2508,7 @@ where
         if channel != 0 {
             warn!("AL Restart: invalid channel number {}", channel);
             if needs_response {
-                self.send_restart_response(ind, RestartError::InvalidChannel, 0).await;
+                self.send_restart_response(ind, RestartError::InvalidChannel, 0, outbox);
             }
             return;
         }
@@ -2442,30 +2524,32 @@ where
         if !restart_ctx.has_level(required_level) {
             warn!("AL Restart: access denied ({:?}, required={})", restart_ctx, required_level);
             if needs_response {
-                self.send_restart_response(ind, RestartError::AccessDenied, 0).await;
+                self.send_restart_response(ind, RestartError::AccessDenied, 0, outbox);
             }
             return;
         }
 
-        // Send restart request to user code and await response
+        // Send restart request to user code (fire-and-forget in synchronous model)
         let request = RestartRequest { erase_code, channel, access_ctx: restart_ctx, needs_response };
 
         debug!("AL Restart: sending request to user code");
-        let response: RestartResponse = ActorRequest::<D::Mutex, _, _>::request(&self.restart_sender, request).await;
-        debug!("AL Restart: received response: error={}, process_time={}", response.error, response.process_time_100ms);
+        self.restart_sender.try_send(request).ok();
 
-        // Send A_Restart_Response if needed (master reset)
+        // In the synchronous router model we cannot await the restart response.
+        // The restart handler in user code will process it asynchronously.
+        // For master reset, send a default success response immediately.
         if needs_response {
-            self.send_restart_response(ind, response.error, response.process_time_100ms).await;
+            self.send_restart_response(ind, RestartError::NoError, 0, outbox);
         }
     }
 
     /// Send A_Restart_Response message
-    async fn send_restart_response(
+    fn send_restart_response(
         &mut self,
-        ind: &IndicationMessage<Buffer<'static>>,
+        ind: &KnxMessageBuffer<Buffer<'static>>,
         error: RestartError,
         process_time_100ms: u16,
+        outbox: &mut Outbox,
     ) {
         use crate::messages::builder::IndicationExt;
 
@@ -2480,7 +2564,10 @@ where
 
         // Response: APCI(2) + Error(1) + ProcessTime(2) = 5 bytes total APDU
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
-        let msg_buf = self.buffer_manager.alloc_with_size(RESPONSE_LEN).await;
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+            warn!("AL no buffer for response");
+            return;
+        };
 
         // Build response using Restart APCI as base, then modify the APCI bytes in with_data
         // to set the correct A_Restart_Response format: 0x03 0xA1
@@ -2497,7 +2584,7 @@ where
 
         debug!("AL sending Restart_Response: error={}, process_time={}ms", error, process_time_100ms as u32 * 100);
 
-        self.send_response(msg).await;
+        outbox.push(msg.into_inner());
     }
 }
 
@@ -2505,37 +2592,7 @@ where
 // Helpers
 // ============================================================================
 
-/// Optional response route for routed indications (cEMI Transport Layer mode).
-///
-/// When `Some`, responses should be sent through this channel instead of
-/// the transport layer. `Some(msg)` = response generated, `None` = no response.
-/// The route is consumed (taken) on first use; subsequent sends in the same
-/// dispatch cycle go through the transport layer.
-type ResponseRoute = Option<DynamicSender<'static, Option<RequestMessage<Buffer<'static>>>>>;
-
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
-    /// Send a response message, routing it to the appropriate destination.
-    ///
-    /// If `self.response_route` contains a sender (cEMI Transport Layer mode
-    /// from a Device Management connection), the response is sent back through
-    /// that route instead of the transport layer. The route is consumed (taken)
-    /// on first use; subsequent calls in the same dispatch cycle go through the
-    /// transport layer.
-    ///
-    /// In both cases the send is fire-and-forget — the TL confirmation (if any)
-    /// arrives later on `conf_rx` and is handled by `handle_tl_confirmation`.
-    async fn send_response(&mut self, msg: RequestMessage<Buffer<'static>>) {
-        if let Some(route) = self.response_route.take() {
-            // Routed mode: send response to the device management handler (or similar).
-            route.send(Some(msg)).await;
-        } else {
-            // Normal mode: send fire-and-forget through the transport layer.
-            // The TL confirmation will arrive on conf_rx and be dropped by
-            // handle_tl_confirmation (no pending_group_send set for responses).
-            self.tl_request_tx.send(msg).await;
-        }
-    }
-
     /// Get the object size and message offset for a communication object.
     ///
     /// Returns `(size_in_bytes, offset)` where offset is either:

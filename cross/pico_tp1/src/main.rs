@@ -32,7 +32,6 @@ use zweidraehte::{
     config::MAX_APDU_LENGTH_EXTENDED,
     layers::linklayers::tpuart::TpUartLinkLayerBuilder,
     prelude::*,
-    restart::{RestartError, RestartResponse},
     storage::DeviceStorage,
 };
 
@@ -186,54 +185,44 @@ async fn restart_task(
 
     loop {
         let request = knx.receive_restart_request().await;
-        let req = request.get();
         let state = knx.state();
 
-        info!("Restart request: erase_code={}", req.erase_code);
+        info!("Restart request: erase_code={}", request.erase_code);
 
-        let response = match req.erase_code {
+        // The stack already sent the A_Restart_Response on the bus.
+        match request.erase_code {
             EraseCode::Basic | EraseCode::Confirmed => {
                 info!("Basic restart (no data reset)");
-                RestartResponse::success()
             }
             EraseCode::FactoryReset => {
                 info!("Factory reset — clearing all data");
                 state.factory_reset();
-                RestartResponse::success()
             }
             EraseCode::ResetIA => {
                 info!("Resetting individual address");
                 state.reset_individual_address();
-                RestartResponse::success()
             }
             EraseCode::ResetAP => {
                 info!("Resetting application program");
                 state.reset_application();
-                RestartResponse::success()
             }
             EraseCode::ResetParam => {
                 info!("Resetting parameters");
                 state.reset_parameters();
-                RestartResponse::success()
             }
             EraseCode::FactoryResetKeepIA => {
                 info!("Factory reset (keeping individual address)");
                 state.factory_reset_keep_ia();
-                RestartResponse::success()
             }
             EraseCode::ResetLinks | EraseCode::Other(_) => {
-                warn!("Unsupported erase code");
-                RestartResponse::error(RestartError::UnsupportedEraseCode)
+                warn!("Unsupported erase code — ignoring");
             }
-        };
+        }
 
         // Persist the post-reset state before rebooting.
         if state.is_dirty() {
             save_state(state, storage);
         }
-
-        // Send the response back (which the stack forwards on the bus).
-        request.reply(response).await;
 
         // Brief delay so the response can be sent on the wire.
         Timer::after(Duration::from_millis(100)).await;

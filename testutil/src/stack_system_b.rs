@@ -19,7 +19,7 @@ use std::net::SocketAddrV4;
 use zweidraehte::{
     bcus::system_b::SystemBIpDeviceDef,
     layers::linklayers::knxip::KnxNetIpBuilder,
-    restart::{EraseCode, RestartResponse},
+    restart::EraseCode,
 };
 
 use testutil::devices::system_b_demo::*;
@@ -71,68 +71,56 @@ async fn run_stack(runner: Runner<'static, DemoStack>) {
 /// 5. Re-execs the process via `LinuxSystem::restart()`
 #[embassy_executor::task]
 async fn handle_restarts(stack: Stack<'static, DemoStack>) {
-    use zweidraehte::restart::RestartError;
 
     println!("Restart handler task started");
 
     loop {
         let request = stack.receive_restart_request().await;
-        let req = request.get();
         let state = stack.state();
 
         println!("\n********************************************");
         println!("*** RESTART REQUEST RECEIVED ***");
-        println!("*** Erase Code: {} ***", req.erase_code);
-        println!("*** Channel: {} ***", req.channel);
-        println!("*** Access Level: {:?} ***", req.access_ctx);
-        println!("*** Needs Response: {} ***", req.needs_response);
+        println!("*** Erase Code: {} ***", request.erase_code);
+        println!("*** Channel: {} ***", request.channel);
+        println!("*** Access Level: {:?} ***", request.access_ctx);
+        println!("*** Needs Response: {} ***", request.needs_response);
         println!("********************************************\n");
 
-        // Execute the reset. All reset methods use interior mutability (&self)
-        // so we can call them directly through the shared Stack reference.
-        // factory_reset() now handles both base state and link-layer state
-        // (IP config reset) in one call.
-        let response = match req.erase_code {
+        // The stack already sent the A_Restart_Response on the bus before
+        // delivering this request. We just need to execute the reset.
+        match request.erase_code {
             EraseCode::Basic | EraseCode::Confirmed => {
                 println!("Performing basic restart (no data reset)...");
-                RestartResponse::success()
             }
             EraseCode::FactoryReset => {
                 println!("Performing FACTORY RESET — all data will be cleared!");
                 state.factory_reset();
-                RestartResponse::success()
             }
             EraseCode::ResetIA => {
                 println!("Resetting Individual Address to 15.15.255...");
                 state.reset_individual_address();
-                RestartResponse::success()
             }
             EraseCode::ResetAP => {
                 println!("Resetting Application Program...");
                 state.reset_application();
-                RestartResponse::success()
             }
             EraseCode::ResetParam => {
                 println!("Resetting Parameters to defaults...");
                 state.reset_parameters();
-                RestartResponse::success()
             }
             EraseCode::ResetLinks => {
                 // TODO: Check KNX spec — ResetLinks may be E-Mode only and not
                 // applicable to System B IP devices.
-                println!("ResetLinks not supported on this device");
-                RestartResponse::error(RestartError::UnsupportedEraseCode)
+                println!("ResetLinks not supported on this device — ignoring");
             }
             EraseCode::FactoryResetKeepIA => {
                 println!("Performing Factory Reset (keeping Individual Address)...");
                 state.factory_reset_keep_ia();
-                RestartResponse::success()
             }
             EraseCode::Other(code) => {
-                println!("Unsupported erase code: 0x{:02X}", code);
-                RestartResponse::error(RestartError::UnsupportedEraseCode)
+                println!("Unsupported erase code: 0x{:02X} — ignoring", code);
             }
-        };
+        }
 
         // Persist the post-reset state before restarting so it survives
         // the process re-exec.
@@ -145,9 +133,6 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
                     .expect("load device identity for restart save");
             save_state(state, &mut JsonStorage::new(STATE_FILE_PATH, identity));
         }
-
-        // Send the response back to the stack (which forwards it on the bus).
-        request.reply(response).await;
 
         // Give the stack a moment to send the response on the bus.
         embassy_time::Timer::after(Duration::from_millis(100)).await;

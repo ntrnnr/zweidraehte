@@ -157,7 +157,7 @@ macro_rules! __create_protocol_enum_inner {
             Other($repr),
         }
 
-        impl From<$repr> for $name {
+        impl const From<$repr> for $name {
             fn from(x: $repr) -> $name {
                 #[allow(unreachable_patterns)]
                 match x {
@@ -167,7 +167,7 @@ macro_rules! __create_protocol_enum_inner {
             }
         }
 
-        impl From<$name> for $repr {
+        impl const From<$name> for $repr {
             fn from(name: $name) -> $repr {
                 match name {
                     $($name::$variant => $value,)*
