@@ -841,6 +841,22 @@ pub struct LayerContext<'a, D: StackDefinition> {
     /// Receiver for application service requests from user code
     /// (GroupValueWrite/Read via [`Stack::update_object`]).
     pub app_service_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+
+    // ------------------------------------------------------------------
+    // cEMI Transport Layer channels (optional — only for KNX/IP devices
+    // that use InsecureDeviceLayersWithCemi)
+    // ------------------------------------------------------------------
+
+    /// Receiver for cEMI events from the DevMgmt handler.
+    ///
+    /// `None` when the device doesn't use cEMI Transport Layer mode
+    /// (e.g., TP1-only devices).
+    pub cemi_event_receiver: Option<DynamicReceiver<'a, layers::transport::cemi::CemiEvent>>,
+
+    /// Sender for cEMI response frames back to the KNX/IP runtime.
+    ///
+    /// `None` when the device doesn't use cEMI Transport Layer mode.
+    pub cemi_response_sender: Option<DynamicSender<'a, Buffer<'static>>>,
 }
 
 /// Standard layer stack: `(NetworkLayer, TransportLayer, ApplicationLayer)`.
@@ -941,6 +957,154 @@ where
     fn handle_side_input(&mut self, outbox: &mut router::Outbox) {
         if let Some(req) = self.pending_app_request.take() {
             self.layers.2.handle_app_request(&req, outbox);
+        }
+    }
+}
+
+// ============================================================================
+// InsecureIpDeviceLayers — with cEMI Transport Layer bridge
+// ============================================================================
+
+/// Layer stack for KNX/IP devices: `(NL, CemiTransportLayer<TL>, AL)`.
+///
+/// Extends [`InsecureDeviceLayers`] by wrapping the transport layer in a
+/// [`CemiTransportLayer`](layers::transport::cemi::CemiTransportLayer) that
+/// bridges KNX/IP Device Management connections with the application layer.
+///
+/// When a Device Management connection sends cEMI Transport Layer frames
+/// (T_Data_Connected, T_Data_Individual), they are injected directly into
+/// AL. AL responses are intercepted and routed back to the KNX/IP runtime.
+///
+/// Side inputs handled:
+/// - Application service requests (from user code via [`Stack::update_object`])
+/// - cEMI events (from DevMgmt handler: activate, deactivate, frame)
+pub struct InsecureIpDeviceLayers<'a, D: StackDefinition> {
+    layers: (
+        NetworkLayer<'a, D>,
+        layers::transport::cemi::CemiTransportLayer<'a, D>,
+        ApplicationLayer<'a, D>,
+    ),
+    app_service_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+    pending_app_request: Cell<Option<Request<ApplicationLayerService, ApplicationLayerServiceResponse>>>,
+    cemi_event_receiver: DynamicReceiver<'a, layers::transport::cemi::CemiEvent>,
+    pending_cemi_event: Cell<Option<layers::transport::cemi::CemiEvent>>,
+}
+
+impl<'a, D: StackDefinition> InsecureIpDeviceLayers<'a, D>
+where
+    D::State: HasAddressTable
+        + HasApplication
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasConnectionAuth
+        + HasRoutingCount,
+    D::InterfaceObjects<'static>: HasDeviceObject,
+{
+    /// Construct the `(NL, CemiTL<TL>, AL)` layer stack from a
+    /// [`LayerContext`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ctx.cemi_event_receiver` or `ctx.cemi_response_sender`
+    /// is `None`. These are always `Some` when constructed by `Runner::run()`.
+    pub fn new(ctx: &'a LayerContext<'a, D>) -> Self {
+        let network_layer = NetworkLayer::new(ctx.state, ctx.interface_objects);
+
+        let transport_layer = TransportLayer::new(ctx.buffer_manager, ctx.state, D::TL_STYLE);
+
+        let cemi_response_sender = ctx
+            .cemi_response_sender
+            .expect("InsecureIpDeviceLayers requires cemi_response_sender");
+        let cemi_transport_layer =
+            layers::transport::cemi::CemiTransportLayer::new(transport_layer, cemi_response_sender);
+
+        let application_layer = ApplicationLayer::new(
+            ctx.buffer_manager,
+            ctx.state,
+            ctx.comm_objs,
+            ctx.hook_context,
+            ctx.event_channel,
+            ctx.lifecycle_channel,
+            ctx.interface_objects,
+            ctx.memory_map,
+            ctx.restart_sender,
+        );
+
+        let cemi_event_receiver = ctx
+            .cemi_event_receiver
+            .expect("InsecureIpDeviceLayers requires cemi_event_receiver");
+
+        Self {
+            layers: (network_layer, cemi_transport_layer, application_layer),
+            app_service_receiver: ctx.app_service_receiver,
+            pending_app_request: Cell::new(None),
+            cemi_event_receiver,
+            pending_cemi_event: Cell::new(None),
+        }
+    }
+}
+
+impl<D: StackDefinition> LayerStack for InsecureIpDeviceLayers<'_, D>
+where
+    D::State: HasAddressTable
+        + HasApplication
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasConnectionAuth
+        + HasRoutingCount,
+    D::InterfaceObjects<'static>: HasDeviceObject,
+{
+    const DISPATCH_TABLE: router::DispatchTable = {
+        type Inner<'a, D> = (
+            NetworkLayer<'a, D>,
+            layers::transport::cemi::CemiTransportLayer<'a, D>,
+            ApplicationLayer<'a, D>,
+        );
+        <Inner<'_, D> as LayerStack>::DISPATCH_TABLE
+    };
+
+    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut router::Outbox) {
+        self.layers.dispatch(layer_idx, msg, outbox);
+    }
+
+    fn next_deadline(&self) -> Option<embassy_time::Instant> {
+        self.layers.next_deadline()
+    }
+
+    fn poll(&mut self, outbox: &mut router::Outbox) {
+        self.layers.poll(outbox);
+    }
+
+    fn init(&mut self) {
+        self.layers.init();
+    }
+
+    fn recv_side_input(&self) -> impl core::future::Future<Output = ()> + '_ {
+        use embassy_futures::select::{Either, select};
+
+        async {
+            match select(
+                self.app_service_receiver.receive(),
+                self.cemi_event_receiver.receive(),
+            )
+            .await
+            {
+                Either::First(req) => {
+                    self.pending_app_request.set(Some(req));
+                }
+                Either::Second(event) => {
+                    self.pending_cemi_event.set(Some(event));
+                }
+            }
+        }
+    }
+
+    fn handle_side_input(&mut self, outbox: &mut router::Outbox) {
+        if let Some(req) = self.pending_app_request.take() {
+            self.layers.2.handle_app_request(&req, outbox);
+        }
+        if let Some(event) = self.pending_cemi_event.take() {
+            self.layers.1.handle_cemi_event(event, outbox);
         }
     }
 }
@@ -1141,6 +1305,14 @@ impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
 pub struct StackContext<'a, D: StackDefinition> {
     inner: &'a Inner<D>,
     interface_objects: &'a D::InterfaceObjects<'static>,
+
+    // cEMI Transport Layer channel endpoints (for KNX/IP link layer).
+
+    /// Sender for cEMI events from DevMgmt handler to the layer stack.
+    pub(crate) cemi_event_sender: Option<DynamicSender<'a, layers::transport::cemi::CemiEvent>>,
+
+    /// Receiver for cEMI response frames from the layer stack.
+    pub(crate) cemi_response_receiver: Option<DynamicReceiver<'a, Buffer<'static>>>,
 }
 
 impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
@@ -1255,6 +1427,18 @@ where
 
     fn address_table(&self) -> &core::cell::RefCell<Self::ADT> {
         self.inner.state.adt()
+    }
+}
+
+// Unconditional — the channels are always present in StackContext (just
+// optionally None for non-IP stacks).
+impl<D: StackDefinition> context::CemiTransportContext for StackContext<'_, D> {
+    fn cemi_event_sender(&self) -> Option<&DynamicSender<'_, layers::transport::cemi::CemiEvent>> {
+        self.cemi_event_sender.as_ref()
+    }
+
+    fn cemi_response_receiver(&self) -> Option<&DynamicReceiver<'_, Buffer<'static>>> {
+        self.cemi_response_receiver.as_ref()
     }
 }
 
@@ -1420,6 +1604,25 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let ll_conf: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> = Channel::new();
 
         // ================================================================
+        // cEMI Transport Layer channels
+        // ================================================================
+        //
+        // Always created (cheap), but only wired into the layer stack
+        // when the StackDefinition uses InsecureIpDeviceLayers. The LL
+        // accesses the other endpoints via StackContext.
+        //
+        // - cemi_event: DevMgmt handler → CemiTransportLayer
+        // - cemi_response: CemiTransportLayer → KNX/IP runtime
+
+        // Capacity 2: at most one unconsumed Frame + one Deactivate can be
+        // pending simultaneously when the layer stack is busy processing other
+        // messages (e.g., routing indications). The DevMgmt protocol guarantees
+        // at most one outstanding Frame (ETS waits for ACK), and Activate is
+        // always consumed before the first Frame arrives.
+        let cemi_event_channel: Channel<NoopRawMutex, layers::transport::cemi::CemiEvent, 2> = Channel::new();
+        let cemi_response_channel: Channel<NoopRawMutex, Buffer<'static>, 1> = Channel::new();
+
+        // ================================================================
         // Layer construction (fully generic via StackDefinition)
         // ================================================================
 
@@ -1442,6 +1645,8 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             memory_map: &self.stack.inner.memory_map,
             restart_sender: self.restart_sender,
             app_service_receiver,
+            cemi_event_receiver: Some(cemi_event_channel.receiver().into()),
+            cemi_response_sender: Some(cemi_response_channel.sender().into()),
         };
 
         let mut layers = D::build_layers(&layer_context);
@@ -1454,7 +1659,12 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Link layer task
         // ================================================================
 
-        let stack_context = StackContext { inner: self.stack.inner, interface_objects: self.interface_objects };
+        let stack_context = StackContext {
+            inner: self.stack.inner,
+            interface_objects: self.interface_objects,
+            cemi_event_sender: Some(cemi_event_channel.sender().into()),
+            cemi_response_receiver: Some(cemi_response_channel.receiver().into()),
+        };
         let ll_task = self.link_layer_builder.build_and_run(
             self.link_layer_resources,
             &stack_context,

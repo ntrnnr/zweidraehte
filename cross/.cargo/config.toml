@@ -1,2 +1,2 @@
 [env]
-DEFMT_LOG = "smoltcp=off,embassy_hal_internal=off,trace"
+DEFMT_LOG = "smoltcp=off,embassy_hal_internal=off,debug"

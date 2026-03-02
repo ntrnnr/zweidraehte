@@ -182,6 +182,12 @@ pub struct ConnectionTable<const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     incoming: [Connection; MAX_INCOMING],
     /// Outgoing connections (initiated by us)
     outgoing: [Connection; MAX_OUTGOING],
+    /// When true, `allocate_incoming()` always returns `None`, causing the
+    /// transport layer to reject new bus connections with `T_Disconnect`.
+    ///
+    /// Set by the cEMI Transport Layer to prevent contention between
+    /// bus-originated and cEMI-originated connection-oriented traffic.
+    incoming_locked: bool,
 }
 
 impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_INCOMING, MAX_OUTGOING> {
@@ -190,6 +196,7 @@ impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_I
         Self {
             incoming: [const { Connection::new() }; MAX_INCOMING],
             outgoing: [const { Connection::new() }; MAX_OUTGOING],
+            incoming_locked: false,
         }
     }
 
@@ -239,10 +246,16 @@ impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_I
         None
     }
 
-    /// Allocate a new incoming connection slot for the given address
+    /// Allocate a new incoming connection slot for the given address.
     ///
-    /// Returns `None` if no free slots are available.
+    /// Returns `None` if no free slots are available or if incoming
+    /// connections are locked (see [`lock_incoming`](Self::lock_incoming)).
     pub fn allocate_incoming(&mut self, addr: IndividualAddress) -> Option<&mut Connection> {
+        if self.incoming_locked {
+            info!("TL: rejecting incoming connection from {} (locked by cEMI TL)", addr);
+            return None;
+        }
+
         // First check if we already have a connection to this address
         if let Some(idx) =
             self.incoming.iter().position(|c| c.state != ConnectionState::Closed && c.remote_addr == addr)
@@ -259,6 +272,36 @@ impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_I
         }
 
         None
+    }
+
+    /// Lock incoming connections.
+    ///
+    /// While locked, [`allocate_incoming`](Self::allocate_incoming) always
+    /// returns `None`, causing the transport layer to reject new bus
+    /// connections with `T_Disconnect`.
+    pub fn lock_incoming(&mut self) {
+        self.incoming_locked = true;
+    }
+
+    /// Unlock incoming connections, re-enabling bus connection acceptance.
+    pub fn unlock_incoming(&mut self) {
+        self.incoming_locked = false;
+    }
+
+    /// Force-close all active incoming connections.
+    ///
+    /// Returns an array of remote addresses that had active connections.
+    /// The caller should send `T_Disconnect` to each and issue
+    /// `T_Disconnect.ind` to the application layer.
+    pub fn force_close_all_incoming(&mut self) -> heapless::Vec<IndividualAddress, MAX_INCOMING> {
+        let mut disconnected = heapless::Vec::new();
+        for conn in &mut self.incoming {
+            if conn.state != ConnectionState::Closed {
+                let _ = disconnected.push(conn.remote_addr);
+                conn.reset();
+            }
+        }
+        disconnected
     }
 
     /// Allocate a new outgoing connection slot for the given address

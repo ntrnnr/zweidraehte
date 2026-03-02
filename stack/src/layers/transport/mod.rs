@@ -28,6 +28,7 @@
 
 // FIXME: do we want the connection timeout, ack timeout and max_repetitions to be configurable? Are there PIDs available for interface objects?
 
+pub mod cemi;
 mod connection;
 mod state_machine;
 
@@ -143,6 +144,49 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             connections: ConnectionTable::new(),
             style,
             pending_nl: heapless::Deque::new(),
+        }
+    }
+
+    /// Access to the buffer manager (used by [`CemiTransportLayer`](cemi::CemiTransportLayer)).
+    pub(crate) fn buffer_manager(&self) -> &'a crate::messages::buffers::DynBufferManager<'static> {
+        self.buffer_manager
+    }
+
+    // =========================================================================
+    // cEMI Transport Layer support
+    // =========================================================================
+    //
+    // These methods are called by CemiTransportLayer to manage contention
+    // between bus-originated and cEMI-originated connection-oriented traffic.
+
+    /// Lock incoming connections, causing `allocate_incoming()` to reject
+    /// new bus connections with `T_Disconnect`.
+    pub fn lock_incoming(&mut self) {
+        self.connections.lock_incoming();
+    }
+
+    /// Unlock incoming connections, re-enabling bus connection acceptance.
+    pub fn unlock_incoming(&mut self) {
+        self.connections.unlock_incoming();
+    }
+
+    /// Force-close all active incoming bus connections.
+    ///
+    /// Sends `T_Disconnect` to each remote device and issues
+    /// `T_Disconnect.ind` to the application layer via the outbox.
+    pub fn force_close_incoming(&mut self, outbox: &mut Outbox)
+    where
+        D::State: HasAddressTable + HasConnectionAuth,
+    {
+        let disconnected = self.connections.force_close_all_incoming();
+        for addr in &disconnected {
+            info!("TL: force-closing incoming connection from {} (cEMI TL takeover)", addr);
+        }
+        for addr in disconnected {
+            // Notify the remote device
+            self.send_disconnect(addr, outbox);
+            // Notify the application layer
+            self.send_disconnect_indication(addr, outbox);
         }
     }
 }
@@ -790,11 +834,11 @@ where
                 }
                 TlAction::IndicateConnected { source } => {
                     info!("TL connection established with {}", source);
-                    // TODO: Send T_Connect.ind to application layer if needed
+                    self.send_connect_indication(source, outbox);
                 }
                 TlAction::IndicateDisconnected { source } => {
                     info!("TL connection closed with {}", source);
-                    // TODO: Send T_Disconnect.ind to application layer if needed
+                    self.send_disconnect_indication(source, outbox);
                 }
                 TlAction::IndicateData { source: _ } => {
                     if let Some(mut msg) = msg_for_data.take() {
@@ -1057,6 +1101,60 @@ where
 
         debug!("TL sending T_Disconnect to {}", dest);
         let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
+        outbox.push(msg.into_inner());
+    }
+
+    /// Synthesize a `T_Disconnect.ind` for the application layer.
+    ///
+    /// Used when force-closing incoming connections (e.g. when activating
+    /// cEMI Transport Layer mode). This goes upward to AL, not to the wire.
+    pub(crate) fn send_disconnect_indication(&mut self, source: IndividualAddress, outbox: &mut Outbox) {
+        use crate::messages::builder::MessageBuilder;
+
+        const CONTROL_PDU_LEN: usize = 7;
+
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
+            warn!("TL no buffer for T_Disconnect.ind from {}", source);
+            return;
+        };
+
+        let mut msg = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::N_Data_Req,
+            Priority::System,
+            DestinationAddress::Individual(source),
+        )
+        .with_transport_control(Tpci::Disconnect)
+        .build();
+
+        msg.set_service_type(ServiceType::T_Disconnect_Ind);
+        outbox.push(msg.into_inner());
+    }
+
+    /// Synthesize a `T_Connect.ind` for the application layer.
+    ///
+    /// Used when activating cEMI Transport Layer mode to signal a
+    /// synthetic connection to AL from the cEMI path.
+    pub(crate) fn send_connect_indication(&mut self, source: IndividualAddress, outbox: &mut Outbox) {
+        use crate::messages::builder::MessageBuilder;
+
+        const CONTROL_PDU_LEN: usize = 7;
+
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
+            warn!("TL no buffer for T_Connect.ind from {}", source);
+            return;
+        };
+
+        let mut msg = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::N_Data_Req,
+            Priority::System,
+            DestinationAddress::Individual(source),
+        )
+        .with_transport_control(Tpci::Connect)
+        .build();
+
+        msg.set_service_type(ServiceType::T_Connect_Ind);
         outbox.push(msg.into_inner());
     }
 

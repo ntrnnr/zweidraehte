@@ -76,6 +76,7 @@ create_protocol_enum!(
         TDataConnectedReq, 0x41, "T_Data_Connected.req";
         TDataIndividualReq, 0x4A, "T_Data_Individual.req";
         TDataConnectedInd, 0x89, "T_Data_Connected.ind";
+        TDataConnectedCon, 0x8E, "T_Data_Connected.con";
         TDataIndividualInd, 0x94, "T_Data_Individual.ind";
         _, "Unknown cEMI message code 0x{:x}";
     }
@@ -134,6 +135,7 @@ impl CemiMessageCode {
                 | CemiMessageCode::TDataIndividualInd
                 | CemiMessageCode::TDataConnectedReq
                 | CemiMessageCode::TDataConnectedInd
+                | CemiMessageCode::TDataConnectedCon
         )
     }
 }
@@ -446,10 +448,13 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for CemiTransport<B> {
             .take_front(CEMI_TRANSPORT_RESERVED_LEN)
             .ok_or(ParseError::Format)?;
 
-        // L (1 byte) = TPDU length
-        let tpdu_len = buffer.take_byte_front().ok_or(ParseError::Format)? as usize;
+        // L (1 byte): number of TPDU octets after the first one. Total
+        // TPDU size = L + 1. This follows the same convention as the NPDU
+        // length field in standard cEMI L_Data frames.
+        let l_field = buffer.take_byte_front().ok_or(ParseError::Format)? as usize;
+        let tpdu_len = l_field + 1;
 
-        // TPDU (L bytes)
+        // TPDU (L+1 bytes)
         let tpdu = buffer.take_front(tpdu_len).ok_or(ParseError::Format)?;
 
         Ok(CemiTransport { message_code, additional_info, tpdu })
@@ -486,8 +491,8 @@ impl SerializablePacket for CemiTransportBuilder<'_> {
             .expect("too few bytes for reserved padding");
         reserved_buf.deref_mut().fill(0);
 
-        // L (TPDU length)
-        let len_byte = [self.tpdu.len() as u8];
+        // L (number of TPDU octets after the first — same convention as NPDU length)
+        let len_byte = [self.tpdu.len().saturating_sub(1) as u8];
         let mut len_buf = bv.take_front(1).expect("too few bytes for TPDU length");
         len_buf.deref_mut().copy_from_slice(&len_byte);
 
@@ -1277,12 +1282,12 @@ mod tests {
 
     #[test]
     fn test_transport_parse_t_data_connected_req() {
-        // T_Data_Connected.req with a 2-byte TPDU
+        // T_Data_Connected.req with a 2-byte TPDU (L=1 means L+1=2 bytes)
         let frame = [
             0x41, // T_Data_Connected.req
             0x00, // Additional Info Length = 0
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 6 reserved zero bytes
-            0x02, // TPDU length = 2
+            0x01, // L=1 → 2-byte TPDU
             0x00, 0x81, // TPDU (TPCI/APCI + data)
         ];
 
@@ -1296,12 +1301,12 @@ mod tests {
 
     #[test]
     fn test_transport_parse_t_data_individual_req() {
-        // T_Data_Individual.req with a 3-byte TPDU
+        // T_Data_Individual.req with a 3-byte TPDU (L=2 means L+1=3 bytes)
         let frame = [
             0x4A, // T_Data_Individual.req
             0x00, // Additional Info Length = 0
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 6 reserved zero bytes
-            0x03, // TPDU length = 3
+            0x02, // L=2 → 3-byte TPDU
             0x43, 0x00, 0x01, // TPDU
         ];
 
@@ -1314,13 +1319,13 @@ mod tests {
 
     #[test]
     fn test_transport_parse_with_additional_info() {
-        // T_Data_Connected.req with 2 bytes of additional info
+        // T_Data_Connected.req with 2 bytes of additional info, 1-byte TPDU (L=0)
         let frame = [
             0x41, // T_Data_Connected.req
             0x02, // Additional Info Length = 2
             0xAA, 0xBB, // Additional info
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 6 reserved zero bytes
-            0x01, // TPDU length = 1
+            0x00, // L=0 → 1-byte TPDU
             0x80, // TPDU
         ];
 
@@ -1355,7 +1360,7 @@ mod tests {
             0x89, // T_Data_Connected.ind
             0x00, // Additional Info Length = 0
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 6 reserved zero bytes
-            0x02, // TPDU length = 2
+            0x01, // L=1 → 2-byte TPDU
             0x00, 0x81, // TPDU
         ];
         assert_eq!(written, &expected);
@@ -1363,6 +1368,7 @@ mod tests {
 
     #[test]
     fn test_transport_builder_empty_tpdu() {
+        // Empty TPDU is an edge case — L = saturating_sub(1) = 0
         let builder = CemiTransportBuilder {
             message_code: CemiMessageCode::TDataIndividualReq,
             tpdu: &[],
@@ -1383,7 +1389,7 @@ mod tests {
             0x4A, // T_Data_Individual.req
             0x00, // Additional Info Length = 0
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Reserved
-            0x03, // TPDU length = 3
+            0x02, // L=2 → 3-byte TPDU
             0x43, 0x00, 0x01, // TPDU
         ];
 

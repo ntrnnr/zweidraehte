@@ -1,7 +1,7 @@
 use core::future::pending;
 use core::net::SocketAddrV4;
 
-use embassy_futures::select::{Either3, Either4, select3, select4};
+use embassy_futures::select::{Either4, select4};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, DynamicSender},
@@ -23,9 +23,10 @@ use crate::{
 };
 
 use super::{
+    KnxNetIpContext, KnxNetIpResources, PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError,
+    SubnetIndication, SubnetLink,
     features::{self, RemoteConfigFeature, RoutingFeature},
-    servers, KnxNetIpContext, KnxNetIpResources, PacketOrigin, PendingResponse, ResponseTarget,
-    ServerContext, ServerError, SubnetIndication, SubnetLink,
+    servers,
     tcp_manager::{TcpEvent, TcpManager},
     udp_manager::{UdpEvent, UdpManager},
 };
@@ -81,8 +82,7 @@ pub struct KnxNetIp<
     const MAX_SOCKETS: usize = 4,
     const MAX_TCP_STREAMS: usize = 1,
     const MAX_CHANNELS: usize = 1,
->
-where
+> where
     [(); <F::Tunneling as features::TunnelingFeature>::CAPACITY]:,
     <F::Tunneling as features::TunnelingFeature>::Tunnel:
         servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
@@ -93,7 +93,6 @@ where
     pub(super) udp_manager: UdpManager<T, MAX_SOCKETS>,
 
     // ---- Typed server fields (zero-size when feature is disabled) ----
-
     /// Discovery server — always present (mandatory per KNX spec).
     pub(super) discovery: servers::DiscoveryServer,
     /// Socket indices the discovery server listens on.
@@ -119,11 +118,7 @@ where
     /// The handler collection is a `CompositeHandlers` with the tunneling
     /// slot selected by `TunnelingFeature::Tunnel`.
     pub(super) connection_manager: servers::ConnectionManager<
-        servers::CompositeHandlers<
-            'res,
-            servers::WithDevMgmt,
-            <F::Tunneling as features::TunnelingFeature>::Tunnel,
-        >,
+        servers::CompositeHandlers<'res, servers::WithDevMgmt, <F::Tunneling as features::TunnelingFeature>::Tunnel>,
         { <F::Tunneling as features::TunnelingFeature>::CAPACITY },
         MAX_CHANNELS,
     >,
@@ -143,8 +138,14 @@ where
     pub(super) subnet_link: Option<SubnetLink<'res>>,
 }
 
-impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
-    KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+impl<
+    'res,
+    T: IpTransport,
+    F: features::FeatureSet,
+    const MAX_SOCKETS: usize,
+    const MAX_TCP_STREAMS: usize,
+    const MAX_CHANNELS: usize,
+> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel:
         servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
@@ -177,7 +178,8 @@ where
                     <F::Tunneling as features::TunnelingFeature>::CAPACITY];
                 let addr_count =
                     crate::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
-                        self.context, &mut addr_buf,
+                        self.context,
+                        &mut addr_buf,
                     );
                 let tunnel_slots = self.connection_manager.tunneling_slot_info();
                 let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
@@ -345,21 +347,20 @@ where
         socket_idx: usize,
         response_channel: &Channel<NoopRawMutex, PendingResponse, 16>,
     ) {
-        let mut addr_buf = [crate::address::IndividualAddress::default();
-            <F::Tunneling as features::TunnelingFeature>::CAPACITY];
-        let addr_count =
-            crate::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
-                self.context, &mut addr_buf,
-            );
+        let mut addr_buf =
+            [crate::address::IndividualAddress::default(); <F::Tunneling as features::TunnelingFeature>::CAPACITY];
+        let addr_count = crate::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
+            self.context,
+            &mut addr_buf,
+        );
         let additional_addresses = &addr_buf[..addr_count];
         let tunnel_slots = self.connection_manager.tunneling_slot_info();
         let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
 
         // Helper closure to build server context — captures immutable fields
         // that are disjoint from the mutable server fields.
-        let make_ctx = |ind_tx| {
-            make_server_context::<F::RemoteConfig>(self.context, ind_tx, additional_addresses, tunnel_ref)
-        };
+        let make_ctx =
+            |ind_tx| make_server_context::<F::RemoteConfig>(self.context, ind_tx, additional_addresses, tunnel_ref);
 
         // Discovery server (always present)
         {
@@ -369,9 +370,7 @@ where
                 KNXnetIPServiceType::SearchRequestExtended,
                 KNXnetIPServiceType::DescriptionRequest,
             ];
-            if discovery_service_types.contains(&service_type)
-                && self.discovery_socket_indices.contains(&socket_idx)
-            {
+            if discovery_service_types.contains(&service_type) && self.discovery_socket_indices.contains(&socket_idx) {
                 let context = make_ctx(self.ind_tx);
                 match self.discovery.on_indication(service_type, buffer, source, &context).await {
                     Ok(responses) => {
@@ -473,8 +472,14 @@ where
     }
 }
 
-impl<'res, T: IpTransport, F: features::FeatureSet, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
-    KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+impl<
+    'res,
+    T: IpTransport,
+    F: features::FeatureSet,
+    const MAX_SOCKETS: usize,
+    const MAX_TCP_STREAMS: usize,
+    const MAX_CHANNELS: usize,
+> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel:
         servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
@@ -494,10 +499,7 @@ where
     where
         M: Inbox<RequestMessage<Buffer<'static>>>,
     {
-        info!(
-            "KnxNetIp Link Layer starting with {} socket(s)",
-            self.udp_manager.socket_count()
-        );
+        info!("KnxNetIp Link Layer starting with {} socket(s)", self.udp_manager.socket_count());
 
         let response_channel = self.resources.response_channel();
 
@@ -533,10 +535,7 @@ where
                     use crate::util::packets::SerializeBuffer;
 
                     if let Some(mut buffer) = buffer_manager.try_alloc() {
-                        let control_hpai = HPAI::ipv4_udp(
-                            core::net::Ipv4Addr::UNSPECIFIED,
-                            0,
-                        );
+                        let control_hpai = HPAI::ipv4_udp(core::net::Ipv4Addr::UNSPECIFIED, 0);
                         let builder = DisconnectRequestBuilder::new(channel_id, control_hpai);
                         buffer.serialize(&builder);
                         self.send_response(PendingResponse { buffer, target }).await;
@@ -590,10 +589,21 @@ where
                 }
             };
 
-            let transport_future = select3(
+            // Fourth transport arm: cEMI TL responses from the Application
+            // Layer, intercepted by the CemiTransportLayer. When no DevMgmt
+            // connection is active (no receiver), pends forever.
+            let cemi_response_future = async {
+                match self.context.cemi_response_receiver() {
+                    Some(rx) => rx.receive().await,
+                    None => pending::<Buffer<'static>>().await,
+                }
+            };
+
+            let transport_future = select4(
                 self.udp_manager.next_event(buffer_manager),
                 self.tcp_manager.next_event(buffer_manager),
                 subnet_ind_future,
+                cemi_response_future,
             );
 
             let result = match next_timer {
@@ -611,22 +621,22 @@ where
                 }
 
                 // ============================================================
-                // Transport events (UDP, TCP, or bus bridge indication)
+                // Transport events (UDP, TCP, bus bridge, or cEMI response)
                 // ============================================================
                 Either4::First(transport_event) => match transport_event {
                     // UDP datagram received (multicast echoes already filtered)
-                    Either3::First(UdpEvent::Frame { socket_idx, source, destination, buffer }) => {
+                    Either4::First(UdpEvent::Frame { socket_idx, source, destination, buffer }) => {
                         let origin = PacketOrigin::Udp { source, socket_idx, destination };
                         self.dispatch_frame(&buffer, origin, response_channel).await;
                     }
 
                     // UDP socket receive error
-                    Either3::First(UdpEvent::Error { socket_idx }) => {
+                    Either4::First(UdpEvent::Error { socket_idx }) => {
                         error!("Socket {} receive error", socket_idx);
                     }
 
                     // TCP frame received
-                    Either3::Second(TcpEvent::Frame { tcp_idx, peer, buffer }) => {
+                    Either4::Second(TcpEvent::Frame { tcp_idx, peer, buffer }) => {
                         debug!("TCP connection {}: received {} byte frame from {}", tcp_idx, buffer.len(), peer);
 
                         let origin = PacketOrigin::Tcp { peer, tcp_idx };
@@ -634,19 +644,31 @@ where
                     }
 
                     // TCP connection closed
-                    Either3::Second(TcpEvent::Closed { tcp_idx, .. }) => {
+                    Either4::Second(TcpEvent::Closed { tcp_idx, .. }) => {
                         info!("TCP connection {} closed, tearing down KNX/IP channels", tcp_idx);
                         self.connection_manager.on_tcp_closed(tcp_idx);
                     }
 
                     // Bus bridge: TP1 bus indication to forward to tunnel clients
-                    Either3::Third(subnet_indication) => {
+                    Either4::Third(subnet_indication) => {
                         let forwarded = self
                             .connection_manager
                             .forward_bus_indication(&subnet_indication.cemi_data, self.context.buffer_manager());
 
                         for response in forwarded {
                             response_channel.send(response).await;
+                        }
+                    }
+
+                    // cEMI TL response from the Application Layer. Convert
+                    // from internal format to cEMI TL wire format and send
+                    // as a DeviceConfigurationRequest to the ETS client.
+                    Either4::Fourth(cemi_buf) => {
+                        let bm = self.context.buffer_manager();
+                        if let Some(response) = self.connection_manager.send_devmgmt_cemi_frame(&cemi_buf, bm) {
+                            self.send_response(response).await;
+                        } else {
+                            warn!("cEMI TL: no active DevMgmt connection for response, dropping");
                         }
                     }
                 },
@@ -684,13 +706,8 @@ where
                                 }
                                 Err(ServerError::Busy(wait_time)) => {
                                     if self.retry_queue.len() < MAX_RETRY_QUEUE_SIZE {
-                                        let retry_after =
-                                            Instant::now() + Duration::from_millis(wait_time as u64);
-                                        let pending = PendingRequest {
-                                            message: msg,
-                                            retry_after,
-                                            retry_count: 0,
-                                        };
+                                        let retry_after = Instant::now() + Duration::from_millis(wait_time as u64);
+                                        let pending = PendingRequest { message: msg, retry_after, retry_count: 0 };
 
                                         if self.retry_queue.push(pending).is_ok() {
                                             debug!(

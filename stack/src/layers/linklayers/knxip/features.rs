@@ -399,9 +399,15 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
     ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel> {
+        let cemi_sender = context
+            .cemi_event_sender()
+            .expect("KNX/IP requires cemi_event_sender")
+            .clone();
+
         let dev_mgmt = super::servers::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.buffer_manager(),
+            cemi_sender,
         );
 
         let mut additional_addresses = [crate::address::IndividualAddress::default(); N];
@@ -433,9 +439,15 @@ impl TunnelingFeature for NoTunneling {
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
     ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel> {
+        let cemi_sender = context
+            .cemi_event_sender()
+            .expect("KNX/IP requires cemi_event_sender")
+            .clone();
+
         let dev_mgmt = super::servers::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.buffer_manager(),
+            cemi_sender,
         );
 
         super::servers::CompositeHandlers::new(dev_mgmt, ())

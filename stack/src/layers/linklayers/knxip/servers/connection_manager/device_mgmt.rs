@@ -6,8 +6,11 @@
 
 use embassy_time::Instant;
 
+use embassy_sync::channel::DynamicSender;
+
 use crate::encoding::cemi::{CemiLocalMgmt, CemiMessageCode};
-use crate::messages::buffers::{Buffer, DynBufferManager};
+use crate::layers::transport::cemi::CemiEvent;
+use crate::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
 use crate::messages::knxip::substructs::{CRD, CRI, DeviceManagementCRD};
 use crate::messages::knxip::{
     ConnectionStatus, DeviceConfigurationAck, DeviceConfigurationAckBuilder, DeviceConfigurationRequest,
@@ -32,11 +35,11 @@ use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, Connecti
 /// delegating to a [`PropertyServiceHandler`].
 ///
 /// cEMI Transport Layer frames (T_Data_Connected/T_Data_Individual) are
-/// currently rejected. These will be supported once a `CemiTransportLayer`
-/// handler is implemented as part of the generic handler composition.
-// TODO: Implement CemiTransportLayer handler to restore cEMI transport
-// support for Device Management connections (replaces the removed
-// al_inject bypass channel).
+/// forwarded to the [`CemiTransportLayer`](crate::layers::transport::cemi::CemiTransportLayer)
+/// via the `cemi_event_sender` channel. The CemiTL patches the message code
+/// from `.req` to `.ind` and routes the frame to the Application Layer.
+/// AL responses flow back through the `cemi_response` channel and are
+/// picked up by the KNX/IP runtime.
 pub struct DeviceMgmtConnectionHandler<'a> {
     property_handler: &'a dyn PropertyServiceHandler,
     /// Buffer manager for allocating internal message buffers.
@@ -44,6 +47,8 @@ pub struct DeviceMgmtConnectionHandler<'a> {
     /// Channel ID of the active Device Management connection, if any.
     /// Only one Device Management connection is allowed at a time.
     active_channel: Option<u8>,
+    /// Sender for cEMI events to the CemiTransportLayer.
+    cemi_event_sender: DynamicSender<'a, CemiEvent>,
 }
 
 impl<'a> DeviceMgmtConnectionHandler<'a> {
@@ -51,8 +56,9 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
     pub fn new(
         property_handler: &'a dyn PropertyServiceHandler,
         buffer_manager: &'a DynBufferManager<'static>,
+        cemi_event_sender: DynamicSender<'a, CemiEvent>,
     ) -> Self {
-        Self { property_handler, buffer_manager, active_channel: None }
+        Self { property_handler, buffer_manager, active_channel: None, cemi_event_sender }
     }
 
     /// Parse and process a cEMI frame from a DeviceConfigurationRequest.
@@ -76,9 +82,11 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         // Transport Layer frames (T_Data_Individual.req, T_Data_Connected.req):
         // Convert to internal format and route through the application layer.
         if message_code.is_transport_layer() {
+            debug!("cEMI: TL frame {:?} ({} bytes)", message_code, payload.len());
             return self.handle_cemi_transport(payload, message_code).await;
         }
 
+        debug!("cEMI: Local Management frame {:?} ({} bytes)", message_code, payload.len());
         // Local Management frames (M_PropRead/M_PropWrite)
         let mut buf = payload;
         let frame = buf.parse::<CemiLocalMgmt<_>>().map_err(|_| {
@@ -111,18 +119,41 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
 
     /// Handle a cEMI Transport Layer frame (T_Data_Connected.req / T_Data_Individual.req).
     ///
-    /// Currently unsupported — returns an error. These frames carry APCI services
-    /// (DeviceDescriptorRead, MemoryRead/Write, Authorize, etc.) from ETS and
-    /// require a `CemiTransportLayer` handler to process them through the
-    /// generic handler composition.
+    /// Patches the message code from `.req` to `.ind` and forwards the full
+    /// cEMI TL frame to the [`CemiTransportLayer`](crate::layers::transport::cemi::CemiTransportLayer)
+    /// via the event channel. The CemiTL converts it to internal format and
+    /// delivers it to AL.
+    ///
+    /// Returns `Ok(None)` — no immediate cEMI response. The AL's response
+    /// will arrive asynchronously via the cemi_response channel and be
+    /// sent by the KNX/IP runtime as a separate DeviceConfigurationRequest.
     async fn handle_cemi_transport(
         &self,
-        _payload: &[u8],
+        payload: &[u8],
         message_code: CemiMessageCode,
     ) -> Result<Option<Buffer<'static>>, ConnectionStatus> {
-        // TODO: Route through CemiTransportLayer handler once implemented.
-        warn!("cEMI Transport Layer frames not yet supported (code: {:?})", message_code);
-        Err(ConnectionStatus::DataConnectionError)
+        // Patch .req → .ind in the message code byte.
+        let ind_code = message_code.to_indication().ok_or_else(|| {
+            debug!("cEMI TL: not a .req code: {:?}", message_code);
+            ConnectionStatus::DataConnectionError
+        })?;
+
+        // Allocate a buffer and copy the frame with the patched message code.
+        let mut buf = self.buffer_manager.alloc_no_headroom().await;
+        buf.fill_from_slice(payload);
+        // Overwrite message code byte with .ind variant
+        buf[0] = ind_code.into();
+
+        // Send to CemiTransportLayer. Use try_send — if the channel is
+        // full, the previous frame hasn't been consumed yet. Drop this
+        // frame and let the cEMI client retransmit.
+        if self.cemi_event_sender.try_send(CemiEvent::Frame(buf)).is_err() {
+            warn!("cEMI TL: event channel full, dropping frame");
+            return Err(ConnectionStatus::DataConnectionError);
+        }
+
+        // No immediate cEMI response — ACK only.
+        Ok(None)
     }
 
     /// Build a DeviceConfigurationAck as a `PendingResponse`.
@@ -223,6 +254,12 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         self.active_channel = Some(channel_id);
         debug!("Accepted Device Management connection on channel {}", channel_id);
 
+        // Activate cEMI TL mode — force-close bus connections and route
+        // connection-oriented traffic through the cEMI path.
+        if self.cemi_event_sender.try_send(CemiEvent::Activate).is_err() {
+            warn!("cEMI TL: failed to send Activate (channel full)");
+        }
+
         Ok(AcceptedConnection { crd: CRD::DeviceManagement(DeviceManagementCRD) })
     }
 
@@ -230,6 +267,11 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         if self.active_channel == Some(channel_id) {
             debug!("Closed Device Management connection on channel {}", channel_id);
             self.active_channel = None;
+
+            // Deactivate cEMI TL mode — unlock bus connections.
+            if self.cemi_event_sender.try_send(CemiEvent::Deactivate).is_err() {
+                warn!("cEMI TL: failed to send Deactivate (channel full)");
+            }
         }
     }
 
@@ -240,6 +282,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         conn: &mut ConnectionContext,
         buffer_manager: &DynBufferManager<'static>,
     ) -> Result<DataFrameAction, ServerError> {
+        debug!("DevMgmt raw data ({} bytes): {:?}", data.len(), crate::fmt::Bytes(data));
         // Parse the DeviceConfigurationRequest header (consumes KNXnet/IP + connection headers)
         let mut buf = data;
         let request = match buf.parse::<DeviceConfigurationRequest>() {
@@ -349,6 +392,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
             }
         }
 
+        debug!("DevMgmt on_data_frame: returning {} response(s)", responses.len());
         Ok(DataFrameAction::Responses(responses))
     }
 

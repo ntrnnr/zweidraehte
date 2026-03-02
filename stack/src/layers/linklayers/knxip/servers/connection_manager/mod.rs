@@ -294,18 +294,22 @@ pub enum TcpChannelEvent {
 
 /// Result of a connection manager operation.
 ///
+/// Maximum number of responses from a single `on_indication` call.
+///
+/// A data frame can produce up to: 1 ACK + 1 data response (DevMgmt) or
+/// 1 ACK + forwarded frames to sibling tunnel clients. 4 is sufficient
+/// for any realistic configuration.
+const MAX_RESPONSES: usize = 4;
+
 /// Bundles responses to send with optional TCP channel tracking events
 /// that the main loop must apply to the TCP manager.
-///
-/// The `MAX_CONNECTIONS` capacity covers the worst case: one ACK plus
-/// forwarded TunnelingRequests to sibling tunnel clients.
-pub struct ConnectionManagerResult<const MAX_CONNECTIONS: usize> {
-    pub responses: Vec<PendingResponse, MAX_CONNECTIONS>,
+pub struct ConnectionManagerResult {
+    pub responses: Vec<PendingResponse, MAX_RESPONSES>,
     pub tcp_events: Vec<TcpChannelEvent, 2>,
 }
 
-impl<const MAX_CONNECTIONS: usize> ConnectionManagerResult<MAX_CONNECTIONS> {
-    fn responses_only(responses: Vec<PendingResponse, MAX_CONNECTIONS>) -> Self {
+impl ConnectionManagerResult {
+    fn responses_only(responses: Vec<PendingResponse, MAX_RESPONSES>) -> Self {
         Self { responses, tcp_events: Vec::new() }
     }
 }
@@ -313,7 +317,7 @@ impl<const MAX_CONNECTIONS: usize> ConnectionManagerResult<MAX_CONNECTIONS> {
 /// Result of [`ConnectionManager::check_ack_timeouts`].
 pub struct AckTimeoutResult<const MAX_CONNECTIONS: usize> {
     /// Frames to retransmit (timed-out but under max retries).
-    pub retransmissions: Vec<PendingResponse, MAX_CONNECTIONS>,
+    pub retransmissions: Vec<PendingResponse, MAX_RESPONSES>,
     /// Channels to disconnect (exceeded max retries).
     /// Each entry is (channel_id, control_endpoint target for the
     /// DISCONNECT_REQUEST).
@@ -381,7 +385,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
         ind_tx: DynamicSender<'_, IndicationMessage<Buffer<'static>>>,
-    ) -> Result<ConnectionManagerResult<MAX_CONNECTIONS>, ServerError> {
+    ) -> Result<ConnectionManagerResult, ServerError> {
         match service_type {
             // Connection lifecycle — handled directly by the connection manager
             KNXnetIPServiceType::ConnectRequest => self.handle_connect_request(data, origin, buffer_manager).await,
@@ -395,7 +399,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
             // Everything else: route to the handler via channel ID lookup
             _ => {
                 let responses = self.dispatch_to_handler(service_type, data, buffer_manager, ind_tx).await?;
-                Ok(ConnectionManagerResult::<MAX_CONNECTIONS>::responses_only(responses))
+                Ok(ConnectionManagerResult::responses_only(responses))
             }
         }
     }
@@ -411,7 +415,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         data: &[u8],
         buffer_manager: &DynBufferManager<'static>,
         ind_tx: DynamicSender<'_, IndicationMessage<Buffer<'static>>>,
-    ) -> Result<Vec<PendingResponse, MAX_CONNECTIONS>, ServerError> {
+    ) -> Result<Vec<PendingResponse, MAX_RESPONSES>, ServerError> {
         // Connection header starts at offset 6 (after KNXnet/IP header).
         // Byte layout: struct_length(1), channel_id(1), sequence_or_reserved(1), status_or_reserved(1)
         if data.len() < 6 + 4 {
@@ -649,6 +653,88 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         self.connections.iter().any(|slot| slot.is_some())
     }
 
+    /// Send a cEMI TL response frame through the active Device Management
+    /// connection.
+    ///
+    /// Called by the KNX/IP runtime when the Application Layer produces a
+    /// `T_Data_Req` that was intercepted by the [`CemiTransportLayer`](crate::layers::transport::cemi::CemiTransportLayer)
+    /// and forwarded via the `cemi_response` channel.
+    ///
+    /// The `internal_buf` contains the AL's response in internal message
+    /// format: `ctrl(1) + src(2) + dst(2) + npdu(1) + tpci/apci/data`.
+    /// This method converts it to cEMI TL wire format and wraps it in a
+    /// `DeviceConfigurationRequest`.
+    ///
+    /// Returns `Some(PendingResponse)` if the frame was built successfully,
+    /// `None` if no DevMgmt connection is active or buffers ran out.
+    pub fn send_devmgmt_cemi_frame(
+        &mut self,
+        internal_buf: &Buffer<'static>,
+        buffer_manager: &DynBufferManager<'static>,
+    ) -> Option<PendingResponse> {
+        use crate::encoding::cemi::{CemiMessageCode, CemiTransportBuilder};
+        use crate::messages::knxip::DeviceConfigurationRequestBuilder;
+
+        // Find the active Device Management connection.
+        let conn = self.connections.iter_mut().flatten().find(
+            |c| c.connection_type == ConnectionType::DeviceManagement,
+        )?;
+
+        // Convert internal format to cEMI TL wire format.
+        //
+        // Internal format: ctrl(1) + src(2) + dst(2) + npdu(1) + tpdu(N)
+        // The TPDU starts at byte 6 of the internal format.
+        let data = internal_buf.as_ref();
+        if data.len() < 7 {
+            warn!("cEMI TL response: internal buffer too short ({} bytes)", data.len());
+            return None;
+        }
+
+        let tpdu = &data[6..];
+        debug!("cEMI TL response: internal ({} bytes): {:?}, TPDU ({} bytes): {:?}",
+            data.len(), crate::fmt::Bytes(data), tpdu.len(), crate::fmt::Bytes(tpdu));
+
+        // Serialize the cEMI TL payload using the standard builder.
+        // Message code: T_Data_Connected.ind (0x89) — the device acts as
+        // the "bus" toward the cEMI client, indicating data to it. ETS
+        // expects .ind, not .con (which is for bus-level confirmations).
+        let cemi_builder = CemiTransportBuilder {
+            message_code: CemiMessageCode::TDataConnectedInd,
+            tpdu,
+        };
+        let mut cemi_payload = [0u8; 256];
+        let mut cemi_buf: &mut [u8] = &mut cemi_payload;
+        let (cemi_data, _) = cemi_buf.serialize(&cemi_builder);
+
+        // Build DeviceConfigurationRequest wrapping the cEMI payload.
+        let send_seq = conn.send_sequence_counter;
+        conn.send_sequence_counter = send_seq.wrapping_add(1);
+
+        let req_builder =
+            DeviceConfigurationRequestBuilder::with_payload(conn.channel_id, send_seq, cemi_data);
+
+        let mut resp_buffer = buffer_manager.try_alloc()?;
+        resp_buffer.serialize(&req_builder);
+        let target = conn.response_target();
+
+        // For UDP connections, save a copy for retransmission.
+        if matches!(conn.transport, ConnectionTransport::Udp) {
+            if let Some(retransmit_buffer) = buffer_manager.try_alloc_from_slice(&resp_buffer) {
+                conn.pending_ack = Some(PendingAck {
+                    sequence_counter: send_seq,
+                    buffer: retransmit_buffer,
+                    target,
+                    sent_at: Instant::now(),
+                    attempt: 0,
+                });
+            }
+        }
+
+        conn.last_activity = Instant::now();
+
+        Some(PendingResponse { buffer: resp_buffer, target })
+    }
+
     /// Snapshot the current tunneling slot status for use in DIBs.
     ///
     /// Returns `Some((max_apdu_len, slots))` if a tunneling handler is
@@ -808,7 +894,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         data: &[u8],
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<ConnectionManagerResult<MAX_CONNECTIONS>, ServerError> {
+    ) -> Result<ConnectionManagerResult, ServerError> {
         let mut buf = data;
         let request = match buf.parse::<ConnectRequest>() {
             Ok(req) => req,
@@ -929,7 +1015,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         crd: Option<CRD>,
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<ConnectionManagerResult<MAX_CONNECTIONS>, ServerError> {
+    ) -> Result<ConnectionManagerResult, ServerError> {
         let data_endpoint = match origin {
             PacketOrigin::Tcp { .. } => HPAI::ipv4_tcp(Ipv4Addr::UNSPECIFIED, 0),
             PacketOrigin::Udp { .. } => HPAI::ipv4_udp(Ipv4Addr::UNSPECIFIED, 0),
@@ -941,7 +1027,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
 
         let mut responses = Vec::new();
         let _ = responses.push(PendingResponse { buffer, target: origin.reply_target() });
-        Ok(ConnectionManagerResult::<MAX_CONNECTIONS>::responses_only(responses))
+        Ok(ConnectionManagerResult::responses_only(responses))
     }
 
     // ========================================================================
@@ -953,7 +1039,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         data: &[u8],
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<ConnectionManagerResult<MAX_CONNECTIONS>, ServerError> {
+    ) -> Result<ConnectionManagerResult, ServerError> {
         let mut buf = data;
         let request = match buf.parse::<ConnectionstateRequest>() {
             Ok(req) => req,
@@ -985,7 +1071,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         } else {
             warn!("Buffer pool exhausted — skipping ConnectionstateResponse for channel {}", channel_id);
         }
-        Ok(ConnectionManagerResult::<MAX_CONNECTIONS>::responses_only(responses))
+        Ok(ConnectionManagerResult::responses_only(responses))
     }
 
     // ========================================================================
@@ -997,7 +1083,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         data: &[u8],
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<ConnectionManagerResult<MAX_CONNECTIONS>, ServerError> {
+    ) -> Result<ConnectionManagerResult, ServerError> {
         let mut buf = data;
         let request = match buf.parse::<DisconnectRequest>() {
             Ok(req) => req,

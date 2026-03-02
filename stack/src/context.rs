@@ -100,6 +100,25 @@ pub trait KnxIndividualAddressContext {
     fn individual_address(&self) -> crate::address::IndividualAddress;
 }
 
+/// Provides access to cEMI Transport Layer channels.
+///
+/// Implemented by [`StackContext`](crate::StackContext) when the device uses
+/// KNX/IP with Device Management. The KNX/IP link layer uses these channels
+/// to send cEMI events (activate/deactivate/frame) and receive AL responses.
+pub trait CemiTransportContext {
+    /// Send a cEMI event to the layer stack's `CemiTransportLayer`.
+    ///
+    /// Returns the sender's `DynamicSender`. The caller should use
+    /// `try_send` or `send` as appropriate.
+    fn cemi_event_sender(&self) -> Option<&embassy_sync::channel::DynamicSender<'_, crate::layers::transport::cemi::CemiEvent>>;
+
+    /// Receive a cEMI response frame from the layer stack.
+    ///
+    /// Returns the receiver's `DynamicReceiver`. The KNX/IP runtime polls
+    /// this to pick up AL responses that should be sent to the cEMI client.
+    fn cemi_response_receiver(&self) -> Option<&embassy_sync::channel::DynamicReceiver<'_, crate::messages::buffers::Buffer<'static>>>;
+}
+
 /// Provides access to the device's address table for ACK decisions.
 ///
 /// Used by the TPUART link layer's [`AutoAddressChecker`](crate::layers::linklayers::tpuart::AutoAddressChecker)

@@ -3,8 +3,9 @@
 use core::cell::Cell;
 
 use zweidraehte::context::{
-    BufferManagerContext, DeviceInfoContext, IpAdditionalIndividualAddressContext,
-    IpDiagnosticsContext, KnxIndividualAddressContext, PropertyServiceContext,
+    BufferManagerContext, CemiTransportContext, DeviceInfoContext,
+    IpAdditionalIndividualAddressContext, IpDiagnosticsContext, KnxIndividualAddressContext,
+    PropertyServiceContext,
 };
 use zweidraehte::messages::buffers::DynBufferManager;
 use zweidraehte::messages::knxip::substructs::DeviceInformation;
@@ -198,6 +199,48 @@ impl IpAdditionalIndividualAddressContext for &mut MockContext {
         _buf: &mut [zweidraehte::address::IndividualAddress],
     ) -> usize {
         0
+    }
+}
+
+impl CemiTransportContext for &MockContext {
+    fn cemi_event_sender(
+        &self,
+    ) -> Option<
+        &embassy_sync::channel::DynamicSender<'_, zweidraehte::layers::transport::cemi::CemiEvent>,
+    > {
+        None
+    }
+
+    fn cemi_response_receiver(
+        &self,
+    ) -> Option<
+        &embassy_sync::channel::DynamicReceiver<
+            '_,
+            zweidraehte::messages::buffers::Buffer<'static>,
+        >,
+    > {
+        None
+    }
+}
+
+impl CemiTransportContext for &mut MockContext {
+    fn cemi_event_sender(
+        &self,
+    ) -> Option<
+        &embassy_sync::channel::DynamicSender<'_, zweidraehte::layers::transport::cemi::CemiEvent>,
+    > {
+        None
+    }
+
+    fn cemi_response_receiver(
+        &self,
+    ) -> Option<
+        &embassy_sync::channel::DynamicReceiver<
+            '_,
+            zweidraehte::messages::buffers::Buffer<'static>,
+        >,
+    > {
+        None
     }
 }
 
