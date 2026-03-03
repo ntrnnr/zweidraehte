@@ -21,6 +21,7 @@ mod builder;
 pub mod features;
 pub(crate) mod runtime;
 pub mod servers;
+pub(crate) mod types;
 
 mod tcp_framing;
 mod tcp_manager;
@@ -28,10 +29,7 @@ mod udp_manager;
 
 pub use builder::KnxNetIpBuilder;
 pub use runtime::KnxNetIp;
-
-// Server types re-exported for backward compatibility — these are defined
-// in servers/mod.rs alongside the server trait.
-pub use servers::{PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError};
+pub use types::{PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError};
 
 /// Type-erased context for KnxNetIp.
 ///
