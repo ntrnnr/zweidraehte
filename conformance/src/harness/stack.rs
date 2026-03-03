@@ -25,9 +25,10 @@ use zweidraehte::{
     AccessContext,
     bcus::system_b::{
         IpSystemBDeviceState, KnxIpInterfaceObjects, MemoryLayout,
-        StaticIdentity, create_knxip_objects,
+        create_knxip_objects,
     },
     objects::tables::Application,
+    storage::StaticIdentity,
 };
 
 
