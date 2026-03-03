@@ -46,7 +46,7 @@ pub use traits::{
 };
 pub use tunnel::TunnelConnectionHandler;
 
-use core::net::{Ipv4Addr, SocketAddrV4};
+use core::net::Ipv4Addr;
 
 use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant};
@@ -62,7 +62,7 @@ use crate::messages::knxip::{
 };
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
-use super::types::{PacketOrigin, PendingResponse, ResponseTarget, ServerError};
+use super::types::{PacketOrigin, PendingResponse, ResponseTarget, ServerError, resolve_hpai};
 use traits::MAX_RESPONSES;
 
 
@@ -706,8 +706,8 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         // NAT detection: if HPAI is 0.0.0.0:0, use packet source address.
         // For TCP connections the HPAIs are Route Back and not used for routing,
         // but we store the peer address for logging/diagnostics.
-        let control_endpoint = self.resolve_endpoint(&request.control_endpoint, source);
-        let data_endpoint = self.resolve_endpoint(&request.data_endpoint, source);
+        let control_endpoint = resolve_hpai(&request.control_endpoint, source);
+        let data_endpoint = resolve_hpai(&request.data_endpoint, source);
 
         info!(
             "Accepting {:?} connection: channel_id={}, transport={:?}, control={}, data={}",
@@ -902,18 +902,4 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         id
     }
 
-    /// Resolve an HPAI endpoint, applying NAT detection.
-    ///
-    /// Per KNX spec 3/8/2 §8.6.3.3: when a client sends an HPAI with
-    /// IP address `0.0.0.0`, the server shall use the IP source address of the
-    /// received request packet. The HPAI port is always used — only the IP
-    /// address is substituted.
-    fn resolve_endpoint(&self, hpai: &HPAI, packet_source: SocketAddrV4) -> SocketAddrV4 {
-        let addr = hpai.address();
-        if addr.is_unspecified() {
-            SocketAddrV4::new(*packet_source.ip(), hpai.port())
-        } else {
-            SocketAddrV4::new(addr, hpai.port())
-        }
-    }
 }
