@@ -22,7 +22,7 @@ use crate::objects::interface::{
 };
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
-use super::super::{PendingResponse, ServerError};
+use super::super::types::{PendingResponse, ServerError};
 use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction, PendingAck};
 
 // ============================================================================

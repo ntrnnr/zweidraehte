@@ -15,7 +15,7 @@ use crate::{
 };
 
 use super::{
-    features, servers, EndpointType, KnxNetIpContext, KnxNetIpResources, SubnetLink,
+    connections, features, servers, EndpointType, KnxNetIpContext, KnxNetIpResources, SubnetLink,
     tcp_manager::TcpManager,
     udp_manager::{SocketDescriptor, UdpManager},
 };
@@ -263,7 +263,7 @@ impl<
 > KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel:
-        servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+        connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     /// Build the KnxNetIp link layer.
     ///
@@ -432,7 +432,7 @@ where
         // ====================================================================
 
         let handlers = F::Tunneling::build_handlers(context, cemi_ll.event_sender);
-        let connection_manager = servers::ConnectionManager::new(handlers);
+        let connection_manager = connections::ConnectionManager::new(handlers);
 
         // ====================================================================
         // TCP manager
@@ -501,7 +501,7 @@ impl<
 > LinkLayerBuilder<CTX> for KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel:
-        servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+        connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     fn build_and_run<'a>(
         self,

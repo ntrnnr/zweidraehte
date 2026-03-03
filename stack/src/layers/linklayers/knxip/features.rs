@@ -356,10 +356,10 @@ impl RemoteConfigFeature for NoRemoteConfig {
 /// Compile-time feature slot for KNX/IP Tunneling.
 ///
 /// Controls whether the connection manager includes a
-/// [`TunnelConnectionHandler`](super::servers::TunnelConnectionHandler) and whether tunneling connections can
+/// [`TunnelConnectionHandler`](super::connections::TunnelConnectionHandler) and whether tunneling connections can
 /// be accepted. The associated `Tunnel` type selects the concrete
-/// [`TunnelingConnectedHandler`](super::servers::TunnelingConnectedHandler) implementation for the tunneling slot
-/// in [`CompositeHandlers`](super::servers::CompositeHandlers).
+/// [`TunnelingConnectedHandler`](super::connections::TunnelingConnectedHandler) implementation for the tunneling slot
+/// in [`CompositeHandlers`](super::connections::CompositeHandlers).
 #[allow(private_interfaces)] // build_handlers takes &dyn KnxNetIpContext (pub(crate)), but that's fine — only called internally
 pub trait TunnelingFeature: 'static {
     /// Maximum number of tunneling slots (additional individual addresses).
@@ -368,7 +368,7 @@ pub trait TunnelingFeature: 'static {
     /// `0` when tunneling is disabled.
     const CAPACITY: usize;
 
-    type Tunnel: super::servers::ConnectedHandler;
+    type Tunnel: super::connections::ConnectedHandler;
 
     fn supported_service() -> Option<SupportedService>;
 
@@ -382,7 +382,7 @@ pub trait TunnelingFeature: 'static {
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, crate::layers::transport::cemi::CemiEvent>,
-    ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel>;
+    ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel>;
 }
 
 /// Tunneling is enabled.
@@ -394,7 +394,7 @@ pub struct WithTunneling<const N: usize>;
 #[allow(private_interfaces)]
 impl<const N: usize> TunnelingFeature for WithTunneling<N> {
     const CAPACITY: usize = N;
-    type Tunnel = super::servers::WithTunnel<N>;
+    type Tunnel = super::connections::WithTunnel<N>;
 
     fn supported_service() -> Option<SupportedService> {
         Some(SupportedService { family: substructs::ServiceFamily::Tunneling, version: 1 })
@@ -403,8 +403,8 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, crate::layers::transport::cemi::CemiEvent>,
-    ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel> {
-        let dev_mgmt = super::servers::DeviceMgmtConnectionHandler::new(
+    ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel> {
+        let dev_mgmt = super::connections::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.buffer_manager(),
             cemi_sender,
@@ -413,14 +413,14 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
         let mut additional_addresses = [crate::address::IndividualAddress::default(); N];
         let addr_count = context.write_additional_individual_addresses(&mut additional_addresses);
         let ext_info = context.extended_device_information();
-        let tunnel = super::servers::TunnelConnectionHandler::<N>::new(
+        let tunnel = super::connections::TunnelConnectionHandler::<N>::new(
             &additional_addresses[..addr_count],
             ext_info.device_descriptor_type0,
             context.manufacturer_code(),
             ext_info.max_local_apdu_len,
         );
 
-        super::servers::CompositeHandlers::new(dev_mgmt, tunnel)
+        super::connections::CompositeHandlers::new(dev_mgmt, tunnel)
     }
 }
 
@@ -430,7 +430,7 @@ pub struct NoTunneling;
 #[allow(private_interfaces)]
 impl TunnelingFeature for NoTunneling {
     const CAPACITY: usize = 0;
-    type Tunnel = super::servers::NoTunnel;
+    type Tunnel = super::connections::NoTunnel;
 
     fn supported_service() -> Option<SupportedService> {
         None
@@ -439,14 +439,14 @@ impl TunnelingFeature for NoTunneling {
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, crate::layers::transport::cemi::CemiEvent>,
-    ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel> {
-        let dev_mgmt = super::servers::DeviceMgmtConnectionHandler::new(
+    ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel> {
+        let dev_mgmt = super::connections::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.buffer_manager(),
             cemi_sender,
         );
 
-        super::servers::CompositeHandlers::new(dev_mgmt, ())
+        super::connections::CompositeHandlers::new(dev_mgmt, ())
     }
 }
 

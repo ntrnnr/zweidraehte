@@ -199,7 +199,7 @@ where
     T: IpTransport + 'static,
     F: features::FeatureSet + 'static,
     <F::Tunneling as features::TunnelingFeature>::Tunnel:
-        super::knxip::servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+        super::knxip::connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     fn build_and_run<'a>(
         self,

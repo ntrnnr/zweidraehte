@@ -13,7 +13,7 @@ use crate::messages::buffers::DynBufferManager;
 use crate::messages::knxip::substructs::{CRI, ConnectionType};
 use crate::messages::knxip::{ConnectionStatus, KNXnetIPServiceType};
 
-use super::super::{PendingResponse, ResponseTarget, ServerError};
+use super::super::types::{PendingResponse, ResponseTarget, ServerError};
 use super::{
     AcceptedConnection, ConnectionContext, ConnectionHandlers, ConnectionTypeHandler, DataFrameAction,
     DeviceMgmtConnectionHandler, TunnelConnectionHandler,

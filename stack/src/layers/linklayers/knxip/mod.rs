@@ -18,6 +18,7 @@ use crate::{
 };
 
 mod builder;
+pub mod connections;
 pub mod features;
 pub(crate) mod runtime;
 pub mod servers;

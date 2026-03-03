@@ -48,7 +48,7 @@ use crate::messages::knxip::{
 };
 use crate::util::packets::{ParseBuffer, SerializeBuffer};
 
-use super::super::{PendingResponse, ResponseTarget, ServerError};
+use super::super::types::{PendingResponse, ResponseTarget, ServerError};
 use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction};
 
 // ============================================================================

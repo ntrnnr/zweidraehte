@@ -25,6 +25,7 @@ use crate::{
 use super::{
     KnxNetIpContext, KnxNetIpResources, PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError,
     SubnetIndication, SubnetLink,
+    connections,
     features::{self, RemoteConfigFeature, RoutingFeature},
     servers,
     tcp_manager::{TcpEvent, TcpManager},
@@ -85,7 +86,7 @@ pub struct KnxNetIp<
 > where
     [(); <F::Tunneling as features::TunnelingFeature>::CAPACITY]:,
     <F::Tunneling as features::TunnelingFeature>::Tunnel:
-        servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+        connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     /// Reference to externally-owned resources (response channel).
     pub(super) resources: &'res KnxNetIpResources,
@@ -117,8 +118,8 @@ pub struct KnxNetIp<
     /// Connection manager for connection-oriented services.
     /// The handler collection is a `CompositeHandlers` with the tunneling
     /// slot selected by `TunnelingFeature::Tunnel`.
-    pub(super) connection_manager: servers::ConnectionManager<
-        servers::CompositeHandlers<'res, servers::WithDevMgmt, <F::Tunneling as features::TunnelingFeature>::Tunnel>,
+    pub(super) connection_manager: connections::ConnectionManager<
+        connections::CompositeHandlers<'res, connections::WithDevMgmt, <F::Tunneling as features::TunnelingFeature>::Tunnel>,
         { <F::Tunneling as features::TunnelingFeature>::CAPACITY },
         MAX_CHANNELS,
     >,
@@ -152,9 +153,9 @@ impl<
 > KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel:
-        servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
-    servers::CompositeHandlers<'res, servers::WithDevMgmt, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
-        servers::ConnectionHandlers<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+        connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    connections::CompositeHandlers<'res, connections::WithDevMgmt, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
+        connections::ConnectionHandlers<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     /// Process expired retry requests.
     ///
@@ -422,8 +423,8 @@ where
     }
 
     /// Apply TCP channel tracking events to the TCP manager.
-    fn apply_tcp_channel_events(&mut self, events: &[servers::TcpChannelEvent]) {
-        use servers::TcpChannelEvent;
+    fn apply_tcp_channel_events(&mut self, events: &[connections::TcpChannelEvent]) {
+        use connections::TcpChannelEvent;
         for event in events {
             match event {
                 TcpChannelEvent::Added { tcp_idx, channel_id } => {
@@ -486,9 +487,9 @@ impl<
 > KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel:
-        servers::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
-    servers::CompositeHandlers<'res, servers::WithDevMgmt, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
-        servers::ConnectionHandlers<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+        connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    connections::CompositeHandlers<'res, connections::WithDevMgmt, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
+        connections::ConnectionHandlers<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     /// Run the KNX/IP link layer event loop.
     ///
