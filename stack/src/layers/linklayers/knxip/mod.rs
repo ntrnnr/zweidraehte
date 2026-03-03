@@ -7,7 +7,7 @@ use embassy_sync::{
 
 use crate::{
     context::{
-        BufferManagerContext, CemiTransportContext, DeviceInfoContext,
+        BufferManagerContext, DeviceInfoContext,
         IpAdditionalIndividualAddressContext, IpDiagnosticsContext,
         KnxIndividualAddressContext, PropertyServiceContext,
     },
@@ -45,7 +45,6 @@ pub(crate) trait KnxNetIpContext:
     + IpDiagnosticsContext
     + IpAdditionalIndividualAddressContext
     + KnxIndividualAddressContext
-    + CemiTransportContext
 {
 }
 
@@ -56,7 +55,6 @@ impl<T> KnxNetIpContext for T where
         + IpDiagnosticsContext
         + IpAdditionalIndividualAddressContext
         + KnxIndividualAddressContext
-        + CemiTransportContext
 {
 }
 

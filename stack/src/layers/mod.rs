@@ -59,6 +59,17 @@ pub trait LinkLayerBuilderBase: Sized {
     /// Examples: socket pools for KNX/IP, empty structs for mock link layers.
     type Resources: Sized + 'static;
 
+    /// Extra inter-layer endpoints the link layer needs beyond the standard
+    /// ind/conf/req channels.
+    ///
+    /// Created by [`LayerStackFactory::run_link_layer`](crate::LayerStackFactory::run_link_layer)
+    /// from the shared channel storage and passed to
+    /// [`build_and_run`](LinkLayerBuilder::build_and_run).
+    ///
+    /// Defaults to `()` for link layers that don't need extra channels.
+    /// KNX/IP uses [`CemiTransportLayerEndpoints`](crate::context::CemiTransportLayerEndpoints).
+    type LLEndpoints<'a> = ();
+
     /// Create the resources needed by this link layer.
     ///
     /// Called once during stack initialization. The returned resources are stored
@@ -78,11 +89,12 @@ pub trait LinkLayerBuilderBase: Sized {
 /// The `CTX` type parameter is a trait-level generic so that each implementation
 /// declares only the context traits it actually needs:
 ///
-/// | Link layer | Context bounds |
-/// |------------|---------------|
-/// | Mock | *(none — `impl<CTX> LinkLayerBuilder<CTX>`)* |
-/// | USB | [`BufferManagerContext`](crate::context::BufferManagerContext) |
-/// | KNX/IP | [`BufferManagerContext`](crate::context::BufferManagerContext) + [`PropertyServiceContext`](crate::context::PropertyServiceContext) |
+/// | Link layer | Context bounds | LLEndpoints |
+/// |------------|---------------|-------------|
+/// | Mock | *(none — `impl<CTX> LinkLayerBuilder<CTX>`)* | `()` |
+/// | USB | [`BufferManagerContext`](crate::context::BufferManagerContext) | `()` |
+/// | TPUART | [`BufferManagerContext`](crate::context::BufferManagerContext) | `()` |
+/// | KNX/IP | [`KnxNetIpContext`](crate::layers::linklayers::knxip::KnxNetIpContext) | [`CemiTransportLayerEndpoints`](crate::context::CemiTransportLayerEndpoints) |
 ///
 /// At stack level the concrete context is [`StackContext`](crate::StackContext),
 /// which implements both `BufferManagerContext` and `PropertyServiceContext`,
@@ -109,6 +121,9 @@ pub trait LinkLayerBuilder<CTX>: LinkLayerBuilderBase {
     ///   [`LinkLayerBuilderBase::create_resources`]
     /// * `context` - Runtime context providing access to buffer management
     ///   and (optionally) property services, depending on this impl's bounds
+    /// * `ll_endpoints` - Extra inter-layer endpoints from
+    ///   [`LayerStackFactory::run_link_layer`](crate::LayerStackFactory::run_link_layer).
+    ///   `()` for link layers that don't need them.
     /// * `ind_tx` - Channel sender for passing received frame indications
     ///   up to the network layer
     /// * `conf_tx` - Channel sender for passing transmission confirmations
@@ -119,6 +134,7 @@ pub trait LinkLayerBuilder<CTX>: LinkLayerBuilderBase {
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
+        ll_endpoints: Self::LLEndpoints<'a>,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<crate::messages::builder::RequestMessage<Buffer<'static>>> + 'a,

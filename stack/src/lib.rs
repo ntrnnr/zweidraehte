@@ -783,37 +783,20 @@ pub trait StackDefinition: Copy {
     where
         Self::State: 'a;
 
-    /// Composed layer stack for the protocol stack.
+    /// Layer stack factory that handles channel creation, layer construction,
+    /// and link-layer endpoint wiring.
     ///
-    /// Determines the layer composition (NL, TL, AL, etc.) for this device.
-    /// Use [`InsecureDeviceLayers`] for the standard `(NetworkLayer, TransportLayer,
-    /// ApplicationLayer)` stack, or implement [`LayerStack`](router::LayerStack)
-    /// on a custom type to compose a different set of layers.
-    type Layers<'a>: router::LayerStack
-    where
-        Self: 'a;
-
-    /// Construct the layer stack from a [`LayerContext`].
-    ///
-    /// Called by [`Runner::run()`] to create the protocol layers.
-    /// The default for [`InsecureDeviceLayers`] is:
-    ///
-    /// ```rust,ignore
-    /// fn build_layers<'a>(ctx: &'a LayerContext<'a, Self>) -> Self::Layers<'a> {
-    ///     InsecureDeviceLayers::new(ctx)
-    /// }
-    /// ```
-    fn build_layers<'a>(ctx: &'a LayerContext<'a, Self>) -> Self::Layers<'a>
-    where
-        Self: 'a;
+    /// Use [`InsecureDeviceFactory`] for standard `(NL, TL, AL)` stacks or
+    /// [`InsecureIpDeviceFactory`] for KNX/IP `(NL, CemiTL<TL>, AL)` stacks.
+    type LayerFactory: LayerStackFactory<Self>;
 }
 
 // ============================================================================
 // Layer composition
 // ============================================================================
 
-/// Context passed to [`StackDefinition::build_layers`] for constructing
-/// the layer stack.
+/// Context passed to [`LayerStackFactory::build`] for constructing the
+/// layer stack.
 ///
 /// Bundles all shared stack resources that protocol layers may need.
 /// Custom layer stacks can pick the fields they care about and ignore
@@ -841,23 +824,166 @@ pub struct LayerContext<'a, D: StackDefinition> {
     /// Receiver for application service requests from user code
     /// (GroupValueWrite/Read via [`Stack::update_object`]).
     pub app_service_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
-
-    // ------------------------------------------------------------------
-    // cEMI Transport Layer channels (optional — only for KNX/IP devices
-    // that use InsecureDeviceLayersWithCemi)
-    // ------------------------------------------------------------------
-
-    /// Receiver for cEMI events from the DevMgmt handler.
-    ///
-    /// `None` when the device doesn't use cEMI Transport Layer mode
-    /// (e.g., TP1-only devices).
-    pub cemi_event_receiver: Option<DynamicReceiver<'a, layers::transport::cemi::CemiEvent>>,
-
-    /// Sender for cEMI response frames back to the KNX/IP runtime.
-    ///
-    /// `None` when the device doesn't use cEMI Transport Layer mode.
-    pub cemi_response_sender: Option<DynamicSender<'a, Buffer<'static>>>,
 }
+
+// ============================================================================
+// Layer stack factories
+// ============================================================================
+
+/// Factory for constructing a layer stack and running its link layer.
+///
+/// Encapsulates channel creation, layer construction, and link-layer
+/// endpoint extraction that were previously spread across multiple
+/// `StackDefinition` items. Each factory knows:
+///
+/// - What shared channels are needed between layers and the link layer
+/// - How to build the layer stack from a [`LayerContext`]
+/// - How to extract link-layer endpoints and start the link layer
+///
+/// Two built-in factories are provided:
+/// - [`InsecureDeviceFactory`] — standard `(NL, TL, AL)` stack, no extra channels
+/// - [`InsecureIpDeviceFactory`] — `(NL, CemiTL<TL>, AL)` stack with cEMI channels
+pub trait LayerStackFactory<D: StackDefinition>: Sized {
+    /// Composed layer stack produced by [`build`](Self::build).
+    type Stack<'a>: router::LayerStack
+    where
+        D: 'a;
+
+    /// Owned channel storage shared between the layer stack and the link
+    /// layer. Created as a stack-local in [`Runner::run()`] before layer
+    /// construction, so both the router task and the LL task can borrow
+    /// from it.
+    ///
+    /// `()` when no extra channels are needed (standard TP1 devices).
+    type Channels: 'static;
+
+    /// Create the shared channel storage.
+    fn create_channels() -> Self::Channels;
+
+    /// Build the layer stack from a [`LayerContext`] and the shared channels.
+    fn build<'a>(ctx: &'a LayerContext<'a, D>, channels: &'a Self::Channels) -> Self::Stack<'a>
+    where
+        D: 'a;
+
+    /// Start the link layer, extracting LL endpoints from the shared channels.
+    ///
+    /// The factory knows how to connect its channel type to the link layer
+    /// builder's [`LLEndpoints`](layers::LinkLayerBuilderBase::LLEndpoints).
+    fn run_link_layer<'a>(
+        channels: &'a Self::Channels,
+        builder: D::LLB,
+        resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
+        context: &'a StackContext<'a, D>,
+        ind_tx: DynamicSender<'a, messages::builder::IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, messages::builder::ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl layers::Inbox<messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+    ) -> impl core::future::Future<Output = !> + 'a;
+}
+
+/// Factory for standard `(NL, TL, AL)` layer stacks.
+///
+/// Produces [`InsecureDeviceLayers`] with no extra inter-layer channels.
+/// The link layer builder must have `LLEndpoints = ()` (the default).
+pub struct InsecureDeviceFactory;
+
+impl<D: StackDefinition> LayerStackFactory<D> for InsecureDeviceFactory
+where
+    D::State: HasAddressTable
+        + HasApplication
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasConnectionAuth
+        + HasRoutingCount,
+    D::InterfaceObjects<'static>: HasDeviceObject,
+    for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
+    D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>>,
+{
+    type Stack<'a>
+        = InsecureDeviceLayers<'a, D>
+    where
+        D: 'a;
+    type Channels = ();
+
+    fn create_channels() {}
+
+    fn build<'a>(ctx: &'a LayerContext<'a, D>, channels: &'a ()) -> InsecureDeviceLayers<'a, D>
+    where
+        D: 'a,
+    {
+        InsecureDeviceLayers::new(ctx, channels)
+    }
+
+    fn run_link_layer<'a>(
+        _channels: &'a (),
+        builder: D::LLB,
+        resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
+        context: &'a StackContext<'a, D>,
+        ind_tx: DynamicSender<'a, messages::builder::IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, messages::builder::ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl layers::Inbox<messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+    ) -> impl core::future::Future<Output = !> + 'a {
+        builder.build_and_run(resources, context, Default::default(), ind_tx, conf_tx, req_rx)
+    }
+}
+
+/// Factory for KNX/IP `(NL, CemiTL<TL>, AL)` layer stacks.
+///
+/// Produces [`InsecureIpDeviceLayers`] with a [`CemiTransportLayerChannelPair`](context::CemiTransportLayerChannelPair)
+/// for Device Management connections. The link layer builder's
+/// [`LLEndpoints`](layers::LinkLayerBuilderBase::LLEndpoints) must be
+/// [`CemiTransportLayerEndpoints`](context::CemiTransportLayerEndpoints).
+pub struct InsecureIpDeviceFactory;
+
+impl<D: StackDefinition> LayerStackFactory<D> for InsecureIpDeviceFactory
+where
+    D::State: HasAddressTable
+        + HasApplication
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasConnectionAuth
+        + HasRoutingCount,
+    D::InterfaceObjects<'static>: HasDeviceObject,
+    D::LLB: for<'a> layers::LinkLayerBuilder<
+            StackContext<'a, D>,
+            LLEndpoints<'a> = context::CemiTransportLayerEndpoints<'a>,
+        >,
+{
+    type Stack<'a>
+        = InsecureIpDeviceLayers<'a, D>
+    where
+        D: 'a;
+    type Channels = context::CemiTransportLayerChannelPair;
+
+    fn create_channels() -> context::CemiTransportLayerChannelPair {
+        context::CemiTransportLayerChannelPair::new()
+    }
+
+    fn build<'a>(
+        ctx: &'a LayerContext<'a, D>,
+        channels: &'a context::CemiTransportLayerChannelPair,
+    ) -> InsecureIpDeviceLayers<'a, D>
+    where
+        D: 'a,
+    {
+        InsecureIpDeviceLayers::new(ctx, channels)
+    }
+
+    fn run_link_layer<'a>(
+        channels: &'a context::CemiTransportLayerChannelPair,
+        builder: D::LLB,
+        resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
+        context: &'a StackContext<'a, D>,
+        ind_tx: DynamicSender<'a, messages::builder::IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, messages::builder::ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl layers::Inbox<messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+    ) -> impl core::future::Future<Output = !> + 'a {
+        builder.build_and_run(resources, context, channels.ll_endpoints(), ind_tx, conf_tx, req_rx)
+    }
+}
+
+// ============================================================================
+// Layer stack implementations
+// ============================================================================
 
 /// Standard layer stack: `(NetworkLayer, TransportLayer, ApplicationLayer)`.
 ///
@@ -866,8 +992,7 @@ pub struct LayerContext<'a, D: StackDefinition> {
 /// application service channel as a side input.
 ///
 /// Custom layer stacks can be created by implementing [`LayerStack`]
-/// directly on a different type and returning it from
-/// [`StackDefinition::build_layers`].
+/// directly on a different type and using a custom [`LayerStackFactory`].
 pub struct InsecureDeviceLayers<'a, D: StackDefinition> {
     layers: (NetworkLayer<'a, D>, TransportLayer<'a, D>, ApplicationLayer<'a, D>),
     app_service_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
@@ -886,7 +1011,7 @@ where
 {
     /// Construct the standard `(NL, TL, AL)` layer stack from a
     /// [`LayerContext`].
-    pub fn new(ctx: &'a LayerContext<'a, D>) -> Self {
+    pub fn new(ctx: &'a LayerContext<'a, D>, _channels: &'a ()) -> Self {
         let network_layer = NetworkLayer::new(ctx.state, ctx.interface_objects);
 
         // TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
@@ -979,11 +1104,7 @@ where
 /// - Application service requests (from user code via [`Stack::update_object`])
 /// - cEMI events (from DevMgmt handler: activate, deactivate, frame)
 pub struct InsecureIpDeviceLayers<'a, D: StackDefinition> {
-    layers: (
-        NetworkLayer<'a, D>,
-        layers::transport::cemi::CemiTransportLayer<'a, D>,
-        ApplicationLayer<'a, D>,
-    ),
+    layers: (NetworkLayer<'a, D>, layers::transport::cemi::CemiTransportLayer<'a, D>, ApplicationLayer<'a, D>),
     app_service_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     pending_app_request: Cell<Option<Request<ApplicationLayerService, ApplicationLayerServiceResponse>>>,
     cemi_event_receiver: DynamicReceiver<'a, layers::transport::cemi::CemiEvent>,
@@ -1001,20 +1122,13 @@ where
     D::InterfaceObjects<'static>: HasDeviceObject,
 {
     /// Construct the `(NL, CemiTL<TL>, AL)` layer stack from a
-    /// [`LayerContext`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if `ctx.cemi_event_receiver` or `ctx.cemi_response_sender`
-    /// is `None`. These are always `Some` when constructed by `Runner::run()`.
-    pub fn new(ctx: &'a LayerContext<'a, D>) -> Self {
+    /// [`LayerContext`] and a [`CemiTransportLayerChannelPair`](context::CemiTransportLayerChannelPair).
+    pub fn new(ctx: &'a LayerContext<'a, D>, channels: &'a context::CemiTransportLayerChannelPair) -> Self {
         let network_layer = NetworkLayer::new(ctx.state, ctx.interface_objects);
 
         let transport_layer = TransportLayer::new(ctx.buffer_manager, ctx.state, D::TL_STYLE);
 
-        let cemi_response_sender = ctx
-            .cemi_response_sender
-            .expect("InsecureIpDeviceLayers requires cemi_response_sender");
+        let cemi_response_sender = channels.response.sender().into();
         let cemi_transport_layer =
             layers::transport::cemi::CemiTransportLayer::new(transport_layer, cemi_response_sender);
 
@@ -1030,9 +1144,7 @@ where
             ctx.restart_sender,
         );
 
-        let cemi_event_receiver = ctx
-            .cemi_event_receiver
-            .expect("InsecureIpDeviceLayers requires cemi_event_receiver");
+        let cemi_event_receiver = channels.event.receiver().into();
 
         Self {
             layers: (network_layer, cemi_transport_layer, application_layer),
@@ -1055,11 +1167,8 @@ where
     D::InterfaceObjects<'static>: HasDeviceObject,
 {
     const DISPATCH_TABLE: router::DispatchTable = {
-        type Inner<'a, D> = (
-            NetworkLayer<'a, D>,
-            layers::transport::cemi::CemiTransportLayer<'a, D>,
-            ApplicationLayer<'a, D>,
-        );
+        type Inner<'a, D> =
+            (NetworkLayer<'a, D>, layers::transport::cemi::CemiTransportLayer<'a, D>, ApplicationLayer<'a, D>);
         <Inner<'_, D> as LayerStack>::DISPATCH_TABLE
     };
 
@@ -1083,12 +1192,7 @@ where
         use embassy_futures::select::{Either, select};
 
         async {
-            match select(
-                self.app_service_receiver.receive(),
-                self.cemi_event_receiver.receive(),
-            )
-            .await
-            {
+            match select(self.app_service_receiver.receive(), self.cemi_event_receiver.receive()).await {
                 Either::First(req) => {
                     self.pending_app_request.set(Some(req));
                 }
@@ -1305,14 +1409,6 @@ impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
 pub struct StackContext<'a, D: StackDefinition> {
     inner: &'a Inner<D>,
     interface_objects: &'a D::InterfaceObjects<'static>,
-
-    // cEMI Transport Layer channel endpoints (for KNX/IP link layer).
-
-    /// Sender for cEMI events from DevMgmt handler to the layer stack.
-    pub(crate) cemi_event_sender: Option<DynamicSender<'a, layers::transport::cemi::CemiEvent>>,
-
-    /// Receiver for cEMI response frames from the layer stack.
-    pub(crate) cemi_response_receiver: Option<DynamicReceiver<'a, Buffer<'static>>>,
 }
 
 impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
@@ -1427,18 +1523,6 @@ where
 
     fn address_table(&self) -> &core::cell::RefCell<Self::ADT> {
         self.inner.state.adt()
-    }
-}
-
-// Unconditional — the channels are always present in StackContext (just
-// optionally None for non-IP stacks).
-impl<D: StackDefinition> context::CemiTransportContext for StackContext<'_, D> {
-    fn cemi_event_sender(&self) -> Option<&DynamicSender<'_, layers::transport::cemi::CemiEvent>> {
-        self.cemi_event_sender.as_ref()
-    }
-
-    fn cemi_response_receiver(&self) -> Option<&DynamicReceiver<'_, Buffer<'static>>> {
-        self.cemi_response_receiver.as_ref()
     }
 }
 
@@ -1604,26 +1688,20 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let ll_conf: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> = Channel::new();
 
         // ================================================================
-        // cEMI Transport Layer channels
+        // Shared inter-layer channels (driven by LayerStackFactory)
         // ================================================================
         //
-        // Always created (cheap), but only wired into the layer stack
-        // when the StackDefinition uses InsecureIpDeviceLayers. The LL
-        // accesses the other endpoints via StackContext.
-        //
-        // - cemi_event: DevMgmt handler → CemiTransportLayer
-        // - cemi_response: CemiTransportLayer → KNX/IP runtime
+        // The factory decides what shared channels are needed between
+        // layers and the link layer. For InsecureIpDeviceFactory this is
+        // a CemiTransportLayerChannelPair; for InsecureDeviceFactory it's ().
 
-        // Capacity 2: at most one unconsumed Frame + one Deactivate can be
-        // pending simultaneously when the layer stack is busy processing other
-        // messages (e.g., routing indications). The DevMgmt protocol guarantees
-        // at most one outstanding Frame (ETS waits for ACK), and Activate is
-        // always consumed before the first Frame arrives.
-        let cemi_event_channel: Channel<NoopRawMutex, layers::transport::cemi::CemiEvent, 2> = Channel::new();
-        let cemi_response_channel: Channel<NoopRawMutex, Buffer<'static>, 1> = Channel::new();
+        type F<D> = <D as StackDefinition>::LayerFactory;
+        type Layers<'a, D> = <F<D> as LayerStackFactory<D>>::Stack<'a>;
+
+        let layer_channels = F::<D>::create_channels();
 
         // ================================================================
-        // Layer construction (fully generic via StackDefinition)
+        // Layer construction (via LayerStackFactory)
         // ================================================================
 
         // SAFETY: We are creating a static reference to the channel held by the `Inner` struct.
@@ -1645,11 +1723,9 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             memory_map: &self.stack.inner.memory_map,
             restart_sender: self.restart_sender,
             app_service_receiver,
-            cemi_event_receiver: Some(cemi_event_channel.receiver().into()),
-            cemi_response_sender: Some(cemi_response_channel.sender().into()),
         };
 
-        let mut layers = D::build_layers(&layer_context);
+        let mut layers = F::<D>::build(&layer_context, &layer_channels);
 
         // Initialize all layers (e.g., AL starts read-on-init cycle if
         // the application is already running).
@@ -1659,13 +1735,10 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Link layer task
         // ================================================================
 
-        let stack_context = StackContext {
-            inner: self.stack.inner,
-            interface_objects: self.interface_objects,
-            cemi_event_sender: Some(cemi_event_channel.sender().into()),
-            cemi_response_receiver: Some(cemi_response_channel.receiver().into()),
-        };
-        let ll_task = self.link_layer_builder.build_and_run(
+        let stack_context = StackContext { inner: self.stack.inner, interface_objects: self.interface_objects };
+        let ll_task = F::<D>::run_link_layer(
+            &layer_channels,
+            self.link_layer_builder,
             self.link_layer_resources,
             &stack_context,
             ll_ind.sender().into(),
@@ -1746,7 +1819,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                     if st == ServiceType::L_Data_Req {
                         // Terminal: send to link layer
                         ll_req.send(RequestMessage::request(msg)).await;
-                    } else if let Some(layer_idx) = <D::Layers<'_> as LayerStack>::DISPATCH_TABLE.get(st) {
+                    } else if let Some(layer_idx) = Layers::<'_, D>::DISPATCH_TABLE.get(st) {
                         layers.dispatch(layer_idx, msg, &mut outbox);
                     } else {
                         warn!("Router: no layer for {:?}, dropping", st);

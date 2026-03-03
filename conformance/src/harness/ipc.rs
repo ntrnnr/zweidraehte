@@ -624,6 +624,7 @@ impl<CTX> LinkLayerBuilder<CTX> for IpcLinkLayerBuilder {
         self,
         _resources: &'a mut Self::Resources,
         _context: &'a CTX,
+        _ll_endpoints: (),
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,

@@ -3,7 +3,7 @@
 use core::cell::Cell;
 
 use zweidraehte::context::{
-    BufferManagerContext, CemiTransportContext, DeviceInfoContext,
+    BufferManagerContext, DeviceInfoContext,
     IpAdditionalIndividualAddressContext, IpDiagnosticsContext, KnxIndividualAddressContext,
     PropertyServiceContext,
 };
@@ -202,45 +202,4 @@ impl IpAdditionalIndividualAddressContext for &mut MockContext {
     }
 }
 
-impl CemiTransportContext for &MockContext {
-    fn cemi_event_sender(
-        &self,
-    ) -> Option<
-        &embassy_sync::channel::DynamicSender<'_, zweidraehte::layers::transport::cemi::CemiEvent>,
-    > {
-        None
-    }
-
-    fn cemi_response_receiver(
-        &self,
-    ) -> Option<
-        &embassy_sync::channel::DynamicReceiver<
-            '_,
-            zweidraehte::messages::buffers::Buffer<'static>,
-        >,
-    > {
-        None
-    }
-}
-
-impl CemiTransportContext for &mut MockContext {
-    fn cemi_event_sender(
-        &self,
-    ) -> Option<
-        &embassy_sync::channel::DynamicSender<'_, zweidraehte::layers::transport::cemi::CemiEvent>,
-    > {
-        None
-    }
-
-    fn cemi_response_receiver(
-        &self,
-    ) -> Option<
-        &embassy_sync::channel::DynamicReceiver<
-            '_,
-            zweidraehte::messages::buffers::Buffer<'static>,
-        >,
-    > {
-        None
-    }
-}
 

@@ -186,8 +186,8 @@ impl DispatchTable {
 /// A composed set of [`Layer`]s with a compile-time dispatch table.
 ///
 /// Implemented for tuples of `Layer` via the
-/// [`impl_layer_stack!`] macro. The `StackDefinition::Layers` associated
-/// type determines which tuple is used for a given device.
+/// [`impl_layer_stack!`] macro. The [`LayerStackFactory::Stack`](crate::LayerStackFactory::Stack)
+/// associated type determines which tuple is used for a given device.
 pub trait LayerStack {
     /// Dispatch table mapping ServiceType → layer index, built at
     /// compile time from all layers' [`Layer::HANDLES`].

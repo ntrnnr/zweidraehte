@@ -750,13 +750,7 @@ impl StackDefinition for MyKnxStackWithKnxIp {
         create_knxip_interface_objects(state)
     }
 
-    type Layers<'a> = InsecureIpDeviceLayers<'a, Self>;
-    fn build_layers<'a>(ctx: &'a LayerContext<'a, Self>) -> Self::Layers<'a>
-    where
-        Self: 'a,
-    {
-        InsecureIpDeviceLayers::new(ctx)
-    }
+    type LayerFactory = InsecureIpDeviceFactory;
 }
 
 #[embassy_executor::task]

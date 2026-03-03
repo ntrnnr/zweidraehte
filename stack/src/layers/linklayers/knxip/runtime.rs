@@ -123,9 +123,13 @@ pub struct KnxNetIp<
         MAX_CHANNELS,
     >,
     /// Type-erased stack context providing buffer management, device info,
-    /// IP diagnostics, KNX addresses, property service, and application
-    /// layer access.
+    /// IP diagnostics, KNX addresses, and property service access.
     pub(super) context: &'res dyn KnxNetIpContext,
+    /// Receiver for cEMI response frames from the layer stack's
+    /// [`CemiTransportLayer`](crate::layers::transport::cemi::CemiTransportLayer).
+    /// `Some` when a cEMI TL bridge is active (KNX/IP device stacks),
+    /// `None` otherwise.
+    pub(super) cemi_response_receiver: Option<embassy_sync::channel::DynamicReceiver<'res, Buffer<'static>>>,
     /// TCP connection manager. Always present; without a bound listener
     /// it is a no-op.
     pub(super) tcp_manager: TcpManager<T, MAX_TCP_STREAMS, MAX_CHANNELS>,
@@ -593,7 +597,7 @@ where
             // Layer, intercepted by the CemiTransportLayer. When no DevMgmt
             // connection is active (no receiver), pends forever.
             let cemi_response_future = async {
-                match self.context.cemi_response_receiver() {
+                match &self.cemi_response_receiver {
                     Some(rx) => rx.receive().await,
                     None => pending::<Buffer<'static>>().await,
                 }

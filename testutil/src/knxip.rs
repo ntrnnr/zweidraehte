@@ -24,6 +24,7 @@ use embassy_time::{Duration, Ticker};
 use env_logger::Env;
 
 use zweidraehte::{
+    context::CemiTransportLayerChannelPair,
     layers::{
         LinkLayerBuilder,
         linklayers::knxip::KnxNetIpBuilder,
@@ -125,8 +126,13 @@ async fn main(spawner: Spawner) {
     use zweidraehte::layers::linklayers::knxip::KnxNetIpResources;
     let ll_resources = Box::leak(Box::new(KnxNetIpResources::new()));
 
+    // Dummy cEMI channels — this test only uses routing, not tunneling,
+    // but the KnxNetIpBuilder always requires CemiTransportLayerEndpoints.
+    let cemi_channels = Box::leak(Box::new(CemiTransportLayerChannelPair::new()));
+    let cemi_ll = cemi_channels.ll_endpoints();
+
     // Build and run the link layer using the LinkLayerBuilder trait
-    let link_layer_future = kb.build_and_run(ll_resources, &context, ind_tx, conf_tx, req_rx);
+    let link_layer_future = kb.build_and_run(ll_resources, &context, cemi_ll, ind_tx, conf_tx, req_rx);
 
     let test_loop = async {
         // Main test loop - send a test message every second

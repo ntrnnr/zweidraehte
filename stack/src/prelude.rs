@@ -8,10 +8,14 @@
 pub use crate::{
     Stack, Runner, StackResources, StackDefinition,
     LayerContext, InsecureDeviceLayers, InsecureIpDeviceLayers,
+    InsecureDeviceFactory, InsecureIpDeviceFactory,
     StackState, IpStackState, IpDevice, IpPlatform, IpPlatformConfig,
     ReadObjectError, UpdateObjectError,
     AccessContext,
 };
+
+// Channel types for KNX/IP stacks (used by InsecureIpDeviceFactory and standalone tests)
+pub use crate::context::{CemiTransportLayerChannelPair, CemiTransportLayerClientEndpoints, CemiTransportLayerEndpoints};
 
 // Addressing
 pub use crate::address::{IndividualAddress, GroupAddress};

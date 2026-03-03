@@ -277,6 +277,7 @@ where
         self,
         resources: &'res mut KnxNetIpResources,
         context: &'res dyn KnxNetIpContext,
+        cemi_ll: crate::context::CemiTransportLayerEndpoints<'res>,
         ind_tx: DynamicSender<'res, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'res, ConfirmationMessage<Buffer<'static>>>,
         subnet_link: Option<SubnetLink<'res>>,
@@ -430,7 +431,7 @@ where
         // Connection manager — handler type selected by TunnelingFeature
         // ====================================================================
 
-        let handlers = F::Tunneling::build_handlers(context);
+        let handlers = F::Tunneling::build_handlers(context, cemi_ll.event_sender);
         let connection_manager = servers::ConnectionManager::new(handlers);
 
         // ====================================================================
@@ -466,6 +467,7 @@ where
             retry_queue: Vec::new(),
             connection_manager,
             context,
+            cemi_response_receiver: Some(cemi_ll.response_receiver),
             tcp_manager,
             subnet_link,
         }
@@ -481,11 +483,13 @@ impl<
 > LinkLayerBuilderBase for KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 {
     type Resources = KnxNetIpResources;
+    type LLEndpoints<'a> = crate::context::CemiTransportLayerEndpoints<'a>;
 
     fn create_resources(&self) -> Self::Resources {
         KnxNetIpResources::new()
     }
 }
+
 
 impl<
     CTX: KnxNetIpContext,
@@ -503,11 +507,12 @@ where
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
+        ll_endpoints: crate::context::CemiTransportLayerEndpoints<'a>,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
-        let mut link_layer = self.build(resources, context, ind_tx, conf_tx, None);
+        let mut link_layer = self.build(resources, context, ll_endpoints, ind_tx, conf_tx, None);
         async move { link_layer.run(req_rx).await }
     }
 }

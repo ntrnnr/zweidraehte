@@ -177,6 +177,7 @@ impl<W: Send + 'static, R: Send + 'static, T: IpTransport + 'static, F: features
     LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
 {
     type Resources = IpInterfaceResources;
+    type LLEndpoints<'a> = crate::context::CemiTransportLayerEndpoints<'a>;
 
     fn create_resources(&self) -> Self::Resources {
         IpInterfaceResources::new()
@@ -204,6 +205,7 @@ where
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
+        ll_endpoints: crate::context::CemiTransportLayerEndpoints<'a>,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
@@ -275,6 +277,7 @@ where
             let mut knxip = self.knxip_builder.build(
                 &mut resources.knxip,
                 context,
+                ll_endpoints,
                 knxip_ind_channel.sender().into(),
                 knxip_conf_channel.sender().into(),
                 Some(bus_bridge),

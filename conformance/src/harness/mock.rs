@@ -292,6 +292,7 @@ impl<CTX, const N: usize, const C: usize> LinkLayerBuilder<CTX> for MockLinkLaye
         self,
         _resources: &'a mut Self::Resources,
         _context: &'a CTX,
+        _ll_endpoints: (),
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,

@@ -376,8 +376,12 @@ pub trait TunnelingFeature: 'static {
     ///
     /// Device Management is always enabled (`WithDevMgmt`); the tunneling
     /// slot is selected by `Self::Tunnel`.
+    ///
+    /// The `cemi_sender` is the link-layer-side endpoint for sending cEMI
+    /// events to the [`CemiTransportLayer`](crate::layers::transport::cemi::CemiTransportLayer).
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
+        cemi_sender: embassy_sync::channel::DynamicSender<'a, crate::layers::transport::cemi::CemiEvent>,
     ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel>;
 }
 
@@ -398,12 +402,8 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
 
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
+        cemi_sender: embassy_sync::channel::DynamicSender<'a, crate::layers::transport::cemi::CemiEvent>,
     ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel> {
-        let cemi_sender = context
-            .cemi_event_sender()
-            .expect("KNX/IP requires cemi_event_sender")
-            .clone();
-
         let dev_mgmt = super::servers::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.buffer_manager(),
@@ -438,12 +438,8 @@ impl TunnelingFeature for NoTunneling {
 
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
+        cemi_sender: embassy_sync::channel::DynamicSender<'a, crate::layers::transport::cemi::CemiEvent>,
     ) -> super::servers::CompositeHandlers<'a, super::servers::WithDevMgmt, Self::Tunnel> {
-        let cemi_sender = context
-            .cemi_event_sender()
-            .expect("KNX/IP requires cemi_event_sender")
-            .clone();
-
         let dev_mgmt = super::servers::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.buffer_manager(),

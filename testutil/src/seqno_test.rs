@@ -553,5 +553,5 @@ async fn run_usb_link_layer(
     conf_tx: embassy_sync::channel::DynamicSender<'static, ConfirmationMessage<Buffer<'static>>>,
     req_rx: embassy_sync::channel::Receiver<'static, NoopRawMutex, RequestMessage<Buffer<'static>>, 32>,
 ) {
-    builder.build_and_run(resources, context, ind_tx, conf_tx, req_rx).await;
+    builder.build_and_run(resources, context, (), ind_tx, conf_tx, req_rx).await;
 }

@@ -100,23 +100,66 @@ pub trait KnxIndividualAddressContext {
     fn individual_address(&self) -> crate::address::IndividualAddress;
 }
 
-/// Provides access to cEMI Transport Layer channels.
-///
-/// Implemented by [`StackContext`](crate::StackContext) when the device uses
-/// KNX/IP with Device Management. The KNX/IP link layer uses these channels
-/// to send cEMI events (activate/deactivate/frame) and receive AL responses.
-pub trait CemiTransportContext {
-    /// Send a cEMI event to the layer stack's `CemiTransportLayer`.
-    ///
-    /// Returns the sender's `DynamicSender`. The caller should use
-    /// `try_send` or `send` as appropriate.
-    fn cemi_event_sender(&self) -> Option<&embassy_sync::channel::DynamicSender<'_, crate::layers::transport::cemi::CemiEvent>>;
+// ============================================================================
+// cEMI channel types
+// ============================================================================
 
-    /// Receive a cEMI response frame from the layer stack.
-    ///
-    /// Returns the receiver's `DynamicReceiver`. The KNX/IP runtime polls
-    /// this to pick up AL responses that should be sent to the cEMI client.
-    fn cemi_response_receiver(&self) -> Option<&embassy_sync::channel::DynamicReceiver<'_, crate::messages::buffers::Buffer<'static>>>;
+/// Owned channel pair for cEMI Transport Layer communication.
+///
+/// Allocated by [`Runner::run()`](crate::Runner::run) as a stack-local when
+/// the [`LayerStack`](crate::router::LayerStack) requires it. Both the
+/// router task (layer side) and the LL task (link-layer side) borrow from
+/// this structure.
+pub struct CemiTransportLayerChannelPair {
+    /// DevMgmt handler → CemiTransportLayer (capacity 2: one Frame + one
+    /// Activate/Deactivate can be pending simultaneously).
+    pub event: embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, crate::layers::transport::cemi::CemiEvent, 2>,
+    /// CemiTransportLayer → KNX/IP runtime (capacity 1: at most one
+    /// response pending).
+    pub response: embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, crate::messages::buffers::Buffer<'static>, 1>,
+}
+
+impl CemiTransportLayerChannelPair {
+    /// Create a new channel pair.
+    pub fn new() -> Self {
+        Self {
+            event: embassy_sync::channel::Channel::new(),
+            response: embassy_sync::channel::Channel::new(),
+        }
+    }
+
+    /// Extract layer-side endpoints (for the router/layer stack).
+    pub fn layer_endpoints(&self) -> CemiTransportLayerClientEndpoints<'_> {
+        CemiTransportLayerClientEndpoints {
+            event_receiver: self.event.receiver().into(),
+            response_sender: self.response.sender().into(),
+        }
+    }
+
+    /// Extract link-layer-side endpoints (for the KNX/IP runtime).
+    pub fn ll_endpoints(&self) -> CemiTransportLayerEndpoints<'_> {
+        CemiTransportLayerEndpoints {
+            event_sender: self.event.sender().into(),
+            response_receiver: self.response.receiver().into(),
+        }
+    }
+}
+
+/// Layer-side endpoints borrowed from [`CemiTransportLayerChannelPair`].
+///
+/// Used by [`InsecureIpDeviceLayers`](crate::InsecureIpDeviceLayers) to
+/// receive cEMI events and send responses.
+pub struct CemiTransportLayerClientEndpoints<'a> {
+    pub event_receiver: embassy_sync::channel::DynamicReceiver<'a, crate::layers::transport::cemi::CemiEvent>,
+    pub response_sender: embassy_sync::channel::DynamicSender<'a, crate::messages::buffers::Buffer<'static>>,
+}
+
+/// Link-layer-side endpoints borrowed from [`CemiTransportLayerChannelPair`].
+///
+/// Used by the KNX/IP runtime to send cEMI events and receive responses.
+pub struct CemiTransportLayerEndpoints<'a> {
+    pub event_sender: embassy_sync::channel::DynamicSender<'a, crate::layers::transport::cemi::CemiEvent>,
+    pub response_receiver: embassy_sync::channel::DynamicReceiver<'a, crate::messages::buffers::Buffer<'static>>,
 }
 
 /// Provides access to the device's address table for ACK decisions.
