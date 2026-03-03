@@ -20,7 +20,7 @@ use platform::{AsyncUdpSocket, IpTransport, UdpSocketOptions};
 
 use crate::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
 
-use super::EndpointType;
+use super::super::EndpointType;
 
 // ============================================================================
 // Constants
@@ -114,7 +114,7 @@ pub enum UdpEvent {
 ///
 /// Owns the socket handles and their descriptors. Provides a
 /// [`next_event()`](Self::next_event) interface analogous to
-/// [`TcpManager::next_event()`](super::tcp_manager::TcpManager::next_event)
+/// [`TcpManager::next_event()`](tcp_manager::TcpManager::next_event)
 /// and a [`send_to()`](Self::send_to) method for outbound datagrams.
 pub struct UdpManager<T: IpTransport, const MAX_SOCKETS: usize> {
     sockets: [Option<T::UdpSocket>; MAX_SOCKETS],

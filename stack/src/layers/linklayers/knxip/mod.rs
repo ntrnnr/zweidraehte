@@ -24,9 +24,7 @@ pub(crate) mod runtime;
 pub mod servers;
 pub(crate) mod types;
 
-mod tcp_framing;
-mod tcp_manager;
-mod udp_manager;
+mod transport;
 
 pub use builder::KnxNetIpBuilder;
 pub use runtime::KnxNetIp;

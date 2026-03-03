@@ -28,8 +28,7 @@ use super::{
     connections,
     features::{self, RemoteConfigFeature, RoutingFeature},
     servers,
-    tcp_manager::{TcpEvent, TcpManager},
-    udp_manager::{UdpEvent, UdpManager},
+    transport::{TcpEvent, TcpManager, UdpEvent, UdpManager},
 };
 
 /// A request that is pending retry after being rate-limited

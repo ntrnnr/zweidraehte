@@ -16,8 +16,7 @@ use crate::{
 
 use super::{
     connections, features, servers, EndpointType, KnxNetIpContext, KnxNetIpResources, SubnetLink,
-    tcp_manager::TcpManager,
-    udp_manager::{SocketDescriptor, UdpManager},
+    transport::{SocketDescriptor, TcpManager, UdpManager},
 };
 use super::runtime::KnxNetIp;
 use features::{RemoteConfigFeature, RoutingFeature, TcpFeature, TunnelingFeature};
