@@ -15,7 +15,7 @@ use crate::{
 };
 
 use super::{
-    connections, features, servers, EndpointType, KnxNetIpContext, KnxNetIpResources, SubnetLink,
+    connections, features, services, EndpointType, KnxNetIpContext, KnxNetIpResources, SubnetLink,
     transport::{SocketDescriptor, TcpManager, UdpManager},
 };
 use super::runtime::KnxNetIp;
@@ -421,7 +421,7 @@ where
         // ====================================================================
 
         let control_hpai = substructs::HPAI::ipv4_udp(*self.control_endpoint.ip(), self.control_endpoint.port());
-        let discovery = servers::DiscoveryServer::new(control_hpai, supported_services);
+        let discovery = services::DiscoveryServer::new(control_hpai, supported_services);
 
         let routing = F::Routing::create_server(self.routing_multicast_addr, crate::KNX_PORT);
         let remote_config = F::RemoteConfig::create_server();

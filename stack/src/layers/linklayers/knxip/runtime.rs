@@ -27,7 +27,7 @@ use super::{
     SubnetIndication, SubnetLink,
     connections,
     features::{self, RemoteConfigFeature, RoutingFeature},
-    servers,
+    services,
     transport::{TcpEvent, TcpManager, UdpEvent, UdpManager},
 };
 
@@ -94,7 +94,7 @@ pub struct KnxNetIp<
 
     // ---- Typed server fields (zero-size when feature is disabled) ----
     /// Discovery server — always present (mandatory per KNX spec).
-    pub(super) discovery: servers::DiscoveryServer,
+    pub(super) discovery: services::DiscoveryServer,
     /// Socket indices the discovery server listens on.
     pub(super) discovery_socket_indices: Vec<usize, 4>,
 
@@ -368,7 +368,7 @@ where
 
         // Discovery server (always present)
         {
-            use servers::KnxNetIpServer;
+            use services::KnxNetIpServer;
             let discovery_service_types = [
                 KNXnetIPServiceType::SearchRequest,
                 KNXnetIPServiceType::SearchRequestExtended,

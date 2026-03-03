@@ -28,8 +28,8 @@ use crate::messages::knx::KnxMessageBuffer;
 use crate::messages::knxip::substructs::{self, SupportedService};
 use crate::messages::knxip::KNXnetIPServiceType;
 
-use super::servers::routing::RoutingServer;
-use super::servers::remote_config::RemoteConfigurationServer;
+use super::services::routing::RoutingServer;
+use super::services::remote_config::RemoteConfigurationServer;
 use super::{EndpointType, PendingResponse, ServerContext, ServerError};
 
 // ============================================================================
@@ -178,7 +178,7 @@ impl RoutingFeature for WithRouting {
         source: SocketAddrV4,
         context: &ServerContext<'_>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
-        use super::servers::KnxNetIpServer;
+        use super::services::KnxNetIpServer;
         server.on_indication(service_type, data, source, context).await
     }
 
@@ -187,7 +187,7 @@ impl RoutingFeature for WithRouting {
         message: &KnxMessageBuffer<Buffer<'static>>,
         context: &ServerContext<'_>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
-        use super::servers::KnxNetIpServer;
+        use super::services::KnxNetIpServer;
         server.on_request(message, context).await
     }
 
@@ -305,7 +305,7 @@ impl RemoteConfigFeature for WithRemoteConfig {
         source: SocketAddrV4,
         context: &ServerContext<'_>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
-        use super::servers::KnxNetIpServer;
+        use super::services::KnxNetIpServer;
         server.on_indication(service_type, data, source, context).await
     }
 

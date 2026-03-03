@@ -21,7 +21,7 @@ mod builder;
 pub mod connections;
 pub mod features;
 pub(crate) mod runtime;
-pub mod servers;
+pub mod services;
 pub(crate) mod types;
 
 mod transport;
