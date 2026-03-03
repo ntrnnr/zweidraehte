@@ -4,8 +4,10 @@
 //! Layers depend only on the specific context traits they need, making them
 //! easier to test and more modular.
 
+#[cfg(feature = "knxip")]
 use crate::address::IndividualAddress;
 use crate::messages::buffers::DynBufferManager;
+#[cfg(feature = "knxip")]
 use crate::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
 use crate::objects::interface::PropertyServiceHandler;
 
@@ -41,6 +43,7 @@ pub trait PropertyServiceContext {
     fn property_handler(&self) -> &dyn PropertyServiceHandler;
 }
 
+#[cfg(feature = "knxip")]
 /// Provides access to dynamic device information for KNX/IP discovery.
 ///
 /// Implemented by the stack's runtime context so the KNX/IP link layer
@@ -65,6 +68,7 @@ pub trait DeviceInfoContext {
     fn manufacturer_code(&self) -> u16;
 }
 
+#[cfg(feature = "knxip")]
 /// Provides IP diagnostics data for remote configuration responses.
 ///
 /// The remote diagnostic server (KNX 3/8/7) must include IP_CONFIG,
@@ -82,6 +86,7 @@ pub trait IpDiagnosticsContext {
     fn ip_current_config(&self) -> crate::messages::knxip::substructs::IpCurrentConfig;
 }
 
+#[cfg(feature = "knxip")]
 /// Provides additional KNX individual addresses for IP tunneling use-cases.
 ///
 /// Uses a write-to-buffer pattern instead of returning a fixed-capacity Vec,
@@ -104,6 +109,7 @@ pub trait KnxIndividualAddressContext {
 // cEMI channel types
 // ============================================================================
 
+#[cfg(feature = "knxip")]
 /// Owned channel pair for cEMI Transport Layer communication.
 ///
 /// Allocated by [`Runner::run()`](crate::Runner::run) as a stack-local when
@@ -119,6 +125,14 @@ pub struct CemiTransportLayerChannelPair {
     pub response: embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, crate::messages::buffers::Buffer<'static>, 1>,
 }
 
+#[cfg(feature = "knxip")]
+impl Default for CemiTransportLayerChannelPair {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "knxip")]
 impl CemiTransportLayerChannelPair {
     /// Create a new channel pair.
     pub fn new() -> Self {
@@ -145,15 +159,17 @@ impl CemiTransportLayerChannelPair {
     }
 }
 
+#[cfg(feature = "knxip")]
 /// Layer-side endpoints borrowed from [`CemiTransportLayerChannelPair`].
 ///
-/// Used by [`InsecureIpDeviceLayers`](crate::InsecureIpDeviceLayers) to
+/// Used by [`IpDeviceLayers`](crate::IpDeviceLayers) to
 /// receive cEMI events and send responses.
 pub struct CemiTransportLayerClientEndpoints<'a> {
     pub event_receiver: embassy_sync::channel::DynamicReceiver<'a, crate::layers::transport::cemi::CemiEvent>,
     pub response_sender: embassy_sync::channel::DynamicSender<'a, crate::messages::buffers::Buffer<'static>>,
 }
 
+#[cfg(feature = "knxip")]
 /// Link-layer-side endpoints borrowed from [`CemiTransportLayerChannelPair`].
 ///
 /// Used by the KNX/IP runtime to send cEMI events and receive responses.

@@ -23,9 +23,8 @@ use embassy_sync::{
     pubsub::{PubSubBehavior, PubSubChannel},
 };
 
-use super::Request;
-
 use crate::{
+    actor::Request,
     AccessContext, AccessSource, HasConnectionAuth, StackDefinition, StackState,
     address::GroupAddress,
     messages::{

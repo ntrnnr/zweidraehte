@@ -109,7 +109,7 @@ impl StackDefinition for PicoTp1LightSwitch {
         create_system_b_objects::<Self, _>(state, &Self::memory_layout())
     }
 
-    type LayerFactory = InsecureDeviceFactory;
+    type LayerBuilder = InsecureDeviceBuilder;
 }
 
 // ================================================================================

@@ -1148,7 +1148,7 @@ impl StackDefinition for IpcConformanceTestStack {
         )
     }
 
-    type LayerFactory = InsecureDeviceFactory;
+    type LayerBuilder = InsecureDeviceBuilder;
 }
 
 // ============================================================================

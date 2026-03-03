@@ -10,12 +10,11 @@
 //! This is the single source of truth for all device state.
 
 use core::cell::{Cell, RefCell};
-use core::net::Ipv4Addr;
 
 use const_default::ConstDefault;
 
 use crate::{
-    AccessContext, IpConfig, IpPlatform, IpPlatformConfig, IpStackState, MAX_ACCESS_LEVELS,
+    AccessContext, MAX_ACCESS_LEVELS,
     NUM_AUTH_KEYS, StackState,
     address::IndividualAddress,
     objects::interface::HasRoutingCount,
@@ -31,7 +30,9 @@ use crate::{
     },
 };
 
-use super::{HasPersistedState, LinkLayerState, PersistedIpConfig, PersistedState};
+use super::{HasPersistedState, LinkLayerState, PersistedState};
+#[cfg(feature = "knxip")]
+use super::PersistedIpConfig;
 use crate::storage::DeviceIdentity;
 
 // ============================================================================
@@ -625,6 +626,12 @@ impl<
 // IP Link-Layer State
 // ============================================================================
 
+#[cfg(feature = "knxip")]
+use core::net::Ipv4Addr;
+
+#[cfg(feature = "knxip")]
+use crate::{IpConfig, IpPlatform, IpPlatformConfig, IpStackState};
+
 /// Runtime state for KNX/IP-specific persistent configuration.
 ///
 /// This struct provides interior-mutable access to all IP parameters
@@ -638,6 +645,7 @@ impl<
 /// The const generic `N` is the maximum number of additional individual
 /// addresses (tunneling slots). Non-tunneling devices use the default
 /// `N = 0`, paying zero storage for addresses they never use.
+#[cfg(feature = "knxip")]
 pub struct IpLinkLayerState<P: IpPlatform + IpPlatformConfig, const N: usize = 0> {
     /// Platform for querying current network values and applying config.
     platform: P,
@@ -657,6 +665,7 @@ pub struct IpLinkLayerState<P: IpPlatform + IpPlatformConfig, const N: usize = 0
     additional_individual_addresses: RefCell<heapless::Vec<IndividualAddress, N>>,
 }
 
+#[cfg(feature = "knxip")]
 impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpLinkLayerState<P, N> {
     /// Get the platform (for querying current network state).
     pub fn platform(&self) -> &P {
@@ -708,6 +717,7 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpLinkLayerState<P, N> {
     }
 }
 
+#[cfg(feature = "knxip")]
 impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> LinkLayerState for IpLinkLayerState<P, N> {
     type Config = PersistedIpConfig<N>;
 
@@ -793,6 +803,7 @@ impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> LinkLayerState 
 /// let state: IpSystemBDeviceState<ADT, AST, COT, Params, MyPlatform, 4> =
 ///     IpSystemBDeviceState::new(&identity);
 /// ```
+#[cfg(feature = "knxip")]
 pub type IpSystemBDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
@@ -813,6 +824,7 @@ pub type IpSystemBDeviceState<
 ///
 /// The `mark_dirty()` calls on setters ensure changes are tracked
 /// for persistence.
+#[cfg(feature = "knxip")]
 impl<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,

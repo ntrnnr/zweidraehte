@@ -31,15 +31,21 @@ use core::cell::RefCell;
 use zerocopy::FromBytes;
 
 use crate::{
-    IpStackState, StackState,
+    StackState,
     dpt::{DeviceControl, InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
         FullPropertyReadRequest, FullPropertyWriteRequest, GroupObjectTableObject, HasDeviceObject, InterfaceObject,
-        InterfaceObjectAugment, IpParameterObject, PeiProgramObject, PropertyAccess, PropertyDescriptionResponse,
+        PeiProgramObject, PropertyAccess, PropertyDescriptionResponse,
         PropertyDescriptor, PropertyError, PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
+};
+
+#[cfg(feature = "knxip")]
+use crate::{
+    IpStackState,
+    objects::interface::{InterfaceObjectAugment, IpParameterObject},
 };
 
 use crate::StackDefinition;
@@ -326,6 +332,7 @@ where
 // IpObjects - IP Parameter Object
 // ============================================================================
 
+#[cfg(feature = "knxip")]
 /// Augment that adds tunneling-related IP properties.
 ///
 /// - PID 53: Additional Individual Addresses
@@ -333,6 +340,7 @@ where
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TunnelingAugment;
 
+#[cfg(feature = "knxip")]
 impl TunnelingAugment {
     const KNXNETIP_CAP_TUNNELING_BIT: u16 = 1 << 1;
 
@@ -470,6 +478,7 @@ impl TunnelingAugment {
     }
 }
 
+#[cfg(feature = "knxip")]
 impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugment {
     fn property_description_read(
         &self,
@@ -563,12 +572,14 @@ impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugmen
 ///
 /// The tuple's `PropertyServiceHandler` implementation automatically handles
 /// index offsetting - IpObjects receives index 0 for what is logically index 6.
+#[cfg(feature = "knxip")]
 pub struct IpObjects<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S> = ()> {
     state: &'a S,
     ip_parameter: RefCell<IpParameterObject<'a, S>>,
     augment: A,
 }
 
+#[cfg(feature = "knxip")]
 impl<'a, S: StackState + IpStackState> IpObjects<'a, S, ()> {
     /// Create new IP objects with no augmentation.
     pub fn new(state: &'a S) -> Self {
@@ -576,6 +587,7 @@ impl<'a, S: StackState + IpStackState> IpObjects<'a, S, ()> {
     }
 }
 
+#[cfg(feature = "knxip")]
 impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> IpObjects<'a, S, A> {
     /// Number of interface objects in this container.
     pub const OBJECT_COUNT: u16 = 1;
@@ -596,6 +608,7 @@ impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> IpObjects<'
     }
 }
 
+#[cfg(feature = "knxip")]
 impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> PropertyServiceHandler for IpObjects<'a, S, A> {
     fn object_count(&self) -> u16 {
         Self::OBJECT_COUNT
@@ -698,6 +711,7 @@ impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> PropertySer
 /// - Application Program Object (index 4)
 /// - PEI Program Object (index 5)
 /// - IP Parameter Object (index 6)
+#[cfg(feature = "knxip")]
 pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP, PEI, A = ()> =
     (SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>, IpObjects<'a, S, A>);
 
@@ -707,6 +721,7 @@ pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP, PEI, A = ()> =
 /// from `S`'s `Has*Table` implementations. Use this in
 /// [`StackDefinition::InterfaceObjects`](crate::StackDefinition) to avoid
 /// spelling out 5 associated type projections manually.
+#[cfg(feature = "knxip")]
 pub type DefaultKnxIpInterfaceObjects<'a, S, A = ()> = KnxIpInterfaceObjects<
     'a,
     S,
@@ -824,6 +839,7 @@ where
 ///
 /// - `D`: Stack definition implementing [`StackDefinition`]
 /// - `S`: Unified state type implementing [`IpStackState`] and the required table traits
+#[cfg(feature = "knxip")]
 pub fn create_knxip_objects<'a, D, S>(
     state: &'a S,
     layout: &super::memory_map::MemoryLayout,
@@ -850,6 +866,7 @@ where
 }
 
 /// Create KNX/IP interface objects with an explicit augment chain.
+#[cfg(feature = "knxip")]
 pub fn create_knxip_objects_with_augment<'a, D, S, A>(
     state: &'a S,
     layout: &super::memory_map::MemoryLayout,
@@ -878,6 +895,7 @@ where
 }
 
 /// Create KNX/IP interface objects with built-in tunneling property augmentation.
+#[cfg(feature = "knxip")]
 pub fn create_knxip_tunneling_objects<'a, D, S>(
     state: &'a S,
     layout: &super::memory_map::MemoryLayout,

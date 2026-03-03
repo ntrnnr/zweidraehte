@@ -28,17 +28,20 @@
 //!   → if inactive: delegate to inner TransportLayer (normal bus path)
 //! ```
 
-use embassy_sync::channel::DynamicSender;
+use core::cell::Cell;
+
+use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
 use crate::{
     AccessSource, HasConnectionAuth, StackDefinition,
     address::IndividualAddress,
+    layers::{application::ApplicationLayer, network::NetworkLayer},
     messages::{
         buffers::Buffer,
         knx::{KnxMessageBuffer, ServiceType},
     },
     objects::tables::HasAddressTable,
-    router::{Layer, Outbox},
+    router::{ExtraSideInput, Layer, Outbox},
 };
 
 use super::TransportLayer;
@@ -365,6 +368,61 @@ where
                 );
             }
             _ => unreachable!(),
+        }
+    }
+}
+
+// ============================================================================
+// CemiSideInput — ExtraSideInput for cEMI events
+// ============================================================================
+
+/// Side input that receives [`CemiEvent`]s from a KNX/IP Device Management
+/// connection and forwards them to the [`CemiTransportLayer`].
+///
+/// Used as the `Extra` parameter of
+/// [`InsecureDeviceLayers`](crate::InsecureDeviceLayers) for KNX/IP devices.
+pub struct CemiSideInput<'a> {
+    event_receiver: DynamicReceiver<'a, CemiEvent>,
+    pending_event: Cell<Option<CemiEvent>>,
+}
+
+impl<'a> CemiSideInput<'a> {
+    /// Create a new `CemiSideInput` from a cEMI event receiver.
+    pub fn new(event_receiver: DynamicReceiver<'a, CemiEvent>) -> Self {
+        Self {
+            event_receiver,
+            pending_event: Cell::new(None),
+        }
+    }
+}
+
+impl<'x, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
+    ExtraSideInput<(
+        NetworkLayer<'x, D>,
+        CemiTransportLayer<'x, D, MAX_INCOMING, MAX_OUTGOING>,
+        ApplicationLayer<'x, D>,
+    )> for CemiSideInput<'_>
+where
+    D::State: HasAddressTable + HasConnectionAuth,
+{
+    fn recv(&self) -> impl core::future::Future<Output = ()> + '_ {
+        async {
+            let event = self.event_receiver.receive().await;
+            self.pending_event.set(Some(event));
+        }
+    }
+
+    fn handle(
+        &mut self,
+        layers: &mut (
+            NetworkLayer<'x, D>,
+            CemiTransportLayer<'x, D, MAX_INCOMING, MAX_OUTGOING>,
+            ApplicationLayer<'x, D>,
+        ),
+        outbox: &mut Outbox,
+    ) {
+        if let Some(event) = self.pending_event.take() {
+            layers.1.handle_cemi_event(event, outbox);
         }
     }
 }

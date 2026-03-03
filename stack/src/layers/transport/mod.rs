@@ -28,6 +28,7 @@
 
 // FIXME: do we want the connection timeout, ack timeout and max_repetitions to be configurable? Are there PIDs available for interface objects?
 
+#[cfg(feature = "knxip")]
 pub mod cemi;
 mod connection;
 mod state_machine;

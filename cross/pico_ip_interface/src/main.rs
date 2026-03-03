@@ -126,7 +126,7 @@ impl StackDefinition for PicoIpInterface {
         create_knxip_tunneling_objects::<Self, _>(state, &Self::memory_layout())
     }
 
-    type LayerFactory = InsecureIpDeviceFactory;
+    type LayerBuilder = InsecureIpDeviceBuilder;
 }
 
 // ================================================================================

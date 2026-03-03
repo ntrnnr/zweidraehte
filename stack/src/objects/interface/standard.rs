@@ -177,15 +177,21 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 // IP Parameter Object (Object Type 11 / 0x0B)
 // ============================================================================
 
+#[cfg(feature = "knxip")]
 use core::net::Ipv4Addr;
 
+#[cfg(feature = "knxip")]
 use crate::IpDevice;
+#[cfg(feature = "knxip")]
 use crate::dpt::{PDT_Bitset8, PDT_Bitset16};
+#[cfg(feature = "knxip")]
 use crate::objects::interface::Ipv4Property;
 
+#[cfg(feature = "knxip")]
 /// Default KNX System Setup multicast address: 224.0.23.12
 const SYSTEM_SETUP_MULTICAST: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
 
+#[cfg(feature = "knxip")]
 crate::define_interface_object! {
     /// IP Parameter Object - Object Type 11 (0x0B)
     ///
@@ -266,6 +272,7 @@ crate::define_interface_object! {
     }
 }
 
+#[cfg(feature = "knxip")]
 impl<'a, S: IpDevice> IpParameterObject<'a, S> {
     /// Create a new IP Parameter Object with a reference to the IP stack state.
     pub fn with_state(state: &'a S) -> Self {

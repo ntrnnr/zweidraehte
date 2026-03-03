@@ -7,14 +7,22 @@
 // Core stack
 pub use crate::{
     Stack, Runner, StackResources, StackDefinition,
-    LayerContext, InsecureDeviceLayers, InsecureIpDeviceLayers,
-    InsecureDeviceFactory, InsecureIpDeviceFactory,
-    StackState, IpStackState, IpDevice, IpPlatform, IpPlatformConfig,
+    LayerContext, InsecureDeviceLayers, StandardDeviceLayers,
+    InsecureDeviceBuilder,
+    StackState,
     ReadObjectError, UpdateObjectError,
     AccessContext,
 };
 
-// Channel types for KNX/IP stacks (used by InsecureIpDeviceFactory and standalone tests)
+// KNX/IP-specific types
+#[cfg(feature = "knxip")]
+pub use crate::{
+    InsecureIpDeviceBuilder, IpDeviceLayers,
+    IpStackState, IpDevice, IpPlatform, IpPlatformConfig,
+};
+
+// Channel types for KNX/IP stacks (used by InsecureIpDeviceBuilder and standalone tests)
+#[cfg(feature = "knxip")]
 pub use crate::context::{CemiTransportLayerChannelPair, CemiTransportLayerClientEndpoints, CemiTransportLayerEndpoints};
 
 // Addressing

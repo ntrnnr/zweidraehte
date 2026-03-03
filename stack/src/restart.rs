@@ -72,7 +72,7 @@ create_protocol_enum!(
 /// sends this event to user code. User code should:
 /// 1. Execute the reset using [`RestartHandler::execute_reset`]
 /// 2. Flush storage
-/// 3. Send a [`RestartResponse`] back via [`Request::reply()`](crate::layers::Request::reply)
+/// 3. Send a [`RestartResponse`] back via [`Request::reply()`](crate::actor::Request::reply)
 /// 4. Trigger platform restart after response is sent
 #[derive(Debug, Clone, Copy)]
 pub struct RestartRequest {

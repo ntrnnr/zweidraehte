@@ -186,7 +186,7 @@ impl DispatchTable {
 /// A composed set of [`Layer`]s with a compile-time dispatch table.
 ///
 /// Implemented for tuples of `Layer` via the
-/// [`impl_layer_stack!`] macro. The [`LayerStackFactory::Stack`](crate::LayerStackFactory::Stack)
+/// [`impl_layer_stack!`] macro. The [`LayerStackBuilder::Stack`](crate::LayerStackBuilder::Stack)
 /// associated type determines which tuple is used for a given device.
 pub trait LayerStack {
     /// Dispatch table mapping ServiceType → layer index, built at
@@ -325,6 +325,51 @@ impl_layer_stack!(0: A, 1: B, 2: C, 3: D, 4: E);
 impl_layer_stack!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F);
 impl_layer_stack!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G);
 impl_layer_stack!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H);
+
+// ============================================================================
+// ExtraSideInput — composable side-input extensions
+// ============================================================================
+
+/// Composable side-input extension for [`LayerStack`] implementations.
+///
+/// Side inputs inject events into the router loop from outside the dispatch
+/// table — sources that don't map to a [`ServiceType`] in the normal
+/// dispatch flow. `ExtraSideInput` is parameterised over the concrete
+/// layer tuple so that the handler has typed access to individual layers.
+///
+/// `Layers` is the concrete layer tuple, giving the handler typed access
+/// to call specific layer methods (e.g., `layers.1.handle_cemi_event()`).
+///
+/// # Contract
+///
+/// - [`recv`](Self::recv) is called from `select` and must buffer the
+///   incoming event internally (e.g., via `Cell`) because the `LayerStack`
+///   is immutably borrowed during the async wait.
+/// - [`handle`](Self::handle) is called synchronously after `recv` resolves,
+///   with `&mut` access to both `self` and the layer tuple.
+pub trait ExtraSideInput<Layers> {
+    /// Wait for and buffer the next event.
+    ///
+    /// Called inside the router's `select` alongside the app service
+    /// receiver and timer. Use `Cell` or similar interior mutability to
+    /// store the received event, since `&self` is shared.
+    fn recv(&self) -> impl core::future::Future<Output = ()> + '_;
+
+    /// Process the buffered event.
+    ///
+    /// Called immediately after [`recv`](Self::recv) resolves. Push any
+    /// resulting messages to the outbox.
+    fn handle(&mut self, layers: &mut Layers, outbox: &mut Outbox);
+}
+
+/// No extra side inputs — pends forever on recv, no-op on handle.
+impl<L> ExtraSideInput<L> for () {
+    fn recv(&self) -> impl core::future::Future<Output = ()> + '_ {
+        core::future::pending()
+    }
+
+    fn handle(&mut self, _layers: &mut L, _outbox: &mut Outbox) {}
+}
 
 // ============================================================================
 // Tests

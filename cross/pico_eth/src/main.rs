@@ -97,7 +97,7 @@ impl StackDefinition for PicoEthLightSwitch {
         create_knxip_objects::<Self, _>(state, &Self::memory_layout())
     }
 
-    type LayerFactory = InsecureIpDeviceFactory;
+    type LayerBuilder = InsecureIpDeviceBuilder;
 }
 
 // ================================================================================

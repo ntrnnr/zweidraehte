@@ -54,7 +54,7 @@ use zerocopy::{
 };
 
 use crate::{
-    messages::{buffers::MessageBuffer, knx::ServiceType, knxip::error::ParseError},
+    messages::{buffers::MessageBuffer, error::ParseError, knx::ServiceType},
     util::packets::*,
 };
 

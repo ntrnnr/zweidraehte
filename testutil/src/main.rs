@@ -191,7 +191,7 @@ impl StackDefinition for MyKnxStack {
 
     }
 
-    type LayerFactory = InsecureDeviceFactory;
+    type LayerBuilder = InsecureDeviceBuilder;
 }
 
 #[embassy_executor::task]

@@ -21,6 +21,7 @@
 //! device def trait plus fills in the link layer builder, memory map, and
 //! interface objects. See the examples on each trait.
 
+#[cfg(feature = "knxip")]
 use crate::{IpPlatform, IpPlatformConfig};
 
 /// Trait for KNX/IP devices (mask version 57B0).
@@ -36,6 +37,7 @@ use crate::{IpPlatform, IpPlatformConfig};
 ///     type Platform = LinuxPlatform;
 /// }
 /// ```
+#[cfg(feature = "knxip")]
 pub trait KnxIpDevice: Sized + Copy {
     /// Network interface name (e.g., "eth0", "wlan0", "enp0s3").
     const INTERFACE_NAME: &'static str;
@@ -63,6 +65,7 @@ use const_default::ConstDefault;
 use crate::ets::DeviceDescriptor;
 use crate::layers::transport::TlStyle;
 use crate::objects::comm::ComObjects;
+#[cfg(feature = "knxip")]
 use platform::IpTransport;
 
 use super::memory_map::{MemoryLayout, SystemBMemoryMap};
@@ -126,6 +129,7 @@ use super::memory_map::{MemoryLayout, SystemBMemoryMap};
 /// The `KnxNetIpBuilder` socket count is fixed at 2 by convention. The
 /// feature type parameter selects which optional servers to include at
 /// compile time (e.g., `KnxIpDeviceUdp`, `KnxIpInterfaceUdp`).
+#[cfg(feature = "knxip")]
 pub trait SystemBIpDeviceDef: Copy + 'static {
     /// Device descriptor — single source of truth for hardware identity
     /// and table capacities.
@@ -196,6 +200,7 @@ pub trait SystemBIpDeviceDef: Copy + 'static {
 }
 
 // Blanket impl: SystemBIpDeviceDef → KnxIpDevice
+#[cfg(feature = "knxip")]
 impl<T: SystemBIpDeviceDef> KnxIpDevice for T {
     const INTERFACE_NAME: &'static str = <T as SystemBIpDeviceDef>::INTERFACE_NAME;
     type Platform = T::Platform;

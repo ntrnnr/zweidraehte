@@ -80,13 +80,23 @@ mod objects;
 mod storage;
 mod traits;
 
-pub use device_state::{IpLinkLayerState, IpSystemBDeviceState, SystemBDeviceState};
+pub use device_state::SystemBDeviceState;
+#[cfg(feature = "knxip")]
+pub use device_state::{IpLinkLayerState, IpSystemBDeviceState};
 pub use identity::{DeviceIdentity, StaticIdentity};
 pub use memory_map::{MemoryLayout, SystemBMemoryMap};
 pub use objects::{
-    DefaultKnxIpInterfaceObjects, DefaultSystemBInterfaceObjects, IpObjects, KnxIpInterfaceObjects, SystemBObjects,
-    TunnelingAugment, create_knxip_objects, create_knxip_objects_with_augment, create_knxip_tunneling_objects,
+    DefaultSystemBInterfaceObjects, SystemBObjects,
     create_system_b_objects, device_info_from,
 };
-pub use storage::{HasPersistedState, LinkLayerConfig, LinkLayerState, PersistedIpConfig, PersistedState, table_sizes};
-pub use traits::{KnxIpDevice, SystemBIpDeviceDef, SystemBTpDeviceDef, TpDevice};
+#[cfg(feature = "knxip")]
+pub use objects::{
+    DefaultKnxIpInterfaceObjects, IpObjects, KnxIpInterfaceObjects,
+    TunnelingAugment, create_knxip_objects, create_knxip_objects_with_augment, create_knxip_tunneling_objects,
+};
+pub use storage::{HasPersistedState, LinkLayerConfig, LinkLayerState, PersistedState, table_sizes};
+#[cfg(feature = "knxip")]
+pub use storage::PersistedIpConfig;
+pub use traits::{SystemBTpDeviceDef, TpDevice};
+#[cfg(feature = "knxip")]
+pub use traits::{KnxIpDevice, SystemBIpDeviceDef};
