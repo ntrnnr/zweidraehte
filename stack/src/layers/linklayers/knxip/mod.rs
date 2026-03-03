@@ -17,15 +17,15 @@ use crate::{
     },
 };
 
-mod builder;
-pub mod connections;
-mod dispatch;
-pub mod features;
-pub(crate) mod runtime;
-pub mod services;
-pub(crate) mod types;
+pub mod connections;    // Connection-oriented state machines
+pub mod features;       // Compile-time feature selection
+pub mod services;       // Connectionless service handlers
 
-mod transport;
+mod builder;
+mod dispatch;           // Frame routing and response sending
+pub(crate) mod runtime; // Event loop
+mod transport;          // UDP/TCP socket management
+pub(crate) mod types;   // Shared protocol types (ServerError, PendingResponse, etc.)
 
 pub use builder::KnxNetIpBuilder;
 pub use runtime::KnxNetIp;
@@ -107,7 +107,7 @@ impl Default for EndpointType {
 ///
 /// Provides externally-owned storage that must outlive the
 /// [`KnxNetIp`] link layer instance. Currently holds the response
-/// channel through which servers queue outbound messages.
+/// channel through which services queue outbound messages.
 pub struct KnxNetIpResources {
     /// Response channel for queuing outbound messages.
     response_channel: Channel<NoopRawMutex, PendingResponse, 16>,
