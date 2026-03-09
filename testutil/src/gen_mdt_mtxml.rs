@@ -106,6 +106,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         baggages: None,
         translations: Some(MDT_TRANSLATIONS_DE),
         bus_interfaces: None,
+        additional_addresses_count: None,
+        ip_config: None,
     };
 
     // Output directory: out/<device>/
@@ -121,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         order_number: "KP_BE_01",
         is_rail_mounted: false,
         catalog_section: "KNX Push Buttons",
+        is_ip_enabled: None,
     })
     .output_dir(&out_dir)
     .file_prefix("Mdt")

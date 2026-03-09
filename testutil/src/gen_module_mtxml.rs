@@ -58,6 +58,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Combined German and English translations
         translations: Some(&all_translations),
         bus_interfaces: None,
+        additional_addresses_count: None,
+        ip_config: None,
     };
 
     // Output directory: out/<device>/
@@ -72,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         order_number: "MOD-DIM-4CH",
         is_rail_mounted: false,
         catalog_section: "Dimmer Actuators",
+        is_ip_enabled: None,
     })
     .output_dir(&out_dir)
     .file_prefix("Module")

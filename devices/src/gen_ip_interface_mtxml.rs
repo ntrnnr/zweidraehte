@@ -68,6 +68,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         baggages: None,
         translations: None,
         bus_interfaces: Some(&bus_interfaces),
+        additional_addresses_count: Some(IpInterfaceDevice::ADDITIONAL_IA_COUNT as u32),
+        ip_config: Some("Tool"),
     };
 
     let out_dir: PathBuf = ["out", app.name].iter().collect();
@@ -81,6 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         order_number: "IP-IF-004",
         is_rail_mounted: false,
         catalog_section: "KNX/IP Interfaces",
+        is_ip_enabled: Some(true),
     })
     .output_dir(&out_dir)
     .schema_version(KnxSchemaVersion::V20);

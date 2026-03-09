@@ -194,6 +194,12 @@ pub struct ApplicationProgramDef<'a> {
     /// assign an additional individual address to. Typically 4 entries for
     /// an IP Interface with 4 tunneling channels.
     pub bus_interfaces: Option<&'a [BusInterfaceDef]>,
+    /// Number of additional individual addresses the device supports (for tunneling channels).
+    /// Corresponds to `ApplicationProgram/@AdditionalAddressesCount`.
+    pub additional_addresses_count: Option<u32>,
+    /// IP configuration mode. Typically `"Tool"` for tool-configured devices.
+    /// Corresponds to `ApplicationProgram/@IPConfig`.
+    pub ip_config: Option<&'a str>,
 }
 
 /// Definition of a single bus interface channel.
@@ -242,6 +248,9 @@ pub struct HardwareDef<'a> {
     pub name: &'a str,
     /// Bus current consumption in mA (optional).
     pub bus_current: Option<u16>,
+    /// Whether this hardware is an IP-enabled device.
+    /// Corresponds to `Hardware/@IsIPEnabled`.
+    pub is_ip_enabled: Option<bool>,
     /// Products in this hardware definition.
     pub products: Vec<ProductDef<'a>>,
     /// Application programs linked to this hardware.
@@ -300,6 +309,9 @@ pub struct SingleDeviceDef<'a> {
     pub is_rail_mounted: bool,
     /// Catalog section name.
     pub catalog_section: &'a str,
+    /// Whether this hardware is an IP-enabled device.
+    /// Corresponds to `Hardware/@IsIPEnabled`.
+    pub is_ip_enabled: Option<bool>,
 }
 
 /// Internal configuration passed to the MTXML generator.
@@ -370,6 +382,8 @@ pub(crate) struct ApplicationProgramConfig<'a> {
     pub translations: Option<&'a [EtsTranslation]>,
     /// Bus interface definitions for IP Interface devices.
     pub bus_interfaces: Option<&'a [BusInterfaceDef]>,
+    pub additional_addresses_count: Option<u32>,
+    pub ip_config: Option<&'a str>,
 }
 
 impl<'a> ApplicationProgramConfig<'a> {

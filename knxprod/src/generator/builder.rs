@@ -289,6 +289,7 @@ impl<'a> KnxprodBuilder<'a> {
             hardware_version: def.hardware_version,
             name: def.hardware_name,
             bus_current: None,
+            is_ip_enabled: def.is_ip_enabled,
             products: vec![ProductDef {
                 name: def.product_name,
                 order_number: def.order_number,
@@ -668,6 +669,8 @@ impl<'a> KnxprodBuilder<'a> {
             baggages: app.baggages,
             translations: app.translations,
             bus_interfaces: app.bus_interfaces,
+            additional_addresses_count: app.additional_addresses_count,
+            ip_config: app.ip_config,
         }
     }
 

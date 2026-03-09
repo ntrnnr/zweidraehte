@@ -100,6 +100,7 @@ impl HardwareGenerator {
                 bus_current: hw_def.bus_current,
                 has_individual_address: true,
                 has_application_program: true,
+                is_ip_enabled: hw_def.is_ip_enabled,
                 products: Products { products },
                 hardware2programs: Hardware2Programs { hardware2programs: h2p_elements },
             });

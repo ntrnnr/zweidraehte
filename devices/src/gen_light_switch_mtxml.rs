@@ -70,6 +70,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         baggages: None,
         translations: Some(LIGHT_SWITCH_TRANSLATIONS),
         bus_interfaces: None,
+        additional_addresses_count: None,
+        ip_config: None,
     };
 
     let app_tp1 = ApplicationProgramDef {
@@ -93,6 +95,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         baggages: None,
         translations: Some(LIGHT_SWITCH_TRANSLATIONS),
         bus_interfaces: None,
+        additional_addresses_count: None,
+        ip_config: None,
     };
 
     // Build a multi-device package: two application programs, two hardware
@@ -106,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hardware_version: 1,
         name: "2-Button Light Switch IP",
         bus_current: None,
+        is_ip_enabled: Some(true),
         products: vec![ProductDef {
             name: "Light Switch 2-fold (IP)",
             order_number: "LS-0002-IP",
@@ -120,6 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hardware_version: 1,
         name: "2-Button Light Switch TP1",
         bus_current: Some(10),
+        is_ip_enabled: None,
         products: vec![ProductDef {
             name: "Light Switch 2-fold (TP1)",
             order_number: "LS-0002-TP",

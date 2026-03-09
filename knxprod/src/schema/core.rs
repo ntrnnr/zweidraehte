@@ -180,6 +180,10 @@ pub struct ApplicationProgram {
     pub replaces_versions: Option<String>,
     #[serde(rename = "@Hash", skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
+    #[serde(rename = "@AdditionalAddressesCount", skip_serializing_if = "Option::is_none")]
+    pub additional_addresses_count: Option<u32>,
+    #[serde(rename = "@IPConfig", skip_serializing_if = "Option::is_none")]
+    pub ip_config: Option<String>,
 
     #[serde(rename = "Static")]
     pub static_section: StaticSection,
@@ -209,6 +213,8 @@ impl Default for ApplicationProgram {
             non_reg_relevant_data_version: None,
             replaces_versions: None,
             hash: None,
+            additional_addresses_count: None,
+            ip_config: None,
             static_section: StaticSection::default(),
             module_defs: None,
             dynamic: None,

@@ -79,6 +79,8 @@ pub struct Hardware {
     pub has_individual_address: bool,
     #[serde(rename = "@HasApplicationProgram")]
     pub has_application_program: bool,
+    #[serde(rename = "@IsIPEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_ip_enabled: Option<bool>,
     #[serde(rename = "Products")]
     pub products: Products,
     #[serde(rename = "Hardware2Programs")]
@@ -95,6 +97,7 @@ impl Default for Hardware {
             bus_current: None,
             has_individual_address: true,
             has_application_program: true,
+            is_ip_enabled: None,
             products: Products::default(),
             hardware2programs: Hardware2Programs::default(),
         }

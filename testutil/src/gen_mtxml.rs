@@ -48,6 +48,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         baggages: None,
         translations: None,
         bus_interfaces: None,
+        additional_addresses_count: None,
+        ip_config: None,
     };
 
     // Output directory: out/<device>/
@@ -62,6 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         order_number: "1234",
         is_rail_mounted: false,
         catalog_section: "KNX/IP Devices",
+        is_ip_enabled: Some(true),
     })
     .output_dir(&out_dir)
     .schema_version(KnxSchemaVersion::V20);

@@ -159,6 +159,8 @@ impl MtxmlGenerator {
             non_reg_relevant_data_version: config.non_reg_relevant_data_version,
             replaces_versions: config.replaces_versions.map(|s| s.to_string()),
             hash: config.application_data_hash.map(|s| s.to_string()),
+            additional_addresses_count: config.additional_addresses_count,
+            ip_config: config.ip_config.map(|s| s.to_string()),
             ..Default::default()
         };
 
