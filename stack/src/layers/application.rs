@@ -24,8 +24,8 @@ use embassy_sync::{
 };
 
 use crate::{
-    actor::Request,
     AccessContext, AccessSource, HasConnectionAuth, StackDefinition, StackState,
+    actor::Request,
     address::GroupAddress,
     messages::{
         buffers::{Buffer, DynBufferManager},
@@ -905,9 +905,11 @@ where
     /// - APDU[5-6]: Type + MaxElements
     /// - APDU[7]: Read/Write Access Levels
     fn handle_property_description_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{
+            apdu::property::{PropertyDescriptionRead, PropertyDescriptionResponse},
+            builder::IndicationExt,
+        };
 
-        // Determine response service type based on incoming service type
         let response_service_type = match ind.service_type() {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
             ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
@@ -917,30 +919,22 @@ where
             }
         };
 
-        // PropertyDescriptionRead APDU: [APCI:2][ObjIdx:1][PropId:1][PropIdx:1]
-        // Minimum length: MSG_APCI + 5 = 11 bytes
-        const MIN_LEN: usize = offsets::MSG_APCI + 5;
-
-        if (ind.len()) < MIN_LEN {
-            error!("PropertyDescriptionRead message too short: {} < {}", ind.len(), MIN_LEN);
+        let Some(req) = PropertyDescriptionRead::parse(ind.buf()) else {
+            error!("PropertyDescriptionRead message too short: {}", ind.len());
             return;
-        }
+        };
 
-        let buf = ind.buf();
-        let object_idx = buf[offsets::MSG_APCI + 2] as u16;
-        let prop_id = buf[offsets::MSG_APCI + 3];
-        let prop_idx = buf[offsets::MSG_APCI + 4];
+        debug!(
+            "AL PropertyDescriptionRead: obj={}, prop_id={}, prop_idx={}",
+            req.object_idx, req.prop_id, req.prop_idx
+        );
 
-        debug!("AL PropertyDescriptionRead: obj={}, prop_id={}, prop_idx={}", object_idx, prop_id, prop_idx);
-
-        // Query the interface object server
-        let response = self.interface_objects.property_description_read(object_idx, prop_id, prop_idx);
+        let response = self.interface_objects.property_description_read(req.object_idx, req.prop_id, req.prop_idx);
 
         match response {
             Ok(desc) => {
-                // Allocate response message: APCI(2) + ObjectIdx(1) + PropId(1) + PropIdx(1) + Type(1) + MaxElements(2) + Access(1) = 9
-                const RESPONSE_LEN: usize = offsets::MSG_APCI + 9;
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(PropertyDescriptionResponse::MSG_LEN)
+                else {
                     warn!("AL no buffer for response");
                     return;
                 };
@@ -949,23 +943,19 @@ where
                     .respond_with(msg_buf)
                     .with_application(ApciCode::PropertyDescriptionResponse, response_service_type)
                     .with_data(|data| {
-                        // Encode the response into the message buffer
+                        // Success case: the descriptor encodes itself directly
                         let response_buf = &mut data[offsets::MSG_APCI + 2..];
                         let _len = desc.encode(response_buf);
                     });
 
                 debug!("AL sending PropertyDescriptionResponse: {:?}", desc);
-
-                // Send the response
                 outbox.push(msg.into_inner());
             }
             Err(e) => {
-                // Send negative response: echo back ObjIdx and PID, set all descriptor fields to 0
                 warn!("AL PropertyDescriptionRead failed: {:?}", e);
 
-                // Full response: APCI(2) + ObjIdx(1) + PID(1) + PropIdx(1) + Type(1) + MaxNo(2) + Access(1) = 9
-                const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 9;
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(ERROR_RESPONSE_LEN) else {
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(PropertyDescriptionResponse::MSG_LEN)
+                else {
                     warn!("AL no buffer for response");
                     return;
                 };
@@ -974,14 +964,7 @@ where
                     .respond_with(msg_buf)
                     .with_application(ApciCode::PropertyDescriptionResponse, response_service_type)
                     .with_data(|data| {
-                        // Echo back ObjIdx, PID, PropIdx from request; set descriptor fields to 0
-                        data[offsets::MSG_APCI + 2] = object_idx as u8;
-                        data[offsets::MSG_APCI + 3] = prop_id;
-                        data[offsets::MSG_APCI + 4] = prop_idx;
-                        data[offsets::MSG_APCI + 5] = 0; // Type (WrEnab=0, PDT=0)
-                        data[offsets::MSG_APCI + 6] = 0; // MaxNo high byte
-                        data[offsets::MSG_APCI + 7] = 0; // MaxNo low byte
-                        data[offsets::MSG_APCI + 8] = 0; // Access (ReadAcc=0, WriteAcc=0)
+                        PropertyDescriptionResponse::write_error(data, req.object_idx as u8, req.prop_id, req.prop_idx);
                     });
 
                 outbox.push(msg.into_inner());
@@ -1010,9 +993,11 @@ where
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits]
     /// - APDU[6..]: Data
     fn handle_property_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{
+            apdu::property::{PropertyValueHeader, PropertyValueResponse},
+            builder::IndicationExt,
+        };
 
-        // Determine response service type based on incoming service type
         let response_service_type = match ind.service_type() {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
             ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
@@ -1022,83 +1007,62 @@ where
             }
         };
 
-        // PropertyValueRead APDU: [APCI:2][ObjIdx:1][PropId:1][Count+StartIdx:2]
-        // Minimum length: MSG_APCI + 6 = 12 bytes
-        const MIN_LEN: usize = offsets::MSG_APCI + 6;
-
-        if ind.len() < MIN_LEN {
-            error!("PropertyValueRead message too short: {} < {}", ind.len(), MIN_LEN);
+        let Some(hdr) = PropertyValueHeader::parse(ind.buf()) else {
+            error!("PropertyValueRead message too short: {}", ind.len());
             return;
-        }
-
-        let buf = ind.buf();
-        let object_idx = buf[offsets::MSG_APCI + 2] as u16;
-        let prop_id = buf[offsets::MSG_APCI + 3];
-        let count_start = ((buf[offsets::MSG_APCI + 4] as u16) << 8) | (buf[offsets::MSG_APCI + 5] as u16);
-        let count = count_start >> 12;
-        let start_idx = count_start & 0x0FFF;
+        };
 
         let access_ctx = self.resolve_access(ind);
         debug!(
             "AL PropertyValueRead: obj={}, prop_id={}, count={}, start={}, access_ctx={:?}",
-            object_idx, prop_id, count, start_idx, access_ctx
+            hdr.object_idx, hdr.prop_id, hdr.count, hdr.start_idx, access_ctx
         );
 
-        // Allocate a buffer for the response data
-        // Max APDU size is typically 14 bytes for TP1, so max data is about 8 bytes
-        // We'll use a reasonable max and let the handler limit it
         const MAX_PROPERTY_DATA: usize = 64;
         let mut data_buf = [0u8; MAX_PROPERTY_DATA];
 
-        // Query the interface object server
-        let req = FullPropertyReadRequest { object_idx, pid: prop_id, start_idx, count, ctx: access_ctx };
+        let req = FullPropertyReadRequest {
+            object_idx: hdr.object_idx,
+            pid: hdr.prop_id,
+            start_idx: hdr.start_idx,
+            count: hdr.count,
+            ctx: access_ctx,
+        };
         let result = self.interface_objects.property_value_read(&req, &mut data_buf);
 
         match result {
             Ok(data_len) => {
-                // Allocate response message: APCI(2) + ObjIdx(1) + PropId(1) + Count+StartIdx(2) + Data(N)
-                let response_len = offsets::MSG_APCI + 6 + data_len;
+                let response_len = PropertyValueResponse::msg_len(data_len);
                 let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
                     warn!("AL no buffer for response");
                     return;
                 };
 
-                // Build the response count_start field
-                // Per KNX spec: if start_idx=0 (element count query), response must have nr_of_elem=1
-                let response_count_start = if start_idx == 0 {
-                    // Element count query: respond with count=1, start_idx=0
-                    1u16 << 12
-                } else {
-                    // Normal read: echo back the original count_start
-                    count_start
-                };
+                // Per KNX spec: if start_idx=0 (element count query), response count=1
+                let response_count = if hdr.start_idx == 0 { 1 } else { hdr.count };
 
                 let msg = ind
                     .respond_with(msg_buf)
                     .with_application(ApciCode::PropertyValueResponse, response_service_type)
-                    .with_data(|data| {
-                        // Fill in the response header
-                        data[offsets::MSG_APCI + 2] = object_idx as u8;
-                        data[offsets::MSG_APCI + 3] = prop_id;
-                        data[offsets::MSG_APCI + 4] = (response_count_start >> 8) as u8;
-                        data[offsets::MSG_APCI + 5] = response_count_start as u8;
-
-                        // Copy the data
-                        data[offsets::MSG_APCI + 6..offsets::MSG_APCI + 6 + data_len]
-                            .copy_from_slice(&data_buf[..data_len]);
+                    .with_data(|buf| {
+                        PropertyValueResponse::write(
+                            buf,
+                            hdr.object_idx as u8,
+                            hdr.prop_id,
+                            response_count,
+                            hdr.start_idx,
+                            &data_buf[..data_len],
+                        );
                     });
 
                 debug!("AL sending PropertyValueResponse: {} bytes", data_len);
-
-                // Send the response
                 outbox.push(msg.into_inner());
             }
             Err(e) => {
-                // Send error response with count = 0
                 warn!("AL PropertyValueRead failed: {:?}", e);
 
-                const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 6;
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(ERROR_RESPONSE_LEN) else {
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
+                else {
                     warn!("AL no buffer for response");
                     return;
                 };
@@ -1106,13 +1070,8 @@ where
                 let msg = ind
                     .respond_with(msg_buf)
                     .with_application(ApciCode::PropertyValueResponse, response_service_type)
-                    .with_data(|data| {
-                        // Error response: count = 0 indicates error
-                        data[offsets::MSG_APCI + 2] = object_idx as u8;
-                        data[offsets::MSG_APCI + 3] = prop_id;
-                        // Count = 0, keep start_idx
-                        data[offsets::MSG_APCI + 4] = (start_idx >> 8) as u8;
-                        data[offsets::MSG_APCI + 5] = start_idx as u8;
+                    .with_data(|buf| {
+                        PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
                     });
 
                 outbox.push(msg.into_inner());
@@ -1142,9 +1101,11 @@ where
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits] (count=0 on error)
     /// - APDU[6..]: Written data (echo back on success)
     fn handle_property_value_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{
+            apdu::property::{PropertyValueHeader, PropertyValueResponse},
+            builder::IndicationExt,
+        };
 
-        // Determine response service type based on incoming service type
         let response_service_type = match ind.service_type() {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
             ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
@@ -1154,45 +1115,40 @@ where
             }
         };
 
-        // PropertyValueWrite APDU: [APCI:2][ObjIdx:1][PropId:1][Count+StartIdx:2][Data:N]
-        // Minimum length: MSG_APCI + 6 = 12 bytes (at least header, data can be 0 for some cases)
-        const MIN_LEN: usize = offsets::MSG_APCI + 6;
-
-        if ind.len() < MIN_LEN {
-            error!("PropertyValueWrite message too short: {} < {}", ind.len(), MIN_LEN);
+        let Some(hdr) = PropertyValueHeader::parse(ind.buf()) else {
+            error!("PropertyValueWrite message too short: {}", ind.len());
             return;
-        }
-
-        let buf = ind.buf();
-        let object_idx = buf[offsets::MSG_APCI + 2] as u16;
-        let prop_id = buf[offsets::MSG_APCI + 3];
-        let count_start = ((buf[offsets::MSG_APCI + 4] as u16) << 8) | (buf[offsets::MSG_APCI + 5] as u16);
-        let count = count_start >> 12;
-        let start_idx = count_start & 0x0FFF;
-
-        // Extract the data to write
-        let data_start = offsets::MSG_APCI + 6;
-        let data_len = ind.len() - data_start;
-        let data = &buf[data_start..data_start + data_len];
+        };
+        let data = hdr.data(ind.buf());
 
         let access_ctx = self.resolve_access(ind);
         debug!(
             "AL PropertyValueWrite: obj={}, prop_id={}, count={}, start={}, data_len={}, access_ctx={:?}",
-            object_idx, prop_id, count, start_idx, data_len, access_ctx
+            hdr.object_idx,
+            hdr.prop_id,
+            hdr.count,
+            hdr.start_idx,
+            data.len(),
+            access_ctx
         );
 
         // Capture run state before property writes that might change it.
         // Both LOAD_STATE_CONTROL and RUN_STATE_CONTROL can affect the run state:
         // LOAD_STATE_CONTROL cascades into the RSM via RunnableApplication::write_lsm()
         // (e.g., LoadCompleted triggers HALTED → READY → RUNNING automatically).
-        let was_running = if prop_id == pid::LOAD_STATE_CONTROL || prop_id == pid::RUN_STATE_CONTROL {
+        let was_running = if hdr.prop_id == pid::LOAD_STATE_CONTROL || hdr.prop_id == pid::RUN_STATE_CONTROL {
             Some(self.state.app().borrow().is_running())
         } else {
             None
         };
 
-        // Perform the write - the response may differ from written data (e.g., LOAD_STATE_CONTROL)
-        let req = FullPropertyWriteRequest { object_idx, pid: prop_id, start_idx, data, ctx: access_ctx };
+        let req = FullPropertyWriteRequest {
+            object_idx: hdr.object_idx,
+            pid: hdr.prop_id,
+            start_idx: hdr.start_idx,
+            data,
+            ctx: access_ctx,
+        };
         let result = self.interface_objects.property_value_write(&req);
 
         // Sync DeviceControl.user_stopped and publish lifecycle events on run state transitions.
@@ -1220,12 +1176,10 @@ where
 
         match result {
             Ok(write_response) => {
-                // Success: send response with the data returned by the write operation
-                // WriteResponse::Echo means echo back the original data
+                // WriteResponse::Echo means echo back the original data;
                 // WriteResponse::Data contains transformed data (e.g., LOAD_STATE_CONTROL)
                 let response_data: &[u8] = write_response.as_slice().unwrap_or(data);
-                let response_data_len = response_data.len();
-                let response_len = offsets::MSG_APCI + 6 + response_data_len;
+                let response_len = PropertyValueResponse::msg_len(response_data.len());
                 let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
                     warn!("AL no buffer for response");
                     return;
@@ -1234,27 +1188,25 @@ where
                 let msg = ind
                     .respond_with(msg_buf)
                     .with_application(ApciCode::PropertyValueResponse, response_service_type)
-                    .with_data(|response_buf| {
-                        response_buf[offsets::MSG_APCI + 2] = object_idx as u8;
-                        response_buf[offsets::MSG_APCI + 3] = prop_id;
-                        response_buf[offsets::MSG_APCI + 4] = (count_start >> 8) as u8;
-                        response_buf[offsets::MSG_APCI + 5] = count_start as u8;
-
-                        // Copy response data (echoed write data or transformed data like load state)
-                        response_buf[offsets::MSG_APCI + 6..offsets::MSG_APCI + 6 + response_data_len]
-                            .copy_from_slice(response_data);
+                    .with_data(|buf| {
+                        PropertyValueResponse::write(
+                            buf,
+                            hdr.object_idx as u8,
+                            hdr.prop_id,
+                            hdr.count,
+                            hdr.start_idx,
+                            response_data,
+                        );
                     });
 
-                debug!("AL sending PropertyValueResponse (write success): {} bytes", response_data_len);
-
+                debug!("AL sending PropertyValueResponse (write success): {} bytes", response_data.len());
                 outbox.push(msg.into_inner());
             }
             Err(e) => {
-                // Error: respond with count = 0
                 warn!("AL PropertyValueWrite failed: {:?}", e);
 
-                const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 6;
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(ERROR_RESPONSE_LEN) else {
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
+                else {
                     warn!("AL no buffer for response");
                     return;
                 };
@@ -1262,13 +1214,8 @@ where
                 let msg = ind
                     .respond_with(msg_buf)
                     .with_application(ApciCode::PropertyValueResponse, response_service_type)
-                    .with_data(|response_buf| {
-                        // Error response: count = 0 indicates error
-                        response_buf[offsets::MSG_APCI + 2] = object_idx as u8;
-                        response_buf[offsets::MSG_APCI + 3] = prop_id;
-                        // Count = 0, keep start_idx
-                        response_buf[offsets::MSG_APCI + 4] = (start_idx >> 8) as u8;
-                        response_buf[offsets::MSG_APCI + 5] = start_idx as u8;
+                    .with_data(|buf| {
+                        PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
                     });
 
                 outbox.push(msg.into_inner());
@@ -1302,24 +1249,18 @@ where
     /// - APDU[0-1]: APCI (DeviceDescriptorResponse with descriptor type in low 6 bits)
     /// - APDU[2-3]: Mask version (only if descriptor type is 0)
     fn handle_device_descriptor_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{
+            apdu::device::{DeviceDescriptorRead, DeviceDescriptorResponse},
+            builder::IndicationExt,
+        };
 
-        // DeviceDescriptorRead APDU: [APCI:2] where the descriptor type is in the lower 6 bits
-        // Minimum length: MSG_APCI + 2 = 8 bytes
-        const MIN_LEN: usize = offsets::MSG_APCI + 2;
-
-        if ind.len() < MIN_LEN {
-            error!("DeviceDescriptorRead message too short: {} < {}", ind.len(), MIN_LEN);
+        let Some(req) = DeviceDescriptorRead::parse(ind.buf()) else {
+            error!("DeviceDescriptorRead message too short: {}", ind.len());
             return;
-        }
+        };
 
-        // Extract descriptor type from the lower 6 bits of the APCI
-        let buf = ind.buf();
-        let descriptor_type = buf[offsets::MSG_APCI + 1] & 0x3F;
+        debug!("AL DeviceDescriptorRead: descriptor_type={}", req.descriptor_type);
 
-        debug!("AL DeviceDescriptorRead: descriptor_type={}", descriptor_type);
-
-        // Determine transport service type
         let transport_service = match ind.service_type() {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
             ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
@@ -1329,10 +1270,8 @@ where
             }
         };
 
-        if descriptor_type == 0 {
-            // Descriptor type 0: respond with mask version (2 bytes)
-            const RESPONSE_LEN: usize = offsets::MSG_APCI + 4; // APCI(2) + MaskVersion(2)
-            let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+        if req.descriptor_type == 0 {
+            let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(DeviceDescriptorResponse::TYPE0_MSG_LEN) else {
                 warn!("AL no buffer for response");
                 return;
             };
@@ -1340,78 +1279,61 @@ where
             let msg = ind
                 .respond_with(msg_buf)
                 .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
-                .with_data(|data| {
-                    // Set descriptor type to 0 in the response
-                    data[offsets::MSG_APCI + 1] = data[offsets::MSG_APCI + 1] & 0xC0;
-                    // Copy mask version from device descriptor
-                    let mask_version = D::DEVICE.mask_version_bytes();
-                    data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4].copy_from_slice(&mask_version);
+                .with_data(|buf| {
+                    DeviceDescriptorResponse::write_type0(buf, &D::DEVICE.mask_version_bytes());
                 });
 
             debug!("AL sending DeviceDescriptorResponse: mask_version={}", D::DEVICE.mask_version);
-
             outbox.push(msg.into_inner());
-        } else if descriptor_type == 2 {
-            // Descriptor type 2: respond with extended device info (14 bytes) if supported
+        } else if req.descriptor_type == 2 {
             if let Some(dd2) = D::DEVICE_DESCRIPTOR_TYPE2 {
-                const RESPONSE_LEN: usize = offsets::MSG_APCI + 16; // APCI(2) + DD2(14)
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(DeviceDescriptorResponse::TYPE2_MSG_LEN)
+                else {
                     warn!("AL no buffer for response");
                     return;
                 };
 
+                let dd2_arr: &[u8; 14] = dd2.try_into().expect("DD2 is always 14 bytes");
                 let msg = ind
                     .respond_with(msg_buf)
                     .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
-                    .with_data(|data| {
-                        // Set descriptor type to 2 in the response
-                        data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0) | 0x02;
-                        // Copy DD2 data
-                        data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 16].copy_from_slice(dd2);
+                    .with_data(|buf| {
+                        DeviceDescriptorResponse::write_type2(buf, dd2_arr);
                     });
 
                 debug!("AL sending DeviceDescriptorResponse (DD2): {:?}", crate::fmt::Bytes(dd2));
-
                 outbox.push(msg.into_inner());
             } else {
-                // DD2 not supported: error response with type = 0x3F
-                const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 2;
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(ERROR_RESPONSE_LEN) else {
-                    warn!("AL no buffer for response");
-                    return;
-                };
-
-                let msg = ind
-                    .respond_with(msg_buf)
-                    .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
-                    .with_data(|data| {
-                        data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0) | 0x3F;
-                    });
-
-                debug!("AL sending DeviceDescriptorResponse (error, DD2 not supported): descriptor_type=0x3F");
-
-                outbox.push(msg.into_inner());
+                self.send_dd_error(ind, transport_service, outbox);
             }
         } else {
-            // Any other descriptor type: error response with type = 0x3F, no data
-            const ERROR_RESPONSE_LEN: usize = offsets::MSG_APCI + 2; // APCI(2) only, no data
-            let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(ERROR_RESPONSE_LEN) else {
-                warn!("AL no buffer for response");
-                return;
-            };
-
-            let msg = ind
-                .respond_with(msg_buf)
-                .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
-                .with_data(|data| {
-                    // Set descriptor type to 0x3F (all 6 bits set) to indicate error
-                    data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0) | 0x3F;
-                });
-
-            debug!("AL sending DeviceDescriptorResponse (error): descriptor_type=0x3F");
-
-            outbox.push(msg.into_inner());
+            self.send_dd_error(ind, transport_service, outbox);
         }
+    }
+
+    /// Send a DeviceDescriptorResponse error (descriptor_type = 0x3F).
+    fn send_dd_error(
+        &mut self,
+        ind: &KnxMessageBuffer<Buffer<'static>>,
+        transport_service: ServiceType,
+        outbox: &mut Outbox,
+    ) {
+        use crate::messages::{apdu::device::DeviceDescriptorResponse, builder::IndicationExt};
+
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(DeviceDescriptorResponse::ERROR_MSG_LEN) else {
+            warn!("AL no buffer for response");
+            return;
+        };
+
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
+            .with_data(|buf| {
+                DeviceDescriptorResponse::write_error(buf);
+            });
+
+        debug!("AL sending DeviceDescriptorResponse (error): descriptor_type=0x3F");
+        outbox.push(msg.into_inner());
     }
 
     /// Handle `A_IndividualAddress_Read.ind`
@@ -1428,9 +1350,8 @@ where
     /// Note: The individual address is taken from the source address field of the
     /// response frame, not from the APDU payload.
     fn handle_individual_address_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-        use crate::messages::builder::MessageBuilder;
+        use crate::messages::{apdu::device, builder::MessageBuilder};
 
-        // Validate service type - must be broadcast
         if ind.service_type() != ServiceType::T_Broadcast_Ind {
             warn!("AL IndividualAddressRead with unexpected service type: {:?}", ind.service_type());
             return;
@@ -1438,35 +1359,27 @@ where
 
         debug!("AL IndividualAddressRead received");
 
-        // Only respond if device is in programming mode
-        // Per KNX spec, A_IndividualAddress_Read should only be responded to when
-        // the device is in programming mode (e.g., programming button pressed)
         if !self.interface_objects.is_programming_mode() {
             trace!("AL IndividualAddressRead ignored (not in programming mode)");
             return;
         }
 
-        // IndividualAddressResponse: APCI only, no payload
-        // The individual address is conveyed in the source address field of the L_Data frame
-        const RESPONSE_LEN: usize = offsets::MSG_APCI + 2;
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(device::APCI_ONLY_MSG_LEN) else {
             warn!("AL no buffer for response");
             return;
         };
 
-        // Build broadcast response
-        // Note: For IndividualAddressResponse, we broadcast to 0x0000 (all devices)
+        // IndividualAddressResponse: broadcast to 0x0000, address conveyed in source field
         let msg = MessageBuilder::new_request(
             msg_buf,
             ServiceType::T_Broadcast_Req,
             ind.ctrl_field().priority(),
-            DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])), // Broadcast address
+            DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])),
         )
         .with_application(ApciCode::IndividualAddressResponse, ServiceType::T_Broadcast_Req)
         .build();
 
         debug!("AL sending IndividualAddressResponse");
-
         outbox.push(msg.into_inner());
     }
 
@@ -1481,38 +1394,26 @@ where
     ///
     /// Per KNX spec, this service only takes effect when the device is in programming mode.
     fn handle_individual_address_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, _outbox: &mut Outbox) {
-        use crate::address::IndividualAddress;
+        use crate::{address::IndividualAddress, messages::apdu::device::IndividualAddressWrite};
 
-        // Validate service type - must be broadcast
         if ind.service_type() != ServiceType::T_Broadcast_Ind {
             warn!("AL IndividualAddressWrite with unexpected service type: {:?}", ind.service_type());
             return;
         }
 
-        // Only accept if device is in programming mode
         if !self.interface_objects.is_programming_mode() {
             trace!("AL IndividualAddressWrite ignored (not in programming mode)");
             return;
         }
 
-        // Validate APDU length: APCI (2 bytes) + address (2 bytes) = 4 bytes minimum
-        const MIN_LEN: usize = offsets::MSG_APCI + 4;
-        if ind.len() < MIN_LEN {
-            error!("IndividualAddressWrite message too short: {} < {}", ind.len(), MIN_LEN);
+        let Some(addr_bytes) = IndividualAddressWrite::address_bytes(ind.buf()) else {
+            error!("IndividualAddressWrite message too short: {}", ind.len());
             return;
-        }
+        };
 
-        // Extract new individual address from APDU[2-3]
-        let buf = ind.buf();
-        let new_addr_bytes = &buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4];
-        let new_addr = IndividualAddress::from_bytes(new_addr_bytes);
-
+        let new_addr = IndividualAddress::from_bytes(addr_bytes);
         debug!("AL IndividualAddressWrite: setting address to {}", new_addr);
-
-        // Update the device's individual address
         self.state.set_individual_address(new_addr);
-
-        // No response is sent for IndividualAddressWrite
     }
 
     /// Handle `A_IndividualAddressSerialNumber_Read.ind`
@@ -1533,26 +1434,21 @@ where
         ind: &KnxMessageBuffer<Buffer<'static>>,
         outbox: &mut Outbox,
     ) {
-        use crate::messages::builder::MessageBuilder;
+        use crate::messages::{
+            apdu::device::{IndividualAddressSerialNumberRead, IndividualAddressSerialNumberResponse},
+            builder::MessageBuilder,
+        };
 
-        // Validate service type - must be broadcast
         if ind.service_type() != ServiceType::T_Broadcast_Ind {
             warn!("AL IndividualAddressSerialNumberRead with unexpected service type: {:?}", ind.service_type());
             return;
         }
 
-        // Validate APDU length: APCI (2 bytes) + serial number (6 bytes) = 8 bytes minimum
-        const MIN_LEN: usize = offsets::MSG_APCI + 8;
-        if ind.len() < MIN_LEN {
-            error!("IndividualAddressSerialNumberRead message too short: {} < {}", ind.len(), MIN_LEN);
+        let Some(received_serial) = IndividualAddressSerialNumberRead::serial_number(ind.buf()) else {
+            error!("IndividualAddressSerialNumberRead message too short: {}", ind.len());
             return;
-        }
+        };
 
-        // Extract serial number from APDU[2-7]
-        let buf = ind.buf();
-        let received_serial = &buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8];
-
-        // Only respond if serial number matches
         if received_serial != self.state.serial_number() {
             trace!("AL IndividualAddressSerialNumberRead ignored (serial mismatch)");
             return;
@@ -1560,14 +1456,12 @@ where
 
         debug!("AL IndividualAddressSerialNumberRead: serial matches, sending response");
 
-        // Response: APCI (2) + serial (6) + domain/reserved (4) = 12 bytes APDU
-        const RESPONSE_LEN: usize = offsets::MSG_APCI + 12;
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(IndividualAddressSerialNumberResponse::MSG_LEN)
+        else {
             warn!("AL no buffer for response");
             return;
         };
 
-        // Build broadcast response
         let mut msg = MessageBuilder::new_request(
             msg_buf,
             ServiceType::T_Broadcast_Req,
@@ -1577,9 +1471,8 @@ where
         .with_application(ApciCode::IndividualAddressSerialNumberResponse, ServiceType::T_Broadcast_Req)
         .build();
 
-        // Copy serial number to response (APDU bytes 2-7)
-        msg.buf_mut()[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8].copy_from_slice(self.state.serial_number());
-        // Domain address / reserved (4 bytes, zero) - already zeroed by alloc
+        let serial: &[u8; 6] = self.state.serial_number().try_into().expect("serial is always 6 bytes");
+        IndividualAddressSerialNumberResponse::write_serial(msg.buf_mut(), serial);
 
         outbox.push(msg.into_inner());
     }
@@ -1599,42 +1492,32 @@ where
         ind: &KnxMessageBuffer<Buffer<'static>>,
         _outbox: &mut Outbox,
     ) {
-        use crate::address::IndividualAddress;
+        use crate::{address::IndividualAddress, messages::apdu::device::IndividualAddressSerialNumberWrite};
 
-        // Validate service type - must be broadcast
         if ind.service_type() != ServiceType::T_Broadcast_Ind {
             warn!("AL IndividualAddressSerialNumberWrite with unexpected service type: {:?}", ind.service_type());
             return;
         }
 
-        // Validate APDU length: APCI (2) + serial (6) + addr (2) + reserved (4) = 14 bytes
-        const MIN_LEN: usize = offsets::MSG_APCI + 14;
-        if ind.len() < MIN_LEN {
-            error!("IndividualAddressSerialNumberWrite message too short: {} < {}", ind.len(), MIN_LEN);
-            return;
-        }
-
         let buf = ind.buf();
 
-        // Extract serial number from APDU[2-7]
-        let received_serial = &buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8];
+        let Some(received_serial) = IndividualAddressSerialNumberWrite::serial_number(buf) else {
+            error!("IndividualAddressSerialNumberWrite message too short: {}", ind.len());
+            return;
+        };
 
-        // Only accept if serial number matches
         if received_serial != self.state.serial_number() {
             trace!("AL IndividualAddressSerialNumberWrite ignored (serial mismatch)");
             return;
         }
 
-        // Extract new individual address from APDU[8-9]
-        let new_addr_bytes = &buf[offsets::MSG_APCI + 8..offsets::MSG_APCI + 10];
+        // address_bytes() can't fail here since serial_number() already validated the length
+        let new_addr_bytes = IndividualAddressSerialNumberWrite::address_bytes(buf)
+            .expect("length already validated by serial_number check");
         let new_addr = IndividualAddress::from_bytes(new_addr_bytes);
 
         debug!("AL IndividualAddressSerialNumberWrite: setting address to {}", new_addr);
-
-        // Update the device's individual address
         self.state.set_individual_address(new_addr);
-
-        // No response is sent
     }
 
     /// Handle `A_ADC_Read.ind`
@@ -1653,25 +1536,19 @@ where
     /// - APDU[2]: count - 0 if channel unsupported, otherwise same as request
     /// - APDU[3-4]: sum of readings (2 bytes, big-endian)
     fn handle_adc_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{
+            apdu::device::{AdcRead, AdcResponse},
+            builder::IndicationExt,
+        };
 
-        // ADC_Read APDU: [APCI:2 (with channel in low 6 bits)] [count:1]
-        // Minimum length: MSG_APCI + 3 = 9 bytes
-        const MIN_LEN: usize = offsets::MSG_APCI + 3;
-
-        if ind.len() < MIN_LEN {
-            error!("ADC_Read message too short: {} < {}", ind.len(), MIN_LEN);
+        let Some(req) = AdcRead::parse(ind.buf()) else {
+            error!("ADC_Read message too short: {}", ind.len());
             return;
-        }
+        };
 
-        let buf = ind.buf();
-        let channel = buf[offsets::MSG_APCI + 1] & 0x3F;
-        let count = buf[offsets::MSG_APCI + 2];
+        debug!("AL ADC_Read: channel={}, count={}", req.channel, req.count);
 
-        debug!("AL ADC_Read: channel={}, count={}", channel, count);
-
-        // ADC_Read is only valid in connection-oriented mode (T_Data_Ind)
-        // Per KNX spec and conformance test M-2.20, ADC services require a connection
+        // ADC_Read is only valid in connection-oriented mode
         let transport_service = match ind.service_type() {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
             other => {
@@ -1680,36 +1557,20 @@ where
             }
         };
 
-        // Response: APCI(2) + count(1) + sum(2) = 5 bytes APDU
-        const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(AdcResponse::MSG_LEN) else {
             warn!("AL no buffer for response");
             return;
         };
 
-        // We support channels 0-5 (typical KNX ADC channels), return 0 for unsupported
-        // For supported channels, we return dummy values (0x0000 for the sum)
-        let (response_count, sum) = if channel <= 5 {
-            // Supported channel - return requested count and dummy sum
-            (count, 0x0000u16)
-        } else {
-            // Unsupported channel - return count=0 and sum=0
-            (0u8, 0x0000u16)
-        };
+        // Channels 0-5 are supported; return dummy sum 0x0000
+        let (response_count, sum) = if req.channel <= 5 { (req.count, 0x0000u16) } else { (0u8, 0x0000u16) };
 
         let msg =
-            ind.respond_with(msg_buf).with_application(ApciCode::AdcResponse, transport_service).with_data(|data| {
-                // Set channel in low 6 bits of APCI byte 1
-                data[offsets::MSG_APCI + 1] = (data[offsets::MSG_APCI + 1] & 0xC0) | channel;
-                // Count
-                data[offsets::MSG_APCI + 2] = response_count;
-                // Sum (big-endian)
-                data[offsets::MSG_APCI + 3] = (sum >> 8) as u8;
-                data[offsets::MSG_APCI + 4] = sum as u8;
+            ind.respond_with(msg_buf).with_application(ApciCode::AdcResponse, transport_service).with_data(|buf| {
+                AdcResponse::write(buf, req.channel, response_count, sum);
             });
 
-        debug!("AL sending ADC_Response: channel={}, count={}, sum={}", channel, response_count, sum);
-
+        debug!("AL sending ADC_Response: channel={}, count={}, sum={}", req.channel, response_count, sum);
         outbox.push(msg.into_inner());
     }
 
@@ -1729,44 +1590,34 @@ where
     /// - APDU[4+]: Data (count bytes, if successful)
     fn handle_memory_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::memory::MemoryMap;
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{
+            apdu::memory::{MemoryAccess, MemoryResponse},
+            builder::IndicationExt,
+        };
 
-        // Memory_Read is only valid on connection-oriented transport
         if ind.service_type() != ServiceType::T_Data_Ind {
             warn!("AL Memory_Read rejected: connection-oriented only");
             return;
         }
 
-        // Memory_Read APDU: [APCI:2] [address:2]
-        // Minimum length: MSG_APCI + 4 = 10 bytes
-        const MIN_LEN: usize = offsets::MSG_APCI + 4;
-
-        if ind.len() < MIN_LEN {
-            error!("Memory_Read message too short: {} < {}", ind.len(), MIN_LEN);
+        let Some(acc) = MemoryAccess::parse_read(ind.buf()) else {
+            error!("Memory_Read message too short: {}", ind.len());
             return;
-        }
+        };
 
-        let buf = ind.buf();
-        let count = buf[offsets::MSG_APCI + 1] & 0x3F;
-        let address = u16::from_be_bytes([buf[offsets::MSG_APCI + 2], buf[offsets::MSG_APCI + 3]]);
+        debug!("AL Memory_Read: address=0x{:04X}, count={}", acc.address, acc.count);
 
-        debug!("AL Memory_Read: address=0x{:04X}, count={}", address, count);
-
-        // Read from memory map first to determine response size
-        // Pass access level from the message (set by transport layer from connection state)
         let access_ctx = self.resolve_access(ind);
         let mut data = [0u8; 63]; // Max count is 63 (6 bits)
-        let result = self.memory_map.read(self.state, address, &mut data[..(count as usize)], access_ctx);
+        let result = self.memory_map.read(self.state, acc.address, &mut data[..(acc.count as usize)], access_ctx);
 
         let response_count = match result {
             Ok(bytes_read) => bytes_read as u8,
-            Err(_) => 0, // Error: return count=0
+            Err(_) => 0,
         };
 
-        // Response: APCI(2) + address(2) + data(response_count) = 4 + response_count bytes APDU
-        // On error, response_count is 0 and no data is sent (just APCI + address)
-        let response_len = offsets::MSG_APCI + 4 + (response_count as usize);
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(MemoryResponse::msg_len(response_count as usize))
+        else {
             warn!("AL no buffer for response");
             return;
         };
@@ -1774,21 +1625,11 @@ where
         let msg = ind
             .respond_with(msg_buf)
             .with_application(ApciCode::MemoryReadResponse, ServiceType::T_Data_Req)
-            .with_data(|msg_data| {
-                // Set count in low 6 bits of APCI byte 1
-                msg_data[offsets::MSG_APCI + 1] = (msg_data[offsets::MSG_APCI + 1] & 0xC0) | response_count;
-                // Address (big-endian)
-                msg_data[offsets::MSG_APCI + 2] = (address >> 8) as u8;
-                msg_data[offsets::MSG_APCI + 3] = address as u8;
-                // Copy data if successful
-                if response_count > 0 {
-                    msg_data[offsets::MSG_APCI + 4..offsets::MSG_APCI + 4 + response_count as usize]
-                        .copy_from_slice(&data[..response_count as usize]);
-                }
+            .with_data(|buf| {
+                MemoryResponse::write(buf, response_count, acc.address, &data[..response_count as usize]);
             });
 
-        debug!("AL sending Memory_Response: address=0x{:04X}, count={}", address, response_count);
-
+        debug!("AL sending Memory_Response: address=0x{:04X}, count={}", acc.address, response_count);
         outbox.push(msg.into_inner());
     }
 
@@ -1805,76 +1646,57 @@ where
     /// If the Verify flag is set in DEVICE_CONTROL (PID 14), a Memory_Response is sent.
     fn handle_memory_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::memory::MemoryMap;
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{
+            apdu::memory::{MemoryAccess, MemoryResponse},
+            builder::IndicationExt,
+        };
 
-        // Memory_Write is only valid on connection-oriented transport
         if ind.service_type() != ServiceType::T_Data_Ind {
             warn!("AL Memory_Write rejected: connection-oriented only");
             return;
         }
 
-        // Memory_Write APDU: [APCI:2] [address:2] [data:count]
-        // Minimum length without data: MSG_APCI + 4 = 10 bytes
-        const MIN_LEN: usize = offsets::MSG_APCI + 4;
-
-        if ind.len() < MIN_LEN {
-            error!("Memory_Write message too short: {} < {}", ind.len(), MIN_LEN);
+        let Some(acc) = MemoryAccess::parse_write(ind.buf()) else {
+            error!("Memory_Write message too short: {}", ind.len());
             return;
-        }
+        };
 
-        let buf = ind.buf();
-        let count = buf[offsets::MSG_APCI + 1] & 0x3F;
-        let address = u16::from_be_bytes([buf[offsets::MSG_APCI + 2], buf[offsets::MSG_APCI + 3]]);
-
-        // Verify data length matches count field exactly (length consistency check)
-        let expected_len = offsets::MSG_APCI + 4 + (count as usize);
-        let length_inconsistent = ind.len() != expected_len;
-
+        let length_inconsistent = !acc.is_length_consistent(ind.len());
         if length_inconsistent {
             warn!(
                 "Memory_Write length inconsistency: expected {} bytes, got {} (count={})",
-                expected_len,
+                offsets::MSG_APCI + 4 + acc.count as usize,
                 ind.len(),
-                count
+                acc.count
             );
         }
 
-        let data = &buf[offsets::MSG_APCI + 4..core::cmp::min(ind.len(), offsets::MSG_APCI + 4 + count as usize)];
+        debug!("AL Memory_Write: address=0x{:04X}, count={}", acc.address, acc.count);
 
-        debug!("AL Memory_Write: address=0x{:04X}, count={}", address, count);
-
-        // Get access level from the message (set by transport layer from connection state)
         let access_ctx = self.resolve_access(ind);
 
-        // If length is inconsistent, don't write and respond with count=0
-        // Otherwise, write to memory map
         let response_count = if length_inconsistent {
-            0 // Length inconsistency: response with count=0
+            0
         } else {
-            match self.memory_map.write(self.state, address, data, access_ctx) {
+            match self.memory_map.write(self.state, acc.address, acc.data, access_ctx) {
                 Ok(bytes_written) => {
-                    debug!("AL Memory_Write: wrote {} bytes to 0x{:04X}", bytes_written, address);
+                    debug!("AL Memory_Write: wrote {} bytes to 0x{:04X}", bytes_written, acc.address);
                     self.state.mark_dirty();
                     bytes_written as u8
                 }
                 Err(e) => {
-                    warn!("AL Memory_Write failed: address=0x{:04X}, error={:?}", address, e);
-                    0 // Error: response with count=0
+                    warn!("AL Memory_Write failed: address=0x{:04X}, error={:?}", acc.address, e);
+                    0
                 }
             }
         };
 
-        // Check if Verify flag is set in DEVICE_CONTROL (Object 0, PID 14)
-        // Using the typed accessor from HasDeviceObject trait
         if !self.interface_objects.verify_mode() {
-            // No response when Verify is not enabled
             return;
         }
 
-        // Send Memory_Response with written data (or count=0 on error)
-        // Response: APCI(2) + address(2) + data(response_count) = 4 + response_count bytes APDU
-        let response_len = offsets::MSG_APCI + 4 + (response_count as usize);
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(MemoryResponse::msg_len(response_count as usize))
+        else {
             warn!("AL no buffer for response");
             return;
         };
@@ -1882,21 +1704,11 @@ where
         let msg = ind
             .respond_with(msg_buf)
             .with_application(ApciCode::MemoryReadResponse, ServiceType::T_Data_Req)
-            .with_data(|msg_data| {
-                // Set count in low 6 bits of APCI byte 1
-                msg_data[offsets::MSG_APCI + 1] = (msg_data[offsets::MSG_APCI + 1] & 0xC0) | response_count;
-                // Address (big-endian)
-                msg_data[offsets::MSG_APCI + 2] = (address >> 8) as u8;
-                msg_data[offsets::MSG_APCI + 3] = address as u8;
-                // Copy data if successful
-                if response_count > 0 {
-                    msg_data[offsets::MSG_APCI + 4..offsets::MSG_APCI + 4 + response_count as usize]
-                        .copy_from_slice(data);
-                }
+            .with_data(|buf| {
+                MemoryResponse::write(buf, response_count, acc.address, acc.data);
             });
 
-        debug!("AL sending Memory_Response (verify): address=0x{:04X}, count={}", address, response_count);
-
+        debug!("AL sending Memory_Response (verify): address=0x{:04X}, count={}", acc.address, response_count);
         outbox.push(msg.into_inner());
     }
 
@@ -1919,93 +1731,74 @@ where
     /// Legal length: count must be 1-5 bytes
     fn handle_memorybit_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::memory::MemoryMap;
+        use crate::messages::apdu::memory::MemoryBitWrite;
 
-        // MemoryBit_Write is only valid on connection-oriented transport
         if ind.service_type() != ServiceType::T_Data_Ind {
             warn!("AL MemoryBit_Write rejected: connection-oriented only");
             return;
         }
 
-        // MemoryBit_Write APDU: [APCI:2] [address:2] [AND_masks:count] [XOR_masks:count]
-        // Minimum length with count=1: MSG_APCI + 4 + 1 + 1 = 12 bytes
-        const MIN_LEN: usize = offsets::MSG_APCI + 6;
+        let Some(mbw) = MemoryBitWrite::parse(ind.buf()) else {
+            error!("MemoryBit_Write message too short: {}", ind.len());
+            return;
+        };
 
-        if ind.len() < MIN_LEN {
-            error!("MemoryBit_Write message too short: {} < {}", ind.len(), MIN_LEN);
+        if !mbw.is_count_legal() {
+            warn!("MemoryBit_Write illegal count: {}", mbw.count);
+            self.send_memorybit_response(ind, mbw.address, 0, &[], outbox);
             return;
         }
 
-        let buf = ind.buf();
-        // For MemoryBit_Write with extended APCI 0x1D0:
-        // Format: [APCI:2] [count:1] [address:2] [AND_masks:count] [XOR_masks:count]
-        // The count is at MSG_APCI+2 (first byte after the 2-byte APCI field)
-        let count = buf[offsets::MSG_APCI + 2] & 0x0F; // Only low 4 bits for count
-        let address = u16::from_be_bytes([buf[offsets::MSG_APCI + 3], buf[offsets::MSG_APCI + 4]]);
-
-        // Legal count is 1-5 bytes
-        if count == 0 || count > 5 {
-            warn!("MemoryBit_Write illegal count: {} (APCI+1={:02X})", count, buf[offsets::MSG_APCI + 1]);
-            // Respond with count=0 on illegal length
-            self.send_memorybit_response(ind, address, 0, &[], outbox);
-            return;
-        }
-
-        // Verify data length: need 2 (APCI) + 1 (count) + 2 (address) + count (AND) + count (XOR) bytes
-        let expected_len = offsets::MSG_APCI + 5 + (count as usize) * 2;
+        // Verify total message length matches expected
+        let expected_len = MemoryBitWrite::expected_msg_len(mbw.count as usize);
         if ind.len() != expected_len {
             warn!(
                 "MemoryBit_Write length mismatch: expected {} bytes, got {} (count={})",
                 expected_len,
                 ind.len(),
-                count
+                mbw.count
             );
-            // Respond with count=0 on length mismatch
-            self.send_memorybit_response(ind, address, 0, &[], outbox);
+            self.send_memorybit_response(ind, mbw.address, 0, &[], outbox);
             return;
         }
 
-        debug!("AL MemoryBit_Write: address=0x{:04X}, count={}", address, count);
+        debug!("AL MemoryBit_Write: address=0x{:04X}, count={}", mbw.address, mbw.count);
 
-        // AND masks start after APCI (2 bytes) + count (1 byte) + address (2 bytes) = MSG_APCI + 5
-        let and_masks = &buf[offsets::MSG_APCI + 5..offsets::MSG_APCI + 5 + count as usize];
-        // XOR masks follow AND masks
-        let xor_masks = &buf[offsets::MSG_APCI + 5 + count as usize..offsets::MSG_APCI + 5 + 2 * count as usize];
-
-        // Get access level from the message
         let access_ctx = self.resolve_access(ind);
 
         // Read current memory values
-        let mut current_data = [0u8; 5]; // Max 5 bytes
-        let read_count = current_data[..count as usize].len();
-
-        let read_result = self.memory_map.read(self.state, address, &mut current_data[..read_count], access_ctx);
+        let mut current_data = [0u8; 5];
+        let read_result =
+            self.memory_map.read(self.state, mbw.address, &mut current_data[..mbw.count as usize], access_ctx);
 
         match read_result {
             Ok(_) => {
                 // Apply bit manipulation: new = (old AND and_mask) XOR xor_mask
                 let mut new_data = [0u8; 5];
-                for i in 0..count as usize {
-                    new_data[i] = (current_data[i] & and_masks[i]) ^ xor_masks[i];
+                for i in 0..mbw.count as usize {
+                    new_data[i] = (current_data[i] & mbw.and_masks[i]) ^ mbw.xor_masks[i];
                 }
 
-                // Write back the modified data
-                match self.memory_map.write(self.state, address, &new_data[..count as usize], access_ctx) {
+                match self.memory_map.write(self.state, mbw.address, &new_data[..mbw.count as usize], access_ctx) {
                     Ok(_) => {
-                        debug!("AL MemoryBit_Write: wrote {} bytes to 0x{:04X}", count, address);
-                        // Check if Verify is enabled - if so, send response with new data
-                        self.send_memorybit_response(ind, address, count, &new_data[..count as usize], outbox);
+                        debug!("AL MemoryBit_Write: wrote {} bytes to 0x{:04X}", mbw.count, mbw.address);
+                        self.send_memorybit_response(
+                            ind,
+                            mbw.address,
+                            mbw.count,
+                            &new_data[..mbw.count as usize],
+                            outbox,
+                        );
                     }
                     Err(e) => {
-                        warn!("AL MemoryBit_Write write failed: address=0x{:04X}, error={:?}", address, e);
-                        // Respond with count=0 on write error
-                        self.send_memorybit_response(ind, address, 0, &[], outbox);
+                        warn!("AL MemoryBit_Write write failed: address=0x{:04X}, error={:?}", mbw.address, e);
+                        self.send_memorybit_response(ind, mbw.address, 0, &[], outbox);
                     }
                 }
             }
             Err(e) => {
-                warn!("AL MemoryBit_Write read failed: address=0x{:04X}, error={:?}", address, e);
-                // Respond with count=0 on read error
-                self.send_memorybit_response(ind, address, 0, &[], outbox);
+                warn!("AL MemoryBit_Write read failed: address=0x{:04X}, error={:?}", mbw.address, e);
+                self.send_memorybit_response(ind, mbw.address, 0, &[], outbox);
             }
         }
     }
@@ -2022,20 +1815,13 @@ where
         data: &[u8],
         outbox: &mut Outbox,
     ) {
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{apdu::memory::MemoryResponse, builder::IndicationExt};
 
-        // Check if Verify flag is set in DEVICE_CONTROL (Object 0, PID 14)
-        // Using the typed accessor from HasDeviceObject trait
         if !self.interface_objects.verify_mode() {
-            // No response when Verify is not enabled
             return;
         }
 
-        // Send A_Memory_Response (same format as response to A_Memory_Read)
-        // Response format: [APCI:2 with count in low 4 bits of byte 1] [address:2] [data:count]
-        // The count is embedded in the APCI code (0x140 | count), same as A_Memory_Response
-        let response_len = offsets::MSG_APCI + 4 + (count as usize);
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(MemoryResponse::msg_len(count as usize)) else {
             warn!("AL no buffer for response");
             return;
         };
@@ -2043,24 +1829,11 @@ where
         let msg = ind
             .respond_with(msg_buf)
             .with_application(ApciCode::MemoryReadResponse, ServiceType::T_Data_Req)
-            .with_data(|msg_data| {
-                // Override the APCI encoding - A_Memory_Response has count embedded
-                // APCI 0x140 with count in bits 0-3 spans across MSG_APCI and MSG_APCI+1
-                // MSG_APCI bits 1-0 contain upper bits of APCI (should be 10 = 2 for 0x140)
-                // MSG_APCI+1 contains 0x40 | count
-                msg_data[offsets::MSG_APCI] = (msg_data[offsets::MSG_APCI] & 0xFC) | 2;
-                msg_data[offsets::MSG_APCI + 1] = 0x40 | (count & 0x0F);
-                // Address (big-endian)
-                msg_data[offsets::MSG_APCI + 2] = (address >> 8) as u8;
-                msg_data[offsets::MSG_APCI + 3] = address as u8;
-                // Copy data if count > 0
-                if count > 0 {
-                    msg_data[offsets::MSG_APCI + 4..offsets::MSG_APCI + 4 + count as usize].copy_from_slice(data);
-                }
+            .with_data(|buf| {
+                MemoryResponse::write(buf, count, address, data);
             });
 
         debug!("AL sending A_Memory_Response (for MemoryBit_Write): address=0x{:04X}, count={}", address, count);
-
         outbox.push(msg.into_inner());
     }
 
@@ -2084,50 +1857,36 @@ where
     /// - APDU[5+]: Data (count bytes, if successful)
     fn handle_user_memory_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::memory::MemoryMap;
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{
+            apdu::memory::{UserMemoryAccess, UserMemoryResponse},
+            builder::IndicationExt,
+        };
 
-        // UserMemory_Read is only valid on connection-oriented transport
         if ind.service_type() != ServiceType::T_Data_Ind {
             warn!("AL UserMemory_Read rejected: connection-oriented only");
             return;
         }
 
-        // UserMemory_Read APDU: [APCI:2] [count:1] [address:2]
-        // Minimum length: MSG_APCI + 5 = 11 bytes
-        const MIN_LEN: usize = offsets::MSG_APCI + 5;
-
-        if ind.len() < MIN_LEN {
-            error!("UserMemory_Read message too short: {} < {}", ind.len(), MIN_LEN);
+        let Some(acc) = UserMemoryAccess::parse_read(ind.buf()) else {
+            error!("UserMemory_Read message too short: {}", ind.len());
             return;
-        }
+        };
 
-        let buf = ind.buf();
-        // Address extension is in bits 3-2 of the second APCI byte (bits 1-0 = sub-type)
-        let addr_ext = ((buf[offsets::MSG_APCI + 1] >> 2) & 0x03) as u32;
-        let count = buf[offsets::MSG_APCI + 2];
-        let address_low = u16::from_be_bytes([buf[offsets::MSG_APCI + 3], buf[offsets::MSG_APCI + 4]]);
-        // Full 18-bit address = (addr_ext << 16) | address_low
-        let full_address = (addr_ext << 16) | (address_low as u32);
+        debug!("AL UserMemory_Read: address=0x{:05X}, count={}", acc.full_address(), acc.count);
 
-        debug!("AL UserMemory_Read: address=0x{:05X}, count={}", full_address, count);
-
-        // Read from memory map first to determine response size
-        // Pass access level from the message (set by transport layer from connection state)
         let access_ctx = self.resolve_access(ind);
-        let mut data = [0u8; 255]; // Max count is 255 (8 bits)
-        let max_read = core::cmp::min(count as usize, data.len());
-        // UserMemory uses 16-bit address for the memory map interface (address extension is for user address space)
-        let result = self.memory_map.read(self.state, address_low, &mut data[..max_read], access_ctx);
+        let mut data = [0u8; 255];
+        let max_read = core::cmp::min(acc.count as usize, data.len());
+        let result = self.memory_map.read(self.state, acc.address_low, &mut data[..max_read], access_ctx);
 
         let response_count = match result {
             Ok(bytes_read) => bytes_read as u8,
-            Err(_) => 0, // Error: return count=0
+            Err(_) => 0,
         };
 
-        // Response: APCI(2) + count(1) + address(2) + data(response_count) = 5 + response_count bytes APDU
-        // On error, response_count is 0 and no data is sent (just APCI + count + address)
-        let response_len = offsets::MSG_APCI + 5 + (response_count as usize);
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+        let Some(msg_buf) =
+            self.buffer_manager.try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
+        else {
             warn!("AL no buffer for response");
             return;
         };
@@ -2135,24 +1894,17 @@ where
         let msg = ind
             .respond_with(msg_buf)
             .with_application(ApciCode::UserMemoryResponse, ServiceType::T_Data_Req)
-            .with_data(|msg_data| {
-                // Address extension goes in bits 3-2 of APCI byte 1 (bits 1-0 contain sub-type Read/Response/Write)
-                msg_data[offsets::MSG_APCI + 1] =
-                    (msg_data[offsets::MSG_APCI + 1] & 0xF3) | ((addr_ext as u8 & 0x03) << 2);
-                // Count
-                msg_data[offsets::MSG_APCI + 2] = response_count;
-                // Address (big-endian)
-                msg_data[offsets::MSG_APCI + 3] = (address_low >> 8) as u8;
-                msg_data[offsets::MSG_APCI + 4] = address_low as u8;
-                // Copy data if successful
-                if response_count > 0 {
-                    msg_data[offsets::MSG_APCI + 5..offsets::MSG_APCI + 5 + response_count as usize]
-                        .copy_from_slice(&data[..response_count as usize]);
-                }
+            .with_data(|buf| {
+                UserMemoryResponse::write(
+                    buf,
+                    acc.addr_ext,
+                    response_count,
+                    acc.address_low,
+                    &data[..response_count as usize],
+                );
             });
 
-        debug!("AL sending UserMemory_Response: address=0x{:05X}, count={}", full_address, response_count);
-
+        debug!("AL sending UserMemory_Response: address=0x{:05X}, count={}", acc.full_address(), response_count);
         outbox.push(msg.into_inner());
     }
 
@@ -2172,80 +1924,58 @@ where
     /// If the Verify flag is set in DEVICE_CONTROL (PID 14), a UserMemory_Response is sent.
     fn handle_user_memory_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::memory::MemoryMap;
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{
+            apdu::memory::{UserMemoryAccess, UserMemoryResponse},
+            builder::IndicationExt,
+        };
 
-        // UserMemory_Write is only valid on connection-oriented transport
         if ind.service_type() != ServiceType::T_Data_Ind {
             warn!("AL UserMemory_Write rejected: connection-oriented only");
             return;
         }
 
-        // UserMemory_Write APDU: [APCI:2] [count:1] [address:2] [data:count]
-        // Minimum length without data: MSG_APCI + 5 = 11 bytes
-        const MIN_LEN: usize = offsets::MSG_APCI + 5;
-
-        if ind.len() < MIN_LEN {
-            error!("UserMemory_Write message too short: {} < {}", ind.len(), MIN_LEN);
+        let Some(acc) = UserMemoryAccess::parse_write(ind.buf()) else {
+            error!("UserMemory_Write message too short: {}", ind.len());
             return;
-        }
+        };
 
-        let buf = ind.buf();
-        // Address extension is in bits 3-2 of the second APCI byte (bits 1-0 = sub-type)
-        let addr_ext = ((buf[offsets::MSG_APCI + 1] >> 2) & 0x03) as u32;
-        let count = buf[offsets::MSG_APCI + 2];
-        let address_low = u16::from_be_bytes([buf[offsets::MSG_APCI + 3], buf[offsets::MSG_APCI + 4]]);
-        // Full 18-bit address = (addr_ext << 16) | address_low
-        let full_address = (addr_ext << 16) | (address_low as u32);
-
-        // Verify data length matches count field exactly (length consistency check)
-        let expected_len = offsets::MSG_APCI + 5 + (count as usize);
-        let length_inconsistent = ind.len() != expected_len;
-
+        let length_inconsistent = !acc.is_length_consistent(ind.len());
         if length_inconsistent {
             warn!(
                 "UserMemory_Write length inconsistency: expected {} bytes, got {} (count={})",
-                expected_len,
+                offsets::MSG_APCI + 5 + acc.count as usize,
                 ind.len(),
-                count
+                acc.count
             );
         }
 
-        let data = &buf[offsets::MSG_APCI + 5..core::cmp::min(ind.len(), offsets::MSG_APCI + 5 + count as usize)];
+        debug!("AL UserMemory_Write: address=0x{:05X}, count={}", acc.full_address(), acc.count);
 
-        debug!("AL UserMemory_Write: address=0x{:05X}, count={}", full_address, count);
-
-        // Get access level from the message (set by transport layer from connection state)
         let access_ctx = self.resolve_access(ind);
 
-        // If length is inconsistent, don't write and respond with count=0
-        // Otherwise, write to memory map
         let response_count = if length_inconsistent {
-            0 // Length inconsistency: response with count=0
+            0
         } else {
-            match self.memory_map.write(self.state, address_low, data, access_ctx) {
+            match self.memory_map.write(self.state, acc.address_low, acc.data, access_ctx) {
                 Ok(bytes_written) => {
-                    debug!("AL UserMemory_Write: wrote {} bytes to 0x{:05X}", bytes_written, full_address);
+                    debug!("AL UserMemory_Write: wrote {} bytes to 0x{:05X}", bytes_written, acc.full_address());
                     self.state.mark_dirty();
                     bytes_written as u8
                 }
                 Err(e) => {
-                    warn!("AL UserMemory_Write failed: address=0x{:05X}, error={:?}", full_address, e);
-                    0 // Error: response with count=0
+                    warn!("AL UserMemory_Write failed: address=0x{:05X}, error={:?}", acc.full_address(), e);
+                    0
                 }
             }
         };
 
-        // Check if Verify flag is set in DEVICE_CONTROL (Object 0, PID 14)
-        // Using the typed accessor from HasDeviceObject trait
         if !self.interface_objects.verify_mode() {
-            // No response when Verify is not enabled
             return;
         }
 
-        // Send UserMemory_Response with written data (or count=0 on error)
-        // Response: APCI(2) + count(1) + address(2) + data(response_count) = 5 + response_count bytes APDU
-        let response_len = offsets::MSG_APCI + 5 + (response_count as usize);
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+        let Some(msg_buf) =
+            self.buffer_manager.try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
+        else {
             warn!("AL no buffer for response");
             return;
         };
@@ -2253,24 +1983,15 @@ where
         let msg = ind
             .respond_with(msg_buf)
             .with_application(ApciCode::UserMemoryResponse, ServiceType::T_Data_Req)
-            .with_data(|msg_data| {
-                // Address extension goes in bits 3-2 of APCI byte 1 (bits 1-0 contain sub-type Read/Response/Write)
-                msg_data[offsets::MSG_APCI + 1] =
-                    (msg_data[offsets::MSG_APCI + 1] & 0xF3) | ((addr_ext as u8 & 0x03) << 2);
-                // Count
-                msg_data[offsets::MSG_APCI + 2] = response_count;
-                // Address (big-endian)
-                msg_data[offsets::MSG_APCI + 3] = (address_low >> 8) as u8;
-                msg_data[offsets::MSG_APCI + 4] = address_low as u8;
-                // Copy data if successful
-                if response_count > 0 {
-                    msg_data[offsets::MSG_APCI + 5..offsets::MSG_APCI + 5 + response_count as usize]
-                        .copy_from_slice(data);
-                }
+            .with_data(|buf| {
+                UserMemoryResponse::write(buf, acc.addr_ext, response_count, acc.address_low, acc.data);
             });
 
-        debug!("AL sending UserMemory_Response (verify): address=0x{:05X}, count={}", full_address, response_count);
-
+        debug!(
+            "AL sending UserMemory_Response (verify): address=0x{:05X}, count={}",
+            acc.full_address(),
+            response_count
+        );
         outbox.push(msg.into_inner());
     }
 
@@ -2337,32 +2058,21 @@ where
     /// - APDU[0-1]: APCI (0x03D2 - Authorize_Response)
     /// - APDU[2]: Access level (0 = max access, 3 or 15 = min access)
     fn handle_authorize_request(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{
+            apdu::auth::{AuthorizeRequest, AuthorizeResponse},
+            builder::IndicationExt,
+        };
 
-        // Authorize_Request APDU: [APCI:2][Reserved:1][Key:4] = 7 bytes
-        const EXPECTED_LEN: usize = offsets::MSG_APCI + 7;
-
-        if ind.len() < EXPECTED_LEN {
-            error!("Authorize_Request message too short: {} < {}", ind.len(), EXPECTED_LEN);
+        let Some(req) = AuthorizeRequest::parse(ind.buf()) else {
+            error!("Authorize_Request message too short: {}", ind.len());
             return;
-        }
+        };
 
-        let buf = ind.buf();
-        let key: [u8; 4] = [
-            buf[offsets::MSG_APCI + 3],
-            buf[offsets::MSG_APCI + 4],
-            buf[offsets::MSG_APCI + 5],
-            buf[offsets::MSG_APCI + 6],
-        ];
+        debug!("AL Authorize_Request: key={:?}", crate::fmt::Bytes(&req.key));
 
-        debug!("AL Authorize_Request: key={:?}", crate::fmt::Bytes(&key));
-
-        // Authorize with the key - returns the access level for this key
-        let access_level = self.state.authorize(&key);
-
+        let access_level = self.state.authorize(&req.key);
         debug!("AL Authorize_Request: granted level {}", access_level);
 
-        // Authorize is only valid on connection-oriented transport
         if ind.service_type() != ServiceType::T_Data_Ind {
             warn!("AL Authorize_Request rejected: connection-oriented only");
             return;
@@ -2374,23 +2084,19 @@ where
             self.state.set_connection_access(slot, AccessContext::new(access_level));
         }
 
-        let transport_service = ServiceType::T_Data_Req;
-
-        // Response: APCI(2) + Level(1) = 3 bytes
-        const RESPONSE_LEN: usize = offsets::MSG_APCI + 3;
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(AuthorizeResponse::MSG_LEN) else {
             warn!("AL no buffer for response");
             return;
         };
 
-        let msg = ind.respond_with(msg_buf).with_application(ApciCode::AuthorizeResponse, transport_service).with_data(
-            |data| {
-                data[offsets::MSG_APCI + 2] = access_level;
-            },
-        );
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::AuthorizeResponse, ServiceType::T_Data_Req)
+            .with_data(|buf| {
+                AuthorizeResponse::write(buf, access_level);
+            });
 
         debug!("AL sending Authorize_Response: level={}", access_level);
-
         outbox.push(msg.into_inner());
     }
 
@@ -2407,55 +2113,44 @@ where
     /// - APDU[0-1]: APCI (0x03D4 - Key_Response)
     /// - APDU[2]: Access level (or 0xFF on error)
     fn handle_key_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{
+            apdu::auth::{KeyResponse, KeyWrite},
+            builder::IndicationExt,
+        };
 
-        // Key_Write APDU: [APCI:2][Level:1][Key:4] = 7 bytes
-        const EXPECTED_LEN: usize = offsets::MSG_APCI + 7;
-
-        if ind.len() < EXPECTED_LEN {
-            error!("Key_Write message too short: {} < {}", ind.len(), EXPECTED_LEN);
+        let Some(req) = KeyWrite::parse(ind.buf()) else {
+            error!("Key_Write message too short: {}", ind.len());
             return;
-        }
+        };
 
-        let buf = ind.buf();
-        let level = buf[offsets::MSG_APCI + 2];
-        let key: [u8; 4] = [
-            buf[offsets::MSG_APCI + 3],
-            buf[offsets::MSG_APCI + 4],
-            buf[offsets::MSG_APCI + 5],
-            buf[offsets::MSG_APCI + 6],
-        ];
-
-        // Get current access context from the message (set by transport layer from connection)
         let current_ctx = self.resolve_access(ind);
-        debug!("AL Key_Write: level={}, key={:?}, current_ctx={:?}", level, crate::fmt::Bytes(&key), current_ctx);
+        debug!(
+            "AL Key_Write: level={}, key={:?}, current_ctx={:?}",
+            req.level,
+            crate::fmt::Bytes(&req.key),
+            current_ctx
+        );
 
-        // Perform the key write
-        let result_level = self.state.key_write(level, &key, current_ctx);
-
+        let result_level = self.state.key_write(req.level, &req.key, current_ctx);
         debug!("AL Key_Write: result={}", result_level);
 
-        // Key_Write is only valid on connection-oriented transport
         if ind.service_type() != ServiceType::T_Data_Ind {
             warn!("AL Key_Write rejected: connection-oriented only");
             return;
         }
-        let transport_service = ServiceType::T_Data_Req;
 
-        // Response: APCI(2) + Level(1) = 3 bytes
-        const RESPONSE_LEN: usize = offsets::MSG_APCI + 3;
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(KeyResponse::MSG_LEN) else {
             warn!("AL no buffer for response");
             return;
         };
 
-        let msg =
-            ind.respond_with(msg_buf).with_application(ApciCode::KeyResponse, transport_service).with_data(|data| {
-                data[offsets::MSG_APCI + 2] = result_level;
-            });
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::KeyResponse, ServiceType::T_Data_Req).with_data(
+            |buf| {
+                KeyResponse::write(buf, result_level);
+            },
+        );
 
         debug!("AL sending Key_Response: level={}", result_level);
-
         outbox.push(msg.into_inner());
     }
 
@@ -2470,25 +2165,16 @@ where
     ///
     /// Response (for master reset): APDU[0-1] = APCI (0x03A1), APDU[2] = error, APDU[3-4] = process_time
     fn handle_restart(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-        let buf = ind.buf();
-        let len = ind.len();
+        use crate::messages::apdu::restart::RestartParsed;
 
-        // Determine restart type from APCI low bits
-        // Basic restart: 0x0380 (bit 0 = 0)
-        // Master reset:  0x0381 (bit 0 = 1)
-        let is_master_reset = (len > offsets::MSG_APCI + 1) && (buf[offsets::MSG_APCI + 1] & 0x01) == 1;
+        let Some(parsed) = RestartParsed::parse(ind.buf()) else {
+            warn!("AL Restart message too short: {}", ind.len());
+            return;
+        };
 
-        let (erase_code, channel, needs_response) = if is_master_reset {
-            // Master reset: APCI[0-1] + EraseCode + Channel = at least 4 bytes from APCI
-            if len < offsets::MSG_APCI + 4 {
-                warn!("AL Restart (master reset) message too short: {}", len);
-                return;
-            }
-            let code = EraseCode::from(buf[offsets::MSG_APCI + 2]);
-            let ch = buf[offsets::MSG_APCI + 3];
-            (code, ch, true)
+        let (erase_code, channel, needs_response) = if parsed.is_master_reset {
+            (EraseCode::from(parsed.erase_code), parsed.channel, true)
         } else {
-            // Basic restart: no payload, no response
             (EraseCode::Basic, 0, false)
         };
 
@@ -2498,7 +2184,6 @@ where
             erase_code, channel, needs_response, restart_ctx
         );
 
-        // Check for unknown erase code (Other variant from create_protocol_enum!)
         if matches!(erase_code, EraseCode::Other(_)) {
             warn!("AL Restart: unsupported erase code {:?}", erase_code);
             if needs_response {
@@ -2507,7 +2192,6 @@ where
             return;
         }
 
-        // Validate channel number. Only channel 0 is supported.
         if channel != 0 {
             warn!("AL Restart: invalid channel number {}", channel);
             if needs_response {
@@ -2516,12 +2200,9 @@ where
             return;
         }
 
-        // For master reset operations (not basic/confirmed), check access level.
-        // Basic and Confirmed restart can be done by anyone, but other erase codes
-        // typically require higher access (level 0).
         let required_level = match erase_code {
-            EraseCode::Basic | EraseCode::Confirmed => 3, // Anyone
-            _ => 0,                                       // System access required for other erase codes
+            EraseCode::Basic | EraseCode::Confirmed => 3,
+            _ => 0,
         };
 
         if !restart_ctx.has_level(required_level) {
@@ -2532,15 +2213,10 @@ where
             return;
         }
 
-        // Send restart request to user code (fire-and-forget in synchronous model)
         let request = RestartRequest { erase_code, channel, access_ctx: restart_ctx, needs_response };
-
         debug!("AL Restart: sending request to user code");
         self.restart_sender.try_send(request).ok();
 
-        // In the synchronous router model we cannot await the restart response.
-        // The restart handler in user code will process it asynchronously.
-        // For master reset, send a default success response immediately.
         if needs_response {
             self.send_restart_response(ind, RestartError::NoError, 0, outbox);
         }
@@ -2554,39 +2230,24 @@ where
         process_time_100ms: u16,
         outbox: &mut Outbox,
     ) {
-        use crate::messages::builder::IndicationExt;
+        use crate::messages::{apdu::restart::RestartResponse, builder::IndicationExt};
 
-        // Determine transport service based on incoming service type.
-        // Connection-oriented data arrives as T_Data_Ind, connectionless
-        // individual data as T_DataUnack_Ind, and broadcast as T_Broadcast_Ind.
         let transport_service = match ind.service_type() {
             ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
             ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
             _ => ServiceType::T_Broadcast_Req,
         };
 
-        // Response: APCI(2) + Error(1) + ProcessTime(2) = 5 bytes total APDU
-        const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RestartResponse::MSG_LEN) else {
             warn!("AL no buffer for response");
             return;
         };
 
-        // Build response using Restart APCI as base, then modify the APCI bytes in with_data
-        // to set the correct A_Restart_Response format: 0x03 0xA1
-        let msg = ind.respond_with(msg_buf).with_application(ApciCode::Restart, transport_service).with_data(|data| {
-            // Manually set APCI bytes for A_Restart_Response: 0x03 0xA1
-            // The first byte (0x03) encodes the APCI high bits
-            // The second byte (0xA1) encodes: bit 7=1 (response), bits 0-5 = channel info
-            data[offsets::MSG_APDU] = 0x03;
-            data[offsets::MSG_APCI + 1] = 0xA1;
-            data[offsets::MSG_APCI + 2] = error.into();
-            data[offsets::MSG_APCI + 3] = (process_time_100ms >> 8) as u8;
-            data[offsets::MSG_APCI + 4] = process_time_100ms as u8;
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::Restart, transport_service).with_data(|buf| {
+            RestartResponse::write(buf, error.into(), process_time_100ms);
         });
 
         debug!("AL sending Restart_Response: error={}, process_time={}ms", error, process_time_100ms as u32 * 100);
-
         outbox.push(msg.into_inner());
     }
 }

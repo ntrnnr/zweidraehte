@@ -1,3 +1,4 @@
+pub mod apdu;
 pub mod buffers;
 pub mod builder;
 pub mod error;
