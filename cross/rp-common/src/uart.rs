@@ -43,6 +43,45 @@ use embassy_rp::uart::{Blocking, Instance, Uart};
 use embassy_sync::waitqueue::AtomicWaker;
 
 // ================================================================================
+// UART Receive Errors
+// ================================================================================
+
+/// UART receive error detected by the PL011 hardware.
+///
+/// The PL011 DR register reports per-byte error flags alongside each received
+/// data byte. When any of these are set, the byte is corrupted and is not
+/// delivered to the reader — the ISR drops it and signals the error via an
+/// atomic flag that [`DirectUartRx::read()`] checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum UartError {
+    /// Framing error: stop bit was invalid.
+    Framing,
+    /// Parity error: parity mismatch.
+    Parity,
+    /// Break condition: line held low for a full character time.
+    Break,
+    /// Overrun: data was lost (ring buffer full or HW holding register
+    /// overwritten before the ISR read it).
+    Overrun,
+}
+
+impl embedded_io_async::Error for UartError {
+    fn kind(&self) -> embedded_io_async::ErrorKind {
+        embedded_io_async::ErrorKind::Other
+    }
+}
+
+// ISR → task error signaling via atomic flag. Only one error is tracked
+// at a time; consecutive errors before the task wakes overwrite each other.
+// The state machine treats all error types identically (frame invalidation),
+// so losing intermediate error types is harmless.
+const RX_ERR_NONE: u8 = 0;
+const RX_ERR_FRAMING: u8 = 1;
+const RX_ERR_PARITY: u8 = 2;
+const RX_ERR_BREAK: u8 = 3;
+const RX_ERR_OVERRUN: u8 = 4;
+
+// ================================================================================
 // RP2040 Atomic Register Aliases
 // ================================================================================
 
@@ -110,6 +149,11 @@ struct State {
     tx_waker: AtomicWaker,
     rx_ring: RingBuffer,
     rx_overrun: portable_atomic::AtomicU32,
+    /// Per-byte error flag set by the ISR when FE/PE/BE/OE is detected.
+    /// The corrupted byte is dropped (not pushed into the ring buffer).
+    /// The reader returns `Err(UartError)` when this is nonzero and the
+    /// ring buffer is empty.
+    rx_error: portable_atomic::AtomicU8,
     /// Backing storage for `rx_ring`. Embedded here so that the ring
     /// buffer and its backing memory share the same `'static` lifetime,
     /// eliminating the need for separate `static mut` buffers.
@@ -128,6 +172,7 @@ impl State {
             tx_waker: AtomicWaker::new(),
             rx_ring: RingBuffer::new(),
             rx_overrun: portable_atomic::AtomicU32::new(0),
+            rx_error: portable_atomic::AtomicU8::new(RX_ERR_NONE),
             rx_buf: UnsafeCell::new([0; RX_BUF_SIZE]),
         }
     }
@@ -216,10 +261,22 @@ impl<T: DirectUartInstance> embassy_rp::interrupt::typelevel::Handler<T::Interru
 
                 while !r.uartfr().read().rxfe() {
                     let dr = r.uartdr().read();
-                    if !writer.push_one(dr.data()) {
-                        // Ring buffer full — count the dropped byte.
-                        // Logged at task level in DirectUartRx::read().
+
+                    // The PL011 DR register carries per-byte error flags
+                    // alongside the data. A byte with FE/PE/BE is corrupted
+                    // and useless — drop it and signal the error to the
+                    // reader via the atomic flag. Break subsumes framing
+                    // (a break IS a framing error), so check it first.
+                    if dr.be() {
+                        state.rx_error.store(RX_ERR_BREAK, Ordering::Release);
+                    } else if dr.pe() {
+                        state.rx_error.store(RX_ERR_PARITY, Ordering::Release);
+                    } else if dr.fe() {
+                        state.rx_error.store(RX_ERR_FRAMING, Ordering::Release);
+                    } else if !writer.push_one(dr.data()) {
+                        // Ring buffer full — byte dropped.
                         state.rx_overrun.fetch_add(1, Ordering::Relaxed);
+                        state.rx_error.store(RX_ERR_OVERRUN, Ordering::Release);
                     }
 
                     // HW overrun: a byte was lost before we got the IRQ.
@@ -227,6 +284,7 @@ impl<T: DirectUartInstance> embassy_rp::interrupt::typelevel::Handler<T::Interru
                     // extends ISR time and cascades into more overruns.
                     if dr.oe() {
                         state.rx_overrun.fetch_add(1, Ordering::Relaxed);
+                        state.rx_error.store(RX_ERR_OVERRUN, Ordering::Release);
                     }
                 }
             }
@@ -426,7 +484,7 @@ pub struct DirectUartRx {
 unsafe impl Send for DirectUartRx {}
 
 impl embedded_io_async::ErrorType for DirectUartRx {
-    type Error = core::convert::Infallible;
+    type Error = UartError;
 }
 
 impl embedded_io_async::Read for DirectUartRx {
@@ -438,13 +496,10 @@ impl embedded_io_async::Read for DirectUartRx {
         poll_fn(|cx| {
             let state = self.state;
 
-            // Check for overruns since last read.
-            let overruns = state.rx_overrun.swap(0, Ordering::Relaxed);
-            if overruns > 0 {
-                warn!("UART RX: {} byte(s) lost to overrun", overruns);
-            }
-
-            // Drain available bytes from the ISR ring buffer.
+            // Drain available bytes from the ISR ring buffer first.
+            // If there are buffered bytes, return them even if an error
+            // flag is set — the error byte was dropped by the ISR, so
+            // the buffered bytes precede it and should be delivered.
             let mut reader = unsafe { state.rx_ring.reader() };
             let n = reader.pop(|ring_buf| {
                 let n = ring_buf.len().min(buf.len());
@@ -453,15 +508,38 @@ impl embedded_io_async::Read for DirectUartRx {
             });
 
             if n > 0 {
-                Poll::Ready(Ok(n))
-            } else {
-                state.rx_waker.register(cx.waker());
-                // Re-check after registering waker to avoid missed wakeup.
-                if !state.rx_ring.is_empty() {
-                    cx.waker().wake_by_ref();
-                }
-                Poll::Pending
+                return Poll::Ready(Ok(n));
             }
+
+            // Ring buffer empty — check for a pending error from the ISR.
+            let err = state.rx_error.swap(RX_ERR_NONE, Ordering::Acquire);
+            if err != RX_ERR_NONE {
+                // Log accumulated overrun count for diagnostics.
+                let overruns = state.rx_overrun.swap(0, Ordering::Relaxed);
+                if overruns > 0 {
+                    warn!("UART RX: {} byte(s) lost to overrun", overruns);
+                }
+
+                let error = match err {
+                    RX_ERR_FRAMING => UartError::Framing,
+                    RX_ERR_PARITY => UartError::Parity,
+                    RX_ERR_BREAK => UartError::Break,
+                    _ => UartError::Overrun,
+                };
+                return Poll::Ready(Err(error));
+            }
+
+            // Nothing available — register waker and wait.
+            state.rx_waker.register(cx.waker());
+
+            // Re-check after registering waker to avoid missed wakeup.
+            if !state.rx_ring.is_empty() {
+                cx.waker().wake_by_ref();
+            }
+            if state.rx_error.load(Ordering::Acquire) != RX_ERR_NONE {
+                cx.waker().wake_by_ref();
+            }
+            Poll::Pending
         })
         .await
     }
