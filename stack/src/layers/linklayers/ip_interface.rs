@@ -405,10 +405,13 @@ async fn bridge_loop<'a>(
 
 /// Convert an internal-format indication to cEMI for tunnel forwarding.
 ///
-/// Allocates a new buffer (with default headroom for the `grow_front(3)`
-/// inside `into_cemi()`), copies the internal data, converts in-place,
-/// and returns the raw cEMI buffer. Returns `None` if no free buffers
-/// are available.
+/// A separate buffer copy is necessary here because the original indication
+/// buffer is consumed by `ind_tx.send()` (network layer) while the cEMI
+/// copy goes to the KNX/IP runtime (different async task) via
+/// `subnet_ind_tx`. Non-blocking allocation (`try_alloc`) ensures buffer
+/// pressure causes graceful indication drops rather than bus stalls.
+///
+/// Returns `None` if no free buffers are available.
 fn internal_to_cemi(
     indication: &IndicationMessage<Buffer<'static>>,
     buffer_manager: &DynBufferManager<'static>,
