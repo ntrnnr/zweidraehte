@@ -9,7 +9,7 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, pubsub::WaitResult};
 use embassy_time::{Duration, Timer};
 use env_logger::Env;
-use knx_conformance::harness::mock::MockLinkLayerBuilder;
+use zweidraehte_conformance::harness::mock::MockLinkLayerBuilder;
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
 use zweidraehte_device::prelude::*;

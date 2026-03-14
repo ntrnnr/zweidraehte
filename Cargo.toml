@@ -7,10 +7,10 @@ members = [
     "crates/zweidraehte-ets",
     "crates/zweidraehte-knxprod",
     "crates/zweidraehte-util",
-    "devices",
-    "testutil",
-    "conformance",
-    "knxprod-tui",
+    "examples/devices",
+    "examples/testutil",
+    "examples/conformance",
+    "tools/knxprod-tui",
 ]
 
 [workspace.package]

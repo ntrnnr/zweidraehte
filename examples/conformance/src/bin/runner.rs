@@ -35,9 +35,9 @@ use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Timer};
 use log::LevelFilter;
 
-use knx_conformance::harness::MultiProcessHarness;
-use knx_conformance::logger;
-use knx_conformance::*;
+use zweidraehte_conformance::harness::MultiProcessHarness;
+use zweidraehte_conformance::logger;
+use zweidraehte_conformance::*;
 
 // ============================================================================
 // Step Execution
@@ -215,58 +215,58 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
     // Collect all test suites
     let all_suites = vec![
-        knx_conformance::tests::network_layer::create_network_layer_suite(),
-        knx_conformance::tests::transport_layer_general::create_transport_layer_suite(),
-        knx_conformance::tests::transport_layer_timing::create_transport_layer_timing_suite(),
-        knx_conformance::tests::transport_layer_state_machine::create_transport_layer_state_machine_suite(),
-        knx_conformance::tests::group_objects::create_group_objects_uint1_suite(),
-        knx_conformance::tests::management::create_individual_address_read_suite(),
-        knx_conformance::tests::management::create_individual_address_write_suite(),
-        knx_conformance::tests::management::create_device_descriptor_type0_suite(),
-        knx_conformance::tests::management::create_device_descriptor_type2_suite(),
-        knx_conformance::tests::management::create_device_descriptor_illegal_types_suite(),
-        knx_conformance::tests::management::create_memory_read_suite(),
-        knx_conformance::tests::management::create_memory_write_suite(),
-        knx_conformance::tests::management::create_adc_read_suite(),
-        knx_conformance::tests::management::create_memorybit_write_suite(),
-        knx_conformance::tests::management::create_memorybit_write_verify_suite(),
-        knx_conformance::tests::management::create_authorization_suite(),
-        knx_conformance::tests::management::create_key_write_suite(),
+        zweidraehte_conformance::tests::network_layer::create_network_layer_suite(),
+        zweidraehte_conformance::tests::transport_layer_general::create_transport_layer_suite(),
+        zweidraehte_conformance::tests::transport_layer_timing::create_transport_layer_timing_suite(),
+        zweidraehte_conformance::tests::transport_layer_state_machine::create_transport_layer_state_machine_suite(),
+        zweidraehte_conformance::tests::group_objects::create_group_objects_uint1_suite(),
+        zweidraehte_conformance::tests::management::create_individual_address_read_suite(),
+        zweidraehte_conformance::tests::management::create_individual_address_write_suite(),
+        zweidraehte_conformance::tests::management::create_device_descriptor_type0_suite(),
+        zweidraehte_conformance::tests::management::create_device_descriptor_type2_suite(),
+        zweidraehte_conformance::tests::management::create_device_descriptor_illegal_types_suite(),
+        zweidraehte_conformance::tests::management::create_memory_read_suite(),
+        zweidraehte_conformance::tests::management::create_memory_write_suite(),
+        zweidraehte_conformance::tests::management::create_adc_read_suite(),
+        zweidraehte_conformance::tests::management::create_memorybit_write_suite(),
+        zweidraehte_conformance::tests::management::create_memorybit_write_verify_suite(),
+        zweidraehte_conformance::tests::management::create_authorization_suite(),
+        zweidraehte_conformance::tests::management::create_key_write_suite(),
         // Restart suite placed after authorization/key_write because M-2.9.11
         // (access denied) requires the auth keys set up by M-2.11. Note that
         // destructive tests (factory reset, reset IA/AP/links) will corrupt
         // state for subsequent tests in the same suite.
-        knx_conformance::tests::management::create_restart_suite(),
-        //knx_conformance::tests::management::create_property_value_read_suite(),
-        knx_conformance::tests::management::create_individual_address_serial_number_write_suite(),
-        knx_conformance::tests::management::create_individual_address_serial_number_read_suite(),
-        //knx_conformance::tests::management::create_network_parameter_read_suite(),
-        //knx_conformance::tests::management::create_network_parameter_write_suite(),
-        knx_conformance::tests::management::create_illegal_apci_suite(),
-        knx_conformance::tests::management::create_user_memory_read_suite(),
-        knx_conformance::tests::management::create_user_memory_write_suite(),
-        knx_conformance::tests::management::create_user_memory_write_verify_suite(),
-        knx_conformance::tests::management::create_user_manufacturer_info_read_suite(),
+        zweidraehte_conformance::tests::management::create_restart_suite(),
+        //zweidraehte_conformance::tests::management::create_property_value_read_suite(),
+        zweidraehte_conformance::tests::management::create_individual_address_serial_number_write_suite(),
+        zweidraehte_conformance::tests::management::create_individual_address_serial_number_read_suite(),
+        //zweidraehte_conformance::tests::management::create_network_parameter_read_suite(),
+        //zweidraehte_conformance::tests::management::create_network_parameter_write_suite(),
+        zweidraehte_conformance::tests::management::create_illegal_apci_suite(),
+        zweidraehte_conformance::tests::management::create_user_memory_read_suite(),
+        zweidraehte_conformance::tests::management::create_user_memory_write_suite(),
+        zweidraehte_conformance::tests::management::create_user_memory_write_verify_suite(),
+        zweidraehte_conformance::tests::management::create_user_manufacturer_info_read_suite(),
         // Load State Machine Tests
-        knx_conformance::tests::load_state_machines::create_preparation_suite(),
-        knx_conformance::tests::load_state_machines::create_unloaded_state_suite(),
-        knx_conformance::tests::load_state_machines::create_loaded_state_suite(),
-        knx_conformance::tests::load_state_machines::create_loading_state_suite(),
-        knx_conformance::tests::load_state_machines::create_error_state_suite(),
-        knx_conformance::tests::load_state_machines::create_no_access_rights_suite(),
+        zweidraehte_conformance::tests::load_state_machines::create_preparation_suite(),
+        zweidraehte_conformance::tests::load_state_machines::create_unloaded_state_suite(),
+        zweidraehte_conformance::tests::load_state_machines::create_loaded_state_suite(),
+        zweidraehte_conformance::tests::load_state_machines::create_loading_state_suite(),
+        zweidraehte_conformance::tests::load_state_machines::create_error_state_suite(),
+        zweidraehte_conformance::tests::load_state_machines::create_no_access_rights_suite(),
         // Run State Machine Tests
         // NOTE: These tests use AbsoluteData (0x00) load segments in their preparation steps.
         // System B devices only support RelativeData (0x0b) segments, so these tests cannot
         // pass until we either: (a) add AbsoluteData support, or (b) rewrite the test
         // preparations to use RelativeData segments.
-        knx_conformance::tests::run_state_machines::create_preparation_suite(),
-        knx_conformance::tests::run_state_machines::create_halted_state_suite(),
-        // knx_conformance::tests::run_state_machines::create_running_state_suite(),
-        // knx_conformance::tests::run_state_machines::create_ready_state_suite(),
-        // knx_conformance::tests::run_state_machines::create_terminated_state_suite(),
+        zweidraehte_conformance::tests::run_state_machines::create_preparation_suite(),
+        zweidraehte_conformance::tests::run_state_machines::create_halted_state_suite(),
+        // zweidraehte_conformance::tests::run_state_machines::create_running_state_suite(),
+        // zweidraehte_conformance::tests::run_state_machines::create_ready_state_suite(),
+        // zweidraehte_conformance::tests::run_state_machines::create_terminated_state_suite(),
         // Manual intervention required
-        //knx_conformance::tests::group_objects::create_association_table_receiving_suite(),
-        //knx_conformance::tests::group_objects::create_association_table_sending_suite(),
+        //zweidraehte_conformance::tests::group_objects::create_association_table_receiving_suite(),
+        //zweidraehte_conformance::tests::group_objects::create_association_table_sending_suite(),
     ];
 
     // Helper to check if a filter matches a suite or test name

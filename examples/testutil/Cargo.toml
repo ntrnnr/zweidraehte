@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-zweidraehte-device = { path = "../crates/zweidraehte-device", features = ["log", "linux", "knxip", "tp1", "usb"] }
-knx-conformance = { path = "../conformance" }
-zweidraehte-platform = { path = "../crates/zweidraehte-platform", features = ["log", "linux"] }
-zweidraehte-knxprod = { path = "../crates/zweidraehte-knxprod" }
+zweidraehte-device = { path = "../../crates/zweidraehte-device", features = ["log", "linux", "knxip", "tp1", "usb"] }
+zweidraehte-conformance = { path = "../conformance" }
+zweidraehte-platform = { path = "../../crates/zweidraehte-platform", features = ["log", "linux"] }
+zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod" }
 embassy-sync = { workspace = true, features = ["std"] }
 embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"] }
 embassy-time = { workspace = true, features = ["std"] }

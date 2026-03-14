@@ -28,7 +28,7 @@ static_cell = { workspace = true }
 # KNX stack and device definitions
 zweidraehte-device = { path = "../../crates/zweidraehte-device", default-features = false, features = ["defmt", "ip-interface"] }
 zweidraehte-platform = { path = "../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
-devices = { path = "../../devices", default-features = false, features = ["defmt"] }
+devices = { path = "../../examples/devices", default-features = false, features = ["defmt"] }
 
 # Shared RP platform code
 rp-common = { path = "../rp-common", features = ["rp2040"] }

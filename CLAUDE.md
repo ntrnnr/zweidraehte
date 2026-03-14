@@ -5,7 +5,7 @@ The goal is to write a KNX device stack (and possibly more later) in Rust target
 The stack needs to be conformance compliant and generic enough so that we can replace different layers and servers in the stack for different use cases when building devices. It's best to stick to existing patterns where applicable.
 
 We are also working on a product definition XML generator. We are generating XML files based on rust macro code that defines the device, its parameters and communication objects as well as dynamic pages that are presented to the user when configuring the device in the ETS.
-We try to replicate a real existing MDT device that is defined in `manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml` using this framework in `testutil/src/devices/mdt_push_button_lite.rs`.
+We try to replicate a real existing MDT device that is defined in `manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml` using this framework in `examples/testutil/src/devices/mdt_push_button_lite.rs`.
 We aim for an accurate replication by using our own DSL to ensure feature parity - the parameters, the enums, the comm objects and the dynamic pages that select different combinations of references and show/hide parameters and/or communication objects based on the currently selected configuration. After that we will start optimizing everything and ensure some quality of life improvements when defining all these structures in our DSL to make it easier to understand.
 The file in `manuf_tool_data/VC-EASY-03_MDT_KP_V35/M-0083/M-0083_A-0070-35-1740.xml` contains so-called module definitions that we still need to replicate conceptually with a small test device.
 For all these XML files, an XSD schema is available at `manuf_tool_data/knx_project.xsd` for reference and checking of correctness.
@@ -14,8 +14,9 @@ For all these XML files, an XSD schema is available at `manuf_tool_data/knx_proj
 
 ### Workspace Overview
 
-The project is organized as a Rust workspace. Library crates live under `crates/`,
-while application/test crates and the embedded workspace live at the top level.
+The project is organized as a Rust workspace with three top-level directories:
+`crates/` for libraries, `examples/` for testing and demo code, and `tools/`
+for standalone applications.
 
 ```
 crates/
@@ -26,10 +27,14 @@ crates/
   zweidraehte-knxprod/     XML generator for KNX product definitions
   zweidraehte-util/        Embedded utility types (button input, etc.)
 
-conformance/               KNX conformance test framework
-devices/                   Device definitions (light switch, IP interface)
-testutil/                  Test helpers, demo binaries, MTXML generators
-knxprod-tui/               TUI viewer for MTXML files
+examples/
+  conformance/             KNX conformance test framework
+  devices/                 Device definitions (light switch, IP interface)
+  testutil/                Test helpers, demo binaries, MTXML generators
+
+tools/
+  knxprod-tui/             TUI viewer for MTXML files
+
 cross/                     Embedded targets (separate workspace)
 ```
 
@@ -112,7 +117,7 @@ Subdirectories:
   - UDP multicast socket handling (for KNX/IP routing)
   - Network interface address resolution
 
-#### 4. Conformance Testing Crate (`/conformance`)
+#### 4. Conformance Testing Crate (`examples/conformance`)
 **Purpose**: KNX conformance test framework for validating stack compliance
 
 Run with: `cargo run --bin conformance-runner [test_name_filter]`
@@ -174,7 +179,7 @@ Key modules:
   - Conditional visibility logic
   - Parameter grouping and sections
 
-#### 7. Test Utilities Crate (`/testutil`)
+#### 7. Test Utilities Crate (`examples/testutil`)
 **Purpose**: Device definitions, test helpers, and demonstration tools
 
 Key modules:
@@ -198,7 +203,7 @@ Binaries (run with `cargo run --bin <name>`):
 - `busmon` - Bus monitor utility
 - `usb_test` - USB interface testing
 
-#### 8. Cross-Compilation Crate (`/cross`)
+#### 8. Cross-Compilation Crate (`cross/`)
 **Purpose**: Embedded cross-compilation support (separate workspace)
 
 **IMPORTANT**: The `cross/` directory is a separate Cargo workspace. To build
@@ -255,9 +260,9 @@ Link Layers (physical: TPUART, KNX/IP, USB, Mock)
 ```
 zweidraehte-proto          (no_std, pure protocol types)
   ├── zweidraehte-device   (no_std, device stack — re-exports proto)
-  │     ├── conformance
-  │     ├── testutil
-  │     ├── devices
+  │     ├── examples/conformance
+  │     ├── examples/testutil
+  │     ├── examples/devices
   │     └── cross/*
   └── (future: zweidraehte-client)
 
@@ -265,9 +270,9 @@ zweidraehte-ets            (proc-macro, no runtime deps)
   └── zweidraehte-device
 
 zweidraehte-knxprod        (std, XML generation)
-  ├── testutil
-  ├── devices
-  └── knxprod-tui
+  ├── examples/testutil
+  ├── examples/devices
+  └── tools/knxprod-tui
 
 zweidraehte-platform       (platform abstraction)
   ├── zweidraehte-proto
@@ -331,7 +336,7 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 ### Key Files
 - `crates/zweidraehte-knxprod/src/parser.rs` - XML parsing functions
 - `crates/zweidraehte-knxprod/src/model.rs` - Device model and condition evaluation
-- `knxprod-tui/src/` - TUI application
+- `tools/knxprod-tui/src/` - TUI application
 - `knxprod-html/src/` - HTML server (future)
 
 ## Commands Reference
@@ -376,13 +381,13 @@ Generates MTXML files (ApplicationProgram1.mtxml, Hardware1.mtxml, Catalog1.mtxm
 ```bash
 cargo run --bin gen_mdt_mtxml
 ```
-Generates MTXML files from the MDT Push Button Lite device definition (`testutil/src/devices/mdt_push_button_lite.rs`). Used for comparing against the real MDT reference XML.
+Generates MTXML files from the MDT Push Button Lite device definition (`examples/testutil/src/devices/mdt_push_button_lite.rs`). Used for comparing against the real MDT reference XML.
 
 **Generate Module Test Device MTXML**
 ```bash
 cargo run --bin gen_module_mtxml
 ```
-Generates MTXML files from the module test device definition (`testutil/src/devices/module_test_device.rs`). Demonstrates KNX module support with a 4-channel dimmer device.
+Generates MTXML files from the module test device definition (`examples/testutil/src/devices/module_test_device.rs`). Demonstrates KNX module support with a 4-channel dimmer device.
 
 ### Device Demos & Testing
 

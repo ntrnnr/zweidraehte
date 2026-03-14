@@ -1,12 +1,12 @@
 [package]
-name = "knx-conformance"
+name = "zweidraehte-conformance"
 version = "0.1.0"
 edition = "2024"
 description = "KNX conformance testing framework"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-zweidraehte-device = { path = "../crates/zweidraehte-device", features = ["log", "linux", "knxip"] }
+zweidraehte-device = { path = "../../crates/zweidraehte-device", features = ["log", "linux", "knxip"] }
 embassy-sync = { workspace = true }
 embassy-time = { workspace = true, features = ["std"] }
 embassy-futures = { workspace = true }

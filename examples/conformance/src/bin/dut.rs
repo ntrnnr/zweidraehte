@@ -16,8 +16,8 @@ use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
-use knx_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilder, SharedMemory, TAG_LOG, TAG_READY};
-use knx_conformance::harness::stack::{
+use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilder, SharedMemory, TAG_LOG, TAG_READY};
+use zweidraehte_conformance::harness::stack::{
     ConformanceHookContext, ConformanceMemoryMap,
     ConformancePersistedState, ConformanceState, IpcConformanceTestStack,
     comm_objs::ConformanceComObjects, device_info,

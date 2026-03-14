@@ -2533,27 +2533,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "knx-conformance"
-version = "0.1.0"
-dependencies = [
- "async-io",
- "const-default",
- "embassy-executor",
- "embassy-futures",
- "embassy-sync",
- "embassy-time",
- "heapless 0.9.2",
- "log",
- "nix 0.29.0",
- "paste",
- "postcard",
- "serde",
- "serde_with",
- "static_cell",
- "zweidraehte-device",
-]
-
-[[package]]
 name = "knxprod-tui"
 version = "0.1.0"
 dependencies = [
@@ -4631,7 +4610,6 @@ dependencies = [
  "embedded-io-async",
  "env_logger",
  "futures-lite",
- "knx-conformance",
  "libc",
  "log",
  "quick-xml",
@@ -4639,6 +4617,7 @@ dependencies = [
  "serde",
  "serde_json",
  "static_cell",
+ "zweidraehte-conformance",
  "zweidraehte-device",
  "zweidraehte-knxprod",
  "zweidraehte-platform",
@@ -6107,6 +6086,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "410e9ecef634c709e3831c2cfdb8d9c32164fae1c67496d5b68fff728eec37fe"
 dependencies = [
  "zune-core 0.5.1",
+]
+
+[[package]]
+name = "zweidraehte-conformance"
+version = "0.1.0"
+dependencies = [
+ "async-io",
+ "const-default",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
+ "heapless 0.9.2",
+ "log",
+ "nix 0.29.0",
+ "paste",
+ "postcard",
+ "serde",
+ "serde_with",
+ "static_cell",
+ "zweidraehte-device",
 ]
 
 [[package]]
