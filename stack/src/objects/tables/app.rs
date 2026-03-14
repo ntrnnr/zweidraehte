@@ -141,15 +141,19 @@ impl<D: ConstDefault> Application<D> {
     }
 }
 
-/// PEI (Platform Extension Interface) Program Object with Load and Run state machines.
+/// PEI (Physical External Interface) Program Object with Load and Run state machines.
 ///
-/// For System B devices (mask 57B0), the PEI Program Object is Interface Object 5,
-/// positioned between the Application Program Object (4) and IP Parameter Object (6).
+/// PEI is a vestigial KNX specification artifact from older BCU designs where
+/// external interface hardware (serial ports, etc.) had its own separately loadable
+/// program. Modern System B devices (mask 07B0 and similar) don't use PEI programs,
+/// but ETS still expects the interface object to be present and sends load/unload
+/// commands to it during device programming.
 ///
-/// This object provides proper state machine infrastructure for ETS compatibility,
-/// even for devices that don't use platform-specific extensions. It is instantiated
-/// with empty data `()` but still provides the required LOAD_STATE_CONTROL and
-/// RUN_STATE_CONTROL properties that ETS expects.
+/// This type is instantiated with empty data `()` because there is no actual PEI
+/// program to store. The load and run state machines transition normally when ETS
+/// writes to them, but **no stack behavior depends on PEI's state** — unlike the
+/// application program object, whose run state gates access to group objects and
+/// communication services.
 ///
 /// # KNX Object Structure
 ///
@@ -160,7 +164,7 @@ impl<D: ConstDefault> Application<D> {
 /// Object 3: Group Object Table Object
 /// Object 4: Application Program Object
 /// Object 5: PEI Program Object (this type)
-/// Object 6: IP Parameter Object
+/// Object 6: IP Parameter Object (if KNX/IP)
 /// ```
 pub type PeiApplication = RunnableApplication<Table<ApplicationImpl<()>>>;
 

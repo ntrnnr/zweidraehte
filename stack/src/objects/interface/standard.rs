@@ -473,21 +473,22 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
 // PEI Program Object (Object Type 5) - Interface Program
 // ============================================================================
 
-/// PEI (Platform Extension Interface) Program Object - Object Type 5.
+/// PEI (Physical External Interface) Program Object - Object Type 5.
 ///
-/// This is Interface Object Type 5 (InterfaceProgram), positioned at index 5
-/// between the Application Program Object (4) and IP Parameter Object (6).
+/// This interface object is required by the KNX specification and ETS, but its
+/// state transitions have no side effects on device operation. It exists purely
+/// so that ETS can load/unload it during device programming without errors.
+/// See [`PeiApplication`] for background on why PEI is vestigial.
 ///
-/// The PEI object has the same properties as Application Program Object but
+/// The object exposes the same properties as [`ApplicationProgramObject`] but
 /// reports a different object type (0x0005 instead of 0x0004).
 ///
 /// # Properties
 ///
-/// Same as ApplicationProgramObject:
 /// - OBJECT_TYPE (PID 1): Reports InterfaceObjectType::InterfaceProgram (5)
-/// - LOAD_STATE_CONTROL (PID 5): Load state machine
-/// - RUN_STATE_CONTROL (PID 6): Run state machine
-/// - PROGRAM_VERSION (PID 13): Program version
+/// - LOAD_STATE_CONTROL (PID 5): Load state machine (no side effects)
+/// - RUN_STATE_CONTROL (PID 6): Run state machine (no side effects)
+/// - PROGRAM_VERSION (PID 13): Program version (always `[0; 5]` on modern devices)
 pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     pei: &'a RefCell<T>,
     /// Virtual address to assign during RelativeData allocation (typically 0 for PEI)

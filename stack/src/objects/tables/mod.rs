@@ -63,10 +63,11 @@ pub trait HasApplication {
     fn app(&self) -> &RefCell<Self::APP>;
 }
 
-/// Trait for types that contain a PEI (Platform Extension Interface) Program.
+/// Trait for types that contain a PEI (Physical External Interface) Program.
 ///
 /// This is used by interface objects to access the PEI's load and run state machines.
-/// For System B devices (mask 57B0), the PEI Program Object is Interface Object 5.
+/// Required for ETS/spec compliance even though no modern device behavior depends on
+/// PEI state. See [`PeiApplication`] for details on why this exists.
 pub trait HasPeiApplication {
     /// The concrete PEI application type.
     type PEI: HasLoadStateMachine + HasRunStateMachine;
