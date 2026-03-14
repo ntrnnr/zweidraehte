@@ -23,7 +23,7 @@ use embassy_sync::{
 use embassy_time::{Duration, Ticker};
 use env_logger::Env;
 
-use zweidraehte::{
+use zweidraehte_device::{
     context::CemiTransportLayerChannelPair,
     layers::{
         LinkLayerBuilder,
@@ -88,9 +88,9 @@ async fn main(spawner: Spawner) {
     let req_rx = req_channel.receiver();
 
     // Create the KNXnet/IP link layer builder
-    use platform::address::EthernetAddress;
-    use zweidraehte::address::IndividualAddress;
-    use zweidraehte::messages::knxip::substructs::{DeviceStatus, KNXMedium};
+    use zweidraehte_platform::address::EthernetAddress;
+    use zweidraehte_device::address::IndividualAddress;
+    use zweidraehte_device::messages::knxip::substructs::{DeviceStatus, KNXMedium};
 
     let control_endpoint = SocketAddrV4::new("192.168.106.6".parse().unwrap(), 3671);
 
@@ -107,9 +107,9 @@ async fn main(spawner: Spawner) {
         friendly_name: *b"KNX Test Device\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
     });
 
-    let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
+    let interface_addr = zweidraehte_platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
     let kb =
-        KnxNetIpBuilder::<platform::LinuxIpTransport, _, 2>::new("knxdevbridgeif", interface_addr, control_endpoint, ())
+        KnxNetIpBuilder::<zweidraehte_platform::LinuxIpTransport, _, 2>::new("knxdevbridgeif", interface_addr, control_endpoint, ())
             .enable_routing_server();
 
     println!("Starting KNXnet/IP link layer with Discovery and Routing Servers");
@@ -123,7 +123,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(run_fake_network(fake_network)).unwrap();
 
     // Create resources for the link layer (2 sockets max, 1 server)
-    use zweidraehte::layers::linklayers::knxip::KnxNetIpResources;
+    use zweidraehte_device::layers::linklayers::knxip::KnxNetIpResources;
     let ll_resources = Box::leak(Box::new(KnxNetIpResources::new()));
 
     // Dummy cEMI channels — this test only uses routing, not tunneling,

@@ -14,9 +14,9 @@ use embassy_sync::pubsub::WaitResult;
 use embassy_time::Duration;
 use env_logger::Env;
 use static_cell::StaticCell;
-use zweidraehte::prelude::*;
+use zweidraehte_device::prelude::*;
 use std::net::SocketAddrV4;
-use zweidraehte::{
+use zweidraehte_device::{
     bcus::system_b::SystemBIpDeviceDef,
     layers::linklayers::knxip::KnxNetIpBuilder,
     restart::EraseCode,
@@ -138,8 +138,8 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
         embassy_time::Timer::after(Duration::from_millis(100)).await;
 
         // Re-exec the process. This call does not return on success.
-        use platform::SystemControl;
-        let mut system = platform::LinuxSystem;
+        use zweidraehte_platform::SystemControl;
+        let mut system = zweidraehte_platform::LinuxSystem;
         let Err(e) = system.restart().await;
         panic!("Failed to restart: {:?}", e);
     }
@@ -190,18 +190,18 @@ async fn main(spawner: Spawner) {
     // Create KNX/IP link layer
     let control_endpoint = SocketAddrV4::new("192.168.1.200".parse().unwrap(), 3671);
 
-    let interface_addr = platform::get_interface_address(INTERFACE_NAME).expect("Failed to get interface address");
+    let interface_addr = zweidraehte_platform::get_interface_address(INTERFACE_NAME).expect("Failed to get interface address");
     let link_layer_builder =
-        KnxNetIpBuilder::<platform::LinuxIpTransport, _, 2>::new(INTERFACE_NAME, interface_addr, control_endpoint, ())
+        KnxNetIpBuilder::<zweidraehte_platform::LinuxIpTransport, _, 2>::new(INTERFACE_NAME, interface_addr, control_endpoint, ())
             .enable_routing_server()
             .enable_remote_config_server()
             .enable_tcp();
 
     // Create stack resources and initialize the stack
     static RESOURCES: StaticCell<
-        StackResources<DemoStack, { zweidraehte::config::buffer_size_for_apdu(<DemoStack as StackDefinition>::MAX_APDU_LENGTH) }>,
+        StackResources<DemoStack, { zweidraehte_device::config::buffer_size_for_apdu(<DemoStack as StackDefinition>::MAX_APDU_LENGTH) }>,
     > = StaticCell::new();
-    let (stack, runner) = zweidraehte::new(
+    let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
         comm_objs::DemoComObjects::new(),
         (),

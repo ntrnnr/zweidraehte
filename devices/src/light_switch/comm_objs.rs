@@ -22,9 +22,9 @@
 //! back to the default if the user hasn't changed it.
 
 use super::params::ButtonConfigDiscriminant;
-use zweidraehte::dpt::*;
-use zweidraehte::objects::comm::{ComObject, ComObjectStorage};
-use zweidraehte::prelude::*;
+use zweidraehte_device::dpt::*;
+use zweidraehte_device::objects::comm::{ComObject, ComObjectStorage};
+use zweidraehte_device::prelude::*;
 
 /// Communication objects for the 2-button light switch.
 #[derive(EtsComObjects)]

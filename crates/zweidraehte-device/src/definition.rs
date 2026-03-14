@@ -1,0 +1,206 @@
+//! Compile-time stack configuration trait.
+//!
+//! [`StackDefinition`] is the central type-level "bill of materials" for a
+//! KNX device. It declares the device descriptor, table types, state type,
+//! link-layer builder, and layer composition strategy. The stack is fully
+//! generic over this trait, allowing the same code to drive TP1 bus devices,
+//! KNX/IP devices, USB devices, and mock test fixtures.
+
+use const_default::ConstDefault;
+use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
+
+use crate::{
+    config,
+    ets,
+    inner::StackContext,
+    layers,
+    memory::MemoryMap,
+    objects::{
+        comm::ComObjects,
+        interface::PropertyServiceHandler,
+    },
+};
+
+pub trait StackDefinition: Copy {
+    /// Device descriptor containing all device identification and configuration.
+    ///
+    /// This is the **single source of truth** for device identity including:
+    /// - Hardware identification (mask version, manufacturer ID, serial number, hardware type)
+    /// - Application program info (app ID, version)
+    /// - Table capacities (max addresses, associations, communication objects)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use zweidraehte_device::ets::DeviceDescriptor;
+    ///
+    /// const MY_DEVICE: DeviceDescriptor = DeviceDescriptor {
+    ///     mask_version: MaskVersion::SystemBTp1,
+    ///     manufacturer_id: 0x00FA,
+    ///     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
+    ///     application_id: 0xF023,
+    ///     application_version: 0x01,
+    ///     max_address_table_entries: 64,
+    ///     max_association_table_entries: 64,
+    ///     max_com_objects: 32,
+    ///     pei_type: 0,
+    /// };
+    ///
+    /// impl StackDefinition for MyDevice {
+    ///     const DEVICE: &'static DeviceDescriptor = &MY_DEVICE;
+    ///     // ... other fields
+    /// }
+    /// ```
+    ///
+    /// # Note on Serial Number
+    ///
+    /// The serial number is NOT part of the device descriptor because it's unique
+    /// per physical device instance (factory-programmed). Serial number should be
+    /// stored in runtime state and read from persistent storage or hardware.
+    const DEVICE: &'static ets::DeviceDescriptor;
+
+    /// Maximum APDU length for compile-time buffer allocation.
+    ///
+    /// This is the APDU payload size (not the full buffer size). The actual buffer
+    /// size is calculated by [`config::buffer_size_for_apdu()`] which adds:
+    /// - Frame overhead (6 bytes): ctrl + src + dst + npdu
+    /// - Headroom (16 bytes): for cEMI expansion + KNXnet/IP headers
+    ///
+    /// For the actual runtime limit (which can be lower based on detected hardware),
+    /// see [`StackState::max_apdu_length()`](crate::StackState::max_apdu_length).
+    /// The runtime limit is what gets reported via PID 56 (MAX_APDU_LENGTH) in the Device Object.
+    ///
+    /// Common values:
+    /// - [`config::MAX_APDU_LENGTH_TP1_STANDARD`] (14): Standard TP1 without EFF
+    /// - [`config::MAX_APDU_LENGTH_EXTENDED`] (255): TP1 with EFF or KNX/IP
+    ///
+    /// Default is 255 (full support for extended frames).
+    const MAX_APDU_LENGTH: u16 = config::MAX_APDU_LENGTH_EXTENDED;
+
+    /// Device descriptor type 2 (14 bytes, optional).
+    ///
+    /// DD2 contains extended device information:
+    /// - Bytes 0-1: Application manufacturer code (16-bit)
+    /// - Bytes 2-3: Manufacturer-specific device type (16-bit)
+    /// - Byte 4: Version of manufacturer-specific device type (8-bit)
+    /// - Byte 5: Link management support (bit 7) + Logical tag base (bits 0-5)
+    /// - Bytes 6-13: Channel information (4 channels, 2 bytes each)
+    ///
+    /// Set to `None` if DD2 is not supported. If `None`, the stack will return
+    /// error code 0x3F when DD2 is requested.
+    const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = None;
+
+    /// User Manufacturer Info (3 bytes, optional).
+    ///
+    /// Contains:
+    /// - Byte 0: KNX Manufacturer ID (8-bit)
+    /// - Bytes 1-2: Manufacturer-specific data (16-bit)
+    ///
+    /// Set to `None` if not supported. If `None`, the stack will not respond
+    /// to A_UserManufacturerInfo_Read requests.
+    const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = None;
+
+    /// Maximum incoming transport-layer connections (from remote devices).
+    ///
+    /// A typical KNX device accepts 1 incoming connection (from ETS or a
+    /// configurator). Routers or gateways may need more. Default: 1.
+    ///
+    /// Note: Due to `generic_const_exprs` limitations, the default
+    /// [`Runner::run()`](crate::Runner::run) cannot forward these constants
+    /// to the transport layer at compile time. The TL's own defaults (1/0)
+    /// match these defaults. If you override these values, you'll need a
+    /// custom runner that instantiates `TransportLayer` with explicit const
+    /// generics.
+    const TL_MAX_INCOMING: usize = 1;
+
+    /// Maximum outgoing transport-layer connections (initiated by us).
+    ///
+    /// A typical KNX device has 0 outgoing connections. Routers or gateways
+    /// that actively connect to other devices need more. Default: 0.
+    ///
+    /// Only valid with [`TlStyle::Style3`] or higher — the transport layer
+    /// will panic at startup if `TL_MAX_OUTGOING > 0` with a style that
+    /// does not support outgoing connections.
+    const TL_MAX_OUTGOING: usize = 0;
+
+    /// Transport layer state machine style per KNX spec 03/03/04 section 5.4.
+    ///
+    /// Determines connection-oriented error recovery behavior. Must be chosen
+    /// explicitly — there is no default.
+    const TL_STYLE: crate::layers::transport::TlStyle;
+
+    /// Mutex type for channels shared between the stack runner and user code.
+    ///
+    /// Use [`NoopRawMutex`]
+    /// (default) when the stack runner and user code share the same executor.
+    /// Use [`CriticalSectionRawMutex`](embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex)
+    /// when the stack runs on an `InterruptExecutor` while user code runs on
+    /// the thread executor — the interrupt executor can preempt mid-borrow,
+    /// which requires a real mutex to prevent `BorrowMutError` panics.
+    type Mutex: RawMutex + 'static = NoopRawMutex;
+
+    type P: ConstDefault;
+    type CO: ComObjects;
+    type LLB: layers::LinkLayerBuilderBase + for<'a> layers::LinkLayerBuilder<StackContext<'a, Self>>;
+
+    /// Unified device state containing both runtime state and tables.
+    ///
+    /// This type holds all device state:
+    /// - Runtime state (individual address, authorization keys)
+    /// - ETS-loaded tables (ADT, AST, COT, APP)
+    ///
+    /// Must implement [`StackState`](crate::StackState) for runtime state
+    /// access, and may implement table accessor traits for group object
+    /// communication:
+    /// - [`HasAddressTable`](crate::objects::tables::HasAddressTable)
+    /// - [`HasAssociationTable`](crate::objects::tables::HasAssociationTable)
+    /// - [`HasCommunicationObjectTable`](crate::objects::tables::HasCommunicationObjectTable)
+    ///
+    /// For System B devices, use [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)
+    /// or [`IpSystemBDeviceState`](crate::bcus::system_b::IpSystemBDeviceState).
+    type State: crate::StackState + 'static;
+
+    /// Memory map for A_Memory_Read/Write services.
+    ///
+    /// The memory map receives a reference to your `State` type when processing
+    /// memory read/write requests. You implement the dispatch logic to map
+    /// addresses to the appropriate tables stored in the state.
+    ///
+    /// Use [`memory::NoMemoryMap`](crate::memory::NoMemoryMap) if you don't
+    /// need memory services.
+    type Mem: MemoryMap<Self::State> + 'static;
+
+    /// Interface objects container type.
+    ///
+    /// This holds all interface objects for property service handling.
+    /// The container must implement `PropertyServiceHandler` for property access.
+    ///
+    /// If the device has a DeviceObject, implement `HasDeviceObject` on this type
+    /// to enable device-level configuration (programming mode, verify mode, etc.).
+    /// This is required by [`Runner::run`](crate::Runner::run) when running the stack.
+    type InterfaceObjects<'a>: PropertyServiceHandler
+    where
+        Self::State: 'a;
+
+    /// Create interface objects container.
+    ///
+    /// This method is called during stack initialization to create the interface
+    /// objects that handle property service requests (A_PropertyValue_Read/Write, etc.).
+    ///
+    /// # Arguments
+    /// * `state` - Reference to the unified device state (contains both runtime state and tables)
+    ///
+    /// # Returns
+    /// The container holding all interface objects for this device.
+    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    where
+        Self::State: 'a;
+
+    /// Layer stack builder that handles channel creation, layer construction,
+    /// and link-layer endpoint wiring.
+    ///
+    /// Use [`InsecureDeviceBuilder`](crate::InsecureDeviceBuilder) for standard
+    /// `(NL, TL, AL)` stacks or [`InsecureIpDeviceBuilder`](crate::InsecureIpDeviceBuilder)
+    /// for KNX/IP `(NL, CemiTL<TL>, AL)` stacks.
+    type LayerBuilder: crate::LayerStackBuilder<Self>;
+}

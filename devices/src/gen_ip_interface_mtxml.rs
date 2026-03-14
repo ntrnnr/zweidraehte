@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use devices::ip_interface::{
     DEVICE_DESCRIPTOR, IpInterfaceDevice, IpInterfaceParams, SERIAL_NUMBER,
 };
-use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
-use knxprod::{
+use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
+use zweidraehte_knxprod::{
     ApplicationProgramDef, BusAccessType, BusInterfaceDef, KnxprodBuilder, SingleDeviceDef,
 };
 

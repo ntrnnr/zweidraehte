@@ -35,7 +35,7 @@ use devices::ip_interface::{
     IpInterfaceComObjects, IpInterfaceDevice, IpInterfaceParams, DEVICE_DESCRIPTOR,
 };
 
-use zweidraehte::{
+use zweidraehte_device::{
     bcus::system_b::*,
     config::MAX_APDU_LENGTH_EXTENDED,
     layers::linklayers::{
@@ -180,9 +180,9 @@ async fn restart_task(
     knx: Stack<'static, PicoIpInterface>,
     storage: &'static RefCell<Storage>,
 ) -> ! {
-    use platform::SystemControl;
+    use zweidraehte_platform::SystemControl;
     use rp_common::CortexMSystem;
-    use zweidraehte::restart::EraseCode;
+    use zweidraehte_device::restart::EraseCode;
 
     loop {
         let request = knx.receive_restart_request().await;
@@ -415,11 +415,11 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             PicoIpInterface,
-            { zweidraehte::config::buffer_size_for_apdu(<PicoIpInterface as StackDefinition>::MAX_APDU_LENGTH) },
+            { zweidraehte_device::config::buffer_size_for_apdu(<PicoIpInterface as StackDefinition>::MAX_APDU_LENGTH) },
         >,
     > = StaticCell::new();
 
-    let (knx_stack, knx_runner) = zweidraehte::new(
+    let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
         IpInterfaceComObjects::new(),
         (),

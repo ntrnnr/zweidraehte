@@ -1,0 +1,31 @@
+[package]
+name = "zweidraehte-proto"
+version = "0.1.0"
+edition = "2024"
+description = "KNX protocol types, message parsing, and encoding"
+
+[dependencies]
+zweidraehte-platform = { path = "../zweidraehte-platform", default-features = false }
+
+zerocopy = { workspace = true }
+const-default = { workspace = true }
+paste = { workspace = true }
+serde = { workspace = true }
+serde_with = { workspace = true }
+embassy-sync = { workspace = true }
+embassy-futures = { workspace = true }
+embassy-time = { workspace = true }
+defmt = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
+heapless = { workspace = true }
+replace_with = { workspace = true }
+
+[dev-dependencies]
+test-case = "3.3"
+
+[features]
+defmt = ["dep:defmt", "zweidraehte-platform/defmt", "heapless/defmt"]
+log = ["dep:log", "zweidraehte-platform/log"]
+std = ["zweidraehte-platform/std"]
+knxip = []
+tp1 = []

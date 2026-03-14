@@ -1,13 +1,13 @@
 //! Application state and logic for the KNX TUI viewer.
 
-use knxprod::runtime::master_data::{MaskVersion, TableFlavour};
-use knxprod::runtime::model::{walk_dynamic, DynamicVisitor, ParameterValue};
-use knxprod::schema::{
+use zweidraehte_knxprod::runtime::master_data::{MaskVersion, TableFlavour};
+use zweidraehte_knxprod::runtime::model::{walk_dynamic, DynamicVisitor, ParameterValue};
+use zweidraehte_knxprod::schema::{
     Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, ComObject, ComObjectPriority,
     ComObjectRef, DynamicSection, EnableFlag, Module, ModuleDef, ModuleDefDynamicItem, Parameter, ParameterBlock,
     ParameterBlockItem, ParameterItem, ParameterTypeDef, UnionParameter, WhenItem,
 };
-use knxprod::{Device, MasterData};
+use zweidraehte_knxprod::{Device, MasterData};
 
 #[cfg(feature = "images")]
 use ratatui_image::picker::Picker;
@@ -23,10 +23,10 @@ use std::collections::HashMap;
 /// If no BaseNumber is specified, the local number is used as-is.
 fn compute_module_object_number(
     obj: &ComObject,
-    expanded: &knxprod::runtime::model::ExpandedModule,
+    expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
     module_def: &ModuleDef,
 ) -> u16 {
-    use knxprod::runtime::model::ModuleArgValue;
+    use zweidraehte_knxprod::runtime::model::ModuleArgValue;
 
     let local_number = obj.number;
 
@@ -360,12 +360,12 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
         }
     }
 
-    fn enter_module(&mut self, _module: &Module, _ctx: &knxprod::runtime::model::VisitorModuleContext) {
+    fn enter_module(&mut self, _module: &Module, _ctx: &zweidraehte_knxprod::runtime::model::VisitorModuleContext) {
         // Mark that we're inside a module - skip internal ParameterBlocks from tree
         self.in_module = true;
     }
 
-    fn leave_module(&mut self, _module: &Module, _ctx: &knxprod::runtime::model::VisitorModuleContext) {
+    fn leave_module(&mut self, _module: &Module, _ctx: &zweidraehte_knxprod::runtime::model::VisitorModuleContext) {
         self.in_module = false;
     }
 }
@@ -796,7 +796,7 @@ impl App {
                     return self.device.interpolate_module_text(instance_name, expanded);
                 } else {
                     // Fallback: use module name with channel number
-                    if let Some(knxprod::runtime::model::ModuleArgValue::Numeric(ch)) = expanded.args.get("ChNo") {
+                    if let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(ch)) = expanded.args.get("ChNo") {
                         return format!("{} {}", module_def.name, ch);
                     }
                     return module_def.name.clone();
@@ -1142,7 +1142,7 @@ impl App {
                         self.device.interpolate_module_text(instance_name, exp)
                     } else {
                         // Fallback: use module name with channel number
-                        if let Some(knxprod::runtime::model::ModuleArgValue::Numeric(ch)) = exp.args.get("ChNo") {
+                        if let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(ch)) = exp.args.get("ChNo") {
                             format!("{} {}", module_def.name, ch)
                         } else {
                             module_def.name.clone()
@@ -1342,7 +1342,7 @@ impl App {
     fn add_module_block_items(
         &mut self,
         items: &[ParameterBlockItem],
-        expanded: &knxprod::runtime::model::ExpandedModule,
+        expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
     ) {
         for item in items {
             match item {
@@ -1374,7 +1374,7 @@ impl App {
     }
 
     /// Add choose items for a module.
-    fn add_module_choose_items(&mut self, choose: &Choose, expanded: &knxprod::runtime::model::ExpandedModule) {
+    fn add_module_choose_items(&mut self, choose: &Choose, expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule) {
         // Try module-internal lookup first, fall back to device-level
         let module_val = self.get_module_selector_value(&choose.param_ref_id, expanded);
         let device_val = self.get_selector_value(&choose.param_ref_id);
@@ -1408,7 +1408,7 @@ impl App {
     fn get_module_selector_value(
         &self,
         param_ref_id: &str,
-        expanded: &knxprod::runtime::model::ExpandedModule,
+        expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
     ) -> Option<i64> {
         // Get the module definition
         let module_def = self.device.get_module_def(&expanded.module_def_id)?;
@@ -1437,7 +1437,7 @@ impl App {
     }
 
     /// Add when items for a module.
-    fn add_module_when_items(&mut self, items: &[WhenItem], expanded: &knxprod::runtime::model::ExpandedModule) {
+    fn add_module_when_items(&mut self, items: &[WhenItem], expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule) {
         for item in items {
             match item {
                 WhenItem::ParameterRefRef(prr) => {
@@ -1464,7 +1464,7 @@ impl App {
     }
 
     /// Add a module parameter ref to content items.
-    fn add_module_param_ref(&mut self, ref_id: &str, expanded: &knxprod::runtime::model::ExpandedModule) {
+    fn add_module_param_ref(&mut self, ref_id: &str, expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule) {
         // Look up the ModuleDef to access its static section
         let module_def = match self.device.get_module_def(&expanded.module_def_id) {
             Some(def) => def.clone(),
@@ -1707,7 +1707,7 @@ impl App {
     }
 
     /// Add a module comm object ref to content items.
-    fn add_module_com_obj_ref(&mut self, ref_id: &str, expanded: &knxprod::runtime::model::ExpandedModule) {
+    fn add_module_com_obj_ref(&mut self, ref_id: &str, expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule) {
         // Look up the ModuleDef to access its static section
         let module_def = match self.device.get_module_def(&expanded.module_def_id) {
             Some(def) => def.clone(),
@@ -3051,7 +3051,7 @@ impl App {
         byte_offset: usize,
         bit_offset: u8,
         size_bits: u16,
-        value: &knxprod::runtime::model::ParameterValue,
+        value: &zweidraehte_knxprod::runtime::model::ParameterValue,
     ) {
         // Skip if no bits to write (e.g., picture types)
         if size_bits == 0 {
@@ -3060,13 +3060,13 @@ impl App {
 
         // Convert value to integer (most parameters are integer-based)
         let int_value: u64 = match value {
-            knxprod::runtime::model::ParameterValue::Integer(v) => *v as u64,
-            knxprod::runtime::model::ParameterValue::Float(v) => {
+            zweidraehte_knxprod::runtime::model::ParameterValue::Integer(v) => *v as u64,
+            zweidraehte_knxprod::runtime::model::ParameterValue::Float(v) => {
                 // For float, assume DPT9 encoding (2 bytes)
                 // Simplified: just cast to u64 for now
                 (*v as i64) as u64
             }
-            knxprod::runtime::model::ParameterValue::Text(s) => {
+            zweidraehte_knxprod::runtime::model::ParameterValue::Text(s) => {
                 // For text, write raw bytes
                 let bytes = s.as_bytes();
                 let max_bytes = (size_bits as usize).div_ceil(8);
@@ -3077,7 +3077,7 @@ impl App {
                 }
                 return;
             }
-            knxprod::runtime::model::ParameterValue::Bytes(bytes) => {
+            zweidraehte_knxprod::runtime::model::ParameterValue::Bytes(bytes) => {
                 // For raw bytes, write directly
                 for (i, &b) in bytes.iter().enumerate() {
                     if byte_offset + i < data.len() {
@@ -3168,7 +3168,7 @@ impl App {
     /// searches for such an argument and returns its resolved value.
     fn get_module_param_offset_base(
         &self,
-        expanded: &knxprod::runtime::model::ExpandedModule,
+        expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
         module_def: &ModuleDef,
     ) -> Option<u32> {
         // Find the parameter base offset argument definition
@@ -3180,7 +3180,7 @@ impl App {
         })?;
 
         // Get the resolved value from the expanded module
-        if let Some(knxprod::runtime::model::ModuleArgValue::Numeric(val)) = expanded.args.get(&arg_def.name) {
+        if let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(val)) = expanded.args.get(&arg_def.name) {
             Some(*val as u32)
         } else {
             None
@@ -3192,7 +3192,7 @@ impl App {
     /// Falls back to the module definition name if no identifier is found.
     fn build_module_instance_label(
         &self,
-        expanded: &knxprod::runtime::model::ExpandedModule,
+        expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
         module_def: &ModuleDef,
     ) -> String {
         // Try to find a channel/instance number argument (commonly named ChNo, Channel, ChannelNo, etc.)
@@ -3204,7 +3204,7 @@ impl App {
         });
 
         if let Some(arg_def) = channel_arg
-            && let Some(knxprod::runtime::model::ModuleArgValue::Numeric(val)) = expanded.args.get(&arg_def.name) {
+            && let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(val)) = expanded.args.get(&arg_def.name) {
                 // Use module name with channel number, e.g., "Ch1" or "DimmerChannel 1"
                 return format!("Ch{}", val);
             }
@@ -3781,7 +3781,7 @@ impl App {
 
                 // If buffer is non-empty, parse and assign the new address
                 if !buffer.is_empty()
-                    && let Some(addr) = knxprod::runtime::model::GroupAddress::parse(&buffer) {
+                    && let Some(addr) = zweidraehte_knxprod::runtime::model::GroupAddress::parse(&buffer) {
                         // First assigned address becomes the sending address
                         self.device.assign_group_address(object_number, addr);
                     }

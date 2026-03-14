@@ -13,9 +13,9 @@ use std::path::PathBuf;
 
 use const_default::ConstDefault;
 
-use knxprod::definition::page_layout::EtsPageLayout;
-use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
-use knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
+use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
+use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
+use zweidraehte_knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
 use testutil::devices::system_b_demo::{DEVICE_DESCRIPTOR, DemoParams, DemoStack, SERIAL_NUMBER, comm_objs};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

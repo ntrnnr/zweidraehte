@@ -15,12 +15,12 @@ use std::io::{self, Write as IoWrite};
 use embassy_executor::Spawner;
 use env_logger::Env;
 
-use platform::{
+use zweidraehte_platform::{
     AsyncSerialPort,
     serialport::{Options, Parity},
 };
 
-use zweidraehte::layers::linklayers::tpuart::busmon::{
+use zweidraehte_device::layers::linklayers::tpuart::busmon::{
     AckStatus, BusMonitor, BusMonitorError, BUSMON_ACK, BUSMON_BUSY, BUSMON_NACK,
 };
 

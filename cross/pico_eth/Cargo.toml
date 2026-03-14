@@ -26,8 +26,8 @@ panic-probe = { workspace = true, features = ["print-defmt"] }
 static_cell = { workspace = true }
 
 # KNX stack and device definitions
-zweidraehte = { path = "../../stack", default-features = false, features = ["defmt", "knxip"] }
-platform = { path = "../../platform", default-features = false, features = ["defmt"] }
+zweidraehte-device = { path = "../../crates/zweidraehte-device", default-features = false, features = ["defmt", "knxip"] }
+zweidraehte-platform = { path = "../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
 devices = { path = "../../devices", default-features = false, features = ["defmt"] }
 
 # Shared RP platform code

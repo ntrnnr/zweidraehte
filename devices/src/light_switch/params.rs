@@ -17,8 +17,8 @@
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 
-use zweidraehte::ets::ets_range_enum;
-use zweidraehte::prelude::*;
+use zweidraehte_device::ets::ets_range_enum;
+use zweidraehte_device::prelude::*;
 
 // ============================================================================
 // Simple Enums
@@ -220,9 +220,9 @@ impl ConstDefault for ButtonConfig {
 // Object description text fields for each button. These are editable in ETS
 // and appear in the comm object tree via `{{param:default}}` text templates.
 // They have no device memory footprint.
-pub const LIGHT_SWITCH_VIRTUAL_PARAMS: &[zweidraehte::ets::EtsParamDefExt] = &[
-    zweidraehte::ets::EtsParamDefExt {
-        base: zweidraehte::ets::EtsParamDef {
+pub const LIGHT_SWITCH_VIRTUAL_PARAMS: &[zweidraehte_device::ets::EtsParamDefExt] = &[
+    zweidraehte_device::ets::EtsParamDefExt {
+        base: zweidraehte_device::ets::EtsParamDef {
             name: "btn1_description",
             display_name: "Object description",
             suffix: None,
@@ -230,7 +230,7 @@ pub const LIGHT_SWITCH_VIRTUAL_PARAMS: &[zweidraehte::ets::EtsParamDefExt] = &[
             rust_offset: 0,
             size_bits: 240, // 30 bytes
             bit_offset: 0,
-            param_type: zweidraehte::ets::EtsParamType::String,
+            param_type: zweidraehte_device::ets::EtsParamType::String,
             hidden: false,
             no_memory: true,
             type_name: None,
@@ -240,8 +240,8 @@ pub const LIGHT_SWITCH_VIRTUAL_PARAMS: &[zweidraehte::ets::EtsParamDefExt] = &[
         default_value: None,
         is_text_source: false,
     },
-    zweidraehte::ets::EtsParamDefExt {
-        base: zweidraehte::ets::EtsParamDef {
+    zweidraehte_device::ets::EtsParamDefExt {
+        base: zweidraehte_device::ets::EtsParamDef {
             name: "btn2_description",
             display_name: "Object description",
             suffix: None,
@@ -249,7 +249,7 @@ pub const LIGHT_SWITCH_VIRTUAL_PARAMS: &[zweidraehte::ets::EtsParamDefExt] = &[
             rust_offset: 0,
             size_bits: 240, // 30 bytes
             bit_offset: 0,
-            param_type: zweidraehte::ets::EtsParamType::String,
+            param_type: zweidraehte_device::ets::EtsParamType::String,
             hidden: false,
             no_memory: true,
             type_name: None,

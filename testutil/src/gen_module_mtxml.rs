@@ -11,9 +11,9 @@
 use std::env;
 use std::path::PathBuf;
 
-use knxprod::definition::page_layout::EtsPageLayout;
-use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
-use knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
+use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
+use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
+use zweidraehte_knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
 use testutil::devices::module_test_device::{
     BAGGAGES, DEVICE_DESCRIPTOR, DEVICE_VIRTUAL_PARAMS, DeviceParams, MODULE_TRANSLATIONS_DE, MODULE_TRANSLATIONS_EN,
     ModuleTestDevice, SERIAL_NUMBER,

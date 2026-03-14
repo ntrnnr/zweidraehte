@@ -3,12 +3,12 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use embassy_time::{Duration, Ticker};
 use env_logger::Env;
 
-use platform::{
+use zweidraehte_platform::{
     AsyncSerialPort, AsyncSerialPortRx, AsyncSerialPortTx,
     serialport::{Options, Parity},
 };
 
-use zweidraehte::{
+use zweidraehte_device::{
     layers::linklayers::tpuart::TpUartLinkLayer,
     messages::{
         buffers::{Buffer, BufferManager},

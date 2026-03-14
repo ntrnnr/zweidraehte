@@ -39,7 +39,7 @@ pub mod translations;
 
 pub use params::*;
 
-use zweidraehte::ets::{DeviceDescriptor, MaskVersion};
+use zweidraehte_device::ets::{DeviceDescriptor, MaskVersion};
 
 // ============================================================================
 // Device Identity

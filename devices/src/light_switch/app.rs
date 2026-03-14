@@ -19,12 +19,12 @@
 //! handle_button_press(&knx, &params, event, ButtonId::Btn1, &mut waiter, &mut dim_up).await;
 //! ```
 
-pub use embedded_util::input::{ButtonEvent, WaitForRelease};
+pub use zweidraehte_util::input::{ButtonEvent, WaitForRelease};
 
 use super::comm_objs::{Index, LightSwitchComObjects};
 use super::params::{ButtonConfig, ButtonsMode, LightSwitchParams, RockerDirection, SwitchAction};
-use zweidraehte::dpt::*;
-use zweidraehte::prelude::*;
+use zweidraehte_device::dpt::*;
+use zweidraehte_device::prelude::*;
 
 // ============================================================================
 // Types

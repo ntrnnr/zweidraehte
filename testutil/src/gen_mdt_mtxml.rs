@@ -8,9 +8,9 @@
 use std::env;
 use std::path::PathBuf;
 
-use knxprod::definition::page_layout::EtsPageLayout;
-use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
-use knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef, System7MemoryLayout, System7Segment};
+use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
+use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
+use zweidraehte_knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef, System7MemoryLayout, System7Segment};
 use testutil::devices::mdt_push_button_lite::{
     DEVICE_DESCRIPTOR, MDT_TRANSLATIONS_DE, MdtParams, MdtStack, SERIAL_NUMBER, comm_objs,
 };

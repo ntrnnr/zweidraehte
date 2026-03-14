@@ -25,8 +25,8 @@ use super::mock::CapturedLinkLayerMessage;
 use super::stack::{ConformanceMemoryMap, ConformanceState, TestParameters, conformance_config};
 
 use crate::logger::{self, LogEntry};
-use zweidraehte::messages::knx::ServiceType;
-use zweidraehte::objects::tables::{Application, HasLoadStateMachine, LoadEvent};
+use zweidraehte_device::messages::knx::ServiceType;
+use zweidraehte_device::objects::tables::{Application, HasLoadStateMachine, LoadEvent};
 
 // ============================================================================
 // Child State

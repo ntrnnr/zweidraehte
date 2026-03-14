@@ -17,8 +17,8 @@
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 
-use zweidraehte::ets::{DeviceDescriptor, MaskVersion};
-use zweidraehte::objects::comm::{
+use zweidraehte_device::ets::{DeviceDescriptor, MaskVersion};
+use zweidraehte_device::objects::comm::{
     ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects,
 };
 
@@ -87,7 +87,7 @@ impl ConstDefault for IpInterfaceParams {
 
 impl IpInterfaceParams {
     /// Empty parameter list — no ETS-visible parameters.
-    pub const ETS_PARAMS_EXT: &'static [zweidraehte::ets::EtsParamDefExt] = &[];
+    pub const ETS_PARAMS_EXT: &'static [zweidraehte_device::ets::EtsParamDefExt] = &[];
 }
 
 // ============================================================================

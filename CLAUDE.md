@@ -14,35 +14,72 @@ For all these XML files, an XSD schema is available at `manuf_tool_data/knx_proj
 
 ### Workspace Overview
 
-The project is organized as a Rust workspace with 6 main crates targeting both embedded devices (no_std) and Linux userspace systems.
+The project is organized as a Rust workspace. Library crates live under `crates/`,
+while application/test crates and the embedded workspace live at the top level.
+
+```
+crates/
+  zweidraehte-proto/       Shared KNX protocol types (messages, encoding, addresses, DPTs)
+  zweidraehte-device/      KNX device stack (layers, objects, BCUs)
+  zweidraehte-platform/    Platform abstraction (serial, sockets, network)
+  zweidraehte-ets/         Procedural macros for ETS parameter definitions
+  zweidraehte-knxprod/     XML generator for KNX product definitions
+  zweidraehte-util/        Embedded utility types (button input, etc.)
+
+conformance/               KNX conformance test framework
+devices/                   Device definitions (light switch, IP interface)
+testutil/                  Test helpers, demo binaries, MTXML generators
+knxprod-tui/               TUI viewer for MTXML files
+cross/                     Embedded targets (separate workspace)
+```
 
 ### Coding style
 
 - Don't assume std or even alloc in the core crates, we need to run on embedded devices
 - If you see common patterns, implement new features using these patterns in case they fit instead of inventing new ones
-- When generating packets, use the existing packet generation infrastructure in `zweidraehte::messages`
-- When parsing packets, use the existing packet parsing infrastructure in `zweidraehte::messages`
+- When generating packets, use the existing packet generation infrastructure in `zweidraehte_device::messages`
+- When parsing packets, use the existing packet parsing infrastructure in `zweidraehte_device::messages`
 
 ### Crates
 
-#### 1. Stack Crate (`/stack`)
-**Purpose**: Core KNX device stack implementation (the main library)
+#### 1. Protocol Crate (`crates/zweidraehte-proto`)
+**Purpose**: Shared KNX protocol types used by both device stacks and (future) client implementations. Pure protocol — no device behavior.
 
-Key modules:
-- `lib.rs` - Main stack entry point, defines core traits and state management
+Contains:
 - `address.rs` - KNX addressing types (individual and group addresses)
 - `dpt.rs` - Data Point Types (DPT) - KNX data encoding/decoding
-- `config.rs` - Device configuration and parameter management
-- `context.rs` - Runtime context for buffer management
-- `ets.rs` - ETS (Engineering Tool Software) integration and parameter export
-- `memory.rs` - Memory management for embedded/no_std environments
-- `macros.rs` - Helper macros for DSL definitions
-- `fmt.rs` - Formatting helpers
-
-Subdirectories:
+- `access.rs` - Access control types (authorization levels)
+- `config.rs` - Buffer sizing and APDU constants
+- `device.rs` - Device identification (MaskVersion, MaskFamily, DeviceDescriptor)
+- `properties.rs` - Interface object property definitions and access traits
+- `error.rs` - Protocol error types
 - `encoding/` - Low-level encoding
   - `cemi.rs` - Common EMI format for KNX messages
   - `tp1.rs` - TP1 physical layer encoding
+- `messages/` - Message formatting and building
+  - `knx.rs` - KNX message structures and ServiceType
+  - `builder.rs` - Message construction utilities
+  - `buffers.rs` - Buffer management for messages
+  - `apdu/` - Application layer PDU types (property, memory, device, auth, restart)
+  - `knxip/` - KNX/IP protocol messages (tunneling, discovery, routing, etc.)
+- `util/` - Utility functions
+  - `crc.rs` - CRC calculations
+  - `packets/` - Packet parsing and buffer utilities
+  - `dequeue.rs` - Queue operations
+
+#### 2. Device Stack Crate (`crates/zweidraehte-device`)
+**Purpose**: Core KNX device stack implementation. Depends on `zweidraehte-proto` and re-exports its modules for downstream convenience.
+
+Key modules:
+- `lib.rs` - Main stack entry point, defines core traits, re-exports proto modules
+- `config.rs` - Device-specific configuration macros (`knx_stack_config!`)
+- `context.rs` - Runtime context for buffer management
+- `ets.rs` - ETS integration, parameter export, derive macro re-exports
+- `memory.rs` - Memory management for embedded/no_std environments
+- `router.rs` - Table-driven message router and `Layer` trait
+- `definition.rs` - `StackDefinition` trait
+
+Subdirectories:
 - `layers/` - KNX protocol stack layers
   - `application.rs` - Application layer (handles app-level services)
   - `network.rs` - Network layer routing
@@ -52,32 +89,16 @@ Subdirectories:
   - `linklayers/` - Physical layer implementations
     - `tpuart/` - TP-UART serial interface (bus access, state machine, busmon)
     - `knxip/` - KNX/IP routing and tunneling over IP
-      - `servers/` - Discovery, routing, remote config, tunneling servers
     - `usb/` - USB HID interface support
     - `mock.rs` - Mock link layer for testing
-- `messages/` - Message formatting and building
-  - `knx.rs` - KNX message structures
-  - `builder.rs` - Message construction utilities
-  - `buffers.rs` - Buffer management for messages
-  - `knxip/` - KNX/IP protocol messages
 - `objects/` - KNX interface objects
   - `comm.rs` - Communication objects (group objects)
-  - `interface/` - Interface object properties and standard objects
+  - `interface/` - Interface object traits and standard objects
   - `tables/` - Standard KNX tables (address table, app table, association table, CO table)
 - `bcus/` - Bus Control Units (BCU) device implementations
   - `system_b/` - System B BCU implementation
-    - `device_state.rs` - Runtime state persistence
-    - `memory_map.rs` - Memory layout
-    - `objects.rs` - Object management
-    - `storage.rs` - State storage backends
-  - `x7b0.rs` - X7B0 model support
-- `util/` - Utility functions
-  - `crc.rs` - CRC calculations
-  - `packets/` - Packet parsing and buffer utilities
-  - `dequeue.rs` - Queue operations
-- `test_util/` - Testing utilities (when feature enabled)
 
-#### 2. Platform Crate (`/platform`)
+#### 3. Platform Crate (`crates/zweidraehte-platform`)
 **Purpose**: Platform abstraction layer for different operating systems and hardware
 
 Key modules:
@@ -91,7 +112,7 @@ Subdirectories:
   - UDP multicast socket handling (for KNX/IP routing)
   - Network interface address resolution
 
-#### 3. Conformance Testing Crate (`/conformance`)
+#### 4. Conformance Testing Crate (`/conformance`)
 **Purpose**: KNX conformance test framework for validating stack compliance
 
 Run with: `cargo run --bin conformance-runner [test_name_filter]`
@@ -114,7 +135,7 @@ Subdirectories:
   - `run_state_machines.rs` - Application state execution
   - `management.rs` - Management operations
 
-#### 4. ETS Macros Crate (`/ets-macros`)
+#### 5. ETS Macros Crate (`crates/zweidraehte-ets`)
 **Purpose**: Procedural macros for generating ETS parameter definitions
 
 Macros provided:
@@ -132,7 +153,7 @@ Macros provided:
   - Supports multi-DPT objects with selector-based typed access
   - Attributes: `index`, `display`, `function`, `flags`, `selector_enum`
 
-#### 5. KNXPROD Generator Crate (`/knxprod`)
+#### 6. KNXPROD Generator Crate (`crates/zweidraehte-knxprod`)
 **Purpose**: XML generator for KNX product definitions (MTXML format)
 
 Key modules:
@@ -153,7 +174,7 @@ Key modules:
   - Conditional visibility logic
   - Parameter grouping and sections
 
-#### 6. Test Utilities Crate (`/testutil`)
+#### 7. Test Utilities Crate (`/testutil`)
 **Purpose**: Device definitions, test helpers, and demonstration tools
 
 Key modules:
@@ -177,7 +198,7 @@ Binaries (run with `cargo run --bin <name>`):
 - `busmon` - Bus monitor utility
 - `usb_test` - USB interface testing
 
-#### 7. Cross-Compilation Crate (`/cross`)
+#### 8. Cross-Compilation Crate (`/cross`)
 **Purpose**: Embedded cross-compilation support (separate workspace)
 
 **IMPORTANT**: The `cross/` directory is a separate Cargo workspace. To build
@@ -229,6 +250,30 @@ Network Layer (routing)
 Link Layers (physical: TPUART, KNX/IP, USB, Mock)
 ```
 
+### Crate Dependency Graph
+
+```
+zweidraehte-proto          (no_std, pure protocol types)
+  ├── zweidraehte-device   (no_std, device stack — re-exports proto)
+  │     ├── conformance
+  │     ├── testutil
+  │     ├── devices
+  │     └── cross/*
+  └── (future: zweidraehte-client)
+
+zweidraehte-ets            (proc-macro, no runtime deps)
+  └── zweidraehte-device
+
+zweidraehte-knxprod        (std, XML generation)
+  ├── testutil
+  ├── devices
+  └── knxprod-tui
+
+zweidraehte-platform       (platform abstraction)
+  ├── zweidraehte-proto
+  └── zweidraehte-device
+```
+
 ### ETS Integration Pipeline
 
 ```
@@ -250,6 +295,7 @@ MTXML/KNXPROD Files
 - **Trait-Based Abstraction**: `Layer` trait for protocol layers, `ComObjects` trait for comm object access, `MemoryMap` trait for device memory, `LinkLayerBuilder` for pluggable link layers
 - **Platform Abstraction**: Platform crate abstracts OS-specific operations with features to enable/disable platform support
 - **no_std Compatible**: Core stack works in both no_std embedded and std Linux environments
+- **Proto/Device Split**: Pure protocol types in `zweidraehte-proto` can be shared with future client implementations without pulling in device stack logic
 
 ## KNXPROD Parser & Viewer
 
@@ -261,11 +307,11 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 
 ### Architecture
 
-**Parser (knxprod/src/parser.rs)**:
+**Parser (`crates/zweidraehte-knxprod/src/parser.rs`)**:
 - Uses existing schema.rs types (already have serde Deserialize)
 - Simple wrapper functions for parsing XML strings and files
 
-**Device Model (knxprod/src/model.rs)**:
+**Device Model (`crates/zweidraehte-knxprod/src/model.rs`)**:
 - Runtime state: parameter values, object bindings, visibility
 - Condition evaluation engine for choose/when blocks
 - Visibility recomputation on parameter changes
@@ -283,8 +329,8 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 - Form-based parameter editing
 
 ### Key Files
-- `knxprod/src/parser.rs` - XML parsing functions
-- `knxprod/src/model.rs` - Device model and condition evaluation
+- `crates/zweidraehte-knxprod/src/parser.rs` - XML parsing functions
+- `crates/zweidraehte-knxprod/src/model.rs` - Device model and condition evaluation
 - `knxprod-tui/src/` - TUI application
 - `knxprod-html/src/` - HTML server (future)
 

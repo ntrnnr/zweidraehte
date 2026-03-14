@@ -52,7 +52,7 @@ pub mod tests;
 pub use telegram::{Telegram, TelegramBuilder, TelegramMatcher};
 
 // Re-export address types from the stack for convenience
-pub use zweidraehte::address::{GroupAddress, IndividualAddress};
+pub use zweidraehte_device::address::{GroupAddress, IndividualAddress};
 
 // ============================================================================
 // Test Variables

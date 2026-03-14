@@ -4,20 +4,20 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-zweidraehte = { path = "../stack", default-features = false }
-embedded-util = { path = "../embedded-util" }
+zweidraehte-device = { path = "../crates/zweidraehte-device", default-features = false }
+zweidraehte-util = { path = "../crates/zweidraehte-util" }
 const-default = { workspace = true }
 serde = { workspace = true }
-knxprod = { path = "../knxprod", optional = true }
+zweidraehte-knxprod = { path = "../crates/zweidraehte-knxprod", optional = true }
 env_logger = { workspace = true, optional = true }
 embassy-time.workspace = true
 
 [features]
 default = []
-knxprod = ["dep:knxprod"]
+knxprod = ["dep:zweidraehte-knxprod"]
 gen = ["knxprod", "dep:env_logger"]
-defmt = ["zweidraehte/defmt"]
-log = ["zweidraehte/log"]
+defmt = ["zweidraehte-device/defmt"]
+log = ["zweidraehte-device/log"]
 
 [[bin]]
 name = "gen_light_switch_mtxml"

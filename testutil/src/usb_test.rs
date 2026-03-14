@@ -13,7 +13,7 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use env_logger::Env;
 
-use zweidraehte::{
+use zweidraehte_device::{
     address::{GroupAddress, IndividualAddress},
     context::BufferManagerContext,
     layers::{
@@ -107,16 +107,16 @@ async fn run_fake_network(mut fake_network: FakeNetworkLayer) {
 
 // Simple context that just provides a buffer manager
 struct SimpleContext {
-    buffer_manager: &'static zweidraehte::messages::buffers::DynBufferManager<'static>,
+    buffer_manager: &'static zweidraehte_device::messages::buffers::DynBufferManager<'static>,
 }
 
 impl BufferManagerContext for SimpleContext {
-    fn buffer_manager(&self) -> &zweidraehte::messages::buffers::DynBufferManager<'static> {
+    fn buffer_manager(&self) -> &zweidraehte_device::messages::buffers::DynBufferManager<'static> {
         self.buffer_manager
     }
 
     fn max_apdu_length(&self) -> u16 {
-        zweidraehte::config::MAX_APDU_LENGTH_EXTENDED
+        zweidraehte_device::config::MAX_APDU_LENGTH_EXTENDED
     }
 
     fn set_max_apdu_length(&self, _length: u16) {
@@ -163,7 +163,7 @@ async fn main(spawner: Spawner) {
 
     // List available USB devices first
     println!("Searching for KNX USB interfaces...");
-    match zweidraehte::layers::linklayers::usb::list_devices().await {
+    match zweidraehte_device::layers::linklayers::usb::list_devices().await {
         Ok(devices) => {
             if devices.is_empty() {
                 println!("  No KNX USB interfaces found!");

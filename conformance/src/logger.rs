@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_shorten_target() {
-        assert_eq!(shorten_target("zweidraehte::layers::network"), "layers::network");
+        assert_eq!(shorten_target("zweidraehte_device::layers::network"), "layers::network");
         assert_eq!(shorten_target("network"), "network");
         assert_eq!(shorten_target("a::b"), "a::b");
         assert_eq!(shorten_target("a::b::c::d"), "c::d");

@@ -22,8 +22,8 @@
 //! custom label in ETS. This label is substituted into the comm object
 //! display text via `{{param:default}}` text templates.
 
-use knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
-use knxprod::ets_pages;
+use zweidraehte_knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
+use zweidraehte_knxprod::ets_pages;
 
 use super::LightSwitchDevice;
 use super::params::{ButtonConfigDiscriminant, ButtonsMode, SwitchAction};

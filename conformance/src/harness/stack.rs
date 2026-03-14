@@ -20,8 +20,8 @@ use std::net::Ipv4Addr;
 
 use const_default::ConstDefault;
 
-use zweidraehte::prelude::*;
-use zweidraehte::{
+use zweidraehte_device::prelude::*;
+use zweidraehte_device::{
     AccessContext,
     bcus::system_b::{
         IpSystemBDeviceState, KnxIpInterfaceObjects, MemoryLayout,
@@ -49,9 +49,9 @@ use zweidraehte::{
 // This is achieved through the prepare_read and handle_write hooks.
 
 pub mod comm_objs {
-    use zweidraehte::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
-    use zweidraehte::ets::EtsComObjects;
-    use zweidraehte::objects::comm::ComObject;
+    use zweidraehte_device::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
+    use zweidraehte_device::ets::EtsComObjects;
+    use zweidraehte_device::objects::comm::ComObject;
 
     // Use #[ets(manual_impl)] to provide our own ComObjects implementation with hooks
     #[derive(EtsComObjects)]
@@ -128,9 +128,9 @@ pub mod comm_objs {
 // Manual ComObjects implementation with custom hooks for shadow objects
 use comm_objs::{ConformanceComObjects, Index as CoIndex};
 use core::cell::UnsafeCell;
-use zweidraehte::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
-use zweidraehte::objects::comm::{ComObjectInfo, ComObjectInfoMut};
-use zweidraehte::objects::tables::CommunicationObjectTable;
+use zweidraehte_device::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
+use zweidraehte_device::objects::comm::{ComObjectInfo, ComObjectInfoMut};
+use zweidraehte_device::objects::tables::CommunicationObjectTable;
 
 /// Hook context for conformance tests that provides access to the COT.
 ///
@@ -397,8 +397,8 @@ impl ComObjects for ConformanceComObjects {
 // - TSAP 11: 0x2D05 (5/5/5) → CO 11 (GO6, 1-bit for transport layer test 2.1)
 
 pub(crate) mod conformance_config {
-    use zweidraehte::config::{CE, RE, ROI, TE, UE, WE};
-    use zweidraehte::knx_stack_config;
+    use zweidraehte_device::config::{CE, RE, ROI, TE, UE, WE};
+    use zweidraehte_device::knx_stack_config;
 
     knx_stack_config! {
         name: ConformanceTestConfig,
@@ -538,7 +538,7 @@ impl IpPlatform for MockIpPlatform {
 impl IpPlatformConfig for MockIpPlatform {
     type Error = core::convert::Infallible;
 
-    fn apply_ip_config(&self, _config: &zweidraehte::IpConfig) -> Result<(), Self::Error> {
+    fn apply_ip_config(&self, _config: &zweidraehte_device::IpConfig) -> Result<(), Self::Error> {
         Ok(()) // No-op for tests — OS manages networking.
     }
 }
@@ -550,7 +550,7 @@ impl IpPlatformConfig for MockIpPlatform {
 /// Device-specific constants for Interface Objects
 pub mod device_info {
     use super::*;
-    use zweidraehte::config::{buffer_size_for_apdu, MAX_APDU_LENGTH_EXTENDED};
+    use zweidraehte_device::config::{buffer_size_for_apdu, MAX_APDU_LENGTH_EXTENDED};
 
     /// The device descriptor for conformance testing.
     ///
@@ -846,12 +846,12 @@ impl HasRoutingCount for ConformanceState {
     fn set_routing_count(&self, value: u8) { self.inner.set_routing_count(value) }
 }
 
-impl zweidraehte::HasConnectionAuth for ConformanceState {
-    fn connection_access(&self, slot: u8) -> zweidraehte::AccessContext {
+impl zweidraehte_device::HasConnectionAuth for ConformanceState {
+    fn connection_access(&self, slot: u8) -> zweidraehte_device::AccessContext {
         self.inner.connection_access(slot)
     }
 
-    fn set_connection_access(&self, slot: u8, ctx: zweidraehte::AccessContext) {
+    fn set_connection_access(&self, slot: u8, ctx: zweidraehte_device::AccessContext) {
         self.inner.set_connection_access(slot, ctx);
     }
 
@@ -1122,7 +1122,7 @@ impl StackDefinition for IpcConformanceTestStack {
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
-    const TL_STYLE: zweidraehte::layers::transport::TlStyle = zweidraehte::layers::transport::TlStyle::Style3;
+    const TL_STYLE: zweidraehte_device::layers::transport::TlStyle = zweidraehte_device::layers::transport::TlStyle::Style3;
     type P = TestParameters;
     type CO = ConformanceComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
@@ -1163,7 +1163,7 @@ impl StackDefinition for IpcConformanceTestStack {
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use zweidraehte::bcus::system_b::{HasPersistedState, PersistedIpConfig, PersistedState};
+use zweidraehte_device::bcus::system_b::{HasPersistedState, PersistedIpConfig, PersistedState};
 
 /// The persisted state type for the inner `IpSystemBDeviceState`.
 type InnerPersistedState = PersistedState<

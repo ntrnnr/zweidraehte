@@ -41,7 +41,7 @@
 //! Use the `define_module!` macro to define the module with its parameters:
 //!
 //! ```rust,ignore
-//! knxprod::define_module! {
+//! zweidraehte_knxprod::define_module! {
 //!     pub module DimmerChannelModule {
 //!         name = "DimmerChannel",
 //!         description = "Dimmer channel module",
@@ -229,20 +229,20 @@
 
 use serde::{Deserialize, Serialize};
 
-use zweidraehte::dpt::{DPT_Scaling, DPT_State, DPT_Switch};
-use zweidraehte::prelude::*;
+use zweidraehte_device::dpt::{DPT_Scaling, DPT_State, DPT_Switch};
+use zweidraehte_device::prelude::*;
 
-use knxprod::definition::module::ModuleCollection;
-use knxprod::definition::page_layout::EtsPageLayout;
-use knxprod::ets_pages;
-use knxprod::schema::BaggageDef;
+use zweidraehte_knxprod::definition::module::ModuleCollection;
+use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
+use zweidraehte_knxprod::ets_pages;
+use zweidraehte_knxprod::schema::BaggageDef;
 
 // ============================================================================
 // Translations
 // ============================================================================
 
 // German translations for the dimmer module device
-zweidraehte::ets_translations! {
+zweidraehte_device::ets_translations! {
     pub MODULE_TRANSLATIONS_DE;
 
     "de-DE" {
@@ -279,7 +279,7 @@ zweidraehte::ets_translations! {
 }
 
 // English translations (for completeness / as reference)
-zweidraehte::ets_translations! {
+zweidraehte_device::ets_translations! {
     pub MODULE_TRANSLATIONS_EN;
 
     "en-US" {
@@ -357,7 +357,7 @@ pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x10, 0x00, 0x00, 0x01];
 // - Device name for display in ETS
 // - Location/room information
 // - Any text that's only needed in ETS, not on the device
-zweidraehte::ets_virtual_params! {
+zweidraehte_device::ets_virtual_params! {
     pub DEVICE_VIRTUAL_PARAMS {
         device_name: String(50) => "Device name" [text_source],
     }
@@ -520,7 +520,7 @@ pub struct DimmerChannelObjects {
 // Communication objects are provided by referencing the DimmerChannelObjects
 // type defined above with `objects: DimmerChannelObjects,`
 
-knxprod::define_module! {
+zweidraehte_knxprod::define_module! {
     /// Module definition for a dimmer channel.
     ///
     /// This module encapsulates all the parameters and communication objects
@@ -634,8 +634,8 @@ impl ModuleTestDevice {
 }
 
 impl EtsPageLayout for ModuleTestDevice {
-    fn page_layout() -> knxprod::definition::page_layout::PageStructure {
-        use knxprod::definition::module::module_instances;
+    fn page_layout() -> zweidraehte_knxprod::definition::page_layout::PageStructure {
+        use zweidraehte_knxprod::definition::module::module_instances;
 
         // Build entire page structure using the ets_pages! macro
         // - Device settings: global dimming speed only
@@ -819,7 +819,7 @@ mod tests {
     #[test]
     fn test_has_channel_helpers_trait() {
         // Verify the HasChannelHelpers trait is correctly implemented
-        use knxprod::definition::module::HasChannelHelpers;
+        use zweidraehte_knxprod::definition::module::HasChannelHelpers;
 
         // Test COUNT matches NUM_CHANNELS
         assert_eq!(<DeviceParams as HasChannelHelpers<DimmerChannelModule>>::COUNT, NUM_CHANNELS);
@@ -1073,7 +1073,7 @@ mod tests {
     #[test]
     fn test_dimmer_comm_objects_creation() {
         use crate::devices::module_test_device::comm_objs::DimmerCommObjects;
-        use zweidraehte::objects::comm::ComObjects;
+        use zweidraehte_device::objects::comm::ComObjects;
 
         // Create the comm objects instance (this is what you pass to the stack)
         let comm_objs = DimmerCommObjects::new();
@@ -1104,7 +1104,7 @@ mod tests {
     #[test]
     fn test_dimmer_comm_objects_trait_access() {
         use crate::devices::module_test_device::comm_objs::DimmerCommObjects;
-        use zweidraehte::objects::comm::{ComObjectStatus, ComObjects};
+        use zweidraehte_device::objects::comm::{ComObjectStatus, ComObjects};
 
         let mut comm_objs = DimmerCommObjects::new();
 
@@ -1152,7 +1152,7 @@ mod tests {
         //! 5. Sending the status to the bus
 
         use crate::devices::module_test_device::comm_objs::DimmerCommObjects;
-        use zweidraehte::objects::comm::{ComObjectStatus, ComObjects};
+        use zweidraehte_device::objects::comm::{ComObjectStatus, ComObjects};
 
         // Setup: comm objects and params
         let mut comm_objs = DimmerCommObjects::new();
@@ -1261,7 +1261,7 @@ mod tests {
         //! Using the Index struct for type-safe object access.
 
         use crate::devices::module_test_device::comm_objs::{DimmerCommObjects, Index};
-        use zweidraehte::objects::comm::{ComObjectIndex, ComObjects};
+        use zweidraehte_device::objects::comm::{ComObjectIndex, ComObjects};
 
         let mut comm_objs = DimmerCommObjects::new();
 

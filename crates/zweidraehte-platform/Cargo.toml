@@ -1,0 +1,28 @@
+[package]
+name = "zweidraehte-platform"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+defmt = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
+
+embedded-io-async = { workspace = true }
+zerocopy = { workspace = true }
+
+# Linux deps
+embassy-time = { workspace = true }
+serialport = { version = "4.7", optional = true }
+async-io = { version = "2.4", optional = true }
+nix = { version = "0.30", default-features = false, optional = true, features = ["term", "socket", "net", "uio", "fs"] }
+socket2 = { version = "0.6", optional = true }
+
+
+[target.'cfg(target_os = "linux")'.dependencies]
+serialport_low_latency = { version = "0.1.1", optional = true }
+
+[features]
+defmt = ["dep:defmt"]
+log = ["dep:log"]
+std = []
+linux = ["dep:serialport", "dep:async-io", "dep:nix", "dep:serialport_low_latency", "dep:socket2", "std"]

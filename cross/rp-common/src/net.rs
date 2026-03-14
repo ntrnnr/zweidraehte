@@ -9,7 +9,7 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 use embassy_net::udp::{self, UdpSocket};
 use embassy_net::{IpEndpoint, Stack};
 
-use platform::traits::{
+use zweidraehte_platform::traits::{
     AsyncUdpSocket, IpTransport, NeverTcpListener, NeverTcpStream, UdpSocketOptions,
 };
 

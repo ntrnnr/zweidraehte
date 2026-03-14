@@ -23,11 +23,11 @@ use knx_conformance::harness::stack::{
     comm_objs::ConformanceComObjects, device_info,
 };
 
-use zweidraehte::messages::buffers::{BufferManager, DynBufferManager};
-use zweidraehte::objects::comm::ComObjects;
-use zweidraehte::objects::interface::HasDeviceObject;
-use zweidraehte::restart::EraseCode;
-use zweidraehte::{Runner, Stack, StackResources};
+use zweidraehte_device::messages::buffers::{BufferManager, DynBufferManager};
+use zweidraehte_device::objects::comm::ComObjects;
+use zweidraehte_device::objects::interface::HasDeviceObject;
+use zweidraehte_device::restart::EraseCode;
+use zweidraehte_device::{Runner, Stack, StackResources};
 
 // ============================================================================
 // Static Resources
@@ -319,7 +319,7 @@ async fn main(spawner: Spawner) {
     let hook_context = ConformanceHookContext::new();
 
     // Create the KNX stack.
-    let (stack, runner) = zweidraehte::new(
+    let (stack, runner) = zweidraehte_device::new(
         resources,
         ConformanceComObjects::new(),
         hook_context,

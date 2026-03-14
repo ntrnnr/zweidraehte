@@ -26,7 +26,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use zweidraehte::storage::DeviceIdentity;
+use zweidraehte_device::storage::DeviceIdentity;
 
 // ============================================================================
 // Error Type

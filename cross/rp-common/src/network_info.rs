@@ -20,7 +20,7 @@ use core::net::Ipv4Addr;
 
 use embassy_net::{Ipv4Cidr, Stack, StaticConfigV4};
 
-use platform::traits::{IpConfig, NetworkConfig, NetworkInfo};
+use zweidraehte_platform::traits::{IpConfig, NetworkConfig, NetworkInfo};
 
 // ================================================================================
 // EmbassyNetworkInfo

@@ -1,0 +1,31 @@
+[package]
+name = "zweidraehte-knxprod"
+version = "0.1.0"
+edition = "2024"
+authors = ["Andreas Galauner <andreas@galauner.de>"]
+license = "Proprietary"
+description = "KNX product definition generator - schema, generator, and page layout DSL"
+
+[dependencies]
+zweidraehte-device = { path = "../zweidraehte-device" }
+
+serde = { workspace = true }
+chrono = { workspace = true }
+quick-xml = { workspace = true }
+base64 = { workspace = true }
+regex = { workspace = true }
+paste = { workspace = true }
+const-default = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+
+# Signing and packaging dependencies
+sha1 = "0.10"
+rsa = { version = "0.9", features = ["hazmat"] }
+rand = "0.8"
+num-bigint-dig = "0.8"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+icu = "1.5"
+reqwest = { version = "0.12", features = ["blocking"] }
+directories = "5.0"
+uuid = { version = "1.21.0", features = ["v4"] }

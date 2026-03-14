@@ -21,9 +21,9 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use simplelog::{Config, WriteLogger};
 
 use app::{App, EditMode};
-use knxprod::runtime::baggage::BaggageIndex;
-use knxprod::runtime::parser::ProgramSummary;
-use knxprod::{parse_application_program_from_file, Device, MasterData};
+use zweidraehte_knxprod::runtime::baggage::BaggageIndex;
+use zweidraehte_knxprod::runtime::parser::ProgramSummary;
+use zweidraehte_knxprod::{parse_application_program_from_file, Device, MasterData};
 
 /// KNX ApplicationProgram TUI Viewer
 #[derive(Parser, Debug)]

@@ -20,7 +20,7 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use env_logger::Env;
 
-use zweidraehte::{
+use zweidraehte_device::{
     address::IndividualAddress,
     context::BufferManagerContext,
     encoding::tp1::tp1_to_knx_message_no_checksum,
@@ -125,16 +125,16 @@ async fn run_network(mut layer: TestNetworkLayer) {
 
 // Simple context that just provides a buffer manager
 struct SimpleContext {
-    buffer_manager: &'static zweidraehte::messages::buffers::DynBufferManager<'static>,
+    buffer_manager: &'static zweidraehte_device::messages::buffers::DynBufferManager<'static>,
 }
 
 impl BufferManagerContext for SimpleContext {
-    fn buffer_manager(&self) -> &zweidraehte::messages::buffers::DynBufferManager<'static> {
+    fn buffer_manager(&self) -> &zweidraehte_device::messages::buffers::DynBufferManager<'static> {
         self.buffer_manager
     }
 
     fn max_apdu_length(&self) -> u16 {
-        zweidraehte::config::MAX_APDU_LENGTH_EXTENDED
+        zweidraehte_device::config::MAX_APDU_LENGTH_EXTENDED
     }
 
     fn set_max_apdu_length(&self, _length: u16) {
@@ -310,7 +310,7 @@ async fn clear_received(received: &RefCell<Vec<Vec<u8>>>) {
 }
 
 async fn run_seqno_test(
-    bm: &'static zweidraehte::messages::buffers::DynBufferManager<'static>,
+    bm: &'static zweidraehte_device::messages::buffers::DynBufferManager<'static>,
     req_tx: &embassy_sync::channel::Sender<'static, NoopRawMutex, RequestMessage<Buffer<'static>>, 32>,
     conf_rx: &embassy_sync::channel::Receiver<'static, NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 32>,
     received: &'static RefCell<Vec<Vec<u8>>>,
@@ -468,7 +468,7 @@ async fn main(spawner: Spawner) {
 
     // List available USB devices
     println!("Searching for KNX USB interfaces...");
-    match zweidraehte::layers::linklayers::usb::list_devices().await {
+    match zweidraehte_device::layers::linklayers::usb::list_devices().await {
         Ok(devices) => {
             if devices.is_empty() {
                 println!("  No KNX USB interfaces found!");

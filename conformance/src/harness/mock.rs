@@ -10,7 +10,7 @@ use embassy_sync::{
     channel::{Channel, DynamicSender, Receiver, Sender, TrySendError},
 };
 
-use zweidraehte::{
+use zweidraehte_device::{
     encoding::tp1,
     layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase},
     messages::{

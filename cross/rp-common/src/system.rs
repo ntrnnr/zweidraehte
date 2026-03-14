@@ -2,7 +2,7 @@
 //!
 //! Implements [`SystemControl`] by triggering a Cortex-M system reset.
 
-use platform::SystemControl;
+use zweidraehte_platform::SystemControl;
 
 /// System control for Cortex-M based devices.
 pub struct CortexMSystem;

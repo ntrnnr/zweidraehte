@@ -13,17 +13,17 @@ use core::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 
-use knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
-use knxprod::ets_pages;
-use zweidraehte::bcus::system_b::{
+use zweidraehte_knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
+use zweidraehte_knxprod::ets_pages;
+use zweidraehte_device::bcus::system_b::{
     DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, SystemBIpDeviceDef, SystemBMemoryMap,
     create_knxip_objects,
 };
-use zweidraehte::dpt::*;
-use zweidraehte::ets::ets_range_enum;
-use zweidraehte::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp};
-use zweidraehte::layers::transport::TlStyle;
-use zweidraehte::prelude::*;
+use zweidraehte_device::dpt::*;
+use zweidraehte_device::ets::ets_range_enum;
+use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp};
+use zweidraehte_device::layers::transport::TlStyle;
+use zweidraehte_device::prelude::*;
 
 // ============================================================================
 // Device Descriptor
@@ -1142,7 +1142,7 @@ pub mod comm_objs {
     use super::*;
     // Import the ObjectType enum for selector values
     use super::ObjectType;
-    use zweidraehte::objects::comm::ComObjectStorage;
+    use zweidraehte_device::objects::comm::ComObjectStorage;
 
     /// MDT Push Button Lite communication objects.
     /// Total: 87 objects (many are dummy placeholders)
@@ -3196,10 +3196,10 @@ impl IpPlatform for MockIpPlatform {
     }
 }
 
-impl platform::NetworkConfig for MockIpPlatform {
+impl zweidraehte_platform::NetworkConfig for MockIpPlatform {
     type Error = core::convert::Infallible;
 
-    fn apply_ip_config(&self, _config: &platform::IpConfig) -> Result<(), Self::Error> {
+    fn apply_ip_config(&self, _config: &zweidraehte_platform::IpConfig) -> Result<(), Self::Error> {
         Ok(()) // No-op — OS manages networking on Linux.
     }
 }
@@ -3224,7 +3224,7 @@ impl SystemBIpDeviceDef for MdtStack {
 
     type P = MdtParams;
     type CO = comm_objs::MdtComObjects;
-    type Transport = platform::LinuxIpTransport;
+    type Transport = zweidraehte_platform::LinuxIpTransport;
     type Platform = MockIpPlatform;
     type State = MdtState;
 }
@@ -3235,7 +3235,7 @@ impl StackDefinition for MdtStack {
 
     type P = MdtParams;
     type CO = comm_objs::MdtComObjects;
-    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, KnxIpDeviceUdp, 2>;
+    type LLB = KnxNetIpBuilder<zweidraehte_platform::LinuxIpTransport, KnxIpDeviceUdp, 2>;
     type State = MdtState;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, MdtState>;
@@ -5924,7 +5924,7 @@ mod tests {
 //
 // This demonstrates the `ets_translations!` macro for defining translations
 // separately from the enum/param definitions to keep code clean.
-zweidraehte::ets_translations! {
+zweidraehte_device::ets_translations! {
     pub MDT_TRANSLATIONS_DE;
 
     "de-DE" {

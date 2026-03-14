@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
-use knxprod::parse_application_program_from_file;
+use zweidraehte_knxprod::parse_application_program_from_file;
 
 use super::canonical::{CanonicalProgram, ComObjectFlags, ParameterKey, TypeSignature};
 

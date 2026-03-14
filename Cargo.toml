@@ -1,14 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "stack",
-    "platform",
+    "crates/zweidraehte-proto",
+    "crates/zweidraehte-device",
+    "crates/zweidraehte-platform",
+    "crates/zweidraehte-ets",
+    "crates/zweidraehte-knxprod",
+    "crates/zweidraehte-util",
     "devices",
-    "embedded-util",
     "testutil",
     "conformance",
-    "ets-macros",
-    "knxprod",
     "knxprod-tui",
 ]
 

@@ -115,8 +115,8 @@ use embassy_time::Duration;
 use env_logger::Env;
 use static_cell::StaticCell;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use zweidraehte::prelude::*;
-use zweidraehte::{
+use zweidraehte_device::prelude::*;
+use zweidraehte_device::{
     dpt::{DPT_Switch, InterfaceObjectType},
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     objects::interface::{
@@ -156,8 +156,8 @@ pub mod comm_objs {
 
 // Define stack configuration using the new macro
 mod stack_test_config {
-    use zweidraehte::config::{CE, RE, TE, UE, WE};
-    use zweidraehte::knx_stack_config;
+    use zweidraehte_device::config::{CE, RE, TE, UE, WE};
+    use zweidraehte_device::knx_stack_config;
 
     knx_stack_config! {
         name: StackTestConfig,
@@ -258,10 +258,10 @@ impl IpPlatform for MockIpPlatform {
     }
 }
 
-impl platform::NetworkConfig for MockIpPlatform {
+impl zweidraehte_platform::NetworkConfig for MockIpPlatform {
     type Error = core::convert::Infallible;
 
-    fn apply_ip_config(&self, _config: &platform::IpConfig) -> Result<(), Self::Error> {
+    fn apply_ip_config(&self, _config: &zweidraehte_platform::IpConfig) -> Result<(), Self::Error> {
         Ok(()) // No-op — OS manages networking on Linux.
     }
 }
@@ -451,7 +451,7 @@ where
     }
 }
 
-use zweidraehte::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
+use zweidraehte_device::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
 
 impl<'a, S> HasDeviceObject for KnxIpInterfaceObjects<'a, S>
 where
@@ -513,7 +513,7 @@ pub struct KnxIpState<P: IpPlatform> {
     /// Application program table (holds both load and run state machines)
     pub app: RefCell<Application<()>>,
     /// Per-connection access level store
-    access_store: zweidraehte::ConnectionAuthLevels<1>,
+    access_store: zweidraehte_device::ConnectionAuthLevels<1>,
 }
 
 impl<P: IpPlatform> KnxIpState<P> {
@@ -525,7 +525,7 @@ impl<P: IpPlatform> KnxIpState<P> {
             ast: RefCell::new(stack_test_config::AssoTab::new()),
             cot: RefCell::new(stack_test_config::CoTab::new()),
             app: RefCell::new(Application::new()),
-            access_store: zweidraehte::ConnectionAuthLevels::<1>::new(),
+            access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
         }
     }
 
@@ -544,7 +544,7 @@ impl<P: IpPlatform> KnxIpState<P> {
             ast: RefCell::new(ast),
             cot: RefCell::new(cot),
             app: RefCell::new(app),
-            access_store: zweidraehte::ConnectionAuthLevels::<1>::new(),
+            access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
         }
     }
 }
@@ -700,12 +700,12 @@ impl<P: IpPlatform> HasApplication for KnxIpState<P> {
     }
 }
 
-impl<P: IpPlatform> zweidraehte::HasConnectionAuth for KnxIpState<P> {
-    fn connection_access(&self, slot: u8) -> zweidraehte::AccessContext {
+impl<P: IpPlatform> zweidraehte_device::HasConnectionAuth for KnxIpState<P> {
+    fn connection_access(&self, slot: u8) -> zweidraehte_device::AccessContext {
         self.access_store.get(slot)
     }
 
-    fn set_connection_access(&self, slot: u8, ctx: zweidraehte::AccessContext) {
+    fn set_connection_access(&self, slot: u8, ctx: zweidraehte_device::AccessContext) {
         self.access_store.set(slot, ctx);
     }
 
@@ -737,7 +737,7 @@ impl StackDefinition for MyKnxStackWithKnxIp {
     const TL_STYLE: TlStyle = TlStyle::Style1;
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
-    type LLB = KnxNetIpBuilder<platform::LinuxIpTransport, KnxIpDeviceUdp, 2>;
+    type LLB = KnxNetIpBuilder<zweidraehte_platform::LinuxIpTransport, KnxIpDeviceUdp, 2>;
     type State = MyState;
     type Mem = NoMemoryMap;
 
@@ -777,9 +777,9 @@ async fn main(spawner: Spawner) {
     // Create KNX/IP link layer
     let control_endpoint = SocketAddrV4::new("192.168.106.6".parse().unwrap(), 3671);
 
-    let interface_addr = platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
+    let interface_addr = zweidraehte_platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
     let link_layer_builder =
-        KnxNetIpBuilder::<platform::LinuxIpTransport, _, 2>::new("knxdevbridgeif", interface_addr, control_endpoint, ())
+        KnxNetIpBuilder::<zweidraehte_platform::LinuxIpTransport, _, 2>::new("knxdevbridgeif", interface_addr, control_endpoint, ())
             .enable_routing_server()
             .enable_remote_config_server();
 
@@ -822,10 +822,10 @@ async fn main(spawner: Spawner) {
     static RESOURCES: StaticCell<
         StackResources<
             MyKnxStackWithKnxIp,
-            { zweidraehte::config::buffer_size_for_apdu(MyKnxStackWithKnxIp::MAX_APDU_LENGTH) },
+            { zweidraehte_device::config::buffer_size_for_apdu(MyKnxStackWithKnxIp::MAX_APDU_LENGTH) },
         >,
     > = StaticCell::new();
-    let (stack, runner) = zweidraehte::new(
+    let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
         comm_objs::AppComObjects::new(),
         (), // hook_context

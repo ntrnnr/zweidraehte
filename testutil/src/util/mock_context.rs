@@ -2,14 +2,14 @@
 
 use core::cell::Cell;
 
-use zweidraehte::context::{
+use zweidraehte_device::context::{
     BufferManagerContext, DeviceInfoContext,
     IpAdditionalIndividualAddressContext, IpDiagnosticsContext, KnxIndividualAddressContext,
     PropertyServiceContext,
 };
-use zweidraehte::messages::buffers::DynBufferManager;
-use zweidraehte::messages::knxip::substructs::DeviceInformation;
-use zweidraehte::objects::interface::PropertyServiceHandler;
+use zweidraehte_device::messages::buffers::DynBufferManager;
+use zweidraehte_device::messages::knxip::substructs::DeviceInformation;
+use zweidraehte_device::objects::interface::PropertyServiceHandler;
 
 /// Mock context for testing link layers.
 ///
@@ -26,7 +26,7 @@ impl MockContext {
     pub fn new(buffer_manager: DynBufferManager<'static>) -> Self {
         Self {
             buffer_manager,
-            max_apdu_length: Cell::new(zweidraehte::config::MAX_APDU_LENGTH_EXTENDED),
+            max_apdu_length: Cell::new(zweidraehte_device::config::MAX_APDU_LENGTH_EXTENDED),
             device_info: Cell::new(None),
         }
     }
@@ -93,8 +93,8 @@ impl DeviceInfoContext for &MockContext {
         self.device_info.get().expect("MockContext: device_info not set")
     }
 
-    fn extended_device_information(&self) -> zweidraehte::messages::knxip::substructs::ExtendedDeviceInformation {
-        zweidraehte::messages::knxip::substructs::ExtendedDeviceInformation {
+    fn extended_device_information(&self) -> zweidraehte_device::messages::knxip::substructs::ExtendedDeviceInformation {
+        zweidraehte_device::messages::knxip::substructs::ExtendedDeviceInformation {
             medium_status: 0x00,
             max_local_apdu_len: self.max_apdu_length.get(),
             device_descriptor_type0: 0x091A, // System B TP1
@@ -111,8 +111,8 @@ impl DeviceInfoContext for &mut MockContext {
         self.device_info.get().expect("MockContext: device_info not set")
     }
 
-    fn extended_device_information(&self) -> zweidraehte::messages::knxip::substructs::ExtendedDeviceInformation {
-        zweidraehte::messages::knxip::substructs::ExtendedDeviceInformation {
+    fn extended_device_information(&self) -> zweidraehte_device::messages::knxip::substructs::ExtendedDeviceInformation {
+        zweidraehte_device::messages::knxip::substructs::ExtendedDeviceInformation {
             medium_status: 0x00,
             max_local_apdu_len: self.max_apdu_length.get(),
             device_descriptor_type0: 0x091A, // System B TP1
@@ -125,9 +125,9 @@ impl DeviceInfoContext for &mut MockContext {
 }
 
 impl IpDiagnosticsContext for &MockContext {
-    fn ip_config(&self) -> zweidraehte::messages::knxip::substructs::IpConfig {
+    fn ip_config(&self) -> zweidraehte_device::messages::knxip::substructs::IpConfig {
         use core::net::Ipv4Addr;
-        zweidraehte::messages::knxip::substructs::IpConfig {
+        zweidraehte_device::messages::knxip::substructs::IpConfig {
             ip_address: Ipv4Addr::UNSPECIFIED,
             subnet_mask: Ipv4Addr::UNSPECIFIED,
             default_gateway: Ipv4Addr::UNSPECIFIED,
@@ -136,9 +136,9 @@ impl IpDiagnosticsContext for &MockContext {
         }
     }
 
-    fn ip_current_config(&self) -> zweidraehte::messages::knxip::substructs::IpCurrentConfig {
+    fn ip_current_config(&self) -> zweidraehte_device::messages::knxip::substructs::IpCurrentConfig {
         use core::net::Ipv4Addr;
-        zweidraehte::messages::knxip::substructs::IpCurrentConfig {
+        zweidraehte_device::messages::knxip::substructs::IpCurrentConfig {
             ip_address: Ipv4Addr::UNSPECIFIED,
             subnet_mask: Ipv4Addr::UNSPECIFIED,
             default_gateway: Ipv4Addr::UNSPECIFIED,
@@ -149,9 +149,9 @@ impl IpDiagnosticsContext for &MockContext {
 }
 
 impl IpDiagnosticsContext for &mut MockContext {
-    fn ip_config(&self) -> zweidraehte::messages::knxip::substructs::IpConfig {
+    fn ip_config(&self) -> zweidraehte_device::messages::knxip::substructs::IpConfig {
         use core::net::Ipv4Addr;
-        zweidraehte::messages::knxip::substructs::IpConfig {
+        zweidraehte_device::messages::knxip::substructs::IpConfig {
             ip_address: Ipv4Addr::UNSPECIFIED,
             subnet_mask: Ipv4Addr::UNSPECIFIED,
             default_gateway: Ipv4Addr::UNSPECIFIED,
@@ -160,9 +160,9 @@ impl IpDiagnosticsContext for &mut MockContext {
         }
     }
 
-    fn ip_current_config(&self) -> zweidraehte::messages::knxip::substructs::IpCurrentConfig {
+    fn ip_current_config(&self) -> zweidraehte_device::messages::knxip::substructs::IpCurrentConfig {
         use core::net::Ipv4Addr;
-        zweidraehte::messages::knxip::substructs::IpCurrentConfig {
+        zweidraehte_device::messages::knxip::substructs::IpCurrentConfig {
             ip_address: Ipv4Addr::UNSPECIFIED,
             subnet_mask: Ipv4Addr::UNSPECIFIED,
             default_gateway: Ipv4Addr::UNSPECIFIED,
@@ -173,21 +173,21 @@ impl IpDiagnosticsContext for &mut MockContext {
 }
 
 impl KnxIndividualAddressContext for &MockContext {
-    fn individual_address(&self) -> zweidraehte::address::IndividualAddress {
-        zweidraehte::address::IndividualAddress::new(0, 0, 0)
+    fn individual_address(&self) -> zweidraehte_device::address::IndividualAddress {
+        zweidraehte_device::address::IndividualAddress::new(0, 0, 0)
     }
 }
 
 impl KnxIndividualAddressContext for &mut MockContext {
-    fn individual_address(&self) -> zweidraehte::address::IndividualAddress {
-        zweidraehte::address::IndividualAddress::new(0, 0, 0)
+    fn individual_address(&self) -> zweidraehte_device::address::IndividualAddress {
+        zweidraehte_device::address::IndividualAddress::new(0, 0, 0)
     }
 }
 
 impl IpAdditionalIndividualAddressContext for &MockContext {
     fn write_additional_individual_addresses(
         &self,
-        _buf: &mut [zweidraehte::address::IndividualAddress],
+        _buf: &mut [zweidraehte_device::address::IndividualAddress],
     ) -> usize {
         0
     }
@@ -196,7 +196,7 @@ impl IpAdditionalIndividualAddressContext for &MockContext {
 impl IpAdditionalIndividualAddressContext for &mut MockContext {
     fn write_additional_individual_addresses(
         &self,
-        _buf: &mut [zweidraehte::address::IndividualAddress],
+        _buf: &mut [zweidraehte_device::address::IndividualAddress],
     ) -> usize {
         0
     }

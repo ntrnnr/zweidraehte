@@ -12,8 +12,8 @@ use env_logger::Env;
 use knx_conformance::harness::mock::MockLinkLayerBuilder;
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
-use zweidraehte::prelude::*;
-use zweidraehte::{
+use zweidraehte_device::prelude::*;
+use zweidraehte_device::{
     dpt::DPT_Switch,
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::tables::{
@@ -67,7 +67,7 @@ pub struct MyState {
     /// Application program (load and run state machines)
     pub app: RefCell<Application<()>>,
     /// Per-connection access level store
-    access_store: zweidraehte::ConnectionAuthLevels<1>,
+    access_store: zweidraehte_device::ConnectionAuthLevels<1>,
 }
 
 impl MyState {
@@ -78,7 +78,7 @@ impl MyState {
             ast: RefCell::new(ast),
             cot: RefCell::new(cot),
             app: RefCell::new(Application::new()),
-            access_store: zweidraehte::ConnectionAuthLevels::<1>::new(),
+            access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
         }
     }
 }
@@ -91,7 +91,7 @@ impl Default for MyState {
             ast: RefCell::new(AssoTab6::<15>::new()),
             cot: RefCell::new(CoTab7::<30>::new()),
             app: RefCell::new(Application::new()),
-            access_store: zweidraehte::ConnectionAuthLevels::<1>::new(),
+            access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
         }
     }
 }
@@ -131,12 +131,12 @@ impl HasCommunicationObjectTable for MyState {
     }
 }
 
-impl zweidraehte::HasConnectionAuth for MyState {
-    fn connection_access(&self, slot: u8) -> zweidraehte::AccessContext {
+impl zweidraehte_device::HasConnectionAuth for MyState {
+    fn connection_access(&self, slot: u8) -> zweidraehte_device::AccessContext {
         self.access_store.get(slot)
     }
 
-    fn set_connection_access(&self, slot: u8, ctx: zweidraehte::AccessContext) {
+    fn set_connection_access(&self, slot: u8, ctx: zweidraehte_device::AccessContext) {
         self.access_store.set(slot, ctx);
     }
 
@@ -244,7 +244,7 @@ async fn main(spawner: Spawner) {
     }
 
     static RESOURCES: StaticCell<
-        StackResources<MyKnxStack, { zweidraehte::config::buffer_size_for_apdu(MyKnxStack::MAX_APDU_LENGTH) }>,
+        StackResources<MyKnxStack, { zweidraehte_device::config::buffer_size_for_apdu(MyKnxStack::MAX_APDU_LENGTH) }>,
     > = StaticCell::new();
 
     // Create a channel for the mock link layer to receive injected messages
@@ -259,7 +259,7 @@ async fn main(spawner: Spawner) {
     // Create the unified state (tables + runtime state)
     let state = MyState::new(stored_data.addr_tab, stored_data.asso_tab, stored_data.co_tab);
 
-    let (stack, runner) = zweidraehte::new(
+    let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
         comm_objs::AppComObjects::new(),
         (), // hook_context

@@ -20,9 +20,9 @@ use devices::light_switch::{
     params::LIGHT_SWITCH_VIRTUAL_PARAMS,
     translations::LIGHT_SWITCH_TRANSLATIONS,
 };
-use knxprod::definition::page_layout::EtsPageLayout;
-use knxprod::signing::{KnxSchemaVersion, MasterDataSource};
-use knxprod::{
+use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
+use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
+use zweidraehte_knxprod::{
     ApplicationProgramDef, CatalogEntryDef, CatalogSectionDef, DeviceInstanceDef, HardwareDef,
     KnxprodBuilder, ProductDef,
 };

@@ -11,7 +11,7 @@ use embassy_time::{Duration, Timer};
 use embedded_hal::digital::InputPin;
 use embedded_hal_async::digital::Wait;
 
-pub use embedded_util::input::ButtonEvent;
+pub use zweidraehte_util::input::ButtonEvent;
 
 /// A push-button with debounce and short/long press classification.
 ///

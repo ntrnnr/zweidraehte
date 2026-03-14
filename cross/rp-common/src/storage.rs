@@ -44,9 +44,9 @@ use embassy_rp::flash::{self, Flash};
 use embassy_rp::peripherals::FLASH;
 use serde::{Deserialize, Serialize};
 
-use zweidraehte::bcus::system_b::HasPersistedState;
-use zweidraehte::storage::DeviceIdentity;
-use zweidraehte::storage::DeviceStorage;
+use zweidraehte_device::bcus::system_b::HasPersistedState;
+use zweidraehte_device::storage::DeviceIdentity;
+use zweidraehte_device::storage::DeviceStorage;
 
 // ================================================================================
 // Constants

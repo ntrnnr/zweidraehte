@@ -24,7 +24,7 @@ use devices::light_switch::{
     self, LightSwitchDevice, LightSwitchParams,
     comm_objs::LightSwitchComObjects,
 };
-use zweidraehte::{
+use zweidraehte_device::{
     bcus::system_b::{
         DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, SystemBIpDeviceDef,
         SystemBMemoryMap, create_knxip_objects,
@@ -136,8 +136,8 @@ async fn restart_task(
     storage: &'static RefCell<Storage>,
 ) -> ! {
     use rp_common::CortexMSystem;
-    use platform::SystemControl;
-    use zweidraehte::restart::EraseCode;
+    use zweidraehte_platform::SystemControl;
+    use zweidraehte_device::restart::EraseCode;
 
     loop {
         let request = knx.receive_restart_request().await;
@@ -390,11 +390,11 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             PicoWLightSwitch,
-            { zweidraehte::config::buffer_size_for_apdu(<PicoWLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
+            { zweidraehte_device::config::buffer_size_for_apdu(<PicoWLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
         >,
     > = StaticCell::new();
 
-    let (knx_stack, knx_runner) = zweidraehte::new(
+    let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
         LightSwitchComObjects::new(),
         (), // hook context — no application hooks yet

@@ -7,7 +7,7 @@
 //!
 //! ```rust,ignore
 //! use testutil::storage::JsonStorage;
-//! use zweidraehte::storage::DeviceStorage;
+//! use zweidraehte_device::storage::DeviceStorage;
 //!
 //! let identity = FileIdentity::load_or_provision("identity.json", serial).unwrap();
 //! let mut storage = JsonStorage::<DemoState, _>::new("device_state.json", identity);
@@ -22,9 +22,9 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use serde::{Serialize, de::DeserializeOwned};
-use zweidraehte::bcus::system_b::HasPersistedState;
-use zweidraehte::storage::DeviceIdentity;
-use zweidraehte::storage::DeviceStorage;
+use zweidraehte_device::bcus::system_b::HasPersistedState;
+use zweidraehte_device::storage::DeviceIdentity;
+use zweidraehte_device::storage::DeviceStorage;
 
 /// JSON file-based storage for device state.
 ///

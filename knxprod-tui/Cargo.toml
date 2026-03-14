@@ -11,7 +11,7 @@ default = []
 images = ["dep:ratatui-image", "dep:image"]
 
 [dependencies]
-knxprod = { path = "../knxprod" }
+zweidraehte-knxprod = { path = "../crates/zweidraehte-knxprod" }
 
 ratatui = "0.30"
 crossterm = "0.28"
