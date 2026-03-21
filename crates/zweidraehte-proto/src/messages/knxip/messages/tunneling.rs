@@ -73,6 +73,33 @@ mod raw {
 }
 
 // ============================================================================
+// Tunneling Feature IDs (KNX spec 03/08/04 §4.6 Table 3)
+// ============================================================================
+
+/// Interface feature identifiers for tunneling connections.
+///
+/// Used with `TunnelingFeatureGet` / `TunnelingFeatureSet` /
+/// `TunnelingFeatureResponse` to query and configure tunnel properties.
+pub mod tunneling_feature_id {
+    /// Supported EMI type bitmap (1 byte). Always 0x01 (cEMI only).
+    pub const SUPPORTED_EMI_TYPE: u8 = 0x01;
+    /// Host Device Descriptor Type 0 (2 bytes).
+    pub const HOST_DEVICE_DESCRIPTOR_TYPE_0: u8 = 0x02;
+    /// Bus connection status (1 byte). 0x01 = connected, 0x00 = disconnected.
+    pub const BUS_CONNECTION_STATUS: u8 = 0x03;
+    /// KNX manufacturer code (2 bytes).
+    pub const KNX_MANUFACTURER_CODE: u8 = 0x04;
+    /// Active EMI type (1 byte). Always 0x01 (cEMI).
+    pub const ACTIVE_EMI_TYPE: u8 = 0x05;
+    /// Individual address of this tunneling connection (2 bytes).
+    pub const INDIVIDUAL_ADDRESS: u8 = 0x06;
+    /// Maximum APDU length supported by this tunnel connection (2 bytes, big-endian).
+    pub const MAX_APDU_LENGTH: u8 = 0x07;
+    /// Feature info enable bitmap (1 byte). Controls unsolicited notifications.
+    pub const FEATURE_INFO_ENABLE: u8 = 0x08;
+}
+
+// ============================================================================
 // TUNNELING REQUEST
 // ============================================================================
 
@@ -570,18 +597,40 @@ impl SerializablePacket for TunnelingFeatureGetBuilder {
 
 /// KNXnet/IP TUNNELING_FEATURE_RESPONSE
 ///
-/// Response containing tunneling feature information
+/// Response containing tunneling feature information. The feature value
+/// (up to 4 bytes) follows the return code in the wire format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TunnelingFeatureResponse {
     pub communication_channel_id: u8,
     pub sequence_counter: u8,
     pub feature_identifier: u8,
     pub return_code: u8,
+    /// Feature value bytes. Only the first `value_len` bytes are valid.
+    value: [u8; 4],
+    value_len: u8,
 }
 
 impl TunnelingFeatureResponse {
     pub fn new(communication_channel_id: u8, sequence_counter: u8, feature_identifier: u8, return_code: u8) -> Self {
-        Self { communication_channel_id, sequence_counter, feature_identifier, return_code }
+        Self {
+            communication_channel_id, sequence_counter, feature_identifier, return_code,
+            value: [0; 4], value_len: 0,
+        }
+    }
+
+    /// The feature value bytes (empty if return_code != 0 or no value present).
+    pub fn value(&self) -> &[u8] {
+        &self.value[..self.value_len as usize]
+    }
+
+    /// Parse the feature value as a big-endian u16 (e.g., for MAX_APDU_LENGTH).
+    /// Returns `None` if the value is not exactly 2 bytes.
+    pub fn value_u16(&self) -> Option<u16> {
+        if self.value_len == 2 {
+            Some(u16::from_be_bytes([self.value[0], self.value[1]]))
+        } else {
+            None
+        }
     }
 }
 
@@ -597,14 +646,26 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingFeatureResponse {
             return Err(ParseError::Format);
         }
 
+        let total_len = header.total_length.get() as usize;
+        let headers_len = mem::size_of::<KNXnetIPHeader>() + mem::size_of::<raw::TunnelingFeatureHeader>() + 1;
+
         let feat_header = buffer.take_obj_front::<raw::TunnelingFeatureHeader>().ok_or(ParseError::Format)?;
         let return_code = buffer.take_byte_front().ok_or(ParseError::Format)?;
+
+        // Remaining bytes after the return code are the feature value.
+        let value_len = total_len.saturating_sub(headers_len).min(4);
+        let mut value = [0u8; 4];
+        for byte in value.iter_mut().take(value_len) {
+            *byte = buffer.take_byte_front().ok_or(ParseError::Format)?;
+        }
 
         Ok(TunnelingFeatureResponse {
             communication_channel_id: feat_header.communication_channel_id,
             sequence_counter: feat_header.sequence_counter,
             feature_identifier: feat_header.feature_identifier,
             return_code,
+            value,
+            value_len: value_len as u8,
         })
     }
 }
@@ -938,5 +999,26 @@ mod tests {
         assert_eq!(parsed.sequence_counter, 3);
         assert_eq!(parsed.feature_identifier, 0x01);
         assert_eq!(parsed.return_code, 0x00);
+        assert_eq!(parsed.value(), &[]);
+    }
+
+    #[test]
+    fn test_tunneling_feature_response_with_value() {
+        // MAX_APDU_LENGTH response: 2 bytes, big-endian 254
+        let builder = TunnelingFeatureResponseBuilder::with_value(
+            25, 3, tunneling_feature_id::MAX_APDU_LENGTH, 0x00, &[0x00, 0xFE],
+        );
+
+        let mut buffer = [0u8; 32];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+
+        let mut parse_buf = written;
+        let parsed = parse_buf.parse::<TunnelingFeatureResponse>().unwrap();
+
+        assert_eq!(parsed.feature_identifier, 0x07);
+        assert_eq!(parsed.return_code, 0x00);
+        assert_eq!(parsed.value(), &[0x00, 0xFE]);
+        assert_eq!(parsed.value_u16(), Some(254));
     }
 }

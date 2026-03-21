@@ -18,6 +18,7 @@
 //! # Modules
 //!
 //! - [`property`] — `A_PropertyValue_*` and `A_PropertyDescription_*`
+//! - [`function_property`] — `A_FunctionPropertyCommand`, `A_FunctionPropertyState_*`
 //! - [`memory`] — `A_Memory_*`, `A_UserMemory_*`, `A_MemoryBit_Write`
 //! - [`device`] — `A_DeviceDescriptor_*`, `A_IndividualAddress*`, `A_ADC_*`
 //! - [`auth`] — `A_Authorize_*`, `A_Key_*`
@@ -25,6 +26,7 @@
 
 pub mod auth;
 pub mod device;
+pub mod function_property;
 pub mod memory;
 pub mod property;
 pub mod restart;

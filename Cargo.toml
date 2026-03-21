@@ -4,6 +4,7 @@ members = [
     "crates/zweidraehte-proto",
     "crates/zweidraehte-device",
     "crates/zweidraehte-platform",
+    "crates/zweidraehte-client",
     "crates/zweidraehte-ets",
     "crates/zweidraehte-knxprod",
     "crates/zweidraehte-util",

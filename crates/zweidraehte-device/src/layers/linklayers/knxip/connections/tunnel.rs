@@ -64,29 +64,7 @@ struct TunnelSlot {
     active_channel: Option<u8>,
 }
 
-// ============================================================================
-// Tunneling Feature IDs (spec 03/08/04 §4.6 Table 3)
-// ============================================================================
-
-/// Interface feature identifiers for tunneling connections.
-mod feature_id {
-    /// Supported EMI type bitmap (1 byte). Always 0x01 (cEMI only).
-    pub const SUPPORTED_EMI_TYPE: u8 = 0x01;
-    /// Host Device Descriptor Type 0 (2 bytes).
-    pub const HOST_DEVICE_DESCRIPTOR_TYPE_0: u8 = 0x02;
-    /// Bus connection status (1 byte). 0x01 = connected, 0x00 = disconnected.
-    pub const BUS_CONNECTION_STATUS: u8 = 0x03;
-    /// KNX manufacturer code (2 bytes).
-    pub const KNX_MANUFACTURER_CODE: u8 = 0x04;
-    /// Active EMI type (1 byte). Always 0x01 (cEMI).
-    pub const ACTIVE_EMI_TYPE: u8 = 0x05;
-    /// Individual address of this tunneling connection (2 bytes).
-    pub const INDIVIDUAL_ADDRESS: u8 = 0x06;
-    /// Maximum APDU length (2 bytes).
-    pub const MAX_APDU_LENGTH: u8 = 0x07;
-    /// Feature info enable bitmap (1 byte). Controls unsolicited notifications.
-    pub const FEATURE_INFO_ENABLE: u8 = 0x08;
-}
+use crate::messages::knxip::tunneling_feature_id as feature_id;
 
 // ============================================================================
 // Handler

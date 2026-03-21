@@ -1,0 +1,15 @@
+[package]
+name = "zweidraehte-client"
+version = "0.1.0"
+edition.workspace = true
+description = "KNX/IP client library for device management"
+
+[dependencies]
+zweidraehte-proto = { path = "../zweidraehte-proto", features = ["std", "log", "knxip"] }
+
+tokio = { version = "1", features = ["net", "time", "sync", "rt", "macros"] }
+log = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }

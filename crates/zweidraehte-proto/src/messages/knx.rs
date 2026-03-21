@@ -176,6 +176,8 @@ create_protocol_enum!(
         UserManufacturerInfoRead,   0x85,   "A_UserManufacturerInfo_Read";
         UserManufacturerInfoResponse, 0x86, "A_UserManufacturerInfo_Response";
         FunctionPropertyCommand,    0x87,   "A_FunctionPropertyCommand";
+        FunctionPropertyStateRead,  0x88,   "A_FunctionPropertyState_Read";
+        FunctionPropertyStateResponse, 0x89, "A_FunctionPropertyState_Response";
 
         MemoryBitWrite,             0xd0,   "A_MemoryBit_Write";
         AuthorizeRequest,           0xd1,   "A_Authorize_Request";
@@ -1336,6 +1338,33 @@ mod tests {
         0x01, 0x02, 0x03, 0x04, // Data: 0x01020304
     ];
 
+    // 7. Function property state read
+    const FUNCTION_PROPERTY_STATE_READ: &[u8] = &[
+        0xBC, // Control byte 1: Standard frame, priority 3
+        0x11, 0x22, // Source address: 1.1.34
+        0x11, 0x23, // Destination address: 1.1.35
+        0x00, // Control byte 2: Individual address
+        0x46, // TPCI: Numbered data packet seqno 1, first 2 bits of APCI: 10 (User)
+        0xC8, // APCI: (10) 11 (User) 001000 (Function Property State Read)
+        0x01, // Object index: 1
+        0x02, // Property ID: 2
+        0x01, 0x02, 0x03, 0x04, // Data: 0x01020304
+    ];
+
+    // 8. Function property state response
+    const FUNCTION_PROPERTY_STATE_RESPONSE: &[u8] = &[
+        0xBC, // Control byte 1: Standard frame, priority 3
+        0x11, 0x22, // Source address: 1.1.34
+        0x11, 0x23, // Destination address: 1.1.35
+        0x00, // Control byte 2: Individual address
+        0x46, // TPCI: Numbered data packet seqno 1, first 2 bits of APCI: 10 (User)
+        0xC9, // APCI: (10) 11 (User) 001001 (Function Property State Response)
+        0x01, // Object index: 1
+        0x02, // Property ID: 2
+        0x00, // Return code: 0 (success)
+        0x01, 0x02, 0x03, 0x04, // Data: 0x01020304
+    ];
+
     // Collection of all KNX TP1 test frames for easy iteration
     pub const KNX_TP1_TEST_FRAMES: &[&[u8]] = &[
         GROUP_VALUE_WRITE,
@@ -1344,6 +1373,8 @@ mod tests {
         PROPERTY_VALUE_READ,
         SYSTEM_NETWORK_PARAMETER_READ,
         FUNCTION_PROPERTY_COMMAND,
+        FUNCTION_PROPERTY_STATE_READ,
+        FUNCTION_PROPERTY_STATE_RESPONSE,
     ];
 
     #[test]
@@ -1355,6 +1386,8 @@ mod tests {
             ApciCode::PropertyValueRead,
             ApciCode::SystemNetworkParameterRead,
             ApciCode::FunctionPropertyCommand,
+            ApciCode::FunctionPropertyStateRead,
+            ApciCode::FunctionPropertyStateResponse,
         ];
 
         for (t, e) in KNX_TP1_TEST_FRAMES.iter().zip(EXPECTED_APCIS.iter()) {
@@ -1371,6 +1404,8 @@ mod tests {
             Some(Tpci::DataConnected(1)),
             Some(Tpci::DataConnected(1)),
             Some(Tpci::DataSystemBroadcast),
+            Some(Tpci::DataConnected(1)),
+            Some(Tpci::DataConnected(1)),
             Some(Tpci::DataConnected(1)),
         ];
 
