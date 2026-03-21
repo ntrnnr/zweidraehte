@@ -26,6 +26,7 @@ test-case = "3.3"
 [features]
 defmt = ["dep:defmt", "zweidraehte-platform/defmt", "heapless/defmt"]
 log = ["dep:log", "zweidraehte-platform/log"]
-std = ["zweidraehte-platform/std"]
+alloc = []
+std = ["alloc", "zweidraehte-platform/std"]
 knxip = []
 tp1 = []

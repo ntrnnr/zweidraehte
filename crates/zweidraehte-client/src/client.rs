@@ -4,14 +4,9 @@ use core::net::SocketAddrV4;
 
 use tokio::sync::{mpsc, oneshot};
 
-use zweidraehte_proto::encoding::cemi::CemiLData;
-use zweidraehte_proto::util::packets::ParseBuffer;
-
-/// Offset of the TPCI/APCI region within the cEMI body (after msg_code and
-/// add_info_len have been stripped by the parser).
-///
-/// cEMI body: [ctrl1, ctrl2, src_hi, src_lo, dst_hi, dst_lo, npdu_len, tpci/apci...]
-const CEMI_BODY_TPCI_OFFSET: usize = 7;
+use zweidraehte_proto::messages::knx::{ApciCode, decode_apci_code, offsets};
+use zweidraehte_proto::messages::apdu::property::PropertyValueHeader;
+use zweidraehte_proto::messages::apdu::function_property::FunctionPropertyResponse;
 
 use crate::device::DeviceConnection;
 use crate::error::{Error, Result};
@@ -94,8 +89,12 @@ impl KnxClient {
         descriptor_type: u8,
     ) -> Result<Vec<u8>> {
         let apci = management::build_device_descriptor_read(descriptor_type);
-        let response = self.send_unconnected(addr, &apci).await?;
-        management::parse_device_descriptor_response(&response)
+        let buf = self.send_unconnected(addr, &apci).await?;
+        // Device descriptor data starts at APDU offset (MSG_APDU = 8).
+        if buf.len() < offsets::MSG_APDU {
+            return Err(Error::Parse("DeviceDescriptorResponse too short"));
+        }
+        Ok(buf[offsets::MSG_APDU..].to_vec())
     }
 
     /// Read a property value from a device (unconnected).
@@ -108,12 +107,13 @@ impl KnxClient {
         count: u16,
     ) -> Result<Vec<u8>> {
         let apci = management::build_property_read(obj_idx, prop_id, count, start_idx);
-        let response = self.send_unconnected(addr, &apci).await?;
-        let (resp_count, _, data) = management::parse_property_value_response(&response)?;
-        if resp_count == 0 {
+        let buf = self.send_unconnected(addr, &apci).await?;
+        let hdr = PropertyValueHeader::parse(&buf)
+            .ok_or(Error::Parse("PropertyValueResponse too short"))?;
+        if hdr.count == 0 {
             return Err(Error::DeviceError(0));
         }
-        Ok(data)
+        Ok(hdr.data(&buf).to_vec())
     }
 
     /// Execute a function property command on a device (unconnected).
@@ -125,8 +125,13 @@ impl KnxClient {
         service_data: &[u8],
     ) -> Result<crate::FunctionPropertyResult> {
         let apci = management::build_function_property_command(obj_idx, prop_id, service_data);
-        let response = self.send_unconnected(addr, &apci).await?;
-        management::parse_function_property_response(&response)
+        let buf = self.send_unconnected(addr, &apci).await?;
+        let resp = FunctionPropertyResponse::parse(&buf)
+            .ok_or(Error::Parse("FunctionPropertyResponse too short"))?;
+        Ok(crate::FunctionPropertyResult {
+            return_code: resp.return_code,
+            data: resp.data(&buf).to_vec(),
+        })
     }
 
     /// Read the state of a function property on a device (unconnected).
@@ -138,8 +143,13 @@ impl KnxClient {
         service_data: &[u8],
     ) -> Result<crate::FunctionPropertyResult> {
         let apci = management::build_function_property_state_read(obj_idx, prop_id, service_data);
-        let response = self.send_unconnected(addr, &apci).await?;
-        management::parse_function_property_response(&response)
+        let buf = self.send_unconnected(addr, &apci).await?;
+        let resp = FunctionPropertyResponse::parse(&buf)
+            .ok_or(Error::Parse("FunctionPropertyResponse too short"))?;
+        Ok(crate::FunctionPropertyResult {
+            return_code: resp.return_code,
+            data: resp.data(&buf).to_vec(),
+        })
     }
 
     // ========================================================================
@@ -200,35 +210,46 @@ impl KnxClient {
             self.cemi_mode,
         );
 
+        // Derive the expected response APCI from the outgoing request.
+        let expected_apci = Self::derive_expected_apci(apci_data);
+
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(Command::SendFrame {
                 cemi,
+                expected_source: Some(dest),
+                expected_apci,
                 response_tx: tx,
             })
             .await
             .map_err(|_| Error::WorkerGone)?;
 
-        let cemi_response = rx.await.map_err(|_| Error::WorkerGone)??;
+        // The worker returns the response in internal message format.
+        let internal_buf = rx.await.map_err(|_| Error::WorkerGone)??;
 
-        // Parse the cEMI response to extract APCI data.
-        let mut slice: &[u8] = &cemi_response;
-        let cemi: CemiLData<&[u8]> = slice
-            .parse()
-            .map_err(|_| Error::Parse("invalid cEMI in response"))?;
-
-        let cemi_body = cemi.data();
-        if cemi_body.len() < CEMI_BODY_TPCI_OFFSET + 2 {
-            return Err(Error::Parse("cEMI body too short for APCI"));
-        }
-
-        let apci_data = &cemi_body[CEMI_BODY_TPCI_OFFSET..];
         log::debug!(
-            "Response APCI ({} bytes): {:02x?}",
-            apci_data.len(),
-            apci_data,
+            "Response internal ({} bytes): {:02x?}",
+            internal_buf.len(),
+            internal_buf,
         );
 
-        Ok(apci_data.to_vec())
+        Ok(internal_buf)
+    }
+
+    /// Derive the expected response APCI from outgoing APCI data bytes.
+    ///
+    /// Constructs a minimal internal-format buffer from the 2 APCI bytes to
+    /// decode the request APCI code, then maps to the expected response.
+    fn derive_expected_apci(apci_data: &[u8]) -> Option<ApciCode> {
+        if apci_data.len() < 2 {
+            return None;
+        }
+        // Build a minimal internal-format buffer: 6 zero bytes (ctrl, src, dst, npdu)
+        // followed by the 2 APCI bytes.
+        let mut buf = vec![0u8; offsets::MSG_APCI + 2];
+        buf[offsets::MSG_APCI] = apci_data[0];
+        buf[offsets::MSG_APCI + 1] = apci_data[1];
+        let request_apci = decode_apci_code(&buf)?;
+        crate::management::expected_response_apci(request_apci)
     }
 }

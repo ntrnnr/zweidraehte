@@ -255,6 +255,64 @@ pub trait MessageBuffer: Deref<Target = [u8]> + DerefMut<Target = [u8]> + Sized 
     }
 }
 
+// ============================================================================
+// Vec<u8> implementation (requires alloc)
+// ============================================================================
+
+/// `MessageBuffer` implementation for `Vec<u8>`.
+///
+/// This enables using `Vec<u8>` with functions like [`cemi_to_knx_message`]
+/// in `std`/`alloc` environments (e.g., the client crate).
+///
+/// `Vec` has no headroom concept, so `grow_front` and `shrink_front` use
+/// copying (`insert`/`drain`). This is fine for occasional use but not
+/// suitable for hot paths that rely on zero-copy prepending.
+///
+/// [`cemi_to_knx_message`]: crate::encoding::cemi::cemi_to_knx_message
+#[cfg(feature = "alloc")]
+impl MessageBuffer for alloc::vec::Vec<u8> {
+    fn len(&self) -> usize {
+        alloc::vec::Vec::len(self)
+    }
+
+    fn set_len(&mut self, len: usize) {
+        self.resize(len, 0);
+    }
+
+    fn capacity(&self) -> usize {
+        alloc::vec::Vec::capacity(self)
+    }
+
+    fn headroom(&self) -> usize {
+        0
+    }
+
+    fn grow_front(&mut self, count: usize) {
+        // Insert zeroed bytes at the front. This shifts all existing data
+        // right by `count` bytes — O(n) but acceptable for non-hot paths.
+        self.splice(..0, core::iter::repeat(0).take(count));
+    }
+
+    fn shrink_front(&mut self, count: usize) {
+        assert!(
+            count <= alloc::vec::Vec::len(self),
+            "cannot shrink more than length: requested {}, length {}",
+            count,
+            alloc::vec::Vec::len(self),
+        );
+        self.drain(..count);
+    }
+
+    fn spare_capacity_mut(&mut self) -> &mut [u8] {
+        let len = alloc::vec::Vec::len(self);
+        let cap = alloc::vec::Vec::capacity(self);
+        // Safety: the bytes between len and capacity are allocated but
+        // uninitialized. Callers must write before reading, then call
+        // extend_len() to include the written bytes.
+        unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr().add(len), cap - len) }
+    }
+}
+
 /// A message buffer managed by the [`BufferManager`].
 ///
 /// This buffer has built-in headroom support for zero-copy format conversions.

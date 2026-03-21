@@ -10,7 +10,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant, timeout_at};
 
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::encoding::cemi::CemiMessageCode;
+use zweidraehte_proto::encoding::cemi::{CemiMessageCode, cemi_to_knx_message};
+use zweidraehte_proto::messages::knx::{ApciCode, decode_apci_code, offsets};
 use zweidraehte_proto::messages::knxip::*;
 use zweidraehte_proto::messages::knxip::substructs::*;
 use zweidraehte_proto::messages::knxip::tunneling_feature_id;
@@ -47,9 +48,11 @@ pub enum Command {
     ///
     /// The worker wraps the cEMI in a TunnelingRequest, handles the ACK,
     /// then waits for the corresponding indication from the bus. The
-    /// response_tx receives the raw cEMI indication bytes.
+    /// response is returned in internal message format (converted from cEMI).
     SendFrame {
         cemi: Vec<u8>,
+        expected_source: Option<IndividualAddress>,
+        expected_apci: Option<ApciCode>,
         response_tx: oneshot::Sender<Result<Vec<u8>>>,
     },
     /// Send a cEMI frame but don't wait for a bus response.
@@ -283,8 +286,8 @@ impl TunnelWorker {
                             let _ = response_tx.send(result);
                             return Ok(());
                         }
-                        Command::SendFrame { cemi, response_tx } => {
-                            let result = self.send_and_receive(&cemi).await;
+                        Command::SendFrame { cemi, expected_source, expected_apci, response_tx } => {
+                            let result = self.send_and_receive(&cemi, expected_source, expected_apci).await;
                             let _ = response_tx.send(result);
                         }
                         Command::SendFrameNoResponse { cemi, response_tx } => {
@@ -356,9 +359,18 @@ impl TunnelWorker {
     // ========================================================================
 
     /// Send a cEMI frame, wait for ACK, then wait for the bus response indication.
-    async fn send_and_receive(&mut self, cemi: &[u8]) -> Result<Vec<u8>> {
+    ///
+    /// The response is returned in internal message format. Optional filters
+    /// allow skipping indications that don't match the expected source address
+    /// or APCI code.
+    async fn send_and_receive(
+        &mut self,
+        cemi: &[u8],
+        expected_source: Option<IndividualAddress>,
+        expected_apci: Option<ApciCode>,
+    ) -> Result<Vec<u8>> {
         self.send_and_wait_ack(cemi).await?;
-        self.wait_for_indication().await
+        self.wait_for_indication(expected_source, expected_apci).await
     }
 
     /// Send a cEMI frame and wait for the TunnelingAck. Retries once on timeout.
@@ -429,7 +441,16 @@ impl TunnelWorker {
 
     /// Wait for a bus response indication (TunnelingRequest from server
     /// containing an L_Data.ind or L_Data.con cEMI frame).
-    async fn wait_for_indication(&mut self) -> Result<Vec<u8>> {
+    ///
+    /// The response is converted to internal message format before returning.
+    /// Optional filters skip indications that don't match the expected source
+    /// address or APCI code (useful when unsolicited indications arrive during
+    /// a request-response exchange).
+    async fn wait_for_indication(
+        &mut self,
+        expected_source: Option<IndividualAddress>,
+        expected_apci: Option<ApciCode>,
+    ) -> Result<Vec<u8>> {
         let mut recv_buf = [0u8; MAX_PACKET_SIZE];
         let deadline = Instant::now() + RESPONSE_TIMEOUT;
 
@@ -464,20 +485,51 @@ impl TunnelWorker {
                                 CemiMessageCode::LDataCon => {
                                     // Bus confirmation of our request.
                                     _got_confirmation = true;
-                                    // Check for negative confirmation.
-                                    if cemi_data.len() > 2 {
-                                        let add_info_len = cemi_data[1] as usize;
-                                        let ctrl_offset = 2 + add_info_len;
-                                        if ctrl_offset < cemi_data.len()
-                                            && (cemi_data[ctrl_offset] & 0x01) != 0
-                                        {
-                                            return Err(Error::NegativeConfirmation);
-                                        }
+                                    // Check for negative confirmation using internal format.
+                                    let con_internal = cemi_to_knx_message(cemi_data.to_vec());
+                                    if !con_internal.is_empty()
+                                        && (con_internal[offsets::MSG_CONTROL] & 0x01) != 0
+                                    {
+                                        return Err(Error::NegativeConfirmation);
                                     }
                                 }
                                 CemiMessageCode::LDataInd => {
-                                    // Actual response from the bus device.
-                                    return Ok(cemi_data.to_vec());
+                                    // Convert to internal format.
+                                    let internal = cemi_to_knx_message(cemi_data.to_vec());
+
+                                    // Filter by source address.
+                                    if let Some(expected) = expected_source {
+                                        if internal.len() >= offsets::MSG_SOURCE_ADDR + 2 {
+                                            let source = IndividualAddress::from_bytes(
+                                                &internal[offsets::MSG_SOURCE_ADDR
+                                                    ..offsets::MSG_SOURCE_ADDR + 2],
+                                            );
+                                            if source != expected {
+                                                log::debug!(
+                                                    "Skipping L_Data.ind from {} (expected {})",
+                                                    source,
+                                                    expected,
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                    }
+
+                                    // Filter by APCI code.
+                                    if let Some(expected) = expected_apci {
+                                        if let Some(actual) = decode_apci_code(&internal) {
+                                            if actual != expected {
+                                                log::debug!(
+                                                    "Skipping APCI {} (expected {})",
+                                                    actual,
+                                                    expected,
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                    }
+
+                                    return Ok(internal);
                                 }
                                 _ => {
                                     log::trace!("Ignoring cEMI {}", msg_code);

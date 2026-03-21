@@ -199,6 +199,33 @@ create_protocol_enum!(
     }
 );
 
+/// Decode an [`ApciCode`] from a raw internal-format message buffer.
+///
+/// This is the standalone equivalent of [`KnxMessageBuffer::get_apci_code`],
+/// usable without constructing a full message buffer. The buffer must start at
+/// offset 0 of the internal format (ctrl byte) and contain at least
+/// `MSG_APCI + 2` bytes.
+pub fn decode_apci_code(buf: &[u8]) -> Option<ApciCode> {
+    use offsets::MSG_APCI;
+
+    if buf.len() < MSG_APCI + 2 {
+        return None;
+    }
+
+    let apci_u16 = u16::from_be_bytes([buf[MSG_APCI], buf[MSG_APCI + 1]]);
+    let apci_raw = ((apci_u16 & 0x03C0) >> 6) as u8;
+
+    Some(if apci_raw == ApciCode::UserMessage.into() {
+        ApciCode::from(buf[MSG_APCI + 1] & 0xbf)
+    } else if apci_raw == ApciCode::Escape.into() {
+        ApciCode::from(buf[MSG_APCI + 1])
+    } else if apci_raw == 7 && ((buf[MSG_APCI + 1] & 0x3f) > 7) {
+        ApciCode::from(buf[MSG_APCI + 1] & 0x7f)
+    } else {
+        ApciCode::from(apci_raw)
+    })
+}
+
 create_protocol_enum!(
     /// Address types
     #[derive(Eq, PartialEq, Copy, Clone)]
@@ -701,27 +728,14 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
         unsafe { &*(&self.buf[MSG_TPCI] as *const u8 as *const TpciField) }
     }
 
-    /// Get the APCI value from the message as an enum
+    /// Get the APCI value from the message as an enum.
+    ///
+    /// See also [`decode_apci_code`] for a standalone version that works on
+    /// raw `&[u8]` slices without a `KnxMessageBuffer`.
     pub fn get_apci_code(&self) -> ApciCode {
-        use offsets::*;
-
-        // The first six bits of the APCI field either directly contain the
-        // short APCIs or an escape code for the extended and user codes.
-        let apci_raw = ((self.read_u16_be(MSG_APCI) & 0x03C0) >> 6) as u8;
-
-        if apci_raw == ApciCode::UserMessage.into() {
-            // User messages
-            ApciCode::from(self.buf[MSG_APCI + 1] & 0xbf)
-        } else if apci_raw == ApciCode::Escape.into() {
-            // Escaped messages
-            ApciCode::from(self.buf[MSG_APCI + 1])
-        } else if apci_raw == 7 && ((self.buf[MSG_APCI + 1] & 0x3f) > 7) {
-            // Extended messages
-            ApciCode::from(self.buf[MSG_APCI + 1] & 0x7f)
-        } else {
-            // Short messages
-            ApciCode::from(apci_raw)
-        }
+        // The buffer is guaranteed to be at least MSG_APCI + 2 bytes for any
+        // valid message, so unwrap is safe here.
+        decode_apci_code(&self.buf).expect("message buffer too short for APCI")
     }
 
     /// Get the 6-bit data field from a short APCI message.
@@ -1394,6 +1408,31 @@ mod tests {
             let msg = KnxMessageBuffer::new(*t, ServiceType::L_Data_Ind);
             assert_eq!(msg.get_apci_code(), *e, "APCI code mismatch for test frame: {:x?}", t);
         }
+    }
+
+    #[test]
+    fn test_decode_apci_code_matches_get_apci_code() {
+        const EXPECTED_APCIS: &[ApciCode] = &[
+            ApciCode::GroupValueWrite,
+            ApciCode::GroupValueRead,
+            ApciCode::MemoryWrite,
+            ApciCode::PropertyValueRead,
+            ApciCode::SystemNetworkParameterRead,
+            ApciCode::FunctionPropertyCommand,
+            ApciCode::FunctionPropertyStateRead,
+            ApciCode::FunctionPropertyStateResponse,
+        ];
+
+        for (t, e) in KNX_TP1_TEST_FRAMES.iter().zip(EXPECTED_APCIS.iter()) {
+            let result = decode_apci_code(t);
+            assert_eq!(result, Some(*e), "decode_apci_code mismatch for test frame: {:x?}", t);
+        }
+    }
+
+    #[test]
+    fn test_decode_apci_code_too_short() {
+        assert_eq!(decode_apci_code(&[0; 7]), None);
+        assert!(decode_apci_code(&[0; 8]).is_some());
     }
 
     #[test]

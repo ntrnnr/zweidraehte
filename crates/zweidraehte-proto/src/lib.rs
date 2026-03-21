@@ -7,6 +7,9 @@
 #![feature(never_type)]
 #![feature(associated_type_defaults)]
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 // Re-export paste for use in macros
 #[doc(hidden)]
 pub use paste;

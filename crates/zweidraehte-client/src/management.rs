@@ -4,7 +4,7 @@
 //! service. The caller is responsible for wrapping these in the appropriate
 //! transport (connected or unconnected) and cEMI framing.
 
-use crate::error::{Error, Result};
+use zweidraehte_proto::messages::knx::ApciCode;
 
 // ============================================================================
 // Result types
@@ -140,75 +140,22 @@ pub fn build_restart() -> Vec<u8> {
 }
 
 // ============================================================================
-// Response parsers
+// APCI request/response mapping
 // ============================================================================
 
-/// Parse a device descriptor response from raw APCI data.
-///
-/// The `apci_data` starts at the APCI region (TPCI has been stripped).
-/// Returns the descriptor bytes.
-pub fn parse_device_descriptor_response(apci_data: &[u8]) -> Result<Vec<u8>> {
-    if apci_data.len() < 2 {
-        return Err(Error::Parse("DeviceDescriptorResponse too short"));
+/// Map a request APCI code to the expected response APCI code.
+pub fn expected_response_apci(request: ApciCode) -> Option<ApciCode> {
+    match request {
+        ApciCode::DeviceDescriptorRead => Some(ApciCode::DeviceDescriptorResponse),
+        ApciCode::PropertyValueRead | ApciCode::PropertyValueWrite => {
+            Some(ApciCode::PropertyValueResponse)
+        }
+        ApciCode::PropertyDescriptionRead => Some(ApciCode::PropertyDescriptionResponse),
+        ApciCode::FunctionPropertyCommand | ApciCode::FunctionPropertyStateRead => {
+            Some(ApciCode::FunctionPropertyStateResponse)
+        }
+        ApciCode::MemoryRead => Some(ApciCode::MemoryReadResponse),
+        ApciCode::AuthorizeRequest => Some(ApciCode::AuthorizeResponse),
+        _ => None,
     }
-    // Descriptor data starts at byte 2.
-    Ok(apci_data[2..].to_vec())
-}
-
-/// Parse a property value response.
-///
-/// Returns (count, start_idx, data). Count=0 indicates an error response.
-pub fn parse_property_value_response(apci_data: &[u8]) -> Result<(u16, u16, Vec<u8>)> {
-    if apci_data.len() < 6 {
-        return Err(Error::Parse("PropertyValueResponse too short"));
-    }
-    let count_start = u16::from_be_bytes([apci_data[4], apci_data[5]]);
-    let count = count_start >> 12;
-    let start_idx = count_start & 0x0FFF;
-    let data = if apci_data.len() > 6 { apci_data[6..].to_vec() } else { Vec::new() };
-    Ok((count, start_idx, data))
-}
-
-/// Parse a function property state response.
-pub fn parse_function_property_response(apci_data: &[u8]) -> Result<FunctionPropertyResult> {
-    if apci_data.len() < 5 {
-        return Err(Error::Parse("FunctionPropertyResponse too short"));
-    }
-    let return_code = apci_data[4];
-    let data = if apci_data.len() > 5 { apci_data[5..].to_vec() } else { Vec::new() };
-    Ok(FunctionPropertyResult { return_code, data })
-}
-
-/// Parse a property description response.
-pub fn parse_property_description_response(apci_data: &[u8]) -> Result<PropertyDescription> {
-    if apci_data.len() < 9 {
-        return Err(Error::Parse("PropertyDescriptionResponse too short"));
-    }
-    let prop_id = apci_data[3];
-    let prop_idx = apci_data[4];
-    let type_byte = apci_data[5];
-    let write_enabled = (type_byte & 0x80) != 0;
-    let pdt = type_byte & 0x3F;
-    let max_elements = u16::from_be_bytes([apci_data[6], apci_data[7]]);
-    let access = apci_data[8];
-    let read_access = (access >> 4) & 0x0F;
-    let write_access = access & 0x0F;
-
-    Ok(PropertyDescription {
-        prop_id,
-        prop_idx,
-        write_enabled,
-        pdt,
-        max_elements,
-        read_access,
-        write_access,
-    })
-}
-
-/// Parse an authorize response. Returns the granted access level.
-pub fn parse_authorize_response(apci_data: &[u8]) -> Result<u8> {
-    if apci_data.len() < 3 {
-        return Err(Error::Parse("AuthorizeResponse too short"));
-    }
-    Ok(apci_data[2])
 }
