@@ -128,6 +128,13 @@ impl PropertyDescriptionRead {
             prop_idx: buf[offsets::MSG_APCI + 4],
         })
     }
+
+    /// Write an `A_PropertyDescription_Read` request into a message buffer.
+    pub fn write(buf: &mut [u8], obj_idx: u8, prop_id: u8, prop_idx: u8) {
+        buf[offsets::MSG_APCI + 2] = obj_idx;
+        buf[offsets::MSG_APCI + 3] = prop_id;
+        buf[offsets::MSG_APCI + 4] = prop_idx;
+    }
 }
 
 /// Writer for `A_PropertyDescription_Response` error case.

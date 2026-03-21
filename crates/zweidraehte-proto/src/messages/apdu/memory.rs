@@ -60,6 +60,49 @@ impl<'a> MemoryAccess<'a> {
     }
 }
 
+/// Writer for `A_Memory_Read` requests.
+pub struct MemoryReadRequest;
+
+impl MemoryReadRequest {
+    /// Message length for a memory read request (no data payload).
+    pub const MSG_LEN: usize = MemoryAccess::MIN_MSG_LEN;
+
+    /// Write an `A_Memory_Read` request into a message buffer.
+    ///
+    /// Sets count in the low 6 bits of APCI byte 1 (preserving the high bits
+    /// set by `set_apci_code`) and the 16-bit address.
+    pub fn write(buf: &mut [u8], count: u8, address: u16) {
+        buf[offsets::MSG_APCI + 1] = (buf[offsets::MSG_APCI + 1] & 0xC0) | (count & 0x3F);
+        buf[offsets::MSG_APCI + 2] = (address >> 8) as u8;
+        buf[offsets::MSG_APCI + 3] = address as u8;
+    }
+}
+
+/// Writer for `A_Memory_Write` requests.
+pub struct MemoryWriteRequest;
+
+impl MemoryWriteRequest {
+    /// Compute total message length for a given data size.
+    pub const fn msg_len(data_len: usize) -> usize {
+        offsets::MSG_APCI + 4 + data_len
+    }
+
+    /// Write an `A_Memory_Write` request into a message buffer.
+    ///
+    /// Sets count in the low 6 bits of APCI byte 1, the address, and copies
+    /// the data payload.
+    pub fn write(buf: &mut [u8], address: u16, data: &[u8]) {
+        let count = data.len() as u8;
+        buf[offsets::MSG_APCI + 1] = (buf[offsets::MSG_APCI + 1] & 0xC0) | (count & 0x3F);
+        buf[offsets::MSG_APCI + 2] = (address >> 8) as u8;
+        buf[offsets::MSG_APCI + 3] = address as u8;
+        if !data.is_empty() {
+            let start = offsets::MSG_APCI + 4;
+            buf[start..start + data.len()].copy_from_slice(data);
+        }
+    }
+}
+
 /// Writer for `A_Memory_Response`.
 pub struct MemoryResponse;
 

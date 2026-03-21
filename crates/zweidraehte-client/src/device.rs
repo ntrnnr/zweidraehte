@@ -7,9 +7,14 @@
 use tokio::sync::oneshot;
 
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::messages::knx::{ApciCode, decode_apci_code, offsets};
-use zweidraehte_proto::messages::apdu::property::PropertyValueHeader;
-use zweidraehte_proto::messages::apdu::function_property::FunctionPropertyResponse;
+use zweidraehte_proto::messages::knx::{ApciCode, offsets};
+use zweidraehte_proto::messages::apdu::auth::AuthorizeRequest;
+use zweidraehte_proto::messages::apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse};
+use zweidraehte_proto::messages::apdu::memory::{MemoryReadRequest, MemoryWriteRequest};
+use zweidraehte_proto::messages::apdu::property::{
+    PropertyDescriptionRead, PropertyDescriptionResponse, PropertyValueHeader, PropertyValueResponse,
+};
+use zweidraehte_proto::messages::apdu::restart::RestartParsed;
 
 use crate::error::{Error, Result};
 use crate::management::{self, FunctionPropertyResult, PropertyDescription};
@@ -44,15 +49,22 @@ impl DeviceConnection {
 
     /// Send a connected management request and return the response in internal
     /// message format.
-    async fn send_management_request(&mut self, apci_data: &[u8]) -> Result<Vec<u8>> {
+    async fn send_management_request(
+        &mut self,
+        apci: ApciCode,
+        msg_len: usize,
+        data_writer: impl FnOnce(&mut [u8]),
+    ) -> Result<Vec<u8>> {
         let cemi = transport::build_connected_data_cemi(
             self.source,
             self.remote,
             self.send_seq,
-            apci_data,
+            apci,
+            msg_len,
+            data_writer,
         );
 
-        let expected_apci = Self::derive_expected_apci(apci_data);
+        let expected_apci = management::expected_response_apci(apci);
 
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -86,18 +98,6 @@ impl DeviceConnection {
         Ok(())
     }
 
-    /// Derive the expected response APCI from outgoing APCI data bytes.
-    fn derive_expected_apci(apci_data: &[u8]) -> Option<ApciCode> {
-        if apci_data.len() < 2 {
-            return None;
-        }
-        let mut buf = vec![0u8; offsets::MSG_APCI + 2];
-        buf[offsets::MSG_APCI] = apci_data[0];
-        buf[offsets::MSG_APCI + 1] = apci_data[1];
-        let request_apci = decode_apci_code(&buf)?;
-        crate::management::expected_response_apci(request_apci)
-    }
-
     // ========================================================================
     // Management services
     // ========================================================================
@@ -109,8 +109,11 @@ impl DeviceConnection {
         prop_id: u8,
         service_data: &[u8],
     ) -> Result<FunctionPropertyResult> {
-        let apci = management::build_function_property_command(obj_idx, prop_id, service_data);
-        let buf = self.send_management_request(&apci).await?;
+        let buf = self.send_management_request(
+            ApciCode::FunctionPropertyCommand,
+            FunctionPropertyHeader::msg_len(service_data.len()),
+            |buf| FunctionPropertyHeader::write(buf, obj_idx, prop_id, service_data),
+        ).await?;
         let resp = FunctionPropertyResponse::parse(&buf)
             .ok_or(Error::Parse("FunctionPropertyResponse too short"))?;
         Ok(FunctionPropertyResult {
@@ -126,8 +129,11 @@ impl DeviceConnection {
         prop_id: u8,
         service_data: &[u8],
     ) -> Result<FunctionPropertyResult> {
-        let apci = management::build_function_property_state_read(obj_idx, prop_id, service_data);
-        let buf = self.send_management_request(&apci).await?;
+        let buf = self.send_management_request(
+            ApciCode::FunctionPropertyStateRead,
+            FunctionPropertyHeader::msg_len(service_data.len()),
+            |buf| FunctionPropertyHeader::write(buf, obj_idx, prop_id, service_data),
+        ).await?;
         let resp = FunctionPropertyResponse::parse(&buf)
             .ok_or(Error::Parse("FunctionPropertyResponse too short"))?;
         Ok(FunctionPropertyResult {
@@ -144,8 +150,11 @@ impl DeviceConnection {
         start_idx: u16,
         count: u16,
     ) -> Result<Vec<u8>> {
-        let apci = management::build_property_read(obj_idx, prop_id, count, start_idx);
-        let buf = self.send_management_request(&apci).await?;
+        let buf = self.send_management_request(
+            ApciCode::PropertyValueRead,
+            PropertyValueHeader::MIN_MSG_LEN,
+            |buf| PropertyValueResponse::write(buf, obj_idx, prop_id, count, start_idx, &[]),
+        ).await?;
         let hdr = PropertyValueHeader::parse(&buf)
             .ok_or(Error::Parse("PropertyValueResponse too short"))?;
         if hdr.count == 0 {
@@ -163,8 +172,11 @@ impl DeviceConnection {
         count: u16,
         data: &[u8],
     ) -> Result<()> {
-        let apci = management::build_property_write(obj_idx, prop_id, count, start_idx, data);
-        let buf = self.send_management_request(&apci).await?;
+        let buf = self.send_management_request(
+            ApciCode::PropertyValueWrite,
+            PropertyValueResponse::msg_len(data.len()),
+            |buf| PropertyValueResponse::write(buf, obj_idx, prop_id, count, start_idx, data),
+        ).await?;
         let hdr = PropertyValueHeader::parse(&buf)
             .ok_or(Error::Parse("PropertyValueResponse too short"))?;
         if hdr.count == 0 {
@@ -180,11 +192,12 @@ impl DeviceConnection {
         prop_id: u8,
         prop_idx: u8,
     ) -> Result<PropertyDescription> {
-        let apci = management::build_property_description_read(obj_idx, prop_id, prop_idx);
-        let buf = self.send_management_request(&apci).await?;
-        // PropertyDescriptionResponse layout: APCI+2=obj_idx, +3=prop_id,
-        // +4=prop_idx, +5=type, +6-7=max_elements, +8=access
-        if buf.len() < offsets::MSG_APCI + 9 {
+        let buf = self.send_management_request(
+            ApciCode::PropertyDescriptionRead,
+            PropertyDescriptionRead::MIN_MSG_LEN,
+            |buf| PropertyDescriptionRead::write(buf, obj_idx, prop_id, prop_idx),
+        ).await?;
+        if buf.len() < PropertyDescriptionResponse::MSG_LEN {
             return Err(Error::Parse("PropertyDescriptionResponse too short"));
         }
         let base = offsets::MSG_APCI;
@@ -202,8 +215,11 @@ impl DeviceConnection {
 
     /// Read memory from the device.
     pub async fn memory_read(&mut self, address: u16, count: u8) -> Result<Vec<u8>> {
-        let apci = management::build_memory_read(count, address);
-        let buf = self.send_management_request(&apci).await?;
+        let buf = self.send_management_request(
+            ApciCode::MemoryRead,
+            MemoryReadRequest::MSG_LEN,
+            |buf| MemoryReadRequest::write(buf, count, address),
+        ).await?;
         // Memory response data starts at MSG_APDU (offset 8) + 2 (address bytes).
         let data_start = offsets::MSG_APDU + 2;
         if buf.len() < data_start {
@@ -214,20 +230,24 @@ impl DeviceConnection {
 
     /// Write memory to the device.
     pub async fn memory_write(&mut self, address: u16, data: &[u8]) -> Result<()> {
-        let apci = management::build_memory_write(address, data);
         let cemi = transport::build_connected_data_cemi(
             self.source,
             self.remote,
             self.send_seq,
-            &apci,
+            ApciCode::MemoryWrite,
+            MemoryWriteRequest::msg_len(data.len()),
+            |buf| MemoryWriteRequest::write(buf, address, data),
         );
         self.send_no_response(cemi).await
     }
 
     /// Authorize with the device using a key.
     pub async fn authorize(&mut self, key: &[u8; 4]) -> Result<u8> {
-        let apci = management::build_authorize_request(key);
-        let buf = self.send_management_request(&apci).await?;
+        let buf = self.send_management_request(
+            ApciCode::AuthorizeRequest,
+            AuthorizeRequest::MIN_MSG_LEN,
+            |buf| AuthorizeRequest::write(buf, key),
+        ).await?;
         // Authorize response: APCI+2 = access level.
         if buf.len() < offsets::MSG_APCI + 3 {
             return Err(Error::Parse("AuthorizeResponse too short"));
@@ -237,12 +257,13 @@ impl DeviceConnection {
 
     /// Restart the device.
     pub async fn restart(&mut self) -> Result<()> {
-        let apci = management::build_restart();
         let cemi = transport::build_connected_data_cemi(
             self.source,
             self.remote,
             self.send_seq,
-            &apci,
+            ApciCode::Restart,
+            RestartParsed::BASIC_MIN_MSG_LEN,
+            |_| {},
         );
         self.send_no_response(cemi).await
     }

@@ -250,7 +250,7 @@ pub mod state {
 /// Type-safe message builder
 ///
 /// Generic parameters:
-/// - `B`: Buffer type (usually `Buffer<'static>`)
+/// - `B`: Buffer type (`Buffer<'static>` in the device stack, `Vec<u8>` in clients)
 /// - `Dir`: Direction (Indication or Request)
 /// - `State`: Current builder state (Allocated, NetworkRequest, etc.)
 pub struct MessageBuilder<B, Dir, State> {
@@ -263,7 +263,7 @@ pub struct MessageBuilder<B, Dir, State> {
 // Starting Points: Creating Builders
 // ============================================================================
 
-impl MessageBuilder<Buffer<'static>, direction::Request, state::Allocated> {
+impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, state::Allocated> {
     /// Create a Request by responding to an Indication
     ///
     /// This automatically extracts:
@@ -271,17 +271,20 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::Allocated> {
     /// - Source address (becomes destination for response)
     /// - Appropriate response service type
     ///
+    /// The indication buffer type `I` is independent of the output buffer type
+    /// `B` — the builder only reads from the indication to extract context.
+    ///
     /// # Example
     /// ```ignore
     /// let msg = MessageBuilder::respond_to(buffer, &indication)
     ///     .with_application(ApciCode::DeviceDescriptorResponse, ServiceType::T_Data_Req)
     ///     .build();
     /// ```
-    pub fn respond_to(
-        buffer: Buffer<'static>,
-        indication: &KnxMessageBuffer<Buffer<'static>>,
-    ) -> MessageBuilder<Buffer<'static>, direction::Request, state::NetworkRequest> {
-        let service_type = Self::indication_to_request_service(indication.service_type());
+    pub fn respond_to<I: Deref<Target = [u8]>>(
+        buffer: B,
+        indication: &KnxMessageBuffer<I>,
+    ) -> MessageBuilder<B, direction::Request, state::NetworkRequest> {
+        let service_type = indication_to_request_service(indication.service_type());
 
         MessageBuilder {
             buffer,
@@ -311,46 +314,47 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::Allocated> {
     ///     )
     ///     .with_transport_control(Tpci::Connect)
     ///     .build();
+    /// network_layer.request(ack).await;
     /// ```
     pub fn new_request(
-        buffer: Buffer<'static>,
+        buffer: B,
         service_type: ServiceType,
         priority: Priority,
         dest: DestinationAddress,
-    ) -> MessageBuilder<Buffer<'static>, direction::Request, state::NetworkRequest> {
+    ) -> MessageBuilder<B, direction::Request, state::NetworkRequest> {
         MessageBuilder {
             buffer,
             _direction: PhantomData,
             state: state::NetworkRequest { service_type, priority, dest },
         }
     }
+}
 
-    /// Convert an indication service type to its corresponding request type
-    fn indication_to_request_service(ind_service: ServiceType) -> ServiceType {
-        match ind_service {
-            // Network layer
-            ServiceType::N_Data_Ind => ServiceType::N_Data_Req,
-            ServiceType::N_GroupData_Ind => ServiceType::N_GroupData_Req,
-            ServiceType::N_Broadcast_Ind => ServiceType::N_Broadcast_Req,
-            ServiceType::N_SystemBroadcast_Ind => ServiceType::N_SystemBroadcast_Req,
+/// Convert an indication service type to its corresponding request type.
+fn indication_to_request_service(ind_service: ServiceType) -> ServiceType {
+    match ind_service {
+        // Network layer
+        ServiceType::N_Data_Ind => ServiceType::N_Data_Req,
+        ServiceType::N_GroupData_Ind => ServiceType::N_GroupData_Req,
+        ServiceType::N_Broadcast_Ind => ServiceType::N_Broadcast_Req,
+        ServiceType::N_SystemBroadcast_Ind => ServiceType::N_SystemBroadcast_Req,
 
-            // Transport layer
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
-            ServiceType::T_GroupData_Ind => ServiceType::T_GroupData_Req,
+        // Transport layer
+        ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
+        ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
+        ServiceType::T_GroupData_Ind => ServiceType::T_GroupData_Req,
 
-            // If already a request, keep it (shouldn't happen, but safe)
-            ServiceType::N_Data_Req
-            | ServiceType::N_GroupData_Req
-            | ServiceType::N_Broadcast_Req
-            | ServiceType::N_SystemBroadcast_Req
-            | ServiceType::T_Data_Req
-            | ServiceType::T_DataUnack_Req
-            | ServiceType::T_GroupData_Req => ind_service,
+        // If already a request, keep it (shouldn't happen, but safe)
+        ServiceType::N_Data_Req
+        | ServiceType::N_GroupData_Req
+        | ServiceType::N_Broadcast_Req
+        | ServiceType::N_SystemBroadcast_Req
+        | ServiceType::T_Data_Req
+        | ServiceType::T_DataUnack_Req
+        | ServiceType::T_GroupData_Req => ind_service,
 
-            // Default fallback for other types
-            _ => ServiceType::N_Data_Req,
-        }
+        // Default fallback for other types
+        _ => ServiceType::N_Data_Req,
     }
 }
 
@@ -358,12 +362,12 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::Allocated> {
 // Network Layer: Request Building
 // ============================================================================
 
-impl MessageBuilder<Buffer<'static>, direction::Request, state::NetworkRequest> {
+impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, state::NetworkRequest> {
     /// Build a network-layer message (no transport/application layer)
     ///
     /// This is used when you only need network layer context.
     /// Returns a `RequestMessage` for sending through request channels.
-    pub fn build(self) -> RequestMessage<Buffer<'static>> {
+    pub fn build(self) -> RequestMessage<B> {
         let mut msg = KnxMessageBuffer::new(self.buffer, self.state.service_type);
         msg.ctrl_field_mut().set_priority(self.state.priority);
         msg.set_dest_addr(self.state.dest);
@@ -387,7 +391,7 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::NetworkRequest> 
     pub fn with_transport_control(
         self,
         tpci: Tpci,
-    ) -> MessageBuilder<Buffer<'static>, direction::Request, state::TransportRequest> {
+    ) -> MessageBuilder<B, direction::Request, state::TransportRequest> {
         MessageBuilder {
             buffer: self.buffer,
             _direction: PhantomData,
@@ -416,7 +420,7 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::NetworkRequest> 
         self,
         apci: ApciCode,
         transport_service: ServiceType,
-    ) -> MessageBuilder<Buffer<'static>, direction::Request, state::ApplicationRequest> {
+    ) -> MessageBuilder<B, direction::Request, state::ApplicationRequest> {
         MessageBuilder {
             buffer: self.buffer,
             _direction: PhantomData,
@@ -429,12 +433,12 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::NetworkRequest> 
 // Transport Layer: Request Building
 // ============================================================================
 
-impl MessageBuilder<Buffer<'static>, direction::Request, state::TransportRequest> {
+impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, state::TransportRequest> {
     /// Build a transport control PDU
     ///
     /// This finalizes the message with transport layer context (ACK, NACK, Connect, Disconnect).
     /// Returns a `RequestMessage` for sending through request channels.
-    pub fn build(self) -> RequestMessage<Buffer<'static>> {
+    pub fn build(self) -> RequestMessage<B> {
         let mut msg = KnxMessageBuffer::new(self.buffer, self.state.network.service_type);
         msg.ctrl_field_mut().set_priority(self.state.network.priority);
         msg.set_dest_addr(self.state.network.dest);
@@ -447,7 +451,7 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::TransportRequest
 // Application Layer: Request Building
 // ============================================================================
 
-impl MessageBuilder<Buffer<'static>, direction::Request, state::ApplicationRequest> {
+impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, state::ApplicationRequest> {
     /// Build an application message with custom data writer
     ///
     /// The writer function receives mutable access to the buffer to write
@@ -464,7 +468,7 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::ApplicationReque
     ///         .copy_from_slice(&mask_version);
     /// });
     /// ```
-    pub fn with_data<F>(self, writer: F) -> RequestMessage<Buffer<'static>>
+    pub fn with_data<F>(self, writer: F) -> RequestMessage<B>
     where
         F: FnOnce(&mut [u8]),
     {
@@ -487,7 +491,7 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::ApplicationReque
     ///
     /// Used when the APCI code is sufficient (e.g., simple read requests).
     /// Returns a `RequestMessage` for sending through request channels.
-    pub fn build(self) -> RequestMessage<Buffer<'static>> {
+    pub fn build(self) -> RequestMessage<B> {
         self.with_data(|_| {})
     }
 }
@@ -496,8 +500,11 @@ impl MessageBuilder<Buffer<'static>, direction::Request, state::ApplicationReque
 // Convenience Extensions
 // ============================================================================
 
-/// Extension trait for cleaner API when responding to indications
-pub trait IndicationExt {
+/// Extension trait for cleaner API when responding to indications.
+///
+/// Generic over the output buffer type `B`, so the same indication can
+/// produce a response backed by any buffer type.
+pub trait IndicationExt<B: Deref<Target = [u8]> + DerefMut> {
     /// Start building a response to this indication
     ///
     /// # Example
@@ -508,15 +515,15 @@ pub trait IndicationExt {
     /// ```
     fn respond_with(
         &self,
-        buffer: Buffer<'static>,
-    ) -> MessageBuilder<Buffer<'static>, direction::Request, state::NetworkRequest>;
+        buffer: B,
+    ) -> MessageBuilder<B, direction::Request, state::NetworkRequest>;
 }
 
-impl IndicationExt for KnxMessageBuffer<Buffer<'static>> {
+impl<I: Deref<Target = [u8]>, B: Deref<Target = [u8]> + DerefMut> IndicationExt<B> for KnxMessageBuffer<I> {
     fn respond_with(
         &self,
-        buffer: Buffer<'static>,
-    ) -> MessageBuilder<Buffer<'static>, direction::Request, state::NetworkRequest> {
+        buffer: B,
+    ) -> MessageBuilder<B, direction::Request, state::NetworkRequest> {
         MessageBuilder::respond_to(buffer, self)
     }
 }
@@ -545,20 +552,20 @@ use crate::messages::knx::Confirm;
 ///     }
 /// }
 /// ```
-pub trait ConfirmationExt {
+pub trait ConfirmationExt<B: Deref<Target = [u8]>> {
     /// Convert this request message into a successful confirmation.
     ///
     /// Sets `Confirm::NoError` and converts service type (e.g., T_Data_Req → T_Data_Con).
-    fn confirm(self) -> MessageBuilder<Buffer<'static>, direction::Confirmation, state::ConfirmationReady>;
+    fn confirm(self) -> MessageBuilder<B, direction::Confirmation, state::ConfirmationReady>;
 
     /// Convert this request message into an error confirmation.
     ///
     /// Sets `Confirm::Err` and converts service type (e.g., T_Data_Req → T_Data_Con).
-    fn error(self) -> MessageBuilder<Buffer<'static>, direction::Confirmation, state::ConfirmationReady>;
+    fn error(self) -> MessageBuilder<B, direction::Confirmation, state::ConfirmationReady>;
 }
 
-impl ConfirmationExt for KnxMessageBuffer<Buffer<'static>> {
-    fn confirm(self) -> MessageBuilder<Buffer<'static>, direction::Confirmation, state::ConfirmationReady> {
+impl<B: Deref<Target = [u8]>> ConfirmationExt<B> for KnxMessageBuffer<B> {
+    fn confirm(self) -> MessageBuilder<B, direction::Confirmation, state::ConfirmationReady> {
         let (buffer, service_type) = self.into_parts();
         MessageBuilder {
             buffer,
@@ -567,7 +574,7 @@ impl ConfirmationExt for KnxMessageBuffer<Buffer<'static>> {
         }
     }
 
-    fn error(self) -> MessageBuilder<Buffer<'static>, direction::Confirmation, state::ConfirmationReady> {
+    fn error(self) -> MessageBuilder<B, direction::Confirmation, state::ConfirmationReady> {
         let (buffer, service_type) = self.into_parts();
         MessageBuilder {
             buffer,
@@ -581,7 +588,7 @@ impl ConfirmationExt for KnxMessageBuffer<Buffer<'static>> {
 // Confirmation Builder Implementation
 // ============================================================================
 
-impl MessageBuilder<Buffer<'static>, direction::Confirmation, state::ConfirmationReady> {
+impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Confirmation, state::ConfirmationReady> {
     /// Build the confirmation message.
     ///
     /// This finalizes the confirmation by:
@@ -589,7 +596,7 @@ impl MessageBuilder<Buffer<'static>, direction::Confirmation, state::Confirmatio
     /// - Setting the Confirm flag (NoError or Err)
     ///
     /// Returns a `ConfirmationMessage` which can only be sent via `response_tx`.
-    pub fn build(self) -> ConfirmationMessage<Buffer<'static>> {
+    pub fn build(self) -> ConfirmationMessage<B> {
         let mut msg = KnxMessageBuffer::new(self.buffer, self.state.service_type.to_confirmation());
         msg.ctrl_field_mut().set_c(self.state.confirm);
         ConfirmationMessage::confirmation(msg)

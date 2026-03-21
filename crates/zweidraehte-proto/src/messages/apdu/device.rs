@@ -28,6 +28,14 @@ impl DeviceDescriptorRead {
         }
         Some(Self { descriptor_type: buf[offsets::MSG_APCI + 1] & 0x3F })
     }
+
+    /// Write a `DeviceDescriptorRead` request into a message buffer.
+    ///
+    /// Sets the descriptor type in the low 6 bits of APCI byte 1, preserving
+    /// the high bits already set by `set_apci_code`.
+    pub fn write(buf: &mut [u8], descriptor_type: u8) {
+        buf[offsets::MSG_APCI + 1] = (buf[offsets::MSG_APCI + 1] & 0xC0) | (descriptor_type & 0x3F);
+    }
 }
 
 /// Writer for `A_DeviceDescriptor_Response`.

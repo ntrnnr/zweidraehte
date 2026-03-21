@@ -38,6 +38,14 @@ impl AuthorizeRequest {
             ],
         })
     }
+
+    /// Write an `A_Authorize_Request` into a message buffer.
+    ///
+    /// Sets the reserved byte (0x00) and 4-byte key at APDU[2..7].
+    pub fn write(buf: &mut [u8], key: &[u8; 4]) {
+        buf[offsets::MSG_APCI + 2] = 0x00; // reserved
+        buf[offsets::MSG_APCI + 3..offsets::MSG_APCI + 7].copy_from_slice(key);
+    }
 }
 
 /// Writer for `A_Authorize_Response`.

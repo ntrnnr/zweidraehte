@@ -1,54 +1,77 @@
 //! Client-side KNX transport layer.
 //!
-//! Provides connected (point-to-point) and unconnected transport services.
-//! This is a simplified client-side implementation — not the full device
-//! stack state machine.
+//! Builds outgoing KNX messages using `KnxMessageBuffer<Vec<u8>>` in internal
+//! format, then converts to cEMI for transmission through the tunnel. Also
+//! provides helpers for parsing incoming cEMI transport fields.
 
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::messages::knx::offsets;
+use zweidraehte_proto::encoding::cemi::CemiMessageCode;
+use zweidraehte_proto::messages::knx::{
+    ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci, offsets,
+};
 
 use crate::tunnel::codec::{self, CemiMode};
 
 // ============================================================================
-// TPCI byte patterns
+// Internal message construction
 // ============================================================================
 
-/// TPCI for T_Connect: 0x80
-const TPCI_CONNECT: u8 = 0x80;
-
-/// TPCI for T_Disconnect: 0x81
-const TPCI_DISCONNECT: u8 = 0x81;
-
-/// TPCI for T_ACK: 0xC2 (with seq=0, will be OR'd with seq << 2)
-const TPCI_ACK_BASE: u8 = 0xC2;
-
-/// TPCI for T_Data_Connected: 0x40 (with seq=0, will be OR'd with seq << 2)
-const TPCI_DATA_CONNECTED_BASE: u8 = 0x40;
-
-// ============================================================================
-// cEMI frame building
-// ============================================================================
-
-/// Build a cEMI frame for an unconnected (connectionless) message.
+/// Build a transport-only cEMI frame (no application data).
 ///
-/// `apci_data` contains the combined TPCI+APCI region bytes. For unconnected
-/// data, the TPCI bits (upper 6 bits of the first byte) are 0x00. The
-/// management builders produce bytes where these upper bits are already zero,
-/// so `apci_data` is passed through directly.
+/// Used for T_Connect, T_Disconnect, T_ACK — messages that carry only a TPCI
+/// byte with no APCI payload.
+fn build_transport_cemi(
+    source: IndividualAddress,
+    dest: IndividualAddress,
+    tpci: Tpci,
+) -> Vec<u8> {
+    // Internal format: ctrl(1) + src(2) + dst(2) + npdu(1) + tpci(1) = 7 bytes
+    let mut msg = KnxMessageBuffer::new(vec![0u8; offsets::MSG_TPCI + 1], ServiceType::L_Data_Req);
+    msg.ctrl_field_mut().set_priority(Priority::System);
+    msg.set_source_addr(source);
+    msg.set_dest_addr(DestinationAddress::Individual(dest));
+    msg.set_tpci(tpci);
+    codec::internal_to_cemi(&msg.into_inner(), CemiMessageCode::LDataReq)
+}
+
+/// Build a cEMI frame carrying an application-layer message.
+///
+/// Sets TPCI, APCI code, and calls `data_writer` to fill in the APDU payload.
+/// Used for both connected and unconnected data messages.
+fn build_app_cemi(
+    source: IndividualAddress,
+    dest: IndividualAddress,
+    tpci: Tpci,
+    apci: ApciCode,
+    msg_len: usize,
+    data_writer: impl FnOnce(&mut [u8]),
+) -> Vec<u8> {
+    let mut msg = KnxMessageBuffer::new(vec![0u8; msg_len], ServiceType::L_Data_Req);
+    msg.ctrl_field_mut().set_priority(Priority::System);
+    msg.set_source_addr(source);
+    msg.set_dest_addr(DestinationAddress::Individual(dest));
+    msg.set_tpci(tpci);
+    msg.set_apci_code(apci);
+    data_writer(msg.buf_mut());
+    codec::internal_to_cemi(&msg.into_inner(), CemiMessageCode::LDataReq)
+}
+
+// ============================================================================
+// Public cEMI frame builders
+// ============================================================================
+
+/// Build a cEMI frame for an unconnected (connectionless) application message.
 pub fn build_unconnected_cemi(
     source: IndividualAddress,
     dest: IndividualAddress,
-    apci_data: &[u8],
-    cemi_mode: CemiMode,
+    apci: ApciCode,
+    msg_len: usize,
+    data_writer: impl FnOnce(&mut [u8]),
+    _cemi_mode: CemiMode,
 ) -> Vec<u8> {
-    match cemi_mode {
-        CemiMode::LData => codec::build_ldata_req(source, dest, apci_data),
-        CemiMode::TDataIndividual => {
-            // TODO: Implement T_Data_Individual cEMI mode (msg code 0x4A).
-            // For now, use L_Data mode.
-            codec::build_ldata_req(source, dest, apci_data)
-        }
-    }
+    // TODO: Implement T_Data_Individual cEMI mode (msg code 0x4A).
+    // For now, all modes use L_Data framing.
+    build_app_cemi(source, dest, Tpci::DataIndividual, apci, msg_len, data_writer)
 }
 
 /// Build a cEMI frame for T_Connect (open transport connection).
@@ -56,7 +79,7 @@ pub fn build_connect_cemi(
     source: IndividualAddress,
     dest: IndividualAddress,
 ) -> Vec<u8> {
-    codec::build_ldata_req(source, dest, &[TPCI_CONNECT])
+    build_transport_cemi(source, dest, Tpci::Connect)
 }
 
 /// Build a cEMI frame for T_Disconnect (close transport connection).
@@ -64,25 +87,19 @@ pub fn build_disconnect_cemi(
     source: IndividualAddress,
     dest: IndividualAddress,
 ) -> Vec<u8> {
-    codec::build_ldata_req(source, dest, &[TPCI_DISCONNECT])
+    build_transport_cemi(source, dest, Tpci::Disconnect)
 }
 
 /// Build a cEMI frame for T_Data_Connected (numbered data in a transport connection).
-///
-/// The TPCI bits (0x40 | seq<<2) are OR'd into the first byte of `apci_data`,
-/// since TPCI and the first APCI byte share the same byte in the KNX frame.
 pub fn build_connected_data_cemi(
     source: IndividualAddress,
     dest: IndividualAddress,
     seq_no: u8,
-    apci_data: &[u8],
+    apci: ApciCode,
+    msg_len: usize,
+    data_writer: impl FnOnce(&mut [u8]),
 ) -> Vec<u8> {
-    let tpci_bits = TPCI_DATA_CONNECTED_BASE | ((seq_no & 0x0F) << 2);
-    let mut tpci_apci = apci_data.to_vec();
-    if !tpci_apci.is_empty() {
-        tpci_apci[0] |= tpci_bits;
-    }
-    codec::build_ldata_req(source, dest, &tpci_apci)
+    build_app_cemi(source, dest, Tpci::DataConnected(seq_no), apci, msg_len, data_writer)
 }
 
 /// Build a cEMI frame for T_ACK (acknowledge a connected data packet).
@@ -91,8 +108,7 @@ pub fn build_ack_cemi(
     dest: IndividualAddress,
     seq_no: u8,
 ) -> Vec<u8> {
-    let tpci_byte = TPCI_ACK_BASE | ((seq_no & 0x0F) << 2);
-    codec::build_ldata_req(source, dest, &[tpci_byte])
+    build_transport_cemi(source, dest, Tpci::Ack(seq_no))
 }
 
 // ============================================================================
