@@ -17,6 +17,7 @@ use crate::{
     access::HasConnectionAuth,
     actor::Request,
     definition::StackDefinition,
+    device_model::{self, DeviceModel as _},
     inner::StackContext,
     layers::{
         self, LinkLayerBuilder,
@@ -30,6 +31,7 @@ use crate::{
         interface::{HasDeviceObject, HasRoutingCount},
         tables::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
+            HasRunStateMachine, RunAction,
         },
     },
     restart,
@@ -253,6 +255,8 @@ where
 /// [`LayerStackBuilder`].
 pub struct InsecureDeviceLayers<'a, D: StackDefinition, TL: router::Layer, Extra = ()> {
     layers: (NetworkLayer<'a, D>, TL, ApplicationLayer<'a, D>),
+    device_model: device_model::SystemBDeviceModel<'a, D>,
+    state: &'a D::State,
     app_service_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     pending_app_request: Cell<Option<Request<ApplicationLayerService, ApplicationLayerServiceResponse>>>,
     extra: Extra,
@@ -296,14 +300,22 @@ where
             ctx.comm_objs,
             ctx.hook_context,
             ctx.event_channel,
-            ctx.lifecycle_channel,
             ctx.interface_objects,
             ctx.memory_map,
             ctx.restart_sender,
         );
 
+        let device_model = device_model::SystemBDeviceModel::new(
+            ctx.state,
+            ctx.comm_objs,
+            ctx.lifecycle_channel,
+            ctx.interface_objects,
+        );
+
         Self {
             layers: (network_layer, transport_layer, application_layer),
+            device_model,
+            state: ctx.state,
             app_service_receiver: ctx.app_service_receiver,
             pending_app_request: Cell::new(None),
             extra: (),
@@ -345,16 +357,24 @@ where
             ctx.comm_objs,
             ctx.hook_context,
             ctx.event_channel,
-            ctx.lifecycle_channel,
             ctx.interface_objects,
             ctx.memory_map,
             ctx.restart_sender,
+        );
+
+        let device_model = device_model::SystemBDeviceModel::new(
+            ctx.state,
+            ctx.comm_objs,
+            ctx.lifecycle_channel,
+            ctx.interface_objects,
         );
 
         let cemi_event_receiver = channels.event.receiver().into();
 
         Self {
             layers: (network_layer, cemi_transport_layer, application_layer),
+            device_model,
+            state: ctx.state,
             app_service_receiver: ctx.app_service_receiver,
             pending_app_request: Cell::new(None),
             extra: layers::transport::cemi::CemiSideInput::new(cemi_event_receiver),
@@ -383,7 +403,13 @@ where
     };
 
     fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut router::Outbox) {
+        let was_running = self.state.app().borrow().is_running();
         self.layers.dispatch(layer_idx, msg, outbox);
+        let is_running = self.state.app().borrow().is_running();
+        let action = RunAction::from_transition(was_running, is_running);
+        if action != RunAction::None {
+            self.device_model.on_action(action);
+        }
     }
 
     fn next_deadline(&self) -> Option<embassy_time::Instant> {
@@ -395,6 +421,7 @@ where
     }
 
     fn init(&mut self) {
+        self.device_model.init();
         self.layers.init();
     }
 
@@ -414,9 +441,15 @@ where
     }
 
     fn handle_side_input(&mut self, outbox: &mut router::Outbox) {
+        let was_running = self.state.app().borrow().is_running();
         if let Some(req) = self.pending_app_request.take() {
             self.layers.2.handle_app_request(&req, outbox);
         }
         self.extra.handle(&mut self.layers, outbox);
+        let is_running = self.state.app().borrow().is_running();
+        let action = RunAction::from_transition(was_running, is_running);
+        if action != RunAction::None {
+            self.device_model.on_action(action);
+        }
     }
 }

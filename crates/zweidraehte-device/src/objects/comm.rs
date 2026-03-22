@@ -391,6 +391,16 @@ pub trait ComObjects {
             self.set_status(idx, ComObjectStatus::IdleOk);
         }
     }
+
+    /// Reset all communication objects to their initial state.
+    ///
+    /// Clears all values and sets all statuses back to `Uninitialized`.
+    /// Called when the application starts running, ensuring read-on-init
+    /// correctly re-reads values from the bus after a reload.
+    #[inline]
+    fn reset(&mut self) where Self: Sized {
+        *self = Self::new();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

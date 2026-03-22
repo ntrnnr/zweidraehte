@@ -8,7 +8,7 @@ use core::cell::RefCell;
 use embassy_sync::{
     blocking_mutex::raw::{NoopRawMutex, RawMutex},
     channel::{Channel, DynamicReceiver, DynamicSender},
-    pubsub::{PubSubBehavior, PubSubChannel},
+    pubsub::PubSubChannel,
 };
 
 use crate::{
@@ -22,11 +22,10 @@ use crate::{
     },
     messages::buffers::{Buffer, BufferManager},
     objects::{
-        comm::{ComObjects, LifecycleEvent},
+        comm::ComObjects,
         interface::{HasDeviceObject, HasRoutingCount},
         tables::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
-            HasRunStateMachine,
         },
     },
     resources::StackResources,
@@ -73,20 +72,8 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             "TL_MAX_OUTGOING > 0 requires TlStyle::Style3 (has CONNECTING state for client connections)"
         );
 
-        // Initialize the run state machine at startup.
-        // If the application is already loaded (from persistent storage), this will
-        // transition it to RUNNING.
-        self.stack.inner.state.app().borrow_mut().init_run_state();
-
-        // Sync the DeviceControl user_stopped bit based on run state.
-        let is_running = self.stack.inner.state.app().borrow().is_running();
-        self.interface_objects.set_user_stopped(!is_running);
-
-        // Publish initial lifecycle event so user code can initialize if the
-        // application is already loaded from persisted state.
-        if is_running {
-            self.stack.inner.lifecycle_channel.publish_immediate(LifecycleEvent::ApplicationStarted);
-        }
+        // Run state machine initialization, DeviceControl sync, and lifecycle
+        // events are handled by the DeviceModel in InsecureDeviceLayers::init().
 
         use embassy_futures::select::{Either, select, select3};
         use embassy_time::Timer;

@@ -32,8 +32,8 @@ use crate::{
         knx::*,
     },
     objects::{
-        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, LifecycleEvent},
-        interface::{FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, PropertyServiceHandler, pid},
+        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
+        interface::{FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, PropertyServiceHandler},
         tables::{
             AssociationTable, CommunicationObjectTable, HasApplication, HasAssociationTable,
             HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine,
@@ -86,7 +86,6 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     hook_context: &'a <D::CO as ComObjects>::HookContext,
     event_channel:
         &'a PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
-    lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
 
     // --- Interface objects ---
     /// Interface objects container with typed access to device properties.
@@ -129,7 +128,7 @@ struct PendingGroupSend {
 }
 
 /// State machine for the read-on-init cycle.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 enum ReadOnInitState {
     /// No ROI cycle active.
@@ -157,7 +156,6 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             2,
             1,
         >,
-        lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
         interface_objects: &'a D::InterfaceObjects<'static>,
         memory_map: &'a D::Mem,
         restart_sender: DynamicSender<'a, RestartRequest>,
@@ -168,7 +166,6 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             comm_objects,
             hook_context,
             event_channel,
-            lifecycle_channel,
             interface_objects,
             memory_map,
             restart_sender,
@@ -345,22 +342,39 @@ where
 
     fn next_deadline(&self) -> Option<embassy_time::Instant> {
         match self.read_on_init {
-            // When ROI is active, request immediate poll
             ReadOnInitState::Scanning(cursor) => {
                 debug!("AL next_deadline: ROI active (cursor={}), returning now", cursor);
                 Some(embassy_time::Instant::now())
             }
-            ReadOnInitState::Idle => None,
+            ReadOnInitState::Idle => {
+                // Self-detect: when the app is running and AST is loaded but
+                // comm objects are still Uninitialized (the DeviceModel resets
+                // them on app start), a ROI scan is needed.
+                if self.state.app().borrow().is_running()
+                    && self.state.ast().borrow().is_loaded()
+                    && self.comm_objects.borrow().status(1) == ComObjectStatus::Uninitialized
+                {
+                    Some(embassy_time::Instant::now())
+                } else {
+                    None
+                }
+            }
         }
     }
 
     fn poll(&mut self, outbox: &mut Outbox) {
-        debug!("AL poll called, ROI state: {:?}", self.read_on_init);
-        self.read_on_init_step(outbox);
-    }
+        // Start ROI scan if the conditions are met (app running, AST loaded,
+        // comm objects still uninitialized from DeviceModel reset).
+        if self.read_on_init == ReadOnInitState::Idle
+            && self.state.app().borrow().is_running()
+            && self.state.ast().borrow().is_loaded()
+            && self.comm_objects.borrow().status(1) == ComObjectStatus::Uninitialized
+        {
+            info!("AL read-on-init: starting cycle (detected uninitialized objects)");
+            self.read_on_init = ReadOnInitState::Scanning(1);
+        }
 
-    fn init(&mut self) {
-        self.init_read_on_init();
+        self.read_on_init_step(outbox);
     }
 }
 
@@ -369,20 +383,6 @@ where
     D::State: HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
     D::InterfaceObjects<'static>: HasDeviceObject,
 {
-    /// Initialize the read-on-init cycle if the application is already running.
-    ///
-    /// Called by the router after constructing the handler set, before entering
-    /// the main event loop.
-    pub fn init_read_on_init(&mut self) {
-        let running = self.state.app().borrow().is_running();
-        let loaded = self.state.ast().borrow().is_loaded();
-        debug!("AL init_read_on_init: app_running={}, ast_loaded={}", running, loaded);
-        if running && loaded {
-            info!("AL read-on-init: starting cycle (app already running at startup)");
-            self.read_on_init = ReadOnInitState::Scanning(1);
-        }
-    }
-
     /// Handle a confirmation from the transport layer.
     ///
     /// If a group value send is pending, updates the communication object
@@ -1144,16 +1144,6 @@ where
             access_ctx
         );
 
-        // Capture run state before property writes that might change it.
-        // Both LOAD_STATE_CONTROL and RUN_STATE_CONTROL can affect the run state:
-        // LOAD_STATE_CONTROL cascades into the RSM via RunnableApplication::write_lsm()
-        // (e.g., LoadCompleted triggers HALTED → READY → RUNNING automatically).
-        let was_running = if hdr.prop_id == pid::LOAD_STATE_CONTROL || hdr.prop_id == pid::RUN_STATE_CONTROL {
-            Some(self.state.app().borrow().is_running())
-        } else {
-            None
-        };
-
         let req = FullPropertyWriteRequest {
             object_idx: hdr.object_idx,
             pid: hdr.prop_id,
@@ -1163,28 +1153,9 @@ where
         };
         let result = self.interface_objects.property_value_write(&req);
 
-        // Sync DeviceControl.user_stopped and publish lifecycle events on run state transitions.
-        if let Some(was_running) = was_running
-            && result.is_ok()
-        {
-            let is_running = self.state.app().borrow().is_running();
-            if was_running != is_running {
-                self.interface_objects.set_user_stopped(!is_running);
-                self.lifecycle_channel.publish_immediate(if is_running {
-                    LifecycleEvent::ApplicationStarted
-                } else {
-                    LifecycleEvent::ApplicationStopped
-                });
-
-                // Activate or cancel the read-on-init cycle.
-                if is_running {
-                    info!("AL read-on-init: starting cycle (app transitioned to running)");
-                    self.read_on_init = ReadOnInitState::Scanning(1);
-                } else {
-                    self.read_on_init = ReadOnInitState::Idle;
-                }
-            }
-        }
+        // Lifecycle side effects (DeviceControl sync, lifecycle events, comm
+        // object reset) are handled by the DeviceModel in the composition
+        // layer, which detects run state transitions around dispatch().
 
         match result {
             Ok(write_response) => {
