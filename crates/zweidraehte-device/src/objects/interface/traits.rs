@@ -232,6 +232,78 @@ impl<'a> FullPropertyWriteRequest<'a> {
 }
 
 // ============================================================================
+// Function Property Request / Result Types
+// ============================================================================
+
+/// Maximum size for function property response data.
+///
+/// Sized to fit within a standard APDU. The response data starts at
+/// APDU byte 5, so for a 255-byte APDU this leaves ~250 bytes. We use
+/// a practical limit matching the property value read handler.
+pub const MAX_FUNCTION_PROPERTY_RESPONSE: usize = 64;
+
+/// Request for `A_FunctionPropertyCommand` or `A_FunctionPropertyState_Read`.
+///
+/// Used at the [`PropertyServiceHandler`] and [`InterfaceObjectAugment`] level.
+/// The `service_data` is opaque and function-specific — the handler decides
+/// what it means.
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionPropertyRequest<'a> {
+    /// Object index (0-based).
+    pub object_idx: u16,
+    /// Property ID of the function property.
+    pub prop_id: u8,
+    /// Opaque service data from the request.
+    pub service_data: &'a [u8],
+    /// Caller's access context.
+    pub ctx: AccessContext,
+}
+
+impl<'a> FunctionPropertyRequest<'a> {
+    /// Create a copy with a different `object_idx` (used by tuple dispatch
+    /// to offset the index before forwarding to a sub-handler).
+    #[inline]
+    pub fn with_object_idx(&self, object_idx: u16) -> Self {
+        Self { object_idx, ..*self }
+    }
+}
+
+/// Result from a function property operation.
+///
+/// Named `Result` (not `Response`) to avoid collision with the wire-format
+/// [`FunctionPropertyResponse`](crate::messages::apdu::function_property::FunctionPropertyResponse)
+/// in the proto crate.
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionPropertyResult {
+    /// Return code (0x00 = success).
+    pub return_code: u8,
+    /// Response data (variable length, may be empty).
+    pub data: PropertyBuf<MAX_FUNCTION_PROPERTY_RESPONSE>,
+}
+
+impl FunctionPropertyResult {
+    /// Success with no response data.
+    pub fn success() -> Self {
+        Self { return_code: 0x00, data: PropertyBuf::new(&[]) }
+    }
+
+    /// Success with response data.
+    pub fn success_with_data(data: &[u8]) -> Self {
+        Self { return_code: 0x00, data: PropertyBuf::new(data) }
+    }
+
+    /// Error: function property not supported by this object/property.
+    pub fn not_supported() -> Self {
+        Self { return_code: 0x02, data: PropertyBuf::new(&[]) }
+    }
+
+    /// Error: invalid object index.
+    pub fn invalid_object_index() -> Self {
+        Self { return_code: 0x05, data: PropertyBuf::new(&[]) }
+    }
+}
+
+// ============================================================================
 // State Property Value Conversion
 // ============================================================================
 
@@ -512,11 +584,48 @@ pub trait PropertyServiceHandler {
         &self,
         req: &FullPropertyWriteRequest<'_>,
     ) -> Result<WriteResponse, PropertyError>;
+
+    /// Handle `A_FunctionPropertyCommand` request.
+    ///
+    /// Executes a function on a property. The default returns "not supported"
+    /// since most interface objects don't implement function properties.
+    fn function_property_command(
+        &self,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        let _ = req;
+        FunctionPropertyResult::not_supported()
+    }
+
+    /// Handle `A_FunctionPropertyState_Read` request.
+    ///
+    /// Reads the state of a function property. The default returns
+    /// "not supported".
+    fn function_property_state_read(
+        &self,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        let _ = req;
+        FunctionPropertyResult::not_supported()
+    }
 }
 
 // ============================================================================
 // Interface Object Augmentation
 // ============================================================================
+
+/// How to look up a property in an augment's `property_description_read`.
+///
+/// The container translates the raw `(prop_id, prop_idx)` wire fields into
+/// this enum before calling the augment, so augments don't need to handle
+/// the `prop_id == 0` convention themselves.
+#[derive(Debug, Clone, Copy)]
+pub enum PropertyLookup {
+    /// Look up by Property ID (direct access).
+    ByPid(u8),
+    /// Look up by augment-local 0-based index (during property scanning).
+    ByIndex(u8),
+}
 
 /// Extension hooks for augmenting interface object property handling.
 ///
@@ -525,13 +634,17 @@ pub trait PropertyServiceHandler {
 /// next augment (or the base object implementation).
 pub trait InterfaceObjectAugment<S: StackState> {
     /// Optional override for `A_PropertyDescription_Read`.
+    ///
+    /// The `lookup` parameter tells the augment whether this is a direct
+    /// PID query or an index-based scan. For index scans, the index is
+    /// 0-based relative to this augment's own properties (the container
+    /// subtracts the base object's property count).
     fn property_description_read(
         &self,
         _state: &S,
         _object_type: InterfaceObjectType,
         _object_idx: u16,
-        _prop_id: u8,
-        _prop_idx: u8,
+        _lookup: PropertyLookup,
     ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
         None
     }
@@ -556,6 +669,26 @@ pub trait InterfaceObjectAugment<S: StackState> {
     ) -> Option<Result<WriteResponse, PropertyError>> {
         None
     }
+
+    /// Optional override for `A_FunctionPropertyCommand`.
+    fn function_property_command(
+        &self,
+        _state: &S,
+        _object_type: InterfaceObjectType,
+        _req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        None
+    }
+
+    /// Optional override for `A_FunctionPropertyState_Read`.
+    fn function_property_state_read(
+        &self,
+        _state: &S,
+        _object_type: InterfaceObjectType,
+        _req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        None
+    }
 }
 
 impl<S: StackState> InterfaceObjectAugment<S> for () {}
@@ -571,12 +704,11 @@ where
         state: &S,
         object_type: InterfaceObjectType,
         object_idx: u16,
-        prop_id: u8,
-        prop_idx: u8,
+        lookup: PropertyLookup,
     ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
         self.0
-            .property_description_read(state, object_type, object_idx, prop_id, prop_idx)
-            .or_else(|| self.1.property_description_read(state, object_type, object_idx, prop_id, prop_idx))
+            .property_description_read(state, object_type, object_idx, lookup)
+            .or_else(|| self.1.property_description_read(state, object_type, object_idx, lookup))
     }
 
     fn property_value_read(
@@ -600,6 +732,28 @@ where
         self.0
             .property_value_write(state, object_type, req)
             .or_else(|| self.1.property_value_write(state, object_type, req))
+    }
+
+    fn function_property_command(
+        &self,
+        state: &S,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        self.0
+            .function_property_command(state, object_type, req)
+            .or_else(|| self.1.function_property_command(state, object_type, req))
+    }
+
+    fn function_property_state_read(
+        &self,
+        state: &S,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        self.0
+            .function_property_state_read(state, object_type, req)
+            .or_else(|| self.1.function_property_state_read(state, object_type, req))
     }
 }
 
@@ -639,10 +793,11 @@ mod tests {
             _state: &S,
             object_type: InterfaceObjectType,
             object_idx: u16,
-            prop_id: u8,
-            _prop_idx: u8,
+            lookup: PropertyLookup,
         ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
-            if object_type != InterfaceObjectType::Device || prop_id != 42 {
+            if object_type != InterfaceObjectType::Device
+                || !matches!(lookup, PropertyLookup::ByPid(42) | PropertyLookup::ByIndex(0))
+            {
                 return None;
             }
 
@@ -663,10 +818,11 @@ mod tests {
             _state: &S,
             object_type: InterfaceObjectType,
             object_idx: u16,
-            prop_id: u8,
-            _prop_idx: u8,
+            lookup: PropertyLookup,
         ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
-            if object_type != InterfaceObjectType::IPParameter || prop_id != 42 {
+            if object_type != InterfaceObjectType::IPParameter
+                || !matches!(lookup, PropertyLookup::ByPid(42) | PropertyLookup::ByIndex(0))
+            {
                 return None;
             }
 
@@ -682,7 +838,7 @@ mod tests {
         let chain = (DeviceOnlyAugment { max_elements: 1 }, DeviceOnlyAugment { max_elements: 9 });
 
         let response = chain
-            .property_description_read(&state, InterfaceObjectType::Device, 0, 42, 0)
+            .property_description_read(&state, InterfaceObjectType::Device, 0, PropertyLookup::ByPid(42))
             .expect("first augment should handle")
             .expect("handler should succeed");
 
@@ -695,13 +851,13 @@ mod tests {
         let chain = (DeviceOnlyAugment { max_elements: 2 }, IpOnlyAugment { max_elements: 7 });
 
         let device_response = chain
-            .property_description_read(&state, InterfaceObjectType::Device, 0, 42, 0)
+            .property_description_read(&state, InterfaceObjectType::Device, 0, PropertyLookup::ByPid(42))
             .expect("device augment should handle")
             .expect("handler should succeed");
         assert_eq!(device_response.max_elements, 2);
 
         let ip_response = chain
-            .property_description_read(&state, InterfaceObjectType::IPParameter, 0, 42, 0)
+            .property_description_read(&state, InterfaceObjectType::IPParameter, 0, PropertyLookup::ByPid(42))
             .expect("ip augment should handle after delegation")
             .expect("handler should succeed");
         assert_eq!(ip_response.max_elements, 7);
@@ -862,6 +1018,20 @@ impl PropertyServiceHandler for () {
     ) -> Result<WriteResponse, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
     }
+
+    fn function_property_command(
+        &self,
+        _req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        FunctionPropertyResult::invalid_object_index()
+    }
+
+    fn function_property_state_read(
+        &self,
+        _req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        FunctionPropertyResult::invalid_object_index()
+    }
 }
 
 /// Implement HasDeviceObject for () (empty container) for testing purposes
@@ -960,6 +1130,30 @@ where
             self.0.property_value_write(req)
         } else {
             self.1.property_value_write(&req.with_object_idx(req.object_idx - base_count))
+        }
+    }
+
+    fn function_property_command(
+        &self,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        let base_count = self.0.object_count();
+        if req.object_idx < base_count {
+            self.0.function_property_command(req)
+        } else {
+            self.1.function_property_command(&req.with_object_idx(req.object_idx - base_count))
+        }
+    }
+
+    fn function_property_state_read(
+        &self,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        let base_count = self.0.object_count();
+        if req.object_idx < base_count {
+            self.0.function_property_state_read(req)
+        } else {
+            self.1.function_property_state_read(&req.with_object_idx(req.object_idx - base_count))
         }
     }
 }

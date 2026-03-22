@@ -112,7 +112,7 @@ use super::memory_map::{MemoryLayout, SystemBMemoryMap};
 ///     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, MyState>;
 ///
 ///     fn create_interface_objects<'a>(state: &'a MyState) -> Self::InterfaceObjects<'a> {
-///         create_knxip_objects::<Self, _>(state, &Self::memory_layout())
+///         create_knxip_objects::<Self, _, _>(state, &Self::memory_layout(), ())
 ///     }
 /// }
 /// ```
@@ -251,7 +251,7 @@ impl<T: SystemBIpDeviceDef> KnxIpDevice for T {
 ///     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, MyState>;
 ///
 ///     fn create_interface_objects<'a>(state: &'a MyState) -> Self::InterfaceObjects<'a> {
-///         create_system_b_objects::<Self, _>(state, &Self::memory_layout())
+///         create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), ())
 ///     }
 /// }
 /// ```

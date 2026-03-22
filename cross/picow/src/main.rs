@@ -23,6 +23,7 @@ use {defmt_rtt as _, panic_probe as _};
 use devices::light_switch::{
     self, LightSwitchDevice, LightSwitchParams,
     comm_objs::LightSwitchComObjects,
+    easter_egg::EasterEggAugment,
 };
 use zweidraehte_device::{
     bcus::system_b::{
@@ -81,13 +82,13 @@ impl StackDefinition for PicoWLightSwitch {
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
     type State = PicoWState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, PicoWState>;
+    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, PicoWState, EasterEggAugment>;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_knxip_objects::<Self, _>(state, &Self::memory_layout())
+        create_knxip_objects::<Self, _, _>(state, &Self::memory_layout(), EasterEggAugment)
     }
 
     type LayerBuilder = InsecureIpDeviceBuilder;

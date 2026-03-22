@@ -1143,9 +1143,10 @@ impl StackDefinition for IpcConformanceTestStack {
     where
         Self::State: 'a,
     {
-        create_knxip_objects::<IpcConformanceTestStack, _>(
+        create_knxip_objects::<IpcConformanceTestStack, _, _>(
             state,
             &CONFORMANCE_MEMORY_LAYOUT,
+            (),
         )
     }
 

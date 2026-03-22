@@ -29,8 +29,9 @@
 //! ```
 
 pub mod app;
-pub mod params;
 pub mod comm_objs;
+pub mod easter_egg;
+pub mod params;
 
 #[cfg(feature = "knxprod")]
 mod layout;

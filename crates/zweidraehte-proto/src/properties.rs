@@ -200,7 +200,7 @@ impl PropertyDescriptionResponse {
         buf[3] = if self.writeable { 0x80 } else { 0x00 } | (self.pdt & 0x3F);
         buf[4] = (type_and_max >> 8) as u8;
         buf[5] = type_and_max as u8;
-        buf[6] = (self.write_level << 4) | self.read_level;
+        buf[6] = (self.read_level << 4) | self.write_level;
         7
     }
 }

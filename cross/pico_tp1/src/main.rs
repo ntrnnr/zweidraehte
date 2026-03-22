@@ -25,6 +25,7 @@ use devices::light_switch::{
     self, LightSwitchDevice, LightSwitchParams,
     app::{self, ButtonId, WaitForRelease},
     comm_objs::LightSwitchComObjects,
+    easter_egg::EasterEggAugment,
 };
 
 use zweidraehte_device::{
@@ -100,13 +101,13 @@ impl StackDefinition for PicoTp1LightSwitch {
     type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
     type State = PicoTp1State;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, PicoTp1State>;
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, PicoTp1State, EasterEggAugment>;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_system_b_objects::<Self, _>(state, &Self::memory_layout())
+        create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), EasterEggAugment)
     }
 
     type LayerBuilder = InsecureDeviceBuilder;

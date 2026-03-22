@@ -27,6 +27,7 @@ use devices::light_switch::{
     self, LightSwitchDevice, LightSwitchParams,
     app::{self, ButtonId, WaitForRelease},
     comm_objs::LightSwitchComObjects,
+    easter_egg::EasterEggAugment,
 };
 
 use zweidraehte_device::{
@@ -88,13 +89,13 @@ impl StackDefinition for PicoEthLightSwitch {
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
     type State = PicoEthState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, PicoEthState>;
+    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, PicoEthState, EasterEggAugment>;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_knxip_objects::<Self, _>(state, &Self::memory_layout())
+        create_knxip_objects::<Self, _, _>(state, &Self::memory_layout(), EasterEggAugment)
     }
 
     type LayerBuilder = InsecureIpDeviceBuilder;

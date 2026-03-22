@@ -3244,7 +3244,7 @@ impl StackDefinition for MdtStack {
     where
         Self::State: 'a,
     {
-        create_knxip_objects::<Self, _>(state, &Self::memory_layout())
+        create_knxip_objects::<Self, _, _>(state, &Self::memory_layout(), ())
     }
 
     type LayerBuilder = InsecureIpDeviceBuilder;

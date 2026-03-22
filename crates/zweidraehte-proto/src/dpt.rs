@@ -60,11 +60,7 @@ impl KnxFloat16 {
             // Negative: mantissa is bits 0-10 as signed 11-bit value
             let m = (raw & 0x07FF) as i16;
             // Sign-extend from 11 bits
-            if m & 0x400 != 0 {
-                (m | (!0x07FF_u16 as i16)) as i32
-            } else {
-                -((!m & 0x07FF) + 1) as i32
-            }
+            if m & 0x400 != 0 { (m | (!0x07FF_u16 as i16)) as i32 } else { -((!m & 0x07FF) + 1) as i32 }
         } else {
             (raw & 0x07FF) as i32
         };
@@ -432,7 +428,7 @@ pub type PDT_Enum8 = PropertyData<u8, 0x35, 1>;
 pub type PDT_Scaling = PropertyData<u8, 0x36, 1>; //TODO: Custom type?
 //pub type PDT_NotEncodedVariableLength = //TODO: Super special variable len WTF shit - need to investigate
 //pub type PDT_NotEncodedFixedLength = //TODO: Super special WTF shit - need to investigate
-//pub type PDT_Function = //TODO: Super special WTF shit - need to investigate
+pub type PDT_Function = PropertyData<[u8; 0], 0x3E, 0>;
 //pub type PDT_Escape = //TODO: Super special WTF shit - need to investigate
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1354,11 +1350,7 @@ impl core::fmt::Debug for DPT_SceneControl {
         let value: u8 = self.backing.into();
         let scene = (value & 0x3F) + 1;
         let learn = (value & 0x80) != 0;
-        if learn {
-            write!(f, "Learn scene {}", scene)
-        } else {
-            write!(f, "Activate scene {}", scene)
-        }
+        if learn { write!(f, "Learn scene {}", scene) } else { write!(f, "Activate scene {}", scene) }
     }
 }
 

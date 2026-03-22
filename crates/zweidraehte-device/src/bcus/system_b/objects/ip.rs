@@ -12,9 +12,10 @@ use crate::{
     IpStackState, StackDefinition, StackState,
     dpt::{InterfaceObjectType, PDT_UnsignedChar, PDT_UnsignedInt},
     objects::interface::{
-        FullPropertyReadRequest, FullPropertyWriteRequest, InterfaceObject,
-        InterfaceObjectAugment, IpParameterObject, PropertyAccess, PropertyDescriptionResponse,
-        PropertyDescriptor, PropertyError, PropertyServiceHandler, WriteResponse, pid,
+        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest,
+        FunctionPropertyResult, InterfaceObject, InterfaceObjectAugment, IpParameterObject,
+        PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError,
+        PropertyLookup, PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{
         HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
@@ -43,6 +44,9 @@ impl TunnelingAugment {
         (state.knxnetip_device_capabilities() & Self::KNXNETIP_CAP_TUNNELING_BIT) != 0
     }
 
+    /// PIDs provided by this augment, in index-scan order.
+    const PIDS: [u8; 2] = [pid::ADDITIONAL_INDIVIDUAL_ADDRESSES, pid::TUNNELLING_ADDRESSES];
+
     fn descriptor(state: &impl IpStackState, prop_id: u8) -> Option<PropertyDescriptor> {
         let max_addrs = state.additional_individual_address_capacity() as u16;
         match prop_id {
@@ -62,6 +66,11 @@ impl TunnelingAugment {
             )),
             _ => None,
         }
+    }
+
+    /// Look up a descriptor by augment-local property index (0-based).
+    fn descriptor_by_index(state: &impl IpStackState, idx: u8) -> Option<PropertyDescriptor> {
+        Self::PIDS.get(idx as usize).and_then(|&pid| Self::descriptor(state, pid))
     }
 
     fn encode_addrs(
@@ -179,8 +188,7 @@ impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugmen
         state: &S,
         object_type: InterfaceObjectType,
         object_idx: u16,
-        prop_id: u8,
-        _prop_idx: u8,
+        lookup: PropertyLookup,
     ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
         if object_type != InterfaceObjectType::IPParameter {
             return None;
@@ -190,11 +198,10 @@ impl<S: StackState + IpStackState> InterfaceObjectAugment<S> for TunnelingAugmen
             return None;
         }
 
-        if prop_id == 0 {
-            return None;
-        }
-
-        let desc = Self::descriptor(state, prop_id)?;
+        let desc = match lookup {
+            PropertyLookup::ByPid(pid) => Self::descriptor(state, pid)?,
+            PropertyLookup::ByIndex(idx) => Self::descriptor_by_index(state, idx)?,
+        };
         Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &desc)))
     }
 
@@ -321,69 +328,123 @@ impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> PropertySer
         prop_id: u8,
         prop_idx: u8,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
-        if object_idx == 0 {
+        use crate::objects::interface::PropertyLookup;
+
+        if object_idx != 0 {
+            return Err(PropertyError::InvalidObjectIndex);
+        }
+
+        let obj_type = InterfaceObjectType::IPParameter;
+
+        if prop_id != 0 {
+            // Direct PID lookup: augment first (can intercept/add PIDs),
+            // then base.
             if let Some(result) = self.augment.property_description_read(
-                self.state,
-                InterfaceObjectType::IPParameter,
-                object_idx,
-                prop_id,
-                prop_idx,
+                self.state, obj_type, object_idx, PropertyLookup::ByPid(prop_id),
             ) {
                 return result;
             }
-            // Note: We need to report the actual object index (5) in the response,
-            // but the tuple impl calls us with 0. The caller handles this.
-            self.ip_parameter.borrow().property_description(object_idx, prop_id, prop_idx)
-        } else {
-            Err(PropertyError::InvalidObjectIndex)
         }
+
+        let base_result = self.ip_parameter.borrow().property_description(object_idx, prop_id, prop_idx);
+
+        if base_result.is_ok() || prop_id != 0 {
+            return base_result;
+        }
+
+        // Index scan (prop_id == 0): base ran out of properties.
+        // Give the augment a chance to append its own.
+        let base_count = self.ip_parameter.borrow().property_count() as u8;
+        let augment_idx = prop_idx.saturating_sub(base_count);
+        if let Some(result) = self.augment.property_description_read(
+            self.state, obj_type, object_idx, PropertyLookup::ByIndex(augment_idx),
+        ) {
+            return result.map(|mut resp| {
+                resp.prop_idx = prop_idx;
+                resp
+            });
+        }
+
+        base_result
     }
 
     fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
-        if req.object_idx == 0 {
-            if let Some(result) =
-                self.augment.property_value_read(self.state, InterfaceObjectType::IPParameter, req, buf)
-            {
-                return result;
-            }
-            // Check access level
-            if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(req.pid) {
-                if !desc.can_read(req.ctx) {
-                    return Err(PropertyError::AccessDenied);
-                }
-            } else {
-                return Err(PropertyError::InvalidPropertyId);
-            }
-            self.ip_parameter.borrow().read_property(req.property_request(), buf)
-        } else {
-            Err(PropertyError::InvalidObjectIndex)
+        if req.object_idx != 0 {
+            return Err(PropertyError::InvalidObjectIndex);
         }
+
+        // Augment first (can intercept specific PIDs).
+        if let Some(result) =
+            self.augment.property_value_read(self.state, InterfaceObjectType::IPParameter, req, buf)
+        {
+            return result;
+        }
+
+        // Check access level
+        if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(req.pid) {
+            if !desc.can_read(req.ctx) {
+                return Err(PropertyError::AccessDenied);
+            }
+        } else {
+            return Err(PropertyError::InvalidPropertyId);
+        }
+        self.ip_parameter.borrow().read_property(req.property_request(), buf)
     }
 
     fn property_value_write(&self, req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
-        if req.object_idx == 0 {
-            if let Some(result) = self.augment.property_value_write(self.state, InterfaceObjectType::IPParameter, req) {
-                if result.is_ok() {
-                    self.state.mark_dirty();
-                }
-                return result;
-            }
-            // Check access level
-            if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(req.pid) {
-                if !desc.can_write(req.ctx) {
-                    return Err(PropertyError::AccessDenied);
-                }
-            } else {
-                return Err(PropertyError::InvalidPropertyId);
-            }
-            let result = self.ip_parameter.borrow_mut().write_property(req.property_request());
+        if req.object_idx != 0 {
+            return Err(PropertyError::InvalidObjectIndex);
+        }
+
+        // Augment first (can intercept specific PIDs).
+        if let Some(result) = self.augment.property_value_write(self.state, InterfaceObjectType::IPParameter, req) {
             if result.is_ok() {
                 self.state.mark_dirty();
             }
-            result
-        } else {
-            Err(PropertyError::InvalidObjectIndex)
+            return result;
         }
+
+        // Check access level
+        if let Some((_, desc)) = self.ip_parameter.borrow().property_descriptor_by_id(req.pid) {
+            if !desc.can_write(req.ctx) {
+                return Err(PropertyError::AccessDenied);
+            }
+        } else {
+            return Err(PropertyError::InvalidPropertyId);
+        }
+        let result = self.ip_parameter.borrow_mut().write_property(req.property_request());
+        if result.is_ok() {
+            self.state.mark_dirty();
+        }
+        result
+    }
+
+    fn function_property_command(
+        &self,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        if req.object_idx == 0 {
+            if let Some(result) = self.augment.function_property_command(
+                self.state, InterfaceObjectType::IPParameter, req,
+            ) {
+                return result;
+            }
+        }
+        FunctionPropertyResult::not_supported()
+    }
+
+    fn function_property_state_read(
+        &self,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        if req.object_idx == 0 {
+            if let Some(result) = self.augment.function_property_state_read(
+                self.state, InterfaceObjectType::IPParameter, req,
+            ) {
+                return result;
+            }
+        }
+        FunctionPropertyResult::not_supported()
     }
 }
 
@@ -405,8 +466,11 @@ impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> PropertySer
 /// - Application Program Object (index 4)
 /// - PEI Program Object (index 5)
 /// - IP Parameter Object (index 6)
-pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP, PEI, A = ()> =
-    (SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>, IpObjects<'a, S, A>);
+/// Type parameters:
+/// - `A`: Augment on `SystemBObjects` (the 6 base objects). Default `()`.
+/// - `IA`: Augment on `IpObjects` (IP Parameter Object). Default `()`.
+pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP, PEI, A = (), IA = ()> =
+    (SystemBObjects<'a, S, ADT, AST, COT, APP, PEI, A>, IpObjects<'a, S, IA>);
 
 /// Convenience alias that fills in the GAT projections automatically.
 ///
@@ -414,7 +478,11 @@ pub type KnxIpInterfaceObjects<'a, S, ADT, AST, COT, APP, PEI, A = ()> =
 /// from `S`'s `Has*Table` implementations. Use this in
 /// [`StackDefinition::InterfaceObjects`](crate::StackDefinition) to avoid
 /// spelling out 5 associated type projections manually.
-pub type DefaultKnxIpInterfaceObjects<'a, S, A = ()> = KnxIpInterfaceObjects<
+///
+/// Type parameters:
+/// - `A`: Augment on `SystemBObjects` (the 6 base objects). Default `()`.
+/// - `IA`: Augment on `IpObjects` (IP Parameter Object). Default `()`.
+pub type DefaultKnxIpInterfaceObjects<'a, S, A = (), IA = ()> = KnxIpInterfaceObjects<
     'a,
     S,
     <S as HasAddressTable>::ADT,
@@ -423,6 +491,7 @@ pub type DefaultKnxIpInterfaceObjects<'a, S, A = ()> = KnxIpInterfaceObjects<
     <S as HasApplication>::APP,
     <S as HasPeiApplication>::PEI,
     A,
+    IA,
 >;
 
 // ============================================================================
@@ -431,35 +500,10 @@ pub type DefaultKnxIpInterfaceObjects<'a, S, A = ()> = KnxIpInterfaceObjects<
 
 /// Create KNX/IP interface objects (7 objects: indices 0-6).
 ///
-/// Use this function in your `StackDefinition::create_interface_objects` implementation
-/// for KNX/IP System B devices (57B0).
-pub fn create_knxip_objects<'a, D, S>(
-    state: &'a S,
-    layout: &crate::bcus::system_b::memory_map::MemoryLayout,
-) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI>
-where
-    D: StackDefinition,
-    S: StackState
-        + IpStackState
-        + HasAddressTable
-        + HasAssociationTable
-        + HasCommunicationObjectTable
-        + HasApplication
-        + HasPeiApplication
-        + HasRoutingCount,
-    S::ADT: HasLoadStateMachine,
-    S::AST: HasLoadStateMachine,
-    S::COT: HasLoadStateMachine,
-    S::APP: HasLoadStateMachine + HasRunStateMachine,
-    S::PEI: HasLoadStateMachine + HasRunStateMachine,
-{
-    let base = super::create_system_b_objects::<D, S>(state, layout);
-    let ip = IpObjects::new(state);
-    (base, ip)
-}
-
-/// Create KNX/IP interface objects with an explicit augment chain.
-pub fn create_knxip_objects_with_augment<'a, D, S, A>(
+/// Pass `()` as the augment if no augmentation is needed, or an
+/// [`InterfaceObjectAugment`] to intercept property and function property
+/// requests on the 6 base System B objects.
+pub fn create_knxip_objects<'a, D, S, A>(
     state: &'a S,
     layout: &crate::bcus::system_b::memory_map::MemoryLayout,
     augment: A,
@@ -481,8 +525,39 @@ where
     S::PEI: HasLoadStateMachine + HasRunStateMachine,
     A: InterfaceObjectAugment<S>,
 {
-    let base = super::create_system_b_objects::<D, S>(state, layout);
-    let ip = IpObjects::with_augment(state, augment);
+    let base = super::create_system_b_objects::<D, S, _>(state, layout, augment);
+    let ip = IpObjects::new(state);
+    (base, ip)
+}
+
+/// Create KNX/IP interface objects with an augment on the IP Parameter Object.
+///
+/// Use this when you need to extend the IP Parameter Object with additional
+/// properties (e.g., tunneling address management).
+pub fn create_knxip_objects_with_ip_augment<'a, D, S, IA>(
+    state: &'a S,
+    layout: &crate::bcus::system_b::memory_map::MemoryLayout,
+    ip_augment: IA,
+) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI, (), IA>
+where
+    D: StackDefinition,
+    S: StackState
+        + IpStackState
+        + HasAddressTable
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasApplication
+        + HasPeiApplication
+        + HasRoutingCount,
+    S::ADT: HasLoadStateMachine,
+    S::AST: HasLoadStateMachine,
+    S::COT: HasLoadStateMachine,
+    S::APP: HasLoadStateMachine + HasRunStateMachine,
+    S::PEI: HasLoadStateMachine + HasRunStateMachine,
+    IA: InterfaceObjectAugment<S>,
+{
+    let base = super::create_system_b_objects::<D, S, _>(state, layout, ());
+    let ip = IpObjects::with_augment(state, ip_augment);
     (base, ip)
 }
 
@@ -490,7 +565,7 @@ where
 pub fn create_knxip_tunneling_objects<'a, D, S>(
     state: &'a S,
     layout: &crate::bcus::system_b::memory_map::MemoryLayout,
-) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI, (TunnelingAugment, ())>
+) -> KnxIpInterfaceObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI, (), (TunnelingAugment, ())>
 where
     D: StackDefinition,
     S: StackState
@@ -507,5 +582,5 @@ where
     S::APP: HasLoadStateMachine + HasRunStateMachine,
     S::PEI: HasLoadStateMachine + HasRunStateMachine,
 {
-    create_knxip_objects_with_augment::<D, S, _>(state, layout, (TunnelingAugment, ()))
+    create_knxip_objects_with_ip_augment::<D, S, _>(state, layout, (TunnelingAugment, ()))
 }

@@ -76,6 +76,10 @@ const fn required_access_level(apci: ApciCode) -> Option<u8> {
         | ApciCode::PropertyValueRead
         | ApciCode::PropertyValueWrite => None,
 
+        // Function property services: per-property checks in handler.
+        ApciCode::FunctionPropertyCommand
+        | ApciCode::FunctionPropertyStateRead => None,
+
         // Memory services: per-region checks in the memory map.
         ApciCode::MemoryRead
         | ApciCode::MemoryWrite
@@ -155,6 +159,14 @@ mod tests {
         );
         assert_eq!(
             check_service_access(ApciCode::AuthorizeRequest, &ctx),
+            AccessDecision::Defer
+        );
+        assert_eq!(
+            check_service_access(ApciCode::FunctionPropertyCommand, &ctx),
+            AccessDecision::Defer
+        );
+        assert_eq!(
+            check_service_access(ApciCode::FunctionPropertyStateRead, &ctx),
             AccessDecision::Defer
         );
     }
