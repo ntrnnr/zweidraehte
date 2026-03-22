@@ -2,3 +2,11 @@
 name = "zweidraehte-util"
 version = "0.1.0"
 edition = "2024"
+
+[dependencies]
+defmt = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
+
+[features]
+defmt = ["dep:defmt"]
+log = ["dep:log"]

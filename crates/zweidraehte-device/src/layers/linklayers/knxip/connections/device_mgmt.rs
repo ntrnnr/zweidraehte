@@ -282,7 +282,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
         conn: &mut ConnectionContext,
         buffer_manager: &DynBufferManager<'static>,
     ) -> Result<DataFrameAction, ServerError> {
-        debug!("DevMgmt raw data ({} bytes): {:?}", data.len(), crate::fmt::Bytes(data));
+        debug!("DevMgmt raw data ({} bytes): {:?}", data.len(), zweidraehte_util::fmt::Bytes(data));
         // Parse the DeviceConfigurationRequest header (consumes KNXnet/IP + connection headers)
         let mut buf = data;
         let request = match buf.parse::<DeviceConfigurationRequest>() {

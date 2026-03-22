@@ -507,7 +507,7 @@ where
 
     /// Write bytes to the UART, logging them at trace level.
     async fn uart_write(&mut self, bytes: &[u8]) {
-        trace!("TPUART TX: {:?}", crate::fmt::Bytes(bytes));
+        trace!("TPUART TX: {:?}", zweidraehte_util::fmt::Bytes(bytes));
         let _ = self.uart_tx.write_all(bytes).await;
     }
 

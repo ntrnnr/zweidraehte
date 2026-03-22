@@ -551,7 +551,7 @@ where
                     "AL ASAP {} updated via {:?}: {:?}",
                     asap,
                     apci,
-                    crate::fmt::Bytes(self.comm_objects.borrow().value(asap))
+                    zweidraehte_util::fmt::Bytes(self.comm_objects.borrow().value(asap))
                 );
             } else {
                 error!("Length of telegram not enough to contain object value");
@@ -647,7 +647,7 @@ where
             trace!(
                 "AL sent GroupValueResponse for ASAP {}: {:?}",
                 asap,
-                crate::fmt::Bytes(self.comm_objects.borrow().value(asap))
+                zweidraehte_util::fmt::Bytes(self.comm_objects.borrow().value(asap))
             );
 
             // Publish read event to the event channel
@@ -1423,7 +1423,7 @@ where
                         DeviceDescriptorResponse::write_type2(buf, dd2_arr);
                     });
 
-                debug!("AL sending DeviceDescriptorResponse (DD2): {:?}", crate::fmt::Bytes(dd2));
+                debug!("AL sending DeviceDescriptorResponse (DD2): {:?}", zweidraehte_util::fmt::Bytes(dd2));
                 outbox.push(msg.into_inner());
             } else {
                 self.send_dd_error(ind, transport_service, outbox);
@@ -2162,7 +2162,7 @@ where
                 data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 5].copy_from_slice(info);
             });
 
-        debug!("AL sending UserManufacturerInfo_Response: {:?}", crate::fmt::Bytes(info));
+        debug!("AL sending UserManufacturerInfo_Response: {:?}", zweidraehte_util::fmt::Bytes(info));
 
         outbox.push(msg.into_inner());
     }
@@ -2190,7 +2190,7 @@ where
             return;
         };
 
-        debug!("AL Authorize_Request: key={:?}", crate::fmt::Bytes(&req.key));
+        debug!("AL Authorize_Request: key={:?}", zweidraehte_util::fmt::Bytes(&req.key));
 
         let access_level = self.state.authorize(&req.key);
         debug!("AL Authorize_Request: granted level {}", access_level);
@@ -2249,7 +2249,7 @@ where
         debug!(
             "AL Key_Write: level={}, key={:?}, current_ctx={:?}",
             req.level,
-            crate::fmt::Bytes(&req.key),
+            zweidraehte_util::fmt::Bytes(&req.key),
             current_ctx
         );
 

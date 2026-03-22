@@ -2103,6 +2103,7 @@ dependencies = [
  "zweidraehte-ets",
  "zweidraehte-platform",
  "zweidraehte-proto",
+ "zweidraehte-util",
 ]
 
 [[package]]
@@ -2140,8 +2141,12 @@ dependencies = [
  "serde_with",
  "zerocopy",
  "zweidraehte-platform",
+ "zweidraehte-util",
 ]
 
 [[package]]
 name = "zweidraehte-util"
 version = "0.1.0"
+dependencies = [
+ "defmt 1.0.1",
+]

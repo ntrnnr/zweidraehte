@@ -433,7 +433,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
 
         let tpdu = &data[6..];
         debug!("cEMI TL response: internal ({} bytes): {:?}, TPDU ({} bytes): {:?}",
-            data.len(), crate::fmt::Bytes(data), tpdu.len(), crate::fmt::Bytes(tpdu));
+            data.len(), zweidraehte_util::fmt::Bytes(data), tpdu.len(), zweidraehte_util::fmt::Bytes(tpdu));
 
         // Serialize the cEMI TL payload using the standard builder.
         // Message code: T_Data_Connected.ind (0x89) — the device acts as

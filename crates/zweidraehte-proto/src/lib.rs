@@ -14,7 +14,8 @@ extern crate alloc;
 #[doc(hidden)]
 pub use paste;
 
-mod fmt;
+#[macro_use]
+extern crate zweidraehte_util;
 
 #[macro_use]
 mod macros;

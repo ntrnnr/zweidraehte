@@ -3,6 +3,8 @@
 //#[cfg(all(feature = "defmt", feature = "log"))]
 //compile_error!("You may not enable both `defmt` and `log` features.");
 
+#[doc(hidden)]
+#[macro_export]
 macro_rules! __create_protocol_enum_inner {
     // Create protocol enum when the Other variant is specified.
     //
@@ -93,7 +95,7 @@ macro_rules! __create_protocol_enum_inner {
         }
 
         impl core::convert::TryFrom<$repr> for $name {
-            type Error = crate::error::UnrecognizedProtocolCode<$repr>;
+            type Error = $crate::error::UnrecognizedProtocolCode<$repr>;
 
             fn try_from(x: $repr) -> Result<Self, Self::Error> {
                 use core::convert::TryFrom;
@@ -219,13 +221,13 @@ macro_rules! __create_protocol_enum_inner {
         }
 
         impl core::convert::TryFrom<$repr> for $name {
-            type Error = crate::error::UnrecognizedProtocolCode<$repr>;
+            type Error = $crate::error::UnrecognizedProtocolCode<$repr>;
 
             #[allow(unreachable_patterns)]
             fn try_from(x: $repr) -> Result<Self, Self::Error> {
                 match x {
                     $($value => Ok($name::$variant),)*
-                    x => Err(crate::error::UnrecognizedProtocolCode(x)),
+                    x => Err($crate::error::UnrecognizedProtocolCode(x)),
                 }
             }
         }
@@ -312,6 +314,7 @@ macro_rules! __create_protocol_enum_inner {
 /// For a numerical type `U` (`u8`, `u16`, etc), impls of `Into<U>` are generated.
 /// `From<U>` impls are generated if the `Other` variant is specified. If the
 /// `Other` variant is not specified, `TryFrom<U>` will be generated instead.
+#[macro_export]
 macro_rules! create_protocol_enum {
     ($(#[$attr:meta])* enum $name:ident: $repr:ty {
         $($variant:ident, $value:expr, $fmt:expr;)*

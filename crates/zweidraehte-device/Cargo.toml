@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+zweidraehte-util = { path = "../zweidraehte-util", default-features = false }
 zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false }
 zweidraehte-platform = { path = "../zweidraehte-platform", default-features = false }
 zweidraehte-ets = { path = "../zweidraehte-ets" }
@@ -34,8 +35,8 @@ critical-section = { version = "1.2.0", optional = true }
 test-case = "3.3"
 
 [features]
-defmt = ["dep:defmt", "zweidraehte-proto/defmt", "zweidraehte-platform/defmt", "heapless/defmt"]
-log = ["dep:log", "zweidraehte-proto/log", "zweidraehte-platform/log"]
+defmt = ["dep:defmt", "zweidraehte-util/defmt", "zweidraehte-proto/defmt", "zweidraehte-platform/defmt", "heapless/defmt"]
+log = ["dep:log", "zweidraehte-util/log", "zweidraehte-proto/log", "zweidraehte-platform/log"]
 std = ["zweidraehte-proto/std", "zweidraehte-platform/std", "critical-section/std"]
 linux = ["zweidraehte-platform/linux", "std"]
 knxip = ["zweidraehte-proto/knxip"]

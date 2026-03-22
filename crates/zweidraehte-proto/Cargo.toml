@@ -5,6 +5,7 @@ edition = "2024"
 description = "KNX protocol types, message parsing, and encoding"
 
 [dependencies]
+zweidraehte-util = { path = "../zweidraehte-util", default-features = false }
 zweidraehte-platform = { path = "../zweidraehte-platform", default-features = false }
 
 zerocopy = { workspace = true }
@@ -24,8 +25,8 @@ replace_with = { workspace = true }
 test-case = "3.3"
 
 [features]
-defmt = ["dep:defmt", "zweidraehte-platform/defmt", "heapless/defmt"]
-log = ["dep:log", "zweidraehte-platform/log"]
+defmt = ["dep:defmt", "zweidraehte-util/defmt", "zweidraehte-platform/defmt", "heapless/defmt"]
+log = ["dep:log", "zweidraehte-util/log", "zweidraehte-platform/log"]
 alloc = []
 std = ["alloc", "zweidraehte-platform/std"]
 knxip = []

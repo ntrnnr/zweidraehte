@@ -11,11 +11,10 @@
 #[doc(hidden)]
 pub use paste;
 
-mod fmt;
-
 #[macro_use]
-mod macros;
-
+extern crate zweidraehte_util;
+#[macro_use]
+extern crate zweidraehte_proto;
 
 // Re-export protocol types from proto so downstream can use zweidraehte_device::address etc.
 pub use zweidraehte_proto::access;

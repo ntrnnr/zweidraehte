@@ -210,7 +210,7 @@ where
             return;
         }
 
-        debug!("cEMI TL: inject_cemi_frame ({} bytes): {:?}", buf.len(), crate::fmt::Bytes(buf.as_ref()));
+        debug!("cEMI TL: inject_cemi_frame ({} bytes): {:?}", buf.len(), zweidraehte_util::fmt::Bytes(buf.as_ref()));
 
         // Parse the cEMI TL wire frame: skip msg_code(1) + add_info_len(1) +
         // add_info(N) to find the reserved bytes and TPDU.
@@ -247,7 +247,7 @@ where
         }
 
         let tpdu = &data[tpdu_start..tpdu_start + tpdu_len];
-        debug!("cEMI TL: L={}, TPDU ({} bytes): {:?}", l_field, tpdu.len(), crate::fmt::Bytes(tpdu));
+        debug!("cEMI TL: L={}, TPDU ({} bytes): {:?}", l_field, tpdu.len(), zweidraehte_util::fmt::Bytes(tpdu));
 
         // Build internal format message: ctrl(1) + src(2) + dst(2) + npdu(1) + tpdu
         let internal_len = 6 + tpdu.len();

@@ -196,7 +196,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
 
     /// Send a datagram on a specific socket.
     pub async fn send_to(&self, socket_idx: usize, data: &[u8], destination: SocketAddrV4) -> Result<(), ()> {
-        trace!("KNX/IP TX {} bytes on socket {} to {}: {:?}", data.len(), socket_idx, destination, crate::fmt::Bytes(data));
+        trace!("KNX/IP TX {} bytes on socket {} to {}: {:?}", data.len(), socket_idx, destination, zweidraehte_util::fmt::Bytes(data));
 
         if let Some(Some(socket)) = self.sockets.get(socket_idx) {
             match socket.send_to(data, destination).await {
@@ -245,7 +245,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                                     socket_idx,
                                     source,
                                     destination,
-                                    crate::fmt::Bytes(&buffer[..len])
+                                    zweidraehte_util::fmt::Bytes(&buffer[..len])
                                 );
                                 buffer.set_len(len);
                                 Ok((buffer, source, destination))
