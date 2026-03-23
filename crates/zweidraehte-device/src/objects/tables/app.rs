@@ -198,6 +198,14 @@ mod tests {
         assert_eq!(app.run_state(), RunState::Terminated);
     }
 
+    /// Helper: load and start an application (simulates DeviceModel cascade).
+    fn load_and_start(app: &mut Application<()>) {
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+        app.handle_run_event(RunEvent::Loaded);
+        app.handle_run_event(RunEvent::ReadyToRun);
+    }
+
     #[test]
     fn test_load_completes_to_running() {
         let mut app: Application<()> = Application::new();
@@ -207,20 +215,22 @@ mod tests {
         assert_eq!(app.read_lsm()[0], LoadState::Loading.into());
         assert_eq!(app.run_state(), RunState::Halted);
 
-        // Complete loading - should automatically transition to RUNNING
-        // (HALTED + Loaded → READY, then READY + ReadyToRun → RUNNING)
+        // Complete loading — LSM is now Loaded, RSM still Halted (no cascade)
         app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
         assert_eq!(app.read_lsm()[0], LoadState::Loaded.into());
+        assert_eq!(app.run_state(), RunState::Halted);
+
+        // DeviceModel cascade: Loaded → Ready, ReadyToRun → Running
+        app.handle_run_event(RunEvent::Loaded);
+        assert_eq!(app.run_state(), RunState::Ready);
+        app.handle_run_event(RunEvent::ReadyToRun);
         assert_eq!(app.run_state(), RunState::Running);
     }
 
     #[test]
     fn test_restart_from_running_goes_to_ready() {
         let mut app: Application<()> = Application::new();
-
-        // Load and automatically start running
-        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+        load_and_start(&mut app);
         assert_eq!(app.run_state(), RunState::Running);
 
         // RESTART from RUNNING should go to READY (not stay RUNNING)
@@ -231,16 +241,16 @@ mod tests {
     #[test]
     fn test_unload_resets_run_state() {
         let mut app: Application<()> = Application::new();
-
-        // Load the application (automatically starts running)
-        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+        load_and_start(&mut app);
         assert_eq!(app.run_state(), RunState::Running);
 
-        // Unload should reset run state to HALTED
+        // DeviceModel signals Unloaded on LSM unload → RSM goes to HALTED
+        app.handle_run_event(RunEvent::Unloaded);
+        assert_eq!(app.run_state(), RunState::Halted);
+
+        // LSM unload separately
         app.write_lsm(&[LoadEvent::Unload.into()], None);
         assert_eq!(app.read_lsm()[0], LoadState::Unloaded.into());
-        assert_eq!(app.run_state(), RunState::Halted);
     }
 
     #[test]
@@ -251,9 +261,8 @@ mod tests {
         app.write_rsm(&[RunEvent::Ready.into()]);
         assert_eq!(app.run_state(), RunState::Halted);
 
-        // Load and automatically start running
-        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+        // Load and start running
+        load_and_start(&mut app);
         assert_eq!(app.run_state(), RunState::Running);
 
         // Ready event should preserve RUNNING
@@ -281,5 +290,119 @@ mod tests {
         // RESTART from TERMINATED when not loaded should go to HALTED
         app.write_rsm(&[RunEvent::Restart.into()]);
         assert_eq!(app.run_state(), RunState::Halted);
+    }
+
+    // ====================================================================
+    // RunAction production tests
+    // ====================================================================
+
+    use crate::objects::tables::{LoadAction, RunAction};
+
+    #[test]
+    fn test_write_lsm_returns_load_action() {
+        let mut app: Application<()> = Application::new();
+
+        assert_eq!(app.write_lsm(&[LoadEvent::StartLoading.into()], None), LoadAction::LoadStart);
+        assert_eq!(app.write_lsm(&[LoadEvent::LoadCompleted.into()], None), LoadAction::LoadEnd);
+    }
+
+    #[test]
+    fn test_write_lsm_does_not_cascade_to_rsm() {
+        let mut app: Application<()> = Application::new();
+
+        // write_lsm no longer cascades into the RSM. After loading, the
+        // RSM stays in Halted — the DeviceModel must orchestrate the cascade.
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+        assert!(app.is_loaded());
+        assert_eq!(app.run_state(), RunState::Halted); // Not Running!
+    }
+
+    #[test]
+    fn test_handle_run_event_loaded_then_ready_to_run() {
+        let mut app: Application<()> = Application::new();
+
+        // Load the app (LSM side only)
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+        assert!(app.is_loaded());
+        assert_eq!(app.run_state(), RunState::Halted);
+
+        // DeviceModel orchestrates the cascade:
+        let ev = app.handle_run_event(RunEvent::Loaded);
+        assert_eq!(app.run_state(), RunState::Ready);
+        assert_eq!(ev, None); // Not running yet
+
+        let ev = app.handle_run_event(RunEvent::ReadyToRun);
+        assert_eq!(app.run_state(), RunState::Running);
+        assert_eq!(ev, Some(RunAction::Started));
+    }
+
+    #[test]
+    fn test_handle_run_event_unloaded() {
+        let mut app: Application<()> = Application::new();
+
+        // Load and start running (manual cascade)
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+        app.handle_run_event(RunEvent::Loaded);
+        app.handle_run_event(RunEvent::ReadyToRun);
+        assert!(app.is_running());
+
+        // Unload — RSM transitions Running → Halted
+        let ev = app.handle_run_event(RunEvent::Unloaded);
+        assert_eq!(app.run_state(), RunState::Halted);
+        assert_eq!(ev, Some(RunAction::Stopped));
+    }
+
+    #[test]
+    fn test_write_rsm_stop_produces_stopped() {
+        let mut app: Application<()> = Application::new();
+
+        // Load and start running (manual cascade)
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+        app.handle_run_event(RunEvent::Loaded);
+        app.handle_run_event(RunEvent::ReadyToRun);
+        assert!(app.is_running());
+
+        // Stop via PID 6 write
+        let ev = app.write_rsm(&[RunEvent::Stop.into()]);
+        assert_eq!(app.run_state(), RunState::Terminated);
+        assert_eq!(ev, Some(RunAction::Stopped));
+    }
+
+    #[test]
+    fn test_noop_transitions_produce_no_action() {
+        let mut app: Application<()> = Application::new();
+
+        assert_eq!(app.write_rsm(&[RunEvent::Ready.into()]), None);
+        assert_eq!(app.write_rsm(&[RunEvent::Restart.into()]), None);
+        assert_eq!(app.write_rsm(&[0xFF]), None);
+    }
+
+    #[test]
+    fn test_startup_cascade_on_preloaded_app() {
+        let mut app: Application<()> = Application::new();
+
+        // Load app, start it, then stop (simulating a previous session)
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+        app.handle_run_event(RunEvent::Loaded);
+        app.handle_run_event(RunEvent::ReadyToRun);
+        app.write_rsm(&[RunEvent::Stop.into()]);
+        assert!(!app.is_running());
+        assert!(app.is_loaded());
+
+        // Simulate restart from persistent storage
+        let mut app2 = RunnableApplication::from_table(app.inner().clone());
+        assert!(!app2.is_running());
+        assert!(app2.is_loaded());
+
+        // DeviceModel startup cascade: Loaded → Ready → ReadyToRun → Running
+        app2.handle_run_event(RunEvent::Loaded);
+        let ev = app2.handle_run_event(RunEvent::ReadyToRun);
+        assert!(app2.is_running());
+        assert_eq!(ev, Some(RunAction::Started));
     }
 }

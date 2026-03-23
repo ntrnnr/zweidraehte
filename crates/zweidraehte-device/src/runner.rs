@@ -12,26 +12,21 @@ use embassy_sync::{
 };
 
 use crate::{
+    StackState,
     access::HasConnectionAuth,
     composition::{LayerContext, LayerStackBuilder},
     definition::StackDefinition,
     inner::{Inner, StackContext},
-    layers::{
-        LinkLayerBuilderBase,
-        transport::TlStyle,
-    },
+    layers::{LinkLayerBuilderBase, transport::TlStyle},
     messages::buffers::{Buffer, BufferManager},
     objects::{
         comm::ComObjects,
         interface::{HasDeviceObject, HasRoutingCount},
-        tables::{
-            HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
-        },
+        tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
     },
     resources::StackResources,
     restart,
     stack_handle::Stack,
-    StackState,
 };
 
 // ============================================================================
@@ -75,11 +70,11 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Run state machine initialization, DeviceControl sync, and lifecycle
         // events are handled by the DeviceModel in InsecureDeviceLayers::init().
 
-        use embassy_futures::select::{Either, select, select3};
-        use embassy_time::Timer;
         use crate::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
         use crate::messages::knx::ServiceType;
         use crate::router::{LayerStack, Outbox};
+        use embassy_futures::select::{Either, select, select3};
+        use embassy_time::Timer;
 
         // ================================================================
         // Link layer channels
@@ -232,6 +227,10 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                         // Buffer is dropped, returned to pool
                     }
                 }
+
+                // Handle side-effect events emitted during this dispatch cycle
+                // (e.g., run state machine transitions).
+                layers.drain_events(&mut outbox);
             }
         };
 

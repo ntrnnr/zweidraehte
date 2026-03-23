@@ -91,10 +91,16 @@ pub trait TableMemory: ConstDefault + Sized {
 pub trait HasLoadStateMachine: TableMemory {
     /// Process a load state machine command.
     ///
+    /// Process a load state machine command.
+    ///
+    /// Returns the [`LoadAction`] that the state machine produced, so the
+    /// caller (e.g., `ApplicationProgramObject`) can orchestrate side effects
+    /// like signaling the run state machine on `LoadEnd` or `Unload`.
+    ///
     /// # Arguments
     /// * `buf` - Load control data (event byte followed by segment data for allocation)
     /// * `alloc_address` - Virtual address to assign during RelativeData allocation.
-    fn write_lsm(&mut self, buf: &[u8], alloc_address: Option<u32>);
+    fn write_lsm(&mut self, buf: &[u8], alloc_address: Option<u32>) -> LoadAction;
     fn read_lsm(&self) -> [u8; 1];
     fn is_loaded(&self) -> bool;
 
@@ -632,31 +638,17 @@ create_protocol_enum!(
     }
 );
 
-/// Lifecycle action produced by a run state machine transition.
+/// Lifecycle action produced when the run state machine crosses the
+/// running/not-running boundary.
 ///
-/// Used by the device model to react to application start/stop transitions.
-/// The composition layer detects transitions by comparing `is_running()`
-/// before and after dispatching messages through the layer stack.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Sent to the [`DeviceModel`](crate::device_model::DeviceModel) via the
+/// DM channel as a [`DeviceModelEvent::RunAction`](crate::device_model::DeviceModelEvent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunAction {
-    /// No lifecycle change.
-    #[default]
-    None,
     /// Application transitioned to RUNNING.
     Started,
     /// Application transitioned out of RUNNING.
     Stopped,
-}
-
-impl RunAction {
-    /// Derive the lifecycle action from a before/after `is_running()` comparison.
-    pub fn from_transition(was_running: bool, is_running: bool) -> Self {
-        match (was_running, is_running) {
-            (false, true) => RunAction::Started,
-            (true, false) => RunAction::Stopped,
-            _ => RunAction::None,
-        }
-    }
 }
 
 /// Result of a run state machine transition (internal).
@@ -702,8 +694,19 @@ pub trait HasRunStateMachine {
     /// The `data` buffer contains the run control event (first byte) followed
     /// by optional additional data (currently unused).
     ///
-    /// Returns the resulting run state after processing the event.
-    fn write_rsm(&mut self, data: &[u8]) -> RunState;
+    /// Returns an optional [`RunAction`] if the transition crossed the
+    /// running/not-running boundary.
+    fn write_rsm(&mut self, data: &[u8]) -> Option<RunAction>;
+
+    /// Handle an internal run event (Loaded, Unloaded, ReadyToRun).
+    ///
+    /// Called by the DeviceModel to cascade LSM actions into the RSM
+    /// (e.g., `LoadEnd` → `RunEvent::Loaded`) or to fire delayed
+    /// transitions (e.g., `ReadyToRun` after init delay).
+    ///
+    /// Returns an optional [`RunAction`] if the transition crossed the
+    /// running/not-running boundary.
+    fn handle_run_event(&mut self, event: RunEvent) -> Option<RunAction>;
 
     /// Read the current run state as a single byte.
     fn read_rsm(&self) -> [u8; 1] {
@@ -714,16 +717,6 @@ pub trait HasRunStateMachine {
     fn is_running(&self) -> bool {
         self.run_state() == RunState::Running
     }
-
-    /// Initialize the run state machine at startup.
-    ///
-    /// This should be called when the stack starts up. If the application
-    /// is already loaded (from persistent storage), this will transition
-    /// the run state machine to RUNNING.
-    ///
-    /// 1. If app is loaded: HALTED → READY (via Loaded event)
-    /// 2. Then immediately: READY → RUNNING (via ReadyToRun event)
-    fn init_run_state(&mut self);
 }
 
 create_protocol_enum!(
@@ -741,10 +734,13 @@ create_protocol_enum!(
     }
 );
 
-/// Internal action to perform during load state machine transitions.
-/// This is purely internal and never serialized/deserialized from the wire.
+/// Action produced by a load state machine transition.
+///
+/// Returned by [`HasLoadStateMachine::write_lsm`] so the caller can
+/// orchestrate side effects (e.g., signaling the run state machine on
+/// `LoadEnd` or `Unload`).
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
-enum LoadAction {
+pub enum LoadAction {
     None,
     LoadStart,
     LoadEnd,
@@ -886,7 +882,7 @@ impl<T: TableMemory> Table<T> {
 }
 
 impl<T: TableMemory> HasLoadStateMachine for Table<T> {
-    fn write_lsm(&mut self, mut buf: &[u8], alloc_address: Option<u32>) {
+    fn write_lsm(&mut self, mut buf: &[u8], alloc_address: Option<u32>) -> LoadAction {
         let mut buf = &mut buf;
         let (mut new_state, action) = Self::next_state(buf.take_front(1).unwrap()[0].into(), self.state);
 
@@ -939,6 +935,7 @@ impl<T: TableMemory> HasLoadStateMachine for Table<T> {
         }
 
         self.state = new_state;
+        action
     }
 
     fn read_lsm(&self) -> [u8; 1] {
@@ -1079,11 +1076,15 @@ impl<T: HasLoadStateMachine> RunnableApplication<T> {
             }
 
             // Loaded event (from LSM)
-            (RunState::Halted, RunEvent::Loaded) => RunStateResult { state: RunState::Ready, action: RunStateAction::None },
+            (RunState::Halted, RunEvent::Loaded) => {
+                RunStateResult { state: RunState::Ready, action: RunStateAction::None }
+            }
             (RunState::Running, RunEvent::Loaded) => {
                 RunStateResult { state: RunState::Running, action: RunStateAction::None }
             }
-            (RunState::Ready, RunEvent::Loaded) => RunStateResult { state: RunState::Ready, action: RunStateAction::None },
+            (RunState::Ready, RunEvent::Loaded) => {
+                RunStateResult { state: RunState::Ready, action: RunStateAction::None }
+            }
             (RunState::Terminated, RunEvent::Loaded) => {
                 RunStateResult { state: RunState::Terminated, action: RunStateAction::None }
             }
@@ -1121,6 +1122,18 @@ impl<T: HasLoadStateMachine> RunnableApplication<T> {
         }
     }
 
+    /// Apply a run event and return a [`RunAction`] if the running state
+    /// crossed the running/not-running boundary.
+    fn apply_event(&mut self, event: RunEvent) -> Option<RunAction> {
+        let was_running = self.is_running();
+        let result = self.next_run_state_with_action(event);
+        self.run_state = result.state;
+        match (was_running, self.is_running()) {
+            (false, true) => Some(RunAction::Started),
+            (true, false) => Some(RunAction::Stopped),
+            _ => None,
+        }
+    }
 }
 
 // Delegate TableMemory to inner table
@@ -1146,33 +1159,11 @@ impl<T: HasLoadStateMachine + TableMemory> TableMemory for RunnableApplication<T
     }
 }
 
-// Delegate HasLoadStateMachine to inner table, but also signal internal RSM events
+// Pure delegation — no LSM→RSM cascade. The cascade is orchestrated by
+// the ApplicationProgramObject (mirroring conformance's HandleApplLoadStateMachine).
 impl<T: HasLoadStateMachine> HasLoadStateMachine for RunnableApplication<T> {
-    fn write_lsm(&mut self, buf: &[u8], alloc_address: Option<u32>) {
-        let was_loaded = self.table.is_loaded();
-
-        // Process the load event on the inner table
-        self.table.write_lsm(buf, alloc_address);
-
-        let is_loaded = self.table.is_loaded();
-
-        // Signal internal events to run state machine based on load state change
-        if !was_loaded && is_loaded {
-            // Just became loaded - signal Loaded event, then immediately ReadyToRun
-            let result = self.next_run_state_with_action(RunEvent::Loaded);
-            self.run_state = result.state;
-
-            // If now in READY, immediately signal ReadyToRun to start the app
-            if self.run_state == RunState::Ready {
-                let result = self.next_run_state_with_action(RunEvent::ReadyToRun);
-                self.run_state = result.state;
-                // Note: result.action would be LoadEnd if app started - caller can check is_running()
-            }
-        } else if was_loaded && !is_loaded {
-            // Just became unloaded - signal Unloaded event
-            let result = self.next_run_state_with_action(RunEvent::Unloaded);
-            self.run_state = result.state;
-        }
+    fn write_lsm(&mut self, buf: &[u8], alloc_address: Option<u32>) -> LoadAction {
+        self.table.write_lsm(buf, alloc_address)
     }
 
     fn read_lsm(&self) -> [u8; 1] {
@@ -1192,40 +1183,22 @@ impl<T: HasLoadStateMachine> HasLoadStateMachine for RunnableApplication<T> {
     }
 }
 
-// Implement HasRunStateMachine
 impl<T: HasLoadStateMachine> HasRunStateMachine for RunnableApplication<T> {
     fn run_state(&self) -> RunState {
         self.run_state
     }
 
-    fn write_rsm(&mut self, data: &[u8]) -> RunState {
+    fn write_rsm(&mut self, data: &[u8]) -> Option<RunAction> {
         if data.is_empty() {
-            return self.run_state;
+            return None;
         }
 
         let event = RunEvent::from(data[0]);
-        let result = self.next_run_state_with_action(event);
-        self.run_state = result.state;
-        // Note: result.action contains the side effect to perform (LoadStart, LoadEnd, Unload)
-        // The caller can use write_rsm_with_action() if they need the action
-        self.run_state
+        self.apply_event(event)
     }
 
-    fn init_run_state(&mut self) {
-        // 1. Start with current state (could be HALTED or preserved from storage)
-        // 2. If app is loaded: signal Loaded event (HALTED → READY)
-        // 3. Immediately signal ReadyToRun (READY → RUNNING)
-        if self.table.is_loaded() {
-            // Signal Loaded event - transitions HALTED → READY
-            let result = self.next_run_state_with_action(RunEvent::Loaded);
-            self.run_state = result.state;
-
-            // If now in READY, immediately signal ReadyToRun to start the app
-            if self.run_state == RunState::Ready {
-                let result = self.next_run_state_with_action(RunEvent::ReadyToRun);
-                self.run_state = result.state;
-            }
-        }
+    fn handle_run_event(&mut self, event: RunEvent) -> Option<RunAction> {
+        self.apply_event(event)
     }
 }
 

@@ -103,7 +103,9 @@ impl StackDefinition for PicoTp1LightSwitch {
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, PicoTp1State, EasterEggAugment>;
 
-    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(
+        state: &'a Self::State,
+    ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {

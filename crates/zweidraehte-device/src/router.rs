@@ -39,11 +39,7 @@ pub trait Layer {
     ///
     /// The outbox messages carry their own ServiceType, which the router
     /// uses to dispatch them to the next layer in the chain.
-    fn process(
-        &mut self,
-        msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    );
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox);
 
     /// Earliest deadline at which this layer wants a [`poll`](Self::poll)
     /// call. Returns `None` if no timer is needed.
@@ -98,11 +94,7 @@ pub struct Outbox {
 impl Outbox {
     /// Create a new empty outbox.
     pub fn new() -> Self {
-        Self {
-            messages: [const { None }; OUTBOX_CAPACITY],
-            head: 0,
-            count: 0,
-        }
+        Self { messages: [const { None }; OUTBOX_CAPACITY], head: 0, count: 0 }
     }
 
     /// Push a message to the outbox.
@@ -113,10 +105,7 @@ impl Outbox {
     /// message chains never produce more than ~6 messages in a single
     /// drain cycle.
     pub fn push(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
-        assert!(
-            self.count < OUTBOX_CAPACITY,
-            "Outbox overflow — possible dispatch loop"
-        );
+        assert!(self.count < OUTBOX_CAPACITY, "Outbox overflow — possible dispatch loop");
         let tail = (self.head + self.count) % OUTBOX_CAPACITY;
         self.messages[tail] = Some(msg);
         self.count += 1;
@@ -162,10 +151,7 @@ impl DispatchTable {
         // Must use `core::assert!` directly — the crate's `fmt.rs` remaps
         // `assert!`/`debug_assert!` to defmt equivalents on embedded targets,
         // which aren't const-compatible.
-        core::assert!(
-            self.table[service_type as usize] == 0xFF,
-            "Duplicate layer registration for ServiceType"
-        );
+        core::assert!(self.table[service_type as usize] == 0xFF, "Duplicate layer registration for ServiceType");
         self.table[service_type as usize] = layer_idx;
     }
 
@@ -194,12 +180,7 @@ pub trait LayerStack {
     const DISPATCH_TABLE: DispatchTable;
 
     /// Dispatch a message to the layer at the given index.
-    fn dispatch(
-        &mut self,
-        layer_idx: u8,
-        msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    );
+    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox);
 
     /// Earliest deadline across all layers.
     fn next_deadline(&self) -> Option<Instant>;
@@ -233,6 +214,16 @@ pub trait LayerStack {
     ///
     /// Default: no-op.
     fn handle_side_input(&mut self, _outbox: &mut Outbox) {}
+
+    /// Drain and handle [`StackEvent`]s emitted by layers during this
+    /// dispatch cycle.
+    ///
+    /// Called by the runner after the message drain loop completes.
+    /// Composition layers override this to forward events to the
+    /// [`DeviceModel`](crate::device_model::DeviceModel).
+    ///
+    /// Default: no-op (plain tuple layer stacks have no event handler).
+    fn drain_events(&mut self, _outbox: &mut Outbox) {}
 }
 
 // ============================================================================
@@ -381,15 +372,9 @@ mod tests {
 
     struct NlHandler;
     impl Layer for NlHandler {
-        const HANDLES: &'static [ServiceType] = &[
-            ServiceType::L_Data_Ind,
-        ];
+        const HANDLES: &'static [ServiceType] = &[ServiceType::L_Data_Ind];
 
-        fn process(
-            &mut self,
-            mut msg: KnxMessageBuffer<Buffer<'static>>,
-            outbox: &mut Outbox,
-        ) {
+        fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
             msg.set_service_type(ServiceType::N_Data_Ind);
             outbox.push(msg);
         }
@@ -397,15 +382,9 @@ mod tests {
 
     struct TlHandler;
     impl Layer for TlHandler {
-        const HANDLES: &'static [ServiceType] = &[
-            ServiceType::N_Data_Ind,
-        ];
+        const HANDLES: &'static [ServiceType] = &[ServiceType::N_Data_Ind];
 
-        fn process(
-            &mut self,
-            mut msg: KnxMessageBuffer<Buffer<'static>>,
-            outbox: &mut Outbox,
-        ) {
+        fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
             msg.set_service_type(ServiceType::T_Data_Ind);
             outbox.push(msg);
         }
@@ -415,15 +394,9 @@ mod tests {
         received: usize,
     }
     impl Layer for AlHandler {
-        const HANDLES: &'static [ServiceType] = &[
-            ServiceType::T_Data_Ind,
-        ];
+        const HANDLES: &'static [ServiceType] = &[ServiceType::T_Data_Ind];
 
-        fn process(
-            &mut self,
-            _msg: KnxMessageBuffer<Buffer<'static>>,
-            _outbox: &mut Outbox,
-        ) {
+        fn process(&mut self, _msg: KnxMessageBuffer<Buffer<'static>>, _outbox: &mut Outbox) {
             // Terminal — consume the message, don't push anything.
             self.received += 1;
         }
@@ -455,11 +428,7 @@ mod tests {
     fn handler_set_next_deadline_returns_earliest() {
         // NlHandler and TlHandler have no deadlines (return None).
         // AlHandler also has no deadline.
-        let set: (NlHandler, TlHandler, AlHandler) = (
-            NlHandler,
-            TlHandler,
-            AlHandler { received: 0 },
-        );
+        let set: (NlHandler, TlHandler, AlHandler) = (NlHandler, TlHandler, AlHandler { received: 0 });
         assert_eq!(set.next_deadline(), None);
     }
 }

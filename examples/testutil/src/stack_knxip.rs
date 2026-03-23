@@ -115,6 +115,7 @@ use embassy_time::Duration;
 use env_logger::Env;
 use static_cell::StaticCell;
 use std::net::{Ipv4Addr, SocketAddrV4};
+use zweidraehte_device::device_model::{DeviceModelNotifier, DmNotificationSlot};
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     dpt::{DPT_Switch, InterfaceObjectType},
@@ -314,6 +315,7 @@ impl<'a, S> KnxIpInterfaceObjects<'a, S>
 where
     S: StackState
         + IpStackState
+        + DeviceModelNotifier
         + HasAddressTable<ADT = stack_test_config::AddrTab>
         + HasAssociationTable<AST = stack_test_config::AssoTab>
         + HasCommunicationObjectTable<COT = stack_test_config::CoTab>
@@ -326,7 +328,7 @@ where
 
         // Create Application Program Object wrapping the application table
         // Using 0 for alloc address since NoMemoryMap is used (no memory-mapped access)
-        let mut app_program = ApplicationProgramObject::new(state.app(), 0);
+        let mut app_program = ApplicationProgramObject::new(state.app(), 0, state);
         app_program.set_program_version(KNXIP_DEVICE_DESCRIPTOR.program_version().into());
         app_program.set_pei_type(KNXIP_DEVICE_DESCRIPTOR.pei_type.into());
 
@@ -383,11 +385,7 @@ where
         }
     }
 
-    fn property_value_read(
-        &self,
-        req: &FullPropertyReadRequest,
-        buf: &mut [u8],
-    ) -> Result<usize, PropertyError> {
+    fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
         // Check access level first (in separate scope to release borrow)
         {
             let desc = match req.object_idx {
@@ -400,9 +398,10 @@ where
                 _ => return Err(PropertyError::InvalidObjectIndex),
             };
             if let Some((_, desc)) = desc
-                && !desc.can_read(req.ctx) {
-                    return Err(PropertyError::AccessDenied);
-                }
+                && !desc.can_read(req.ctx)
+            {
+                return Err(PropertyError::AccessDenied);
+            }
         }
 
         let prop_req = req.property_request();
@@ -417,10 +416,7 @@ where
         }
     }
 
-    fn property_value_write(
-        &self,
-        req: &FullPropertyWriteRequest<'_>,
-    ) -> Result<WriteResponse, PropertyError> {
+    fn property_value_write(&self, req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
         // Check access level first (in separate scope to release borrow)
         {
             let desc = match req.object_idx {
@@ -433,9 +429,10 @@ where
                 _ => return Err(PropertyError::InvalidObjectIndex),
             };
             if let Some((_, desc)) = desc
-                && !desc.can_write(req.ctx) {
-                    return Err(PropertyError::AccessDenied);
-                }
+                && !desc.can_write(req.ctx)
+            {
+                return Err(PropertyError::AccessDenied);
+            }
         }
 
         let prop_req = req.property_request();
@@ -491,6 +488,7 @@ pub fn create_knxip_interface_objects<'a, S>(state: &'a S) -> KnxIpInterfaceObje
 where
     S: StackState
         + IpStackState
+        + DeviceModelNotifier
         + HasAddressTable<ADT = stack_test_config::AddrTab>
         + HasAssociationTable<AST = stack_test_config::AssoTab>
         + HasCommunicationObjectTable<COT = stack_test_config::CoTab>
@@ -514,6 +512,8 @@ pub struct KnxIpState<P: IpPlatform> {
     pub app: RefCell<Application<()>>,
     /// Per-connection access level store
     access_store: zweidraehte_device::ConnectionAuthLevels<1>,
+    /// DeviceModel notification slot
+    dm_slot: DmNotificationSlot,
 }
 
 impl<P: IpPlatform> KnxIpState<P> {
@@ -526,6 +526,7 @@ impl<P: IpPlatform> KnxIpState<P> {
             cot: RefCell::new(stack_test_config::CoTab::new()),
             app: RefCell::new(Application::new()),
             access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
+            dm_slot: DmNotificationSlot::new(),
         }
     }
 
@@ -545,6 +546,7 @@ impl<P: IpPlatform> KnxIpState<P> {
             cot: RefCell::new(cot),
             app: RefCell::new(app),
             access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
+            dm_slot: DmNotificationSlot::new(),
         }
     }
 }
@@ -689,8 +691,11 @@ impl<P: IpPlatform> HasCommunicationObjectTable for KnxIpState<P> {
 }
 
 impl<P: IpPlatform> HasRoutingCount for KnxIpState<P> {
-    fn routing_count(&self) -> u8 { 6 }
-    fn set_routing_count(&self, _value: u8) { /* demo device — not persisted */ }
+    fn routing_count(&self) -> u8 {
+        6
+    }
+    fn set_routing_count(&self, _value: u8) { /* demo device — not persisted */
+    }
 }
 
 impl<P: IpPlatform> HasApplication for KnxIpState<P> {
@@ -711,6 +716,16 @@ impl<P: IpPlatform> zweidraehte_device::HasConnectionAuth for KnxIpState<P> {
 
     fn reset_connection_access(&self, slot: u8, default_level: u8) {
         self.access_store.reset(slot, default_level);
+    }
+}
+
+impl<P: IpPlatform> DeviceModelNotifier for KnxIpState<P> {
+    fn notify(&self, event: DeviceModelEvent) {
+        self.dm_slot.notify(event);
+    }
+
+    fn take_event(&self) -> Option<DeviceModelEvent> {
+        self.dm_slot.take_event()
     }
 }
 
@@ -777,11 +792,16 @@ async fn main(spawner: Spawner) {
     // Create KNX/IP link layer
     let control_endpoint = SocketAddrV4::new("192.168.106.6".parse().unwrap(), 3671);
 
-    let interface_addr = zweidraehte_platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
-    let link_layer_builder =
-        KnxNetIpBuilder::<zweidraehte_platform::LinuxIpTransport, _, 2>::new("knxdevbridgeif", interface_addr, control_endpoint, ())
-            .enable_routing_server()
-            .enable_remote_config_server();
+    let interface_addr =
+        zweidraehte_platform::get_interface_address("knxdevbridgeif").expect("Failed to get interface address");
+    let link_layer_builder = KnxNetIpBuilder::<zweidraehte_platform::LinuxIpTransport, _, 2>::new(
+        "knxdevbridgeif",
+        interface_addr,
+        control_endpoint,
+        (),
+    )
+    .enable_routing_server()
+    .enable_remote_config_server();
 
     println!("KNX/IP Configuration:");
     println!("  - Interface: knxdevbridgeif");

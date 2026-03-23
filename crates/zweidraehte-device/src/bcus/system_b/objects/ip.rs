@@ -8,21 +8,20 @@ use core::cell::RefCell;
 
 use zerocopy::FromBytes;
 
+use crate::objects::interface::HasRoutingCount;
 use crate::{
     IpStackState, StackDefinition, StackState,
     dpt::{InterfaceObjectType, PDT_UnsignedChar, PDT_UnsignedInt},
     objects::interface::{
-        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest,
-        FunctionPropertyResult, InterfaceObject, InterfaceObjectAugment, IpParameterObject,
-        PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError,
-        PropertyLookup, PropertyServiceHandler, WriteResponse, pid,
+        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
+        InterfaceObject, InterfaceObjectAugment, IpParameterObject, PropertyAccess, PropertyDescriptionResponse,
+        PropertyDescriptor, PropertyError, PropertyLookup, PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{
-        HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
-        HasLoadStateMachine, HasPeiApplication, HasRunStateMachine,
+        HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine,
+        HasPeiApplication, HasRunStateMachine,
     },
 };
-use crate::objects::interface::HasRoutingCount;
 
 use super::SystemBObjects;
 
@@ -50,20 +49,12 @@ impl TunnelingAugment {
     fn descriptor(state: &impl IpStackState, prop_id: u8) -> Option<PropertyDescriptor> {
         let max_addrs = state.additional_individual_address_capacity() as u16;
         match prop_id {
-            pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => Some(PropertyDescriptor::array::<PDT_UnsignedInt>(
-                prop_id,
-                max_addrs,
-                PropertyAccess::ReadWrite,
-                3,
-                3,
-            )),
-            pid::TUNNELLING_ADDRESSES => Some(PropertyDescriptor::array::<PDT_UnsignedChar>(
-                prop_id,
-                max_addrs,
-                PropertyAccess::ReadOnly,
-                3,
-                3,
-            )),
+            pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => {
+                Some(PropertyDescriptor::array::<PDT_UnsignedInt>(prop_id, max_addrs, PropertyAccess::ReadWrite, 3, 3))
+            }
+            pid::TUNNELLING_ADDRESSES => {
+                Some(PropertyDescriptor::array::<PDT_UnsignedChar>(prop_id, max_addrs, PropertyAccess::ReadOnly, 3, 3))
+            }
             _ => None,
         }
     }
@@ -339,9 +330,9 @@ impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> PropertySer
         if prop_id != 0 {
             // Direct PID lookup: augment first (can intercept/add PIDs),
             // then base.
-            if let Some(result) = self.augment.property_description_read(
-                self.state, obj_type, object_idx, PropertyLookup::ByPid(prop_id),
-            ) {
+            if let Some(result) =
+                self.augment.property_description_read(self.state, obj_type, object_idx, PropertyLookup::ByPid(prop_id))
+            {
                 return result;
             }
         }
@@ -357,7 +348,10 @@ impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> PropertySer
         let base_count = self.ip_parameter.borrow().property_count() as u8;
         let augment_idx = prop_idx.saturating_sub(base_count);
         if let Some(result) = self.augment.property_description_read(
-            self.state, obj_type, object_idx, PropertyLookup::ByIndex(augment_idx),
+            self.state,
+            obj_type,
+            object_idx,
+            PropertyLookup::ByIndex(augment_idx),
         ) {
             return result.map(|mut resp| {
                 resp.prop_idx = prop_idx;
@@ -374,9 +368,7 @@ impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> PropertySer
         }
 
         // Augment first (can intercept specific PIDs).
-        if let Some(result) =
-            self.augment.property_value_read(self.state, InterfaceObjectType::IPParameter, req, buf)
-        {
+        if let Some(result) = self.augment.property_value_read(self.state, InterfaceObjectType::IPParameter, req, buf) {
             return result;
         }
 
@@ -419,28 +411,22 @@ impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> PropertySer
         result
     }
 
-    fn function_property_command(
-        &self,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn function_property_command(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         if req.object_idx == 0 {
-            if let Some(result) = self.augment.function_property_command(
-                self.state, InterfaceObjectType::IPParameter, req,
-            ) {
+            if let Some(result) =
+                self.augment.function_property_command(self.state, InterfaceObjectType::IPParameter, req)
+            {
                 return result;
             }
         }
         FunctionPropertyResult::not_supported()
     }
 
-    fn function_property_state_read(
-        &self,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn function_property_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         if req.object_idx == 0 {
-            if let Some(result) = self.augment.function_property_state_read(
-                self.state, InterfaceObjectType::IPParameter, req,
-            ) {
+            if let Some(result) =
+                self.augment.function_property_state_read(self.state, InterfaceObjectType::IPParameter, req)
+            {
                 return result;
             }
         }
@@ -512,6 +498,7 @@ where
     D: StackDefinition,
     S: StackState
         + IpStackState
+        + crate::device_model::DeviceModelNotifier
         + HasAddressTable
         + HasAssociationTable
         + HasCommunicationObjectTable
@@ -543,6 +530,7 @@ where
     D: StackDefinition,
     S: StackState
         + IpStackState
+        + crate::device_model::DeviceModelNotifier
         + HasAddressTable
         + HasAssociationTable
         + HasCommunicationObjectTable
@@ -570,6 +558,7 @@ where
     D: StackDefinition,
     S: StackState
         + IpStackState
+        + crate::device_model::DeviceModelNotifier
         + HasAddressTable
         + HasAssociationTable
         + HasCommunicationObjectTable

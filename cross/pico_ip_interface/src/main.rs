@@ -117,9 +117,11 @@ impl StackDefinition for PicoIpInterface {
     type LLB = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, EmbassyIpTransport, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>, 2, 1, 1>;
     type State = IpIfState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, IpIfState, (TunnelingAugment, ())>;
+    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, IpIfState, (), (TunnelingAugment, ())>;
 
-    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(
+        state: &'a Self::State,
+    ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {

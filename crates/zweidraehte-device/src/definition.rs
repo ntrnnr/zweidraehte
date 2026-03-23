@@ -10,15 +10,11 @@ use const_default::ConstDefault;
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 
 use crate::{
-    config,
-    ets,
+    config, ets,
     inner::StackContext,
     layers,
     memory::MemoryMap,
-    objects::{
-        comm::ComObjects,
-        interface::PropertyServiceHandler,
-    },
+    objects::{comm::ComObjects, interface::PropertyServiceHandler},
 };
 
 pub trait StackDefinition: Copy {

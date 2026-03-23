@@ -23,14 +23,11 @@ use const_default::ConstDefault;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     AccessContext,
-    bcus::system_b::{
-        IpSystemBDeviceState, KnxIpInterfaceObjects, MemoryLayout,
-        create_knxip_objects,
-    },
+    bcus::system_b::{IpSystemBDeviceState, KnxIpInterfaceObjects, MemoryLayout, create_knxip_objects},
+    device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::Application,
     storage::StaticIdentity,
 };
-
 
 // ============================================================================
 // Communication Objects (BCU1-style with shadow objects)
@@ -171,11 +168,7 @@ impl ConformanceHookContext {
         // to a valid reference by set_cot().
         unsafe {
             let ptr = *self.cot.get();
-            if ptr.is_null() {
-                None
-            } else {
-                Some(&*ptr)
-            }
+            if ptr.is_null() { None } else { Some(&*ptr) }
         }
     }
 }
@@ -302,9 +295,10 @@ impl ComObjects for ConformanceComObjects {
                 // GO2 reads GO0's configuration flags from the COT
                 // GO0 is at ASAP 1 (index 1 in the COT)
                 if let Some(cot) = ctx.cot()
-                    && let Some(flags) = cot.borrow().object_flags(1) {
-                        self.go_2_config_flags.value.as_mut()[0] = flags.to_byte();
-                    }
+                    && let Some(flags) = cot.borrow().object_flags(1)
+                {
+                    self.go_2_config_flags.value.as_mut()[0] = flags.to_byte();
+                }
             }
             Some(CoIndex::Go3Value) => {
                 // GO3 reads GO0's value
@@ -321,9 +315,10 @@ impl ComObjects for ConformanceComObjects {
                 // GO2_BYTE3 reads GO0_BYTE3's configuration flags from the COT
                 // GO0_BYTE3 is at ASAP 5 (index 5 in the COT)
                 if let Some(cot) = ctx.cot()
-                    && let Some(flags) = cot.borrow().object_flags(5) {
-                        self.go_2_byte3_config_flags.value.as_mut()[0] = flags.to_byte();
-                    }
+                    && let Some(flags) = cot.borrow().object_flags(5)
+                {
+                    self.go_2_byte3_config_flags.value.as_mut()[0] = flags.to_byte();
+                }
             }
             Some(CoIndex::Go3Byte3Value) => {
                 // GO3_BYTE3 reads GO0_BYTE3's value (3 bytes)
@@ -550,7 +545,7 @@ impl IpPlatformConfig for MockIpPlatform {
 /// Device-specific constants for Interface Objects
 pub mod device_info {
     use super::*;
-    use zweidraehte_device::config::{buffer_size_for_apdu, MAX_APDU_LENGTH_EXTENDED};
+    use zweidraehte_device::config::{MAX_APDU_LENGTH_EXTENDED, buffer_size_for_apdu};
 
     /// The device descriptor for conformance testing.
     ///
@@ -593,17 +588,16 @@ pub mod device_info {
 /// The conformance tests use a custom memory map with table addresses at
 /// fixed positions. This layout tells `create_knxip_objects` where the
 /// tables live in address space (for PID_TABLE_REFERENCE responses).
-const CONFORMANCE_MEMORY_LAYOUT: MemoryLayout =
-    MemoryLayout::calculate(
-        ConformanceMemoryMap::ADT_BASE,
-        // Use the conformance test's actual table entry counts.
-        conformance_config::ConformanceTestConfig::NUM_GROUP_ADDRS,
-        conformance_config::ConformanceTestConfig::NUM_ASSOCIATIONS,
-        conformance_config::ConformanceTestConfig::NUM_COMM_OBJECTS,
-        // Application data size — not meaningful for conformance tests
-        // since memory is accessed through the custom memory map.
-        0,
-    );
+const CONFORMANCE_MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calculate(
+    ConformanceMemoryMap::ADT_BASE,
+    // Use the conformance test's actual table entry counts.
+    conformance_config::ConformanceTestConfig::NUM_GROUP_ADDRS,
+    conformance_config::ConformanceTestConfig::NUM_ASSOCIATIONS,
+    conformance_config::ConformanceTestConfig::NUM_COMM_OBJECTS,
+    // Application data size — not meaningful for conformance tests
+    // since memory is accessed through the custom memory map.
+    0,
+);
 
 // ============================================================================
 // Test Parameters
@@ -619,7 +613,6 @@ impl ConstDefault for TestParameters {
 // ============================================================================
 // Stack Definition
 // ============================================================================
-
 
 /// Size of linear memory region (0x0200-0x02FF) - freely accessible
 pub const LINEAR_MEMORY_SIZE: usize = 256;
@@ -681,6 +674,9 @@ pub struct ConformanceState {
     /// User memory region for A_UserMemory_Read/Write tests (0x7FF0-0x7FFF)
     /// Used by M-2.31/M-2.32 tests.
     pub user_memory: RefCell<[u8; USER_MEMORY_SIZE]>,
+
+    /// DeviceModel notification slot
+    dm_slot: DmNotificationSlot,
 }
 
 impl ConformanceState {
@@ -691,8 +687,6 @@ impl ConformanceState {
         co_tab: conformance_config::CoTab,
         app_table: Application<TestParameters>,
     ) -> Self {
-
-
         let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
         let inner = InnerState::new(&identity);
 
@@ -711,6 +705,7 @@ impl ConformanceState {
             level2_memory: RefCell::new([0xAA; LEVEL2_MEMORY_SIZE]),
             level1_memory: RefCell::new([0xFF; LEVEL1_MEMORY_SIZE]),
             user_memory: RefCell::new([0xFF; USER_MEMORY_SIZE]),
+            dm_slot: DmNotificationSlot::new(),
         }
     }
 
@@ -726,7 +721,6 @@ impl ConformanceState {
 
 impl Default for ConformanceState {
     fn default() -> Self {
-
         Self::new(Table::new(), Table::new(), Table::new(), Application::new())
     }
 }
@@ -782,34 +776,95 @@ impl StackState for ConformanceState {
 }
 
 // ============================================================================
+// DeviceModelNotifier Implementation
+// ============================================================================
+
+impl DeviceModelNotifier for ConformanceState {
+    fn notify(&self, event: DeviceModelEvent) {
+        self.dm_slot.notify(event);
+    }
+    fn take_event(&self) -> Option<DeviceModelEvent> {
+        self.dm_slot.take_event()
+    }
+}
+
+// ============================================================================
 // Trait Forwarding — IpStackState
 // ============================================================================
 
 impl IpStackState for ConformanceState {
-    fn current_ip_address(&self) -> Ipv4Addr { self.inner.current_ip_address() }
-    fn current_subnet_mask(&self) -> Ipv4Addr { self.inner.current_subnet_mask() }
-    fn current_default_gateway(&self) -> Ipv4Addr { self.inner.current_default_gateway() }
-    fn mac_address(&self) -> [u8; 6] { self.inner.mac_address() }
-    fn current_ip_assignment_method(&self) -> u8 { self.inner.current_ip_assignment_method() }
-    fn ip_capabilities(&self) -> u8 { self.inner.ip_capabilities() }
-    fn knxnetip_device_capabilities(&self) -> u16 { self.inner.knxnetip_device_capabilities() }
-    fn configured_ip_address(&self) -> Ipv4Addr { self.inner.configured_ip_address() }
-    fn set_configured_ip_address(&self, addr: Ipv4Addr) { self.inner.set_configured_ip_address(addr); }
-    fn configured_subnet_mask(&self) -> Ipv4Addr { self.inner.configured_subnet_mask() }
-    fn set_configured_subnet_mask(&self, mask: Ipv4Addr) { self.inner.set_configured_subnet_mask(mask); }
-    fn configured_default_gateway(&self) -> Ipv4Addr { self.inner.configured_default_gateway() }
-    fn set_configured_default_gateway(&self, gateway: Ipv4Addr) { self.inner.set_configured_default_gateway(gateway); }
-    fn ip_assignment_method(&self) -> u8 { self.inner.ip_assignment_method() }
-    fn set_ip_assignment_method(&self, method: u8) { self.inner.set_ip_assignment_method(method); }
-    fn routing_multicast_address(&self) -> Ipv4Addr { self.inner.routing_multicast_address() }
-    fn set_routing_multicast_address(&self, addr: Ipv4Addr) { self.inner.set_routing_multicast_address(addr); }
-    fn ttl(&self) -> u8 { self.inner.ttl() }
-    fn set_ttl(&self, ttl: u8) { self.inner.set_ttl(ttl); }
-    fn friendly_name_len(&self) -> usize { self.inner.friendly_name_len() }
-    fn friendly_name(&self, buf: &mut [u8]) -> usize { self.inner.friendly_name(buf) }
-    fn set_friendly_name(&self, name: &[u8]) { self.inner.set_friendly_name(name); }
-    fn project_installation_id(&self) -> u16 { self.inner.project_installation_id() }
-    fn set_project_installation_id(&self, id: u16) { self.inner.set_project_installation_id(id); }
+    fn current_ip_address(&self) -> Ipv4Addr {
+        self.inner.current_ip_address()
+    }
+    fn current_subnet_mask(&self) -> Ipv4Addr {
+        self.inner.current_subnet_mask()
+    }
+    fn current_default_gateway(&self) -> Ipv4Addr {
+        self.inner.current_default_gateway()
+    }
+    fn mac_address(&self) -> [u8; 6] {
+        self.inner.mac_address()
+    }
+    fn current_ip_assignment_method(&self) -> u8 {
+        self.inner.current_ip_assignment_method()
+    }
+    fn ip_capabilities(&self) -> u8 {
+        self.inner.ip_capabilities()
+    }
+    fn knxnetip_device_capabilities(&self) -> u16 {
+        self.inner.knxnetip_device_capabilities()
+    }
+    fn configured_ip_address(&self) -> Ipv4Addr {
+        self.inner.configured_ip_address()
+    }
+    fn set_configured_ip_address(&self, addr: Ipv4Addr) {
+        self.inner.set_configured_ip_address(addr);
+    }
+    fn configured_subnet_mask(&self) -> Ipv4Addr {
+        self.inner.configured_subnet_mask()
+    }
+    fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
+        self.inner.set_configured_subnet_mask(mask);
+    }
+    fn configured_default_gateway(&self) -> Ipv4Addr {
+        self.inner.configured_default_gateway()
+    }
+    fn set_configured_default_gateway(&self, gateway: Ipv4Addr) {
+        self.inner.set_configured_default_gateway(gateway);
+    }
+    fn ip_assignment_method(&self) -> u8 {
+        self.inner.ip_assignment_method()
+    }
+    fn set_ip_assignment_method(&self, method: u8) {
+        self.inner.set_ip_assignment_method(method);
+    }
+    fn routing_multicast_address(&self) -> Ipv4Addr {
+        self.inner.routing_multicast_address()
+    }
+    fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
+        self.inner.set_routing_multicast_address(addr);
+    }
+    fn ttl(&self) -> u8 {
+        self.inner.ttl()
+    }
+    fn set_ttl(&self, ttl: u8) {
+        self.inner.set_ttl(ttl);
+    }
+    fn friendly_name_len(&self) -> usize {
+        self.inner.friendly_name_len()
+    }
+    fn friendly_name(&self, buf: &mut [u8]) -> usize {
+        self.inner.friendly_name(buf)
+    }
+    fn set_friendly_name(&self, name: &[u8]) {
+        self.inner.set_friendly_name(name);
+    }
+    fn project_installation_id(&self) -> u16 {
+        self.inner.project_installation_id()
+    }
+    fn set_project_installation_id(&self, id: u16) {
+        self.inner.set_project_installation_id(id);
+    }
 }
 
 // ============================================================================
@@ -818,32 +873,46 @@ impl IpStackState for ConformanceState {
 
 impl HasAddressTable for ConformanceState {
     type ADT = <InnerState as HasAddressTable>::ADT;
-    fn adt(&self) -> &RefCell<Self::ADT> { self.inner.adt() }
+    fn adt(&self) -> &RefCell<Self::ADT> {
+        self.inner.adt()
+    }
 }
 
 impl HasAssociationTable for ConformanceState {
     type AST = <InnerState as HasAssociationTable>::AST;
-    fn ast(&self) -> &RefCell<Self::AST> { self.inner.ast() }
+    fn ast(&self) -> &RefCell<Self::AST> {
+        self.inner.ast()
+    }
 }
 
 impl HasCommunicationObjectTable for ConformanceState {
     type COT = <InnerState as HasCommunicationObjectTable>::COT;
-    fn cot(&self) -> &RefCell<Self::COT> { self.inner.cot() }
+    fn cot(&self) -> &RefCell<Self::COT> {
+        self.inner.cot()
+    }
 }
 
 impl HasApplication for ConformanceState {
     type APP = <InnerState as HasApplication>::APP;
-    fn app(&self) -> &RefCell<Self::APP> { self.inner.app() }
+    fn app(&self) -> &RefCell<Self::APP> {
+        self.inner.app()
+    }
 }
 
 impl HasPeiApplication for ConformanceState {
     type PEI = <InnerState as HasPeiApplication>::PEI;
-    fn pei(&self) -> &RefCell<Self::PEI> { self.inner.pei() }
+    fn pei(&self) -> &RefCell<Self::PEI> {
+        self.inner.pei()
+    }
 }
 
 impl HasRoutingCount for ConformanceState {
-    fn routing_count(&self) -> u8 { self.inner.routing_count() }
-    fn set_routing_count(&self, value: u8) { self.inner.set_routing_count(value) }
+    fn routing_count(&self) -> u8 {
+        self.inner.routing_count()
+    }
+    fn set_routing_count(&self, value: u8) {
+        self.inner.set_routing_count(value)
+    }
 }
 
 impl zweidraehte_device::HasConnectionAuth for ConformanceState {
@@ -901,9 +970,6 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         data: &mut [u8],
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
-
-
-
         let end_address = address.saturating_add(data.len() as u16);
 
         // Address Table (ADT): 0x0100 - 0x0115
@@ -993,9 +1059,6 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         data: &[u8],
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
-
-
-
         let end_address = address.saturating_add(data.len() as u16);
 
         // Address Table (ADT): 0x0100 - 0x0115
@@ -1122,7 +1185,8 @@ impl StackDefinition for IpcConformanceTestStack {
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
-    const TL_STYLE: zweidraehte_device::layers::transport::TlStyle = zweidraehte_device::layers::transport::TlStyle::Style3;
+    const TL_STYLE: zweidraehte_device::layers::transport::TlStyle =
+        zweidraehte_device::layers::transport::TlStyle::Style3;
     type P = TestParameters;
     type CO = ConformanceComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
@@ -1143,11 +1207,7 @@ impl StackDefinition for IpcConformanceTestStack {
     where
         Self::State: 'a,
     {
-        create_knxip_objects::<IpcConformanceTestStack, _, _>(
-            state,
-            &CONFORMANCE_MEMORY_LAYOUT,
-            (),
-        )
+        create_knxip_objects::<IpcConformanceTestStack, _, _>(state, &CONFORMANCE_MEMORY_LAYOUT, ())
     }
 
     type LayerBuilder = InsecureDeviceBuilder;
@@ -1167,13 +1227,8 @@ use serde_with::serde_as;
 use zweidraehte_device::bcus::system_b::{HasPersistedState, PersistedIpConfig, PersistedState};
 
 /// The persisted state type for the inner `IpSystemBDeviceState`.
-type InnerPersistedState = PersistedState<
-    { table_sizes::ADT },
-    { table_sizes::AST },
-    { table_sizes::COT },
-    TestParameters,
-    PersistedIpConfig,
->;
+type InnerPersistedState =
+    PersistedState<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, TestParameters, PersistedIpConfig>;
 
 /// Full snapshot of conformance test state for shared memory.
 ///
@@ -1218,6 +1273,7 @@ impl ConformanceState {
             level2_memory: RefCell::new(snapshot.level2_memory),
             level1_memory: RefCell::new(snapshot.level1_memory),
             user_memory: RefCell::new(snapshot.user_memory),
+            dm_slot: DmNotificationSlot::new(),
         }
     }
 
@@ -1235,4 +1291,3 @@ impl ConformanceState {
         }
     }
 }
-

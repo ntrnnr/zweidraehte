@@ -27,12 +27,13 @@ use core::cell::RefCell;
 use core::marker::PhantomData;
 
 use crate::StackState;
+use crate::device_model::{DeviceModelEvent, DeviceModelNotifier};
 use crate::dpt::{
     DeviceControl, InterfaceObjectType, PDT_Generic02, PDT_Generic04, PDT_Generic05, PDT_Generic06, PDT_Generic08,
     PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong, ProgrammingMode, PropertyDataDefinition,
     RoutingCount,
 };
-use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine};
+use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunEvent};
 
 use super::{
     ArrayPropertyWithPrefixRead, ArrayPropertyWithPrefixWrite, InterfaceObject, PropertyAccess, PropertyDescriptor,
@@ -332,6 +333,8 @@ pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMach
     alloc_address: u32,
     program_version: PDT_Generic05,
     pei_type: PDT_UnsignedChar,
+    /// Notifier for DeviceModel events (RSM lifecycle transitions).
+    notifier: &'a dyn DeviceModelNotifier,
 }
 
 impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'a, T> {
@@ -341,8 +344,15 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
     /// # Arguments
     /// * `app` - Reference to the application table
     /// * `alloc_address` - Virtual address to assign during RelativeData allocation
-    pub fn new(app: &'a RefCell<T>, alloc_address: u32) -> Self {
-        Self { app, alloc_address, program_version: PDT_Generic05::default(), pei_type: PDT_UnsignedChar::default() }
+    /// * `notifier` - Notification sink for DeviceModel lifecycle events
+    pub fn new(app: &'a RefCell<T>, alloc_address: u32, notifier: &'a dyn DeviceModelNotifier) -> Self {
+        Self {
+            app,
+            alloc_address,
+            program_version: PDT_Generic05::default(),
+            pei_type: PDT_UnsignedChar::default(),
+            notifier,
+        }
     }
 
     /// Create with specific program version and PEI type.
@@ -351,8 +361,9 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
         alloc_address: u32,
         program_version: PDT_Generic05,
         pei_type: PDT_UnsignedChar,
+        notifier: &'a dyn DeviceModelNotifier,
     ) -> Self {
-        Self { app, alloc_address, program_version, pei_type }
+        Self { app, alloc_address, program_version, pei_type, notifier }
     }
 
     /// Get the program version.
@@ -440,15 +451,27 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
                 Ok(WriteResponse::Echo)
             }
             super::pid::LOAD_STATE_CONTROL => {
-                // Write the load event to the state machine, providing the allocation address
-                self.app.borrow_mut().write_lsm(req.data, Some(self.alloc_address));
-                // Response contains the resulting load state (1 byte)
+                let action = self.app.borrow_mut().write_lsm(req.data, Some(self.alloc_address));
+
+                let run_action = match action {
+                    LoadAction::LoadEnd => self.app.borrow_mut().handle_run_event(RunEvent::Loaded),
+                    LoadAction::Unload => self.app.borrow_mut().handle_run_event(RunEvent::Unloaded),
+                    _ => None,
+                };
+
+                if let Some(action) = run_action {
+                    self.notifier.notify(DeviceModelEvent::RunAction(action));
+                }
+
                 Ok(WriteResponse::byte(self.app.borrow().read_lsm()[0]))
             }
             super::pid::RUN_STATE_CONTROL => {
-                // Write the run event to the state machine
-                self.app.borrow_mut().write_rsm(req.data);
-                // Response contains the resulting run state (1 byte)
+                let run_action = self.app.borrow_mut().write_rsm(req.data);
+
+                if let Some(action) = run_action {
+                    self.notifier.notify(DeviceModelEvent::RunAction(action));
+                }
+
                 Ok(WriteResponse::byte(self.app.borrow().read_rsm()[0]))
             }
             _ => Err(PropertyError::InvalidPropertyId),
@@ -728,7 +751,9 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableIn
                 let obj_type: u16 = S::OBJECT_TYPE.into();
                 obj_type.to_be_bytes().read_property(req.start_idx, req.count, buf)
             }
-            super::pid::LOAD_STATE_CONTROL => self.table.borrow().read_lsm().read_property(req.start_idx, req.count, buf),
+            super::pid::LOAD_STATE_CONTROL => {
+                self.table.borrow().read_lsm().read_property(req.start_idx, req.count, buf)
+            }
             super::pid::TABLE_REFERENCE => {
                 // Base address of the allocated table memory for memory read/write operations
                 // Set during RelativeData allocation, cleared on unload
@@ -877,7 +902,8 @@ mod tests {
 
         // Read OBJECT_TYPE property
         let mut buf = [0u8; 4];
-        let len = obj.read_property(PropertyReadRequest { pid: pid::OBJECT_TYPE, start_idx: 1, count: 1 }, &mut buf).unwrap();
+        let len =
+            obj.read_property(PropertyReadRequest { pid: pid::OBJECT_TYPE, start_idx: 1, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 2);
         assert_eq!(&buf[0..2], &[0x00, 0x01]); // AddressTable = 1
     }
@@ -889,14 +915,23 @@ mod tests {
 
         // Should start unloaded
         let mut buf = [0u8; 4];
-        let len = obj.read_property(PropertyReadRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, count: 1 }, &mut buf).unwrap();
+        let len = obj
+            .read_property(PropertyReadRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, count: 1 }, &mut buf)
+            .unwrap();
         assert_eq!(len, 1);
         assert_eq!(buf[0], 0x00); // Unloaded
 
         // Start loading
-        obj.write_property(PropertyWriteRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, data: &[LoadEvent::StartLoading.into()] }).unwrap();
+        obj.write_property(PropertyWriteRequest {
+            pid: pid::LOAD_STATE_CONTROL,
+            start_idx: 1,
+            data: &[LoadEvent::StartLoading.into()],
+        })
+        .unwrap();
 
-        let len = obj.read_property(PropertyReadRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, count: 1 }, &mut buf).unwrap();
+        let len = obj
+            .read_property(PropertyReadRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, count: 1 }, &mut buf)
+            .unwrap();
         assert_eq!(len, 1);
         assert_eq!(buf[0], 0x02); // Loading
     }
@@ -1024,11 +1059,16 @@ mod tests {
         let mut obj = AddressTableObject::new(&addr_table, 0x100);
 
         // OBJECT_TYPE should not be writable
-        let result = obj.write_property(PropertyWriteRequest { pid: pid::OBJECT_TYPE, start_idx: 1, data: &[0x00, 0x00] });
+        let result =
+            obj.write_property(PropertyWriteRequest { pid: pid::OBJECT_TYPE, start_idx: 1, data: &[0x00, 0x00] });
         assert!(matches!(result, Err(PropertyError::WriteNotAllowed)));
 
         // TABLE_REFERENCE should not be writable
-        let result = obj.write_property(PropertyWriteRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, data: &[0x00, 0x00, 0x00, 0x00] });
+        let result = obj.write_property(PropertyWriteRequest {
+            pid: pid::TABLE_REFERENCE,
+            start_idx: 1,
+            data: &[0x00, 0x00, 0x00, 0x00],
+        });
         assert!(matches!(result, Err(PropertyError::WriteNotAllowed)));
 
         // MCB_TABLE should not be writable
@@ -1060,12 +1100,19 @@ mod tests {
 
         // TABLE_REFERENCE should be 0 initially (unloaded)
         let mut buf = [0u8; 10];
-        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf).unwrap();
+        let len = obj
+            .read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf)
+            .unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0x00, 0x00, 0x00]);
 
         // Start loading
-        obj.write_property(PropertyWriteRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, data: &[LoadEvent::StartLoading.into()] }).unwrap();
+        obj.write_property(PropertyWriteRequest {
+            pid: pid::LOAD_STATE_CONTROL,
+            start_idx: 1,
+            data: &[LoadEvent::StartLoading.into()],
+        })
+        .unwrap();
 
         // Allocate via RelativeData segment - this sets the TABLE_REFERENCE
         // Format: [event][segment_type][mcb_data...]
@@ -1082,24 +1129,41 @@ mod tests {
             0x00,
             0x00, // CRC placeholder
         ];
-        obj.write_property(PropertyWriteRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, data: &alloc_data }).unwrap();
+        obj.write_property(PropertyWriteRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, data: &alloc_data })
+            .unwrap();
 
         // Now TABLE_REFERENCE should be set to 0x1234
-        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf).unwrap();
+        let len = obj
+            .read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf)
+            .unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0x00, 0x12, 0x34]);
 
         // Complete loading
-        obj.write_property(PropertyWriteRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, data: &[LoadEvent::LoadCompleted.into()] }).unwrap();
+        obj.write_property(PropertyWriteRequest {
+            pid: pid::LOAD_STATE_CONTROL,
+            start_idx: 1,
+            data: &[LoadEvent::LoadCompleted.into()],
+        })
+        .unwrap();
 
         // TABLE_REFERENCE should still be 0x1234
-        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf).unwrap();
+        let len = obj
+            .read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf)
+            .unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0x00, 0x12, 0x34]);
 
         // Unload - TABLE_REFERENCE should be cleared to 0
-        obj.write_property(PropertyWriteRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, data: &[LoadEvent::Unload.into()] }).unwrap();
-        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf).unwrap();
+        obj.write_property(PropertyWriteRequest {
+            pid: pid::LOAD_STATE_CONTROL,
+            start_idx: 1,
+            data: &[LoadEvent::Unload.into()],
+        })
+        .unwrap();
+        let len = obj
+            .read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf)
+            .unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0x00, 0x00, 0x00]);
     }
@@ -1119,7 +1183,9 @@ mod tests {
 
         // TABLE_REFERENCE should be 0xABCD (from with_data)
         let mut buf = [0u8; 10];
-        let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf).unwrap();
+        let len = obj
+            .read_property(PropertyReadRequest { pid: pid::TABLE_REFERENCE, start_idx: 1, count: 1 }, &mut buf)
+            .unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0x00, 0xAB, 0xCD]);
     }

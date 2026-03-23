@@ -1608,8 +1608,8 @@ impl DeviceControl {
 
     /// Set user application stopped flag (bit 0)
     ///
-    /// This should be called when the run state machine transitions away from RUNNING
-    /// (i.e., when RunAction::LoadStart is returned).
+    /// This should be called when the run state machine transitions away
+    /// from RUNNING (i.e., on `RunAction::Stopped`).
     #[inline]
     pub fn set_user_stopped(&mut self, stopped: bool) {
         if stopped {

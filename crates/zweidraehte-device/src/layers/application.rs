@@ -1153,10 +1153,6 @@ where
         };
         let result = self.interface_objects.property_value_write(&req);
 
-        // Lifecycle side effects (DeviceControl sync, lifecycle events, comm
-        // object reset) are handled by the DeviceModel in the composition
-        // layer, which detects run state transitions around dispatch().
-
         match result {
             Ok(write_response) => {
                 // WriteResponse::Echo means echo back the original data;
@@ -1216,20 +1212,12 @@ where
     D::State: HasConnectionAuth,
 {
     /// Handle `A_FunctionPropertyCommand.ind`
-    fn handle_function_property_command(
-        &mut self,
-        ind: &KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_function_property_command(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         self.handle_function_property(ind, outbox, true);
     }
 
     /// Handle `A_FunctionPropertyState_Read.ind`
-    fn handle_function_property_state_read(
-        &mut self,
-        ind: &KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_function_property_state_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         self.handle_function_property(ind, outbox, false);
     }
 
@@ -1244,10 +1232,7 @@ where
         is_command: bool,
     ) {
         use crate::messages::{
-            apdu::function_property::{
-                FunctionPropertyHeader,
-                FunctionPropertyResponse as FpResponseWriter,
-            },
+            apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse as FpResponseWriter},
             builder::IndicationExt,
         };
         use crate::objects::interface::FunctionPropertyRequest;
@@ -1271,7 +1256,11 @@ where
         let label = if is_command { "Command" } else { "StateRead" };
         debug!(
             "AL FunctionProperty{}: obj={}, prop_id={}, service_data_len={}, access_ctx={:?}",
-            label, hdr.object_idx, hdr.prop_id, service_data.len(), access_ctx
+            label,
+            hdr.object_idx,
+            hdr.prop_id,
+            service_data.len(),
+            access_ctx
         );
 
         let req = FunctionPropertyRequest {
@@ -1299,13 +1288,7 @@ where
             .respond_with(msg_buf)
             .with_application(ApciCode::FunctionPropertyStateResponse, response_service_type)
             .with_data(|buf| {
-                FpResponseWriter::write(
-                    buf,
-                    hdr.object_idx,
-                    hdr.prop_id,
-                    result.return_code,
-                    response_data,
-                );
+                FpResponseWriter::write(buf, hdr.object_idx, hdr.prop_id, result.return_code, response_data);
             });
 
         debug!(

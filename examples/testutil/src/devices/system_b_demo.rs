@@ -57,15 +57,14 @@ impl core::fmt::Display for BeU16 {
         write!(f, "{}", self.get())
     }
 }
-use zweidraehte_platform::LinuxIpTransport;
 use zweidraehte_device::bcus::system_b::{
-    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, SystemBIpDeviceDef, SystemBMemoryMap,
-    create_knxip_objects,
+    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, SystemBIpDeviceDef, SystemBMemoryMap, create_knxip_objects,
 };
 use zweidraehte_device::dpt::*;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceTcp};
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
+use zweidraehte_platform::LinuxIpTransport;
 
 // ============================================================================
 // Device Descriptor

@@ -13,17 +13,16 @@ use core::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 
-use zweidraehte_knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
-use zweidraehte_knxprod::ets_pages;
 use zweidraehte_device::bcus::system_b::{
-    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, SystemBIpDeviceDef, SystemBMemoryMap,
-    create_knxip_objects,
+    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, SystemBIpDeviceDef, SystemBMemoryMap, create_knxip_objects,
 };
 use zweidraehte_device::dpt::*;
 use zweidraehte_device::ets::ets_range_enum;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp};
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
+use zweidraehte_knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
+use zweidraehte_knxprod::ets_pages;
 
 // ============================================================================
 // Device Descriptor

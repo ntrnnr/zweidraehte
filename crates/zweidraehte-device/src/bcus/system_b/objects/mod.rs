@@ -35,13 +35,13 @@ use core::cell::RefCell;
 
 use crate::{
     StackState,
+    device_model::DeviceModelNotifier,
     dpt::{DeviceControl, InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
         FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
-        GroupObjectTableObject, HasDeviceObject, InterfaceObject, InterfaceObjectAugment,
-        PeiProgramObject, PropertyDescriptionResponse,
-        PropertyDescriptor, PropertyError, PropertyServiceHandler, WriteResponse, pid,
+        GroupObjectTableObject, HasDeviceObject, InterfaceObject, InterfaceObjectAugment, PeiProgramObject,
+        PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -103,7 +103,7 @@ where
 
 impl<'a, S, ADT, AST, COT, APP, PEI> SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>
 where
-    S: StackState,
+    S: StackState + DeviceModelNotifier,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
@@ -126,15 +126,26 @@ where
         routing_count: u8,
     ) -> Self {
         Self::with_augment(
-            state, device_info, layout, adt, ast, cot, app, pei,
-            program_version, pei_program_version, pei_type, routing_count, (),
+            state,
+            device_info,
+            layout,
+            adt,
+            ast,
+            cot,
+            app,
+            pei,
+            program_version,
+            pei_program_version,
+            pei_type,
+            routing_count,
+            (),
         )
     }
 }
 
 impl<'a, S, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<S>> SystemBObjects<'a, S, ADT, AST, COT, APP, PEI, A>
 where
-    S: StackState,
+    S: StackState + DeviceModelNotifier,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
@@ -176,6 +187,7 @@ where
                 layout.app_address() as u32,
                 PDT_Generic05::with_value(program_version),
                 PDT_UnsignedChar::with_value(pei_type),
+                state,
             )),
             pei_program: RefCell::new(PeiProgramObject::new(
                 pei,
@@ -245,7 +257,7 @@ where
 impl<'a, S, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<S>> PropertyServiceHandler
     for SystemBObjects<'a, S, ADT, AST, COT, APP, PEI, A>
 where
-    S: StackState,
+    S: StackState + DeviceModelNotifier,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
@@ -274,9 +286,9 @@ where
             // Direct PID lookup: augment first (can intercept/add PIDs),
             // then base.
             if let Some(ot) = obj_type {
-                if let Some(result) = self.augment.property_description_read(
-                    self.state, ot, object_idx, PropertyLookup::ByPid(prop_id),
-                ) {
+                if let Some(result) =
+                    self.augment.property_description_read(self.state, ot, object_idx, PropertyLookup::ByPid(prop_id))
+                {
                     return result;
                 }
             }
@@ -302,9 +314,9 @@ where
         if let Some(ot) = obj_type {
             let base_count = self.base_property_count(object_idx);
             let augment_idx = prop_idx.saturating_sub(base_count);
-            if let Some(result) = self.augment.property_description_read(
-                self.state, ot, object_idx, PropertyLookup::ByIndex(augment_idx),
-            ) {
+            if let Some(result) =
+                self.augment.property_description_read(self.state, ot, object_idx, PropertyLookup::ByIndex(augment_idx))
+            {
                 // Restore the original prop_idx in the response so it
                 // matches the client's request.
                 return result.map(|mut resp| {
@@ -392,10 +404,7 @@ where
         result
     }
 
-    fn function_property_command(
-        &self,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn function_property_command(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         if let Some(obj_type) = self.object_type_for(req.object_idx) {
             if let Some(result) = self.augment.function_property_command(self.state, obj_type, req) {
                 return result;
@@ -404,10 +413,7 @@ where
         FunctionPropertyResult::not_supported()
     }
 
-    fn function_property_state_read(
-        &self,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn function_property_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         if let Some(obj_type) = self.object_type_for(req.object_idx) {
             if let Some(result) = self.augment.function_property_state_read(self.state, obj_type, req) {
                 return result;
@@ -420,7 +426,7 @@ where
 impl<'a, S, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<S>> HasDeviceObject
     for SystemBObjects<'a, S, ADT, AST, COT, APP, PEI, A>
 where
-    S: StackState + HasRoutingCount,
+    S: StackState + DeviceModelNotifier + HasRoutingCount,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
@@ -522,6 +528,7 @@ pub fn create_system_b_objects<'a, D, S, A>(
 where
     D: StackDefinition,
     S: StackState
+        + DeviceModelNotifier
         + HasAddressTable
         + HasAssociationTable
         + HasCommunicationObjectTable
@@ -552,4 +559,3 @@ where
         augment,
     )
 }
-

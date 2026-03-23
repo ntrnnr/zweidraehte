@@ -84,7 +84,9 @@ impl StackDefinition for PicoWLightSwitch {
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, PicoWState, EasterEggAugment>;
 
-    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(
+        state: &'a Self::State,
+    ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {

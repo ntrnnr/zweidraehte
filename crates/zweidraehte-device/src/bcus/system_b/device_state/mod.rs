@@ -14,9 +14,9 @@ use core::cell::{Cell, RefCell};
 use const_default::ConstDefault;
 
 use crate::{
-    AccessContext, MAX_ACCESS_LEVELS,
-    NUM_AUTH_KEYS, StackState,
+    AccessContext, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS, StackState,
     address::IndividualAddress,
+    device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::interface::HasRoutingCount,
     objects::tables::{
         HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication,
@@ -164,6 +164,16 @@ pub struct SystemBDeviceState<
     /// The binary is responsible for checking `is_dirty()` and saving
     /// state via its own storage backend.
     dirty: Cell<bool>,
+
+    // ========================================================================
+    // DeviceModel Notification
+    // ========================================================================
+    /// Single-slot notification buffer for [`DeviceModelEvent`]s.
+    ///
+    /// Interface objects post events here during property writes; the
+    /// [`DeviceModel`](crate::device_model::DeviceModel) drains them
+    /// after each dispatch cycle.
+    dm_slot: DmNotificationSlot,
 }
 
 impl<
@@ -203,6 +213,7 @@ impl<
             access_store: crate::ConnectionAuthLevels::new(),
             link_layer_state: LS::from_config(LS::Config::default()),
             dirty: Cell::new(false),
+            dm_slot: DmNotificationSlot::new(),
         }
     }
 
@@ -408,6 +419,7 @@ impl<
             access_store: crate::ConnectionAuthLevels::new(),
             link_layer_state: LS::from_config(link_layer_config),
             dirty: Cell::new(false),
+            dm_slot: DmNotificationSlot::new(),
         }
     }
 }
@@ -543,6 +555,22 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 }
 
 // ============================================================================
+// DeviceModelNotifier Implementation
+// ============================================================================
+
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
+    DeviceModelNotifier for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+{
+    fn notify(&self, event: DeviceModelEvent) {
+        self.dm_slot.notify(event);
+    }
+
+    fn take_event(&self) -> Option<DeviceModelEvent> {
+        self.dm_slot.take_event()
+    }
+}
+
+// ============================================================================
 // Table Accessor Trait Implementations
 // ============================================================================
 
@@ -630,4 +658,3 @@ impl<
         self.access_store.reset(slot, default_level);
     }
 }
-

@@ -9,11 +9,12 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, pubsub::WaitResult};
 use embassy_time::{Duration, Timer};
 use env_logger::Env;
-use zweidraehte_conformance::harness::mock::MockLinkLayerBuilder;
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
+use zweidraehte_conformance::harness::mock::MockLinkLayerBuilder;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
+    device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     dpt::DPT_Switch,
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::tables::{
@@ -68,6 +69,8 @@ pub struct MyState {
     pub app: RefCell<Application<()>>,
     /// Per-connection access level store
     access_store: zweidraehte_device::ConnectionAuthLevels<1>,
+    /// DeviceModel notification slot
+    dm_slot: DmNotificationSlot,
 }
 
 impl MyState {
@@ -79,6 +82,7 @@ impl MyState {
             cot: RefCell::new(cot),
             app: RefCell::new(Application::new()),
             access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
+            dm_slot: DmNotificationSlot::new(),
         }
     }
 }
@@ -92,7 +96,17 @@ impl Default for MyState {
             cot: RefCell::new(CoTab7::<30>::new()),
             app: RefCell::new(Application::new()),
             access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
+            dm_slot: DmNotificationSlot::new(),
         }
+    }
+}
+
+impl DeviceModelNotifier for MyState {
+    fn notify(&self, event: DeviceModelEvent) {
+        self.dm_slot.notify(event);
+    }
+    fn take_event(&self) -> Option<DeviceModelEvent> {
+        self.dm_slot.take_event()
     }
 }
 
@@ -146,8 +160,11 @@ impl zweidraehte_device::HasConnectionAuth for MyState {
 }
 
 impl HasRoutingCount for MyState {
-    fn routing_count(&self) -> u8 { 6 }
-    fn set_routing_count(&self, _value: u8) { /* demo device — not persisted */ }
+    fn routing_count(&self) -> u8 {
+        6
+    }
+    fn set_routing_count(&self, _value: u8) { /* demo device — not persisted */
+    }
 }
 
 impl HasApplication for MyState {
@@ -188,7 +205,6 @@ impl StackDefinition for MyKnxStack {
     where
         Self::State: 'a,
     {
-
     }
 
     type LayerBuilder = InsecureDeviceBuilder;

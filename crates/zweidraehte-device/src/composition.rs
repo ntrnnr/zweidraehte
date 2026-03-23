@@ -8,7 +8,6 @@
 //! - [`InsecureIpDeviceBuilder`] — KNX/IP `(NL, CemiTL<TL>, AL)` stack (requires `knxip` feature)
 
 #[allow(async_fn_in_trait)]
-
 use core::cell::Cell;
 
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
@@ -29,10 +28,7 @@ use crate::{
     objects::{
         comm::{ComObjectEvent, ComObjects, LifecycleEvent},
         interface::{HasDeviceObject, HasRoutingCount},
-        tables::{
-            HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
-            HasRunStateMachine, RunAction,
-        },
+        tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
     },
     restart,
     router::{self, LayerStack},
@@ -141,7 +137,8 @@ where
         + HasAssociationTable
         + HasCommunicationObjectTable
         + HasConnectionAuth
-        + HasRoutingCount,
+        + HasRoutingCount
+        + device_model::DeviceModelNotifier,
     D::InterfaceObjects<'static>: HasDeviceObject,
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
     D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>>,
@@ -189,7 +186,8 @@ where
         + HasAssociationTable
         + HasCommunicationObjectTable
         + HasConnectionAuth
-        + HasRoutingCount,
+        + HasRoutingCount
+        + device_model::DeviceModelNotifier,
     D::InterfaceObjects<'static>: HasDeviceObject,
     D::LLB: for<'a> layers::LinkLayerBuilder<
             StackContext<'a, D>,
@@ -256,20 +254,22 @@ where
 pub struct InsecureDeviceLayers<'a, D: StackDefinition, TL: router::Layer, Extra = ()> {
     layers: (NetworkLayer<'a, D>, TL, ApplicationLayer<'a, D>),
     device_model: device_model::SystemBDeviceModel<'a, D>,
-    state: &'a D::State,
     app_service_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     pending_app_request: Cell<Option<Request<ApplicationLayerService, ApplicationLayerServiceResponse>>>,
     extra: Extra,
 }
 
 /// Standard layer stack: `(NL, TL, AL)` with no extra side inputs.
-pub type StandardDeviceLayers<'a, D> =
-    InsecureDeviceLayers<'a, D, TransportLayer<'a, D>>;
+pub type StandardDeviceLayers<'a, D> = InsecureDeviceLayers<'a, D, TransportLayer<'a, D>>;
 
 /// KNX/IP layer stack: `(NL, CemiTL<TL>, AL)` with cEMI side input.
 #[cfg(feature = "knxip")]
-pub type IpDeviceLayers<'a, D> =
-    InsecureDeviceLayers<'a, D, layers::transport::cemi::CemiTransportLayer<'a, D>, layers::transport::cemi::CemiSideInput<'a>>;
+pub type IpDeviceLayers<'a, D> = InsecureDeviceLayers<
+    'a,
+    D,
+    layers::transport::cemi::CemiTransportLayer<'a, D>,
+    layers::transport::cemi::CemiSideInput<'a>,
+>;
 
 // ----------------------------------------------------------------------------
 // Constructors
@@ -282,7 +282,8 @@ where
         + HasAssociationTable
         + HasCommunicationObjectTable
         + HasConnectionAuth
-        + HasRoutingCount,
+        + HasRoutingCount
+        + device_model::DeviceModelNotifier,
     D::InterfaceObjects<'static>: HasDeviceObject,
 {
     /// Construct the standard `(NL, TL, AL)` layer stack.
@@ -315,7 +316,6 @@ where
         Self {
             layers: (network_layer, transport_layer, application_layer),
             device_model,
-            state: ctx.state,
             app_service_receiver: ctx.app_service_receiver,
             pending_app_request: Cell::new(None),
             extra: (),
@@ -324,14 +324,21 @@ where
 }
 
 #[cfg(feature = "knxip")]
-impl<'a, D: StackDefinition> InsecureDeviceLayers<'a, D, layers::transport::cemi::CemiTransportLayer<'a, D>, layers::transport::cemi::CemiSideInput<'a>>
+impl<'a, D: StackDefinition>
+    InsecureDeviceLayers<
+        'a,
+        D,
+        layers::transport::cemi::CemiTransportLayer<'a, D>,
+        layers::transport::cemi::CemiSideInput<'a>,
+    >
 where
     D::State: HasAddressTable
         + HasApplication
         + HasAssociationTable
         + HasCommunicationObjectTable
         + HasConnectionAuth
-        + HasRoutingCount,
+        + HasRoutingCount
+        + device_model::DeviceModelNotifier,
     D::InterfaceObjects<'static>: HasDeviceObject,
 {
     /// Construct the KNX/IP `(NL, CemiTL<TL>, AL)` layer stack.
@@ -342,7 +349,10 @@ where
     /// Only when a Device Management connection activates does it lock the
     /// inner TL's incoming connections and intercept connection-oriented AL
     /// requests, routing them to the cEMI response channel.
-    pub fn with_cemi(ctx: &'a LayerContext<'a, D>, channels: &'a crate::context::CemiTransportLayerChannelPair) -> Self {
+    pub fn with_cemi(
+        ctx: &'a LayerContext<'a, D>,
+        channels: &'a crate::context::CemiTransportLayerChannelPair,
+    ) -> Self {
         let network_layer = NetworkLayer::new(ctx.state, ctx.interface_objects);
 
         let transport_layer = TransportLayer::new(ctx.buffer_manager, ctx.state, D::TL_STYLE);
@@ -374,7 +384,6 @@ where
         Self {
             layers: (network_layer, cemi_transport_layer, application_layer),
             device_model,
-            state: ctx.state,
             app_service_receiver: ctx.app_service_receiver,
             pending_app_request: Cell::new(None),
             extra: layers::transport::cemi::CemiSideInput::new(cemi_event_receiver),
@@ -393,7 +402,8 @@ where
         + HasAssociationTable
         + HasCommunicationObjectTable
         + HasConnectionAuth
-        + HasRoutingCount,
+        + HasRoutingCount
+        + device_model::DeviceModelNotifier,
     D::InterfaceObjects<'static>: HasDeviceObject,
     Extra: router::ExtraSideInput<(NetworkLayer<'a, D>, TL, ApplicationLayer<'a, D>)>,
 {
@@ -403,13 +413,7 @@ where
     };
 
     fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut router::Outbox) {
-        let was_running = self.state.app().borrow().is_running();
         self.layers.dispatch(layer_idx, msg, outbox);
-        let is_running = self.state.app().borrow().is_running();
-        let action = RunAction::from_transition(was_running, is_running);
-        if action != RunAction::None {
-            self.device_model.on_action(action);
-        }
     }
 
     fn next_deadline(&self) -> Option<embassy_time::Instant> {
@@ -441,15 +445,13 @@ where
     }
 
     fn handle_side_input(&mut self, outbox: &mut router::Outbox) {
-        let was_running = self.state.app().borrow().is_running();
         if let Some(req) = self.pending_app_request.take() {
             self.layers.2.handle_app_request(&req, outbox);
         }
         self.extra.handle(&mut self.layers, outbox);
-        let is_running = self.state.app().borrow().is_running();
-        let action = RunAction::from_transition(was_running, is_running);
-        if action != RunAction::None {
-            self.device_model.on_action(action);
-        }
+    }
+
+    fn drain_events(&mut self, _outbox: &mut router::Outbox) {
+        self.device_model.drain_dm_events();
     }
 }
