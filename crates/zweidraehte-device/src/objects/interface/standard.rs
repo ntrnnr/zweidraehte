@@ -26,12 +26,14 @@
 use core::cell::RefCell;
 use core::marker::PhantomData;
 
+use zweidraehte_proto::dpt::PDT_Control;
+
 use crate::StackState;
 use crate::device_model::{DeviceModelEvent, DeviceModelNotifier};
 use crate::dpt::{
     DeviceControl, InterfaceObjectType, KNXVersion, PDT_Generic02, PDT_Generic04, PDT_Generic05, PDT_Generic06,
-    PDT_Generic08, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong, PDT_Version,
-    ProgrammingMode, PropertyDataDefinition, RoutingCount,
+    PDT_Generic08, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong, PDT_Version, ProgrammingMode,
+    PropertyDataDefinition, RoutingCount,
 };
 use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunEvent};
 
@@ -390,8 +392,8 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
     fn property_descriptors() -> [PropertyDescriptor; 7] {
         [
             PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 3),
-            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 3),
-            PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 3),
+            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 3),
+            PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 3),
             PropertyDescriptor::new(pid::TABLE_REFERENCE, PDT_UnsignedLong::ID, 1, PropertyAccess::ReadOnly, 3, 3),
             PropertyDescriptor::new(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadWrite, 3, 3),
             PropertyDescriptor::new(pid::PEI_TYPE, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadOnly, 3, 3),
@@ -540,8 +542,8 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> PeiProgramObject<'a, T> {
     fn property_descriptors() -> [PropertyDescriptor; 4] {
         [
             PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 3),
-            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 0),
-            PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 0),
+            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 0),
+            PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 0),
             // PROGRAM_VERSION: ETS needs to write this during programming
             PropertyDescriptor::new(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadWrite, 3, 0),
         ]
@@ -707,7 +709,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
             // However, the access control check happens at the PropertyServiceHandler level,
             // which requires caller's access_level <= write_level (lower = more access).
             // So write_level=0 means only callers with level 0 (full access) can write.
-            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadWrite, 3, 0),
+            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 0),
             PropertyDescriptor::new(pid::TABLE_REFERENCE, PDT_UnsignedLong::ID, 1, PropertyAccess::ReadOnly, 3, 3),
             PropertyDescriptor::new(pid::TABLE, S::TABLE_PDT, 0, PropertyAccess::ReadWrite, 3, 3), // max_elements set dynamically
             PropertyDescriptor::new(pid::MCB_TABLE, PDT_Generic08::ID, 1, PropertyAccess::ReadOnly, 3, 3),
