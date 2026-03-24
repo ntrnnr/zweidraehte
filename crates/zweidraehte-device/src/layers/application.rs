@@ -1777,11 +1777,14 @@ where
             return;
         };
 
+        // Error responses (count=0) must not include the original request data,
+        // which would overflow the buffer sized for zero data bytes.
+        let response_data = if response_count > 0 { acc.data } else { &[] };
         let msg = ind
             .respond_with(msg_buf)
             .with_application(ApciCode::MemoryReadResponse, ServiceType::T_Data_Req)
             .with_data(|buf| {
-                MemoryResponse::write(buf, response_count, acc.address, acc.data);
+                MemoryResponse::write(buf, response_count, acc.address, response_data);
             });
 
         debug!("AL sending Memory_Response (verify): address=0x{:04X}, count={}", acc.address, response_count);
@@ -1814,29 +1817,40 @@ where
             return;
         }
 
-        let Some(mbw) = MemoryBitWrite::parse(ind.buf()) else {
+        // Extract header fields (count + address) before full parse, so we can
+        // send an error response even when the message is too short for its
+        // declared mask count.
+        let raw = ind.buf();
+        if raw.len() < MemoryBitWrite::MIN_MSG_LEN {
             error!("MemoryBit_Write message too short: {}", ind.len());
             return;
-        };
+        }
+        let header_count = raw[offsets::MSG_APCI + 2] & 0x0F;
+        let header_address =
+            u16::from_be_bytes([raw[offsets::MSG_APCI + 3], raw[offsets::MSG_APCI + 4]]);
 
-        if !mbw.is_count_legal() {
-            warn!("MemoryBit_Write illegal count: {}", mbw.count);
-            self.send_memorybit_response(ind, mbw.address, 0, &[], outbox);
+        // Reject illegal count (must be 1-5) or truncated messages up front,
+        // sending an error response so the remote side isn't left waiting.
+        if !(1..=5).contains(&header_count) {
+            warn!("MemoryBit_Write illegal count: {}", header_count);
+            self.send_memorybit_response(ind, header_address, 0, &[], outbox);
             return;
         }
-
-        // Verify total message length matches expected
-        let expected_len = MemoryBitWrite::expected_msg_len(mbw.count as usize);
+        let expected_len = MemoryBitWrite::expected_msg_len(header_count as usize);
         if ind.len() != expected_len {
             warn!(
                 "MemoryBit_Write length mismatch: expected {} bytes, got {} (count={})",
                 expected_len,
                 ind.len(),
-                mbw.count
+                header_count
             );
-            self.send_memorybit_response(ind, mbw.address, 0, &[], outbox);
+            self.send_memorybit_response(ind, header_address, 0, &[], outbox);
             return;
         }
+
+        // Full parse is safe now — header, count, and mask lengths are validated.
+        let mbw = MemoryBitWrite::parse(raw)
+            .expect("header and length already validated");
 
         debug!("AL MemoryBit_Write: address=0x{:04X}, count={}", mbw.address, mbw.count);
 
@@ -2056,11 +2070,14 @@ where
             return;
         };
 
+        // Error responses (count=0) must not include the original request data,
+        // which would overflow the buffer sized for zero data bytes.
+        let response_data = if response_count > 0 { acc.data } else { &[] };
         let msg = ind
             .respond_with(msg_buf)
             .with_application(ApciCode::UserMemoryResponse, ServiceType::T_Data_Req)
             .with_data(|buf| {
-                UserMemoryResponse::write(buf, acc.addr_ext, response_count, acc.address_low, acc.data);
+                UserMemoryResponse::write(buf, acc.addr_ext, response_count, acc.address_low, response_data);
             });
 
         debug!(
