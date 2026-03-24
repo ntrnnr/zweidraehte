@@ -211,10 +211,7 @@ impl<D: StackDefinition> crate::context::KnxIndividualAddressContext for StackCo
     }
 }
 
-impl<D: StackDefinition> crate::context::AddressTableContext for StackContext<'_, D>
-where
-    D::State: crate::objects::tables::HasAddressTable,
-{
+impl<D: StackDefinition> crate::context::AddressTableContext for StackContext<'_, D> {
     type ADT = <D::State as crate::objects::tables::HasAddressTable>::ADT;
 
     fn address_table(&self) -> &core::cell::RefCell<Self::ADT> {
