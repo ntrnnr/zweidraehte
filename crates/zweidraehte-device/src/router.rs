@@ -201,25 +201,29 @@ pub trait LayerStack {
     /// Initialize all layers. Called once before the router loop starts.
     fn init(&mut self);
 
-    /// Wait for external (non-dispatch-table) input.
+    /// Event type returned by [`recv_service_input`](Self::recv_service_input).
+    ///
+    /// Defaults to `!` (never type) for layer stacks that have no service
+    /// inputs. Composition types like `InsecureDeviceLayers` override this
+    /// with a concrete enum.
+    type ServiceInput = !;
+
+    /// Wait for a service input event (non-dispatch-table input).
     ///
     /// The router `select`s on this future alongside LL events and
-    /// layer timers. When it resolves, the router calls
-    /// [`handle_side_input`](Self::handle_side_input).
+    /// layer timers. When it resolves, the returned event is passed to
+    /// [`handle_service_input`](Self::handle_service_input).
     ///
-    /// Default: pends forever (no external input).
-    fn recv_side_input(&self) -> impl core::future::Future<Output = ()> + '_ {
+    /// Default: pends forever (no service inputs).
+    fn recv_service_input(&self) -> impl core::future::Future<Output = Self::ServiceInput> + '_ {
         core::future::pending()
     }
 
-    /// Process the external input that [`recv_side_input`](Self::recv_side_input)
-    /// signaled.
+    /// Process a service input event.
     ///
-    /// Called immediately after `recv_side_input` resolves. Push any
-    /// resulting messages to the outbox.
-    ///
-    /// Default: no-op.
-    fn handle_side_input(&mut self, _outbox: &mut Outbox) {}
+    /// Called immediately after `recv_service_input` resolves with the
+    /// event it returned. Push any resulting messages to the outbox.
+    fn handle_service_input(&mut self, input: Self::ServiceInput, outbox: &mut Outbox);
 
     /// Drain and handle [`StackEvent`]s emitted by layers during this
     /// dispatch cycle.
@@ -309,6 +313,10 @@ macro_rules! impl_layer_stack {
             fn init(&mut self) {
                 $(self.$idx.init();)+
             }
+
+            fn handle_service_input(&mut self, input: Self::ServiceInput, _outbox: &mut Outbox) {
+                match input {}
+            }
         }
     };
 }
@@ -322,51 +330,6 @@ impl_layer_stack!(0: A, 1: B, 2: C, 3: D, 4: E);
 impl_layer_stack!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F);
 impl_layer_stack!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G);
 impl_layer_stack!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H);
-
-// ============================================================================
-// ExtraSideInput — composable side-input extensions
-// ============================================================================
-
-/// Composable side-input extension for [`LayerStack`] implementations.
-///
-/// Side inputs inject events into the router loop from outside the dispatch
-/// table — sources that don't map to a [`ServiceType`] in the normal
-/// dispatch flow. `ExtraSideInput` is parameterised over the concrete
-/// layer tuple so that the handler has typed access to individual layers.
-///
-/// `Layers` is the concrete layer tuple, giving the handler typed access
-/// to call specific layer methods (e.g., `layers.1.handle_cemi_event()`).
-///
-/// # Contract
-///
-/// - [`recv`](Self::recv) is called from `select` and must buffer the
-///   incoming event internally (e.g., via `Cell`) because the `LayerStack`
-///   is immutably borrowed during the async wait.
-/// - [`handle`](Self::handle) is called synchronously after `recv` resolves,
-///   with `&mut` access to both `self` and the layer tuple.
-pub trait ExtraSideInput<Layers> {
-    /// Wait for and buffer the next event.
-    ///
-    /// Called inside the router's `select` alongside the app service
-    /// receiver and timer. Use `Cell` or similar interior mutability to
-    /// store the received event, since `&self` is shared.
-    fn recv(&self) -> impl core::future::Future<Output = ()> + '_;
-
-    /// Process the buffered event.
-    ///
-    /// Called immediately after [`recv`](Self::recv) resolves. Push any
-    /// resulting messages to the outbox.
-    fn handle(&mut self, layers: &mut Layers, outbox: &mut Outbox);
-}
-
-/// No extra side inputs — pends forever on recv, no-op on handle.
-impl<L> ExtraSideInput<L> for () {
-    fn recv(&self) -> impl core::future::Future<Output = ()> + '_ {
-        core::future::pending()
-    }
-
-    fn handle(&mut self, _layers: &mut L, _outbox: &mut Outbox) {}
-}
 
 // ============================================================================
 // Tests

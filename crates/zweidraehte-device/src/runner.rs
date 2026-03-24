@@ -146,8 +146,9 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // consumed or sent to the LL.
         //
         // The router is fully generic: it only uses the `LayerStack` trait.
-        // Side inputs (e.g., app service requests from user code) are
-        // handled through `recv_side_input` / `handle_side_input`.
+        // Service inputs (e.g., app service requests from user code, cEMI
+        // events) are handled through `recv_service_input` /
+        // `handle_service_input`.
 
         let router_task = async {
             loop {
@@ -159,11 +160,11 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                 }
 
                 // Wait for the next event: LL indication, LL confirmation,
-                // layer side input, or layer timer.
+                // service input, or layer timer.
                 match select3(
                     ll_ind.receive(),
                     ll_conf.receive(),
-                    select(layers.recv_side_input(), async {
+                    select(layers.recv_service_input(), async {
                         match layer_deadline {
                             Some(deadline) => Timer::at(deadline).await,
                             // No deadline -> sleep forever (select will pick
@@ -184,9 +185,9 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                     }
                     embassy_futures::select::Either3::Third(third) => {
                         match third {
-                            // Side input resolved -> let layers process it
-                            Either::First(()) => {
-                                layers.handle_side_input(&mut outbox);
+                            // Service input resolved -> let layers process it
+                            Either::First(input) => {
+                                layers.handle_service_input(input, &mut outbox);
                             }
                             // Timer expired -> poll layers with expired deadlines
                             Either::Second(_) => {

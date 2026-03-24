@@ -19,7 +19,7 @@
 //! ```text
 //! Inbound (ETS → AL):
 //!   cEMI Client → DevMgmt handler → patches .req→.ind
-//!   → CemiEvent::Frame → CemiTransportLayer (side input)
+//!   → CemiEvent::Frame → CemiTransportLayer (service input)
 //!   → stamps T_Data_Ind + AccessSource::Explicit(MAX_ACCESS) → outbox → AL
 //!
 //! Outbound (AL → ETS):
@@ -28,19 +28,16 @@
 //!   → if inactive: delegate to inner TransportLayer (normal bus path)
 //! ```
 
-use core::cell::Cell;
-
-use embassy_sync::channel::{DynamicReceiver, DynamicSender};
+use embassy_sync::channel::DynamicSender;
 
 use crate::{
     AccessSource, StackDefinition,
     address::IndividualAddress,
-    layers::{application::ApplicationLayer, network::NetworkLayer},
     messages::{
         buffers::Buffer,
         knx::{KnxMessageBuffer, ServiceType},
     },
-    router::{ExtraSideInput, Layer, Outbox},
+    router::{Layer, Outbox},
 };
 
 use super::TransportLayer;
@@ -52,7 +49,7 @@ use super::TransportLayer;
 /// Events sent from the DevMgmt connection handler to the CemiTransportLayer.
 ///
 /// Carried over a `Channel<NoopRawMutex, CemiEvent, 2>` — the DevMgmt
-/// handler is the sole producer, the layer stack's `recv_side_input` is
+/// handler is the sole producer, the layer stack's `recv_service_input` is
 /// the sole consumer. Capacity 2 ensures a pending Frame + Deactivate
 /// can coexist when the layer stack is busy.
 pub enum CemiEvent {
@@ -171,7 +168,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
     /// Handle a cEMI event from the DevMgmt handler.
     ///
-    /// Called by the `LayerStack` implementation's `handle_side_input`.
+    /// Called by the `LayerStack` implementation's `handle_service_input`.
     pub fn handle_cemi_event(&mut self, event: CemiEvent, outbox: &mut Outbox) {
         match event {
             CemiEvent::Activate => self.activate(outbox),
@@ -365,55 +362,3 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     }
 }
 
-// ============================================================================
-// CemiSideInput — ExtraSideInput for cEMI events
-// ============================================================================
-
-/// Side input that receives [`CemiEvent`]s from a KNX/IP Device Management
-/// connection and forwards them to the [`CemiTransportLayer`].
-///
-/// Used as the `Extra` parameter of
-/// [`InsecureDeviceLayers`](crate::InsecureDeviceLayers) for KNX/IP devices.
-pub struct CemiSideInput<'a> {
-    event_receiver: DynamicReceiver<'a, CemiEvent>,
-    pending_event: Cell<Option<CemiEvent>>,
-}
-
-impl<'a> CemiSideInput<'a> {
-    /// Create a new `CemiSideInput` from a cEMI event receiver.
-    pub fn new(event_receiver: DynamicReceiver<'a, CemiEvent>) -> Self {
-        Self {
-            event_receiver,
-            pending_event: Cell::new(None),
-        }
-    }
-}
-
-impl<'x, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
-    ExtraSideInput<(
-        NetworkLayer<'x, D>,
-        CemiTransportLayer<'x, D, MAX_INCOMING, MAX_OUTGOING>,
-        ApplicationLayer<'x, D>,
-    )> for CemiSideInput<'_>
-{
-    fn recv(&self) -> impl core::future::Future<Output = ()> + '_ {
-        async {
-            let event = self.event_receiver.receive().await;
-            self.pending_event.set(Some(event));
-        }
-    }
-
-    fn handle(
-        &mut self,
-        layers: &mut (
-            NetworkLayer<'x, D>,
-            CemiTransportLayer<'x, D, MAX_INCOMING, MAX_OUTGOING>,
-            ApplicationLayer<'x, D>,
-        ),
-        outbox: &mut Outbox,
-    ) {
-        if let Some(event) = self.pending_event.take() {
-            layers.1.handle_cemi_event(event, outbox);
-        }
-    }
-}
