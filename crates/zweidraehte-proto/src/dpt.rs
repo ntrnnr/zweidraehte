@@ -348,17 +348,17 @@ pub type PDT_UnsignedChar = PropertyData<u8, 2, 1>;
 pub type PDT_Int = PropertyData<i16, 3, 2>;
 pub type PDT_UnsignedInt = PropertyData<u16, 4, 2>;
 pub type PDT_KNXFloat = PropertyData<KnxFloat16, 5, 2>;
-//pub type PDT_Date           = PropertyData<KNXDate, 6, 3>;
-//pub type PDT_Time           = PropertyData<KNXTime, 7, 3>;
+// TODO: PDT_Date (0x06, 3 bytes) — needs KnxDate struct
+// TODO: PDT_Time (0x07, 3 bytes) — needs KnxTime struct
 pub type PDT_Long = PropertyData<i32, 8, 4>;
 pub type PDT_UnsignedLong = PropertyData<u32, 9, 4>;
 pub type PDT_Float = PropertyData<f32, 0x0A, 4>;
 pub type PDT_Double = PropertyData<f64, 0x0B, 8>;
-pub type PDT_CharBlock = PropertyData<[u8; 10], 0x0C, 10>; //TODO: raw_data/set_raw_data
-//pub type PDT_PollGroupSettings = PropertyData<PollGroupSettings, 0x0D, 3>;
-pub type PDT_ShortCharBlock = PropertyData<[u8; 5], 0x0E, 5>; //TODO: raw_data/set_raw_data
-//pub type PDT_DateTime       = PropertyData<KNXDateTime, 0x0F, 6>;
-//pub type PDT_VariableLength = //TODO: Super special variable len WTF shit - need to investigate
+pub type PDT_CharBlock = PropertyData<[u8; 10], 0x0C, 10>;
+// TODO: PDT_PollGroupSettings (0x0D, 3 bytes) — needs PollGroupSettings struct
+pub type PDT_ShortCharBlock = PropertyData<[u8; 5], 0x0E, 5>;
+// TODO: PDT_DateTime (0x0F, 8 bytes) — needs KnxDateTime struct
+// TODO: PDT_VariableLength (0x10) — variable-length encoding, not representable as fixed PropertyData
 pub type PDT_Generic01 = PropertyData<[u8; 1], 0x11, 1>;
 pub type PDT_Generic02 = PropertyData<[u8; 2], 0x12, 2>;
 pub type PDT_Generic03 = PropertyData<[u8; 3], 0x13, 3>;
@@ -379,18 +379,18 @@ pub type PDT_Generic17 = PropertyData<[u8; 17], 0x21, 17>;
 pub type PDT_Generic18 = PropertyData<[u8; 18], 0x22, 18>;
 pub type PDT_Generic19 = PropertyData<[u8; 19], 0x23, 19>;
 pub type PDT_Generic20 = PropertyData<[u8; 20], 0x24, 20>;
-//pub type PDT_UTF8           = //TODO: Super special variable len WTF shit - need to investigate
+// TODO: PDT_UTF8 (0x25) — variable-length UTF-8, not representable as fixed PropertyData
 pub type PDT_Version = PropertyData<KNXVersion, 0x30, 2>;
-//pub type PDT_AlarmInfo      = PropertyData<KNXAlarmInfo, 0x31, 2>;
-pub type PDT_BinaryInformation = PropertyData<bool, 0x32, 1>; //TODO: raw_data/set_raw_data
+// TODO: PDT_AlarmInfo (0x31, 6 bytes) — needs KnxAlarmInfo struct
+pub type PDT_BinaryInformation = PropertyData<bool, 0x32, 1>;
 pub type PDT_Bitset8 = PropertyData<u8, 0x33, 1>;
 pub type PDT_Bitset16 = PropertyData<u16, 0x34, 2>;
 pub type PDT_Enum8 = PropertyData<u8, 0x35, 1>;
-pub type PDT_Scaling = PropertyData<u8, 0x36, 1>; //TODO: Custom type?
-//pub type PDT_NotEncodedVariableLength = //TODO: Super special variable len WTF shit - need to investigate
-//pub type PDT_NotEncodedFixedLength = //TODO: Super special WTF shit - need to investigate
+pub type PDT_Scaling = PropertyData<u8, 0x36, 1>;
+// TODO: PDT_NotEncodedVariableLength (0x3C) — raw bytes, length from property element count
+// TODO: PDT_NotEncodedFixedLength (0x3D) — raw bytes, fixed length per property definition
 pub type PDT_Function = PropertyData<[u8; 0], 0x3E, 0>;
-//pub type PDT_Escape = //TODO: Super special WTF shit - need to investigate
+// TODO: PDT_Escape (0x3F) — extended type indicator, actual type in property description
 
 // ###########################################################################
 // Datapoint Infrastructure
@@ -511,18 +511,12 @@ datapoint_type_convs!(PDT_Char);
 datapoint_type_convs!(PDT_UnsignedChar);
 datapoint_type_convs!(PDT_Int);
 datapoint_type_convs!(PDT_UnsignedInt);
-//datapoint_type_convs!(PDT_KNXFloat);
-//datapoint_type_convs!(PDT_Date);
-//datapoint_type_convs!(PDT_Time);
 datapoint_type_convs!(PDT_Long);
 datapoint_type_convs!(PDT_UnsignedLong);
 datapoint_type_convs!(PDT_Float);
 datapoint_type_convs!(PDT_Double);
 datapoint_type_convs!(PDT_CharBlock);
-//datapoint_type_convs!(PDT_PollGroupSettings);
 datapoint_type_convs!(PDT_ShortCharBlock);
-//datapoint_type_convs!(PDT_DateTime);
-//datapoint_type_convs!(PDT_VariableLength);
 datapoint_type_convs!(PDT_Generic01);
 datapoint_type_convs!(PDT_Generic02);
 datapoint_type_convs!(PDT_Generic03);
@@ -543,18 +537,12 @@ datapoint_type_convs!(PDT_Generic17);
 datapoint_type_convs!(PDT_Generic18);
 datapoint_type_convs!(PDT_Generic19);
 datapoint_type_convs!(PDT_Generic20);
-//datapoint_type_convs!(PDT_UTF8);
 datapoint_type_convs!(PDT_Version);
-//datapoint_type_convs!(PDT_AlarmInfo);
 datapoint_type_convs!(PDT_BinaryInformation);
 datapoint_type_convs!(PDT_Bitset8);
 datapoint_type_convs!(PDT_Bitset16);
 datapoint_type_convs!(PDT_Enum8);
 datapoint_type_convs!(PDT_Scaling);
-//datapoint_type_convs!(PDT_NotEncodedVariableLength);
-//datapoint_type_convs!(PDT_NotEncodedFixedLength);
-//datapoint_type_convs!(PDT_Function);
-//datapoint_type_convs!(PDT_Escape);
 
 // ###########################################################################
 // Datapoint Types (DPT)
