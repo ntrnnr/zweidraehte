@@ -173,12 +173,7 @@ impl<'a, D: StackDefinition> SystemBDeviceModel<'a, D> {
     }
 }
 
-impl<D: StackDefinition> DeviceModel for SystemBDeviceModel<'_, D>
-where
-    D::State: HasApplication + DeviceModelNotifier,
-    D::InterfaceObjects<'static>: HasDeviceObject,
-    D::CO: Sized,
-{
+impl<D: StackDefinition> DeviceModel for SystemBDeviceModel<'_, D> {
     fn init(&mut self) {
         // Default to stopped until the RSM says otherwise.
         self.interface_objects.set_user_stopped(true);

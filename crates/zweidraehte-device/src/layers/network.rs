@@ -36,11 +36,7 @@ impl<'a, D: StackDefinition> NetworkLayer<'a, D> {
     }
 }
 
-impl<D: StackDefinition> Layer for NetworkLayer<'_, D>
-where
-    D::State: HasRoutingCount,
-    D::InterfaceObjects<'static>: HasDeviceObject,
-{
+impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
     const HANDLES: &'static [ServiceType] = &[
         // Indications from LL (upward)
         ServiceType::L_Data_Ind,

@@ -33,14 +33,13 @@ use core::cell::Cell;
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
 use crate::{
-    AccessSource, HasConnectionAuth, StackDefinition,
+    AccessSource, StackDefinition,
     address::IndividualAddress,
     layers::{application::ApplicationLayer, network::NetworkLayer},
     messages::{
         buffers::Buffer,
         knx::{KnxMessageBuffer, ServiceType},
     },
-    objects::tables::HasAddressTable,
     router::{ExtraSideInput, Layer, Outbox},
 };
 
@@ -130,8 +129,6 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
 impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     CemiTransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
-where
-    D::State: HasAddressTable + HasConnectionAuth,
 {
     /// Activate cEMI Transport Layer mode.
     ///
@@ -289,8 +286,6 @@ const CEMI_PSEUDO_ADDR: IndividualAddress = IndividualAddress::new(0, 0, 0);
 
 impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     Layer for CemiTransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
-where
-    D::State: HasAddressTable + HasConnectionAuth,
 {
     // Register for exactly the same ServiceTypes as the inner TransportLayer.
     const HANDLES: &'static [ServiceType] = TransportLayer::<'_, D, MAX_INCOMING, MAX_OUTGOING>::HANDLES;
@@ -337,8 +332,6 @@ where
 
 impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     CemiTransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
-where
-    D::State: HasAddressTable + HasConnectionAuth,
 {
     /// Intercept an AL connection-oriented request and send it to the cEMI
     /// response channel.
@@ -402,8 +395,6 @@ impl<'x, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
         CemiTransportLayer<'x, D, MAX_INCOMING, MAX_OUTGOING>,
         ApplicationLayer<'x, D>,
     )> for CemiSideInput<'_>
-where
-    D::State: HasAddressTable + HasConnectionAuth,
 {
     fn recv(&self) -> impl core::future::Future<Output = ()> + '_ {
         async {

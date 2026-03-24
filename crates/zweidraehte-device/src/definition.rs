@@ -10,11 +10,18 @@ use const_default::ConstDefault;
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 
 use crate::{
-    config, ets,
+    access::HasConnectionAuth,
+    config,
+    device_model::DeviceModelNotifier,
+    ets,
     inner::StackContext,
     layers,
     memory::MemoryMap,
-    objects::{comm::ComObjects, interface::PropertyServiceHandler},
+    objects::{
+        comm::ComObjects,
+        interface::{HasDeviceObject, HasRoutingCount, PropertyServiceHandler},
+        tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
+    },
 };
 
 pub trait StackDefinition: Copy {
@@ -144,17 +151,27 @@ pub trait StackDefinition: Copy {
     /// This type holds all device state:
     /// - Runtime state (individual address, authorization keys)
     /// - ETS-loaded tables (ADT, AST, COT, APP)
+    /// - Per-connection authorization levels
+    /// - Routing count and device model notifications
     ///
-    /// Must implement [`StackState`](crate::StackState) for runtime state
-    /// access, and may implement table accessor traits for group object
-    /// communication:
-    /// - [`HasAddressTable`](crate::objects::tables::HasAddressTable)
-    /// - [`HasAssociationTable`](crate::objects::tables::HasAssociationTable)
-    /// - [`HasCommunicationObjectTable`](crate::objects::tables::HasCommunicationObjectTable)
+    /// Every KNX device requires address tables, association tables,
+    /// communication object tables, an application program, per-connection
+    /// authentication, a routing count, and device model lifecycle
+    /// orchestration. These bounds are enforced here so that
+    /// [`Runner::run()`](crate::Runner::run) and layer builders don't need
+    /// to repeat them.
     ///
     /// For System B devices, use [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)
     /// or [`IpSystemBDeviceState`](crate::bcus::system_b::IpSystemBDeviceState).
-    type State: crate::StackState + 'static;
+    type State: crate::StackState
+        + HasAddressTable
+        + HasApplication
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasConnectionAuth
+        + HasRoutingCount
+        + DeviceModelNotifier
+        + 'static;
 
     /// Memory map for A_Memory_Read/Write services.
     ///
@@ -169,12 +186,10 @@ pub trait StackDefinition: Copy {
     /// Interface objects container type.
     ///
     /// This holds all interface objects for property service handling.
-    /// The container must implement `PropertyServiceHandler` for property access.
-    ///
-    /// If the device has a DeviceObject, implement `HasDeviceObject` on this type
-    /// to enable device-level configuration (programming mode, verify mode, etc.).
-    /// This is required by [`Runner::run`](crate::Runner::run) when running the stack.
-    type InterfaceObjects<'a>: PropertyServiceHandler
+    /// The container must implement `PropertyServiceHandler` for property access
+    /// and `HasDeviceObject` for device-level configuration (programming mode,
+    /// verify mode, etc.).
+    type InterfaceObjects<'a>: PropertyServiceHandler + HasDeviceObject
     where
         Self::State: 'a;
 

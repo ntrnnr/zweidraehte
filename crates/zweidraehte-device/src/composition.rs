@@ -12,7 +12,6 @@ use core::cell::Cell;
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
 use crate::{
-    access::HasConnectionAuth,
     actor::Request,
     definition::StackDefinition,
     device_model::{self, DeviceModel as _},
@@ -24,11 +23,7 @@ use crate::{
         transport::TransportLayer,
     },
     messages::buffers::{Buffer, DynBufferManager},
-    objects::{
-        comm::{ComObjectEvent, ComObjects, LifecycleEvent},
-        interface::{HasDeviceObject, HasRoutingCount},
-        tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
-    },
+    objects::comm::{ComObjectEvent, ComObjects, LifecycleEvent},
     restart,
     router::{self, LayerStack},
 };
@@ -131,16 +126,7 @@ pub struct InsecureDeviceBuilder;
 
 impl<D: StackDefinition> LayerStackBuilder<D> for InsecureDeviceBuilder
 where
-    D::State: HasAddressTable
-        + HasApplication
-        + HasAssociationTable
-        + HasCommunicationObjectTable
-        + HasConnectionAuth
-        + HasRoutingCount
-        + device_model::DeviceModelNotifier,
-    D::InterfaceObjects<'static>: HasDeviceObject,
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
-    D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>>,
 {
     type Stack<'a>
         = StandardDeviceLayers<'a, D>
@@ -180,14 +166,6 @@ pub struct InsecureIpDeviceBuilder;
 #[cfg(feature = "knxip")]
 impl<D: StackDefinition> LayerStackBuilder<D> for InsecureIpDeviceBuilder
 where
-    D::State: HasAddressTable
-        + HasApplication
-        + HasAssociationTable
-        + HasCommunicationObjectTable
-        + HasConnectionAuth
-        + HasRoutingCount
-        + device_model::DeviceModelNotifier,
-    D::InterfaceObjects<'static>: HasDeviceObject,
     D::LLB: for<'a> layers::LinkLayerBuilder<
             StackContext<'a, D>,
             LLEndpoints<'a> = crate::context::CemiTransportLayerEndpoints<'a>,
@@ -274,17 +252,7 @@ pub type IpDeviceLayers<'a, D> = InsecureDeviceLayers<
 // Constructors
 // ----------------------------------------------------------------------------
 
-impl<'a, D: StackDefinition> InsecureDeviceLayers<'a, D, TransportLayer<'a, D>, ()>
-where
-    D::State: HasAddressTable
-        + HasApplication
-        + HasAssociationTable
-        + HasCommunicationObjectTable
-        + HasConnectionAuth
-        + HasRoutingCount
-        + device_model::DeviceModelNotifier,
-    D::InterfaceObjects<'static>: HasDeviceObject,
-{
+impl<'a, D: StackDefinition> InsecureDeviceLayers<'a, D, TransportLayer<'a, D>, ()> {
     /// Construct the standard `(NL, TL, AL)` layer stack.
     pub fn standard(ctx: &'a LayerContext<'a, D>) -> Self {
         let network_layer = NetworkLayer::new(ctx.state, ctx.interface_objects);
@@ -330,15 +298,6 @@ impl<'a, D: StackDefinition>
         layers::transport::cemi::CemiTransportLayer<'a, D>,
         layers::transport::cemi::CemiSideInput<'a>,
     >
-where
-    D::State: HasAddressTable
-        + HasApplication
-        + HasAssociationTable
-        + HasCommunicationObjectTable
-        + HasConnectionAuth
-        + HasRoutingCount
-        + device_model::DeviceModelNotifier,
-    D::InterfaceObjects<'static>: HasDeviceObject,
 {
     /// Construct the KNX/IP `(NL, CemiTL<TL>, AL)` layer stack.
     ///
@@ -396,14 +355,6 @@ where
 
 impl<'a, D: StackDefinition, TL: router::Layer, Extra> LayerStack for InsecureDeviceLayers<'a, D, TL, Extra>
 where
-    D::State: HasAddressTable
-        + HasApplication
-        + HasAssociationTable
-        + HasCommunicationObjectTable
-        + HasConnectionAuth
-        + HasRoutingCount
-        + device_model::DeviceModelNotifier,
-    D::InterfaceObjects<'static>: HasDeviceObject,
     Extra: router::ExtraSideInput<(NetworkLayer<'a, D>, TL, ApplicationLayer<'a, D>)>,
 {
     const DISPATCH_TABLE: router::DispatchTable = {

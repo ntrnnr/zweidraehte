@@ -179,10 +179,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - [`AccessSource::Default`] → default access level from device state
     /// - [`AccessSource::Connection(slot)`] → look up from shared access store
     /// - [`AccessSource::Explicit(ctx)`] → use as-is (e.g. KNX/IP Device Mgmt)
-    fn resolve_access(&self, msg: &KnxMessageBuffer<Buffer<'static>>) -> AccessContext
-    where
-        D::State: HasConnectionAuth,
-    {
+    fn resolve_access(&self, msg: &KnxMessageBuffer<Buffer<'static>>) -> AccessContext {
         match msg.access_source() {
             AccessSource::Default => AccessContext::new(self.state.default_access_level()),
             AccessSource::Connection(slot) => self.state.connection_access(slot),
@@ -199,11 +196,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 // Layer Trait Implementation
 // ============================================================================
 
-impl<D: StackDefinition> Layer for ApplicationLayer<'_, D>
-where
-    D::State: HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
-    D::InterfaceObjects<'static>: HasDeviceObject,
-{
+impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
     const HANDLES: &'static [ServiceType] = &[
         // Indications from TL (upward — group communication)
         ServiceType::T_GroupData_Ind,
@@ -378,11 +371,7 @@ where
     }
 }
 
-impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
-where
-    D::State: HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasConnectionAuth,
-    D::InterfaceObjects<'static>: HasDeviceObject,
-{
+impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Handle a confirmation from the transport layer.
     ///
     /// If a group value send is pending, updates the communication object
@@ -447,10 +436,7 @@ where
 // Group Communication Services (A_GroupValue_*)
 // ============================================================================
 
-impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
-where
-    D::State: HasApplication + HasAssociationTable + HasCommunicationObjectTable,
-{
+impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Handle `A_GroupValue_Write.ind` or `A_GroupValue_Response.ind`
     ///
     /// Updates local communication objects with values received from the bus.
@@ -890,11 +876,7 @@ where
 // Property Services (A_PropertyDescription_*, A_PropertyValue_*)
 // ============================================================================
 
-impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
-where
-    D::State: HasApplication + HasConnectionAuth,
-    D::InterfaceObjects<'static>: HasDeviceObject,
-{
+impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Handle `A_PropertyDescription_Read.ind`
     ///
     /// Returns property metadata (type, max elements, access rights) for an interface object.
@@ -1207,10 +1189,7 @@ where
 // Function Property Services (A_FunctionPropertyCommand, ...)
 // ============================================================================
 
-impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
-where
-    D::State: HasConnectionAuth,
-{
+impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Handle `A_FunctionPropertyCommand.ind`
     fn handle_function_property_command(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         self.handle_function_property(ind, outbox, true);
@@ -1304,11 +1283,7 @@ where
 // Device Management Services (A_DeviceDescriptor_Read, ...)
 // ============================================================================
 
-impl<'a, D: StackDefinition> ApplicationLayer<'a, D>
-where
-    D::State: HasConnectionAuth,
-    D::InterfaceObjects<'static>: HasDeviceObject,
-{
+impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Handle `A_DeviceDescriptor_Read.ind`
     ///
     /// Responds with the device descriptor (mask version) for descriptor type 0.

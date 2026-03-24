@@ -175,10 +175,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     ///
     /// Sends `T_Disconnect` to each remote device and issues
     /// `T_Disconnect.ind` to the application layer via the outbox.
-    pub fn force_close_incoming(&mut self, outbox: &mut Outbox)
-    where
-        D::State: HasAddressTable + HasConnectionAuth,
-    {
+    pub fn force_close_incoming(&mut self, outbox: &mut Outbox) {
         let disconnected = self.connections.force_close_all_incoming();
         for addr in &disconnected {
             info!("TL: force-closing incoming connection from {} (cEMI TL takeover)", addr);
@@ -194,8 +191,6 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
 impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     Layer for TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
-where
-    D::State: HasAddressTable + HasConnectionAuth,
 {
     const HANDLES: &'static [ServiceType] = &[
         // Indications from NL (upward — connectionless)
@@ -279,8 +274,6 @@ where
 
 impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
-where
-    D::State: HasAddressTable + HasConnectionAuth,
 {
     /// Handle an indication from the network layer.
     fn handle_indication(

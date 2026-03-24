@@ -588,10 +588,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
 }
 
 // Table accessor methods - only available when State implements the appropriate traits
-impl<'d, D: StackDefinition> Stack<'d, D>
-where
-    D::State: HasAddressTable,
-{
+impl<'d, D: StackDefinition> Stack<'d, D> {
     /// Get access to the address table.
     ///
     /// Returns a reference to the `RefCell` containing the address table.
@@ -604,10 +601,7 @@ where
     }
 }
 
-impl<'d, D: StackDefinition> Stack<'d, D>
-where
-    D::State: HasAssociationTable,
-{
+impl<'d, D: StackDefinition> Stack<'d, D> {
     /// Get access to the association table.
     ///
     /// Returns a reference to the `RefCell` containing the association table.
@@ -620,10 +614,7 @@ where
     }
 }
 
-impl<'d, D: StackDefinition> Stack<'d, D>
-where
-    D::State: HasCommunicationObjectTable,
-{
+impl<'d, D: StackDefinition> Stack<'d, D> {
     /// Get access to the communication object table.
     ///
     /// Returns a reference to the `RefCell` containing the communication object table.
@@ -637,10 +628,7 @@ where
     }
 }
 
-impl<'d, D: StackDefinition> Stack<'d, D>
-where
-    D::State: HasApplication,
-{
+impl<'d, D: StackDefinition> Stack<'d, D> {
     /// Check if the application is currently running.
     ///
     /// The application is running when the run state machine is in the RUNNING state.

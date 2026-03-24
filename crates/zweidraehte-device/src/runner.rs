@@ -13,17 +13,12 @@ use embassy_sync::{
 
 use crate::{
     StackState,
-    access::HasConnectionAuth,
     composition::{LayerContext, LayerStackBuilder},
     definition::StackDefinition,
     inner::{Inner, StackContext},
     layers::{LinkLayerBuilderBase, transport::TlStyle},
     messages::buffers::{Buffer, BufferManager},
-    objects::{
-        comm::ComObjects,
-        interface::{HasDeviceObject, HasRoutingCount},
-        tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
-    },
+    objects::comm::ComObjects,
     resources::StackResources,
     restart,
     stack_handle::Stack,
@@ -48,18 +43,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
     /// Run the KNX stack.
     ///
     /// You must call this in a background task, to process KNX messages.
-    // FIXME: Figure out how to get rid of the trait bounds here on all the tables
-    //        Problem is all the process() methods in the layers require these traits
-    pub async fn run(self) -> !
-    where
-        D::State: HasAddressTable
-            + HasApplication
-            + HasAssociationTable
-            + HasCommunicationObjectTable
-            + HasConnectionAuth
-            + HasRoutingCount,
-        D::InterfaceObjects<'static>: HasDeviceObject,
-    {
+    pub async fn run(self) -> ! {
         // Validate that outgoing connections require Style 3 (which has the
         // CONNECTING state needed for client-initiated connections).
         assert!(
