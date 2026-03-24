@@ -40,7 +40,7 @@ log = ["dep:log", "zweidraehte-util/log", "zweidraehte-proto/log", "zweidraehte-
 std = ["zweidraehte-proto/std", "zweidraehte-platform/std", "critical-section/std"]
 linux = ["zweidraehte-platform/linux", "std"]
 knxip = ["zweidraehte-proto/knxip"]
-tp1 = ["zweidraehte-proto/tp1"]
+tp1 = []
 ip-interface = ["knxip", "tp1"]
 usb = ["std", "dep:async-hid", "dep:futures-lite"]
 
