@@ -98,7 +98,10 @@
 
 use std::collections::BTreeMap;
 
-use super::helpers::{comment, expect, inject, inject_delay, trigger_read, trigger_write};
+use super::helpers::{
+    comment, expect, expect_none, inject, inject_delay, trigger_read, trigger_write,
+    wait_for_restart,
+};
 use crate::{TestCase, TestSuite, TestVariable};
 
 /// Create test variables for group object tests
@@ -644,17 +647,11 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
         // ====================================================================
         // Test 1.4.1.6: Checking of Read on Init Flag (UINT1)
         // ====================================================================
-        // ROI is implemented (commit 71fa541). The original EITT test
-        // restarts the device and verifies that only ROI-flagged objects
-        // send GroupValue_Read. Since the conformance harness doesn't
-        // actually reboot, we use explicit TriggerRead steps for the
-        // ROI-flagged objects instead.
+        // Restarts the device via A_Restart and verifies that only
+        // ROI-flagged objects send GroupValue_Read automatically.
         //
         // GO3 (ASAP 4) and GO4 (ASAP 9) have the ROI flag set.
         // GO0-GO2 and GO0_BYTE3-GO3_BYTE3 do not.
-        //
-        // TODO: Test the automatic ROI scan after restart once the harness
-        // supports a full simulated reboot (app stop → start cycle).
         TestCase {
             name: "1.4.1.6 Checking of Read on Init Flag (UINT1)",
             steps: vec![
@@ -663,11 +660,18 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 comment("a Group Value Read request for group objects with the read-on-init flag set."),
                 comment("GO3 (ASAP 4, addr 2/0/3) and GO4 (ASAP 9, addr 2/0/5) have ROI enabled."),
                 comment("GO0-GO2 do not have ROI."),
-                comment("Trigger ROI reads explicitly (harness cannot do a real reboot)."),
-                trigger_read(4),
+                // Send a basic A_Restart (connectionless) to trigger a reboot.
+                inject("BC #EDI #BDUT 61 03 80"),
+                // Wait for the child to exit and respawn without draining ROI
+                // messages, so subsequent Expect steps can observe them.
+                wait_for_restart(10000),
+                // The ROI scan processes one object per ~100ms iteration,
+                // starting from ASAP 1. ASAP 4 fires around ~400ms, ASAP 9
+                // around ~900ms.
                 expect("BC #BDUT #GO_3_ADDR E1 00 00", 5000),
-                trigger_read(9),
                 expect("BC #BDUT #GO_4_ADDR E1 00 00", 5000),
+                // Verify no further ROI reads fire (non-ROI objects stay quiet).
+                expect_none(2000),
             ],
         },
         // ====================================================================

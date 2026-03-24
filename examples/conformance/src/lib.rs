@@ -170,6 +170,14 @@ pub enum TestStep {
     /// would interfere with subsequent Expect steps.
     Drain { settle_ms: u32 },
 
+    /// Wait for the DUT child process to exit (restart), then respawn it.
+    ///
+    /// Unlike the implicit respawn in `send_command()`, this does NOT drain
+    /// ROI messages after respawn — they remain in the capture buffer for
+    /// subsequent Expect steps. Use this when the test needs to observe
+    /// automatic post-restart behavior (e.g., Read-On-Init scans).
+    WaitForRestart { timeout_ms: u32 },
+
     /// Custom action placeholder (for complex test scenarios)
     Custom,
 }

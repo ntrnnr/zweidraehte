@@ -88,3 +88,12 @@ pub fn wait(duration_ms: u32) -> TestStep {
 pub fn drain(settle_ms: u32) -> TestStep {
     TestStep::Drain { settle_ms }
 }
+
+/// Wait for the DUT to exit (restart) and respawn it without draining
+/// captured messages.
+///
+/// Use this after injecting an A_Restart telegram when the test needs to
+/// observe automatic post-restart behavior such as Read-On-Init scans.
+pub fn wait_for_restart(timeout_ms: u32) -> TestStep {
+    TestStep::WaitForRestart { timeout_ms }
+}

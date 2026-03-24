@@ -174,6 +174,17 @@ async fn execute_step(
             true
         }
 
+        TestStep::WaitForRestart { timeout_ms } => {
+            println!("  [{}] 🔄 WaitForRestart (timeout {}ms)", index, timeout_ms);
+            let timeout = Duration::from_millis(*timeout_ms as u64);
+            if let Err(e) = harness.wait_for_restart(timeout).await {
+                println!("        ❌ Failed: {}", e);
+                return false;
+            }
+            println!("        ✅ DUT restarted");
+            true
+        }
+
         TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
             // These should have been resolved before reaching here
             println!("  [{}] ❌ Unresolved template", index);
@@ -354,9 +365,19 @@ async fn main(_spawner: embassy_executor::Spawner) {
     harness.spawn_child().await
         .expect("spawn DUT child");
 
-    // Drain any read-on-init messages that were sent during startup
-    Timer::after(Duration::from_millis(100)).await;
-    let roi_drained = harness.drain_captured();
+    // Drain read-on-init messages sent during startup. The ROI scan
+    // processes one object per ~100ms tick, so we need to wait long enough
+    // for all ROI-flagged objects to fire. Drain in a loop until no new
+    // messages arrive within a settle window.
+    let mut roi_drained = 0;
+    loop {
+        Timer::after(Duration::from_millis(500)).await;
+        let batch = harness.drain_captured();
+        roi_drained += batch;
+        if batch == 0 {
+            break;
+        }
+    }
     if roi_drained > 0 {
         println!("(Drained {} read-on-init messages from startup)\n", roi_drained);
     }

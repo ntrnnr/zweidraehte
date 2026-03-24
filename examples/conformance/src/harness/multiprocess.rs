@@ -302,6 +302,60 @@ impl MultiProcessHarness {
         self.send_command(TAG_TRIGGER_WRITE, &asap.to_le_bytes()).await
     }
 
+    /// Wait for the child to exit (restart) and respawn it.
+    ///
+    /// Reads frames until EOF (forwarding log and captured frames), then
+    /// respawns. Unlike `send_command()`'s implicit respawn, this does NOT
+    /// drain captured messages — ROI reads and other post-startup messages
+    /// remain available for subsequent `receive_captured()` calls.
+    pub async fn wait_for_restart(&mut self, timeout: embassy_time::Duration) -> io::Result<()> {
+        let socket = self.socket()?;
+
+        // Read frames until EOF or timeout. Any TAG_CAPTURED or TAG_LOG
+        // frames that arrive before the child exits are still forwarded.
+        let drain_result = embassy_futures::select::select(
+            async {
+                loop {
+                    match ipc::read_frame_async(socket).await {
+                        Ok(Some(frame)) if frame.tag == TAG_LOG => {
+                            handle_log_frame(&frame.payload);
+                        }
+                        Ok(Some(frame)) if frame.tag == TAG_CAPTURED => {
+                            // The child sent a captured frame before exiting
+                            // (e.g., A_Restart_Response). Discard it — the
+                            // test should have already expected it.
+                            log::debug!("Discarding pre-exit captured frame");
+                        }
+                        Ok(Some(_)) => {
+                            // Ignore other frames while draining
+                        }
+                        Ok(None) => {
+                            // EOF — child exited
+                            return Ok(());
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+            },
+            embassy_time::Timer::after(timeout),
+        )
+        .await;
+
+        match drain_result {
+            embassy_futures::select::Either::First(result) => result?,
+            embassy_futures::select::Either::Second(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "child did not exit within timeout",
+                ));
+            }
+        }
+
+        self.mark_dead();
+        self.spawn_child().await?;
+        Ok(())
+    }
+
     /// Send a command frame, respawning the child on broken pipe.
     async fn send_command(&mut self, tag: u8, payload: &[u8]) -> io::Result<()> {
         self.ensure_child_running().await?;
@@ -314,10 +368,18 @@ impl MultiProcessHarness {
                 self.spawn_child().await?;
 
                 // After respawn, the new child may send read-on-init (ROI)
-                // messages. Wait for them to arrive and drain them so they
-                // don't interfere with the test's expected responses.
-                embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
-                let drained = self.drain_captured();
+                // messages. Drain in a loop until no new messages arrive
+                // within a settle window, so they don't interfere with the
+                // test's expected responses.
+                let mut drained = 0;
+                loop {
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+                    let batch = self.drain_captured();
+                    drained += batch;
+                    if batch == 0 {
+                        break;
+                    }
+                }
                 if drained > 0 {
                     log::info!("Drained {} ROI messages after respawn", drained);
                 }
