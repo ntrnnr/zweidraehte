@@ -377,6 +377,29 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
         Ok(())
     }
 
+    /// Read a property and extract its data payload.
+    ///
+    /// Sends an `M_PropRead.req`, validates that the response contains the
+    /// 7-byte device management header, and returns just the data bytes
+    /// (everything after the header).
+    ///
+    /// The property response wire format is:
+    /// ```text
+    /// msg_code(1) + obj_type(2) + obj_instance(1) + pid(1) + count_idx(2) + data(N)
+    /// ```
+    pub async fn read_property_value(
+        &mut self,
+        object_type: u8,
+        property_id: u8,
+    ) -> Result<Vec<u8>, UsbHidError> {
+        const HEADER_LEN: usize = 7;
+        let response = self.prop_read(object_type, property_id).await?;
+        if response.len() < HEADER_LEN {
+            return Err(UsbHidError::InvalidReport);
+        }
+        Ok(response[HEADER_LEN..].to_vec())
+    }
+
     /// Send a device management request and wait for response
     async fn send_device_mgmt_request(&mut self, request: &[u8]) -> Result<Vec<u8>, UsbHidError> {
         debug!("USB Transport: Device mgmt request: {:02X?}", request);

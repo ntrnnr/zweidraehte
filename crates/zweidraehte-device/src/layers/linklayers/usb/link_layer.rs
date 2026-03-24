@@ -16,10 +16,6 @@
 //! // Use with LinkLayerBuilder trait
 //! ```
 
-// FIXME: The whole object property read/write stuff in here should be handled
-//        by some kind of "component" that is generic, maybe? Might be useful for
-//        other devices as well or management.
-
 extern crate alloc;
 
 use embassy_futures::select::{Either3, select3};
@@ -105,64 +101,57 @@ impl Default for UsbLinkLayerBuilder {
 const DEFAULT_MAX_APDU_LENGTH: u16 = crate::config::MAX_APDU_LENGTH_TP1_STANDARD;
 
 impl UsbLinkLayerBuilder {
-    /// Read the interface's individual address from the device
+    /// Read the interface's individual address from the Device Object.
     async fn read_individual_address<'a, D: UsbHidDevice>(
         transport: &mut UsbCemiTransport<'a, D>,
     ) -> Result<IndividualAddress, super::device::UsbHidError> {
-        // Read subnet address (area.line as single byte) from Device Object
-        let subnet_data = transport.prop_read(properties::DEVICE_OBJECT, properties::PID_SUBNET_ADDR).await?;
+        let subnet = transport.read_property_value(properties::DEVICE_OBJECT, properties::PID_SUBNET_ADDR).await?;
+        let device = transport.read_property_value(properties::DEVICE_OBJECT, properties::PID_DEVICE_ADDR).await?;
 
-        // Read device address from Device Object
-        let device_data = transport.prop_read(properties::DEVICE_OBJECT, properties::PID_DEVICE_ADDR).await?;
-
-        // Property response format: msg_code(1) + obj_type(2) + obj_instance(1) + pid(1) + count_idx(2) + data
-        // The actual value is at offset 7 (first data byte)
-        if subnet_data.len() < 8 || device_data.len() < 8 {
+        if subnet.is_empty() || device.is_empty() {
             return Err(super::device::UsbHidError::InvalidReport);
         }
 
-        let subnet = subnet_data[7];
-        let device = device_data[7];
-
-        Ok(IndividualAddress([subnet, device]))
+        Ok(IndividualAddress([subnet[0], device[0]]))
     }
 
-    /// Attempt to set the interface's individual address via Device Object properties
-    ///
-    /// This writes to PIDs 57 (subnet) and 58 (device) on the Device Object (Object 0).
+    /// Set the interface's individual address via Device Object properties
+    /// (PIDs 57/58 — subnet and device address).
     async fn write_individual_address<'a, D: UsbHidDevice>(
         transport: &mut UsbCemiTransport<'a, D>,
         address: IndividualAddress,
     ) -> Result<(), super::device::UsbHidError> {
-        // Write subnet address (area.line as single byte) to Device Object
         transport.prop_write(properties::DEVICE_OBJECT, properties::PID_SUBNET_ADDR, &[address.subnet()]).await?;
-
-        // Write device address to Device Object
         transport.prop_write(properties::DEVICE_OBJECT, properties::PID_DEVICE_ADDR, &[address.device()]).await?;
-
         Ok(())
     }
 
-    /// Read the maximum APDU length supported by the interface
-    ///
-    /// This reads PID 56 (MAX_APDU_LENGTH) from the Device Object (Object 0).
-    /// The value is a 16-bit unsigned integer representing the maximum APDU size
-    /// the interface can handle.
+    /// Read the maximum APDU length from the Device Object (PID 56).
     async fn read_max_apdu_length<'a, D: UsbHidDevice>(
         transport: &mut UsbCemiTransport<'a, D>,
     ) -> Result<u16, super::device::UsbHidError> {
-        let data = transport
-            .prop_read(properties::DEVICE_OBJECT, properties::PID_MAX_APDU_LENGTH)
-            .await?;
+        let data = transport.read_property_value(properties::DEVICE_OBJECT, properties::PID_MAX_APDU_LENGTH).await?;
 
-        // Property response format: msg_code(1) + obj_type(2) + obj_instance(1) + pid(1) + count_idx(2) + data
-        // The actual value is at offset 7, and it's a 16-bit big-endian value
-        if data.len() < 9 {
+        if data.len() < 2 {
             return Err(super::device::UsbHidError::InvalidReport);
         }
 
-        let max_apdu = u16::from_be_bytes([data[7], data[8]]);
-        Ok(max_apdu)
+        Ok(u16::from_be_bytes([data[0], data[1]]))
+    }
+
+    /// Read the communication mode from the cEMI Server Object (PID 52).
+    async fn read_comm_mode<'a, D: UsbHidDevice>(
+        transport: &mut UsbCemiTransport<'a, D>,
+    ) -> Result<u8, super::device::UsbHidError> {
+        let data = transport
+            .read_property_value(properties::CEMI_SERVER_OBJECT, properties::PID_COMM_MODE)
+            .await?;
+
+        if data.is_empty() {
+            return Err(super::device::UsbHidError::InvalidReport);
+        }
+
+        Ok(data[0])
     }
 }
 
@@ -171,6 +160,100 @@ impl LinkLayerBuilderBase for UsbLinkLayerBuilder {
 
     fn create_resources(&self) -> Self::Resources {
         UsbLinkLayerResources::new()
+    }
+}
+
+impl UsbLinkLayerBuilder {
+    /// Open the USB device and negotiate cEMI mode.
+    async fn open_transport<'a>(
+        selector: &DeviceSelector,
+        resources: super::transport::InitializedResources<'a>,
+    ) -> UsbCemiTransport<'a, super::device::AsyncHidDevice> {
+        info!("USB Link Layer: Opening device...");
+        let mut transport = UsbCemiTransport::open(selector, resources)
+            .await
+            .unwrap_or_else(|e| panic!("USB Link Layer: Failed to open device: {:?}", e));
+
+        transport
+            .initialize()
+            .await
+            .unwrap_or_else(|e| panic!("USB Link Layer: Failed to initialize transport: {:?}", e));
+
+        transport
+    }
+
+    /// Configure the interface's individual address.
+    ///
+    /// Reads the current address (for logging), then writes the requested
+    /// address if one was provided.
+    async fn configure_address<'a, D: UsbHidDevice>(
+        transport: &mut UsbCemiTransport<'a, D>,
+        requested: Option<IndividualAddress>,
+    ) {
+        match Self::read_individual_address(transport).await {
+            Ok(address) => info!("USB Link Layer: Current interface address: {}", address),
+            Err(e) => warn!("USB Link Layer: Failed to read individual address: {:?}", e),
+        }
+
+        if let Some(address) = requested {
+            info!("USB Link Layer: Setting interface address to {}...", address);
+            if let Err(e) = Self::write_individual_address(transport, address).await {
+                warn!("USB Link Layer: Failed to set individual address: {:?}", e);
+            }
+        }
+    }
+
+    /// Set the cEMI Server Object to Data Link Layer mode and verify.
+    async fn configure_comm_mode<'a, D: UsbHidDevice>(transport: &mut UsbCemiTransport<'a, D>) {
+        info!("USB Link Layer: Setting communication mode to Data Link Layer...");
+        if let Err(e) = transport
+            .prop_write(properties::CEMI_SERVER_OBJECT, properties::PID_COMM_MODE, &[comm_mode::DATA_LINK_LAYER])
+            .await
+        {
+            panic!("USB Link Layer: Failed to set comm mode: {:?}", e);
+        }
+
+        match Self::read_comm_mode(transport).await {
+            Ok(mode) if mode == comm_mode::DATA_LINK_LAYER => {
+                info!("USB Link Layer: Communication mode verified as Data Link Layer");
+            }
+            Ok(mode) => {
+                warn!("USB Link Layer: Unexpected comm mode after write: 0x{:02X}", mode);
+            }
+            Err(e) => {
+                // Write succeeded (we got M_PropWrite.con), but read-back failed
+                debug!("USB Link Layer: Failed to verify comm mode: {:?}", e);
+                info!("USB Link Layer: Communication mode set (write confirmed)");
+            }
+        }
+    }
+
+    /// Query the interface's max APDU length, falling back to the default.
+    async fn query_max_apdu_length<'a, D: UsbHidDevice>(
+        transport: &mut UsbCemiTransport<'a, D>,
+    ) -> u16 {
+        match Self::read_max_apdu_length(transport).await {
+            Ok(len) => {
+                info!("USB Link Layer: Interface max APDU length: {} bytes", len);
+                len
+            }
+            Err(e) => {
+                warn!(
+                    "USB Link Layer: Failed to read max APDU length: {:?}, using default {}",
+                    e, DEFAULT_MAX_APDU_LENGTH
+                );
+                DEFAULT_MAX_APDU_LENGTH
+            }
+        }
+    }
+
+    /// Log the bus connection status (best-effort, non-fatal).
+    async fn log_bus_status<'a, D: UsbHidDevice>(transport: &mut UsbCemiTransport<'a, D>) {
+        match transport.get_bus_connection_status().await {
+            Ok(true) => info!("USB Link Layer: Bus connected"),
+            Ok(false) => warn!("USB Link Layer: Bus not connected!"),
+            Err(e) => warn!("USB Link Layer: Failed to check bus status: {:?}", e),
+        }
     }
 }
 
@@ -184,102 +267,18 @@ impl<CTX: BufferManagerContext> LinkLayerBuilder<CTX> for UsbLinkLayerBuilder {
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> ! {
-        // Initialize transport resources
         let transport_resources = resources.transport.init();
 
-        // Open USB device and create transport
-        info!("USB Link Layer: Opening device...");
-        let mut transport = match UsbCemiTransport::open(&self.selector, transport_resources).await {
-            Ok(t) => t,
-            Err(e) => {
-                panic!("USB Link Layer: Failed to open device: {:?}", e);
-            }
-        };
+        let mut transport = Self::open_transport(&self.selector, transport_resources).await;
+        Self::configure_address(&mut transport, self.individual_address).await;
+        Self::configure_comm_mode(&mut transport).await;
 
-        // Initialize transport (negotiate cEMI)
-        if let Err(e) = transport.initialize().await {
-            panic!("USB Link Layer: Failed to initialize transport: {:?}", e);
-        }
-
-        // Read interface's current individual address (before any writes)
-        match Self::read_individual_address(&mut transport).await {
-            Ok(address) => {
-                info!("USB Link Layer: Current interface address: {}", address);
-            }
-            Err(e) => {
-                warn!("USB Link Layer: Failed to read individual address: {:?}", e);
-            }
-        }
-
-        // Set individual address if configured
-        if let Some(address) = self.individual_address {
-            info!("USB Link Layer: Setting interface address to {}...", address);
-            if let Err(e) = Self::write_individual_address(&mut transport, address).await {
-                warn!("USB Link Layer: Failed to set individual address: {:?}", e);
-            }
-        }
-
-        // Set communication mode to Data Link Layer on cEMI Server Object (Object 8)
-        info!("USB Link Layer: Setting communication mode to Data Link Layer...");
-        if let Err(e) = transport
-            .prop_write(properties::CEMI_SERVER_OBJECT, properties::PID_COMM_MODE, &[comm_mode::DATA_LINK_LAYER])
-            .await
-        {
-            panic!("USB Link Layer: Failed to set comm mode: {:?}", e);
-        }
-
-        // Verify the write
-        match transport.prop_read(properties::CEMI_SERVER_OBJECT, properties::PID_COMM_MODE).await {
-            Ok(data) => {
-                // Response format: msg_code(1) + obj_type(2) + obj_instance(1) + pid(1) + count_idx(2) + data
-                // The actual value is at offset 7 (first data byte)
-                if data.len() >= 8 && data[7] == comm_mode::DATA_LINK_LAYER {
-                    info!("USB Link Layer: Communication mode verified as Data Link Layer");
-                } else {
-                    warn!("USB Link Layer: Unexpected comm mode response: {:02X?}", data);
-                }
-            }
-            Err(e) => {
-                // Write succeeded (we got M_PropWrite.con), but read failed
-                debug!("USB Link Layer: Failed to verify comm mode: {:?}", e);
-                info!("USB Link Layer: Communication mode set (write confirmed)");
-            }
-        }
-
-        // Read max APDU length from interface and update the stack state
-        let max_apdu_length = match Self::read_max_apdu_length(&mut transport).await {
-            Ok(len) => {
-                info!("USB Link Layer: Interface max APDU length: {} bytes", len);
-                len
-            }
-            Err(e) => {
-                warn!(
-                    "USB Link Layer: Failed to read max APDU length: {:?}, using default {}",
-                    e, DEFAULT_MAX_APDU_LENGTH
-                );
-                DEFAULT_MAX_APDU_LENGTH
-            }
-        };
-
-        // Update the stack state with the detected max APDU length
-        // This ensures PID 56 (MAX_APDU_LENGTH) in the Device Object reports
-        // the actual hardware capability rather than the compile-time default
+        let max_apdu_length = Self::query_max_apdu_length(&mut transport).await;
+        // Update the stack state so PID 56 (MAX_APDU_LENGTH) in the Device Object
+        // reports the actual hardware capability rather than the compile-time default.
         context.set_max_apdu_length(max_apdu_length);
 
-        // Check bus connection
-        match transport.get_bus_connection_status().await {
-            Ok(connected) => {
-                if connected {
-                    info!("USB Link Layer: Bus connected");
-                } else {
-                    warn!("USB Link Layer: Bus not connected!");
-                }
-            }
-            Err(e) => {
-                warn!("USB Link Layer: Failed to check bus status: {:?}", e);
-            }
-        }
-
+        Self::log_bus_status(&mut transport).await;
         info!("USB Link Layer: Initialization complete");
 
         let mut link_layer = UsbLinkLayer {
