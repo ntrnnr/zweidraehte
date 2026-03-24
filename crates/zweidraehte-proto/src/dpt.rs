@@ -4,13 +4,16 @@ use core::convert::TryInto;
 use core::fmt;
 use core::marker::PhantomData;
 
+use bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned, big_endian};
 
 // ###########################################################################
-// KNX 2-byte float type (must be defined before PDT_KNXFloat)
+// Backing Types
 // ###########################################################################
+
+// ---- KnxFloat16 (KNX 2-byte float) ----------------------------------------
 
 /// KNX 2-byte float value
 ///
@@ -112,8 +115,34 @@ impl core::fmt::Debug for KnxFloat16 {
     }
 }
 
-// Datapoint types: 3.7.2
-// Identifiers: 3.7.3
+// ---- KNXVersion (magic.version.revision bitfield) --------------------------
+
+bitfield! {
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct KNXVersion(u16);
+
+    u8, revision, set_revision: 5, 0;
+    u8, version, set_version: 10, 6;
+    u8, magic, set_magic: 15, 11;
+}
+
+impl KNXVersion {
+    pub const fn from_triplet(magic: u8, version: u8, revision: u8) -> Self {
+        // revision [5:0], version [10:6], magic [15:11]
+        let val = (revision as u16 & 0x3F) | ((version as u16 & 0x1F) << 6) | ((magic as u16 & 0x1F) << 11);
+        KNXVersion(val)
+    }
+}
+
+impl core::fmt::Debug for KNXVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}.{:?}.{:?}", self.magic(), self.version(), self.revision())
+    }
+}
+
+// ###########################################################################
+// Property Data Infrastructure (KNX spec 3.7.2 / 3.7.3)
+// ###########################################################################
 
 pub const trait PropertyDataDefinition {
     const SIZE: usize;
@@ -157,51 +186,6 @@ impl<T, const ID: u8, const N: usize> Default for PropertyData<T, ID, N> {
         Self { data: [0; N], _p: PhantomData }
     }
 }
-
-// impl<T, const ID: u8, const N: usize> Serialize for PropertyData<T, ID, N> {
-//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-//     where
-//         S: serde::Serializer,
-//     {
-//         serializer.serialize_bytes(&self.data)
-//     }
-// }
-
-// impl<'de, T, const ID: u8, const N: usize> Deserialize<'de> for PropertyData<T, ID, N> {
-//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-//     where
-//         D: serde::Deserializer<'de>,
-//     {
-//         struct PropertyDataVisitor<T, const ID: u8, const N: usize>(PhantomData<T>);
-
-//         impl<'de, T, const ID: u8, const N: usize> Visitor<'de> for PropertyDataVisitor<T, ID, N> {
-//             type Value = PropertyData<T, ID, N>;
-
-//             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-//                 formatter.write_str("a byte array of the correct size")
-//             }
-
-//             fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
-//             where
-//                 E: serde::de::Error,
-//             {
-//                 if value.len() != N {
-//                     return Err(E::invalid_length(value.len(), &self));
-//                 }
-
-//                 let mut data = [0; N];
-//                 data.copy_from_slice(value);
-
-//                 Ok(PropertyData {
-//                     data,
-//                     p: PhantomData,
-//                 })
-//             }
-//         }
-
-//         deserializer.deserialize_bytes(PropertyDataVisitor(PhantomData))
-//     }
-// }
 
 impl<T, const ID: u8, const N: usize> const PropertyDataDefinition for PropertyData<T, ID, N> {
     const ID: u8 = ID;
@@ -325,61 +309,38 @@ impl_array_pdt!([u8; 18]);
 impl_array_pdt!([u8; 19]);
 impl_array_pdt!([u8; 20]);
 
-// use const_bitfield::bitfield;
+impl<const ID: u8, const N: usize> PropertyData<KNXVersion, ID, N> {
+    pub fn with_value(value: KNXVersion) -> Self {
+        let value: u16 = value.0;
+        Self { data: (&value.to_be_bytes()[0..N]).try_into().unwrap(), _p: PhantomData }
+    }
 
-// bitfield! {
-//     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-//     pub struct KNXVersion(u16);
+    pub fn value(&self) -> KNXVersion {
+        let value = u16::from_be_bytes(self.data[..N].try_into().unwrap());
+        KNXVersion(value)
+    }
 
-//     u8, revision, set_revision: 5, 0;
-//     u8, version, set_version: 10, 6;
-//     u8, magic, set_magic: 15, 11;
-// }
+    pub fn set_value(&mut self, data: KNXVersion) {
+        let data: u16 = data.0;
+        self.data.copy_from_slice(&data.to_be_bytes()[..N]);
+    }
+}
 
-// impl KNXVersion {
-//     pub const fn from_triplet(magic: u8, version: u8, revision: u8) -> Self {
-//         let mut v = KNXVersion(0);
-//         v.set_magic(magic);
-//         v.set_version(version);
-//         v.set_revision(revision);
-//         v
-//     }
-// }
+impl<const ID: u8, const N: usize> Into<KNXVersion> for PropertyData<KNXVersion, ID, N> {
+    fn into(self) -> KNXVersion {
+        self.value()
+    }
+}
 
-// impl core::fmt::Debug for KNXVersion {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         write!(f, "{:?}.{:?}.{:?}", self.magic(), self.version(), self.revision())
-//     }
-// }
+impl<const ID: u8, const N: usize> From<KNXVersion> for PropertyData<KNXVersion, ID, N> {
+    fn from(value: KNXVersion) -> Self {
+        Self::with_value(value)
+    }
+}
 
-// impl<const ID: u8, const N: usize> PropertyData<KNXVersion, ID, N> {
-//     pub fn with_value(value: KNXVersion) -> Self {
-//         let value: u16 = value.0;
-//         Self { data: (&value.to_be_bytes()[0..N]).try_into().unwrap(), _p: PhantomData }
-//     }
-
-//     pub fn value(&self) -> KNXVersion {
-//         let value = u16::from_be_bytes(self.data[..N].try_into().unwrap());
-//         KNXVersion(value)
-//     }
-
-//     pub fn set_value(&mut self, data: KNXVersion) {
-//         let data: u16 = data.0;
-//         self.data.copy_from_slice(&data.to_be_bytes()[..N]);
-//     }
-// }
-
-// impl<const ID: u8, const N: usize> Into<KNXVersion> for PropertyData<KNXVersion, ID, N> {
-//     fn into(self) -> KNXVersion {
-//         self.value()
-//     }
-// }
-
-// impl<const ID: u8, const N: usize> From<KNXVersion> for PropertyData<KNXVersion, ID, N> {
-//     fn from(value: KNXVersion) -> Self {
-//         Self::with_value(value)
-//     }
-// }
+// ###########################################################################
+// Property Data Types (PDT)
+// ###########################################################################
 
 pub type PDT_Control = PropertyData<[u8; 1], 0, 10>;
 pub type PDT_Char = PropertyData<i8, 1, 1>;
@@ -419,7 +380,7 @@ pub type PDT_Generic18 = PropertyData<[u8; 18], 0x22, 18>;
 pub type PDT_Generic19 = PropertyData<[u8; 19], 0x23, 19>;
 pub type PDT_Generic20 = PropertyData<[u8; 20], 0x24, 20>;
 //pub type PDT_UTF8           = //TODO: Super special variable len WTF shit - need to investigate
-//pub type PDT_Version = PropertyData<KNXVersion, 0x30, 2>;
+pub type PDT_Version = PropertyData<KNXVersion, 0x30, 2>;
 //pub type PDT_AlarmInfo      = PropertyData<KNXAlarmInfo, 0x31, 2>;
 pub type PDT_BinaryInformation = PropertyData<bool, 0x32, 1>; //TODO: raw_data/set_raw_data
 pub type PDT_Bitset8 = PropertyData<u8, 0x33, 1>;
@@ -430,6 +391,10 @@ pub type PDT_Scaling = PropertyData<u8, 0x36, 1>; //TODO: Custom type?
 //pub type PDT_NotEncodedFixedLength = //TODO: Super special WTF shit - need to investigate
 pub type PDT_Function = PropertyData<[u8; 0], 0x3E, 0>;
 //pub type PDT_Escape = //TODO: Super special WTF shit - need to investigate
+
+// ###########################################################################
+// Datapoint Infrastructure
+// ###########################################################################
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DatapointID<const MAIN: u16, const SUB: u16>;
@@ -579,7 +544,7 @@ datapoint_type_convs!(PDT_Generic18);
 datapoint_type_convs!(PDT_Generic19);
 datapoint_type_convs!(PDT_Generic20);
 //datapoint_type_convs!(PDT_UTF8);
-//datapoint_type_convs!(PDT_Version);
+datapoint_type_convs!(PDT_Version);
 //datapoint_type_convs!(PDT_AlarmInfo);
 datapoint_type_convs!(PDT_BinaryInformation);
 datapoint_type_convs!(PDT_Bitset8);
@@ -590,6 +555,12 @@ datapoint_type_convs!(PDT_Scaling);
 //datapoint_type_convs!(PDT_NotEncodedFixedLength);
 //datapoint_type_convs!(PDT_Function);
 //datapoint_type_convs!(PDT_Escape);
+
+// ###########################################################################
+// Datapoint Types (DPT)
+// ###########################################################################
+
+// ---- DPT 221.001 - Serial Number --------------------------------------------
 
 pub type DPT_SerNum = DatapointType<PDT_Generic06, 221, 1>;
 
@@ -639,8 +610,13 @@ impl From<DPT_SerNum> for KNXSerialNumber {
 //    }
 //}
 
-// ###########################################################################
+// ---- DPT 1.x - 1-bit types -------------------------------------------------
 
+/// DPT 1.001 - Switch (On/Off)
+///
+/// 1-bit datapoint type for switch control:
+/// - 0 = Off
+/// - 1 = On
 pub type DPT_Switch = DatapointType<PDT_UnsignedChar, 1, 1>;
 
 impl core::fmt::Debug for DPT_Switch {
@@ -662,6 +638,11 @@ impl From<DPT_Switch> for bool {
     }
 }
 
+/// DPT 1.002 - Bool (True/False)
+///
+/// 1-bit datapoint type for boolean control:
+/// - 0 = False
+/// - 1 = True
 pub type DPT_Bool = DatapointType<PDT_UnsignedChar, 1, 2>;
 
 impl core::fmt::Debug for DPT_Bool {
@@ -678,6 +659,32 @@ impl From<bool> for DPT_Bool {
 
 impl From<DPT_Bool> for bool {
     fn from(value: DPT_Bool) -> Self {
+        let value: u8 = value.backing.into();
+        value & 1 == 1
+    }
+}
+
+/// DPT 1.007 - Step (Decrease/Increase)
+///
+/// 1-bit datapoint type for step control:
+/// - 0 = Decrease
+/// - 1 = Increase
+pub type DPT_Step = DatapointType<PDT_UnsignedChar, 1, 7>;
+
+impl core::fmt::Debug for DPT_Step {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.backing)
+    }
+}
+
+impl From<bool> for DPT_Step {
+    fn from(value: bool) -> Self {
+        DPT_Step::new((value as u8).into())
+    }
+}
+
+impl From<DPT_Step> for bool {
+    fn from(value: DPT_Step) -> Self {
         let value: u8 = value.backing.into();
         value & 1 == 1
     }
@@ -751,35 +758,7 @@ impl From<DPT_State> for bool {
     }
 }
 
-/// DPT 1.007 - Step (Decrease/Increase)
-///
-/// 1-bit datapoint type for step control:
-/// - 0 = Decrease
-/// - 1 = Increase
-pub type DPT_Step = DatapointType<PDT_UnsignedChar, 1, 7>;
-
-impl core::fmt::Debug for DPT_Step {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.backing)
-    }
-}
-
-impl From<bool> for DPT_Step {
-    fn from(value: bool) -> Self {
-        DPT_Step::new((value as u8).into())
-    }
-}
-
-impl From<DPT_Step> for bool {
-    fn from(value: DPT_Step) -> Self {
-        let value: u8 = value.backing.into();
-        value & 1 == 1
-    }
-}
-
-// ###########################################################################
-// DPT 2.x - 2-bit control types
-// ###########################################################################
+// ---- DPT 2.x - 1-bit controlled --------------------------------------------
 
 /// DPT 2.001 - Switch Control (Forcible Control)
 ///
@@ -939,7 +918,7 @@ impl From<SwitchControl> for u8 {
     }
 }
 
-// ###########################################################################
+// ---- DPT 3.x - 3-bit controlled --------------------------------------------
 
 /// DPT 3.007 - Dimming Control
 ///
@@ -958,6 +937,8 @@ impl From<SwitchControl> for u8 {
 /// - 6: 3.125%
 /// - 7: 1.5625%
 pub type DPT_Control_Dimming = DatapointType<PDT_UnsignedChar, 3, 7>;
+
+// ---- DPT 5.x - 1-byte unsigned value ---------------------------------------
 
 /// DPT 5.001 - Scaling (Percent)
 ///
@@ -1069,8 +1050,6 @@ impl From<DPT_Scaling> for u8 {
     }
 }
 
-// ###########################################################################
-
 /// DPT 5.005 - Decimal Factor (0-255)
 ///
 /// 1-byte unsigned value representing a decimal factor.
@@ -1095,8 +1074,6 @@ impl From<DPT_DecimalFactor> for u8 {
     }
 }
 
-// ###########################################################################
-
 /// DPT 5.010 - 1-byte unsigned counter (0..255)
 /// Uses long format for GroupValue_Response (data > 6 bits)
 pub type DPT_Value_1_Ucount = DatapointType<PDT_UnsignedChar, 5, 10>;
@@ -1119,7 +1096,7 @@ impl From<DPT_Value_1_Ucount> for u8 {
     }
 }
 
-// ###########################################################################
+// ---- DPT 7.x - 2-byte unsigned value ----------------------------------------
 
 /// DPT 7.600 - Colour Temperature (Kelvin)
 ///
@@ -1146,7 +1123,7 @@ impl From<DPT_Colour_Temperature> for u16 {
     }
 }
 
-// ###########################################################################
+// ---- DPT 9.x - 2-byte float value -------------------------------------------
 
 /// DPT 9.001 - Temperature (°C)
 ///
@@ -1192,8 +1169,6 @@ impl From<DPT_Value_Temp> for KnxFloat16 {
     }
 }
 
-// ###########################################################################
-
 /// DPT 9.004 - Light intensity (Lux)
 ///
 /// 2-byte floating point value representing brightness/luminance.
@@ -1238,7 +1213,7 @@ impl From<DPT_Value_Lux> for KnxFloat16 {
     }
 }
 
-// ###########################################################################
+// ---- DPT 17.x / 18.x - Scene types -----------------------------------------
 
 /// DPT 17.001 - Scene Number
 ///
@@ -1354,7 +1329,7 @@ impl core::fmt::Debug for DPT_SceneControl {
     }
 }
 
-// ###########################################################################
+// ---- DPT misc - Multi-byte types --------------------------------------------
 
 /// DPT for 3-byte RGB value
 pub type DPT_Colour_RGB = DatapointType<PDT_Generic03, 232, 600>;
@@ -1362,7 +1337,7 @@ pub type DPT_Colour_RGB = DatapointType<PDT_Generic03, 232, 600>;
 /// DPT for 4-byte value
 pub type DPT_Value_4_Ucount = DatapointType<PDT_Generic04, 12, 1>;
 
-// ###########################################################################
+// ---- DPT 7.010 / 20.x - Property/enum types --------------------------------
 
 pub type DPT_PropDataType = DatapointType<PDT_UnsignedInt, 7, 10>;
 
@@ -1435,8 +1410,6 @@ impl From<PDT_UnsignedInt> for InterfaceObjectType {
 //    }
 //}
 
-// ###########################################################################
-
 pub type DPT_ErrorClass_System = DatapointType<PDT_Enum8, 20, 11>;
 
 impl core::fmt::Debug for DPT_ErrorClass_System {
@@ -1506,32 +1479,32 @@ impl From<PDT_Enum8> for SystemError {
 //    }
 //}
 
+// ---- DPT 217.001 - Version --------------------------------------------------
+
+pub type DPT_Version = DatapointType<PDT_Version, 217, 001>;
+
+impl core::fmt::Debug for DPT_Version {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let i: KNXVersion = self.clone().into();
+        write!(f, "{:?}.{:?}.{:?}", i.magic(), i.version(), i.revision())
+    }
+}
+
+impl From<KNXVersion> for DPT_Version {
+    fn from(value: KNXVersion) -> Self {
+        DPT_Version::new(value.into())
+    }
+}
+
+impl From<DPT_Version> for KNXVersion {
+    fn from(value: DPT_Version) -> Self {
+        value.backing.into()
+    }
+}
+
 // ###########################################################################
-
-// pub type DPT_Version = DatapointType<PDT_Version, 217, 001>;
-
-// impl core::fmt::Debug for DPT_Version {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         let i: KNXVersion = self.clone().into();
-//         write!(f, "{:?}.{:?}.{:?}", i.magic(), i.version(), i.revision())
-//     }
-// }
-
-// impl From<KNXVersion> for DPT_Version {
-//     fn from(value: KNXVersion) -> Self {
-//         DPT_Version::new(value.into())
-//     }
-// }
-
-// impl From<DPT_Version> for KNXVersion {
-//     fn from(value: DPT_Version) -> Self {
-//         value.backing.into()
-//     }
-// }
-
-// ============================================================================
 // Semantic Property Wrapper Types
-// ============================================================================
+// ###########################################################################
 //
 // These types provide type-safe, ergonomic access to KNX property values.
 // Instead of raw byte arrays, they expose named accessors for individual
@@ -1890,9 +1863,7 @@ impl From<RoutingCount> for [u8; 1] {
     }
 }
 
-// ============================================================================
-// PropertyDataDefinition implementations for semantic types
-// ============================================================================
+// ---- PropertyDataDefinition implementations for semantic types --------------
 //
 // These allow the semantic types to be used in the define_interface_object! macro
 // which needs the PDT type ID for property descriptors.
@@ -2037,19 +2008,23 @@ mod test {
         assert!(ctrl.value());
     }
 
-    // #[test]
-    // fn test_dpt_version() {
-    //     let s: DPT_Version = KNXVersion::from_triplet(3, 2, 1).into();
+    #[test]
+    fn test_dpt_version() {
+        let s: DPT_Version = KNXVersion::from_triplet(3, 2, 1).into();
 
-    //     let id = s.id();
-    //     assert_eq!(id.main(), 217);
-    //     assert_eq!(id.sub(), 1);
+        let id = s.id();
+        assert_eq!(id.main(), 217);
+        assert_eq!(id.sub(), 1);
 
-    //     assert_eq!(KNXVersion::from(s), KNXVersion::from_triplet(3, 2, 1));
-    //     {
-    //         let b = s.backing();
-    //         // FIXME: endianness correct?
-    //         assert_eq!(b.as_ref(), &[0b00011000, 0b10000001]);
-    //     }
-    // }
+        assert_eq!(KNXVersion::from(s), KNXVersion::from_triplet(3, 2, 1));
+        {
+            let b = s.backing();
+            // magic=3 (bits 15:11) = 0b00011
+            // version=2 (bits 10:6) = 0b00010
+            // revision=1 (bits 5:0)  = 0b000001
+            // raw u16 = 0b00011_00010_000001 = 0x1881
+            // big-endian bytes: [0x18, 0x81]
+            assert_eq!(b.as_ref(), &[0b00011000, 0b10000001]);
+        }
+    }
 }

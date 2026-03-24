@@ -36,7 +36,7 @@ use core::cell::RefCell;
 use crate::{
     StackState,
     device_model::DeviceModelNotifier,
-    dpt::{DeviceControl, InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
+    dpt::{DeviceControl, InterfaceObjectType, KNXVersion, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
         FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
@@ -483,7 +483,7 @@ pub fn device_info_from<D: StackDefinition>() -> DeviceInfo {
     DeviceInfo {
         order_info: [0; 10], // Manufacturer-specific, usually left empty
         hardware_type: D::DEVICE.hardware_type,
-        version: [0x00, 0x01], // Default version 0.0.1
+        version: KNXVersion::from_triplet(0, 0, 1),
         device_descriptor: D::DEVICE.mask_version.as_u16(),
     }
 }
@@ -504,7 +504,7 @@ pub fn device_info_from_descriptor(desc: &crate::ets::DeviceDescriptor) -> Devic
     DeviceInfo {
         order_info: [0; 10], // Manufacturer-specific, usually left empty
         hardware_type: desc.hardware_type,
-        version: [0x00, 0x01], // Default version 0.0.1
+        version: KNXVersion::from_triplet(0, 0, 1),
         device_descriptor: desc.mask_version.as_u16(),
     }
 }

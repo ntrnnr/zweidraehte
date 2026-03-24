@@ -20,6 +20,7 @@ defmt = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
 heapless = { workspace = true }
 replace_with = { workspace = true }
+bitfield.workspace = true
 
 [dev-dependencies]
 test-case = "3.3"

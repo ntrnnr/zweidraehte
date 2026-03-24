@@ -29,9 +29,9 @@ use core::marker::PhantomData;
 use crate::StackState;
 use crate::device_model::{DeviceModelEvent, DeviceModelNotifier};
 use crate::dpt::{
-    DeviceControl, InterfaceObjectType, PDT_Generic02, PDT_Generic04, PDT_Generic05, PDT_Generic06, PDT_Generic08,
-    PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong, ProgrammingMode, PropertyDataDefinition,
-    RoutingCount,
+    DeviceControl, InterfaceObjectType, KNXVersion, PDT_Generic02, PDT_Generic04, PDT_Generic05, PDT_Generic06,
+    PDT_Generic08, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong, PDT_Version,
+    ProgrammingMode, PropertyDataDefinition, RoutingCount,
 };
 use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunEvent};
 
@@ -76,7 +76,7 @@ crate::define_interface_object! {
         // Static properties (stored in struct) with semantic wrapper types
         pid::DEVICE_CONTROL => device_control: DeviceControl, ReadWrite,
         pid::ORDER_INFO => order_info: PDT_Generic10, ReadOnly,
-        pid::VERSION => version: PDT_Generic02, ReadOnly,
+        pid::VERSION => version: PDT_Version, ReadOnly,
         pid::HARDWARE_TYPE => hardware_type: PDT_Generic06, ReadOnly,
         pid::DEVICE_DESCRIPTOR => device_descriptor: PDT_UnsignedInt, ReadOnly,
         // These are now stored directly in the DeviceObject with semantic types
@@ -140,8 +140,8 @@ pub struct DeviceInfo {
     pub order_info: [u8; 10],
     /// Hardware type (6 bytes)
     pub hardware_type: [u8; 6],
-    /// Firmware version (2 bytes: magic.version.revision encoded)
-    pub version: [u8; 2],
+    /// Firmware version (magic.version.revision encoded as KNXVersion)
+    pub version: KNXVersion,
     /// Device descriptor (mask version, e.g., 0x07B0 for System B)
     pub device_descriptor: u16,
 }
@@ -154,7 +154,7 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
     pub fn with_info(state: &'a S, info: &DeviceInfo) -> Self {
         let mut obj = Self::new(state);
         obj.order_info = PDT_Generic10::with_value(info.order_info);
-        obj.version = PDT_Generic02::with_value(info.version);
+        obj.version = PDT_Version::with_value(info.version);
         obj.hardware_type = PDT_Generic06::with_value(info.hardware_type);
         obj.device_descriptor = PDT_UnsignedInt::with_value(info.device_descriptor);
         obj
@@ -168,7 +168,7 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
         Self::with_info(state, &DeviceInfo {
             order_info: [0; 10],
             hardware_type: hardware_type_val,
-            version: [0x00, 0x01],     // Version 0.0.1
+            version: KNXVersion::from_triplet(0, 0, 1),
             device_descriptor: 0x07B0, // System B
         })
     }
