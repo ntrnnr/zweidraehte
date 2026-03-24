@@ -347,7 +347,7 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 ```bash
 cargo run --bin conformance-runner [test_filter]
 ```
-Runs KNX protocol conformance tests. Takes a long while to run. Pass an optional filter to run specific tests or test suites (e.g., `transport` to run only transport layer tests). Pipe output to a file if you need to grep through results.
+Runs KNX protocol conformance tests. Takes a long while to run. Prevent running them multiple times. If you need output, write it to a file to grep through later for what you are looking. Also pass an optional filter to run specific tests or test suites (e.g., `transport` to run only transport layer tests).
 
 **Compare MTXML Programs**
 ```bash
