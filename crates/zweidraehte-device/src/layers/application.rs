@@ -104,13 +104,9 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     /// Read-on-init cursor. When `Scanning(idx)`, the AL will process one
     /// ROI object per main-loop iteration, starting from ASAP `idx`. Set to
     /// `Scanning(1)` when the application transitions to RUNNING (COT is
-    /// 1-indexed); returns to
-    /// `Idle` when the scan completes or the application stops.
-    ///
-    /// After a successful L2 send, the object transitions to `IdleOk` (like
-    /// the CO-idle action). If a response arrives later, it will
-    /// update the value; if not, the object simply stays idle with its value
-    /// uninitialized — no application-level timeout is needed.
+    /// 1-indexed); transitions to `Done` when the scan completes, and resets
+    /// to `Idle` when the application stops (enabling a fresh scan on
+    /// restart).
     read_on_init: ReadOnInitState,
 
     /// Pending group value send awaiting TL confirmation. When set, the next
@@ -131,10 +127,13 @@ struct PendingGroupSend {
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 enum ReadOnInitState {
-    /// No ROI cycle active.
+    /// No ROI cycle active — ready to start on next app startup.
     Idle,
     /// Scanning objects, sending reads. The `u16` is the next ASAP to check.
     Scanning(u16),
+    /// Scan completed for this app run. Resets to `Idle` when the app stops
+    /// (so a restart triggers a fresh scan).
+    Done,
 }
 
 // ============================================================================
@@ -336,8 +335,8 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
     fn next_deadline(&self) -> Option<embassy_time::Instant> {
         match self.read_on_init {
             ReadOnInitState::Scanning(cursor) => {
-                debug!("AL next_deadline: ROI active (cursor={}), returning now", cursor);
-                Some(embassy_time::Instant::now())
+                debug!("AL next_deadline: ROI active (cursor={}), next step in 100ms", cursor);
+                Some(embassy_time::Instant::now() + embassy_time::Duration::from_millis(100))
             }
             ReadOnInitState::Idle => {
                 // Self-detect: when the app is running and AST is loaded but
@@ -352,10 +351,17 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
                     None
                 }
             }
+            ReadOnInitState::Done => None,
         }
     }
 
     fn poll(&mut self, outbox: &mut Outbox) {
+        // Reset Done → Idle when the app stops, so the next startup triggers
+        // a fresh ROI scan.
+        if self.read_on_init == ReadOnInitState::Done && !self.state.app().borrow().is_running() {
+            self.read_on_init = ReadOnInitState::Idle;
+        }
+
         // Start ROI scan if the conditions are met (app running, AST loaded,
         // comm objects still uninitialized from DeviceModel reset).
         if self.read_on_init == ReadOnInitState::Idle
@@ -787,20 +793,17 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// 2. Its runtime status is `Uninitialized` (value not yet valid)
     /// 3. It has at least one association in the AST (is linked)
     ///
-    /// Objects that are `Uninitialized` are transitioned to `IdleOk` during
-    /// the scan regardless of ROI eligibility, per the conformance suite
-    /// behavior of clearing RAM flags as it walks through objects.
-    ///
-    /// After a successful L2 send, the object goes to `IdleOk` (matching
-    /// the CO-idle action). If a `GroupValue_Response` arrives
-    /// later, it will update the value normally. If nobody answers, the
-    /// object simply stays idle — no application-level timeout is needed.
+    /// Objects that are not eligible (no ROI flag, already have a value,
+    /// or not linked) are left untouched — they keep their current status.
+    /// In particular, non-ROI objects stay `Uninitialized` until they
+    /// actually receive a value via a write or response from the bus.
     fn read_on_init_step(&mut self, outbox: &mut Outbox) {
         let ReadOnInitState::Scanning(start) = self.read_on_init else {
             return;
         };
 
-        // Cancel if app is no longer running or AST not loaded.
+        // Cancel if app is no longer running or AST not loaded. Reset to
+        // Idle (not Done) so a subsequent app restart triggers a fresh scan.
         if !self.state.app().borrow().is_running() {
             debug!("AL read-on-init: cancelled (app not running)");
             self.read_on_init = ReadOnInitState::Idle;
@@ -824,26 +827,13 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 continue;
             };
 
-            // Transition Uninitialized objects to IdleOk (clear RAM
-            // flags). Capture whether the object was uninitialized before
-            // the transition so we can check value validity.
-            let was_uninitialized = {
-                let status = self.comm_objects.borrow().status(asap);
-                if status == ComObjectStatus::Uninitialized {
-                    self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::IdleOk);
-                    true
-                } else {
-                    false
-                }
-            };
-
             // 1. ROI flag must be set
             if !cot_info.flags.read_on_init() {
                 continue;
             }
 
-            // 2. Value must not have been valid (was Uninitialized)
-            if !was_uninitialized {
+            // 2. Object must still be uninitialized (value not yet valid)
+            if self.comm_objects.borrow().status(asap) != ComObjectStatus::Uninitialized {
                 debug!("AL read-on-init: ASAP {} skipped (value already valid)", asap);
                 continue;
             }
@@ -868,7 +858,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         // All objects scanned — cycle complete.
         info!("AL read-on-init: cycle complete ({} objects scanned)", entry_count);
-        self.read_on_init = ReadOnInitState::Idle;
+        self.read_on_init = ReadOnInitState::Done;
     }
 }
 
