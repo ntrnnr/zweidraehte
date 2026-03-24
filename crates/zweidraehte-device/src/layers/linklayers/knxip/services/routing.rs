@@ -429,6 +429,15 @@ impl RoutingServer {
         let cemi_msg: KnxMessageBuffer<Buffer<'static>, CemiFormat> = KnxMessageBuffer::from_cemi(knx_buffer);
         let internal_msg = cemi_msg.into_internal();
 
+        // Filter by destination address — on KNX/IP routing multicast we see
+        // all traffic. Drop frames not addressed to this device (individual
+        // address mismatch, or group address not in the address table).
+        if let Some(filter) = context.address_filter() {
+            if !filter.accepts(internal_msg.get_dest_addr()) {
+                return Ok(Vec::new());
+            }
+        }
+
         // Forward to network layer
         context.send_to_network_layer(internal_msg).await;
 

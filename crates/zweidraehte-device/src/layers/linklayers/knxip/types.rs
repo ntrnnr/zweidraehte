@@ -8,14 +8,18 @@ use core::net::SocketAddrV4;
 use embassy_sync::channel::DynamicSender;
 use heapless::Vec;
 
+use core::cell::RefCell;
+
 use crate::address::IndividualAddress;
 use crate::context::{DeviceInfoContext, IpDiagnosticsContext, KnxIndividualAddressContext};
+use crate::messages::knx::DestinationAddress;
 use crate::messages::{
     buffers::{Buffer, DynBufferManager},
     builder::IndicationMessage,
     knx::KnxMessageBuffer,
     knxip::{KNXnetIPServiceType, substructs},
 };
+use crate::objects::tables::{AddressTable, HasLoadStateMachine};
 
 // ============================================================================
 // Server Error
@@ -100,6 +104,50 @@ pub struct PendingResponse {
 }
 
 // ============================================================================
+// Address Filter
+// ============================================================================
+
+/// Determines whether an incoming frame should be accepted by the local
+/// device stack, based on its destination address.
+///
+/// This is the KNX/IP equivalent of TPUART's `AddressChecker` — it filters
+/// incoming multicast routing frames by destination address before they
+/// reach the network layer. Unlike `AddressChecker`, which operates on raw
+/// TP1 header bytes, this trait works with already-parsed addresses.
+pub trait AddressFilter {
+    fn accepts(&self, dest: DestinationAddress) -> bool;
+}
+
+/// Address filter for KNX/IP routing devices.
+///
+/// Accepts frames addressed to the device's individual address, group
+/// addresses present in the loaded address table, and broadcasts. This
+/// is the same logic as `DeviceAddressChecker::should_ack` for TPUART.
+pub struct RoutingAddressFilter<'a, ADT> {
+    individual_address: IndividualAddress,
+    address_table: &'a RefCell<ADT>,
+}
+
+impl<'a, ADT> RoutingAddressFilter<'a, ADT> {
+    pub fn new(individual_address: IndividualAddress, address_table: &'a RefCell<ADT>) -> Self {
+        Self { individual_address, address_table }
+    }
+}
+
+impl<ADT: AddressTable + HasLoadStateMachine> AddressFilter for RoutingAddressFilter<'_, ADT> {
+    fn accepts(&self, dest: DestinationAddress) -> bool {
+        match dest {
+            DestinationAddress::Individual(addr) => addr == self.individual_address,
+            DestinationAddress::Group(ga) => {
+                let table = self.address_table.borrow();
+                table.is_loaded() && (table.entry_count() == 0 || table.contains(ga))
+            }
+            DestinationAddress::Broadcast | DestinationAddress::SystemBroadcast => true,
+        }
+    }
+}
+
+// ============================================================================
 // Server Context
 // ============================================================================
 
@@ -130,6 +178,11 @@ pub struct ServerContext<'a> {
     /// Present when a tunneling handler is registered. Used by the
     /// discovery server to build the TunnelingInfo DIB.
     tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
+    /// Address filter for incoming routing frames. When present, frames
+    /// not addressed to this device are silently dropped before reaching
+    /// the network layer. `None` for tunneling-only servers that forward
+    /// all traffic.
+    address_filter: Option<&'a dyn AddressFilter>,
 }
 
 impl<'a> ServerContext<'a> {
@@ -143,6 +196,7 @@ impl<'a> ServerContext<'a> {
         additional_addresses: &'a [IndividualAddress],
         knx_addresses: &'a dyn KnxIndividualAddressContext,
         tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
+        address_filter: Option<&'a dyn AddressFilter>,
     ) -> Self {
         Self {
             buffer_manager,
@@ -153,6 +207,7 @@ impl<'a> ServerContext<'a> {
             additional_addresses,
             knx_addresses,
             tunneling_slot_info,
+            address_filter,
         }
     }
 
@@ -193,6 +248,13 @@ impl<'a> ServerContext<'a> {
         self.tunneling_slot_info
     }
 
+    /// Get the address filter, if configured.
+    ///
+    /// Present for routing devices; absent for tunneling-only servers.
+    pub fn address_filter(&self) -> Option<&dyn AddressFilter> {
+        self.address_filter
+    }
+
     /// Send an indication to the network layer (L_Data.ind).
     pub async fn send_to_network_layer(&self, message: KnxMessageBuffer<Buffer<'static>>) {
         let indication = IndicationMessage::indication(message);
@@ -228,16 +290,8 @@ pub(crate) fn resolve_hpai(
     packet_source: SocketAddrV4,
 ) -> SocketAddrV4 {
     let addr = hpai.address();
-    let ip = if addr.is_unspecified() {
-        *packet_source.ip()
-    } else {
-        addr
-    };
-    let port = if hpai.port() == 0 {
-        packet_source.port()
-    } else {
-        hpai.port()
-    };
+    let ip = if addr.is_unspecified() { *packet_source.ip() } else { addr };
+    let port = if hpai.port() == 0 { packet_source.port() } else { hpai.port() };
     SocketAddrV4::new(ip, port)
 }
 

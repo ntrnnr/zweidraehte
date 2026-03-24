@@ -274,6 +274,14 @@ where
                 subnet_inject_tx: subnet_inject_channel.sender().into(),
             };
 
+            // Construct address filter for routing frames. The IP interface
+            // uses the same filter as standalone — RoutingIndications only
+            // go to the local NL, not to tunnel clients.
+            let routing_filter = super::knxip::types::RoutingAddressFilter::new(
+                context.individual_address(),
+                context.address_table(),
+            );
+
             let mut knxip = self.knxip_builder.build(
                 &mut resources.knxip,
                 context,
@@ -281,6 +289,7 @@ where
                 knxip_ind_channel.sender().into(),
                 knxip_conf_channel.sender().into(),
                 Some(bus_bridge),
+                Some(&routing_filter),
             );
 
             // ==============================================================

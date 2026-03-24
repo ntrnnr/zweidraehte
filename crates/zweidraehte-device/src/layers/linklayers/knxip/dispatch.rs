@@ -68,6 +68,7 @@ pub(super) fn make_server_context<'a, RC: RemoteConfigFeature>(
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
     additional_addresses: &'a [crate::address::IndividualAddress],
     tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
+    address_filter: Option<&'a dyn super::types::AddressFilter>,
 ) -> ServerContext<'a> {
     let ip_diagnostics: Option<&dyn IpDiagnosticsContext> =
         if RC::exposes_diagnostics() { Some(context) } else { None };
@@ -80,6 +81,7 @@ pub(super) fn make_server_context<'a, RC: RemoteConfigFeature>(
         additional_addresses,
         context,
         tunneling_slot_info,
+        address_filter,
     )
 }
 
@@ -137,6 +139,7 @@ where
                     self.ind_tx,
                     &addr_buf[..addr_count],
                     tunnel_ref,
+                    self.address_filter,
                 );
 
                 match F::Routing::on_request(&mut self.routing, &pending.message, &context).await {
@@ -308,8 +311,9 @@ where
 
         // Helper closure to build server context — captures immutable fields
         // that are disjoint from the mutable server fields.
+        let address_filter = self.address_filter;
         let make_ctx =
-            |ind_tx| make_server_context::<F::RemoteConfig>(self.context, ind_tx, additional_addresses, tunnel_ref);
+            |ind_tx| make_server_context::<F::RemoteConfig>(self.context, ind_tx, additional_addresses, tunnel_ref, address_filter);
 
         // Discovery server (always present)
         {

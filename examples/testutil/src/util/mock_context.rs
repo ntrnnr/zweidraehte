@@ -1,15 +1,17 @@
 //! Mock context for testing link layers in isolation.
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 
 use zweidraehte_device::context::{
-    BufferManagerContext, DeviceInfoContext,
+    AddressTableContext, BufferManagerContext, DeviceInfoContext,
     IpAdditionalIndividualAddressContext, IpDiagnosticsContext, KnxIndividualAddressContext,
     PropertyServiceContext,
 };
 use zweidraehte_device::messages::buffers::DynBufferManager;
 use zweidraehte_device::messages::knxip::substructs::DeviceInformation;
 use zweidraehte_device::objects::interface::PropertyServiceHandler;
+use zweidraehte_device::objects::tables::addr7::AddrTab7Impl;
+use zweidraehte_device::objects::tables::Table;
 
 /// Mock context for testing link layers.
 ///
@@ -19,6 +21,7 @@ pub struct MockContext {
     buffer_manager: DynBufferManager<'static>,
     max_apdu_length: Cell<u16>,
     device_info: Cell<Option<DeviceInformation>>,
+    address_table: RefCell<Table<AddrTab7Impl<4>>>,
 }
 
 impl MockContext {
@@ -28,6 +31,7 @@ impl MockContext {
             buffer_manager,
             max_apdu_length: Cell::new(zweidraehte_device::config::MAX_APDU_LENGTH_EXTENDED),
             device_info: Cell::new(None),
+            address_table: RefCell::new(Table::new()),
         }
     }
 
@@ -37,6 +41,7 @@ impl MockContext {
             buffer_manager,
             max_apdu_length: Cell::new(max_apdu_length),
             device_info: Cell::new(None),
+            address_table: RefCell::new(Table::new()),
         }
     }
 
@@ -202,4 +207,16 @@ impl IpAdditionalIndividualAddressContext for &mut MockContext {
     }
 }
 
+impl AddressTableContext for &MockContext {
+    type ADT = Table<AddrTab7Impl<4>>;
+    fn address_table(&self) -> &RefCell<Self::ADT> {
+        &self.address_table
+    }
+}
 
+impl AddressTableContext for &mut MockContext {
+    type ADT = Table<AddrTab7Impl<4>>;
+    fn address_table(&self) -> &RefCell<Self::ADT> {
+        &self.address_table
+    }
+}

@@ -92,6 +92,9 @@ pub struct KnxNetIp<
     /// `subnet_inject_tx` instead of the real `ind_tx`, and bus indications
     /// arrive via `subnet_ind_rx` for forwarding to tunnel clients.
     pub(super) subnet_link: Option<SubnetLink<'res>>,
+    /// Address filter for incoming routing frames. Drops frames not
+    /// addressed to this device before they reach the network layer.
+    pub(super) address_filter: Option<&'res dyn super::types::AddressFilter>,
 }
 
 impl<
@@ -316,6 +319,7 @@ where
                                 self.ind_tx,
                                 &addr_buf2[..addr_count2],
                                 tunnel_ref2,
+                                self.address_filter,
                             );
 
                             match F::Routing::on_request(&mut self.routing, &msg, &context).await {

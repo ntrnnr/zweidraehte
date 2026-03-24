@@ -280,6 +280,7 @@ where
         ind_tx: DynamicSender<'res, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'res, ConfirmationMessage<Buffer<'static>>>,
         subnet_link: Option<SubnetLink<'res>>,
+        address_filter: Option<&'res dyn super::types::AddressFilter>,
     ) -> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS> {
         // ====================================================================
         // Auto-derive supported services from feature traits
@@ -469,6 +470,7 @@ where
             cemi_response_receiver: Some(cemi_ll.response_receiver),
             tcp_manager,
             subnet_link,
+            address_filter,
         }
     }
 }
@@ -491,7 +493,7 @@ impl<
 
 
 impl<
-    CTX: KnxNetIpContext,
+    CTX: KnxNetIpContext + crate::context::AddressTableContext,
     T: IpTransport + 'static,
     F: features::FeatureSet + 'static,
     const MAX_SOCKETS: usize,
@@ -511,7 +513,16 @@ where
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
-        let mut link_layer = self.build(resources, context, ll_endpoints, ind_tx, conf_tx, None);
-        async move { link_layer.run(req_rx).await }
+        // Construct address filter while we still have the concrete context
+        // type (before type-erasure to &dyn KnxNetIpContext). Same pattern
+        // as TPUART's AutoAddressChecker → DeviceAddressChecker.
+        let address_filter = super::types::RoutingAddressFilter::new(
+            context.individual_address(),
+            context.address_table(),
+        );
+        async move {
+            let mut link_layer = self.build(resources, context, ll_endpoints, ind_tx, conf_tx, None, Some(&address_filter));
+            link_layer.run(req_rx).await
+        }
     }
 }
