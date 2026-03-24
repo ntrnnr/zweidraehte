@@ -130,6 +130,7 @@ impl ConnectedHandler for WithDevMgmt {
 }
 
 /// Device Management is disabled — zero-size no-op.
+#[allow(dead_code)] // Available for configurations without Device Management
 pub struct NoDevMgmt;
 
 impl ConnectedHandler for NoDevMgmt {

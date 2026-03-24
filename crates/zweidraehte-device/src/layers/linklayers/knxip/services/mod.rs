@@ -1,14 +1,12 @@
-pub mod discovery;
-pub mod remote_config;
-pub mod routing;
+pub(crate) mod discovery;
+pub(crate) mod remote_config;
+pub(crate) mod routing;
 
-pub use discovery::DiscoveryServer;
-pub use remote_config::RemoteConfigurationServer;
-pub use routing::RoutingServer;
+pub(crate) use discovery::DiscoveryServer;
 
 // Re-export shared types so `use super::` in individual service files
 // resolves to these without needing `super::super::types::` paths.
-pub use super::types::{
-    KnxNetIpServer, PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError,
+pub(crate) use super::types::{
+    KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, ServerError,
 };
 pub(crate) use super::types::resolve_hpai;

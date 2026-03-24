@@ -246,7 +246,7 @@ pub(crate) fn resolve_hpai(
 // ============================================================================
 
 /// Trait that all connectionless KNX/IP services implement.
-pub trait KnxNetIpServer {
+pub(crate) trait KnxNetIpServer {
     /// Handle KNX/IP message received from the network.
     ///
     /// # Arguments
@@ -282,6 +282,7 @@ pub trait KnxNetIpServer {
     ) -> Result<Vec<PendingResponse, 4>, ServerError>;
 
     /// Can this server handle outgoing messages?
+    #[allow(dead_code)] // Implemented by servers; dispatch uses FeatureSet::supports_requests() instead
     fn supports_requests(&self) -> bool {
         false
     }

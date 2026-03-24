@@ -28,23 +28,23 @@
 //! - `device_mgmt` — Device Management (ConnectionType 0x03)
 //! - `tunnel` — Tunneling (ConnectionType 0x04)
 
-pub mod context;
+pub(crate) mod context;
 mod device_mgmt;
 mod handlers;
-pub mod traits;
+pub(crate) mod traits;
 mod tunnel;
 
-pub use context::{ConnectionContext, ConnectionTransport, PendingAck};
-pub use device_mgmt::DeviceMgmtConnectionHandler;
-pub use handlers::{
-    CompositeHandlers, ConnectedHandler, NoDevMgmt, NoTunnel, TunnelingConnectedHandler,
+pub(crate) use context::{ConnectionContext, ConnectionTransport, PendingAck};
+pub(crate) use device_mgmt::DeviceMgmtConnectionHandler;
+pub(crate) use handlers::{
+    CompositeHandlers, ConnectedHandler, NoTunnel, TunnelingConnectedHandler,
     WithDevMgmt, WithTunnel,
 };
-pub use traits::{
+pub(crate) use traits::{
     AcceptedConnection, AckTimeoutResult, ConnectionHandlers, ConnectionManagerResult,
     ConnectionTypeHandler, DataFrameAction, TcpChannelEvent,
 };
-pub use tunnel::TunnelConnectionHandler;
+pub(crate) use tunnel::TunnelConnectionHandler;
 
 use core::net::Ipv4Addr;
 

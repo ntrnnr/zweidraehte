@@ -17,9 +17,9 @@ use crate::{
     },
 };
 
-pub mod connections;    // Connection-oriented state machines
-pub mod features;       // Compile-time feature selection
-pub mod services;       // Connectionless service handlers
+pub(crate) mod connections;    // Connection-oriented state machines
+pub mod features;              // Compile-time feature selection
+pub(crate) mod services;      // Connectionless service handlers
 
 mod builder;
 mod dispatch;           // Frame routing and response sending
