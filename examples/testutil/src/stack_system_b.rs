@@ -7,7 +7,6 @@
 //!
 //! Run with: `cargo run --bin stack_system_b`
 
-#![cfg_attr(not(test), feature(adt_const_params))]
 
 use embassy_executor::Spawner;
 use embassy_sync::pubsub::WaitResult;
@@ -74,6 +73,9 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
 
     println!("Restart handler task started");
 
+    // The loop body either performs a process re-exec (which doesn't return)
+    // or panics on failure, so it effectively runs at most once.
+    #[allow(clippy::never_loop)]
     loop {
         let request = stack.receive_restart_request().await;
         let state = stack.state();

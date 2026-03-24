@@ -32,7 +32,7 @@ impl TcpListenerInner {
 
                 let interface_os: OsString = interface.into();
                 setsockopt(&s, BindToDevice, &interface_os)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    .map_err(std::io::Error::other)?;
             }
         }
 

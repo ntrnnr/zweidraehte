@@ -110,7 +110,7 @@ impl TunnelWorker {
             port: 0,
         };
         let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
-        let req = ConnectRequestBuilder::new(nat_hpai.clone(), nat_hpai, cri);
+        let req = ConnectRequestBuilder::new(nat_hpai, nat_hpai, cri);
         Self::send_raw(&socket, server_addr, &req).await?;
 
         // Wait for CONNECT_RESPONSE.
@@ -240,13 +240,8 @@ impl TunnelWorker {
     /// Drain any pending packets from the socket without blocking.
     async fn drain_socket(socket: &UdpSocket) {
         let mut buf = [0u8; MAX_PACKET_SIZE];
-        loop {
-            match tokio::time::timeout(Duration::from_millis(50), socket.recv_from(&mut buf)).await {
-                Ok(Ok((len, _))) => {
-                    log::debug!("Drained {} bytes from socket during connect", len);
-                }
-                _ => break,
-            }
+        while let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_millis(50), socket.recv_from(&mut buf)).await {
+            log::debug!("Drained {} bytes from socket during connect", len);
         }
     }
 
@@ -323,8 +318,8 @@ impl TunnelWorker {
         match service_type {
             KNXnetIPServiceType::TunnelingRequest => {
                 let mut slice: &[u8] = data;
-                if let Ok(req) = slice.parse::<TunnelingRequest>() {
-                    if req.communication_channel_id == self.channel_id {
+                if let Ok(req) = slice.parse::<TunnelingRequest>()
+                    && req.communication_channel_id == self.channel_id {
                         self.send_ack(req.sequence_counter).await?;
                         if req.sequence_counter == self.recv_seq {
                             self.recv_seq = self.recv_seq.wrapping_add(1);
@@ -335,7 +330,6 @@ impl TunnelWorker {
                             );
                         }
                     }
-                }
             }
             KNXnetIPServiceType::DisconnectRequest => {
                 log::info!("Server sent DisconnectRequest");
@@ -407,8 +401,8 @@ impl TunnelWorker {
 
             if let Ok(KNXnetIPServiceType::TunnelingAck) = peek_service_type(data) {
                 let mut slice: &[u8] = data;
-                if let Ok(ack) = slice.parse::<TunnelingAck>() {
-                    if ack.communication_channel_id == self.channel_id
+                if let Ok(ack) = slice.parse::<TunnelingAck>()
+                    && ack.communication_channel_id == self.channel_id
                         && ack.sequence_counter == self.send_seq
                     {
                         if ack.status != ConnectionStatus::NoError {
@@ -417,20 +411,18 @@ impl TunnelWorker {
                         self.send_seq = self.send_seq.wrapping_add(1);
                         return Ok(true);
                     }
-                }
             }
 
             // Handle other incoming frames while waiting for ACK.
             if let Ok(KNXnetIPServiceType::TunnelingRequest) = peek_service_type(data) {
                 let mut slice: &[u8] = data;
-                if let Ok(req) = slice.parse::<TunnelingRequest>() {
-                    if req.communication_channel_id == self.channel_id {
+                if let Ok(req) = slice.parse::<TunnelingRequest>()
+                    && req.communication_channel_id == self.channel_id {
                         self.send_ack(req.sequence_counter).await?;
                         if req.sequence_counter == self.recv_seq {
                             self.recv_seq = self.recv_seq.wrapping_add(1);
                         }
                     }
-                }
             }
 
             if let Ok(KNXnetIPServiceType::DisconnectRequest) = peek_service_type(data) {
@@ -469,8 +461,8 @@ impl TunnelWorker {
 
             if let Ok(KNXnetIPServiceType::TunnelingRequest) = peek_service_type(data) {
                 let mut slice: &[u8] = data;
-                if let Ok(req) = slice.parse::<TunnelingRequest>() {
-                    if req.communication_channel_id == self.channel_id {
+                if let Ok(req) = slice.parse::<TunnelingRequest>()
+                    && req.communication_channel_id == self.channel_id {
                         self.send_ack(req.sequence_counter).await?;
                         if req.sequence_counter == self.recv_seq {
                             self.recv_seq = self.recv_seq.wrapping_add(1);
@@ -498,8 +490,8 @@ impl TunnelWorker {
                                     let internal = cemi_to_knx_message(cemi_data.to_vec());
 
                                     // Filter by source address.
-                                    if let Some(expected) = expected_source {
-                                        if internal.len() >= offsets::MSG_SOURCE_ADDR + 2 {
+                                    if let Some(expected) = expected_source
+                                        && internal.len() >= offsets::MSG_SOURCE_ADDR + 2 {
                                             let source = IndividualAddress::from_bytes(
                                                 &internal[offsets::MSG_SOURCE_ADDR
                                                     ..offsets::MSG_SOURCE_ADDR + 2],
@@ -513,12 +505,11 @@ impl TunnelWorker {
                                                 continue;
                                             }
                                         }
-                                    }
 
                                     // Filter by APCI code.
-                                    if let Some(expected) = expected_apci {
-                                        if let Some(actual) = decode_apci_code(&internal) {
-                                            if actual != expected {
+                                    if let Some(expected) = expected_apci
+                                        && let Some(actual) = decode_apci_code(&internal)
+                                            && actual != expected {
                                                 log::debug!(
                                                     "Skipping APCI {} (expected {})",
                                                     actual,
@@ -526,8 +517,6 @@ impl TunnelWorker {
                                                 );
                                                 continue;
                                             }
-                                        }
-                                    }
 
                                     return Ok(internal);
                                 }
@@ -537,7 +526,6 @@ impl TunnelWorker {
                             }
                         }
                     }
-                }
             } else if let Ok(KNXnetIPServiceType::DisconnectRequest) = peek_service_type(data) {
                 return Err(Error::Disconnected);
             }
@@ -574,20 +562,18 @@ impl TunnelWorker {
                     peek_service_type(data)
                 {
                     let mut slice: &[u8] = data;
-                    if let Ok(resp) = slice.parse::<ConnectionstateResponse>() {
-                        if resp.communication_channel_id == self.channel_id {
+                    if let Ok(resp) = slice.parse::<ConnectionstateResponse>()
+                        && resp.communication_channel_id == self.channel_id {
                             self.last_heartbeat = Instant::now();
                             return Ok(());
                         }
-                    }
                 }
 
                 // Process other frames while waiting.
-                if let Err(e) = self.handle_incoming(data).await {
-                    if matches!(e, Error::Disconnected) {
+                if let Err(e) = self.handle_incoming(data).await
+                    && matches!(e, Error::Disconnected) {
                         return Err(e);
                     }
-                }
             }
 
             if attempt == 0 {

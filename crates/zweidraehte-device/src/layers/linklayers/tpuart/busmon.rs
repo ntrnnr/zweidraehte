@@ -217,8 +217,8 @@ where
             let mut byte_buf = [0u8; 1];
 
             // Calculate timeout
-            let timeout_duration = if self.timeout_deadline.is_some() {
-                let remaining = self.timeout_deadline.unwrap().saturating_duration_since(Instant::now());
+            let timeout_duration = if let Some(deadline) = self.timeout_deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.as_ticks() == 0 {
                     Duration::from_millis(0)
                 } else {

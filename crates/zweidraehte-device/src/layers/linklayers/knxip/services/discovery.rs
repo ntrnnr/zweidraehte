@@ -277,13 +277,13 @@ impl DiscoveryServer {
             )));
         }
 
-        if include_tunneling_info {
-            if let Some((max_apdu_len, slots)) = context.tunneling_slot_info() {
-                let _ = dibs.push(DescriptionInformationBlockBuilder::TunnelingInfo(TunnelingInfoBuilder::new(
-                    max_apdu_len,
-                    slots,
-                )));
-            }
+        if include_tunneling_info
+            && let Some((max_apdu_len, slots)) = context.tunneling_slot_info()
+        {
+            let _ = dibs.push(DescriptionInformationBlockBuilder::TunnelingInfo(TunnelingInfoBuilder::new(
+                max_apdu_len,
+                slots,
+            )));
         }
 
         // ----------------------------------------------------------------

@@ -38,7 +38,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchRequest {
         let header = buffer.take_obj_front::<raw::KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
         // Verify it's a SEARCH_REQUEST
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::SearchRequest
         {
             return Err(ParseError::Format);
@@ -118,7 +118,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchRequestExtended<B> {
         let header = buffer.take_obj_front::<raw::KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
         // Verify it's a SEARCH_REQUEST_EXTENDED
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::SearchRequestExtended
         {
             return Err(ParseError::Format);
@@ -195,7 +195,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchResponse<B> {
         let header = buffer.take_obj_front::<raw::KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
         // Verify it's a SEARCH_RESPONSE
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::SearchResponse
         {
             return Err(ParseError::Format);
@@ -280,7 +280,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SearchResponseExtended<B> {
         let header = buffer.take_obj_front::<raw::KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
         // Verify it's a SEARCH_RESPONSE_EXTENDED
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::SearchResponseExtended
         {
             return Err(ParseError::Format);
@@ -361,7 +361,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DescriptionRequest {
         let header = buffer.take_obj_front::<raw::KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
         // Verify it's a DESCRIPTION_REQUEST
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::DescriptionRequest
         {
             return Err(ParseError::Format);
@@ -432,7 +432,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DescriptionResponse<B> {
         let header = buffer.take_obj_front::<raw::KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
         // Verify it's a DESCRIPTION_RESPONSE
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::DescriptionResponse
         {
             return Err(ParseError::Format);

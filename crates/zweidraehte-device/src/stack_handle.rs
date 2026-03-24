@@ -256,8 +256,8 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # Arguments
     /// * `asap` - The communication object index to read
     /// * `timeout` - Optional timeout duration. If `None`, the method returns immediately after
-    ///               sending the request (same behavior as `read_object`). If `Some(duration)`,
-    ///               it waits for a `ReadResponse` event for up to the specified duration.
+    ///   sending the request (same behavior as `read_object`). If `Some(duration)`,
+    ///   it waits for a `ReadResponse` event for up to the specified duration.
     ///
     /// # Returns
     /// * `Ok(())` - The read request was sent successfully and (if timeout was specified) a response was received

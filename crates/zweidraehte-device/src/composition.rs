@@ -7,7 +7,6 @@
 //! - [`InsecureDeviceBuilder`] — standard `(NL, TL, AL)` stack
 //! - [`InsecureIpDeviceBuilder`] — KNX/IP `(NL, CemiTL<TL>, AL)` stack (requires `knxip` feature)
 
-#[allow(async_fn_in_trait)]
 use core::cell::Cell;
 
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};

@@ -186,7 +186,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for CemiLData<B> {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         // Parse message code (byte 0)
         let msg_code_byte = buffer.take_byte_front().ok_or(ParseError::Format)?;
-        let message_code = CemiMessageCode::try_from(msg_code_byte).map_err(|_| ParseError::NotSupported)?;
+        let message_code = CemiMessageCode::from(msg_code_byte);
 
         // Parse additional info length (byte 1)
         let add_info_len = buffer.take_byte_front().ok_or(ParseError::Format)?;
@@ -334,8 +334,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for CemiLocalMgmt<B> {
             .take_obj_front::<raw::CemiLocalMgmtHeader>()
             .ok_or(ParseError::Format)?;
 
-        let message_code =
-            CemiMessageCode::try_from(header.message_code).map_err(|_| ParseError::NotSupported)?;
+        let message_code = CemiMessageCode::from(header.message_code);
         let count_start = header.count_start_index.get();
 
         let data = buffer.take_rest_front();
@@ -430,8 +429,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for CemiTransport<B> {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         // MC (1 byte)
         let mc_byte = buffer.take_byte_front().ok_or(ParseError::Format)?;
-        let message_code =
-            CemiMessageCode::try_from(mc_byte).map_err(|_| ParseError::NotSupported)?;
+        let message_code = CemiMessageCode::from(mc_byte);
 
         // AddIL (1 byte)
         let add_info_len = buffer.take_byte_front().ok_or(ParseError::Format)? as usize;
@@ -558,7 +556,7 @@ impl<B: MessageBuffer> CemiBuffer<B> {
     /// Get the message code
     pub fn message_code(&self) -> CemiMessageCode {
         if self.inner.len() > 0 {
-            CemiMessageCode::try_from(self.inner[0]).unwrap_or(CemiMessageCode::Other(self.inner[0]))
+            CemiMessageCode::from(self.inner[0])
         } else {
             CemiMessageCode::Other(0)
         }

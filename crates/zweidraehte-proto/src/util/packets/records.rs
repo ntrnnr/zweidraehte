@@ -611,7 +611,7 @@ where
     /// Returns the same records but coerces the backing `B` type to `&[u8]`.
     pub fn as_ref(&self) -> Records<&[u8], R> {
         let Self { bytes, record_count, context } = self;
-        Records { bytes: bytes, record_count: *record_count, context: context.clone() }
+        Records { bytes, record_count: *record_count, context: context.clone() }
     }
 }
 

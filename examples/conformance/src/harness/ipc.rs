@@ -240,11 +240,11 @@ impl SharedMemory {
             c"conformance_state",
             memfd::MemFdCreateFlag::MFD_CLOEXEC,
         )
-        .map_err(|e| io::Error::other(e))?;
+        .map_err(io::Error::other)?;
 
         // Set the size
         nix::unistd::ftruncate(&fd, size as i64)
-            .map_err(|e| io::Error::other(e))?;
+            .map_err(io::Error::other)?;
 
         // Map into our address space
         let ptr = unsafe {
@@ -256,7 +256,7 @@ impl SharedMemory {
                 &fd,
                 0,
             )
-            .map_err(|e| io::Error::other(e))?
+            .map_err(io::Error::other)?
         };
 
         Ok(Self { fd, ptr: ptr.as_ptr() as *mut u8, size })
@@ -285,7 +285,7 @@ impl SharedMemory {
                 &owned_fd,
                 0,
             )
-            .map_err(|e| io::Error::other(e))?
+            .map_err(io::Error::other)?
         };
 
         Ok(Self { fd: owned_fd, ptr: ptr.as_ptr() as *mut u8, size })
@@ -357,11 +357,11 @@ impl SharedMemory {
         use nix::fcntl;
         let raw = self.fd.as_raw_fd();
         let flags = fcntl::fcntl(raw, fcntl::FcntlArg::F_GETFD)
-            .map_err(|e| io::Error::other(e))?;
+            .map_err(io::Error::other)?;
         let mut fd_flags = nix::fcntl::FdFlag::from_bits_truncate(flags);
         fd_flags.remove(nix::fcntl::FdFlag::FD_CLOEXEC);
         fcntl::fcntl(raw, fcntl::FcntlArg::F_SETFD(fd_flags))
-            .map_err(|e| io::Error::other(e))?;
+            .map_err(io::Error::other)?;
         Ok(())
     }
 }

@@ -682,6 +682,7 @@ impl<M: KnxModule> ModuleInstanceBuilder<M> {
     }
 
     /// Add a single instance with the given arguments.
+    #[allow(clippy::should_implement_trait)]
     pub fn add(mut self, args: Vec<ModuleArgValue>) -> Self {
         self.instances.push(M::instance(&args));
         self

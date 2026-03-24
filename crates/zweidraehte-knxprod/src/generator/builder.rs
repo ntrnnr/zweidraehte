@@ -598,7 +598,7 @@ impl<'a> KnxprodBuilder<'a> {
             self.schema_version,
         )?;
 
-        let app_refs: Vec<&ApplicationProgramDef> = self.application_programs.iter().copied().collect();
+        let app_refs: Vec<&ApplicationProgramDef> = self.application_programs.to_vec();
         let topology_xml = ProjectGenerator::generate_topology_xml(
             project_id,
             self.manufacturer_id,

@@ -175,7 +175,7 @@ impl LinkLayerBuilderBase for UsbLinkLayerBuilder {
 }
 
 impl<CTX: BufferManagerContext> LinkLayerBuilder<CTX> for UsbLinkLayerBuilder {
-    fn build_and_run<'a>(
+    async fn build_and_run<'a>(
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
@@ -183,118 +183,116 @@ impl<CTX: BufferManagerContext> LinkLayerBuilder<CTX> for UsbLinkLayerBuilder {
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
-    ) -> impl core::future::Future<Output = !> + 'a {
-        async move {
-            // Initialize transport resources
-            let transport_resources = resources.transport.init();
+    ) -> ! {
+        // Initialize transport resources
+        let transport_resources = resources.transport.init();
 
-            // Open USB device and create transport
-            info!("USB Link Layer: Opening device...");
-            let mut transport = match UsbCemiTransport::open(&self.selector, transport_resources).await {
-                Ok(t) => t,
-                Err(e) => {
-                    panic!("USB Link Layer: Failed to open device: {:?}", e);
-                }
-            };
-
-            // Initialize transport (negotiate cEMI)
-            if let Err(e) = transport.initialize().await {
-                panic!("USB Link Layer: Failed to initialize transport: {:?}", e);
+        // Open USB device and create transport
+        info!("USB Link Layer: Opening device...");
+        let mut transport = match UsbCemiTransport::open(&self.selector, transport_resources).await {
+            Ok(t) => t,
+            Err(e) => {
+                panic!("USB Link Layer: Failed to open device: {:?}", e);
             }
+        };
 
-            // Read interface's current individual address (before any writes)
-            match Self::read_individual_address(&mut transport).await {
-                Ok(address) => {
-                    info!("USB Link Layer: Current interface address: {}", address);
-                }
-                Err(e) => {
-                    warn!("USB Link Layer: Failed to read individual address: {:?}", e);
-                }
-            }
-
-            // Set individual address if configured
-            if let Some(address) = self.individual_address {
-                info!("USB Link Layer: Setting interface address to {}...", address);
-                if let Err(e) = Self::write_individual_address(&mut transport, address).await {
-                    warn!("USB Link Layer: Failed to set individual address: {:?}", e);
-                }
-            }
-
-            // Set communication mode to Data Link Layer on cEMI Server Object (Object 8)
-            info!("USB Link Layer: Setting communication mode to Data Link Layer...");
-            if let Err(e) = transport
-                .prop_write(properties::CEMI_SERVER_OBJECT, properties::PID_COMM_MODE, &[comm_mode::DATA_LINK_LAYER])
-                .await
-            {
-                panic!("USB Link Layer: Failed to set comm mode: {:?}", e);
-            }
-
-            // Verify the write
-            match transport.prop_read(properties::CEMI_SERVER_OBJECT, properties::PID_COMM_MODE).await {
-                Ok(data) => {
-                    // Response format: msg_code(1) + obj_type(2) + obj_instance(1) + pid(1) + count_idx(2) + data
-                    // The actual value is at offset 7 (first data byte)
-                    if data.len() >= 8 && data[7] == comm_mode::DATA_LINK_LAYER {
-                        info!("USB Link Layer: Communication mode verified as Data Link Layer");
-                    } else {
-                        warn!("USB Link Layer: Unexpected comm mode response: {:02X?}", data);
-                    }
-                }
-                Err(e) => {
-                    // Write succeeded (we got M_PropWrite.con), but read failed
-                    debug!("USB Link Layer: Failed to verify comm mode: {:?}", e);
-                    info!("USB Link Layer: Communication mode set (write confirmed)");
-                }
-            }
-
-            // Read max APDU length from interface and update the stack state
-            let max_apdu_length = match Self::read_max_apdu_length(&mut transport).await {
-                Ok(len) => {
-                    info!("USB Link Layer: Interface max APDU length: {} bytes", len);
-                    len
-                }
-                Err(e) => {
-                    warn!(
-                        "USB Link Layer: Failed to read max APDU length: {:?}, using default {}",
-                        e, DEFAULT_MAX_APDU_LENGTH
-                    );
-                    DEFAULT_MAX_APDU_LENGTH
-                }
-            };
-
-            // Update the stack state with the detected max APDU length
-            // This ensures PID 56 (MAX_APDU_LENGTH) in the Device Object reports
-            // the actual hardware capability rather than the compile-time default
-            context.set_max_apdu_length(max_apdu_length);
-
-            // Check bus connection
-            match transport.get_bus_connection_status().await {
-                Ok(connected) => {
-                    if connected {
-                        info!("USB Link Layer: Bus connected");
-                    } else {
-                        warn!("USB Link Layer: Bus not connected!");
-                    }
-                }
-                Err(e) => {
-                    warn!("USB Link Layer: Failed to check bus status: {:?}", e);
-                }
-            }
-
-            info!("USB Link Layer: Initialization complete");
-
-            let mut link_layer = UsbLinkLayer {
-                transport,
-                buffer_manager: context.buffer_manager(),
-                ind_tx,
-                conf_tx,
-                pending_tx: None,
-                timeout_deadline: None,
-                max_apdu_length,
-            };
-
-            link_layer.process(req_rx).await
+        // Initialize transport (negotiate cEMI)
+        if let Err(e) = transport.initialize().await {
+            panic!("USB Link Layer: Failed to initialize transport: {:?}", e);
         }
+
+        // Read interface's current individual address (before any writes)
+        match Self::read_individual_address(&mut transport).await {
+            Ok(address) => {
+                info!("USB Link Layer: Current interface address: {}", address);
+            }
+            Err(e) => {
+                warn!("USB Link Layer: Failed to read individual address: {:?}", e);
+            }
+        }
+
+        // Set individual address if configured
+        if let Some(address) = self.individual_address {
+            info!("USB Link Layer: Setting interface address to {}...", address);
+            if let Err(e) = Self::write_individual_address(&mut transport, address).await {
+                warn!("USB Link Layer: Failed to set individual address: {:?}", e);
+            }
+        }
+
+        // Set communication mode to Data Link Layer on cEMI Server Object (Object 8)
+        info!("USB Link Layer: Setting communication mode to Data Link Layer...");
+        if let Err(e) = transport
+            .prop_write(properties::CEMI_SERVER_OBJECT, properties::PID_COMM_MODE, &[comm_mode::DATA_LINK_LAYER])
+            .await
+        {
+            panic!("USB Link Layer: Failed to set comm mode: {:?}", e);
+        }
+
+        // Verify the write
+        match transport.prop_read(properties::CEMI_SERVER_OBJECT, properties::PID_COMM_MODE).await {
+            Ok(data) => {
+                // Response format: msg_code(1) + obj_type(2) + obj_instance(1) + pid(1) + count_idx(2) + data
+                // The actual value is at offset 7 (first data byte)
+                if data.len() >= 8 && data[7] == comm_mode::DATA_LINK_LAYER {
+                    info!("USB Link Layer: Communication mode verified as Data Link Layer");
+                } else {
+                    warn!("USB Link Layer: Unexpected comm mode response: {:02X?}", data);
+                }
+            }
+            Err(e) => {
+                // Write succeeded (we got M_PropWrite.con), but read failed
+                debug!("USB Link Layer: Failed to verify comm mode: {:?}", e);
+                info!("USB Link Layer: Communication mode set (write confirmed)");
+            }
+        }
+
+        // Read max APDU length from interface and update the stack state
+        let max_apdu_length = match Self::read_max_apdu_length(&mut transport).await {
+            Ok(len) => {
+                info!("USB Link Layer: Interface max APDU length: {} bytes", len);
+                len
+            }
+            Err(e) => {
+                warn!(
+                    "USB Link Layer: Failed to read max APDU length: {:?}, using default {}",
+                    e, DEFAULT_MAX_APDU_LENGTH
+                );
+                DEFAULT_MAX_APDU_LENGTH
+            }
+        };
+
+        // Update the stack state with the detected max APDU length
+        // This ensures PID 56 (MAX_APDU_LENGTH) in the Device Object reports
+        // the actual hardware capability rather than the compile-time default
+        context.set_max_apdu_length(max_apdu_length);
+
+        // Check bus connection
+        match transport.get_bus_connection_status().await {
+            Ok(connected) => {
+                if connected {
+                    info!("USB Link Layer: Bus connected");
+                } else {
+                    warn!("USB Link Layer: Bus not connected!");
+                }
+            }
+            Err(e) => {
+                warn!("USB Link Layer: Failed to check bus status: {:?}", e);
+            }
+        }
+
+        info!("USB Link Layer: Initialization complete");
+
+        let mut link_layer = UsbLinkLayer {
+            transport,
+            buffer_manager: context.buffer_manager(),
+            ind_tx,
+            conf_tx,
+            pending_tx: None,
+            timeout_deadline: None,
+            max_apdu_length,
+        };
+
+        link_layer.process(req_rx).await
     }
 }
 
@@ -326,32 +324,32 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
             return;
         }
 
-        let message_code = CemiMessageCode::try_from(cemi_data[0]).unwrap_or(CemiMessageCode::Other(cemi_data[0]));
+        let message_code = CemiMessageCode::from(cemi_data[0]);
         debug!("USB Link Layer: Incoming cEMI, message_code={:?}, len={}", message_code, cemi_data.len());
 
         // Check if this is a confirmation for our pending transmission
-        if let Some(ref _pending) = self.pending_tx {
-            if message_code == CemiMessageCode::LDataCon {
-                // This is a confirmation
-                if let Some(pending) = self.pending_tx.take() {
-                    let mut msg = KnxMessageBuffer::new(pending.buffer, ServiceType::L_Data_Con);
+        if let Some(ref _pending) = self.pending_tx
+            && message_code == CemiMessageCode::LDataCon
+        {
+            // This is a confirmation
+            if let Some(pending) = self.pending_tx.take() {
+                let mut msg = KnxMessageBuffer::new(pending.buffer, ServiceType::L_Data_Con);
 
-                    // Check positive/negative confirmation from cEMI
-                    // In cEMI L_Data.con, byte 2 contains the control field
-                    // The confirmation flag is in the message itself
-                    if cemi_data.len() > 2 && (cemi_data[2] & 0x01) == 0 {
-                        // Positive confirmation (no error)
-                        msg.ctrl_field_mut().set_c(Confirm::NoError);
-                    } else {
-                        // Negative confirmation
-                        msg.ctrl_field_mut().set_c(Confirm::Err);
-                    }
-
-                    self.conf_tx.send(ConfirmationMessage::confirmation(msg)).await;
+                // Check positive/negative confirmation from cEMI
+                // In cEMI L_Data.con, byte 2 contains the control field
+                // The confirmation flag is in the message itself
+                if cemi_data.len() > 2 && (cemi_data[2] & 0x01) == 0 {
+                    // Positive confirmation (no error)
+                    msg.ctrl_field_mut().set_c(Confirm::NoError);
+                } else {
+                    // Negative confirmation
+                    msg.ctrl_field_mut().set_c(Confirm::Err);
                 }
-                self.timeout_deadline = None;
-                return;
+
+                self.conf_tx.send(ConfirmationMessage::confirmation(msg)).await;
             }
+            self.timeout_deadline = None;
+            return;
         }
 
         // This is an indication - forward to network layer

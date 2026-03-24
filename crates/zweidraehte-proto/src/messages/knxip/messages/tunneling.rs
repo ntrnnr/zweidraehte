@@ -124,7 +124,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingRequest {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::TunnelingRequest
         {
             return Err(ParseError::Format);
@@ -236,7 +236,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingAck {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::TunnelingAck
         {
             return Err(ParseError::Format);
@@ -326,7 +326,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DeviceConfigurationRequest {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::DeviceConfigurationRequest
         {
             return Err(ParseError::Format);
@@ -439,7 +439,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DeviceConfigurationAck {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::DeviceConfigurationAck
         {
             return Err(ParseError::Format);
@@ -528,7 +528,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingFeatureGet {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::TunnelingFeatureGet
         {
             return Err(ParseError::Format);
@@ -640,7 +640,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingFeatureResponse {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::TunnelingFeatureResponse
         {
             return Err(ParseError::Format);
@@ -769,7 +769,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingFeatureSet {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::TunnelingFeatureSet
         {
             return Err(ParseError::Format);
@@ -810,7 +810,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingFeatureInfo {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::TunnelingFeatureInfo
         {
             return Err(ParseError::Format);

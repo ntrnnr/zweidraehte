@@ -9,14 +9,13 @@ pub fn get_interface_address(interface_name: &str) -> Result<Ipv4Addr> {
     let ifaddrs = getifaddrs().map_err(|e| Error::Other(format!("Failed to get interface addresses: {}", e)))?;
 
     for ifaddr in ifaddrs {
-        if ifaddr.interface_name == interface_name {
-            if let Some(address) = ifaddr.address {
+        if ifaddr.interface_name == interface_name
+            && let Some(address) = ifaddr.address {
                 // Check if this is an IPv4 address
                 if let Some(sockaddr) = address.as_sockaddr_in() {
-                    return Ok(sockaddr.ip().into());
+                    return Ok(sockaddr.ip());
                 }
             }
-        }
     }
 
     Err(Error::Other(format!("Interface '{}' not found or has no IPv4 address", interface_name)))

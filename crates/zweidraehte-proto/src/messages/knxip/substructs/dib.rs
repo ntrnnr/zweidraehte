@@ -65,6 +65,7 @@ mod raw {
     }
 
     /// Wire format for a single supported service record (2 bytes)
+    #[allow(dead_code)] // KNX spec: not yet used
     #[derive(Copy, Clone, Debug, FromBytes, IntoBytes, Unaligned, KnownLayout, Immutable)]
     #[repr(C)]
     pub(super) struct SupportedServiceRecord {
@@ -117,6 +118,7 @@ mod raw {
     }
 
     /// Wire format for a single tunneling slot info record (4 bytes)
+    #[allow(dead_code)] // KNX spec: not yet used
     #[derive(Copy, Clone, Debug, FromBytes, IntoBytes, Unaligned, KnownLayout, Immutable)]
     #[repr(C)]
     pub(super) struct TunnelingSlotInfoRecord {
@@ -1040,9 +1042,7 @@ pub fn peek_description_type_code(bytes: &[u8]) -> ParseResult<KNXnetIPServiceFa
     let (hdr, _) = Ref::<_, raw::Header>::from_prefix(bytes)
         .map_err(|_| debug_err!(ParseError::Format, "too few bytes for DIB header"))?;
 
-    KNXnetIPServiceFamily::try_from(hdr.description_type_code).map_err(|_| {
-        debug_err!(ParseError::NotSupported, "unrecognized DIB description type code: {:x}", hdr.description_type_code)
-    })
+    Ok(KNXnetIPServiceFamily::from(hdr.description_type_code))
 }
 
 /// Peek at a DIB header to get the structure length

@@ -271,10 +271,11 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
             self.root_nodes.iter().filter(|n| matches!(n.node_type, VisibleNodeType::Channel { .. })).count();
 
         // Also count the CIB node that may have been added
-        let has_cib = self.root_nodes.iter().any(|n| matches!(n.node_type, VisibleNodeType::DeviceSettings));
+        let _has_cib = self.root_nodes.iter().any(|n| matches!(n.node_type, VisibleNodeType::DeviceSettings));
 
         // The actual channel index in the dynamic section
-        let actual_idx = if has_cib { channel_idx } else { channel_idx };
+        // TODO: Adjust index when CIB node is present (currently a no-op).
+        let actual_idx = channel_idx;
         self.current_channel_idx = Some(actual_idx);
 
         let raw_name = channel.text.clone().unwrap_or_else(|| channel.name.clone());
@@ -701,7 +702,7 @@ impl App {
     }
 
     /// Flatten children of a visible tree node at a given depth.
-    fn flatten_children(&mut self, children: &[VisibleTreeNode], depth: usize, dynamic: &DynamicSection) {
+    fn flatten_children(&mut self, children: &[VisibleTreeNode], depth: usize, _dynamic: &DynamicSection) {
         for child in children {
             let is_expanded = self.expanded_nodes.contains(&child.id);
 
@@ -742,7 +743,7 @@ impl App {
 
             // If expanded, recursively add grandchildren
             if is_expanded {
-                self.flatten_children(&child.children, depth + 1, dynamic);
+                self.flatten_children(&child.children, depth + 1, _dynamic);
             }
         }
     }
@@ -869,11 +870,10 @@ impl App {
     fn collect_modules_from_pb<'a>(&self, items: &'a [ParameterBlockItem], modules: &mut Vec<&'a Module>) {
         for item in items {
             match item {
-                ParameterBlockItem::Module(module) => {
-                    if self.device.is_module_visible(&module.id) {
+                ParameterBlockItem::Module(module)
+                    if self.device.is_module_visible(&module.id) => {
                         modules.push(module);
                     }
-                }
                 ParameterBlockItem::Choose(choose) => {
                     self.collect_modules_from_choose(choose, modules);
                 }
@@ -912,11 +912,10 @@ impl App {
     fn collect_modules_from_when<'a>(&self, items: &'a [WhenItem], modules: &mut Vec<&'a Module>) {
         for item in items {
             match item {
-                WhenItem::Module(module) => {
-                    if self.device.is_module_visible(&module.id) {
+                WhenItem::Module(module)
+                    if self.device.is_module_visible(&module.id) => {
                         modules.push(module);
                     }
-                }
                 WhenItem::Choose(nested_choose) => {
                     self.collect_modules_from_choose(nested_choose, modules);
                 }
@@ -959,11 +958,10 @@ impl App {
     fn collect_when_blocks<'a>(&self, items: &'a [WhenItem], blocks: &mut Vec<&'a ParameterBlock>) {
         for item in items {
             match item {
-                WhenItem::ParameterBlock(pb) => {
-                    if self.block_has_visible_items(&pb.items) {
+                WhenItem::ParameterBlock(pb)
+                    if self.block_has_visible_items(&pb.items) => {
                         blocks.push(pb);
                     }
-                }
                 WhenItem::Choose(nested_choose) => {
                     self.collect_blocks_from_choose(nested_choose, blocks);
                 }
@@ -1828,11 +1826,10 @@ impl App {
     fn find_block_in_when_items<'a>(&self, items: &'a [WhenItem], block_name: &str) -> Option<&'a ParameterBlock> {
         for item in items {
             match item {
-                WhenItem::ParameterBlock(pb) => {
-                    if pb.name.as_deref() == Some(block_name) {
+                WhenItem::ParameterBlock(pb)
+                    if pb.name.as_deref() == Some(block_name) => {
                         return Some(pb);
                     }
-                }
                 WhenItem::Choose(nested_choose) => {
                     if let Some(pb) = self.find_block_in_choose(nested_choose, block_name) {
                         return Some(pb);
@@ -2304,7 +2301,7 @@ impl App {
             .and_then(|mv| mv.address_table())
             .and_then(|r| r.resource_type.as_ref())
             .and_then(|rt| rt.flavour.as_ref())
-            .map(|f| TableFlavour::from_str(f))
+            .map(|f| TableFlavour::parse_flavour(f))
             .unwrap_or(TableFlavour::AddressTableSystemB)
     }
 
@@ -2314,7 +2311,7 @@ impl App {
             .and_then(|mv| mv.association_table())
             .and_then(|r| r.resource_type.as_ref())
             .and_then(|rt| rt.flavour.as_ref())
-            .map(|f| TableFlavour::from_str(f))
+            .map(|f| TableFlavour::parse_flavour(f))
             .unwrap_or(TableFlavour::AssociationTableSystemB)
     }
 
@@ -2811,8 +2808,7 @@ impl App {
             // System 7.x: 4 bytes per entry, no count header
             // Format: [RAM_ptr_lo, RAM_ptr_hi, flags, type] per entry
             // The RAM pointer indicates where the object's value is stored at runtime
-            let mut idx: u32 = 0;
-            for com_obj_ref in self.device.visible_com_object_refs() {
+            for (idx, com_obj_ref) in (0_u32..).zip(self.device.visible_com_object_refs()) {
                 let name = com_obj_ref.text.clone().unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
 
                 // Include assigned group address in annotation if present
@@ -2834,7 +2830,6 @@ impl App {
                     size_bits: 32, // 4 bytes: RAM_ptr(2) + flags(1) + type(1)
                     param_id: com_obj_ref.id.clone(),
                 });
-                idx += 1;
             }
         } else {
             // System B: 2-byte count header + 2 bytes per entry
@@ -2847,8 +2842,7 @@ impl App {
                 param_id: String::new(),
             });
 
-            let mut idx: u32 = 0;
-            for com_obj_ref in self.device.visible_com_object_refs() {
+            for (idx, com_obj_ref) in (0_u32..).zip(self.device.visible_com_object_refs()) {
                 let name = com_obj_ref.text.clone().unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
 
                 // Include assigned group address in annotation if present
@@ -2870,7 +2864,6 @@ impl App {
                     size_bits: 16, // 2 bytes: type(1) + flags(1)
                     param_id: com_obj_ref.id.clone(),
                 });
-                idx += 1;
             }
         }
 
@@ -3501,39 +3494,35 @@ impl App {
     /// Move selection up.
     pub fn move_up(&mut self) {
         match &mut self.edit_mode {
-            EditMode::EnumDropdown { selected_idx, scroll_offset, .. } => {
-                if *selected_idx > 0 {
+            EditMode::EnumDropdown { selected_idx, scroll_offset, .. }
+                if *selected_idx > 0 => {
                     *selected_idx -= 1;
                     // Adjust scroll if selection went above visible area
                     if *selected_idx < *scroll_offset {
                         *scroll_offset = *selected_idx;
                     }
                 }
-            }
             EditMode::None => match (self.current_tab, self.focus) {
                 (_, Focus::Tabs) => {
                     // No vertical movement in tabs
                 }
-                (MainTab::Parameters, Focus::Sidebar) => {
-                    if self.selected_tree_idx > 0 {
+                (MainTab::Parameters, Focus::Sidebar)
+                    if self.selected_tree_idx > 0 => {
                         self.selected_tree_idx -= 1;
                         self.rebuild_content();
                         self.selected_content_idx = 0;
                         self.content_scroll_offset = 0;
                     }
-                }
-                (MainTab::Parameters, Focus::Content) => {
-                    if self.selected_content_idx > 0 {
+                (MainTab::Parameters, Focus::Content)
+                    if self.selected_content_idx > 0 => {
                         self.selected_content_idx -= 1;
                         self.adjust_content_scroll();
                     }
-                }
-                (MainTab::CommObjects, Focus::Content) => {
-                    if self.selected_obj_idx > 0 {
+                (MainTab::CommObjects, Focus::Content)
+                    if self.selected_obj_idx > 0 => {
                         self.selected_obj_idx -= 1;
                         self.adjust_comm_obj_scroll();
                     }
-                }
                 (MainTab::Memory, Focus::Sidebar) => {
                     self.segment_move_up();
                 }
@@ -3555,8 +3544,8 @@ impl App {
     /// Move selection down.
     pub fn move_down(&mut self) {
         match &mut self.edit_mode {
-            EditMode::EnumDropdown { selected_idx, options, scroll_offset, .. } => {
-                if *selected_idx < options.len().saturating_sub(1) {
+            EditMode::EnumDropdown { selected_idx, options, scroll_offset, .. }
+                if *selected_idx < options.len().saturating_sub(1) => {
                     *selected_idx += 1;
                     // Adjust scroll if selection went below visible area
                     let visible_items = Self::DROPDOWN_VISIBLE_ITEMS;
@@ -3564,31 +3553,27 @@ impl App {
                         *scroll_offset = selected_idx.saturating_sub(visible_items - 1);
                     }
                 }
-            }
             EditMode::None => match (self.current_tab, self.focus) {
                 (_, Focus::Tabs) => {
                     // No vertical movement in tabs
                 }
-                (MainTab::Parameters, Focus::Sidebar) => {
-                    if self.selected_tree_idx < self.tree_nodes.len().saturating_sub(1) {
+                (MainTab::Parameters, Focus::Sidebar)
+                    if self.selected_tree_idx < self.tree_nodes.len().saturating_sub(1) => {
                         self.selected_tree_idx += 1;
                         self.rebuild_content();
                         self.selected_content_idx = 0;
                         self.content_scroll_offset = 0;
                     }
-                }
-                (MainTab::Parameters, Focus::Content) => {
-                    if self.selected_content_idx < self.content_items.len().saturating_sub(1) {
+                (MainTab::Parameters, Focus::Content)
+                    if self.selected_content_idx < self.content_items.len().saturating_sub(1) => {
                         self.selected_content_idx += 1;
                         self.adjust_content_scroll();
                     }
-                }
-                (MainTab::CommObjects, Focus::Content) => {
-                    if self.selected_obj_idx < self.com_object_rows.len().saturating_sub(1) {
+                (MainTab::CommObjects, Focus::Content)
+                    if self.selected_obj_idx < self.com_object_rows.len().saturating_sub(1) => {
                         self.selected_obj_idx += 1;
                         self.adjust_comm_obj_scroll();
                     }
-                }
                 (MainTab::Memory, Focus::Sidebar) => {
                     self.segment_move_down();
                 }
@@ -3611,26 +3596,23 @@ impl App {
             (_, Focus::Tabs) => {
                 // No vertical movement in tabs
             }
-            (MainTab::Parameters, Focus::Sidebar) => {
-                if self.selected_tree_idx > 0 {
+            (MainTab::Parameters, Focus::Sidebar)
+                if self.selected_tree_idx > 0 => {
                     self.selected_tree_idx = self.selected_tree_idx.saturating_sub(Self::PAGE_SIZE);
                     self.rebuild_content();
                     self.selected_content_idx = 0;
                     self.content_scroll_offset = 0;
                 }
-            }
-            (MainTab::Parameters, Focus::Content) => {
-                if self.selected_content_idx > 0 {
+            (MainTab::Parameters, Focus::Content)
+                if self.selected_content_idx > 0 => {
                     self.selected_content_idx = self.selected_content_idx.saturating_sub(Self::PAGE_SIZE);
                     self.adjust_content_scroll();
                 }
-            }
-            (MainTab::CommObjects, Focus::Content) => {
-                if self.selected_obj_idx > 0 {
+            (MainTab::CommObjects, Focus::Content)
+                if self.selected_obj_idx > 0 => {
                     self.selected_obj_idx = self.selected_obj_idx.saturating_sub(Self::PAGE_SIZE);
                     self.adjust_comm_obj_scroll();
                 }
-            }
             (MainTab::Memory, Focus::Sidebar) => {
                 for _ in 0..Self::PAGE_SIZE {
                     self.segment_move_up();
@@ -3834,9 +3816,7 @@ impl App {
                 WidgetType::Dropdown { options, current_idx } => {
                     // Calculate initial scroll offset to center the selected item if possible
                     let visible = Self::DROPDOWN_VISIBLE_ITEMS;
-                    let scroll_offset = if options.len() <= visible {
-                        0
-                    } else if *current_idx < visible / 2 {
+                    let scroll_offset = if options.len() <= visible || *current_idx < visible / 2 {
                         0
                     } else if *current_idx > options.len() - visible / 2 {
                         options.len().saturating_sub(visible)
@@ -3876,21 +3856,19 @@ impl App {
     /// Handle character input for editing.
     pub fn handle_char(&mut self, c: char) {
         match &mut self.edit_mode {
-            EditMode::NumberInput { buffer, .. } => {
-                if c.is_ascii_digit() || (c == '-' && buffer.is_empty()) {
+            EditMode::NumberInput { buffer, .. }
+                if (c.is_ascii_digit() || (c == '-' && buffer.is_empty())) => {
                     buffer.push(c);
                 }
-            }
             EditMode::TextInput { buffer, cursor, .. } => {
                 buffer.insert(*cursor, c);
                 *cursor += 1;
             }
-            EditMode::GroupAddressInput { buffer, .. } => {
+            EditMode::GroupAddressInput { buffer, .. }
                 // Allow digits and slashes for group address format (e.g., "1/2/3")
-                if c.is_ascii_digit() || c == '/' {
+                if (c.is_ascii_digit() || c == '/') => {
                     buffer.push(c);
                 }
-            }
             _ => {}
         }
     }
@@ -3901,12 +3879,11 @@ impl App {
             EditMode::NumberInput { buffer, .. } | EditMode::GroupAddressInput { buffer, .. } => {
                 buffer.pop();
             }
-            EditMode::TextInput { buffer, cursor, .. } => {
-                if *cursor > 0 {
+            EditMode::TextInput { buffer, cursor, .. }
+                if *cursor > 0 => {
                     *cursor -= 1;
                     buffer.remove(*cursor);
                 }
-            }
             _ => {}
         }
     }

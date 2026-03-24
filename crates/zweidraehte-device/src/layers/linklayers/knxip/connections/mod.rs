@@ -55,7 +55,7 @@ use heapless::Vec;
 use crate::messages::buffers::{Buffer, DynBufferManager};
 use crate::messages::builder::IndicationMessage;
 use crate::messages::knx::{CemiFormat, KnxMessageBuffer};
-use crate::messages::knxip::substructs::{CRD, CRI, ConnectionType, HPAI};
+use crate::messages::knxip::substructs::{CRD, ConnectionType, HPAI};
 use crate::messages::knxip::{
     ConnectRequest, ConnectResponseBuilder, ConnectionStatus, ConnectionstateRequest, ConnectionstateResponseBuilder,
     DisconnectRequest, DisconnectResponseBuilder, KNXnetIPServiceType,
@@ -459,16 +459,16 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         let target = conn.response_target();
 
         // For UDP connections, save a copy for retransmission.
-        if matches!(conn.transport, ConnectionTransport::Udp) {
-            if let Some(retransmit_buffer) = buffer_manager.try_alloc_from_slice(&resp_buffer) {
-                conn.pending_ack = Some(PendingAck {
-                    sequence_counter: send_seq,
-                    buffer: retransmit_buffer,
-                    target,
-                    sent_at: Instant::now(),
-                    attempt: 0,
-                });
-            }
+        if matches!(conn.transport, ConnectionTransport::Udp)
+            && let Some(retransmit_buffer) = buffer_manager.try_alloc_from_slice(&resp_buffer)
+        {
+            conn.pending_ack = Some(PendingAck {
+                sequence_counter: send_seq,
+                buffer: retransmit_buffer,
+                target,
+                sent_at: Instant::now(),
+                attempt: 0,
+            });
         }
 
         conn.last_activity = Instant::now();

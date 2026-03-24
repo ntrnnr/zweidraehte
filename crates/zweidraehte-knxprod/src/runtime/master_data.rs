@@ -40,6 +40,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
+use std::str::FromStr;
 
 /// Root element of the KNX XML file (wraps MasterData).
 #[derive(Debug, Clone, Deserialize)]
@@ -66,17 +67,20 @@ pub struct MasterData {
     root: KnxRoot,
 }
 
+impl FromStr for MasterData {
+    type Err = Box<dyn std::error::Error>;
+
+    fn from_str(xml: &str) -> Result<Self, Self::Err> {
+        let root: KnxRoot = quick_xml::de::from_str(xml)?;
+        Ok(Self { root })
+    }
+}
+
 impl MasterData {
     /// Parse master data from an XML file.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
-        Self::from_str(&content)
-    }
-
-    /// Parse master data from an XML string.
-    pub fn from_str(xml: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let root: KnxRoot = quick_xml::de::from_str(xml)?;
-        Ok(Self { root })
+        content.parse()
     }
 
     /// Get the raw mask versions container.
@@ -507,7 +511,7 @@ pub enum TableFlavour {
 
 impl TableFlavour {
     /// Parse from flavour string.
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_flavour(s: &str) -> Self {
         match s {
             "AddressTable_Bcu1" => TableFlavour::AddressTableBcu1,
             "AddressTable_SystemB" => TableFlavour::AddressTableSystemB,
@@ -611,13 +615,13 @@ mod tests {
             .resource_type
             .as_ref()
             .and_then(|rt| rt.flavour.as_ref())
-            .map(|f| TableFlavour::from_str(f))
+            .map(|f| TableFlavour::parse_flavour(f))
             .unwrap_or(TableFlavour::Unknown);
         let adt_flavour_07b0 = adt
             .resource_type
             .as_ref()
             .and_then(|rt| rt.flavour.as_ref())
-            .map(|f| TableFlavour::from_str(f))
+            .map(|f| TableFlavour::parse_flavour(f))
             .unwrap_or(TableFlavour::Unknown);
 
         println!("MV-0705 ADT flavour: {:?}, count_size: {}", adt_flavour_0705, adt_flavour_0705.count_size());
@@ -647,7 +651,7 @@ mod tests {
 
     #[test]
     fn test_table_flavour() {
-        assert_eq!(TableFlavour::from_str("AddressTable_SystemB"), TableFlavour::AddressTableSystemB);
+        assert_eq!(TableFlavour::parse_flavour("AddressTable_SystemB"), TableFlavour::AddressTableSystemB);
         assert_eq!(TableFlavour::AddressTableSystemB.count_size(), 2);
         assert_eq!(TableFlavour::AddressTableBcu1.count_size(), 1);
     }

@@ -50,8 +50,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RemoteDiagnosticRequest {
             .take_obj_front::<raw::KNXnetIPHeader>()
             .ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get())
-            .map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::RemoteDiagnosticRequest
         {
             return Err(ParseError::Format);
@@ -124,8 +123,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RemoteDiagnosticResponse<B> {
             .take_obj_front::<raw::KNXnetIPHeader>()
             .ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get())
-            .map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::RemoteDiagnosticResponse
         {
             return Err(ParseError::Format);
@@ -205,8 +203,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RemoteBasicConfigurationReques
             .take_obj_front::<raw::KNXnetIPHeader>()
             .ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get())
-            .map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::RemoteBasicConfigurationRequest
         {
             return Err(ParseError::Format);
@@ -319,8 +316,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RemoteResetRequest {
             .take_obj_front::<raw::KNXnetIPHeader>()
             .ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get())
-            .map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::RemoteResetRequest
         {
             return Err(ParseError::Format);

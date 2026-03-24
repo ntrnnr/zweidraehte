@@ -181,11 +181,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 KeyCode::Char('q') if !in_edit_mode => {
                     app.should_quit = true;
                 }
-                KeyCode::Esc => {
-                    if in_edit_mode {
+                KeyCode::Esc
+                    if in_edit_mode => {
                         app.cancel_edit();
                     }
-                }
                 KeyCode::Tab if !in_edit_mode => {
                     app.toggle_focus();
                 }

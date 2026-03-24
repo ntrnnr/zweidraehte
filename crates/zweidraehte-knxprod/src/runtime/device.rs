@@ -497,9 +497,7 @@ impl Device {
                 } else {
                     // Find the idx-th text argument
                     let text_args: Vec<_> = module
-                        .args
-                        .iter()
-                        .filter_map(|(_, v)| match v {
+                        .args.values().filter_map(|v| match v {
                             ModuleArgValue::Text(s) => Some(s.clone()),
                             _ => None,
                         })

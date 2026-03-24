@@ -246,13 +246,13 @@ where
                 // Service-level access check (first line of defense).
                 // Handlers may perform additional fine-grained checks.
                 let access_ctx = self.resolve_access(&msg);
-                match crate::access_policy::check_service_access(apci, &access_ctx) {
-                    crate::access_policy::AccessDecision::Denied => {
-                        warn!("AL service {:?} denied: {:?}", apci, access_ctx);
-                        return;
-                    }
-                    _ => {} // Allowed or Defer — proceed to handler
+                if crate::access_policy::check_service_access(apci, &access_ctx)
+                    == crate::access_policy::AccessDecision::Denied
+                {
+                    warn!("AL service {:?} denied: {:?}", apci, access_ctx);
+                    return;
                 }
+                // Allowed or Defer — proceed to handler
 
                 match apci {
                     // --- Group Communication ---
@@ -1369,7 +1369,7 @@ where
                     return;
                 };
 
-                let dd2_arr: &[u8; 14] = dd2.try_into().expect("DD2 is always 14 bytes");
+                let dd2_arr: &[u8; 14] = dd2;
                 let msg = ind
                     .respond_with(msg_buf)
                     .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
@@ -1547,7 +1547,7 @@ where
         .with_application(ApciCode::IndividualAddressSerialNumberResponse, ServiceType::T_Broadcast_Req)
         .build();
 
-        let serial: &[u8; 6] = self.state.serial_number().try_into().expect("serial is always 6 bytes");
+        let serial: &[u8; 6] = self.state.serial_number();
         IndividualAddressSerialNumberResponse::write_serial(msg.buf_mut(), serial);
 
         outbox.push(msg.into_inner());

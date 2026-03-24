@@ -54,6 +54,7 @@ impl SocketDescriptor {
     }
 
     /// Get the bind endpoint.
+    #[allow(dead_code)] // Future: not yet used
     pub fn bind_endpoint(&self) -> &EndpointType {
         &self.bind_endpoint
     }
@@ -190,6 +191,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
     }
 
     /// Get socket descriptors (needed for server-to-socket mapping).
+    #[allow(dead_code)] // Future: not yet used
     pub fn descriptors(&self) -> &[SocketDescriptor] {
         &self.descriptors
     }

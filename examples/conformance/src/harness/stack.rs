@@ -145,6 +145,12 @@ pub struct ConformanceHookContext {
     cot: UnsafeCell<*const RefCell<conformance_config::CoTab>>,
 }
 
+impl Default for ConformanceHookContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConformanceHookContext {
     /// Create a new hook context with no COT reference.
     pub const fn new() -> Self {

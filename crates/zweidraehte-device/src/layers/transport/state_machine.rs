@@ -324,6 +324,7 @@ impl ProcessResult {
 /// to one of these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[allow(dead_code)] // KNX spec: E21-E24, E27 not yet triggered
 enum SpecEvent {
     /// N_DATA_INDIVIDUAL.ind, T_CONNECT_REQ_PDU (source == connection_address)
     E00 = 0,
@@ -492,9 +493,11 @@ fn classify_event(conn: &Connection, event: &TlEvent, style: TlStyle) -> Option<
         TlEvent::ReceivedConnect { source } => {
             // In CLOSED, there is no connection_address, so every source
             // is treated as "matching" — we always accept via E00.
-            if conn.state == ConnectionState::Closed {
-                Some(SpecEvent::E00)
-            } else if source == conn.remote_addr {
+            // When source matches the existing remote_addr, it's also E00
+            // (reconnect from same peer). These two conditions yield the
+            // same event intentionally — they are logically distinct cases
+            // that happen to map to the same spec event.
+            if conn.state == ConnectionState::Closed || source == conn.remote_addr {
                 Some(SpecEvent::E00)
             } else {
                 Some(SpecEvent::E01)

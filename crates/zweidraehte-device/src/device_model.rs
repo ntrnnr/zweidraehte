@@ -93,6 +93,12 @@ pub trait DeviceModelNotifier {
 /// ```
 pub struct DmNotificationSlot(Cell<Option<DeviceModelEvent>>);
 
+impl Default for DmNotificationSlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DmNotificationSlot {
     /// Create an empty notification slot.
     pub const fn new() -> Self {

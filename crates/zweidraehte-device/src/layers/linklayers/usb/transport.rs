@@ -117,6 +117,11 @@ impl<'a> UsbCemiTransport<'a, AsyncHidDevice> {
     }
 }
 
+// The `.to_vec()` calls on `self.transfer_buf` slices are required because
+// methods like `send_bus_access_request` and loop bodies borrow `self` mutably,
+// which conflicts with the immutable borrow of `self.transfer_buf`. The copy
+// breaks the borrow dependency.
+#[allow(clippy::unnecessary_to_owned)]
 impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
     /// Create a transport from an existing device
     pub fn from_device(device: D, resources: InitializedResources<'a>) -> Self {
@@ -383,7 +388,7 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
         debug!("USB Transport: TX frame: {:02X?}", &self.transfer_buf[..len]);
 
         // Fragment and send
-        for report in fragment_frame(&self.transfer_buf[..len]) {
+        for report in fragment_frame(&self.transfer_buf[..len].to_vec()) {
             *self.tx_report = report;
             self.device.write_report(self.tx_report).await?;
         }
@@ -460,7 +465,7 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
         let len = encode_cemi_frame(frame.as_bytes(), self.transfer_buf)
             .map_err(|_| UsbHidError::WriteError("Failed to encode frame".into()))?;
 
-        for report in fragment_frame(&self.transfer_buf[..len]) {
+        for report in fragment_frame(&self.transfer_buf[..len].to_vec()) {
             *self.tx_report = report;
             self.device.write_report(self.tx_report).await?;
         }
@@ -479,7 +484,7 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
         // Log the full USB transfer frame (header + body)
         info!("USB Transport: TX USB frame: {:02X?}", &self.transfer_buf[..len]);
 
-        for report in fragment_frame(&self.transfer_buf[..len]) {
+        for report in fragment_frame(&self.transfer_buf[..len].to_vec()) {
             *self.tx_report = report;
             self.device.write_report(self.tx_report).await?;
         }

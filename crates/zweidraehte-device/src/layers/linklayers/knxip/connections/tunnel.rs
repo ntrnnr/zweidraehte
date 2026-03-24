@@ -442,7 +442,7 @@ impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<N> {
             return Err(ServerError::InvalidMessage);
         }
         let service_type_raw = u16::from_be_bytes([data[2], data[3]]);
-        let service_type = KNXnetIPServiceType::try_from(service_type_raw).map_err(|_| ServerError::InvalidMessage)?;
+        let service_type = KNXnetIPServiceType::from(service_type_raw);
 
         match service_type {
             KNXnetIPServiceType::TunnelingRequest => self.handle_tunneling_request(data, conn, buffer_manager).await,

@@ -83,8 +83,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for ConnectRequest {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get())
-            .map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::ConnectRequest
         {
             return Err(ParseError::Format);
@@ -156,8 +155,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for ConnectResponse {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get())
-            .map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::ConnectResponse
         {
             return Err(ParseError::Format);
@@ -256,8 +254,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for ConnectionstateRequest {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get())
-            .map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::ConnectionstateRequest
         {
             return Err(ParseError::Format);
@@ -337,8 +334,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for ConnectionstateResponse {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get())
-            .map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::ConnectionstateResponse
         {
             return Err(ParseError::Format);
@@ -413,8 +409,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DisconnectRequest {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get())
-            .map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::DisconnectRequest
         {
             return Err(ParseError::Format);
@@ -494,8 +489,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DisconnectResponse {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::try_from(header.service_type.get())
-            .map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::DisconnectResponse
         {
             return Err(ParseError::Format);

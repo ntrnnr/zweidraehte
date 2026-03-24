@@ -61,6 +61,7 @@ pub struct TcpConnectionState<S, const MAX_CHANNELS: usize> {
     last_activity: Instant,
     /// Channel IDs of inner KNX/IP connections on this TCP stream.
     /// Updated by the main loop when connections are created/destroyed.
+    #[allow(dead_code)] // Future: not yet used
     channel_ids: Vec<u8, MAX_CHANNELS>,
 }
 
@@ -106,6 +107,7 @@ impl<S, const MAX_CHANNELS: usize> TcpConnectionState<S, MAX_CHANNELS> {
 // ============================================================================
 
 /// Event produced by the TCP manager for the main loop.
+#[allow(dead_code)] // Future: `Closed::channel_ids` not yet read
 pub enum TcpEvent<const MAX_CHANNELS: usize> {
     /// A complete KNX/IP frame was extracted from a TCP stream.
     Frame { tcp_idx: usize, peer: SocketAddrV4, buffer: Buffer<'static> },

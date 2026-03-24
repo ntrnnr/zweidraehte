@@ -231,6 +231,12 @@ impl MockLinkLayerResources {
     }
 }
 
+impl Default for MockLinkLayerResources {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Builder for the MockLinkLayer
 ///
 /// This builder creates a mock link layer. Call `new()` to create both

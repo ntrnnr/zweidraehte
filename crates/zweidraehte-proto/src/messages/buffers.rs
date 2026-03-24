@@ -219,7 +219,7 @@ pub trait MessageBuffer: Deref<Target = [u8]> + DerefMut<Target = [u8]> + Sized 
     }
 
     /// Fill from slice and return self (fluent API).
-    fn from_slice(mut self, data: &[u8]) -> Self {
+    fn with_slice(mut self, data: &[u8]) -> Self {
         self.fill_from_slice(data);
         self
     }
@@ -290,7 +290,7 @@ impl MessageBuffer for alloc::vec::Vec<u8> {
     fn grow_front(&mut self, count: usize) {
         // Insert zeroed bytes at the front. This shifts all existing data
         // right by `count` bytes — O(n) but acceptable for non-hot paths.
-        self.splice(..0, core::iter::repeat(0).take(count));
+        self.splice(..0, core::iter::repeat_n(0, count));
     }
 
     fn shrink_front(&mut self, count: usize) {
@@ -904,7 +904,7 @@ mod tests {
             allocated_count: counter,
         };
 
-        let buffer = buffer.from_slice(&[1, 2, 3]);
+        let buffer = buffer.with_slice(&[1, 2, 3]);
         assert_eq!(buffer.len(), 3);
         assert_eq!(&buffer[..], &[1, 2, 3]);
     }

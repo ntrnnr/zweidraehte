@@ -412,23 +412,21 @@ impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> PropertySer
     }
 
     fn function_property_command(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
-        if req.object_idx == 0 {
-            if let Some(result) =
+        if req.object_idx == 0
+            && let Some(result) =
                 self.augment.function_property_command(self.state, InterfaceObjectType::IPParameter, req)
-            {
-                return result;
-            }
+        {
+            return result;
         }
         FunctionPropertyResult::not_supported()
     }
 
     fn function_property_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
-        if req.object_idx == 0 {
-            if let Some(result) =
+        if req.object_idx == 0
+            && let Some(result) =
                 self.augment.function_property_state_read(self.state, InterfaceObjectType::IPParameter, req)
-            {
-                return result;
-            }
+        {
+            return result;
         }
         FunctionPropertyResult::not_supported()
     }
@@ -452,6 +450,7 @@ impl<'a, S: StackState + IpStackState, A: InterfaceObjectAugment<S>> PropertySer
 /// - Application Program Object (index 4)
 /// - PEI Program Object (index 5)
 /// - IP Parameter Object (index 6)
+///
 /// Type parameters:
 /// - `A`: Augment on `SystemBObjects` (the 6 base objects). Default `()`.
 /// - `IA`: Augment on `IpObjects` (IP Parameter Object). Default `()`.

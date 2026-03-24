@@ -286,7 +286,7 @@ impl DeviceInfo {
             .resource_type
             .as_ref()
             .and_then(|rt| rt.flavour.as_ref())
-            .map(|f| TableFlavour::from_str(f))
+            .map(|f| TableFlavour::parse_flavour(f))
             .unwrap_or_else(|| match resource_name {
                 ResourceName::GroupAddressTable => TableFlavour::AddressTableSystemB,
                 ResourceName::GroupAssociationTable => TableFlavour::AssociationTableSystemB,

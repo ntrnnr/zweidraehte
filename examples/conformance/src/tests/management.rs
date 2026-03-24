@@ -308,7 +308,7 @@ pub fn create_device_descriptor_illegal_types_suite() -> TestSuite {
         // DeviceDescriptor_Read with illegal type (connectionless: TPCI = 0x03)
         steps_cl.push(inject(&format!("BC #EDI #BDUT 61 03 {:02X}", dd_type)));
         // Expect error response 0x7F
-        steps_cl.push(expect(&"BC #BDUT #EDI 61 03 7F".to_string(), 500));
+        steps_cl.push(expect("BC #BDUT #EDI 61 03 7F", 500));
     }
 
     steps_cl.push(comment("Acceptance: The BDUT sends a telegram with a negative A_DeviceDescriptor_Response-PDU."));

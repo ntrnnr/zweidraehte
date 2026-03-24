@@ -37,7 +37,7 @@ impl UdpMulticastSocket {
 
                 let interface_os: OsString = interface.into();
                 setsockopt(&s, BindToDevice, &interface_os)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    .map_err(std::io::Error::other)?;
             }
         }
 
@@ -45,7 +45,7 @@ impl UdpMulticastSocket {
         // of each incoming packet. This lets the stack distinguish unicast
         // from multicast traffic on shared sockets.
         setsockopt(&s, Ipv4PacketInfo, &true)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
         // To be able to receive unicast and multicast traffic on the same socket,
         // we need to bind to INADDR_ANY
@@ -137,7 +137,7 @@ impl AsyncUdpMulticastSocket {
         let reader = self.watcher.read_with(|io| io.s.recv(buf));
 
         if let Some(read_timeout) = self.read_timeout {
-            with_timeout(read_timeout.into(), reader).await?
+            with_timeout(read_timeout, reader).await?
         } else {
             reader.await
         }
@@ -155,7 +155,7 @@ impl AsyncUdpMulticastSocket {
             let mut cmsg_buf = nix::cmsg_space!(libc::in_pktinfo);
 
             let msg = recvmsg::<SockaddrIn>(fd, &mut iov, Some(&mut cmsg_buf), MsgFlags::empty())
-                .map_err(|e| std::io::Error::from(e))?;
+                .map_err(std::io::Error::from)?;
 
             let len = msg.bytes;
 
@@ -177,7 +177,7 @@ impl AsyncUdpMulticastSocket {
         });
 
         if let Some(read_timeout) = self.read_timeout {
-            with_timeout(read_timeout.into(), reader).await?
+            with_timeout(read_timeout, reader).await?
         } else {
             reader.await
         }
@@ -188,7 +188,7 @@ impl AsyncUdpMulticastSocket {
         let writer = self.watcher.write_with(|io| io.s.send(buf));
 
         if let Some(write_timeout) = self.write_timeout {
-            with_timeout(write_timeout.into(), writer).await?
+            with_timeout(write_timeout, writer).await?
         } else {
             writer.await
         }
@@ -199,7 +199,7 @@ impl AsyncUdpMulticastSocket {
         let writer = self.watcher.write_with(|io| io.s.send_to(buf, addr));
 
         if let Some(write_timeout) = self.write_timeout {
-            with_timeout(write_timeout.into(), writer).await?
+            with_timeout(write_timeout, writer).await?
         } else {
             writer.await
         }

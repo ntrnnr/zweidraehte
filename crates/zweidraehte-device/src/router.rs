@@ -91,6 +91,12 @@ pub struct Outbox {
     count: usize,
 }
 
+impl Default for Outbox {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Outbox {
     /// Create a new empty outbox.
     pub fn new() -> Self {

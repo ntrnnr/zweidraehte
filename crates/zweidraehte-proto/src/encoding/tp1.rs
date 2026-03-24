@@ -77,12 +77,12 @@
 //!  |FT | - | R | SB| PR| PR| A | C |
 //!  +---+---+---+---+---+---+---+---+
 //!  FT  = Frame Type (bit 7, 0: standard, 1: extended)
-//!  -   = (bit 6, unused)
-//!  R   = Repeat Flag (bit 5)
-//!  SB  = System Broadcast (bit 4)
-//!  PR  = Priority (bits 3-2, 2 bits)
-//!  A   = Acknowledge (bit 1, only valid for L_Data.req)
-//!  C   = Confirm (bit 0, only valid for L_Data.con)
+//!      -   = (bit 6, unused)
+//!      R   = Repeat Flag (bit 5)
+//!      SB  = System Broadcast (bit 4)
+//!      PR  = Priority (bits 3-2, 2 bits)
+//!      A   = Acknowledge (bit 1, only valid for L_Data.req)
+//!      C   = Confirm (bit 0, only valid for L_Data.con)
 //!
 //!  Field meanings:
 //!  - FT: Frame type (standard/extended)

@@ -55,6 +55,7 @@ pub const U_STATE_IND_MASK: u8 = 0x07;
 /// State indication value
 pub const U_STATE_IND: u8 = 0x07;
 /// ACK information base command (bits 0-2: addr_match, busy, nack)
+#[allow(dead_code)] // KNX spec: not yet used
 pub const U_ACK_INF_BASE: u8 = 0x10;
 /// ACK information command (address match, no busy, no nack)
 pub const U_ACK_INF: u8 = 0x11;
@@ -79,6 +80,7 @@ pub const E981_LONG_DATA_END: u8 = 0xD0;
 /// The NCN5120 datasheet (Table 12) specifies 4 total bytes; the dummy byte
 /// must be sent or the chip will consume the next UART byte as the dummy.
 /// Also activates the auto-acknowledge function (Figure 37).
+#[allow(dead_code)] // KNX spec: not yet used
 pub const U_SET_ADDRESS: u8 = 0xF1;
 /// Set max retry count command
 pub const U_MAX_RST_CNT: u8 = 0x24;
@@ -112,6 +114,7 @@ pub const E981_REG_READ_REQ: u8 = 0x2E;
 /// E981 register write request command
 pub const E981_REG_WRITE_REQ: u8 = 0x2F;
 /// E981 register read response indicator
+#[allow(dead_code)] // KNX spec: not yet used
 pub const E981_REG_READ_RESP: u8 = 0xF1;
 
 /// NCN5120 register write command
@@ -173,6 +176,7 @@ pub enum MainEvent {
 
 /// Actions to be performed by the TPUART layer
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // Future: several variants not yet implemented
 pub enum MainAction {
     // Timer control
     /// Start a timer with the specified duration
@@ -910,6 +914,7 @@ pub enum SendState {
 
 /// Events for the send state machine
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // Future: `Cancel` variant not yet used
 pub enum SendEvent {
     /// Start a new transmission
     StartTransmission,
@@ -1063,6 +1068,7 @@ pub fn process_send_event(ctx: &mut SendContext, event: SendEvent) -> SendAction
 
 /// Check if a telegram is a repeat of the previous one
 /// Compares control bytes ignoring the repeat flag (bit 5)
+#[allow(dead_code)] // Future: not yet used
 pub fn is_repeated_telegram(prev_ctrl: u8, new_ctrl: u8) -> bool {
     ((prev_ctrl ^ new_ctrl) & !0x20) == 0
 }
@@ -1132,6 +1138,7 @@ impl BusMonitorByteType {
 
 /// Actions for the bus monitor state machine
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // Future: `ReceivedByte::byte` field not yet read
 pub enum BusMonitorAction {
     /// Send bus monitor enable command (U_BUSMON_REQ)
     SendBusMonitorEnable,
@@ -1176,6 +1183,7 @@ impl BusMonitorContext {
         Self::default()
     }
 
+    #[allow(dead_code)] // Future: not yet used
     pub fn reset(&mut self) {
         *self = Self::default();
     }

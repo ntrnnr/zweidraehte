@@ -227,7 +227,7 @@ pub fn peek_service_type(bytes: &[u8]) -> ParseResult<KNXnetIPServiceType> {
     }
 
     let service_type = u16::from_be_bytes([bytes[2], bytes[3]]);
-    KNXnetIPServiceType::try_from(service_type).map_err(|_| ParseError::NotSupported)
+    Ok(KNXnetIPServiceType::from(service_type))
 }
 
 mod connection;

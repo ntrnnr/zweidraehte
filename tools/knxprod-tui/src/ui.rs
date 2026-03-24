@@ -184,7 +184,7 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // We need to render items manually to support inline images
     // Each item gets 1 row, except Picture items which get multiple rows for the image
-    let label_width = (inner.width as usize * 40 / 100).max(20).min(45);
+    let label_width = (inner.width as usize * 40 / 100).clamp(20, 45);
 
     // First pass: collect what we need to render to avoid borrow issues
     let items_to_render: Vec<_> = app
@@ -247,7 +247,7 @@ fn create_content_line<'a>(item: &ContentItem, is_selected: bool, app: &App, wid
             };
 
             // Use 40% of width for label, leave rest for value
-            let label_width = (width * 40 / 100).max(20).min(45);
+            let label_width = (width * 40 / 100).clamp(20, 45);
             let label = if text.len() > label_width {
                 format!("{}…", &text[..label_width - 1])
             } else {
@@ -283,7 +283,7 @@ fn create_content_line<'a>(item: &ContentItem, is_selected: bool, app: &App, wid
         }
         ContentItem::CommObject { name, function, dpt } => {
             // Display comm object with distinctive styling
-            let label_width = (width * 40 / 100).max(20).min(45);
+            let label_width = (width * 40 / 100).clamp(20, 45);
             let label = if name.len() > label_width {
                 format!("📡{}…", &name[..label_width - 3])
             } else {

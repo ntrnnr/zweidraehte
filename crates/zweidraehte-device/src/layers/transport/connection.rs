@@ -212,19 +212,10 @@ impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_I
 
     /// Find any connection (incoming or outgoing) by remote address
     pub fn find_any(&mut self, addr: IndividualAddress) -> Option<&mut Connection> {
-        // Check incoming first
-        for conn in self.incoming.iter_mut() {
-            if conn.state != ConnectionState::Closed && conn.remote_addr == addr {
-                return Some(conn);
-            }
-        }
-        // Then check outgoing
-        for conn in self.outgoing.iter_mut() {
-            if conn.state != ConnectionState::Closed && conn.remote_addr == addr {
-                return Some(conn);
-            }
-        }
-        None
+        self.incoming
+            .iter_mut()
+            .chain(self.outgoing.iter_mut())
+            .find(|conn| conn.state != ConnectionState::Closed && conn.remote_addr == addr)
     }
 
     /// Find any connection by remote address, regardless of state.
@@ -233,17 +224,10 @@ impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_I
     /// Used for applying deferred state transitions where the connection may
     /// be temporarily in an intermediate state.
     pub fn find_any_including_closed(&mut self, addr: IndividualAddress) -> Option<&mut Connection> {
-        for conn in self.incoming.iter_mut() {
-            if conn.remote_addr == addr {
-                return Some(conn);
-            }
-        }
-        for conn in self.outgoing.iter_mut() {
-            if conn.remote_addr == addr {
-                return Some(conn);
-            }
-        }
-        None
+        self.incoming
+            .iter_mut()
+            .chain(self.outgoing.iter_mut())
+            .find(|conn| conn.remote_addr == addr)
     }
 
     /// Allocate a new incoming connection slot for the given address.

@@ -135,10 +135,10 @@ impl TransferHeader {
         let emi_id_or_service = data[5];
 
         // Validate EMI ID for KNX Tunnel
-        if protocol_id == ProtocolId::KnxTunnel {
-            if EmiId::from_byte(emi_id_or_service).is_none() || emi_id_or_service == 0 {
-                return Err(TransferProtocolError::UnknownEmiId(emi_id_or_service));
-            }
+        if protocol_id == ProtocolId::KnxTunnel
+            && (EmiId::from_byte(emi_id_or_service).is_none() || emi_id_or_service == 0)
+        {
+            return Err(TransferProtocolError::UnknownEmiId(emi_id_or_service));
         }
 
         let manufacturer_code = u16::from_be_bytes([data[6], data[7]]);

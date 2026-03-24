@@ -661,6 +661,7 @@ pub(crate) struct RunStateResult {
     /// The new run state.
     pub state: RunState,
     /// The internal action from the transition table.
+    #[allow(dead_code)] // Future: not yet used
     pub action: RunStateAction,
 }
 
@@ -1006,6 +1007,12 @@ pub struct RunnableApplication<T: HasLoadStateMachine> {
 
 impl<T: HasLoadStateMachine + ConstDefault> ConstDefault for RunnableApplication<T> {
     const DEFAULT: Self = Self::new();
+}
+
+impl<T: HasLoadStateMachine + ConstDefault> Default for RunnableApplication<T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: HasLoadStateMachine + ConstDefault> RunnableApplication<T> {

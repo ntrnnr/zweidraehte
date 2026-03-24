@@ -469,7 +469,7 @@ impl TpciField {
     }
 
     pub fn seqno(&self) -> u8 {
-        ((self.0 & Self::SEQNO_MASK) >> Self::SEQNO_SHIFT).try_into().unwrap()
+        (self.0 & Self::SEQNO_MASK) >> Self::SEQNO_SHIFT
     }
 
     pub fn set_seqno<S: Into<u8>>(&mut self, seqno: S) {
@@ -513,12 +513,12 @@ impl TpciField {
 ///   |FT | - | R | SB| PR| PR| A | C |
 ///   +---+---+---+---+---+---+---+---+
 ///   FT  = Frame Type (bit 7, 0: standard, 1: extended)
-///   -   = (bit 6, unused)
-///   R   = Repeat Flag (bit 5)
-///   SB  = System Broadcast (bit 4)
-///   PR  = Priority (bits 3-2, 2 bits)
-///   A   = Acknowledge (bit 1, only valid for L_Data.req)
-///   C   = Confirm (bit 0, only valid for L_Data.con)
+///       -   = (bit 6, unused)
+///       R   = Repeat Flag (bit 5)
+///       SB  = System Broadcast (bit 4)
+///       PR  = Priority (bits 3-2, 2 bits)
+///       A   = Acknowledge (bit 1, only valid for L_Data.req)
+///       C   = Confirm (bit 0, only valid for L_Data.con)
 ///
 ///   Field meanings:
 ///   - FT: Frame type (standard/extended)
@@ -527,6 +527,7 @@ impl TpciField {
 ///   - PR: Priority
 ///   - A: Acknowledge (L_Data.req only)
 ///   - C: Confirm (L_Data.con only)
+///
 /// Default access level for messages (minimum access = level 3)
 pub const DEFAULT_MESSAGE_ACCESS_LEVEL: u8 = AccessContext::MIN_ACCESS.access_level;
 
@@ -1081,7 +1082,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, CemiFormat> {
     /// The service type is derived from the cEMI message code (first byte).
     pub fn from_cemi(buf: B) -> Self {
         let message_code = buf[0];
-        let service_type = ServiceType::try_from(message_code).unwrap_or(ServiceType::L_Data_Ind);
+        let service_type = ServiceType::from(message_code);
         KnxMessageBuffer { service_type, buf, access_source: AccessSource::Default, _format: PhantomData }
     }
 

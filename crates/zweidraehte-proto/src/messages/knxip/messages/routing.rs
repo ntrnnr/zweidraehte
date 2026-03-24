@@ -82,7 +82,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RoutingIndication<B> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
         // Verify it's a ROUTING_INDICATION
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::RoutingIndication
         {
             return Err(ParseError::Format);
@@ -263,7 +263,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RoutingBusy {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
         // Verify it's a ROUTING_BUSY
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::RoutingBusy
         {
             return Err(ParseError::Format);
@@ -364,7 +364,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RoutingLostMessage {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
         // Verify it's a ROUTING_LOST_MESSAGE
-        if KNXnetIPServiceType::try_from(header.service_type.get()).map_err(|_| ParseError::NotSupported)?
+        if KNXnetIPServiceType::from(header.service_type.get())
             != KNXnetIPServiceType::RoutingLostMessage
         {
             return Err(ParseError::Format);

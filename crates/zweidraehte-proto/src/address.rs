@@ -196,17 +196,11 @@ impl KNXAddress {
     }
 
     pub fn is_group_address(&self) -> bool {
-        match self {
-            KNXAddress::Group(_) => true,
-            _ => false,
-        }
+        matches!(self, KNXAddress::Group(_))
     }
 
     pub fn is_individual_address(&self) -> bool {
-        match self {
-            KNXAddress::Individual(_) => true,
-            _ => false,
-        }
+        matches!(self, KNXAddress::Individual(_))
     }
 }
 

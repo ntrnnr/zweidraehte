@@ -67,7 +67,7 @@ pub struct PacketInfo(u8);
 
 impl PacketInfo {
     pub fn new(sequence: u8, packet_type: PacketType) -> Self {
-        debug_assert!(sequence >= 1 && sequence <= 5, "Sequence number must be 1-5");
+        debug_assert!((1..=5).contains(&sequence), "Sequence number must be 1-5");
         Self((sequence << 4) | packet_type.as_u8())
     }
 
@@ -211,6 +211,12 @@ pub struct ReassemblyBuffer {
     len: usize,
     expected_seq: u8,
     in_progress: bool,
+}
+
+impl Default for ReassemblyBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ReassemblyBuffer {

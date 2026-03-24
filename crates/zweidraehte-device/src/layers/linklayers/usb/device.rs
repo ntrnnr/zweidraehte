@@ -45,9 +45,10 @@ impl core::fmt::Display for UsbHidError {
 }
 
 /// Device selector for finding KNX USB interfaces
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum DeviceSelector {
     /// Auto-discover first KNX USB interface from known devices
+    #[default]
     AutoDiscover,
     /// Match by vendor ID and product ID
     VidPid { vendor_id: u16, product_id: u16 },
@@ -55,11 +56,6 @@ pub enum DeviceSelector {
     Path(String),
 }
 
-impl Default for DeviceSelector {
-    fn default() -> Self {
-        Self::AutoDiscover
-    }
-}
 
 /// Known KNX USB interface vendor/product IDs
 ///

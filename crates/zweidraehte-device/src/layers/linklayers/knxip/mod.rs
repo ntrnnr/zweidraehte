@@ -113,6 +113,12 @@ pub struct KnxNetIpResources {
     response_channel: Channel<NoopRawMutex, PendingResponse, 16>,
 }
 
+impl Default for KnxNetIpResources {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KnxNetIpResources {
     /// Create a new resource container.
     pub const fn new() -> Self {

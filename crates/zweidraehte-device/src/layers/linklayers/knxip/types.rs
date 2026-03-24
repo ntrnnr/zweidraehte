@@ -190,7 +190,7 @@ impl<'a> ServerContext<'a> {
     /// Returns `(max_apdu_len, slots)` where each slot has an address
     /// and a status word (bit 0 = occupied).
     pub fn tunneling_slot_info(&self) -> Option<(u16, &[substructs::TunnelingSlotInfo])> {
-        self.tunneling_slot_info.map(|(len, slots)| (len, slots))
+        self.tunneling_slot_info
     }
 
     /// Send an indication to the network layer (L_Data.ind).

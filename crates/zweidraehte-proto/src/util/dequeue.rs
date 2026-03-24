@@ -7,6 +7,12 @@ pub struct Dequeue<T, const N: usize> {
     channel: Channel<NoopRawMutex, T, N>,
 }
 
+impl<T, const N: usize> Default for Dequeue<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T, const N: usize> Dequeue<T, N> {
     /// Create a new dequeue with capacity N
     pub const fn new() -> Self {

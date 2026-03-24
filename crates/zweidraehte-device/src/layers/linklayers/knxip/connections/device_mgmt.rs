@@ -74,10 +74,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
             debug!("Empty cEMI payload");
             ConnectionStatus::DataConnectionError
         })?;
-        let message_code = CemiMessageCode::try_from(mc_byte).map_err(|_| {
-            debug!("Unknown cEMI message code: 0x{:02x}", mc_byte);
-            ConnectionStatus::DataConnectionError
-        })?;
+        let message_code = CemiMessageCode::from(mc_byte);
 
         // Transport Layer frames (T_Data_Individual.req, T_Data_Connected.req):
         // Convert to internal format and route through the application layer.

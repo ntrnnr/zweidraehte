@@ -3,9 +3,6 @@
 #![feature(const_convert)]
 #![feature(adt_const_params)]
 #![feature(generic_const_exprs)]
-#![feature(type_alias_impl_trait)]
-#![feature(never_type)]
-#![feature(associated_type_defaults)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

@@ -240,9 +240,9 @@ macro_rules! impl_primitive_pdt {
             }
         }
 
-        impl<const ID: u8, const N: usize> Into<$typ> for PropertyData<$typ, ID, N> {
-            fn into(self) -> $typ {
-                self.value()
+        impl<const ID: u8, const N: usize> From<PropertyData<$typ, ID, N>> for $typ {
+            fn from(pd: PropertyData<$typ, ID, N>) -> $typ {
+                pd.value()
             }
         }
 
@@ -290,9 +290,9 @@ macro_rules! impl_array_pdt {
             }
         }
 
-        impl<const ID: u8, const N: usize> Into<$typ> for PropertyData<$typ, ID, N> {
-            fn into(self) -> $typ {
-                self.value()
+        impl<const ID: u8, const N: usize> From<PropertyData<$typ, ID, N>> for $typ {
+            fn from(pd: PropertyData<$typ, ID, N>) -> $typ {
+                pd.value()
             }
         }
 
@@ -304,15 +304,15 @@ macro_rules! impl_array_pdt {
     };
 }
 
-impl_array_pdt!([u8; 01]);
-impl_array_pdt!([u8; 02]);
-impl_array_pdt!([u8; 03]);
-impl_array_pdt!([u8; 04]);
-impl_array_pdt!([u8; 05]);
-impl_array_pdt!([u8; 06]);
-impl_array_pdt!([u8; 07]);
-impl_array_pdt!([u8; 08]);
-impl_array_pdt!([u8; 09]);
+impl_array_pdt!([u8; 1]);
+impl_array_pdt!([u8; 2]);
+impl_array_pdt!([u8; 3]);
+impl_array_pdt!([u8; 4]);
+impl_array_pdt!([u8; 5]);
+impl_array_pdt!([u8; 6]);
+impl_array_pdt!([u8; 7]);
+impl_array_pdt!([u8; 8]);
+impl_array_pdt!([u8; 9]);
 impl_array_pdt!([u8; 10]);
 impl_array_pdt!([u8; 11]);
 impl_array_pdt!([u8; 12]);
@@ -381,7 +381,7 @@ impl_array_pdt!([u8; 20]);
 //     }
 // }
 
-pub type PDT_Control = PropertyData<[u8; 01], 0, 10>;
+pub type PDT_Control = PropertyData<[u8; 1], 0, 10>;
 pub type PDT_Char = PropertyData<i8, 1, 1>;
 pub type PDT_UnsignedChar = PropertyData<u8, 2, 1>;
 pub type PDT_Int = PropertyData<i16, 3, 2>;
@@ -398,15 +398,15 @@ pub type PDT_CharBlock = PropertyData<[u8; 10], 0x0C, 10>; //TODO: raw_data/set_
 pub type PDT_ShortCharBlock = PropertyData<[u8; 5], 0x0E, 5>; //TODO: raw_data/set_raw_data
 //pub type PDT_DateTime       = PropertyData<KNXDateTime, 0x0F, 6>;
 //pub type PDT_VariableLength = //TODO: Super special variable len WTF shit - need to investigate
-pub type PDT_Generic01 = PropertyData<[u8; 01], 0x11, 01>;
-pub type PDT_Generic02 = PropertyData<[u8; 02], 0x12, 02>;
-pub type PDT_Generic03 = PropertyData<[u8; 03], 0x13, 03>;
-pub type PDT_Generic04 = PropertyData<[u8; 04], 0x14, 04>;
-pub type PDT_Generic05 = PropertyData<[u8; 05], 0x15, 05>;
-pub type PDT_Generic06 = PropertyData<[u8; 06], 0x16, 06>;
-pub type PDT_Generic07 = PropertyData<[u8; 07], 0x17, 07>;
-pub type PDT_Generic08 = PropertyData<[u8; 08], 0x18, 08>;
-pub type PDT_Generic09 = PropertyData<[u8; 09], 0x19, 09>;
+pub type PDT_Generic01 = PropertyData<[u8; 1], 0x11, 1>;
+pub type PDT_Generic02 = PropertyData<[u8; 2], 0x12, 2>;
+pub type PDT_Generic03 = PropertyData<[u8; 3], 0x13, 3>;
+pub type PDT_Generic04 = PropertyData<[u8; 4], 0x14, 4>;
+pub type PDT_Generic05 = PropertyData<[u8; 5], 0x15, 5>;
+pub type PDT_Generic06 = PropertyData<[u8; 6], 0x16, 6>;
+pub type PDT_Generic07 = PropertyData<[u8; 7], 0x17, 7>;
+pub type PDT_Generic08 = PropertyData<[u8; 8], 0x18, 8>;
+pub type PDT_Generic09 = PropertyData<[u8; 9], 0x19, 9>;
 pub type PDT_Generic10 = PropertyData<[u8; 10], 0x1A, 10>;
 pub type PDT_Generic11 = PropertyData<[u8; 11], 0x1B, 11>;
 pub type PDT_Generic12 = PropertyData<[u8; 12], 0x1C, 12>;
@@ -591,7 +591,7 @@ datapoint_type_convs!(PDT_Scaling);
 //datapoint_type_convs!(PDT_Function);
 //datapoint_type_convs!(PDT_Escape);
 
-pub type DPT_SerNum = DatapointType<PDT_Generic06, 221, 001>;
+pub type DPT_SerNum = DatapointType<PDT_Generic06, 221, 1>;
 
 impl core::fmt::Debug for DPT_SerNum {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -601,7 +601,7 @@ impl core::fmt::Debug for DPT_SerNum {
 }
 
 #[derive(FromBytes, IntoBytes, Debug, Clone, Copy, PartialEq, Eq, Immutable, KnownLayout)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct KNXSerialNumber {
     pub manufacturer_code: big_endian::U16,
     pub incremented_number: big_endian::U32,
@@ -641,7 +641,7 @@ impl From<DPT_SerNum> for KNXSerialNumber {
 
 // ###########################################################################
 
-pub type DPT_Switch = DatapointType<PDT_UnsignedChar, 1, 001>;
+pub type DPT_Switch = DatapointType<PDT_UnsignedChar, 1, 1>;
 
 impl core::fmt::Debug for DPT_Switch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -662,7 +662,7 @@ impl From<DPT_Switch> for bool {
     }
 }
 
-pub type DPT_Bool = DatapointType<PDT_UnsignedChar, 1, 002>;
+pub type DPT_Bool = DatapointType<PDT_UnsignedChar, 1, 2>;
 
 impl core::fmt::Debug for DPT_Bool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -687,7 +687,7 @@ impl From<DPT_Bool> for bool {
 ///
 /// 1-bit value for blind/shutter movement direction
 /// 0 = Up, 1 = Down
-pub type DPT_UpDown = DatapointType<PDT_UnsignedChar, 1, 008>;
+pub type DPT_UpDown = DatapointType<PDT_UnsignedChar, 1, 8>;
 
 impl core::fmt::Debug for DPT_UpDown {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -700,7 +700,7 @@ impl core::fmt::Debug for DPT_UpDown {
 ///
 /// 1-bit value for blind/shutter slats or stop
 /// 0 = Open, 1 = Close
-pub type DPT_OpenClose = DatapointType<PDT_UnsignedChar, 1, 009>;
+pub type DPT_OpenClose = DatapointType<PDT_UnsignedChar, 1, 9>;
 
 impl core::fmt::Debug for DPT_OpenClose {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -709,7 +709,7 @@ impl core::fmt::Debug for DPT_OpenClose {
     }
 }
 
-pub type DPT_Enable = DatapointType<PDT_UnsignedChar, 1, 003>;
+pub type DPT_Enable = DatapointType<PDT_UnsignedChar, 1, 3>;
 
 impl core::fmt::Debug for DPT_Enable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -730,7 +730,7 @@ impl From<DPT_Enable> for bool {
     }
 }
 
-pub type DPT_State = DatapointType<PDT_UnsignedChar, 1, 011>;
+pub type DPT_State = DatapointType<PDT_UnsignedChar, 1, 11>;
 
 impl core::fmt::Debug for DPT_State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -756,7 +756,7 @@ impl From<DPT_State> for bool {
 /// 1-bit datapoint type for step control:
 /// - 0 = Decrease
 /// - 1 = Increase
-pub type DPT_Step = DatapointType<PDT_UnsignedChar, 1, 007>;
+pub type DPT_Step = DatapointType<PDT_UnsignedChar, 1, 7>;
 
 impl core::fmt::Debug for DPT_Step {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -792,7 +792,7 @@ impl From<DPT_Step> for bool {
 /// Bit layout in byte: xxxxxx cv
 /// - Bit 1: c (control)
 /// - Bit 0: v (value)
-pub type DPT_Switch_Control = DatapointType<PDT_UnsignedChar, 2, 001>;
+pub type DPT_Switch_Control = DatapointType<PDT_UnsignedChar, 2, 1>;
 
 impl core::fmt::Debug for DPT_Switch_Control {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -957,7 +957,7 @@ impl From<SwitchControl> for u8 {
 /// - 5: 6.25%
 /// - 6: 3.125%
 /// - 7: 1.5625%
-pub type DPT_Control_Dimming = DatapointType<PDT_UnsignedChar, 3, 007>;
+pub type DPT_Control_Dimming = DatapointType<PDT_UnsignedChar, 3, 7>;
 
 /// DPT 5.001 - Scaling (Percent)
 ///
@@ -967,7 +967,7 @@ pub type DPT_Control_Dimming = DatapointType<PDT_UnsignedChar, 3, 007>;
 /// - 255 = 100%
 ///
 /// Uses PDT_Scaling (or PDT_UnsignedChar as alternative)
-pub type DPT_Scaling = DatapointType<PDT_UnsignedChar, 5, 001>;
+pub type DPT_Scaling = DatapointType<PDT_UnsignedChar, 5, 1>;
 
 /// Scaling value for DPT 5.001
 ///
@@ -1075,7 +1075,7 @@ impl From<DPT_Scaling> for u8 {
 ///
 /// 1-byte unsigned value representing a decimal factor.
 /// Range: 0 to 255
-pub type DPT_DecimalFactor = DatapointType<PDT_UnsignedChar, 5, 005>;
+pub type DPT_DecimalFactor = DatapointType<PDT_UnsignedChar, 5, 5>;
 
 impl core::fmt::Debug for DPT_DecimalFactor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1099,7 +1099,7 @@ impl From<DPT_DecimalFactor> for u8 {
 
 /// DPT 5.010 - 1-byte unsigned counter (0..255)
 /// Uses long format for GroupValue_Response (data > 6 bits)
-pub type DPT_Value_1_Ucount = DatapointType<PDT_UnsignedChar, 5, 010>;
+pub type DPT_Value_1_Ucount = DatapointType<PDT_UnsignedChar, 5, 10>;
 
 impl core::fmt::Debug for DPT_Value_1_Ucount {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1152,7 +1152,7 @@ impl From<DPT_Colour_Temperature> for u16 {
 ///
 /// 2-byte floating point value representing temperature.
 /// Range: -273°C to +670760°C (encoded as KNX 2-byte float)
-pub type DPT_Value_Temp = DatapointType<PDT_KNXFloat, 9, 001>;
+pub type DPT_Value_Temp = DatapointType<PDT_KNXFloat, 9, 1>;
 
 impl core::fmt::Debug for DPT_Value_Temp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1198,7 +1198,7 @@ impl From<DPT_Value_Temp> for KnxFloat16 {
 ///
 /// 2-byte floating point value representing brightness/luminance.
 /// Range: 0 to 670760 Lux (encoded as KNX 2-byte float)
-pub type DPT_Value_Lux = DatapointType<PDT_KNXFloat, 9, 004>;
+pub type DPT_Value_Lux = DatapointType<PDT_KNXFloat, 9, 4>;
 
 impl core::fmt::Debug for DPT_Value_Lux {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1244,7 +1244,7 @@ impl From<DPT_Value_Lux> for KnxFloat16 {
 ///
 /// 1-byte value representing scene number (1-64).
 /// The actual encoding is 0-63, so scene 1 = value 0.
-pub type DPT_SceneNumber = DatapointType<PDT_UnsignedChar, 17, 001>;
+pub type DPT_SceneNumber = DatapointType<PDT_UnsignedChar, 17, 1>;
 
 /// Scene number value for DPT 17.001
 ///
@@ -1343,7 +1343,7 @@ impl From<DPT_SceneNumber> for u8 {
 /// 1-byte value for scene control with learn bit.
 /// Bit 7: 0 = activate scene, 1 = learn scene
 /// Bits 0-5: scene number (0-63, representing scenes 1-64)
-pub type DPT_SceneControl = DatapointType<PDT_UnsignedChar, 18, 001>;
+pub type DPT_SceneControl = DatapointType<PDT_UnsignedChar, 18, 1>;
 
 impl core::fmt::Debug for DPT_SceneControl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1360,11 +1360,11 @@ impl core::fmt::Debug for DPT_SceneControl {
 pub type DPT_Colour_RGB = DatapointType<PDT_Generic03, 232, 600>;
 
 /// DPT for 4-byte value
-pub type DPT_Value_4_Ucount = DatapointType<PDT_Generic04, 12, 001>;
+pub type DPT_Value_4_Ucount = DatapointType<PDT_Generic04, 12, 1>;
 
 // ###########################################################################
 
-pub type DPT_PropDataType = DatapointType<PDT_UnsignedInt, 7, 010>;
+pub type DPT_PropDataType = DatapointType<PDT_UnsignedInt, 7, 10>;
 
 impl core::fmt::Debug for DPT_PropDataType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1437,7 +1437,7 @@ impl From<PDT_UnsignedInt> for InterfaceObjectType {
 
 // ###########################################################################
 
-pub type DPT_ErrorClass_System = DatapointType<PDT_Enum8, 20, 011>;
+pub type DPT_ErrorClass_System = DatapointType<PDT_Enum8, 20, 11>;
 
 impl core::fmt::Debug for DPT_ErrorClass_System {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

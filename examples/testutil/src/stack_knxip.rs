@@ -115,7 +115,7 @@ use embassy_time::Duration;
 use env_logger::Env;
 use static_cell::StaticCell;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use zweidraehte_device::device_model::{DeviceModelNotifier, DmNotificationSlot};
+use zweidraehte_device::device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot};
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     dpt::{DPT_Switch, InterfaceObjectType},

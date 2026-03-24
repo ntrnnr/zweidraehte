@@ -38,9 +38,9 @@ macro_rules! __create_protocol_enum_inner {
             }
         }
 
-        impl Into<$repr> for $name {
-            fn into(self) -> $repr {
-                match self {
+        impl From<$name> for $repr {
+            fn from(name: $name) -> $repr {
+                match name {
                     $($name::$variant => $value,)*
                     $name::$delegate_name(x) => x.into(),
                     $name::Other(x) => x,
@@ -106,9 +106,9 @@ macro_rules! __create_protocol_enum_inner {
             }
         }
 
-        impl Into<$repr> for $name {
-            fn into(self) -> $repr {
-                match self {
+        impl From<$name> for $repr {
+            fn from(name: $name) -> $repr {
+                match name {
                     $($name::$variant => $value,)*
                     $name::$delegate_name(x) => x.into(),
                 }

@@ -285,13 +285,12 @@ where
         if prop_id != 0 {
             // Direct PID lookup: augment first (can intercept/add PIDs),
             // then base.
-            if let Some(ot) = obj_type {
-                if let Some(result) =
+            if let Some(ot) = obj_type
+                && let Some(result) =
                     self.augment.property_description_read(self.state, ot, object_idx, PropertyLookup::ByPid(prop_id))
                 {
                     return result;
                 }
-            }
         }
 
         let base_result = match object_idx {
@@ -331,11 +330,10 @@ where
 
     fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
         // Augment first (can intercept specific PIDs).
-        if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) = self.augment.property_value_read(self.state, obj_type, req, buf) {
+        if let Some(obj_type) = self.object_type_for(req.object_idx)
+            && let Some(result) = self.augment.property_value_read(self.state, obj_type, req, buf) {
                 return result;
             }
-        }
 
         // Check access level
         let desc = self.get_descriptor(req.object_idx, req.pid).ok_or(PropertyError::InvalidPropertyId)?;
@@ -358,14 +356,13 @@ where
 
     fn property_value_write(&self, req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
         // Augment first (can intercept specific PIDs).
-        if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) = self.augment.property_value_write(self.state, obj_type, req) {
+        if let Some(obj_type) = self.object_type_for(req.object_idx)
+            && let Some(result) = self.augment.property_value_write(self.state, obj_type, req) {
                 if result.is_ok() {
                     self.state.mark_dirty();
                 }
                 return result;
             }
-        }
 
         // Check access level
         let desc = self.get_descriptor(req.object_idx, req.pid).ok_or(PropertyError::InvalidPropertyId)?;
@@ -405,20 +402,18 @@ where
     }
 
     fn function_property_command(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
-        if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) = self.augment.function_property_command(self.state, obj_type, req) {
+        if let Some(obj_type) = self.object_type_for(req.object_idx)
+            && let Some(result) = self.augment.function_property_command(self.state, obj_type, req) {
                 return result;
             }
-        }
         FunctionPropertyResult::not_supported()
     }
 
     fn function_property_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
-        if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) = self.augment.function_property_state_read(self.state, obj_type, req) {
+        if let Some(obj_type) = self.object_type_for(req.object_idx)
+            && let Some(result) = self.augment.function_property_state_read(self.state, obj_type, req) {
                 return result;
             }
-        }
         FunctionPropertyResult::not_supported()
     }
 }

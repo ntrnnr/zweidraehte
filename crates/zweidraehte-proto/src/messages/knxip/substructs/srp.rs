@@ -45,6 +45,7 @@ mod raw {
 
     /// Wire format for Request DIBs (variable length payload)
     /// Each DIB selector is 1 byte
+    #[allow(dead_code)] // KNX spec: not yet used
     #[derive(Copy, Clone, Debug, FromBytes, IntoBytes, Unaligned, KnownLayout, Immutable)]
     #[repr(C)]
     pub(super) struct RequestDIBsHeader {
