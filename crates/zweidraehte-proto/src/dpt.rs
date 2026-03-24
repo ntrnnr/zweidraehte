@@ -115,6 +115,378 @@ impl core::fmt::Debug for KnxFloat16 {
     }
 }
 
+// ---- KnxDate (3 bytes: day, month, year) ------------------------------------
+
+/// KNX date value (3 bytes, PDT 0x06).
+///
+/// Byte layout (big-endian):
+/// - Byte 0: `---D DDDD` — day (1–31, bits 4:0)
+/// - Byte 1: `---- MMMM` — month (1–12, bits 3:0)
+/// - Byte 2: `-YYY YYYY` — year (0–99, bits 6:0; 0=1990, 99=2089)
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct KnxDate {
+    data: [u8; 3],
+}
+
+impl KnxDate {
+    pub const fn new(day: u8, month: u8, year: u8) -> Self {
+        Self { data: [day & 0x1F, month & 0x0F, year & 0x7F] }
+    }
+
+    pub const fn from_bytes(bytes: [u8; 3]) -> Self {
+        Self { data: bytes }
+    }
+
+    pub const fn to_bytes(&self) -> [u8; 3] {
+        self.data
+    }
+
+    /// Day of month (1–31).
+    pub const fn day(&self) -> u8 {
+        self.data[0] & 0x1F
+    }
+
+    /// Month (1–12).
+    pub const fn month(&self) -> u8 {
+        self.data[1] & 0x0F
+    }
+
+    /// Year offset from 1990 (0–99). Add 1990 to get the calendar year.
+    pub const fn year(&self) -> u8 {
+        self.data[2] & 0x7F
+    }
+
+    /// Calendar year (1990–2089).
+    pub const fn calendar_year(&self) -> u16 {
+        1990 + self.year() as u16
+    }
+}
+
+impl fmt::Debug for KnxDate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:04}-{:02}-{:02}", self.calendar_year(), self.month(), self.day())
+    }
+}
+
+// ---- KnxTime (3 bytes: day+hour, minutes, seconds) -------------------------
+
+/// KNX time-of-day value (3 bytes, PDT 0x07).
+///
+/// Byte layout (big-endian):
+/// - Byte 0: `DDD- ----` day of week (0=no day, 1=Mon .. 7=Sun, bits 7:5)
+///           `---H HHHH` hour (0–23, bits 4:0)
+/// - Byte 1: `--MM MMMM` minutes (0–59, bits 5:0)
+/// - Byte 2: `--SS SSSS` seconds (0–59, bits 5:0)
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct KnxTime {
+    data: [u8; 3],
+}
+
+impl KnxTime {
+    pub const fn new(day_of_week: u8, hour: u8, minutes: u8, seconds: u8) -> Self {
+        Self {
+            data: [
+                ((day_of_week & 0x07) << 5) | (hour & 0x1F),
+                minutes & 0x3F,
+                seconds & 0x3F,
+            ],
+        }
+    }
+
+    pub const fn from_bytes(bytes: [u8; 3]) -> Self {
+        Self { data: bytes }
+    }
+
+    pub const fn to_bytes(&self) -> [u8; 3] {
+        self.data
+    }
+
+    /// Day of week (0=no day, 1=Monday .. 7=Sunday).
+    pub const fn day_of_week(&self) -> u8 {
+        (self.data[0] >> 5) & 0x07
+    }
+
+    /// Hour (0–23).
+    pub const fn hour(&self) -> u8 {
+        self.data[0] & 0x1F
+    }
+
+    /// Minutes (0–59).
+    pub const fn minutes(&self) -> u8 {
+        self.data[1] & 0x3F
+    }
+
+    /// Seconds (0–59).
+    pub const fn seconds(&self) -> u8 {
+        self.data[2] & 0x3F
+    }
+}
+
+impl fmt::Debug for KnxTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let dow = self.day_of_week();
+        if dow > 0 {
+            let names = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+            write!(f, "{} {:02}:{:02}:{:02}", names[dow as usize], self.hour(), self.minutes(), self.seconds())
+        } else {
+            write!(f, "{:02}:{:02}:{:02}", self.hour(), self.minutes(), self.seconds())
+        }
+    }
+}
+
+// ---- KnxDateTime (8 bytes) --------------------------------------------------
+
+/// KNX date and time value (8 bytes, PDT 0x0F / DPT 19.001).
+///
+/// Byte layout (big-endian, per KNX spec 03/07/02 §3.20):
+///
+/// ```text
+/// Byte 0: UUUU UUUU  year (0=1900, 255=2155)
+/// Byte 1: 0000 MMMM  month (1–12)
+/// Byte 2: 000D DDDD  day of month (1–31)
+/// Byte 3: DDD- ----  day of week (0=any, 1=Mon .. 7=Sun)
+///         ---H HHHH  hour (0–24; 24 = end of day)
+/// Byte 4: 00MM MMMM  minutes (0–59)
+/// Byte 5: 00SS SSSS  seconds (0–59)
+/// Byte 6: F WD NWD NY ND NDOW NT SUTI  status/validity flags
+///   - F:    fault (1=clock unreliable / data corrupted)
+///   - WD:   working day (1=working day, 0=bank day / non-working)
+///   - NWD:  no WD (1=WD field not valid)
+///   - NY:   no year (1=year field not valid)
+///   - ND:   no date (1=month+day fields not valid)
+///   - NDOW: no day of week (1=day-of-week field not valid)
+///   - NT:   no time (1=hour+min+sec fields not valid)
+///   - SUTI: standard/summer time (1=summer time, i.e. UT+X+1)
+/// Byte 7: CLQ SRC 00 0000  clock quality + reserved
+///   - CLQ: quality of clock (1=ext. sync signal)
+///   - SRC: source reliability (1=reliable, e.g. radio/internet)
+/// ```
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct KnxDateTime {
+    data: [u8; 8],
+}
+
+impl KnxDateTime {
+    pub const fn from_bytes(bytes: [u8; 8]) -> Self {
+        Self { data: bytes }
+    }
+
+    pub const fn to_bytes(&self) -> [u8; 8] {
+        self.data
+    }
+
+    // ---- Date/time fields ---------------------------------------------------
+
+    /// Year offset from 1900 (0–255).
+    pub const fn year(&self) -> u8 {
+        self.data[0]
+    }
+
+    /// Calendar year (1900–2155).
+    pub const fn calendar_year(&self) -> u16 {
+        1900 + self.data[0] as u16
+    }
+
+    /// Month (1–12).
+    pub const fn month(&self) -> u8 {
+        self.data[1] & 0x0F
+    }
+
+    /// Day of month (1–31).
+    pub const fn day(&self) -> u8 {
+        self.data[2] & 0x1F
+    }
+
+    /// Day of week (0=any, 1=Monday .. 7=Sunday).
+    pub const fn day_of_week(&self) -> u8 {
+        (self.data[3] >> 5) & 0x07
+    }
+
+    /// Hour (0–24; 24 means "end of day").
+    pub const fn hour(&self) -> u8 {
+        self.data[3] & 0x1F
+    }
+
+    /// Minutes (0–59).
+    pub const fn minutes(&self) -> u8 {
+        self.data[4] & 0x3F
+    }
+
+    /// Seconds (0–59).
+    pub const fn seconds(&self) -> u8 {
+        self.data[5] & 0x3F
+    }
+
+    // ---- Status flags (byte 6) ----------------------------------------------
+
+    /// Fault — clock data is corrupted or unreliable.
+    pub const fn fault(&self) -> bool {
+        self.data[6] & 0x80 != 0
+    }
+
+    /// Working day (only meaningful when [`no_working_day()`](Self::no_working_day) is false).
+    pub const fn working_day(&self) -> bool {
+        self.data[6] & 0x40 != 0
+    }
+
+    /// True if the working-day field is not valid.
+    pub const fn no_working_day(&self) -> bool {
+        self.data[6] & 0x20 != 0
+    }
+
+    /// True if the year field is not valid.
+    pub const fn no_year(&self) -> bool {
+        self.data[6] & 0x10 != 0
+    }
+
+    /// True if the month and day-of-month fields are not valid.
+    pub const fn no_date(&self) -> bool {
+        self.data[6] & 0x08 != 0
+    }
+
+    /// True if the day-of-week field is not valid.
+    pub const fn no_day_of_week(&self) -> bool {
+        self.data[6] & 0x04 != 0
+    }
+
+    /// True if the hour, minutes, and seconds fields are not valid.
+    pub const fn no_time(&self) -> bool {
+        self.data[6] & 0x02 != 0
+    }
+
+    /// Summer time flag (SUTI). True = summer time (UT+X+1), false = standard time (UT+X).
+    pub const fn summer_time(&self) -> bool {
+        self.data[6] & 0x01 != 0
+    }
+
+    // ---- Clock quality (byte 7) ---------------------------------------------
+
+    /// Clock has external synchronization signal.
+    pub const fn external_sync(&self) -> bool {
+        self.data[7] & 0x80 != 0
+    }
+
+    /// Synchronization source is reliable (radio, internet).
+    pub const fn reliable_source(&self) -> bool {
+        self.data[7] & 0x40 != 0
+    }
+}
+
+impl fmt::Debug for KnxDateTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            self.calendar_year(),
+            self.month(),
+            self.day(),
+            self.hour(),
+            self.minutes(),
+            self.seconds(),
+        )
+    }
+}
+
+// ---- PollGroupSettings (3 bytes) --------------------------------------------
+
+/// KNX poll group settings (3 bytes, PDT 0x0D).
+///
+/// - Bytes 0–1: group address (big-endian u16)
+/// - Byte 2: `-------E` polling enabled (bit 0)
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct PollGroupSettings {
+    data: [u8; 3],
+}
+
+impl PollGroupSettings {
+    pub fn new(group_address: u16, enabled: bool) -> Self {
+        let mut data = [0u8; 3];
+        data[0..2].copy_from_slice(&group_address.to_be_bytes());
+        data[2] = enabled as u8;
+        Self { data }
+    }
+
+    pub const fn from_bytes(bytes: [u8; 3]) -> Self {
+        Self { data: bytes }
+    }
+
+    pub const fn to_bytes(&self) -> [u8; 3] {
+        self.data
+    }
+
+    pub fn group_address(&self) -> u16 {
+        u16::from_be_bytes([self.data[0], self.data[1]])
+    }
+
+    pub const fn enabled(&self) -> bool {
+        self.data[2] & 0x01 != 0
+    }
+}
+
+impl fmt::Debug for PollGroupSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PollGroup({:#06X}, enabled={})", self.group_address(), self.enabled())
+    }
+}
+
+// ---- KnxAlarmInfo (6 bytes) -------------------------------------------------
+
+/// KNX alarm info (6 bytes, PDT 0x31).
+///
+/// - Byte 0: log number
+/// - Byte 1: alarm priority
+/// - Byte 2: application area
+/// - Byte 3: task number
+/// - Bytes 4–5: sender code (big-endian u16)
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct KnxAlarmInfo {
+    data: [u8; 6],
+}
+
+impl KnxAlarmInfo {
+    pub const fn from_bytes(bytes: [u8; 6]) -> Self {
+        Self { data: bytes }
+    }
+
+    pub const fn to_bytes(&self) -> [u8; 6] {
+        self.data
+    }
+
+    pub const fn log_number(&self) -> u8 {
+        self.data[0]
+    }
+
+    pub const fn alarm_priority(&self) -> u8 {
+        self.data[1]
+    }
+
+    pub const fn application_area(&self) -> u8 {
+        self.data[2]
+    }
+
+    pub const fn task_number(&self) -> u8 {
+        self.data[3]
+    }
+
+    pub fn sender_code(&self) -> u16 {
+        u16::from_be_bytes([self.data[4], self.data[5]])
+    }
+}
+
+impl fmt::Debug for KnxAlarmInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Alarm(log={}, pri={}, area={}, task={}, sender={:#06X})",
+            self.log_number(),
+            self.alarm_priority(),
+            self.application_area(),
+            self.task_number(),
+            self.sender_code(),
+        )
+    }
+}
+
 // ---- KNXVersion (magic.version.revision bitfield) --------------------------
 
 bitfield! {
@@ -338,6 +710,50 @@ impl<const ID: u8, const N: usize> From<KNXVersion> for PropertyData<KNXVersion,
     }
 }
 
+/// Implement `PropertyData` accessors and `From`/`Into` conversions for a
+/// type that wraps a `[u8; SIZE]` with `from_bytes`/`to_bytes` methods.
+macro_rules! impl_byte_backed_pdt {
+    ($typ:ty, $size:literal) => {
+        impl<const ID: u8, const N: usize> PropertyData<$typ, ID, N> {
+            pub fn with_value(value: $typ) -> Self {
+                let bytes = value.to_bytes();
+                let mut data = [0u8; N];
+                data[..N].copy_from_slice(&bytes[..$size]);
+                Self { data, _p: PhantomData }
+            }
+
+            pub fn value(&self) -> $typ {
+                let mut bytes = [0u8; $size];
+                bytes.copy_from_slice(&self.data[..N]);
+                <$typ>::from_bytes(bytes)
+            }
+
+            pub fn set_value(&mut self, value: $typ) {
+                let bytes = value.to_bytes();
+                self.data.copy_from_slice(&bytes[..$size]);
+            }
+        }
+
+        impl<const ID: u8, const N: usize> From<PropertyData<$typ, ID, N>> for $typ {
+            fn from(pd: PropertyData<$typ, ID, N>) -> $typ {
+                pd.value()
+            }
+        }
+
+        impl<const ID: u8, const N: usize> From<$typ> for PropertyData<$typ, ID, N> {
+            fn from(value: $typ) -> Self {
+                Self::with_value(value)
+            }
+        }
+    };
+}
+
+impl_byte_backed_pdt!(KnxDate, 3);
+impl_byte_backed_pdt!(KnxTime, 3);
+impl_byte_backed_pdt!(KnxDateTime, 8);
+impl_byte_backed_pdt!(PollGroupSettings, 3);
+impl_byte_backed_pdt!(KnxAlarmInfo, 6);
+
 // ###########################################################################
 // Property Data Types (PDT)
 // ###########################################################################
@@ -348,16 +764,16 @@ pub type PDT_UnsignedChar = PropertyData<u8, 2, 1>;
 pub type PDT_Int = PropertyData<i16, 3, 2>;
 pub type PDT_UnsignedInt = PropertyData<u16, 4, 2>;
 pub type PDT_KNXFloat = PropertyData<KnxFloat16, 5, 2>;
-// TODO: PDT_Date (0x06, 3 bytes) — needs KnxDate struct
-// TODO: PDT_Time (0x07, 3 bytes) — needs KnxTime struct
+pub type PDT_Date = PropertyData<KnxDate, 6, 3>;
+pub type PDT_Time = PropertyData<KnxTime, 7, 3>;
 pub type PDT_Long = PropertyData<i32, 8, 4>;
 pub type PDT_UnsignedLong = PropertyData<u32, 9, 4>;
 pub type PDT_Float = PropertyData<f32, 0x0A, 4>;
 pub type PDT_Double = PropertyData<f64, 0x0B, 8>;
 pub type PDT_CharBlock = PropertyData<[u8; 10], 0x0C, 10>;
-// TODO: PDT_PollGroupSettings (0x0D, 3 bytes) — needs PollGroupSettings struct
+pub type PDT_PollGroupSettings = PropertyData<PollGroupSettings, 0x0D, 3>;
 pub type PDT_ShortCharBlock = PropertyData<[u8; 5], 0x0E, 5>;
-// TODO: PDT_DateTime (0x0F, 8 bytes) — needs KnxDateTime struct
+pub type PDT_DateTime = PropertyData<KnxDateTime, 0x0F, 8>;
 // TODO: PDT_VariableLength (0x10) — variable-length encoding, not representable as fixed PropertyData
 pub type PDT_Generic01 = PropertyData<[u8; 1], 0x11, 1>;
 pub type PDT_Generic02 = PropertyData<[u8; 2], 0x12, 2>;
@@ -381,7 +797,7 @@ pub type PDT_Generic19 = PropertyData<[u8; 19], 0x23, 19>;
 pub type PDT_Generic20 = PropertyData<[u8; 20], 0x24, 20>;
 // TODO: PDT_UTF8 (0x25) — variable-length UTF-8, not representable as fixed PropertyData
 pub type PDT_Version = PropertyData<KNXVersion, 0x30, 2>;
-// TODO: PDT_AlarmInfo (0x31, 6 bytes) — needs KnxAlarmInfo struct
+pub type PDT_AlarmInfo = PropertyData<KnxAlarmInfo, 0x31, 6>;
 pub type PDT_BinaryInformation = PropertyData<bool, 0x32, 1>;
 pub type PDT_Bitset8 = PropertyData<u8, 0x33, 1>;
 pub type PDT_Bitset16 = PropertyData<u16, 0x34, 2>;
@@ -511,12 +927,16 @@ datapoint_type_convs!(PDT_Char);
 datapoint_type_convs!(PDT_UnsignedChar);
 datapoint_type_convs!(PDT_Int);
 datapoint_type_convs!(PDT_UnsignedInt);
+datapoint_type_convs!(PDT_Date);
+datapoint_type_convs!(PDT_Time);
 datapoint_type_convs!(PDT_Long);
 datapoint_type_convs!(PDT_UnsignedLong);
 datapoint_type_convs!(PDT_Float);
 datapoint_type_convs!(PDT_Double);
 datapoint_type_convs!(PDT_CharBlock);
+datapoint_type_convs!(PDT_PollGroupSettings);
 datapoint_type_convs!(PDT_ShortCharBlock);
+datapoint_type_convs!(PDT_DateTime);
 datapoint_type_convs!(PDT_Generic01);
 datapoint_type_convs!(PDT_Generic02);
 datapoint_type_convs!(PDT_Generic03);
@@ -538,6 +958,7 @@ datapoint_type_convs!(PDT_Generic18);
 datapoint_type_convs!(PDT_Generic19);
 datapoint_type_convs!(PDT_Generic20);
 datapoint_type_convs!(PDT_Version);
+datapoint_type_convs!(PDT_AlarmInfo);
 datapoint_type_convs!(PDT_BinaryInformation);
 datapoint_type_convs!(PDT_Bitset8);
 datapoint_type_convs!(PDT_Bitset16);
