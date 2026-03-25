@@ -309,7 +309,7 @@ impl<W: Send + 'static, R: Send + 'static, A: AddressChecker + Send + 'static> s
 
 impl<CTX, W, R, A> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<W, R, A>
 where
-    CTX: crate::context::BufferManagerContext,
+    CTX: crate::context::BufferManagerContext + crate::context::MaxRetryCountContext,
     W: embedded_io_async::Write + Send + 'static,
     R: embedded_io_async::Read + Send + 'static,
     A: AddressChecker + Send + 'static,
@@ -332,6 +332,10 @@ where
             conf_tx,
             self.address_checker,
         );
+        // Apply PID_MAX_RETRY_COUNT from device state to the chip's retry config.
+        // PID 52 format: busy_retry bits 6-4, nak_retry bits 2-0.
+        let mrc = context.max_retry_count();
+        ll.set_retry_config(RetryConfig::new(mrc & 0x07, (mrc >> 4) & 0x07));
         async move { ll.run(req_rx).await }
     }
 }
@@ -357,7 +361,8 @@ impl<CTX, W, R> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<W
 where
     CTX: crate::context::BufferManagerContext
         + crate::context::KnxIndividualAddressContext
-        + crate::context::AddressTableContext,
+        + crate::context::AddressTableContext
+        + crate::context::MaxRetryCountContext,
     W: embedded_io_async::Write + Send + 'static,
     R: embedded_io_async::Read + Send + 'static,
 {
@@ -374,6 +379,10 @@ where
         let checker = DeviceAddressChecker::new(context, context.address_table());
         let mut ll =
             TpUartLinkLayer::with_address_checker(self.uart_tx, self.uart_rx, buffer_manager, ind_tx, conf_tx, checker);
+        // Apply PID_MAX_RETRY_COUNT from device state to the chip's retry config.
+        // PID 52 format: busy_retry bits 6-4, nak_retry bits 2-0.
+        let mrc = context.max_retry_count();
+        ll.set_retry_config(RetryConfig::new(mrc & 0x07, (mrc >> 4) & 0x07));
         async move { ll.run(req_rx).await }
     }
 }

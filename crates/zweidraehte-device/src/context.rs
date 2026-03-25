@@ -99,6 +99,15 @@ pub trait IpAdditionalIndividualAddressContext {
     fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize;
 }
 
+/// Provides the TP1 max retry count for DLL retry configuration.
+///
+/// Used by the TPUART link layer at init time to configure the chip's
+/// retry behavior from PID_MAX_RETRY_COUNT (PID 52).
+pub trait MaxRetryCountContext {
+    /// Get the max retry count byte (busy_retry bits 6-4, nak_retry bits 2-0).
+    fn max_retry_count(&self) -> u8;
+}
+
 /// Provides the KNX primary individual address.
 pub trait KnxIndividualAddressContext {
     /// The device's primary individual address.

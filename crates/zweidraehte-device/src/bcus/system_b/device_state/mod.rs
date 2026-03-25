@@ -17,7 +17,7 @@ use crate::{
     AccessContext, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS, StackState,
     address::IndividualAddress,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
-    objects::interface::HasRoutingCount,
+    objects::interface::{HasMaxRetryCount, HasRoutingCount},
     objects::tables::{
         HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication,
     },
@@ -37,6 +37,9 @@ use crate::storage::DeviceIdentity;
 mod ip;
 #[cfg(feature = "knxip")]
 pub use ip::*;
+
+mod tp1;
+pub use tp1::*;
 
 // ============================================================================
 // Unified Device State
@@ -63,7 +66,7 @@ pub use ip::*;
 ///
 /// **Link-Layer State:**
 /// - For KNX/IP devices: IP configuration (friendly name, configured IP, etc.)
-/// - For TP1 devices: nothing (`()`)
+/// - For TP1 devices: [`Tp1LinkLayerState`] (PID_MAX_RETRY_COUNT)
 ///
 /// # Persistence
 ///
@@ -78,7 +81,7 @@ pub use ip::*;
 /// - `COT_SIZE`: Group object table size in bytes (2 + MAX_CO * 2)
 /// - `P`: Application parameters type
 /// - `LS`: Link-layer-specific persistent runtime state (e.g.,
-///   [`IpLinkLayerState`] for KNX/IP, `()` for TP1)
+///   [`IpLinkLayerState`] for KNX/IP, [`Tp1LinkLayerState`] for TP1)
 pub struct SystemBDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
@@ -633,6 +636,19 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 
     fn set_routing_count(&self, value: u8) {
         self.routing_count.set(value);
+        self.mark_dirty();
+    }
+}
+
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState + HasMaxRetryCount>
+    HasMaxRetryCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+{
+    fn max_retry_count(&self) -> u8 {
+        self.link_layer_state.max_retry_count()
+    }
+
+    fn set_max_retry_count(&self, value: u8) {
+        self.link_layer_state.set_max_retry_count(value);
         self.mark_dirty();
     }
 }

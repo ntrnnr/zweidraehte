@@ -1213,6 +1213,19 @@ pub trait HasRoutingCount {
     fn set_routing_count(&self, value: u8);
 }
 
+/// Trait for types that provide a max retry count.
+///
+/// The max retry count (PID 52) encodes DLL retry parameters for TP1 devices:
+/// busy_retry (bits 6-4) and nak_retry (bits 2-0). Default 0x33 (3 busy, 3 NAK).
+/// Not applicable for KNX/IP devices.
+pub trait HasMaxRetryCount {
+    /// Get the max retry count byte.
+    fn max_retry_count(&self) -> u8;
+
+    /// Set the max retry count byte.
+    fn set_max_retry_count(&self, value: u8);
+}
+
 /// Trait for containers that provide access to DeviceObject properties.
 ///
 /// This trait enables type-safe access to the DeviceObject's semantic properties

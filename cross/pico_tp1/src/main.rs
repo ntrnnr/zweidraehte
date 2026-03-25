@@ -58,8 +58,8 @@ const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
 const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
-/// Device state for TP1 — no IP link-layer state needed (LS defaults to `()`).
-type PicoTp1State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams>;
+/// Device state for TP1, with [`Tp1LinkLayerState`] for PID_MAX_RETRY_COUNT persistence.
+type PicoTp1State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, Tp1LinkLayerState>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
@@ -101,7 +101,7 @@ impl StackDefinition for PicoTp1LightSwitch {
     type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
     type State = PicoTp1State;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, PicoTp1State, EasterEggAugment>;
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, PicoTp1State, (Tp1Augment, EasterEggAugment)>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
@@ -109,7 +109,7 @@ impl StackDefinition for PicoTp1LightSwitch {
     where
         Self::State: 'a,
     {
-        create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), EasterEggAugment)
+        create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), (Tp1Augment, EasterEggAugment))
     }
 
     type LayerBuilder = InsecureDeviceBuilder;

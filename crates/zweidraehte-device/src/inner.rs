@@ -203,6 +203,16 @@ where
     }
 }
 
+impl<D: StackDefinition> crate::context::MaxRetryCountContext for StackContext<'_, D>
+where
+    D::State: crate::objects::interface::HasMaxRetryCount,
+{
+    fn max_retry_count(&self) -> u8 {
+        use crate::objects::interface::HasMaxRetryCount;
+        self.inner.state.max_retry_count()
+    }
+}
+
 // Unconditional — `individual_address()` is on `StackState`, so this works
 // for both IP and TP1 devices.
 impl<D: StackDefinition> crate::context::KnxIndividualAddressContext for StackContext<'_, D> {

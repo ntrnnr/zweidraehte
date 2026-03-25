@@ -41,7 +41,7 @@ pub use crate::objects::comm::{
 // Interface objects (traits + response/error types)
 pub use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, InterfaceObject,
-    PropertyServiceHandler, HasDeviceObject, HasRoutingCount,
+    PropertyServiceHandler, HasDeviceObject, HasMaxRetryCount, HasRoutingCount,
     PropertyError, PropertyReadRequest, PropertyWriteRequest, WriteResponse,
     PropertyDescriptionResponse,
 };

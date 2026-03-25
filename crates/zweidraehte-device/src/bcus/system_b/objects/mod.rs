@@ -31,6 +31,9 @@ mod ip;
 #[cfg(feature = "knxip")]
 pub use ip::*;
 
+mod tp1;
+pub use tp1::*;
+
 use core::cell::RefCell;
 
 use crate::{

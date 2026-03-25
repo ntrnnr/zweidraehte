@@ -2272,6 +2272,129 @@ impl From<RoutingCount> for [u8; 1] {
     }
 }
 
+// ================================================================================
+// MaxRetryCount — DLL retry parameters (PID 52)
+// ================================================================================
+
+/// Data Link Layer retry configuration for KNX TP1 devices.
+///
+/// Encodes busy and NAK retry counts in a single byte per KNX spec §4.3.3:
+///
+/// ```text
+/// Bit:     7    6    5    4    3    2    1    0
+/// Meaning: 0    busy_retry     0    nak_retry
+/// ```
+///
+/// Default value is `0x33` (3 busy retries, 3 NAK retries). This property
+/// is mandatory for TP1 devices (mask 07B0h) but not applicable for pure
+/// KNX/IP devices (mask 57B0h).
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct MaxRetryCount(u8);
+
+impl MaxRetryCount {
+    /// Default: 3 busy retries, 3 NAK retries (0x33)
+    pub const DEFAULT: u8 = 0x33;
+
+    /// Create with default retry counts (3/3)
+    #[inline]
+    pub const fn new() -> Self {
+        Self(Self::DEFAULT)
+    }
+
+    /// Create from a raw PID 52 byte value.
+    ///
+    /// The caller is responsible for the bit layout: busy in bits 6-4,
+    /// NAK in bits 2-0. Bits 7 and 3 are masked to zero.
+    #[inline]
+    pub const fn from_value(value: u8) -> Self {
+        Self(value & 0x77)
+    }
+
+    /// Create from separate busy and NAK retry counts (each clamped to 0-7).
+    #[inline]
+    pub const fn from_parts(busy_retry: u8, nak_retry: u8) -> Self {
+        Self(((busy_retry & 0x07) << 4) | (nak_retry & 0x07))
+    }
+
+    /// Get the raw byte value (PID 52 format).
+    #[inline]
+    pub const fn value(&self) -> u8 {
+        self.0
+    }
+
+    /// Busy retry count (0-7), extracted from bits 6-4.
+    #[inline]
+    pub const fn busy_retry(&self) -> u8 {
+        (self.0 >> 4) & 0x07
+    }
+
+    /// NAK retry count (0-7), extracted from bits 2-0.
+    #[inline]
+    pub const fn nak_retry(&self) -> u8 {
+        self.0 & 0x07
+    }
+}
+
+impl Default for MaxRetryCount {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for MaxRetryCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "MaxRetryCount(busy={}, nak={})",
+            self.busy_retry(),
+            self.nak_retry()
+        )
+    }
+}
+
+impl AsRef<[u8]> for MaxRetryCount {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        core::slice::from_ref(&self.0)
+    }
+}
+
+impl AsMut<[u8]> for MaxRetryCount {
+    #[inline]
+    fn as_mut(&mut self) -> &mut [u8] {
+        core::slice::from_mut(&mut self.0)
+    }
+}
+
+impl From<u8> for MaxRetryCount {
+    #[inline]
+    fn from(value: u8) -> Self {
+        Self::from_value(value)
+    }
+}
+
+impl From<MaxRetryCount> for u8 {
+    #[inline]
+    fn from(value: MaxRetryCount) -> Self {
+        value.0
+    }
+}
+
+impl From<[u8; 1]> for MaxRetryCount {
+    #[inline]
+    fn from(value: [u8; 1]) -> Self {
+        Self::from_value(value[0])
+    }
+}
+
+impl From<MaxRetryCount> for [u8; 1] {
+    #[inline]
+    fn from(value: MaxRetryCount) -> Self {
+        [value.0]
+    }
+}
+
 // ---- PropertyDataDefinition implementations for semantic types --------------
 //
 // These allow the semantic types to be used in the define_interface_object! macro
@@ -2293,6 +2416,12 @@ impl const PropertyDataDefinition for ProgrammingMode {
 impl const PropertyDataDefinition for RoutingCount {
     const SIZE: usize = 1;
     const ID: u8 = 0x02; // PDT_UNSIGNED_CHAR
+}
+
+/// MaxRetryCount uses PDT_GENERIC_01 (ID 0x11) - 1 byte
+impl const PropertyDataDefinition for MaxRetryCount {
+    const SIZE: usize = 1;
+    const ID: u8 = 0x11; // PDT_GENERIC_01
 }
 
 #[cfg(test)]

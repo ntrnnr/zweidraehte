@@ -207,6 +207,18 @@ impl IpAdditionalIndividualAddressContext for &mut MockContext {
     }
 }
 
+impl zweidraehte_device::context::MaxRetryCountContext for &MockContext {
+    fn max_retry_count(&self) -> u8 {
+        0x33 // Default: 3 busy, 3 NAK retries
+    }
+}
+
+impl zweidraehte_device::context::MaxRetryCountContext for &mut MockContext {
+    fn max_retry_count(&self) -> u8 {
+        0x33 // Default: 3 busy, 3 NAK retries
+    }
+}
+
 impl AddressTableContext for &MockContext {
     type ADT = Table<AddrTab7Impl<4>>;
     fn address_table(&self) -> &RefCell<Self::ADT> {
