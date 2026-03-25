@@ -132,6 +132,10 @@ pub enum DestinationAddress {
     Group(GroupAddress),
     Broadcast,
     SystemBroadcast,
+    /// TSAP-based addressing for group communication. The connection number
+    /// occupies the destination address bytes and is resolved by the transport
+    /// layer to a real group address via the address table.
+    ConnectionNr(u16),
 }
 
 create_protocol_enum!(
@@ -952,6 +956,9 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
             }
             DestinationAddress::SystemBroadcast => {
                 self.set_address_type(AddressType::SystemBroadcast);
+            }
+            DestinationAddress::ConnectionNr(nr) => {
+                self.set_connection_nr(nr);
             }
         }
     }

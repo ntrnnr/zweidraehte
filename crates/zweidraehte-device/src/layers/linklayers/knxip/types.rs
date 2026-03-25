@@ -143,6 +143,9 @@ impl<ADT: AddressTable + HasLoadStateMachine> AddressFilter for RoutingAddressFi
                 table.is_loaded() && (table.entry_count() == 0 || table.contains(ga))
             }
             DestinationAddress::Broadcast | DestinationAddress::SystemBroadcast => true,
+            // ConnectionNr is an internal TSAP index used between the application
+            // and transport layers — it never reaches the link layer address filter.
+            DestinationAddress::ConnectionNr(_) => false,
         }
     }
 }

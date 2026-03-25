@@ -29,6 +29,7 @@ use crate::{
     address::GroupAddress,
     messages::{
         buffers::{Buffer, DynBufferManager},
+        builder::MessageBuilder,
         knx::*,
     },
     objects::{
@@ -619,22 +620,18 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 return;
             };
 
-            // Build the GroupValueResponse message
-            // Note: We can't use respond_with() because group communication uses connection_nr (TSAP)
-            // instead of individual addressing, so we manually build with the required fields
-            let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_GroupData_Req);
-            // Mirror the priority from the incoming request (BCU1/BCU2 compatible behavior)
-            msg.ctrl_field_mut().set_priority(request_priority);
-            msg.set_connection_nr(tsap);
+            let msg = MessageBuilder::new_request(
+                msg_buf,
+                ServiceType::T_GroupData_Req,
+                request_priority,
+                DestinationAddress::ConnectionNr(tsap),
+            )
+            .with_application(ApciCode::GroupValueResponse, ServiceType::T_GroupData_Req)
+            .with_data(|buf| {
+                buf[msg_offset..msg_offset + object_size].copy_from_slice(self.comm_objects.borrow().value(asap));
+            });
 
-            // Copy the current value from the communication object
-            msg.buf_mut()[msg_offset..msg_offset + object_size].copy_from_slice(self.comm_objects.borrow().value(asap));
-
-            // Set APCI code AFTER copying data to avoid overwriting when data fits in 6 bits
-            msg.set_apci_code(ApciCode::GroupValueResponse);
-
-            // Send the response
-            outbox.push(msg);
+            outbox.push(msg.into_inner());
 
             trace!(
                 "AL sent GroupValueResponse for ASAP {}: {:?}",
@@ -739,25 +736,27 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 return true;
             };
 
-            // Note: We don't use MessageBuilder here because group communication uses
-            // connection_nr (TSAP) instead of individual addressing, which the builder
-            // doesn't support yet. Group services have different semantics.
-            let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_GroupData_Req);
-
-            // Fill in a few other fields
-            msg.ctrl_field_mut().set_priority(cot_info.flags.priority());
-            if read {
-                msg.set_apci_code(ApciCode::GroupValueRead);
+            let msg = if read {
+                MessageBuilder::new_request(
+                    msg_buf,
+                    ServiceType::T_GroupData_Req,
+                    cot_info.flags.priority(),
+                    DestinationAddress::ConnectionNr(tsap),
+                )
+                .with_application(ApciCode::GroupValueRead, ServiceType::T_GroupData_Req)
+                .build()
             } else {
-                // Copy the value of the communication objet into the message
-                msg.buf_mut()[msg_offset..msg_offset + object_size]
-                    .copy_from_slice(self.comm_objects.borrow().value(asap));
-
-                msg.set_apci_code(ApciCode::GroupValueWrite);
-            }
-
-            // Set connection number from sending assoc nr
-            msg.set_connection_nr(tsap);
+                MessageBuilder::new_request(
+                    msg_buf,
+                    ServiceType::T_GroupData_Req,
+                    cot_info.flags.priority(),
+                    DestinationAddress::ConnectionNr(tsap),
+                )
+                .with_application(ApciCode::GroupValueWrite, ServiceType::T_GroupData_Req)
+                .with_data(|buf| {
+                    buf[msg_offset..msg_offset + object_size].copy_from_slice(self.comm_objects.borrow().value(asap));
+                })
+            };
 
             // Store pending state so the TL confirmation (arriving later on
             // conf_rx) can update the CO status.
@@ -765,7 +764,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
             // Send fire-and-forget to TL — confirmation handled in handle_tl_confirmation
             debug!("AL -> TL: GroupValue {} ASAP {} TSAP {}", if read { "Read" } else { "Write" }, asap, tsap);
-            outbox.push(msg);
+            outbox.push(msg.into_inner());
         } else {
             // No sending TSAP found - error
             let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
@@ -1791,8 +1790,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
         let header_count = raw[offsets::MSG_APCI + 2] & 0x0F;
-        let header_address =
-            u16::from_be_bytes([raw[offsets::MSG_APCI + 3], raw[offsets::MSG_APCI + 4]]);
+        let header_address = u16::from_be_bytes([raw[offsets::MSG_APCI + 3], raw[offsets::MSG_APCI + 4]]);
 
         // Reject illegal count (must be 1-5) or truncated messages up front,
         // sending an error response so the remote side isn't left waiting.
@@ -1814,8 +1812,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         }
 
         // Full parse is safe now — header, count, and mask lengths are validated.
-        let mbw = MemoryBitWrite::parse(raw)
-            .expect("header and length already validated");
+        let mbw = MemoryBitWrite::parse(raw).expect("header and length already validated");
 
         debug!("AL MemoryBit_Write: address=0x{:04X}, count={}", mbw.address, mbw.count);
 

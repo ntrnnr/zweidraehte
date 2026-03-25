@@ -449,11 +449,13 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
         msg.ctrl_field_mut().set_priority(self.state.network.priority);
         msg.set_dest_addr(self.state.network.dest);
 
-        // Apply application context
-        msg.set_apci_code(self.state.apci);
-
-        // Let caller write application-specific data
+        // Let caller write application-specific data first, then set APCI code.
+        // Order matters for short APCI codes (GroupValue*, Adc*, Memory*, etc.):
+        // set_apci_code merges APCI bits into the upper bits of MSG_APCI+1,
+        // preserving the lower 6 data bits. If APCI were set first, a raw
+        // copy_from_slice in the writer would clobber the APCI bits.
         writer(msg.buf_mut());
+        msg.set_apci_code(self.state.apci);
 
         RequestMessage::request(msg)
     }
