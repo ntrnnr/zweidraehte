@@ -626,7 +626,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 request_priority,
                 DestinationAddress::ConnectionNr(tsap),
             )
-            .with_application(ApciCode::GroupValueResponse, ServiceType::T_GroupData_Req)
+            .with_application(ApciCode::GroupValueResponse)
             .with_data(|buf| {
                 buf[msg_offset..msg_offset + object_size].copy_from_slice(self.comm_objects.borrow().value(asap));
             });
@@ -743,7 +743,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     cot_info.flags.priority(),
                     DestinationAddress::ConnectionNr(tsap),
                 )
-                .with_application(ApciCode::GroupValueRead, ServiceType::T_GroupData_Req)
+                .with_application(ApciCode::GroupValueRead)
                 .build()
             } else {
                 MessageBuilder::new_request(
@@ -752,7 +752,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     cot_info.flags.priority(),
                     DestinationAddress::ConnectionNr(tsap),
                 )
-                .with_application(ApciCode::GroupValueWrite, ServiceType::T_GroupData_Req)
+                .with_application(ApciCode::GroupValueWrite)
                 .with_data(|buf| {
                     buf[msg_offset..msg_offset + object_size].copy_from_slice(self.comm_objects.borrow().value(asap));
                 })
@@ -893,14 +893,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             builder::IndicationExt,
         };
 
-        let response_service_type = match ind.service_type() {
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
-            other => {
-                warn!("AL PropertyDescriptionRead unexpected service type: {:?}", other);
-                return;
-            }
-        };
+        if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
+            warn!("AL PropertyDescriptionRead unexpected service type: {:?}", ind.service_type());
+            return;
+        }
 
         let Some(req) = PropertyDescriptionRead::parse(ind.buf()) else {
             error!("PropertyDescriptionRead message too short: {}", ind.len());
@@ -922,14 +918,13 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     return;
                 };
 
-                let msg = ind
-                    .respond_with(msg_buf)
-                    .with_application(ApciCode::PropertyDescriptionResponse, response_service_type)
-                    .with_data(|data| {
+                let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyDescriptionResponse).with_data(
+                    |data| {
                         // Success case: the descriptor encodes itself directly
                         let response_buf = &mut data[offsets::MSG_APCI + 2..];
                         let _len = desc.encode(response_buf);
-                    });
+                    },
+                );
 
                 debug!("AL sending PropertyDescriptionResponse: {:?}", desc);
                 outbox.push(msg.into_inner());
@@ -943,12 +938,11 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     return;
                 };
 
-                let msg = ind
-                    .respond_with(msg_buf)
-                    .with_application(ApciCode::PropertyDescriptionResponse, response_service_type)
-                    .with_data(|data| {
+                let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyDescriptionResponse).with_data(
+                    |data| {
                         PropertyDescriptionResponse::write_error(data, req.object_idx as u8, req.prop_id, req.prop_idx);
-                    });
+                    },
+                );
 
                 outbox.push(msg.into_inner());
             }
@@ -981,14 +975,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             builder::IndicationExt,
         };
 
-        let response_service_type = match ind.service_type() {
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
-            other => {
-                warn!("AL PropertyValueRead unexpected service type: {:?}", other);
-                return;
-            }
-        };
+        if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
+            warn!("AL PropertyValueRead unexpected service type: {:?}", ind.service_type());
+            return;
+        }
 
         let Some(hdr) = PropertyValueHeader::parse(ind.buf()) else {
             error!("PropertyValueRead message too short: {}", ind.len());
@@ -1024,10 +1014,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 // Per KNX spec: if start_idx=0 (element count query), response count=1
                 let response_count = if hdr.start_idx == 0 { 1 } else { hdr.count };
 
-                let msg = ind
-                    .respond_with(msg_buf)
-                    .with_application(ApciCode::PropertyValueResponse, response_service_type)
-                    .with_data(|buf| {
+                let msg =
+                    ind.respond_with(msg_buf).with_application(ApciCode::PropertyValueResponse).with_data(|buf| {
                         PropertyValueResponse::write(
                             buf,
                             hdr.object_idx as u8,
@@ -1050,10 +1038,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     return;
                 };
 
-                let msg = ind
-                    .respond_with(msg_buf)
-                    .with_application(ApciCode::PropertyValueResponse, response_service_type)
-                    .with_data(|buf| {
+                let msg =
+                    ind.respond_with(msg_buf).with_application(ApciCode::PropertyValueResponse).with_data(|buf| {
                         PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
                     });
 
@@ -1089,14 +1075,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             builder::IndicationExt,
         };
 
-        let response_service_type = match ind.service_type() {
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
-            other => {
-                warn!("AL PropertyValueWrite unexpected service type: {:?}", other);
-                return;
-            }
-        };
+        if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
+            warn!("AL PropertyValueWrite unexpected service type: {:?}", ind.service_type());
+            return;
+        }
 
         let Some(hdr) = PropertyValueHeader::parse(ind.buf()) else {
             error!("PropertyValueWrite message too short: {}", ind.len());
@@ -1135,10 +1117,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     return;
                 };
 
-                let msg = ind
-                    .respond_with(msg_buf)
-                    .with_application(ApciCode::PropertyValueResponse, response_service_type)
-                    .with_data(|buf| {
+                let msg =
+                    ind.respond_with(msg_buf).with_application(ApciCode::PropertyValueResponse).with_data(|buf| {
                         PropertyValueResponse::write(
                             buf,
                             hdr.object_idx as u8,
@@ -1161,10 +1141,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     return;
                 };
 
-                let msg = ind
-                    .respond_with(msg_buf)
-                    .with_application(ApciCode::PropertyValueResponse, response_service_type)
-                    .with_data(|buf| {
+                let msg =
+                    ind.respond_with(msg_buf).with_application(ApciCode::PropertyValueResponse).with_data(|buf| {
                         PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
                     });
 
@@ -1205,14 +1183,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         };
         use crate::objects::interface::FunctionPropertyRequest;
 
-        let response_service_type = match ind.service_type() {
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
-            other => {
-                warn!("AL FunctionProperty unexpected service type: {:?}", other);
-                return;
-            }
-        };
+        if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
+            warn!("AL FunctionProperty unexpected service type: {:?}", ind.service_type());
+            return;
+        }
 
         let Some(hdr) = FunctionPropertyHeader::parse(ind.buf()) else {
             error!("FunctionProperty message too short: {}", ind.len());
@@ -1252,10 +1226,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         };
 
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::FunctionPropertyStateResponse, response_service_type)
-            .with_data(|buf| {
+        let msg =
+            ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyStateResponse).with_data(|buf| {
                 FpResponseWriter::write(buf, hdr.object_idx, hdr.prop_id, result.return_code, response_data);
             });
 
@@ -1301,14 +1273,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         debug!("AL DeviceDescriptorRead: descriptor_type={}", req.descriptor_type);
 
-        let transport_service = match ind.service_type() {
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
-            other => {
-                warn!("AL DeviceDescriptorRead unexpected service type: {:?}", other);
-                return;
-            }
-        };
+        if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
+            warn!("AL DeviceDescriptorRead unexpected service type: {:?}", ind.service_type());
+            return;
+        }
 
         if req.descriptor_type == 0 {
             let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(DeviceDescriptorResponse::TYPE0_MSG_LEN) else {
@@ -1316,12 +1284,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 return;
             };
 
-            let msg = ind
-                .respond_with(msg_buf)
-                .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
-                .with_data(|buf| {
-                    DeviceDescriptorResponse::write_type0(buf, &D::DEVICE.mask_version_bytes());
-                });
+            let msg = ind.respond_with(msg_buf).with_application(ApciCode::DeviceDescriptorResponse).with_data(|buf| {
+                DeviceDescriptorResponse::write_type0(buf, &D::DEVICE.mask_version_bytes());
+            });
 
             debug!("AL sending DeviceDescriptorResponse: mask_version={}", D::DEVICE.mask_version);
             outbox.push(msg.into_inner());
@@ -1334,30 +1299,23 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 };
 
                 let dd2_arr: &[u8; 14] = dd2;
-                let msg = ind
-                    .respond_with(msg_buf)
-                    .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
-                    .with_data(|buf| {
+                let msg =
+                    ind.respond_with(msg_buf).with_application(ApciCode::DeviceDescriptorResponse).with_data(|buf| {
                         DeviceDescriptorResponse::write_type2(buf, dd2_arr);
                     });
 
                 debug!("AL sending DeviceDescriptorResponse (DD2): {:?}", zweidraehte_util::fmt::Bytes(dd2));
                 outbox.push(msg.into_inner());
             } else {
-                self.send_dd_error(ind, transport_service, outbox);
+                self.send_dd_error(ind, outbox);
             }
         } else {
-            self.send_dd_error(ind, transport_service, outbox);
+            self.send_dd_error(ind, outbox);
         }
     }
 
     /// Send a DeviceDescriptorResponse error (descriptor_type = 0x3F).
-    fn send_dd_error(
-        &mut self,
-        ind: &KnxMessageBuffer<Buffer<'static>>,
-        transport_service: ServiceType,
-        outbox: &mut Outbox,
-    ) {
+    fn send_dd_error(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::messages::{apdu::device::DeviceDescriptorResponse, builder::IndicationExt};
 
         let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(DeviceDescriptorResponse::ERROR_MSG_LEN) else {
@@ -1365,12 +1323,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         };
 
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::DeviceDescriptorResponse, transport_service)
-            .with_data(|buf| {
-                DeviceDescriptorResponse::write_error(buf);
-            });
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::DeviceDescriptorResponse).with_data(|buf| {
+            DeviceDescriptorResponse::write_error(buf);
+        });
 
         debug!("AL sending DeviceDescriptorResponse (error): descriptor_type=0x3F");
         outbox.push(msg.into_inner());
@@ -1416,7 +1371,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             ind.ctrl_field().priority(),
             DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])),
         )
-        .with_application(ApciCode::IndividualAddressResponse, ServiceType::T_Broadcast_Req)
+        .with_application(ApciCode::IndividualAddressResponse)
         .build();
 
         debug!("AL sending IndividualAddressResponse");
@@ -1508,7 +1463,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             ind.ctrl_field().priority(),
             DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])),
         )
-        .with_application(ApciCode::IndividualAddressSerialNumberResponse, ServiceType::T_Broadcast_Req)
+        .with_application(ApciCode::IndividualAddressSerialNumberResponse)
         .build();
 
         let serial: &[u8; 6] = self.state.serial_number();
@@ -1589,13 +1544,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         debug!("AL ADC_Read: channel={}, count={}", req.channel, req.count);
 
         // ADC_Read is only valid in connection-oriented mode
-        let transport_service = match ind.service_type() {
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            other => {
-                debug!("AL ADC_Read requires connection-oriented mode, got {:?}", other);
-                return;
-            }
-        };
+        if ind.service_type() != ServiceType::T_Data_Ind {
+            debug!("AL ADC_Read requires connection-oriented mode, got {:?}", ind.service_type());
+            return;
+        }
 
         let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(AdcResponse::MSG_LEN) else {
             warn!("AL no buffer for response");
@@ -1605,10 +1557,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         // Channels 0-5 are supported; return dummy sum 0x0000
         let (response_count, sum) = if req.channel <= 5 { (req.count, 0x0000u16) } else { (0u8, 0x0000u16) };
 
-        let msg =
-            ind.respond_with(msg_buf).with_application(ApciCode::AdcResponse, transport_service).with_data(|buf| {
-                AdcResponse::write(buf, req.channel, response_count, sum);
-            });
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::AdcResponse).with_data(|buf| {
+            AdcResponse::write(buf, req.channel, response_count, sum);
+        });
 
         debug!("AL sending ADC_Response: channel={}, count={}, sum={}", req.channel, response_count, sum);
         outbox.push(msg.into_inner());
@@ -1662,12 +1613,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         };
 
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::MemoryReadResponse, ServiceType::T_Data_Req)
-            .with_data(|buf| {
-                MemoryResponse::write(buf, response_count, acc.address, &data[..response_count as usize]);
-            });
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryReadResponse).with_data(|buf| {
+            MemoryResponse::write(buf, response_count, acc.address, &data[..response_count as usize]);
+        });
 
         debug!("AL sending Memory_Response: address=0x{:04X}, count={}", acc.address, response_count);
         outbox.push(msg.into_inner());
@@ -1744,12 +1692,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         // Error responses (count=0) must not include the original request data,
         // which would overflow the buffer sized for zero data bytes.
         let response_data = if response_count > 0 { acc.data } else { &[] };
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::MemoryReadResponse, ServiceType::T_Data_Req)
-            .with_data(|buf| {
-                MemoryResponse::write(buf, response_count, acc.address, response_data);
-            });
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryReadResponse).with_data(|buf| {
+            MemoryResponse::write(buf, response_count, acc.address, response_data);
+        });
 
         debug!("AL sending Memory_Response (verify): address=0x{:04X}, count={}", acc.address, response_count);
         outbox.push(msg.into_inner());
@@ -1878,12 +1823,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         };
 
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::MemoryReadResponse, ServiceType::T_Data_Req)
-            .with_data(|buf| {
-                MemoryResponse::write(buf, count, address, data);
-            });
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryReadResponse).with_data(|buf| {
+            MemoryResponse::write(buf, count, address, data);
+        });
 
         debug!("AL sending A_Memory_Response (for MemoryBit_Write): address=0x{:04X}, count={}", address, count);
         outbox.push(msg.into_inner());
@@ -1943,18 +1885,15 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         };
 
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::UserMemoryResponse, ServiceType::T_Data_Req)
-            .with_data(|buf| {
-                UserMemoryResponse::write(
-                    buf,
-                    acc.addr_ext,
-                    response_count,
-                    acc.address_low,
-                    &data[..response_count as usize],
-                );
-            });
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::UserMemoryResponse).with_data(|buf| {
+            UserMemoryResponse::write(
+                buf,
+                acc.addr_ext,
+                response_count,
+                acc.address_low,
+                &data[..response_count as usize],
+            );
+        });
 
         debug!("AL sending UserMemory_Response: address=0x{:05X}, count={}", acc.full_address(), response_count);
         outbox.push(msg.into_inner());
@@ -2035,12 +1974,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         // Error responses (count=0) must not include the original request data,
         // which would overflow the buffer sized for zero data bytes.
         let response_data = if response_count > 0 { acc.data } else { &[] };
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::UserMemoryResponse, ServiceType::T_Data_Req)
-            .with_data(|buf| {
-                UserMemoryResponse::write(buf, acc.addr_ext, response_count, acc.address_low, response_data);
-            });
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::UserMemoryResponse).with_data(|buf| {
+            UserMemoryResponse::write(buf, acc.addr_ext, response_count, acc.address_low, response_data);
+        });
 
         debug!(
             "AL sending UserMemory_Response (verify): address=0x{:05X}, count={}",
@@ -2070,15 +2006,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         };
 
-        // Determine transport service type
-        let transport_service = match ind.service_type() {
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
-            other => {
-                warn!("AL UserManufacturerInfo_Read unexpected service type: {:?}", other);
-                return;
-            }
-        };
+        if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
+            warn!("AL UserManufacturerInfo_Read unexpected service type: {:?}", ind.service_type());
+            return;
+        }
 
         // Response: APCI(2) + Manufacturer ID(2) + Device Type(1) = 5 bytes
         const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
@@ -2087,10 +2018,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         };
 
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::UserManufacturerInfoResponse, transport_service)
-            .with_data(|data| {
+        let msg =
+            ind.respond_with(msg_buf).with_application(ApciCode::UserManufacturerInfoResponse).with_data(|data| {
                 // Copy the 3-byte manufacturer info (Manufacturer ID + Device Type)
                 data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 5].copy_from_slice(info);
             });
@@ -2144,12 +2073,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         };
 
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::AuthorizeResponse, ServiceType::T_Data_Req)
-            .with_data(|buf| {
-                AuthorizeResponse::write(buf, access_level);
-            });
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::AuthorizeResponse).with_data(|buf| {
+            AuthorizeResponse::write(buf, access_level);
+        });
 
         debug!("AL sending Authorize_Response: level={}", access_level);
         outbox.push(msg.into_inner());
@@ -2199,11 +2125,9 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         };
 
-        let msg = ind.respond_with(msg_buf).with_application(ApciCode::KeyResponse, ServiceType::T_Data_Req).with_data(
-            |buf| {
-                KeyResponse::write(buf, result_level);
-            },
-        );
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::KeyResponse).with_data(|buf| {
+            KeyResponse::write(buf, result_level);
+        });
 
         debug!("AL sending Key_Response: level={}", result_level);
         outbox.push(msg.into_inner());
@@ -2287,18 +2211,12 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     ) {
         use crate::messages::{apdu::restart::RestartResponse, builder::IndicationExt};
 
-        let transport_service = match ind.service_type() {
-            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-            ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
-            _ => ServiceType::T_Broadcast_Req,
-        };
-
         let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RestartResponse::MSG_LEN) else {
             warn!("AL no buffer for response");
             return;
         };
 
-        let msg = ind.respond_with(msg_buf).with_application(ApciCode::Restart, transport_service).with_data(|buf| {
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::Restart).with_data(|buf| {
             RestartResponse::write(buf, error.into(), process_time_100ms);
         });
 

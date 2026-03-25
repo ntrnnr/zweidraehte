@@ -22,7 +22,7 @@
 //! ```ignore
 //! // Respond to an indication with application data
 //! let msg = MessageBuilder::respond_to(buffer, &incoming_indication)
-//!     .with_application(ApciCode::DeviceDescriptorResponse, ServiceType::T_Data_Req)
+//!     .with_application(ApciCode::DeviceDescriptorResponse)
 //!     .with_data(|data| {
 //!         data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4]
 //!             .copy_from_slice(&mask_version);
@@ -202,7 +202,6 @@ pub mod state {
     /// Application layer context for a request
     pub struct ApplicationRequest {
         pub network: NetworkRequest,
-        pub transport_service: ServiceType,
         pub apci: ApciCode,
     }
 
@@ -248,7 +247,7 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
     /// # Example
     /// ```ignore
     /// let msg = MessageBuilder::respond_to(buffer, &indication)
-    ///     .with_application(ApciCode::DeviceDescriptorResponse, ServiceType::T_Data_Req)
+    ///     .with_application(ApciCode::DeviceDescriptorResponse)
     ///     .build();
     /// ```
     pub fn respond_to<I: Deref<Target = [u8]>>(
@@ -314,6 +313,8 @@ fn indication_to_request_service(ind_service: ServiceType) -> ServiceType {
         ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
         ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
         ServiceType::T_GroupData_Ind => ServiceType::T_GroupData_Req,
+        ServiceType::T_Broadcast_Ind => ServiceType::T_Broadcast_Req,
+        ServiceType::T_SystemBroadcast_Ind => ServiceType::T_SystemBroadcast_Req,
 
         // If already a request, keep it (shouldn't happen, but safe)
         ServiceType::N_Data_Req
@@ -322,7 +323,9 @@ fn indication_to_request_service(ind_service: ServiceType) -> ServiceType {
         | ServiceType::N_SystemBroadcast_Req
         | ServiceType::T_Data_Req
         | ServiceType::T_DataUnack_Req
-        | ServiceType::T_GroupData_Req => ind_service,
+        | ServiceType::T_GroupData_Req
+        | ServiceType::T_Broadcast_Req
+        | ServiceType::T_SystemBroadcast_Req => ind_service,
 
         // Default fallback for other types
         _ => ServiceType::N_Data_Req,
@@ -377,25 +380,23 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
     /// - PropertyRead/Write
     /// - Memory operations
     ///
-    /// # Parameters
-    /// - `apci`: Application layer service code
-    /// - `transport_service`: Transport service type (T_Data_Req, T_DataUnack_Req, etc.)
+    /// The transport service type is inherited from the network context
+    /// (set by `new_request` or derived from the indication in `respond_to`).
     ///
     /// # Example
     /// ```ignore
     /// let response = builder
-    ///     .with_application(ApciCode::DeviceDescriptorResponse, ServiceType::T_Data_Req)
+    ///     .with_application(ApciCode::DeviceDescriptorResponse)
     ///     .with_data(|data| { /* write application data */ });
     /// ```
     pub fn with_application(
         self,
         apci: ApciCode,
-        transport_service: ServiceType,
     ) -> MessageBuilder<B, direction::Request, state::ApplicationRequest> {
         MessageBuilder {
             buffer: self.buffer,
             _direction: PhantomData,
-            state: state::ApplicationRequest { network: self.state, transport_service, apci },
+            state: state::ApplicationRequest { network: self.state, apci },
         }
     }
 }
@@ -443,7 +444,7 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
     where
         F: FnOnce(&mut [u8]),
     {
-        let mut msg = KnxMessageBuffer::new(self.buffer, self.state.transport_service);
+        let mut msg = KnxMessageBuffer::new(self.buffer, self.state.network.service_type);
 
         // Apply network context
         msg.ctrl_field_mut().set_priority(self.state.network.priority);
@@ -483,7 +484,7 @@ pub trait IndicationExt<B: Deref<Target = [u8]> + DerefMut> {
     /// # Example
     /// ```ignore
     /// let response = indication.respond_with(buffer)
-    ///     .with_application(ApciCode::DeviceDescriptorResponse, ServiceType::T_Data_Req)
+    ///     .with_application(ApciCode::DeviceDescriptorResponse)
     ///     .build();
     /// ```
     fn respond_with(

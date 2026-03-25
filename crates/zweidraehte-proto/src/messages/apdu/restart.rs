@@ -79,7 +79,7 @@ impl RestartResponse {
     /// Overrides the APCI byte 1 to 0xA1 (A_Restart_Response encoding),
     /// then writes the error code and process time into the data fields.
     ///
-    /// The caller should have called `with_application(ApciCode::Restart, ...)`
+    /// The caller should have called `with_application(ApciCode::Restart)`
     /// first, which sets the APCI high bits in byte 0. This writer then
     /// overrides byte 1 (MSG_APCI+1) with 0xA1 for the response variant.
     pub fn write(buf: &mut [u8], error: u8, process_time_100ms: u16) {
