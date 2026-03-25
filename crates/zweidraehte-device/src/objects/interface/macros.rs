@@ -24,7 +24,7 @@
 //!
 //! ## State Property Syntax Options
 //!
-//! There are three forms for state-backed properties, from simplest to most flexible:
+//! There are four forms for state-backed properties, from simplest to most flexible:
 //!
 //! ### 1. Shorthand ReadWrite (auto-generated getter/setter)
 //! ```rust,ignore
@@ -42,7 +42,23 @@
 //! - Read: calls `s.current_ip_address()` and converts to bytes
 //! - Write: returns WriteNotAllowed error
 //!
-//! ### 3. Full closure syntax (for complex logic)
+//! ### 3. Shorthand ReadWrite Array (multi-element properties)
+//! ```rust,ignore
+//! state_rw_array {
+//!     pid::FRIENDLY_NAME => friendly_name: PDT_UnsignedChar[30]
+//! }
+//! ```
+//! This generates array property semantics with three derived methods
+//! (naming convention based on the getter name, using `paste!`):
+//! - Read: calls `s.friendly_name()` → `[u8; 30]` (full buffer, zero-padded)
+//! - Length: calls `s.friendly_name_len()` → `usize` (actual element count)
+//! - Write: calls `s.set_friendly_name(data: &[u8])`
+//!
+//! Array read behavior:
+//! - `start_idx=0`: returns element count as 2 big-endian bytes
+//! - `start_idx>=1`: returns requested element range with bounds checking
+//!
+//! ### 4. Full closure syntax (for complex logic)
 //! ```rust,ignore
 //! pid::PROGMODE => {
 //!     read: |s| [if s.programming_mode() { 0x01 } else { 0x00 }],
@@ -390,6 +406,23 @@ macro_rules! define_interface_object {
                 $ro_pid_path:path => $ro_getter:ident : $ro_pdt:ty
             ),*
         })?
+        // Shorthand ReadWrite array properties: auto getter/setter for multi-element arrays.
+        //
+        // Syntax: pid::FOO => getter_name: PDT_Type[max_elements]
+        //
+        // Naming convention (derived from getter_name via paste):
+        //   - Read:  s.getter_name()      → [u8; N] (full fixed-size buffer, zero-padded)
+        //   - Len:   s.getter_name_len()  → usize   (actual element count)
+        //   - Write: s.set_getter_name(data: &[u8])
+        //
+        // Generates array property semantics:
+        //   - start_idx=0 returns element count as 2 big-endian bytes
+        //   - start_idx>=1 reads/writes elements with bounds checking
+        $(state_rw_array {
+            $(
+                $rwa_pid_path:path => $rwa_getter:ident : $rwa_pdt:ty [$rwa_max:expr]
+            ),*
+        })?
     ) => {
         $(#[$obj_meta])*
         $vis struct $name<$lt, $state_ty: $state_bound> {
@@ -451,6 +484,16 @@ macro_rules! define_interface_object {
                         <$ro_pdt as $crate::dpt::PropertyDataDefinition>::ID,
                         1,
                         $crate::objects::interface::PropertyAccess::ReadOnly,
+                        3, // read_level
+                        3, // write_level
+                    ),
+                )*)?
+                // Shorthand ReadWrite array properties
+                $($(
+                    $crate::objects::interface::PropertyDescriptor::array::<$rwa_pdt>(
+                        $rwa_pid_path,
+                        $rwa_max,
+                        $crate::objects::interface::PropertyAccess::ReadWrite,
                         3, // read_level
                         3, // write_level
                     ),
@@ -537,6 +580,12 @@ macro_rules! define_interface_object {
                             $crate::define_interface_object!(@read_shorthand self.state, $ro_getter, $ro_pdt, req.start_idx, req.count, buf)
                         }
                     )*)?
+                    // Shorthand ReadWrite array properties
+                    $($(
+                        $rwa_pid_path => {
+                            $crate::define_interface_object!(@read_array_shorthand self.state, $rwa_getter, req.start_idx, req.count, buf)
+                        }
+                    )*)?
                     _ => Err($crate::objects::interface::PropertyError::InvalidPropertyId),
                 }
             }
@@ -576,6 +625,13 @@ macro_rules! define_interface_object {
                             Err($crate::objects::interface::PropertyError::WriteNotAllowed)
                         }
                     )*)?
+                    // Shorthand ReadWrite array properties
+                    $($(
+                        $rwa_pid_path => {
+                            $crate::define_interface_object!(@write_array_shorthand self.state, $rwa_getter, $rwa_max, req.start_idx, req.data)?;
+                            Ok($crate::objects::interface::WriteResponse::Echo)
+                        }
+                    )*)?
                     _ => Err($crate::objects::interface::PropertyError::InvalidPropertyId),
                 }
             }
@@ -590,6 +646,13 @@ macro_rules! define_interface_object {
                     $($($state_pid_path => Ok(1),)*)?
                     $($($rw_pid_path => Ok(1),)*)?
                     $($($ro_pid_path => Ok(1),)*)?
+                    $($(
+                        $rwa_pid_path => {
+                            Ok($crate::paste::paste! {
+                                self.state.[<$rwa_getter _len>]()
+                            } as u16)
+                        }
+                    )*)?
                     _ => Err($crate::objects::interface::PropertyError::InvalidPropertyId),
                 }
             }
@@ -670,6 +733,73 @@ macro_rules! define_interface_object {
                 Ok(())
             }
             Err(e) => Err(e),
+        }
+    }};
+
+    // ========================================================================
+    // Array property helpers
+    // ========================================================================
+    // These helpers implement KNX array property semantics for state-backed
+    // properties where the getter returns a fixed-size array and a separate
+    // _len method gives the actual element count.
+
+    // Read array shorthand:
+    //   - start_idx=0 → element count as 2 big-endian bytes
+    //   - start_idx>=1 → slice of elements with bounds checking
+    (@read_array_shorthand $state:expr, $getter:ident, $start_idx:expr, $count:expr, $buf:expr) => {{
+        $crate::paste::paste! {
+            let data = $state.$getter();
+            let len = $state.[<$getter _len>]();
+            if $start_idx == 0 {
+                if $buf.len() < 2 {
+                    return Err($crate::objects::interface::PropertyError::BufferTooSmall);
+                }
+                $buf[..2].copy_from_slice(&(len as u16).to_be_bytes());
+                Ok(2)
+            } else {
+                let start = ($start_idx - 1) as usize;
+                if start >= len {
+                    return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
+                }
+                let end = (start + $count as usize).min(len);
+                let n = end - start;
+                if $buf.len() < n {
+                    return Err($crate::objects::interface::PropertyError::BufferTooSmall);
+                }
+                $buf[..n].copy_from_slice(&data[start..end]);
+                Ok(n)
+            }
+        }
+    }};
+
+    // Write array shorthand: supports partial writes at arbitrary start indices.
+    // Performs a read-modify-write: reads the current buffer, patches the written
+    // range, and calls set_getter() with the full updated buffer.
+    (@write_array_shorthand $state:expr, $getter:ident, $max:expr, $start_idx:expr, $data:expr) => {{
+        $crate::paste::paste! {
+            if $start_idx == 0 {
+                return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
+            }
+            let start = ($start_idx - 1) as usize;
+            let mut buf = $state.$getter();
+            let end = (start + $data.len()).min($max);
+            let copy_len = end - start;
+            if copy_len == 0 || start >= $max {
+                return Err($crate::objects::interface::PropertyError::InvalidStartIndex);
+            }
+            buf[start..end].copy_from_slice(&$data[..copy_len]);
+            // Update the length if the write extends beyond the current content.
+            let current_len = $state.[<$getter _len>]();
+            let new_len = end.max(current_len);
+            // We can't set the length separately through the shorthand, so we
+            // pass the full buffer and let set_getter determine the length from
+            // the content (it receives the entire max-sized buffer, zero-padded
+            // beyond the written region).
+            //
+            // However, the setter takes a slice and uses its length as the new
+            // length. So we pass exactly new_len bytes.
+            $state.[<set_ $getter>](&buf[..new_len]);
+            Ok(())
         }
     }};
 }
@@ -795,5 +925,219 @@ mod tests {
 
         let value = obj.serial_number.value();
         assert_eq!(value, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    }
+
+    // ====================================================================
+    // Array property tests
+    // ====================================================================
+
+    use core::cell::Cell;
+
+    /// Mock state for testing state_rw_array properties.
+    struct MockArrayState {
+        name: Cell<[u8; 8]>,
+        name_len: Cell<usize>,
+    }
+
+    impl MockArrayState {
+        fn new() -> Self {
+            Self {
+                name: Cell::new([0; 8]),
+                name_len: Cell::new(0),
+            }
+        }
+
+        fn name(&self) -> [u8; 8] {
+            self.name.get()
+        }
+
+        fn name_len(&self) -> usize {
+            self.name_len.get()
+        }
+
+        fn set_name(&self, data: &[u8]) {
+            let mut buf = [0u8; 8];
+            let len = data.len().min(8);
+            buf[..len].copy_from_slice(&data[..len]);
+            self.name.set(buf);
+            self.name_len.set(len);
+        }
+    }
+
+    /// Dummy trait to satisfy the macro's state bound.
+    trait HasName {
+        fn name(&self) -> [u8; 8];
+        fn name_len(&self) -> usize;
+        fn set_name(&self, data: &[u8]);
+    }
+
+    impl HasName for MockArrayState {
+        fn name(&self) -> [u8; 8] { self.name() }
+        fn name_len(&self) -> usize { self.name_len() }
+        fn set_name(&self, data: &[u8]) { self.set_name(data) }
+    }
+
+    // PID 200 is unused — suitable for testing.
+    const TEST_ARRAY_PID: u8 = 200;
+
+    define_interface_object! {
+        /// Test object with an array property.
+        pub struct TestArrayObject<'a, S: HasName>: InterfaceObjectType::Device
+            with state: &'a S
+        {
+        }
+        state_rw_array {
+            TEST_ARRAY_PID => name: PDT_UnsignedChar[8]
+        }
+    }
+
+    #[test]
+    fn test_array_element_count_query() {
+        let state = MockArrayState::new();
+        state.set_name(b"Hello");
+        let obj = TestArrayObject::new(&state);
+
+        let mut buf = [0u8; 4];
+        let req = PropertyReadRequest { pid: TEST_ARRAY_PID, start_idx: 0, count: 1 };
+        let len = obj.read_property(req, &mut buf).unwrap();
+        assert_eq!(len, 2);
+        // Element count = 5 ("Hello")
+        assert_eq!(&buf[..2], &[0x00, 0x05]);
+    }
+
+    #[test]
+    fn test_array_read_elements() {
+        let state = MockArrayState::new();
+        state.set_name(b"Hello");
+        let obj = TestArrayObject::new(&state);
+
+        // Read all 5 elements starting at index 1
+        let mut buf = [0u8; 8];
+        let req = PropertyReadRequest { pid: TEST_ARRAY_PID, start_idx: 1, count: 5 };
+        let len = obj.read_property(req, &mut buf).unwrap();
+        assert_eq!(len, 5);
+        assert_eq!(&buf[..5], b"Hello");
+    }
+
+    #[test]
+    fn test_array_read_partial() {
+        let state = MockArrayState::new();
+        state.set_name(b"Hello");
+        let obj = TestArrayObject::new(&state);
+
+        // Read 2 elements starting at index 3 (0-based offset 2 → "ll")
+        let mut buf = [0u8; 4];
+        let req = PropertyReadRequest { pid: TEST_ARRAY_PID, start_idx: 3, count: 2 };
+        let len = obj.read_property(req, &mut buf).unwrap();
+        assert_eq!(len, 2);
+        assert_eq!(&buf[..2], b"ll");
+    }
+
+    #[test]
+    fn test_array_read_out_of_bounds() {
+        let state = MockArrayState::new();
+        state.set_name(b"Hi");
+        let obj = TestArrayObject::new(&state);
+
+        // start_idx=3 is past the 2-element content
+        let mut buf = [0u8; 4];
+        let req = PropertyReadRequest { pid: TEST_ARRAY_PID, start_idx: 3, count: 1 };
+        assert_eq!(
+            obj.read_property(req, &mut buf),
+            Err(PropertyError::InvalidStartIndex)
+        );
+    }
+
+    #[test]
+    fn test_array_write() {
+        let state = MockArrayState::new();
+        let mut obj = TestArrayObject::new(&state);
+
+        let req = PropertyWriteRequest {
+            pid: TEST_ARRAY_PID,
+            start_idx: 1,
+            data: b"World",
+        };
+        obj.write_property(req).unwrap();
+
+        assert_eq!(state.name_len(), 5);
+        assert_eq!(&state.name()[..5], b"World");
+    }
+
+    #[test]
+    fn test_array_property_descriptor() {
+        let state = MockArrayState::new();
+        let obj = TestArrayObject::new(&state);
+
+        // OBJECT_TYPE at index 0, array property at index 1
+        assert_eq!(obj.property_count(), 2);
+
+        let desc = obj.property_descriptor_by_id(TEST_ARRAY_PID).unwrap();
+        assert_eq!(desc.0, 1); // index
+        assert_eq!(desc.1.pid, TEST_ARRAY_PID);
+        assert_eq!(desc.1.max_elements, 8);
+        assert!(matches!(desc.1.access, PropertyAccess::ReadWrite));
+    }
+
+    #[test]
+    fn test_array_property_element_count() {
+        let state = MockArrayState::new();
+        state.set_name(b"Test");
+        let obj = TestArrayObject::new(&state);
+
+        assert_eq!(obj.property_element_count(TEST_ARRAY_PID).unwrap(), 4);
+    }
+
+    #[test]
+    fn test_array_write_partial() {
+        let state = MockArrayState::new();
+        state.set_name(b"Hello");
+        let mut obj = TestArrayObject::new(&state);
+
+        // Overwrite bytes at positions 2-3 (start_idx=3, 1-based)
+        let req = PropertyWriteRequest {
+            pid: TEST_ARRAY_PID,
+            start_idx: 3,
+            data: b"LL",
+        };
+        obj.write_property(req).unwrap();
+
+        assert_eq!(state.name_len(), 5);
+        assert_eq!(&state.name()[..5], b"HeLLo");
+    }
+
+    #[test]
+    fn test_array_write_extends_length() {
+        let state = MockArrayState::new();
+        state.set_name(b"Hi");
+        let mut obj = TestArrayObject::new(&state);
+
+        // Write at start_idx=3 (1-based), extending beyond current length
+        let req = PropertyWriteRequest {
+            pid: TEST_ARRAY_PID,
+            start_idx: 3,
+            data: b"!",
+        };
+        obj.write_property(req).unwrap();
+
+        // Length should extend to 3 (positions 0,1,2 now occupied)
+        assert_eq!(state.name_len(), 3);
+        assert_eq!(&state.name()[..3], b"Hi!");
+    }
+
+    #[test]
+    fn test_array_write_start_idx_zero_rejected() {
+        let state = MockArrayState::new();
+        let mut obj = TestArrayObject::new(&state);
+
+        let req = PropertyWriteRequest {
+            pid: TEST_ARRAY_PID,
+            start_idx: 0,
+            data: b"X",
+        };
+        assert_eq!(
+            obj.write_property(req),
+            Err(PropertyError::InvalidStartIndex)
+        );
     }
 }

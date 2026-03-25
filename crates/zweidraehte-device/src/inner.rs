@@ -134,8 +134,7 @@ where
         use zweidraehte_platform::address::EthernetAddress;
 
         let state = &self.inner.state;
-        let mut friendly_name = [0u8; 30];
-        state.friendly_name(&mut friendly_name);
+        let friendly_name = state.friendly_name();
 
         DeviceInformation {
             medium: KNXMedium::KNXIP,

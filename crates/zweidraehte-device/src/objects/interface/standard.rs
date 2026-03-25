@@ -273,6 +273,10 @@ crate::define_interface_object! {
         pid::CURRENT_SUBNET_MASK => current_subnet_mask: Ipv4Property,
         pid::CURRENT_DEFAULT_GATEWAY => current_default_gateway: Ipv4Property
     }
+    // Shorthand ReadWrite array properties
+    state_rw_array {
+        pid::FRIENDLY_NAME => friendly_name: PDT_UnsignedChar[30]
+    }
 }
 
 #[cfg(feature = "knxip")]

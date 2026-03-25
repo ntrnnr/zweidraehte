@@ -119,10 +119,11 @@ pub trait IpStackState {
     /// Get the friendly name length.
     fn friendly_name_len(&self) -> usize;
 
-    /// Copy the friendly name into the provided buffer.
+    /// Get the friendly name as a fixed-size buffer.
     ///
-    /// Returns the number of bytes copied.
-    fn friendly_name(&self, buf: &mut [u8]) -> usize;
+    /// The actual name length is given by [`friendly_name_len`](Self::friendly_name_len).
+    /// Bytes beyond the length are zero-padded.
+    fn friendly_name(&self) -> [u8; 30];
 
     /// Set the friendly name.
     fn set_friendly_name(&self, name: &[u8]);

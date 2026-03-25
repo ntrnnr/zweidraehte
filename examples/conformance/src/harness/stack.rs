@@ -859,8 +859,8 @@ impl IpStackState for ConformanceState {
     fn friendly_name_len(&self) -> usize {
         self.inner.friendly_name_len()
     }
-    fn friendly_name(&self, buf: &mut [u8]) -> usize {
-        self.inner.friendly_name(buf)
+    fn friendly_name(&self) -> [u8; 30] {
+        self.inner.friendly_name()
     }
     fn set_friendly_name(&self, name: &[u8]) {
         self.inner.set_friendly_name(name);

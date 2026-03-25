@@ -612,8 +612,8 @@ impl<P: IpPlatform + Default> IpStackState for KnxIpState<P> {
         0
     }
 
-    fn friendly_name(&self, _buf: &mut [u8]) -> usize {
-        0 // No friendly name set
+    fn friendly_name(&self) -> [u8; 30] {
+        [0; 30] // No friendly name set
     }
 
     fn set_friendly_name(&self, _name: &[u8]) {

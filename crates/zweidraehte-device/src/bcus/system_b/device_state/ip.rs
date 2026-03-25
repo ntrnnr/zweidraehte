@@ -36,7 +36,7 @@ pub struct IpLinkLayerState<P: IpPlatform + IpPlatformConfig, const N: usize = 0
     // ========================================================================
     // Persistent IP configuration
     // ========================================================================
-    friendly_name: RefCell<[u8; 30]>,
+    friendly_name: Cell<[u8; 30]>,
     friendly_name_len: Cell<usize>,
     configured_ip: Cell<Ipv4Addr>,
     configured_subnet: Cell<Ipv4Addr>,
@@ -63,7 +63,7 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpLinkLayerState<P, N> {
         }
 
         PersistedIpConfig {
-            friendly_name: *self.friendly_name.borrow(),
+            friendly_name: self.friendly_name.get(),
             friendly_name_len: self.friendly_name_len.get() as u8,
             configured_ip: self.configured_ip.get().octets(),
             configured_subnet: self.configured_subnet.get().octets(),
@@ -114,7 +114,7 @@ impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> LinkLayerState 
 
         let state = Self {
             platform: P::default(),
-            friendly_name: RefCell::new(config.friendly_name),
+            friendly_name: Cell::new(config.friendly_name),
             friendly_name_len: Cell::new(config.friendly_name_len as usize),
             configured_ip: Cell::new(Ipv4Addr::from(config.configured_ip)),
             configured_subnet: Cell::new(Ipv4Addr::from(config.configured_subnet)),
@@ -136,7 +136,7 @@ impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> LinkLayerState 
 
     fn factory_reset(&self) {
         let defaults: PersistedIpConfig<N> = PersistedIpConfig::default();
-        *self.friendly_name.borrow_mut() = defaults.friendly_name;
+        self.friendly_name.set(defaults.friendly_name);
         self.friendly_name_len.set(defaults.friendly_name_len as usize);
         self.configured_ip.set(Ipv4Addr::from(defaults.configured_ip));
         self.configured_subnet.set(Ipv4Addr::from(defaults.configured_subnet));
@@ -304,18 +304,15 @@ impl<
         self.link_layer_state.friendly_name_len.get()
     }
 
-    fn friendly_name(&self, buf: &mut [u8]) -> usize {
-        let name = self.link_layer_state.friendly_name.borrow();
-        let len = self.link_layer_state.friendly_name_len.get().min(buf.len());
-        buf[..len].copy_from_slice(&name[..len]);
-        len
+    fn friendly_name(&self) -> [u8; 30] {
+        self.link_layer_state.friendly_name.get()
     }
 
     fn set_friendly_name(&self, name: &[u8]) {
-        let mut fname = self.link_layer_state.friendly_name.borrow_mut();
+        let mut fname = [0u8; 30];
         let len = name.len().min(30);
         fname[..len].copy_from_slice(&name[..len]);
-        fname[len..].fill(0);
+        self.link_layer_state.friendly_name.set(fname);
         self.link_layer_state.friendly_name_len.set(len);
         self.mark_dirty();
     }
