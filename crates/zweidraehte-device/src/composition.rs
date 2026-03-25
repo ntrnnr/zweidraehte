@@ -368,9 +368,8 @@ impl<'a, D: StackDefinition> InsecureDeviceLayers<'a, D, CemiTransportLayer<'a, 
 // LayerStack impl — generic over TL, unified service inputs
 // ----------------------------------------------------------------------------
 
-impl<'a, D: StackDefinition, TL: router::Layer> LayerStack for InsecureDeviceLayers<'a, D, TL>
-where
-    TL: HandlesCemiEvent,
+impl<'a, D: StackDefinition, TL: router::Layer + HandlesCemiEvent> LayerStack
+    for InsecureDeviceLayers<'a, D, TL>
 {
     const DISPATCH_TABLE: router::DispatchTable = {
         type Inner<'a, D, TL> = (NetworkLayer<'a, D>, TL, ApplicationLayer<'a, D>);
@@ -398,9 +397,6 @@ where
 
     fn recv_service_input(&self) -> impl core::future::Future<Output = ServiceInput> + '_ {
         async {
-            // Select across all service input receivers. When a receiver
-            // is absent (None), its branch pends forever and the select
-            // only resolves the other branch.
             #[cfg(feature = "knxip")]
             {
                 use embassy_futures::select::{Either, select};
@@ -443,13 +439,21 @@ where
 
 /// Trait for transport layer types that can handle cEMI events.
 ///
-/// `CemiTransportLayer` implements this with real logic;
-/// `TransportLayer` implements it as unreachable (the `CemiEvent`
-/// variant is `cfg`'d out when `knxip` is disabled, so this is
-/// never called).
+/// When `knxip` is enabled, this trait requires a `handle_cemi_event` method
+/// that `CemiTransportLayer` and `TransportLayer` both implement.
+/// When `knxip` is disabled, the trait is empty and blanket-implemented for
+/// all types, so `TL: HandlesCemiEvent` is always satisfied without requiring
+/// each transport layer to opt in.
+#[cfg(feature = "knxip")]
 pub(crate) trait HandlesCemiEvent {
     fn handle_cemi_event(&mut self, event: CemiEvent, outbox: &mut router::Outbox);
 }
+
+#[cfg(not(feature = "knxip"))]
+pub(crate) trait HandlesCemiEvent {}
+
+#[cfg(not(feature = "knxip"))]
+impl<T> HandlesCemiEvent for T {}
 
 #[cfg(feature = "knxip")]
 impl<D: StackDefinition, const MI: usize, const MO: usize> HandlesCemiEvent for CemiTransportLayer<'_, D, MI, MO> {
@@ -458,12 +462,11 @@ impl<D: StackDefinition, const MI: usize, const MO: usize> HandlesCemiEvent for 
     }
 }
 
+#[cfg(feature = "knxip")]
 impl<D: StackDefinition, const MI: usize, const MO: usize> HandlesCemiEvent for TransportLayer<'_, D, MI, MO> {
     fn handle_cemi_event(&mut self, _event: CemiEvent, _outbox: &mut router::Outbox) {
-        // CemiEvent variants are cfg'd out when knxip is disabled,
-        // so this is unreachable in non-knxip builds. In knxip builds,
         // StandardDeviceLayers uses TransportLayer which never receives
-        // cEMI events (the cemi_rx is None).
+        // cEMI events (the cemi_rx is None), so this is unreachable.
         unreachable!("TransportLayer does not handle cEMI events");
     }
 }
@@ -476,3 +479,4 @@ async fn recv_cemi_or_pend(rx: &Option<DynamicReceiver<'_, CemiEvent>>) -> CemiE
         None => core::future::pending().await,
     }
 }
+
