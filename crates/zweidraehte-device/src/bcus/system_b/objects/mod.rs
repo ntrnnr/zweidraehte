@@ -36,12 +36,16 @@ use core::cell::RefCell;
 use crate::{
     StackState,
     device_model::DeviceModelNotifier,
-    dpt::{DeviceControl, InterfaceObjectType, KNXVersion, PDT_Generic05, PDT_UnsignedChar, ProgrammingMode, RoutingCount},
+    dpt::{
+        DeviceControl, InterfaceObjectType, KNXVersion, PDT_Generic05, PDT_UnsignedChar, PDT_UnsignedInt,
+        ProgrammingMode, RoutingCount,
+    },
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceInfo, DeviceObject,
         FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
         GroupObjectTableObject, HasDeviceObject, InterfaceObject, InterfaceObjectAugment, PeiProgramObject,
-        PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyServiceHandler, WriteResponse, pid,
+        PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyServiceHandler,
+        WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -53,7 +57,61 @@ use crate::objects::tables::{
 };
 
 // ============================================================================
-// SystemBObjects - Base 5 Interface Objects
+// IO List Constants
+// ============================================================================
+
+/// The 6 interface object types present in a base System B device.
+///
+/// Used as the default IO list for PID_IO_LIST (PID 71) on the Device Object.
+/// KNX/IP devices use [`KNXIP_IO_TYPES`] instead, which adds IPParameter.
+pub static SYSTEM_B_IO_TYPES: [InterfaceObjectType; 6] = [
+    InterfaceObjectType::Device,
+    InterfaceObjectType::AddressTable,
+    InterfaceObjectType::AssociationTable,
+    InterfaceObjectType::GroupObjectTable,
+    InterfaceObjectType::ApplicationProgram,
+    InterfaceObjectType::InterfaceProgram,
+];
+
+/// Read an IO list as an array property into `buf`.
+///
+/// Follows KNX array property semantics:
+/// - `start_idx == 0`: returns element count as 2 bytes big-endian
+/// - `start_idx >= 1`: returns requested elements (2 bytes each, u16 BE)
+fn read_io_list(
+    io_list: &[InterfaceObjectType],
+    start_idx: u16,
+    count: u16,
+    buf: &mut [u8],
+) -> Result<usize, PropertyError> {
+    let total = io_list.len();
+
+    if start_idx == 0 {
+        if buf.len() < 2 {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        buf[..2].copy_from_slice(&(total as u16).to_be_bytes());
+        return Ok(2);
+    }
+
+    let start = (start_idx - 1) as usize;
+    if start >= total {
+        return Err(PropertyError::InvalidStartIndex);
+    }
+    let end = (start + count as usize).min(total);
+    let needed = (end - start) * 2;
+    if buf.len() < needed {
+        return Err(PropertyError::BufferTooSmall);
+    }
+    for (i, &ot) in io_list[start..end].iter().enumerate() {
+        let val: u16 = ot.into();
+        buf[i * 2..i * 2 + 2].copy_from_slice(&val.to_be_bytes());
+    }
+    Ok(needed)
+}
+
+// ============================================================================
+// SystemBObjects - Base 6 Interface Objects
 // ============================================================================
 
 /// Base interface objects for System B devices (indices 0-5).
@@ -99,6 +157,15 @@ where
     application_program: RefCell<ApplicationProgramObject<'a, APP>>,
     pei_program: RefCell<PeiProgramObject<'a, PEI>>,
     augment: A,
+
+    /// IO list for PID_IO_LIST (PID 71) on the Device Object.
+    ///
+    /// Contains all interface object types present in the device, including
+    /// objects from outer tuple compositions (e.g., IP Parameter Object for
+    /// KNX/IP devices). Serialized to bytes on each read. Populated at
+    /// construction time because the Device Object itself doesn't know
+    /// about sibling objects.
+    io_list: &'static [InterfaceObjectType],
 }
 
 impl<'a, S, ADT, AST, COT, APP, PEI> SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>
@@ -138,6 +205,7 @@ where
             pei_program_version,
             pei_type,
             routing_count,
+            &SYSTEM_B_IO_TYPES,
             (),
         )
     }
@@ -172,6 +240,7 @@ where
         pei_program_version: [u8; 5],
         pei_type: u8,
         routing_count: u8,
+        io_list: &'static [InterfaceObjectType],
         augment: A,
     ) -> Self {
         let mut device = DeviceObject::with_info(state, device_info);
@@ -195,6 +264,7 @@ where
                 PDT_Generic05::with_value(pei_program_version),
             )),
             augment,
+            io_list,
         }
     }
 
@@ -213,8 +283,23 @@ where
         &self.augment
     }
 
+    /// Property descriptor for PID_IO_LIST.
+    fn io_list_descriptor(&self) -> PropertyDescriptor {
+        PropertyDescriptor::array::<PDT_UnsignedInt>(
+            pid::IO_LIST,
+            self.io_list.len() as u16,
+            PropertyAccess::ReadOnly,
+            3, // read_level: anyone can read
+            0, // write_level: irrelevant (read-only)
+        )
+    }
+
     /// Get a property descriptor for a property.
     fn get_descriptor(&self, obj_idx: u16, prop_id: u8) -> Option<PropertyDescriptor> {
+        // PID_IO_LIST is served by the container, not the DeviceObject.
+        if obj_idx == 0 && prop_id == pid::IO_LIST {
+            return Some(self.io_list_descriptor());
+        }
         match obj_idx {
             0 => self.device.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             1 => self.address_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
@@ -283,14 +368,24 @@ where
         let obj_type = self.object_type_for(object_idx);
 
         if prop_id != 0 {
+            // PID_IO_LIST on the Device Object is handled at the container
+            // level, before the augment or base object.
+            if object_idx == 0 && prop_id == pid::IO_LIST {
+                return Ok(PropertyDescriptionResponse::from_descriptor(
+                    object_idx,
+                    0, // prop_idx is not meaningful for direct PID lookup
+                    &self.io_list_descriptor(),
+                ));
+            }
+
             // Direct PID lookup: augment first (can intercept/add PIDs),
             // then base.
             if let Some(ot) = obj_type
                 && let Some(result) =
                     self.augment.property_description_read(self.state, ot, object_idx, PropertyLookup::ByPid(prop_id))
-                {
-                    return result;
-                }
+            {
+                return result;
+            }
         }
 
         let base_result = match object_idx {
@@ -308,8 +403,39 @@ where
         }
 
         // Index scan (prop_id == 0): base ran out of properties.
-        // Give the augment a chance to append its own, using a 0-based
-        // index offset from the base property count.
+        // PID_IO_LIST appears as the first extra property on the Device
+        // Object, before any augment properties.
+        if object_idx == 0 {
+            let base_count = self.base_property_count(object_idx);
+            if prop_idx == base_count {
+                return Ok(PropertyDescriptionResponse::from_descriptor(
+                    object_idx,
+                    prop_idx,
+                    &self.io_list_descriptor(),
+                ));
+            }
+
+            // Offset for augment: skip both base properties and IO_LIST.
+            if let Some(ot) = obj_type {
+                let augment_idx = prop_idx.saturating_sub(base_count + 1);
+                if let Some(result) = self.augment.property_description_read(
+                    self.state,
+                    ot,
+                    object_idx,
+                    PropertyLookup::ByIndex(augment_idx),
+                ) {
+                    return result.map(|mut resp| {
+                        resp.prop_idx = prop_idx;
+                        resp
+                    });
+                }
+            }
+
+            return base_result;
+        }
+
+        // Non-Device objects: give the augment a chance to append its own,
+        // using a 0-based index offset from the base property count.
         if let Some(ot) = obj_type {
             let base_count = self.base_property_count(object_idx);
             let augment_idx = prop_idx.saturating_sub(base_count);
@@ -331,9 +457,17 @@ where
     fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
         // Augment first (can intercept specific PIDs).
         if let Some(obj_type) = self.object_type_for(req.object_idx)
-            && let Some(result) = self.augment.property_value_read(self.state, obj_type, req, buf) {
-                return result;
-            }
+            && let Some(result) = self.augment.property_value_read(self.state, obj_type, req, buf)
+        {
+            return result;
+        }
+
+        // PID_IO_LIST on the Device Object is handled at the container level
+        // because only the container knows all interface object types present
+        // in the device (including objects added by outer tuple compositions).
+        if req.object_idx == 0 && req.pid == pid::IO_LIST {
+            return read_io_list(self.io_list, req.start_idx, req.count, buf);
+        }
 
         // Check access level
         let desc = self.get_descriptor(req.object_idx, req.pid).ok_or(PropertyError::InvalidPropertyId)?;
@@ -357,12 +491,13 @@ where
     fn property_value_write(&self, req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
         // Augment first (can intercept specific PIDs).
         if let Some(obj_type) = self.object_type_for(req.object_idx)
-            && let Some(result) = self.augment.property_value_write(self.state, obj_type, req) {
-                if result.is_ok() {
-                    self.state.mark_dirty();
-                }
-                return result;
+            && let Some(result) = self.augment.property_value_write(self.state, obj_type, req)
+        {
+            if result.is_ok() {
+                self.state.mark_dirty();
             }
+            return result;
+        }
 
         // Check access level
         let desc = self.get_descriptor(req.object_idx, req.pid).ok_or(PropertyError::InvalidPropertyId)?;
@@ -403,17 +538,19 @@ where
 
     fn function_property_command(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         if let Some(obj_type) = self.object_type_for(req.object_idx)
-            && let Some(result) = self.augment.function_property_command(self.state, obj_type, req) {
-                return result;
-            }
+            && let Some(result) = self.augment.function_property_command(self.state, obj_type, req)
+        {
+            return result;
+        }
         FunctionPropertyResult::not_supported()
     }
 
     fn function_property_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         if let Some(obj_type) = self.object_type_for(req.object_idx)
-            && let Some(result) = self.augment.function_property_state_read(self.state, obj_type, req) {
-                return result;
-            }
+            && let Some(result) = self.augment.function_property_state_read(self.state, obj_type, req)
+        {
+            return result;
+        }
         FunctionPropertyResult::not_supported()
     }
 }
@@ -515,6 +652,10 @@ pub fn device_info_from_descriptor(desc: &crate::ets::DeviceDescriptor) -> Devic
 /// implementation for non-IP System B devices. Pass `()` as the augment
 /// if no augmentation is needed, or an [`InterfaceObjectAugment`] to
 /// intercept property and function property requests.
+///
+/// The IO list (PID_IO_LIST) will contain the 6 base System B object types.
+/// For KNX/IP devices, use [`create_knxip_objects`] instead, which adds
+/// the IP Parameter Object to the IO list.
 pub fn create_system_b_objects<'a, D, S, A>(
     state: &'a S,
     layout: &super::memory_map::MemoryLayout,
@@ -551,6 +692,7 @@ where
         D::DEVICE.pei_program_version(),
         D::DEVICE.pei_type,
         state.routing_count(),
+        &SYSTEM_B_IO_TYPES,
         augment,
     )
 }

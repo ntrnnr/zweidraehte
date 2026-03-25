@@ -483,6 +483,64 @@ pub type DefaultKnxIpInterfaceObjects<'a, S, A = (), IA = ()> = KnxIpInterfaceOb
 // KNX/IP Helper Functions
 // ============================================================================
 
+/// The 7 interface object types present in a KNX/IP System B device.
+const KNXIP_IO_TYPES: [InterfaceObjectType; 7] = [
+    InterfaceObjectType::Device,
+    InterfaceObjectType::AddressTable,
+    InterfaceObjectType::AssociationTable,
+    InterfaceObjectType::GroupObjectTable,
+    InterfaceObjectType::ApplicationProgram,
+    InterfaceObjectType::InterfaceProgram,
+    InterfaceObjectType::IPParameter,
+];
+
+/// Create the base `SystemBObjects` for a KNX/IP device.
+///
+/// Like [`super::create_system_b_objects`] but passes [`KNXIP_IO_TYPES`]
+/// (7 types, including IPParameter) as the IO list so that PID_IO_LIST
+/// on the Device Object reflects all objects in the composed tuple.
+fn create_knxip_base<'a, D, S, A>(
+    state: &'a S,
+    layout: &crate::bcus::system_b::memory_map::MemoryLayout,
+    augment: A,
+) -> super::SystemBObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI, A>
+where
+    D: StackDefinition,
+    S: StackState
+        + IpStackState
+        + crate::device_model::DeviceModelNotifier
+        + HasAddressTable
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasApplication
+        + HasPeiApplication
+        + HasRoutingCount,
+    S::ADT: HasLoadStateMachine,
+    S::AST: HasLoadStateMachine,
+    S::COT: HasLoadStateMachine,
+    S::APP: HasLoadStateMachine + HasRunStateMachine,
+    S::PEI: HasLoadStateMachine + HasRunStateMachine,
+    A: InterfaceObjectAugment<S>,
+{
+    let device_info = super::device_info_from::<D>();
+    SystemBObjects::with_augment(
+        state,
+        &device_info,
+        layout,
+        state.adt(),
+        state.ast(),
+        state.cot(),
+        state.app(),
+        state.pei(),
+        D::DEVICE.program_version(),
+        D::DEVICE.pei_program_version(),
+        D::DEVICE.pei_type,
+        state.routing_count(),
+        &KNXIP_IO_TYPES,
+        augment,
+    )
+}
+
 /// Create KNX/IP interface objects (7 objects: indices 0-6).
 ///
 /// Pass `()` as the augment if no augmentation is needed, or an
@@ -511,7 +569,7 @@ where
     S::PEI: HasLoadStateMachine + HasRunStateMachine,
     A: InterfaceObjectAugment<S>,
 {
-    let base = super::create_system_b_objects::<D, S, _>(state, layout, augment);
+    let base = create_knxip_base::<D, S, _>(state, layout, augment);
     let ip = IpObjects::new(state);
     (base, ip)
 }
@@ -543,7 +601,7 @@ where
     S::PEI: HasLoadStateMachine + HasRunStateMachine,
     IA: InterfaceObjectAugment<S>,
 {
-    let base = super::create_system_b_objects::<D, S, _>(state, layout, ());
+    let base = create_knxip_base::<D, S, _>(state, layout, ());
     let ip = IpObjects::with_augment(state, ip_augment);
     (base, ip)
 }
