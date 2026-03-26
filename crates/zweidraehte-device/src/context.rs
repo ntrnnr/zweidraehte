@@ -29,7 +29,8 @@ pub trait BufferManagerContext {
     /// For example, a USB link layer may read the interface's MAX_APDU_LENGTH
     /// property and update the stack state accordingly.
     ///
-    /// The value should not exceed the compile-time `StackDefinition::MAX_APDU_LENGTH`.
+    /// Values exceeding the compile-time `StackDefinition::MAX_APDU_LENGTH`
+    /// will be clamped to that limit.
     fn set_max_apdu_length(&self, length: u16);
 }
 
@@ -128,10 +129,18 @@ pub trait KnxIndividualAddressContext {
 pub struct CemiTransportLayerChannelPair {
     /// DevMgmt handler → CemiTransportLayer (capacity 2: one Frame + one
     /// Activate/Deactivate can be pending simultaneously).
-    pub event: embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, crate::layers::transport::cemi::CemiEvent, 2>,
+    pub event: embassy_sync::channel::Channel<
+        embassy_sync::blocking_mutex::raw::NoopRawMutex,
+        crate::layers::transport::cemi::CemiEvent,
+        2,
+    >,
     /// CemiTransportLayer → KNX/IP runtime (capacity 1: at most one
     /// response pending).
-    pub response: embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, crate::messages::buffers::Buffer<'static>, 1>,
+    pub response: embassy_sync::channel::Channel<
+        embassy_sync::blocking_mutex::raw::NoopRawMutex,
+        crate::messages::buffers::Buffer<'static>,
+        1,
+    >,
 }
 
 #[cfg(feature = "knxip")]
@@ -145,10 +154,7 @@ impl Default for CemiTransportLayerChannelPair {
 impl CemiTransportLayerChannelPair {
     /// Create a new channel pair.
     pub fn new() -> Self {
-        Self {
-            event: embassy_sync::channel::Channel::new(),
-            response: embassy_sync::channel::Channel::new(),
-        }
+        Self { event: embassy_sync::channel::Channel::new(), response: embassy_sync::channel::Channel::new() }
     }
 
     /// Extract layer-side endpoints (for the router/layer stack).

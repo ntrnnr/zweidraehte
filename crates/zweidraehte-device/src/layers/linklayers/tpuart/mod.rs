@@ -26,9 +26,10 @@
 //! - TPUART1/2: 56 bytes (64 byte buffer - 8 bytes overhead)
 //! - NCN5120/E981: 248 bytes (256 byte buffer - 8 bytes overhead)
 //!
-//! Use [`TpUartLinkLayer::max_apdu_length()`] after initialization to get this value,
-//! and update your stack state via [`BufferManagerContext::set_max_apdu_length()`](crate::context::BufferManagerContext::set_max_apdu_length) so that
-//! PID 56 (MAX_APDU_LENGTH) reports the correct hardware capability.
+//! During initialization, the link layer automatically calls
+//! [`BufferManagerContext::set_max_apdu_length()`](crate::context::BufferManagerContext::set_max_apdu_length)
+//! on its context so that PID 56 (MAX_APDU_LENGTH) reports the correct
+//! hardware capability. Incoming frames exceeding the chip's limit are dropped.
 //!
 //! ## Architecture
 //!
@@ -58,7 +59,7 @@ use crate::{
     address::IndividualAddress,
     context::KnxIndividualAddressContext,
     messages::{
-        buffers::{Buffer, DynBufferManager, MessageBuffer},
+        buffers::{Buffer, MessageBuffer},
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage},
         knx::*,
     },
@@ -71,9 +72,7 @@ pub mod busmon;
 mod chip;
 mod state_machine;
 
-use crate::encoding::tp1::{
-    knx_to_tp1_message, tp1_to_knx_message_no_checksum, validate_tp1_checksum,
-};
+use crate::encoding::tp1::{knx_to_tp1_message, tp1_to_knx_message_no_checksum, validate_tp1_checksum};
 use chip::{ChipType, RetryConfig};
 use state_machine::*;
 
@@ -323,11 +322,10 @@ where
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
-        let buffer_manager = context.buffer_manager();
         let mut ll = TpUartLinkLayer::with_address_checker(
             self.uart_tx,
             self.uart_rx,
-            buffer_manager,
+            context,
             ind_tx,
             conf_tx,
             self.address_checker,
@@ -375,10 +373,9 @@ where
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
-        let buffer_manager = context.buffer_manager();
         let checker = DeviceAddressChecker::new(context, context.address_table());
         let mut ll =
-            TpUartLinkLayer::with_address_checker(self.uart_tx, self.uart_rx, buffer_manager, ind_tx, conf_tx, checker);
+            TpUartLinkLayer::with_address_checker(self.uart_tx, self.uart_rx, context, ind_tx, conf_tx, checker);
         // Apply PID_MAX_RETRY_COUNT from device state to the chip's retry config.
         // PID 52 format: busy_retry bits 6-4, nak_retry bits 2-0.
         let mrc = context.max_retry_count();
@@ -404,8 +401,8 @@ where
     uart_tx: W,
     uart_rx: R,
 
-    // Buffer management
-    buffer_manager: &'a DynBufferManager<'static>,
+    // Stack context — provides buffer allocation and max APDU length management.
+    context: &'a dyn crate::context::BufferManagerContext,
 
     // Upper layer channels — indications and confirmations flow UP to NL
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
@@ -463,11 +460,11 @@ where
     pub fn new(
         uart_tx: W,
         uart_rx: R,
-        buffer_manager: &'a DynBufferManager<'static>,
+        context: &'a dyn crate::context::BufferManagerContext,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     ) -> Self {
-        Self::with_address_checker(uart_tx, uart_rx, buffer_manager, ind_tx, conf_tx, NoAddressChecker)
+        Self::with_address_checker(uart_tx, uart_rx, context, ind_tx, conf_tx, NoAddressChecker)
     }
 }
 
@@ -485,7 +482,7 @@ where
     pub fn with_address_checker(
         uart_tx: W,
         uart_rx: R,
-        buffer_manager: &'a DynBufferManager<'static>,
+        context: &'a dyn crate::context::BufferManagerContext,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         address_checker: A,
@@ -493,7 +490,7 @@ where
         Self {
             uart_tx,
             uart_rx,
-            buffer_manager,
+            context,
             ind_tx,
             conf_tx,
             main_ctx: StateMachineContext::new(),
@@ -696,7 +693,7 @@ where
                     self.uart_write(&[byte]).await;
                 }
                 MainAction::AllocReceiveBuffer => {
-                    let buffer = self.buffer_manager.alloc().await;
+                    let buffer = self.context.buffer_manager().alloc().await;
                     self.receive_buffer = Some(buffer);
                 }
                 MainAction::StoreReceivedByte(byte) => {
@@ -745,9 +742,21 @@ where
                             let new_len = buffer.len() - 1;
                             buffer.set_len(new_len);
                             let knx_buffer = tp1_to_knx_message_no_checksum(buffer);
-                            let msg = KnxMessageBuffer::new(knx_buffer, ServiceType::L_Data_Ind);
-                            let indication = IndicationMessage::indication(msg);
-                            self.ind_tx.send(indication).await;
+
+                            // Internal format: ctrl(1) + src(2) + dst(2) + npdu(1) + tpci/apdu...
+                            // The NPDU length (TPCI + APDU bytes) is everything past the 6-byte header.
+                            let npdu_length = knx_buffer.len().saturating_sub(6);
+                            if npdu_length as u16 > self.main_ctx.chip_type.max_apdu_length() {
+                                warn!(
+                                    "TPUART: NPDU length {} exceeds chip maximum {} - dropping frame",
+                                    npdu_length,
+                                    self.main_ctx.chip_type.max_apdu_length()
+                                );
+                            } else {
+                                let msg = KnxMessageBuffer::new(knx_buffer, ServiceType::L_Data_Ind);
+                                let indication = IndicationMessage::indication(msg);
+                                self.ind_tx.send(indication).await;
+                            }
                         } else {
                             warn!("TPUART: Invalid checksum on received frame");
                         }
@@ -1061,7 +1070,7 @@ where
         }
 
         // Allocate buffer for TP1 format and copy data
-        let mut tp1_buf = self.buffer_manager.alloc().await;
+        let mut tp1_buf = self.context.buffer_manager().alloc().await;
         for &byte in &msg[..] {
             tp1_buf.push(byte);
         }
@@ -1120,7 +1129,10 @@ where
     // Initialization
     // ========================================================================
 
-    /// Initialize the TPUART
+    /// Initialize the TPUART transceiver (chip detection, reset sequence).
+    ///
+    /// After chip detection, the hardware's max APDU length is propagated
+    /// to the stack state via [`BufferManagerContext::set_max_apdu_length()`](crate::context::BufferManagerContext::set_max_apdu_length).
     async fn initialize(&mut self) {
         // Start initial timer to trigger reset sequence
         self.timeout_deadline = Some(Instant::now() + TIMEOUT_RESET);
@@ -1165,6 +1177,12 @@ where
         if self.main_ctx.main_state == MainState::Error {
             error!("TPUART: Initialization failed");
         }
+
+        // Propagate the detected chip's max APDU length to the stack state
+        // so that PID 56 (MAX_APDU_LENGTH) reports the actual hardware capability.
+        let hw_max = self.main_ctx.chip_type.max_apdu_length();
+        info!("TPUART: Chip {:?}, max APDU length: {} bytes", self.main_ctx.chip_type, hw_max);
+        self.context.set_max_apdu_length(hw_max);
     }
 }
 
@@ -1180,11 +1198,13 @@ where
 {
     /// Run the TPUART link layer event loop.
     ///
-    /// Receives request messages from the network layer via `req_rx`,
-    /// sends indications and confirmations up via `self.ind_tx` / `self.conf_tx`.
+    /// Initializes the transceiver (chip detection, reset), propagates the
+    /// detected max APDU length to the stack state, then enters the main
+    /// event loop. Receives request messages from the network layer via
+    /// `req_rx`, sends indications and confirmations up via `self.ind_tx`
+    /// / `self.conf_tx`.
     pub async fn run(&mut self, mut req_rx: impl Inbox<RequestMessage<Buffer<'static>>>) -> ! {
         self.initialize().await;
-
         loop {
             let mut buf = [0u8];
 

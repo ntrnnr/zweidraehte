@@ -256,11 +256,10 @@ where
             // ==============================================================
             // Build TPUART link layer
             // ==============================================================
-            let buffer_manager = context.buffer_manager();
             let mut tpuart = TpUartLinkLayer::with_address_checker(
                 self.tpuart_tx,
                 self.tpuart_rx,
-                buffer_manager,
+                context,
                 tpuart_ind_channel.sender().into(),
                 conf_tx, // confirmations go directly to the real network layer
                 address_checker,

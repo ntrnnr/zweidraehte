@@ -63,6 +63,7 @@ async fn main(spawner: Spawner) {
     let buffer_manager = unsafe { BufferManager::new(buffers) };
     let buffer_manager = Box::leak(Box::new(buffer_manager));
     let bm = Box::leak(Box::new(buffer_manager.dyn_buffer_manager()));
+    let ctx: &_ = Box::leak(Box::new(testutil::util::MockContext::new(*bm)));
 
     // Indication channel: link layer -> fake network layer
     let ind_channel =
@@ -86,7 +87,7 @@ async fn main(spawner: Spawner) {
     let (tx, rx) = s.split().unwrap();
     // NoAddressChecker — this test binary doesn't ACK any incoming frames.
     // TODO: Wire up a DeviceAddressChecker once this test needs to receive.
-    let ll = TpUartLinkLayer::new(tx, rx, bm, ind_tx, conf_tx);
+    let ll = TpUartLinkLayer::new(tx, rx, ctx, ind_tx, conf_tx);
 
     // Spawn the fake network layer
     let fake_network = FakeNetworkLayer { ind_rx };

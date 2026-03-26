@@ -51,7 +51,7 @@ impl MockContext {
     }
 }
 
-impl BufferManagerContext for &MockContext {
+impl BufferManagerContext for MockContext {
     fn buffer_manager(&self) -> &DynBufferManager<'static> {
         &self.buffer_manager
     }
@@ -62,6 +62,20 @@ impl BufferManagerContext for &MockContext {
 
     fn set_max_apdu_length(&self, length: u16) {
         self.max_apdu_length.set(length);
+    }
+}
+
+impl BufferManagerContext for &MockContext {
+    fn buffer_manager(&self) -> &DynBufferManager<'static> {
+        (**self).buffer_manager()
+    }
+
+    fn max_apdu_length(&self) -> u16 {
+        (**self).max_apdu_length()
+    }
+
+    fn set_max_apdu_length(&self, length: u16) {
+        (**self).set_max_apdu_length(length);
     }
 }
 
@@ -79,17 +93,19 @@ impl PropertyServiceContext for &mut MockContext {
     }
 }
 
+// BufferManagerContext for &mut MockContext delegates to the MockContext impl
+// via auto-deref, but we need it explicit for trait object coercion in some contexts.
 impl BufferManagerContext for &mut MockContext {
     fn buffer_manager(&self) -> &DynBufferManager<'static> {
-        &self.buffer_manager
+        (**self).buffer_manager()
     }
 
     fn max_apdu_length(&self) -> u16 {
-        self.max_apdu_length.get()
+        (**self).max_apdu_length()
     }
 
     fn set_max_apdu_length(&self, length: u16) {
-        self.max_apdu_length.set(length);
+        (**self).set_max_apdu_length(length);
     }
 }
 

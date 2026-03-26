@@ -6,12 +6,10 @@
 
 use core::cell::RefCell;
 
-use embassy_sync::{
-    channel::Channel,
-    pubsub::PubSubChannel,
-};
+use embassy_sync::{channel::Channel, pubsub::PubSubChannel};
 
 use crate::{
+    StackState,
     actor::Request,
     context::BufferManagerContext,
     definition::StackDefinition,
@@ -22,7 +20,6 @@ use crate::{
         tables::HasAddressTable,
     },
     restart,
-    StackState,
 };
 
 // ============================================================================
@@ -76,7 +73,15 @@ impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
     }
 
     fn set_max_apdu_length(&self, length: u16) {
-        self.state.set_max_apdu_length(length);
+        let clamped = length.min(D::MAX_APDU_LENGTH);
+        if clamped < length {
+            warn!(
+                "set_max_apdu_length({}) clamped to StackDefinition::MAX_APDU_LENGTH ({})",
+                length,
+                D::MAX_APDU_LENGTH
+            );
+        }
+        self.state.set_max_apdu_length(clamped);
     }
 }
 
@@ -111,7 +116,15 @@ impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
     }
 
     fn set_max_apdu_length(&self, length: u16) {
-        self.inner.state.set_max_apdu_length(length);
+        let clamped = length.min(D::MAX_APDU_LENGTH);
+        if clamped < length {
+            warn!(
+                "set_max_apdu_length({}) clamped to StackDefinition::MAX_APDU_LENGTH ({})",
+                length,
+                D::MAX_APDU_LENGTH
+            );
+        }
+        self.inner.state.set_max_apdu_length(clamped);
     }
 }
 
