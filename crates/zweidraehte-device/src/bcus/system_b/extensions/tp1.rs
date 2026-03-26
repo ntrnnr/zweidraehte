@@ -20,14 +20,13 @@ use core::cell::Cell;
 
 use serde::{Deserialize, Serialize};
 
+use crate::StackState;
 use crate::bcus::system_b::{ExtensionConfig, ExtensionState};
 use crate::dpt::{InterfaceObjectType, PDT_Generic01};
 use crate::objects::interface::{
-    FullPropertyReadRequest, FullPropertyWriteRequest, HasMaxRetryCount, InterfaceObjectAugment,
-    PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup,
-    WriteResponse, pid,
+    FullPropertyReadRequest, FullPropertyWriteRequest, HasMaxRetryCount, InterfaceObjectAugment, PropertyAccess,
+    PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, WriteResponse, pid,
 };
-use crate::StackState;
 
 // ============================================================================
 // Default Value
@@ -57,9 +56,7 @@ pub struct Tp1ExtensionConfig {
 
 impl Default for Tp1ExtensionConfig {
     fn default() -> Self {
-        Self {
-            max_retry_count: default_max_retry_count(),
-        }
+        Self { max_retry_count: default_max_retry_count() }
     }
 }
 
@@ -82,21 +79,28 @@ impl ExtensionState for Tp1ExtensionState {
     type Config = Tp1ExtensionConfig;
 
     fn from_config(config: Tp1ExtensionConfig) -> Self {
-        Self {
-            max_retry_count: Cell::new(config.max_retry_count),
-        }
+        Self { max_retry_count: Cell::new(config.max_retry_count) }
     }
 
     fn to_config(&self) -> Tp1ExtensionConfig {
-        Tp1ExtensionConfig {
-            max_retry_count: self.max_retry_count.get(),
-        }
+        Tp1ExtensionConfig { max_retry_count: self.max_retry_count.get() }
     }
 
     fn factory_reset(&self) {
         self.max_retry_count.set(default_max_retry_count());
     }
 }
+
+// ============================================================================
+// TP1 Device State Type Alias
+// ============================================================================
+
+/// Type alias for TP1 device state.
+///
+/// This is [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)
+/// specialized with [`Tp1ExtensionState`] for TP1 twisted-pair devices.
+pub type Tp1SystemBDeviceState<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P> =
+    crate::bcus::system_b::SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, Tp1ExtensionState>;
 
 // ============================================================================
 // HasMaxRetryCount — used by TPUART link layer via MaxRetryCountContext
@@ -128,10 +132,7 @@ impl<S: StackState> InterfaceObjectAugment<S> for Tp1ExtensionState {
             return None;
         }
 
-        if !matches!(
-            lookup,
-            PropertyLookup::ByPid(pid::MAX_RETRY_COUNT) | PropertyLookup::ByIndex(0)
-        ) {
+        if !matches!(lookup, PropertyLookup::ByPid(pid::MAX_RETRY_COUNT) | PropertyLookup::ByIndex(0)) {
             return None;
         }
 
@@ -141,11 +142,7 @@ impl<S: StackState> InterfaceObjectAugment<S> for Tp1ExtensionState {
             3, // read level: unrestricted
             3, // write level: unrestricted
         );
-        Some(Ok(PropertyDescriptionResponse::from_descriptor(
-            object_idx,
-            0,
-            &desc,
-        )))
+        Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &desc)))
     }
 
     fn property_value_read(

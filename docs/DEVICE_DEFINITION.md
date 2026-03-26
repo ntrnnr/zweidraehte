@@ -78,20 +78,20 @@ const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 For convenience, there are type aliases that fill in common patterns:
 
 ```rust
-// KNX/IP device (extension state = IpExtensionState)
+// KNX/IP device
 type MyState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams, MyPlatform>;
 
-// TP1 device with retry count (extension state = Tp1ExtensionState)
-type MyState = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams, Tp1ExtensionState>;
-
-// Plain TP1 device (no extension state)
-type MyState = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams>;
+// TP1 device
+type MyState = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams>;
 ```
 
-`IpSystemBDeviceState` is just a type alias:
+These are type aliases that fill in the extension state:
 ```rust
 pub type IpSystemBDeviceState<..., P, Plat, const N: usize = 0> =
     SystemBDeviceState<..., P, IpExtensionState<Plat, N>>;
+
+pub type Tp1SystemBDeviceState<..., P> =
+    SystemBDeviceState<..., P, Tp1ExtensionState>;
 ```
 
 ## Extension State
@@ -121,7 +121,7 @@ fields for interior mutability.
 
 ### Built-in Extension States
 
-**`()` — no extension state.** Used by plain TP1 devices.
+**`()` — no extension state.** Only useful for test/mock scenarios.
 
 **`Tp1ExtensionState`** — TP1 retry count (PID 52):
 ```rust
@@ -133,7 +133,7 @@ pub struct Tp1ExtensionState {
 **`IpExtensionState<P, N>`** — full IP configuration:
 ```rust
 pub struct IpExtensionState<P: IpPlatform + IpPlatformConfig, const N: usize = 0> {
-    platform: P,                          // Network queries
+    platform: P,                          // Platform access (network stack, MAC, etc.)
     friendly_name: Cell<[u8; 30]>,        // PID 76
     configured_ip: Cell<Ipv4Addr>,        // PID 60
     configured_subnet: Cell<Ipv4Addr>,    // PID 61

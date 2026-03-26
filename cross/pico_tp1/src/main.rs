@@ -58,8 +58,8 @@ const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
 const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
-/// Device state for TP1, with [`Tp1ExtensionState`] for PID_MAX_RETRY_COUNT persistence.
-type PicoTp1State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, Tp1ExtensionState>;
+/// Device state for TP1.
+type PicoTp1State = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
