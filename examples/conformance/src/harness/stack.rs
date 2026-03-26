@@ -23,7 +23,7 @@ use const_default::ConstDefault;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     AccessContext,
-    bcus::system_b::{IpSystemBDeviceState, KnxIpInterfaceObjects, MemoryLayout, create_knxip_objects},
+    bcus::system_b::{DefaultSystemBInterfaceObjects, HasExtensionState, IpExtensionState, IpSystemBDeviceState, MemoryLayout, create_system_b_objects},
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::Application,
     storage::StaticIdentity,
@@ -795,81 +795,93 @@ impl DeviceModelNotifier for ConformanceState {
 }
 
 // ============================================================================
+// Trait Forwarding — HasExtensionState
+// ============================================================================
+
+impl zweidraehte_device::bcus::system_b::HasExtensionState for ConformanceState {
+    type ES = <InnerState as zweidraehte_device::bcus::system_b::HasExtensionState>::ES;
+
+    fn extension_state(&self) -> &Self::ES {
+        self.inner.extension_state()
+    }
+}
+
+// ============================================================================
 // Trait Forwarding — IpStackState
 // ============================================================================
 
 impl IpStackState for ConformanceState {
     fn current_ip_address(&self) -> Ipv4Addr {
-        self.inner.current_ip_address()
+        self.inner.extension_state().current_ip_address()
     }
     fn current_subnet_mask(&self) -> Ipv4Addr {
-        self.inner.current_subnet_mask()
+        self.inner.extension_state().current_subnet_mask()
     }
     fn current_default_gateway(&self) -> Ipv4Addr {
-        self.inner.current_default_gateway()
+        self.inner.extension_state().current_default_gateway()
     }
     fn mac_address(&self) -> [u8; 6] {
-        self.inner.mac_address()
+        self.inner.extension_state().mac_address()
     }
     fn current_ip_assignment_method(&self) -> u8 {
-        self.inner.current_ip_assignment_method()
+        self.inner.extension_state().current_ip_assignment_method()
     }
     fn ip_capabilities(&self) -> u8 {
-        self.inner.ip_capabilities()
+        self.inner.extension_state().ip_capabilities()
     }
     fn knxnetip_device_capabilities(&self) -> u16 {
-        self.inner.knxnetip_device_capabilities()
+        self.inner.extension_state().knxnetip_device_capabilities()
     }
     fn configured_ip_address(&self) -> Ipv4Addr {
-        self.inner.configured_ip_address()
+        self.inner.extension_state().configured_ip_address()
     }
     fn set_configured_ip_address(&self, addr: Ipv4Addr) {
-        self.inner.set_configured_ip_address(addr);
+        self.inner.extension_state().set_configured_ip_address(addr);
     }
     fn configured_subnet_mask(&self) -> Ipv4Addr {
-        self.inner.configured_subnet_mask()
+        self.inner.extension_state().configured_subnet_mask()
     }
     fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
-        self.inner.set_configured_subnet_mask(mask);
+        self.inner.extension_state().set_configured_subnet_mask(mask);
     }
     fn configured_default_gateway(&self) -> Ipv4Addr {
-        self.inner.configured_default_gateway()
+        self.inner.extension_state().configured_default_gateway()
     }
     fn set_configured_default_gateway(&self, gateway: Ipv4Addr) {
-        self.inner.set_configured_default_gateway(gateway);
+        self.inner.extension_state().set_configured_default_gateway(gateway);
     }
     fn ip_assignment_method(&self) -> u8 {
-        self.inner.ip_assignment_method()
+        self.inner.extension_state().ip_assignment_method()
     }
     fn set_ip_assignment_method(&self, method: u8) {
-        self.inner.set_ip_assignment_method(method);
+        self.inner.extension_state().set_ip_assignment_method(method);
     }
     fn routing_multicast_address(&self) -> Ipv4Addr {
-        self.inner.routing_multicast_address()
+        self.inner.extension_state().routing_multicast_address()
     }
     fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
-        self.inner.set_routing_multicast_address(addr);
+        self.inner.extension_state().set_routing_multicast_address(addr);
     }
     fn ttl(&self) -> u8 {
-        self.inner.ttl()
+        self.inner.extension_state().ttl()
     }
     fn set_ttl(&self, ttl: u8) {
-        self.inner.set_ttl(ttl);
+        self.inner.extension_state().set_ttl(ttl);
     }
     fn friendly_name_len(&self) -> usize {
-        self.inner.friendly_name_len()
+        self.inner.extension_state().friendly_name_len()
     }
     fn friendly_name(&self) -> [u8; 30] {
-        self.inner.friendly_name()
+        self.inner.extension_state().friendly_name()
     }
     fn set_friendly_name(&self, name: &[u8]) {
-        self.inner.set_friendly_name(name);
+        self.inner.extension_state().set_friendly_name(name);
     }
     fn project_installation_id(&self) -> u16 {
-        self.inner.project_installation_id()
+        self.inner.extension_state().project_installation_id()
     }
     fn set_project_installation_id(&self, id: u16) {
-        self.inner.set_project_installation_id(id);
+        self.inner.extension_state().set_project_installation_id(id);
     }
 }
 
@@ -1199,21 +1211,17 @@ impl StackDefinition for IpcConformanceTestStack {
     type State = ConformanceState;
     type Mem = ConformanceMemoryMap;
 
-    type InterfaceObjects<'a> = KnxIpInterfaceObjects<
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
         'a,
         ConformanceState,
-        <ConformanceState as HasAddressTable>::ADT,
-        <ConformanceState as HasAssociationTable>::AST,
-        <ConformanceState as HasCommunicationObjectTable>::COT,
-        <ConformanceState as HasApplication>::APP,
-        <ConformanceState as HasPeiApplication>::PEI,
+        &'a IpExtensionState<MockIpPlatform>,
     >;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_knxip_objects::<IpcConformanceTestStack, _, _>(state, &CONFORMANCE_MEMORY_LAYOUT, ())
+        create_system_b_objects::<IpcConformanceTestStack, _, _>(state, &CONFORMANCE_MEMORY_LAYOUT, state.extension_state())
     }
 
     type LayerBuilder = InsecureDeviceBuilder;

@@ -197,7 +197,7 @@ impl<
     /// addresses.
     ///
     /// The const generic `N` sets the maximum number of tunneling slots.
-    /// This must match the `N` on `IpLinkLayerState` / `IpSystemBDeviceState`.
+    /// This must match the `N` on `IpExtensionState` / `IpSystemBDeviceState`.
     ///
     /// # Example
     ///

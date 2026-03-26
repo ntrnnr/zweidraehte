@@ -5,7 +5,7 @@
 //! - ETS-loaded tables (ADT, AST, COT, APP)
 //! - Configuration (routing count)
 //! - Dirty tracking (the binary owns storage separately)
-//! - Link-layer-specific persistent state (IP config for KNX/IP, `()` for TP1)
+//! - Extension state (IP config, augment state, or `()` for plain TP1)
 //!
 //! This is the single source of truth for all device state.
 
@@ -30,16 +30,25 @@ use crate::{
     },
 };
 
-use super::{HasPersistedState, LinkLayerState, PersistedState};
+use super::{ExtensionState, HasPersistedState, PersistedState};
 use crate::storage::DeviceIdentity;
 
-#[cfg(feature = "knxip")]
-mod ip;
-#[cfg(feature = "knxip")]
-pub use ip::*;
+// ============================================================================
+// HasExtensionState trait
+// ============================================================================
 
-mod tp1;
-pub use tp1::*;
+/// Trait for accessing the extension state on a device state.
+///
+/// This enables context trait impls and other generic code to access
+/// the extension state (e.g., `IpExtensionState`) through a trait bound
+/// rather than knowing the concrete `SystemBDeviceState` type.
+pub trait HasExtensionState {
+    /// The extension state type.
+    type ES;
+
+    /// Get a reference to the extension state.
+    fn extension_state(&self) -> &Self::ES;
+}
 
 // ============================================================================
 // Unified Device State
@@ -66,7 +75,7 @@ pub use tp1::*;
 ///
 /// **Link-Layer State:**
 /// - For KNX/IP devices: IP configuration (friendly name, configured IP, etc.)
-/// - For TP1 devices: [`Tp1LinkLayerState`] (PID_MAX_RETRY_COUNT)
+/// - For TP1 devices: [`Tp1ExtensionState`] (PID_MAX_RETRY_COUNT)
 ///
 /// # Persistence
 ///
@@ -80,14 +89,14 @@ pub use tp1::*;
 /// - `AST_SIZE`: Association table size in bytes (2 + MAX_ASSO * 4)
 /// - `COT_SIZE`: Group object table size in bytes (2 + MAX_CO * 2)
 /// - `P`: Application parameters type
-/// - `LS`: Link-layer-specific persistent runtime state (e.g.,
-///   [`IpLinkLayerState`] for KNX/IP, [`Tp1LinkLayerState`] for TP1)
+/// - `ES`: Extension state — link-layer config and/or augment state (e.g.,
+///   [`IpExtensionState`] for KNX/IP, [`Tp1ExtensionState`] for TP1, `()` for plain TP1)
 pub struct SystemBDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault,
-    LS: LinkLayerState = (),
+    ES: ExtensionState = (),
     const MAX_CONN: usize = 1,
 > {
     // ========================================================================
@@ -142,13 +151,14 @@ pub struct SystemBDeviceState<
     pub pei_program_version: RefCell<[u8; 5]>,
 
     // ========================================================================
-    // Link-Layer State
+    // Extension State
     // ========================================================================
-    /// Link-layer-specific persistent runtime state.
+    /// Extension state: link-layer config and/or augment state.
     ///
-    /// For KNX/IP devices this is [`IpLinkLayerState`] with `Cell`/`RefCell`
-    /// fields for interior mutability. For TP1 devices this is `()`.
-    link_layer_state: LS,
+    /// For KNX/IP devices this is [`IpExtensionState`]. For TP1 devices
+    /// this is [`Tp1ExtensionState`] (PID_MAX_RETRY_COUNT is mandatory
+    /// on TP1). Defaults to `()` for test/mock scenarios without extensions.
+    extension_state: ES,
 
     // ========================================================================
     // Access Control
@@ -184,9 +194,9 @@ impl<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault,
-    LS: LinkLayerState,
+    ES: ExtensionState,
     const MAX_CONN: usize,
-> SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS, MAX_CONN>
+> SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES, MAX_CONN>
 {
     /// Create new device state with factory defaults.
     ///
@@ -194,7 +204,7 @@ impl<
     /// - Auth keys: All set to `[0xFF, 0xFF, 0xFF, 0xFF]` (default key)
     /// - Routing count: 6 (default per KNX spec)
     /// - All tables: Unloaded
-    /// - Link-layer state: Factory defaults via `LS::from_config(Default::default())`
+    /// - Extension state: Factory defaults via `ES::from_config(Default::default())`
     ///
     /// # Arguments
     ///
@@ -214,15 +224,15 @@ impl<
             program_version: RefCell::new([0; 5]),
             pei_program_version: RefCell::new([0; 5]),
             access_store: crate::ConnectionAuthLevels::new(),
-            link_layer_state: LS::from_config(LS::Config::default()),
+            extension_state: ES::from_config(ES::Config::default()),
             dirty: Cell::new(false),
             dm_slot: DmNotificationSlot::new(),
         }
     }
 
-    /// Get the link-layer-specific persistent runtime state.
-    pub fn link_layer_state(&self) -> &LS {
-        &self.link_layer_state
+    /// Get the extension state (link-layer config and/or augment state).
+    pub fn extension_state(&self) -> &ES {
+        &self.extension_state
     }
 
     /// Check if there are unsaved changes.
@@ -345,7 +355,7 @@ impl<
         self.programming_mode.set(false);
         *self.pei.borrow_mut() = PeiApplication::new();
         *self.pei_program_version.borrow_mut() = [0; 5];
-        self.link_layer_state.factory_reset();
+        self.extension_state.factory_reset();
         self.mark_dirty();
     }
 
@@ -366,15 +376,15 @@ impl<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault + Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
-    LS: LinkLayerState,
+    ES: ExtensionState,
     const MAX_CONN: usize,
-> HasPersistedState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS, MAX_CONN>
+> HasPersistedState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES, MAX_CONN>
 {
-    type Persisted = PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS::Config>;
+    type Persisted = PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES::Config>;
 
     fn to_persisted(&self) -> Self::Persisted {
         PersistedState {
-            version: PersistedState::<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS::Config>::VERSION,
+            version: PersistedState::<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES::Config>::VERSION,
             individual_address: self.individual_address.get(),
             auth_keys: *self.auth_keys.borrow(),
             routing_count: self.routing_count.get(),
@@ -385,12 +395,12 @@ impl<
             pei_program: (*self.pei.borrow()).clone(),
             program_version: *self.program_version.borrow(),
             pei_program_version: *self.pei_program_version.borrow(),
-            link_layer_config: self.link_layer_state.to_config(),
+            extension_config: self.extension_state.to_config(),
         }
     }
 
     fn from_persisted(identity: &impl DeviceIdentity, persisted: Self::Persisted) -> Self {
-        // Destructure to move link_layer_config out by value (no Clone needed).
+        // Destructure to move extension_config out by value (no Clone needed).
         let PersistedState {
             individual_address,
             auth_keys,
@@ -402,7 +412,7 @@ impl<
             pei_program,
             program_version,
             pei_program_version,
-            link_layer_config,
+            extension_config,
             version: _, // Consumed but unused — migration would check this.
         } = persisted;
 
@@ -420,7 +430,7 @@ impl<
             program_version: RefCell::new(program_version),
             pei_program_version: RefCell::new(pei_program_version),
             access_store: crate::ConnectionAuthLevels::new(),
-            link_layer_state: LS::from_config(link_layer_config),
+            extension_state: ES::from_config(extension_config),
             dirty: Cell::new(false),
             dm_slot: DmNotificationSlot::new(),
         }
@@ -433,8 +443,8 @@ impl<
 
 use crate::restart::{EraseCode, RestartError, RestartHandler};
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
-    RestartHandler for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
+    RestartHandler for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
 {
     fn supports_erase_code(&self, code: EraseCode) -> bool {
         // System B devices support all standard erase codes
@@ -498,8 +508,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 // StackState Implementation
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
-    StackState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
+    StackState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
 {
     fn individual_address(&self) -> IndividualAddress {
         self.individual_address.get()
@@ -561,8 +571,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 // DeviceModelNotifier Implementation
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
-    DeviceModelNotifier for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
+    DeviceModelNotifier for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
 {
     fn notify(&self, event: DeviceModelEvent) {
         self.dm_slot.notify(event);
@@ -577,8 +587,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 // Table Accessor Trait Implementations
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
-    HasAddressTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
+    HasAddressTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
 {
     type ADT = Table<AddrTab7Impl<ADT_SIZE>>;
 
@@ -587,8 +597,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
-    HasAssociationTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
+    HasAssociationTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
 {
     type AST = Table<AssoTab6Impl<AST_SIZE>>;
 
@@ -597,8 +607,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
-    HasCommunicationObjectTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
+    HasCommunicationObjectTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
 {
     type COT = Table<CoTab7Impl<COT_SIZE>>;
 
@@ -607,8 +617,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
-    HasApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
+    HasApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
 {
     type APP = Application<P>;
 
@@ -617,8 +627,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
-    HasPeiApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
+    HasPeiApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
 {
     type PEI = PeiApplication;
 
@@ -627,8 +637,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState>
-    HasRoutingCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
+    HasRoutingCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
 {
     fn routing_count(&self) -> u8 {
         self.routing_count.get()
@@ -640,15 +650,20 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, LS: LinkLayerState + HasMaxRetryCount>
-    HasMaxRetryCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    ES: ExtensionState + HasMaxRetryCount,
+> HasMaxRetryCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
 {
     fn max_retry_count(&self) -> u8 {
-        self.link_layer_state.max_retry_count()
+        self.extension_state.max_retry_count()
     }
 
     fn set_max_retry_count(&self, value: u8) {
-        self.link_layer_state.set_max_retry_count(value);
+        self.extension_state.set_max_retry_count(value);
         self.mark_dirty();
     }
 }
@@ -658,9 +673,9 @@ impl<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault,
-    LS: LinkLayerState,
+    ES: ExtensionState,
     const MAX_CONN: usize,
-> crate::HasConnectionAuth for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, LS, MAX_CONN>
+> crate::HasConnectionAuth for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES, MAX_CONN>
 {
     fn connection_access(&self, slot: u8) -> crate::AccessContext {
         self.access_store.get(slot)
@@ -672,5 +687,21 @@ impl<
 
     fn reset_connection_access(&self, slot: u8, default_level: u8) {
         self.access_store.reset(slot, default_level);
+    }
+}
+
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    ES: ExtensionState,
+    const MAX_CONN: usize,
+> HasExtensionState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES, MAX_CONN>
+{
+    type ES = ES;
+
+    fn extension_state(&self) -> &ES {
+        &self.extension_state
     }
 }

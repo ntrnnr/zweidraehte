@@ -25,9 +25,6 @@ use crate::{
     StackState,
 };
 
-#[cfg(feature = "knxip")]
-use crate::IpStackState;
-
 // ============================================================================
 // Inner
 // ============================================================================
@@ -127,24 +124,27 @@ impl<D: StackDefinition> crate::context::PropertyServiceContext for StackContext
 #[cfg(feature = "knxip")]
 impl<D: StackDefinition> crate::context::DeviceInfoContext for StackContext<'_, D>
 where
-    D::State: crate::IpStackState,
+    D::State: crate::bcus::system_b::HasExtensionState,
+    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::IpStackState,
 {
     fn device_information(&self) -> crate::messages::knxip::substructs::DeviceInformation {
+        use crate::IpStackState;
+        use crate::bcus::system_b::HasExtensionState;
         use crate::messages::knxip::substructs::{DeviceInformation, DeviceStatus, KNXMedium};
         use zweidraehte_platform::address::EthernetAddress;
 
         let state = &self.inner.state;
-        let friendly_name = state.friendly_name();
+        let ip = state.extension_state();
 
         DeviceInformation {
             medium: KNXMedium::KNXIP,
             device_status: if state.is_programming_mode() { DeviceStatus::ProgrammingMode } else { DeviceStatus::None },
             individual_address: state.individual_address(),
-            project_installation_identifier: state.project_installation_id(),
+            project_installation_identifier: ip.project_installation_id(),
             knx_serial_number: *state.serial_number(),
-            routing_multicast_address: state.routing_multicast_address(),
-            mac_address: EthernetAddress(state.mac_address()),
-            friendly_name,
+            routing_multicast_address: ip.routing_multicast_address(),
+            mac_address: EthernetAddress(ip.mac_address()),
+            friendly_name: ip.friendly_name(),
         }
     }
 
@@ -166,28 +166,35 @@ where
 #[cfg(feature = "knxip")]
 impl<D: StackDefinition> crate::context::IpDiagnosticsContext for StackContext<'_, D>
 where
-    D::State: crate::IpStackState,
+    D::State: crate::bcus::system_b::HasExtensionState,
+    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::IpStackState,
 {
     fn ip_config(&self) -> crate::messages::knxip::substructs::IpConfig {
-        let state = &self.inner.state;
+        use crate::IpStackState;
+        use crate::bcus::system_b::HasExtensionState;
+
+        let ip = self.inner.state.extension_state();
         crate::messages::knxip::substructs::IpConfig {
-            ip_address: state.configured_ip_address(),
-            subnet_mask: state.configured_subnet_mask(),
-            default_gateway: state.configured_default_gateway(),
-            ip_capabilities: state.ip_capabilities(),
-            ip_assignment_method: state.ip_assignment_method(),
+            ip_address: ip.configured_ip_address(),
+            subnet_mask: ip.configured_subnet_mask(),
+            default_gateway: ip.configured_default_gateway(),
+            ip_capabilities: ip.ip_capabilities(),
+            ip_assignment_method: ip.ip_assignment_method(),
         }
     }
 
     fn ip_current_config(&self) -> crate::messages::knxip::substructs::IpCurrentConfig {
-        let state = &self.inner.state;
+        use crate::IpStackState;
+        use crate::bcus::system_b::HasExtensionState;
+
+        let ip = self.inner.state.extension_state();
         crate::messages::knxip::substructs::IpCurrentConfig {
-            ip_address: state.current_ip_address(),
-            subnet_mask: state.current_subnet_mask(),
-            default_gateway: state.current_default_gateway(),
-            // TODO: Track DHCP server address in IpStackState when DHCP is implemented
+            ip_address: ip.current_ip_address(),
+            subnet_mask: ip.current_subnet_mask(),
+            default_gateway: ip.current_default_gateway(),
+            // TODO: Track DHCP server address when DHCP is implemented
             dhcp_server: core::net::Ipv4Addr::UNSPECIFIED,
-            ip_assignment_method: state.current_ip_assignment_method(),
+            ip_assignment_method: ip.current_ip_assignment_method(),
         }
     }
 }
@@ -195,10 +202,13 @@ where
 #[cfg(feature = "knxip")]
 impl<D: StackDefinition> crate::context::IpAdditionalIndividualAddressContext for StackContext<'_, D>
 where
-    D::State: crate::IpStackState,
+    D::State: crate::bcus::system_b::HasExtensionState,
+    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::IpStackState,
 {
     fn write_additional_individual_addresses(&self, buf: &mut [crate::address::IndividualAddress]) -> usize {
-        self.inner.state.write_additional_individual_addresses(buf)
+        use crate::IpStackState;
+        use crate::bcus::system_b::HasExtensionState;
+        self.inner.state.extension_state().write_additional_individual_addresses(buf)
     }
 }
 

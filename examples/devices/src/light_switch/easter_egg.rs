@@ -10,10 +10,12 @@
 //! use devices::light_switch::easter_egg::EasterEggAugment;
 //! use zweidraehte_device::bcus::system_b::*;
 //!
-//! type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, MyState, EasterEggAugment>;
+//! type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
+//!     'a, MyState, (&'a IpExtensionState<MyPlatform>, EasterEggAugment),
+//! >;
 //!
 //! fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a> {
-//!     create_knxip_objects::<Self, _, _>(state, &Self::memory_layout(), EasterEggAugment)
+//!     create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), (state.extension_state(), EasterEggAugment))
 //! }
 //! ```
 //!

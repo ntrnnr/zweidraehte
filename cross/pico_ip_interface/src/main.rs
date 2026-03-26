@@ -117,7 +117,9 @@ impl StackDefinition for PicoIpInterface {
     type LLB = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, EmbassyIpTransport, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>, 2, 1, 1>;
     type State = IpIfState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, IpIfState, (), (TunnelingAugment, ())>;
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
+        'a, IpIfState, &'a IpExtensionState<EmbassyNetworkInfo, MAX_TUNNEL_CONNECTIONS>,
+    >;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
@@ -125,7 +127,7 @@ impl StackDefinition for PicoIpInterface {
     where
         Self::State: 'a,
     {
-        create_knxip_tunneling_objects::<Self, _>(state, &Self::memory_layout())
+        create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), state.extension_state())
     }
 
     type LayerBuilder = InsecureIpDeviceBuilder;

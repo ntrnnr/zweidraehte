@@ -324,7 +324,7 @@ where
     /// Create new interface objects from unified state
     pub fn new(state: &'a S) -> Self {
         // Create Device Object with device information and state reference
-        let device = DeviceObject::with_values(state, KNXIP_DEVICE_DESCRIPTOR.hardware_type);
+        let device = DeviceObject::from_descriptor(state, &KNXIP_DEVICE_DESCRIPTOR);
 
         // Create Application Program Object wrapping the application table
         // Using 0 for alloc address since NoMemoryMap is used (no memory-mapped access)
@@ -569,6 +569,11 @@ impl<P: IpPlatform + Default> StackState for KnxIpState<P> {
     fn serial_number(&self) -> &[u8; 6] {
         &device_info::SERIAL_NUMBER
     }
+}
+
+impl<P: IpPlatform + Default> zweidraehte_device::bcus::system_b::HasExtensionState for KnxIpState<P> {
+    type ES = Self;
+    fn extension_state(&self) -> &Self { self }
 }
 
 impl<P: IpPlatform + Default> IpStackState for KnxIpState<P> {

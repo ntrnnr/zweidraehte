@@ -689,9 +689,89 @@ pub trait InterfaceObjectAugment<S: StackState> {
     ) -> Option<FunctionPropertyResult> {
         None
     }
+
+    /// Number of additional interface objects this augment provides.
+    ///
+    /// The container adds these to its base object count, mapping extra
+    /// indices to the types returned by [`additional_object_type_at`].
+    /// Default: 0 (the augment only extends existing objects).
+    fn additional_object_count(&self) -> u16 {
+        0
+    }
+
+    /// Object type for an augment-provided interface object.
+    ///
+    /// `index` is 0-based relative to this augment's additional objects.
+    /// Returns `None` if `index >= additional_object_count()`.
+    fn additional_object_type_at(&self, _index: u16) -> Option<InterfaceObjectType> {
+        None
+    }
 }
 
 impl<S: StackState> InterfaceObjectAugment<S> for () {}
+
+/// Blanket delegation for shared references.
+///
+/// This enables extension state types that implement `InterfaceObjectAugment`
+/// to be borrowed from `state.extension_state()` and passed as the augment
+/// parameter to `create_system_b_objects`. The augment then accesses its own
+/// state directly via `&self` instead of going through `Has*` traits on `S`.
+impl<S: StackState, A: InterfaceObjectAugment<S>> InterfaceObjectAugment<S> for &A {
+    fn property_description_read(
+        &self,
+        state: &S,
+        object_type: InterfaceObjectType,
+        object_idx: u16,
+        lookup: PropertyLookup,
+    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+        (**self).property_description_read(state, object_type, object_idx, lookup)
+    }
+
+    fn property_value_read(
+        &self,
+        state: &S,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyReadRequest,
+        buf: &mut [u8],
+    ) -> Option<Result<usize, PropertyError>> {
+        (**self).property_value_read(state, object_type, req, buf)
+    }
+
+    fn property_value_write(
+        &self,
+        state: &S,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyWriteRequest<'_>,
+    ) -> Option<Result<WriteResponse, PropertyError>> {
+        (**self).property_value_write(state, object_type, req)
+    }
+
+    fn function_property_command(
+        &self,
+        state: &S,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        (**self).function_property_command(state, object_type, req)
+    }
+
+    fn function_property_state_read(
+        &self,
+        state: &S,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        (**self).function_property_state_read(state, object_type, req)
+    }
+
+    fn additional_object_count(&self) -> u16 {
+        (**self).additional_object_count()
+    }
+
+    fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
+        (**self).additional_object_type_at(index)
+    }
+}
 
 impl<S, Head, Tail> InterfaceObjectAugment<S> for (Head, Tail)
 where
@@ -754,6 +834,19 @@ where
         self.0
             .function_property_state_read(state, object_type, req)
             .or_else(|| self.1.function_property_state_read(state, object_type, req))
+    }
+
+    fn additional_object_count(&self) -> u16 {
+        self.0.additional_object_count() + self.1.additional_object_count()
+    }
+
+    fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
+        let head_count = self.0.additional_object_count();
+        if index < head_count {
+            self.0.additional_object_type_at(index)
+        } else {
+            self.1.additional_object_type_at(index - head_count)
+        }
     }
 }
 

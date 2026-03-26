@@ -58,7 +58,8 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::bcus::system_b::{
-    DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, SystemBIpDeviceDef, SystemBMemoryMap, create_knxip_objects,
+    DefaultSystemBInterfaceObjects, IpExtensionState, IpSystemBDeviceState, SystemBIpDeviceDef,
+    SystemBMemoryMap, create_system_b_objects,
 };
 use zweidraehte_device::dpt::*;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceTcp};
@@ -566,13 +567,15 @@ impl StackDefinition for DemoStack {
     type LLB = KnxNetIpBuilder<LinuxIpTransport, KnxIpDeviceTcp, 2>;
     type State = DemoState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, DemoState>;
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
+        'a, DemoState, &'a IpExtensionState<MockIpPlatform>,
+    >;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_knxip_objects::<Self, _, _>(state, &Self::memory_layout(), ())
+        create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), state.extension_state())
     }
 
     type LayerBuilder = InsecureIpDeviceBuilder;

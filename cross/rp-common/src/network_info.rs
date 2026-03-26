@@ -5,7 +5,7 @@
 //!
 //! # Static Context Pattern
 //!
-//! `IpLinkLayerState<P>` requires `P: Default` because `from_config()` calls
+//! `IpExtensionState<P>` requires `P: Default` because `from_config()` calls
 //! `P::default()` when hydrating persisted state. But `EmbassyNetworkInfo`
 //! holds `Stack<'static>` — it can't be defaulted without a live embassy-net
 //! stack.
@@ -89,7 +89,7 @@ impl EmbassyNetworkInfo {
     ///
     /// Must be called once in `main()` before any device state construction.
     /// The context is read (not consumed) by the `Default` impl, which is
-    /// invoked by `IpLinkLayerState::from_config()`.
+    /// invoked by `IpExtensionState::from_config()`.
     pub fn init(stack: Stack<'static>, mac: [u8; 6]) {
         NETWORK_CONTEXT.set(stack, mac);
     }

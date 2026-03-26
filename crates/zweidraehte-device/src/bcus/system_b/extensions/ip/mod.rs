@@ -1,19 +1,114 @@
-//! IP link-layer state and `IpStackState` implementation for KNX/IP devices.
+//! IP extension: persistent config, runtime state, IpStackState, and augment.
+//!
+//! Everything related to KNX/IP extension state lives here:
+//!
+//! - [`PersistedIpConfig`] — serializable IP configuration
+//! - [`IpExtensionState`] — runtime state with interior mutability
+//! - [`ExtensionState`] impl — persistence bridge
+//! - [`IpStackState`] impl — IP property accessors
+//! - [`InterfaceObjectAugment`] impl — provides the IP Parameter Object
+//!   (Type 11) and handles all IP PIDs including tunneling
+//!
+//! The augment impl is in a separate submodule (`augment`) for readability,
+//! but it's all one concept: the IP extension.
+
+mod augment;
 
 use core::cell::{Cell, RefCell};
 use core::net::Ipv4Addr;
 
-use const_default::ConstDefault;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
-use crate::{
-    IpConfig, IpPlatform, IpPlatformConfig, IpStackState,
-    address::IndividualAddress,
-};
-use super::{LinkLayerState, SystemBDeviceState};
-use crate::bcus::system_b::PersistedIpConfig;
+use crate::bcus::system_b::{ExtensionConfig, ExtensionState, SystemBDeviceState};
+use crate::{IpConfig, IpPlatform, IpPlatformConfig, IpStackState, address::IndividualAddress};
 
 // ============================================================================
-// IP Link-Layer State
+// Persisted IP Config
+// ============================================================================
+
+/// Persisted IP configuration (for KNX/IP devices).
+///
+/// All IP-specific settings that can be configured via ETS or
+/// the IP Parameter Object. Implements [`ExtensionConfig`] so it
+/// can be used as the `E` parameter of
+/// [`PersistedState`](crate::bcus::system_b::PersistedState).
+///
+/// The const generic `N` is the maximum number of additional individual
+/// addresses (tunneling slots). Non-tunneling devices use the default
+/// `N = 0`, paying zero storage for addresses they never use.
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedIpConfig<const N: usize = 0> {
+    /// Friendly name for discovery (up to 30 bytes).
+    pub friendly_name: [u8; 30],
+
+    /// Length of the friendly name.
+    pub friendly_name_len: u8,
+
+    /// Configured (static) IP address.
+    pub configured_ip: [u8; 4],
+
+    /// Configured subnet mask.
+    pub configured_subnet: [u8; 4],
+
+    /// Configured default gateway.
+    pub configured_gateway: [u8; 4],
+
+    /// IP assignment method (bitfield: Manual=1, BootP=2, DHCP=4, AutoIP=8).
+    pub ip_assignment_method: u8,
+
+    /// Routing multicast address.
+    pub routing_multicast: [u8; 4],
+
+    /// Multicast TTL value.
+    pub ttl: u8,
+
+    /// Project installation ID.
+    pub project_installation_id: u16,
+
+    /// Additional individual addresses for tunneling-capable profiles.
+    #[serde_as(as = "[[_; 2]; N]")]
+    pub additional_individual_addresses: [[u8; 2]; N],
+
+    /// Number of valid entries in `additional_individual_addresses`.
+    pub additional_individual_addresses_len: u8,
+}
+
+impl<const N: usize> Default for PersistedIpConfig<N> {
+    fn default() -> Self {
+        Self {
+            friendly_name: [0; 30],
+            friendly_name_len: 0,
+            configured_ip: [0, 0, 0, 0],
+            configured_subnet: [255, 255, 255, 0],
+            configured_gateway: [0, 0, 0, 0],
+            ip_assignment_method: 0x04, // DHCP
+            routing_multicast: [224, 0, 23, 12],
+            ttl: 16,
+            project_installation_id: 0,
+            additional_individual_addresses: [[0; 2]; N],
+            additional_individual_addresses_len: 0,
+        }
+    }
+}
+
+impl<const N: usize> ExtensionConfig for PersistedIpConfig<N> {}
+
+impl<const N: usize> PersistedIpConfig<N> {
+    /// Get the configured IP address as an `Ipv4Addr`.
+    pub fn configured_ip_addr(&self) -> Ipv4Addr {
+        Ipv4Addr::from(self.configured_ip)
+    }
+
+    /// Get the routing multicast address as an `Ipv4Addr`.
+    pub fn routing_multicast_addr(&self) -> Ipv4Addr {
+        Ipv4Addr::from(self.routing_multicast)
+    }
+}
+
+// ============================================================================
+// Runtime State
 // ============================================================================
 
 /// Runtime state for KNX/IP-specific persistent configuration.
@@ -29,7 +124,12 @@ use crate::bcus::system_b::PersistedIpConfig;
 /// The const generic `N` is the maximum number of additional individual
 /// addresses (tunneling slots). Non-tunneling devices use the default
 /// `N = 0`, paying zero storage for addresses they never use.
-pub struct IpLinkLayerState<P: IpPlatform + IpPlatformConfig, const N: usize = 0> {
+///
+/// `IpExtensionState` implements:
+/// - [`ExtensionState`] — persistence (serialize/deserialize/factory reset)
+/// - [`IpStackState`] — IP property accessors for context traits
+/// - [`InterfaceObjectAugment`] — provides the IP Parameter Object (Type 11)
+pub struct IpExtensionState<P: IpPlatform + IpPlatformConfig, const N: usize = 0> {
     /// Platform for querying current network values and applying config.
     platform: P,
 
@@ -48,7 +148,7 @@ pub struct IpLinkLayerState<P: IpPlatform + IpPlatformConfig, const N: usize = 0
     additional_individual_addresses: RefCell<heapless::Vec<IndividualAddress, N>>,
 }
 
-impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpLinkLayerState<P, N> {
+impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpExtensionState<P, N> {
     /// Get the platform (for querying current network state).
     pub fn platform(&self) -> &P {
         &self.platform
@@ -99,7 +199,11 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpLinkLayerState<P, N> {
     }
 }
 
-impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> LinkLayerState for IpLinkLayerState<P, N> {
+// ============================================================================
+// ExtensionState
+// ============================================================================
+
+impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> ExtensionState for IpExtensionState<P, N> {
     type Config = PersistedIpConfig<N>;
 
     fn from_config(config: PersistedIpConfig<N>) -> Self {
@@ -155,10 +259,8 @@ impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> LinkLayerState 
 
 /// Type alias for KNX/IP device state.
 ///
-/// This is [`SystemBDeviceState`] specialized with [`IpLinkLayerState`]
-/// for KNX/IP devices. It provides all the base device state plus
-/// IP-specific configuration accessible through the `link_layer_state()`
-/// method and the [`IpStackState`] trait implementation.
+/// This is [`SystemBDeviceState`] specialized with [`IpExtensionState`]
+/// as the extension state for KNX/IP devices.
 ///
 /// # Generic Parameters
 ///
@@ -167,23 +269,6 @@ impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> LinkLayerState 
 /// - `Plat`: Platform type implementing [`IpPlatform`] for network queries
 /// - `N`: Maximum number of additional individual addresses (tunneling slots).
 ///   Non-tunneling devices use the default `N = 0`.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use zweidraehte_device::bcus::system_b::{
-///     IpSystemBDeviceState, StaticIdentity,
-/// };
-///
-/// const SERIAL: [u8; 6] = [0x00, 0xFA, 0xDE, 0xAD, 0xBE, 0xEF];
-/// let identity = StaticIdentity::new(SERIAL);
-/// // Non-tunneling device (N defaults to 0):
-/// let state: IpSystemBDeviceState<ADT, AST, COT, Params, MyPlatform> =
-///     IpSystemBDeviceState::new(&identity);
-/// // Tunneling device with 4 slots:
-/// let state: IpSystemBDeviceState<ADT, AST, COT, Params, MyPlatform, 4> =
-///     IpSystemBDeviceState::new(&identity);
-/// ```
 pub type IpSystemBDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
@@ -191,139 +276,115 @@ pub type IpSystemBDeviceState<
     P,
     Plat,
     const N: usize = 0,
-> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpLinkLayerState<Plat, N>>;
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpExtensionState<Plat, N>>;
 
 // ============================================================================
-// IpStackState Implementation for IP Devices
+// IpStackState — used by context traits via HasExtensionState
 // ============================================================================
 
-/// [`IpStackState`] is implemented for any [`SystemBDeviceState`] whose
-/// link-layer state is [`IpLinkLayerState`]. This means all IP-specific
-/// property reads/writes (configured IP, friendly name, etc.) route
-/// through the link-layer state.
-///
-/// The `mark_dirty()` calls on setters ensure changes are tracked
-/// for persistence.
-impl<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    P: ConstDefault,
-    Plat: IpPlatform + IpPlatformConfig + Default,
-    const N: usize,
-    const MAX_CONN: usize,
-> IpStackState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpLinkLayerState<Plat, N>, MAX_CONN>
-{
+impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpStackState for IpExtensionState<P, N> {
     fn current_ip_address(&self) -> Ipv4Addr {
-        self.link_layer_state.platform.current_ip_address()
+        self.platform.current_ip_address()
     }
 
     fn current_subnet_mask(&self) -> Ipv4Addr {
-        self.link_layer_state.platform.current_subnet_mask()
+        self.platform.current_subnet_mask()
     }
 
     fn current_default_gateway(&self) -> Ipv4Addr {
-        self.link_layer_state.platform.current_default_gateway()
+        self.platform.current_default_gateway()
     }
 
     fn mac_address(&self) -> [u8; 6] {
-        self.link_layer_state.platform.mac_address()
+        self.platform.mac_address()
     }
 
     fn current_ip_assignment_method(&self) -> u8 {
-        self.link_layer_state.platform.current_ip_assignment_method()
+        self.platform.current_ip_assignment_method()
     }
 
     fn ip_capabilities(&self) -> u8 {
-        self.link_layer_state.platform.ip_capabilities()
+        self.platform.ip_capabilities()
     }
 
     fn knxnetip_device_capabilities(&self) -> u16 {
-        self.link_layer_state.platform.knxnetip_device_capabilities()
+        self.platform.knxnetip_device_capabilities()
     }
 
     fn configured_ip_address(&self) -> Ipv4Addr {
-        self.link_layer_state.configured_ip.get()
+        self.configured_ip.get()
     }
 
     fn set_configured_ip_address(&self, addr: Ipv4Addr) {
-        self.link_layer_state.configured_ip.set(addr);
-        self.mark_dirty();
-        self.link_layer_state.apply_current_config();
+        self.configured_ip.set(addr);
+        self.apply_current_config();
     }
 
     fn configured_subnet_mask(&self) -> Ipv4Addr {
-        self.link_layer_state.configured_subnet.get()
+        self.configured_subnet.get()
     }
 
     fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
-        self.link_layer_state.configured_subnet.set(mask);
-        self.mark_dirty();
-        self.link_layer_state.apply_current_config();
+        self.configured_subnet.set(mask);
+        self.apply_current_config();
     }
 
     fn configured_default_gateway(&self) -> Ipv4Addr {
-        self.link_layer_state.configured_gateway.get()
+        self.configured_gateway.get()
     }
 
     fn set_configured_default_gateway(&self, gateway: Ipv4Addr) {
-        self.link_layer_state.configured_gateway.set(gateway);
-        self.mark_dirty();
-        self.link_layer_state.apply_current_config();
+        self.configured_gateway.set(gateway);
+        self.apply_current_config();
     }
 
     fn ip_assignment_method(&self) -> u8 {
-        self.link_layer_state.ip_assignment_method.get()
+        self.ip_assignment_method.get()
     }
 
     fn set_ip_assignment_method(&self, method: u8) {
-        self.link_layer_state.ip_assignment_method.set(method);
-        self.mark_dirty();
-        self.link_layer_state.apply_current_config();
+        self.ip_assignment_method.set(method);
+        self.apply_current_config();
     }
 
     fn routing_multicast_address(&self) -> Ipv4Addr {
-        self.link_layer_state.routing_multicast.get()
+        self.routing_multicast.get()
     }
 
     fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
-        self.link_layer_state.routing_multicast.set(addr);
-        self.mark_dirty();
+        self.routing_multicast.set(addr);
     }
 
     fn ttl(&self) -> u8 {
-        self.link_layer_state.ttl.get()
+        self.ttl.get()
     }
 
     fn set_ttl(&self, ttl: u8) {
-        self.link_layer_state.ttl.set(ttl);
-        self.mark_dirty();
+        self.ttl.set(ttl);
     }
 
     fn friendly_name_len(&self) -> usize {
-        self.link_layer_state.friendly_name_len.get()
+        self.friendly_name_len.get()
     }
 
     fn friendly_name(&self) -> [u8; 30] {
-        self.link_layer_state.friendly_name.get()
+        self.friendly_name.get()
     }
 
     fn set_friendly_name(&self, name: &[u8]) {
         let mut fname = [0u8; 30];
         let len = name.len().min(30);
         fname[..len].copy_from_slice(&name[..len]);
-        self.link_layer_state.friendly_name.set(fname);
-        self.link_layer_state.friendly_name_len.set(len);
-        self.mark_dirty();
+        self.friendly_name.set(fname);
+        self.friendly_name_len.set(len);
     }
 
     fn project_installation_id(&self) -> u16 {
-        self.link_layer_state.project_installation_id.get()
+        self.project_installation_id.get()
     }
 
     fn set_project_installation_id(&self, id: u16) {
-        self.link_layer_state.project_installation_id.set(id);
-        self.mark_dirty();
+        self.project_installation_id.set(id);
     }
 
     fn additional_individual_address_capacity(&self) -> usize {
@@ -331,7 +392,7 @@ impl<
     }
 
     fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize {
-        let stored = self.link_layer_state.additional_individual_addresses.borrow();
+        let stored = self.additional_individual_addresses.borrow();
         let count = stored.len().min(buf.len());
         buf[..count].copy_from_slice(&stored[..count]);
         count
@@ -345,8 +406,8 @@ impl<
         for &addr in addresses {
             vec.push(addr).map_err(|_| ())?;
         }
-        *self.link_layer_state.additional_individual_addresses.borrow_mut() = vec;
-        self.mark_dirty();
+        *self.additional_individual_addresses.borrow_mut() = vec;
         Ok(())
     }
 }
+

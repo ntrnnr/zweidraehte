@@ -27,8 +27,8 @@ use devices::light_switch::{
 };
 use zweidraehte_device::{
     bcus::system_b::{
-        DefaultKnxIpInterfaceObjects, IpSystemBDeviceState, SystemBIpDeviceDef,
-        SystemBMemoryMap, create_knxip_objects,
+        DefaultSystemBInterfaceObjects, IpExtensionState, IpSystemBDeviceState,
+        SystemBIpDeviceDef, SystemBMemoryMap, create_system_b_objects,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
@@ -82,7 +82,9 @@ impl StackDefinition for PicoWLightSwitch {
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
     type State = PicoWState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, PicoWState, EasterEggAugment>;
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
+        'a, PicoWState, (&'a IpExtensionState<EmbassyNetworkInfo>, EasterEggAugment),
+    >;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
@@ -90,7 +92,7 @@ impl StackDefinition for PicoWLightSwitch {
     where
         Self::State: 'a,
     {
-        create_knxip_objects::<Self, _, _>(state, &Self::memory_layout(), EasterEggAugment)
+        create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), (state.extension_state(), EasterEggAugment))
     }
 
     type LayerBuilder = InsecureIpDeviceBuilder;
@@ -336,7 +338,7 @@ async fn main(spawner: Spawner) {
     info!("MAC address: {:02x}", mac);
 
     // Initialize the global network context so EmbassyNetworkInfo::default()
-    // works during device state construction (IpLinkLayerState::from_config
+    // works during device state construction (IpExtensionState::from_config
     // calls P::default()).
     EmbassyNetworkInfo::init(stack, mac);
 

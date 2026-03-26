@@ -74,12 +74,14 @@
 //! ```
 
 mod device_state;
+mod extensions;
 mod memory_map;
 mod objects;
 mod storage;
 mod traits;
 
 pub use device_state::*;
+pub use extensions::*;
 pub use memory_map::*;
 pub use objects::*;
 pub use storage::*;

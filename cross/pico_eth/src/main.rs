@@ -89,7 +89,9 @@ impl StackDefinition for PicoEthLightSwitch {
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
     type State = PicoEthState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultKnxIpInterfaceObjects<'a, PicoEthState, EasterEggAugment>;
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
+        'a, PicoEthState, (&'a IpExtensionState<EmbassyNetworkInfo>, EasterEggAugment),
+    >;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
@@ -97,7 +99,7 @@ impl StackDefinition for PicoEthLightSwitch {
     where
         Self::State: 'a,
     {
-        create_knxip_objects::<Self, _, _>(state, &Self::memory_layout(), EasterEggAugment)
+        create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), (state.extension_state(), EasterEggAugment))
     }
 
     type LayerBuilder = InsecureIpDeviceBuilder;
@@ -441,7 +443,7 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     // Initialize the global network context so EmbassyNetworkInfo::default()
-    // works during device state construction (IpLinkLayerState::from_config
+    // works during device state construction (IpExtensionState::from_config
     // calls P::default()).
     EmbassyNetworkInfo::init(stack, mac_addr);
 

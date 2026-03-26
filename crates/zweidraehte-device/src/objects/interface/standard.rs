@@ -136,43 +136,18 @@ crate::define_interface_object! {
     }
 }
 
-/// Device information for creating a DeviceObject
-pub struct DeviceInfo {
-    /// Order information (10 bytes, manufacturer-specific)
-    pub order_info: [u8; 10],
-    /// Hardware type (6 bytes)
-    pub hardware_type: [u8; 6],
-    /// Firmware version (magic.version.revision encoded as KNXVersion)
-    pub version: KNXVersion,
-    /// Device descriptor (mask version, e.g., 0x07B0 for System B)
-    pub device_descriptor: u16,
-}
-
 impl<'a, S: StackState> DeviceObject<'a, S> {
-    /// Create a new device object with custom static values
+    /// Create a device object from a [`DeviceDescriptor`].
     ///
-    /// Serial number, manufacturer ID, and max APDU length are read dynamically
-    /// from the StackState.
-    pub fn with_info(state: &'a S, info: &DeviceInfo) -> Self {
+    /// Populates hardware type, mask version, and other static properties
+    /// from the descriptor. Serial number, manufacturer ID, and max APDU
+    /// length are read dynamically from the `StackState`.
+    pub fn from_descriptor(state: &'a S, desc: &crate::ets::DeviceDescriptor) -> Self {
         let mut obj = Self::new(state);
-        obj.order_info = PDT_Generic10::with_value(info.order_info);
-        obj.version = PDT_Version::with_value(info.version);
-        obj.hardware_type = PDT_Generic06::with_value(info.hardware_type);
-        obj.device_descriptor = PDT_UnsignedInt::with_value(info.device_descriptor);
+        obj.hardware_type = PDT_Generic06::with_value(desc.hardware_type);
+        obj.version = PDT_Version::with_value(KNXVersion::from_triplet(0, 0, 1));
+        obj.device_descriptor = PDT_UnsignedInt::with_value(desc.mask_version.as_u16());
         obj
-    }
-
-    /// Create a new device object with basic values (legacy API)
-    ///
-    /// Serial number, manufacturer ID, and max APDU length are read dynamically
-    /// from the StackState.
-    pub fn with_values(state: &'a S, hardware_type_val: [u8; 6]) -> Self {
-        Self::with_info(state, &DeviceInfo {
-            order_info: [0; 10],
-            hardware_type: hardware_type_val,
-            version: KNXVersion::from_triplet(0, 0, 1),
-            device_descriptor: 0x07B0, // System B
-        })
     }
 }
 

@@ -166,7 +166,6 @@ pub trait SystemBIpDeviceDef: Copy + 'static {
     /// static contexts when const generics are derived from trait-associated
     /// constants.
     type State: crate::StackState
-        + crate::IpStackState
         + crate::objects::interface::HasRoutingCount
         + crate::objects::tables::HasAddressTable<ADT: crate::objects::tables::HasLoadStateMachine>
         + crate::objects::tables::HasAssociationTable<AST: crate::objects::tables::HasLoadStateMachine>
