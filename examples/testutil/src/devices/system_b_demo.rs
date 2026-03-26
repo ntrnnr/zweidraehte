@@ -58,8 +58,8 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::bcus::system_b::{
-    DefaultSystemBInterfaceObjects, IpExtensionState, IpSystemBDeviceState, SystemBIpDeviceDef,
-    SystemBMemoryMap, create_system_b_objects,
+    DefaultSystemBInterfaceObjects, IpExtensionState, IpSystemBDeviceState, MemoryLayout, SystemBMemoryMap,
+    create_system_b_objects,
 };
 use zweidraehte_device::dpt::*;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceTcp};
@@ -547,15 +547,18 @@ pub type DemoState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoPara
 #[derive(Debug, Clone, Copy)]
 pub struct DemoStack;
 
-impl SystemBIpDeviceDef for DemoStack {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const INTERFACE_NAME: &'static str = INTERFACE_NAME;
+impl DemoStack {
+    pub fn memory_layout() -> MemoryLayout {
+        MemoryLayout::from_descriptor(
+            SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
+            &DEVICE_DESCRIPTOR,
+            core::mem::size_of::<DemoParams>(),
+        )
+    }
 
-    type P = DemoParams;
-    type CO = comm_objs::DemoComObjects;
-    type Transport = LinuxIpTransport;
-    type Platform = MockIpPlatform;
-    type State = DemoState;
+    pub fn memory_map() -> SystemBMemoryMap {
+        SystemBMemoryMap::new(Self::memory_layout())
+    }
 }
 
 impl StackDefinition for DemoStack {
@@ -567,9 +570,7 @@ impl StackDefinition for DemoStack {
     type LLB = KnxNetIpBuilder<LinuxIpTransport, KnxIpDeviceTcp, 2>;
     type State = DemoState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
-        'a, DemoState, &'a IpExtensionState<MockIpPlatform>,
-    >;
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, DemoState, &'a IpExtensionState<MockIpPlatform>>;
 
     fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
     where

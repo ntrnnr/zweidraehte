@@ -66,28 +66,26 @@ type PicoTp1State = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwi
 type Storage = RpFlashStorage<PicoTp1State, FlashIdentityData>;
 
 // ----------------------------------------------------------------------------
-// SystemBTpDeviceDef + StackDefinition
+// StackDefinition
 // ----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
 struct PicoTp1LightSwitch;
 
-impl SystemBTpDeviceDef for PicoTp1LightSwitch {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+impl PicoTp1LightSwitch {
+    fn memory_layout() -> MemoryLayout {
+        MemoryLayout::from_descriptor(SystemBMemoryMap::DEFAULT_BASE_ADDRESS, &DEVICE_DESCRIPTOR, core::mem::size_of::<LightSwitchParams>())
+    }
 
-    // The NCN5120 supports extended frames (248 bytes from its 256-byte
-    // buffer). Allocate compile-time buffers for the full extended range.
-    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
-
-    type P = LightSwitchParams;
-    type CO = LightSwitchComObjects;
-    type UartTx = DirectUartTx;
-    type UartRx = DirectUartRx;
-    type State = PicoTp1State;
+    fn memory_map() -> SystemBMemoryMap {
+        SystemBMemoryMap::new(Self::memory_layout())
+    }
 }
 
 impl StackDefinition for PicoTp1LightSwitch {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    // The NCN5120 supports extended frames (248 bytes from its 256-byte
+    // buffer). Allocate compile-time buffers for the full extended range.
     const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
     const TL_STYLE: TlStyle = TlStyle::Style1;
 

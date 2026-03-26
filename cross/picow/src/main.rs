@@ -28,7 +28,7 @@ use devices::light_switch::{
 use zweidraehte_device::{
     bcus::system_b::{
         DefaultSystemBInterfaceObjects, IpExtensionState, IpSystemBDeviceState,
-        SystemBIpDeviceDef, SystemBMemoryMap, create_system_b_objects,
+        MemoryLayout, SystemBMemoryMap, create_system_b_objects,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
@@ -56,21 +56,20 @@ type PicoWState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitch
 type Storage = RpFlashStorage<PicoWState, rp_common::FlashIdentityData>;
 
 // ----------------------------------------------------------------------------
-// SystemBIpDeviceDef + StackDefinition
+// StackDefinition
 // ----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
 struct PicoWLightSwitch;
 
-impl SystemBIpDeviceDef for PicoWLightSwitch {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const INTERFACE_NAME: &'static str = "wlan0";
+impl PicoWLightSwitch {
+    fn memory_layout() -> MemoryLayout {
+        MemoryLayout::from_descriptor(SystemBMemoryMap::DEFAULT_BASE_ADDRESS, &DEVICE_DESCRIPTOR, core::mem::size_of::<LightSwitchParams>())
+    }
 
-    type P = LightSwitchParams;
-    type CO = LightSwitchComObjects;
-    type Transport = EmbassyIpTransport;
-    type Platform = EmbassyNetworkInfo;
-    type State = PicoWState;
+    fn memory_map() -> SystemBMemoryMap {
+        SystemBMemoryMap::new(Self::memory_layout())
+    }
 }
 
 impl StackDefinition for PicoWLightSwitch {

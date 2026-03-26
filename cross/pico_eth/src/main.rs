@@ -63,21 +63,20 @@ type PicoEthState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwit
 type Storage = RpFlashStorage<PicoEthState, FlashIdentityData>;
 
 // ----------------------------------------------------------------------------
-// SystemBIpDeviceDef + StackDefinition
+// StackDefinition
 // ----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
 struct PicoEthLightSwitch;
 
-impl SystemBIpDeviceDef for PicoEthLightSwitch {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const INTERFACE_NAME: &'static str = "eth0";
+impl PicoEthLightSwitch {
+    fn memory_layout() -> MemoryLayout {
+        MemoryLayout::from_descriptor(SystemBMemoryMap::DEFAULT_BASE_ADDRESS, &DEVICE_DESCRIPTOR, core::mem::size_of::<LightSwitchParams>())
+    }
 
-    type P = LightSwitchParams;
-    type CO = LightSwitchComObjects;
-    type Transport = EmbassyIpTransport;
-    type Platform = EmbassyNetworkInfo;
-    type State = PicoEthState;
+    fn memory_map() -> SystemBMemoryMap {
+        SystemBMemoryMap::new(Self::memory_layout())
+    }
 }
 
 impl StackDefinition for PicoEthLightSwitch {

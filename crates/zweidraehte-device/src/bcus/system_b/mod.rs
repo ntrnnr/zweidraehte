@@ -39,50 +39,21 @@
 //! | 5 | PEI Program Object | PEI Load + Run state machines |
 //! | 6 | IP Parameter Object | IP config (57B0 only) |
 //!
-//! # Example
+//! # Device Definition
 //!
-//! ```rust,ignore
-//! use zweidraehte_device::{
-//!     bcus::system_b::KnxIpDevice,
-//!     dpt::DPT_Switch,
-//!     ets::EtsComObjects,
-//!     objects::comm::ComObject,
-//! };
-//!
-//! // Define communication objects
-//! pub mod co {
-//!     use super::*;
-//!     use zweidraehte_device::objects::comm::{ComObjectIndex, ComObjects, ComObjectInfo, ComObjectInfoMut};
-//!
-//!     #[derive(EtsComObjects)]
-//!     pub struct SwitchObjects {
-//!         #[ets(index = 1, display = "Input", function = "Switch input")]
-//!         pub input: ComObject<DPT_Switch>,
-//!         #[ets(index = 2, display = "Output", function = "Switch output")]
-//!         pub output: ComObject<DPT_Switch>,
-//!     }
-//! }
-//!
-//! // Define device with compile-time constants
-//! #[derive(Copy, Clone)]
-//! pub struct MySwitchDevice;
-//!
-//! impl KnxIpDevice for MySwitchDevice {
-//!     const INTERFACE_NAME: &'static str = "eth0";
-//!     type Platform = MyPlatform;
-//! }
-//! ```
+//! All device-specific configuration is done via
+//! [`StackDefinition`](crate::StackDefinition). For System B devices, define
+//! `memory_layout()` / `memory_map()` as inherent methods using
+//! [`MemoryLayout::from_descriptor`] and [`SystemBMemoryMap::new`].
 
 mod device_state;
 mod extensions;
 mod memory_map;
 mod objects;
 mod storage;
-mod traits;
 
 pub use device_state::*;
 pub use extensions::*;
 pub use memory_map::*;
 pub use objects::*;
 pub use storage::*;
-pub use traits::*;

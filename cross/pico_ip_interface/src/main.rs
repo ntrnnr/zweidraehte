@@ -85,10 +85,9 @@ type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 // StackDefinition
 // ================================================================================
 
-// The IP Interface doesn't fit neatly into either `SystemBIpDeviceDef` or
-// `SystemBTpDeviceDef` — it needs both TPUART (bus) and KNX/IP (tunneling).
-// We implement `StackDefinition` directly and provide the memory helpers
-// that the convenience traits would normally supply.
+// The IP Interface needs both TPUART (bus) and KNX/IP (tunneling), so it
+// uses `IpInterfaceLinkLayerBuilder` instead of the standard single-medium
+// link layer builders.
 
 #[derive(Debug, Clone, Copy)]
 struct PicoIpInterface;
