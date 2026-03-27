@@ -58,8 +58,8 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::bcus::system_b::{
-    DefaultSystemBInterfaceObjects, IpExtensionState, IpSystemBDeviceState, MemoryLayout, SystemBMemoryMap,
-    create_system_b_objects,
+    DefaultSystemBInterfaceObjects, IpExtensionState, IpSystemBDeviceState, SystemBMemoryMap,
+    SystemBStackDefinition, create_system_b_objects,
 };
 use zweidraehte_device::dpt::*;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceTcp};
@@ -547,19 +547,7 @@ pub type DemoState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoPara
 #[derive(Debug, Clone, Copy)]
 pub struct DemoStack;
 
-impl DemoStack {
-    pub fn memory_layout() -> MemoryLayout {
-        MemoryLayout::from_descriptor(
-            SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-            &DEVICE_DESCRIPTOR,
-            core::mem::size_of::<DemoParams>(),
-        )
-    }
-
-    pub fn memory_map() -> SystemBMemoryMap {
-        SystemBMemoryMap::new(Self::memory_layout())
-    }
-}
+impl SystemBStackDefinition for DemoStack {}
 
 impl StackDefinition for DemoStack {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;

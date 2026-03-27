@@ -42,16 +42,18 @@
 //! # Device Definition
 //!
 //! All device-specific configuration is done via
-//! [`StackDefinition`](crate::StackDefinition). For System B devices, define
-//! `memory_layout()` / `memory_map()` as inherent methods using
-//! [`MemoryLayout::from_descriptor`] and [`SystemBMemoryMap::new`].
+//! [`StackDefinition`](crate::StackDefinition). For System B devices using
+//! [`SystemBMemoryMap`], implement [`SystemBStackDefinition`] to get
+//! `memory_layout()` and `memory_map()` for free.
 
+mod definition;
 mod device_state;
 mod extensions;
 mod memory_map;
 mod objects;
 mod storage;
 
+pub use definition::*;
 pub use device_state::*;
 pub use extensions::*;
 pub use memory_map::*;

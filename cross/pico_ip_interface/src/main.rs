@@ -92,19 +92,7 @@ type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoIpInterface;
 
-impl PicoIpInterface {
-    fn memory_layout() -> MemoryLayout {
-        MemoryLayout::from_descriptor(
-            SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-            &DEVICE_DESCRIPTOR,
-            core::mem::size_of::<IpInterfaceParams>(),
-        )
-    }
-
-    fn memory_map() -> SystemBMemoryMap {
-        SystemBMemoryMap::new(Self::memory_layout())
-    }
-}
+impl SystemBStackDefinition for PicoIpInterface {}
 
 impl StackDefinition for PicoIpInterface {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;

@@ -14,8 +14,8 @@ use core::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::{
-    DefaultSystemBInterfaceObjects, IpExtensionState, IpSystemBDeviceState, MemoryLayout, SystemBMemoryMap,
-    create_system_b_objects,
+    DefaultSystemBInterfaceObjects, IpExtensionState, IpSystemBDeviceState, SystemBMemoryMap,
+    SystemBStackDefinition, create_system_b_objects,
 };
 use zweidraehte_device::dpt::*;
 use zweidraehte_device::ets::ets_range_enum;
@@ -3218,19 +3218,7 @@ pub type MdtState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MdtParams
 #[derive(Debug, Clone, Copy)]
 pub struct MdtStack;
 
-impl MdtStack {
-    pub fn memory_layout() -> MemoryLayout {
-        MemoryLayout::from_descriptor(
-            SystemBMemoryMap::DEFAULT_BASE_ADDRESS,
-            &DEVICE_DESCRIPTOR,
-            core::mem::size_of::<MdtParams>(),
-        )
-    }
-
-    pub fn memory_map() -> SystemBMemoryMap {
-        SystemBMemoryMap::new(Self::memory_layout())
-    }
-}
+impl SystemBStackDefinition for MdtStack {}
 
 impl StackDefinition for MdtStack {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;

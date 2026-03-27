@@ -16,6 +16,7 @@ use static_cell::StaticCell;
 use zweidraehte_device::prelude::*;
 use std::net::SocketAddrV4;
 use zweidraehte_device::{
+    bcus::system_b::SystemBStackDefinition,
     layers::linklayers::knxip::KnxNetIpBuilder,
     restart::EraseCode,
 };

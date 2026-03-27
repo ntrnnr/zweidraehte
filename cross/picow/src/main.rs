@@ -28,7 +28,7 @@ use devices::light_switch::{
 use zweidraehte_device::{
     bcus::system_b::{
         DefaultSystemBInterfaceObjects, IpExtensionState, IpSystemBDeviceState,
-        MemoryLayout, SystemBMemoryMap, create_system_b_objects,
+        SystemBMemoryMap, SystemBStackDefinition, create_system_b_objects,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
@@ -62,15 +62,7 @@ type Storage = RpFlashStorage<PicoWState, rp_common::FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoWLightSwitch;
 
-impl PicoWLightSwitch {
-    fn memory_layout() -> MemoryLayout {
-        MemoryLayout::from_descriptor(SystemBMemoryMap::DEFAULT_BASE_ADDRESS, &DEVICE_DESCRIPTOR, core::mem::size_of::<LightSwitchParams>())
-    }
-
-    fn memory_map() -> SystemBMemoryMap {
-        SystemBMemoryMap::new(Self::memory_layout())
-    }
-}
+impl SystemBStackDefinition for PicoWLightSwitch {}
 
 impl StackDefinition for PicoWLightSwitch {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;

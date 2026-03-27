@@ -72,15 +72,7 @@ type Storage = RpFlashStorage<PicoTp1State, FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoTp1LightSwitch;
 
-impl PicoTp1LightSwitch {
-    fn memory_layout() -> MemoryLayout {
-        MemoryLayout::from_descriptor(SystemBMemoryMap::DEFAULT_BASE_ADDRESS, &DEVICE_DESCRIPTOR, core::mem::size_of::<LightSwitchParams>())
-    }
-
-    fn memory_map() -> SystemBMemoryMap {
-        SystemBMemoryMap::new(Self::memory_layout())
-    }
-}
+impl SystemBStackDefinition for PicoTp1LightSwitch {}
 
 impl StackDefinition for PicoTp1LightSwitch {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
