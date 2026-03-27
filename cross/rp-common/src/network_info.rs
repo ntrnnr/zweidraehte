@@ -134,7 +134,7 @@ fn prefix_to_mask(prefix_len: u8) -> Ipv4Addr {
 }
 
 /// Convert a subnet mask to a CIDR prefix length.
-fn mask_to_prefix(mask: Ipv4Addr) -> u8 {
+pub fn mask_to_prefix(mask: Ipv4Addr) -> u8 {
     let bits = u32::from_be_bytes(mask.octets());
     bits.leading_ones() as u8
 }

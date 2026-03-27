@@ -115,6 +115,42 @@ impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE> {
     }
 }
 
+impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE>
+where
+    S: HasPersistedState,
+    S::Persisted: Serialize + for<'de> Deserialize<'de>,
+{
+    /// Read and deserialize the persisted state from flash without
+    /// constructing the runtime state.
+    ///
+    /// This is useful for inspecting persisted configuration (e.g., the
+    /// IP assignment method) before the platform layer is fully
+    /// initialized. Call [`DeviceStorage::load()`] for the normal boot
+    /// path that also constructs the runtime state.
+    pub fn load_persisted(&mut self) -> Result<Option<S::Persisted>, FlashError> {
+        let mut region = [0u8; STORAGE_SIZE];
+        self.flash.blocking_read(Self::STORAGE_OFFSET, &mut region).map_err(|_| FlashError::ReadFailed)?;
+
+        if region[0..4] != CONFIG_MAGIC {
+            return Ok(None);
+        }
+
+        let len = u16::from_le_bytes([region[4], region[5]]) as usize;
+        if len == 0 || CONFIG_HEADER_SIZE + len > region.len() {
+            return Ok(None);
+        }
+
+        let payload = &region[CONFIG_HEADER_SIZE..CONFIG_HEADER_SIZE + len];
+        match postcard::from_bytes::<S::Persisted>(payload) {
+            Ok(persisted) => Ok(Some(persisted)),
+            Err(_) => {
+                defmt::warn!("Flash storage: postcard deserialization failed, returning None");
+                Ok(None)
+            }
+        }
+    }
+}
+
 impl<S, I, const STORAGE_SIZE: usize> DeviceStorage for RpFlashStorage<S, I, STORAGE_SIZE>
 where
     S: HasPersistedState,
@@ -130,31 +166,12 @@ where
     }
 
     fn load(&mut self) -> Result<Option<S>, Self::Error> {
-        let mut region = [0u8; STORAGE_SIZE];
-        self.flash.blocking_read(Self::STORAGE_OFFSET, &mut region).map_err(|_| FlashError::ReadFailed)?;
-
-        // Check magic bytes.
-        if region[0..4] != CONFIG_MAGIC {
-            return Ok(None);
-        }
-
-        // Read payload length (little-endian u16).
-        let len = u16::from_le_bytes([region[4], region[5]]) as usize;
-        if len == 0 || CONFIG_HEADER_SIZE + len > region.len() {
-            return Ok(None);
-        }
-
-        // Deserialize the persisted form, then convert to runtime state.
-        let payload = &region[CONFIG_HEADER_SIZE..CONFIG_HEADER_SIZE + len];
-        match postcard::from_bytes::<S::Persisted>(payload) {
-            Ok(persisted) => {
+        match self.load_persisted()? {
+            Some(persisted) => {
                 let state = S::from_persisted(&self.identity, persisted);
                 Ok(Some(state))
             }
-            Err(_) => {
-                defmt::warn!("Flash storage: postcard deserialization failed, returning None");
-                Ok(None)
-            }
+            None => Ok(None),
         }
     }
 

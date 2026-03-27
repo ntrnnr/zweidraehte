@@ -143,6 +143,89 @@ impl IndividualAddressSerialNumberWrite {
 }
 
 // ============================================================================
+// DomainAddressSerialNumber (Read / Response / Write)
+// ============================================================================
+
+/// Parser for `A_DomainAddressSerialNumber_Read`.
+///
+/// Wire format: APCI(2) + serial(6).
+pub struct DomainAddressSerialNumberRead;
+
+impl DomainAddressSerialNumberRead {
+    pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 8;
+
+    /// Extract the serial number (6 bytes) from the buffer.
+    pub fn serial_number(buf: &[u8]) -> Option<&[u8]> {
+        if buf.len() < Self::MIN_MSG_LEN {
+            return None;
+        }
+        Some(&buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8])
+    }
+}
+
+/// Writer for `A_DomainAddressSerialNumber_Response`.
+///
+/// Wire format: APCI(2) + serial(6) + domain_address(N).
+/// N depends on the medium: 0 for TP1, 4 for IP (multicast address), 6 for RF.
+pub struct DomainAddressSerialNumberResponse;
+
+impl DomainAddressSerialNumberResponse {
+    /// Response length with no domain address (TP1 / minimal).
+    pub const MSG_LEN_NO_DOA: usize = offsets::MSG_APCI + 8;
+    /// Response length with 4-byte domain address (IP multicast).
+    pub const MSG_LEN_IP: usize = offsets::MSG_APCI + 12;
+
+    /// Write serial number into the response buffer.
+    pub fn write_serial(buf: &mut [u8], serial: &[u8; 6]) {
+        buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8].copy_from_slice(serial);
+    }
+
+    /// Write domain address into the response buffer (after the serial number).
+    pub fn write_domain_address(buf: &mut [u8], doa: &[u8]) {
+        let start = offsets::MSG_APCI + 8;
+        buf[start..start + doa.len()].copy_from_slice(doa);
+    }
+}
+
+/// Parser for `A_DomainAddressSerialNumber_Write`.
+///
+/// Wire format: APCI(2) + serial(6) + domain_address(N).
+///
+/// The domain address length depends on the medium:
+/// - 2 octets: PL110
+/// - 4 octets: KNX/IP (routing multicast address)
+/// - 6 octets: RF
+/// - 21 octets: KNX/IP Secure (multicast + security version + backbone key)
+///
+/// Note: this service does NOT carry a new individual address. Address
+/// assignment uses `A_IndividualAddressSerialNumber_Write` instead.
+pub struct DomainAddressSerialNumberWrite;
+
+impl DomainAddressSerialNumberWrite {
+    /// Minimum length: APCI(2) + serial(6) = 8 bytes past MSG_APCI.
+    pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 8;
+
+    /// Extract the serial number (6 bytes) from the buffer.
+    pub fn serial_number(buf: &[u8]) -> Option<&[u8]> {
+        if buf.len() < Self::MIN_MSG_LEN {
+            return None;
+        }
+        Some(&buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8])
+    }
+
+    /// Extract the domain address (variable length, starting after serial).
+    /// Returns an empty slice if no domain address is present.
+    pub fn domain_address(buf: &[u8]) -> &[u8] {
+        let start = offsets::MSG_APCI + 8;
+        if buf.len() <= start {
+            &[]
+        } else {
+            &buf[start..buf.len()]
+        }
+    }
+}
+
+// ============================================================================
 // ADC (Read / Response)
 // ============================================================================
 

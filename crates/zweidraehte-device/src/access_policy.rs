@@ -71,6 +71,15 @@ const fn required_access_level(apci: ApciCode) -> Option<u8> {
         ApciCode::IndividualAddressWrite
         | ApciCode::IndividualAddressSerialNumberWrite => Some(3),
 
+        // Domain address services: unrestricted at service level. Protection
+        // via serial number match (for SerialNumber variants) or programming
+        // mode (for plain DomainAddress variants) in the handler.
+        ApciCode::DomainAddressRead
+        | ApciCode::DomainAddressWrite
+        | ApciCode::DomainAddressResponse
+        | ApciCode::DomainAddressSerialNumberRead
+        | ApciCode::DomainAddressSerialNumberWrite => Some(3),
+
         // Property services: per-property read/write level checks in handler.
         ApciCode::PropertyDescriptionRead
         | ApciCode::PropertyValueRead

@@ -3238,6 +3238,7 @@ impl StackDefinition for MdtStack {
         create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), state.extension_state())
     }
 
+    type AlExtension = zweidraehte_device::layers::al_ext_domain_addr::DomainAddressExtension;
     type LayerBuilder = InsecureIpDeviceBuilder;
 }
 

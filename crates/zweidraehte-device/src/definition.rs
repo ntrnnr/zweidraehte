@@ -207,6 +207,16 @@ pub trait StackDefinition: Copy {
     where
         Self::State: 'a;
 
+    /// Application layer service extension.
+    ///
+    /// Allows devices to handle APCI codes that are not part of the core
+    /// AL dispatch. The default `()` handles nothing (zero overhead).
+    /// Extensions compose via tuples: `type AlExtension = (A, B);`.
+    ///
+    /// Use [`DomainAddressExtension`](crate::layers::al_ext_domain_addr::DomainAddressExtension)
+    /// for KNX/IP devices that need `A_DomainAddressSerialNumber_*` services.
+    type AlExtension: crate::layers::al_extension::AlServiceExtension<Self> + Default = ();
+
     /// Layer stack builder that handles channel creation, layer construction,
     /// and link-layer endpoint wiring.
     ///

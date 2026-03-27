@@ -141,6 +141,8 @@ pub trait LinkLayerBuilder<CTX>: LinkLayerBuilderBase {
     ) -> impl core::future::Future<Output = !> + 'a;
 }
 
+pub mod al_ext_domain_addr;
+pub mod al_extension;
 pub mod application;
 pub mod linklayers;
 pub mod network;

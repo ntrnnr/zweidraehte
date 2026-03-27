@@ -198,6 +198,14 @@ create_protocol_enum!(
         IndividualAddressSerialNumberResponse,  0xdd,   "A_IndividualAddressSerialNumber_Response";
         IndividualAddressSerialNumberWrite,     0xde,   "A_IndividualAddressSerialNumber_Write";
 
+        DomainAddressWrite,                     0xe0,   "A_DomainAddress_Write";
+        DomainAddressRead,                      0xe1,   "A_DomainAddress_Read";
+        DomainAddressResponse,                  0xe2,   "A_DomainAddress_Response";
+
+        DomainAddressSerialNumberRead,          0xec,   "A_DomainAddressSerialNumber_Read";
+        DomainAddressSerialNumberResponse,      0xed,   "A_DomainAddressSerialNumber_Response";
+        DomainAddressSerialNumberWrite,         0xee,   "A_DomainAddressSerialNumber_Write";
+
         Empty,                      0,      "<Empty>";
         _,                                  "Unknown APCI code 0x{:x}";
     }

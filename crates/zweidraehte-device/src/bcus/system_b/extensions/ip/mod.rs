@@ -108,6 +108,32 @@ impl<const N: usize> PersistedIpConfig<N> {
 }
 
 // ============================================================================
+// IP Assignment Result
+// ============================================================================
+
+/// Outcome of the IP assignment procedure
+/// ([`IpExtensionState::resolve_ip_assignment()`]).
+///
+/// Returned so the caller (typically the device boot sequence) can log
+/// or react to what happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpAssignmentResult {
+    /// Static IP was applied from persisted config.
+    StaticApplied,
+
+    /// DHCP is active (was already running as boot default, no change).
+    DhcpActive,
+
+    /// Configured static IP was invalid (0.0.0.0 address or subnet),
+    /// fell back to DHCP (boot default).
+    StaticInvalidFallbackDhcp,
+
+    /// No supported assignment method configured. The raw bitfield value
+    /// is included for diagnostics.
+    Unsupported(u8),
+}
+
+// ============================================================================
 // Runtime State
 // ============================================================================
 
@@ -177,12 +203,14 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpExtensionState<P, N> {
         }
     }
 
-    /// Apply the current IP configuration to the platform's network stack.
+    /// Push the current configured IP/subnet/gateway to the platform.
     ///
-    /// Called after loading config from storage or when ETS writes IP
-    /// configuration properties. On embedded platforms this switches
-    /// between DHCP and static IP. On Linux this is a no-op.
-    pub fn apply_current_config(&self) {
+    /// This is a low-level helper used internally by
+    /// [`resolve_ip_assignment()`](Self::resolve_ip_assignment). Prefer
+    /// calling `resolve_ip_assignment()` at boot — it validates the
+    /// persisted config and follows the KNX IP assignment procedure
+    /// before deciding whether to apply.
+    fn apply_current_config(&self) {
         let config = IpConfig {
             assignment_method: self.ip_assignment_method.get(),
             address: self.configured_ip.get(),
@@ -196,6 +224,71 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpExtensionState<P, N> {
             #[cfg(feature = "defmt")]
             defmt::error!("Failed to apply IP config: {}", defmt::Debug2Format(&e));
         }
+    }
+
+    /// Run the KNX IP assignment procedure (KNX spec Core 8.5, Figure 42).
+    ///
+    /// Examines the persisted `ip_assignment_method` bitfield and applies
+    /// the appropriate configuration to the platform. Call this once at
+    /// boot after loading persisted state from storage.
+    ///
+    /// # IP Assignment Method Bitfield
+    ///
+    /// | Bit | Value | Method               |
+    /// |-----|-------|----------------------|
+    /// |  0  | 0x01  | Manual (static IP)   |
+    /// |  1  | 0x02  | BootP                |
+    /// |  2  | 0x04  | DHCP                 |
+    /// |  3  | 0x08  | AutoIP (RFC 3927)    |
+    ///
+    /// # Assignment Procedure
+    ///
+    /// The full spec procedure includes DHCP timeout detection and AutoIP
+    /// fallback. This implementation handles the common cases synchronously:
+    ///
+    /// 1. **Manual bit set + valid address/subnet** → apply static config.
+    /// 2. **Manual bit set + invalid address** → fall back to DHCP.
+    /// 3. **DHCP bit set (no Manual)** → DHCP is already the boot default.
+    /// 4. **Other** → unsupported, stays on whatever is running.
+    ///
+    /// The async DHCP timeout → AutoIP fallback path (spec steps 4-5, 8-9)
+    /// is not yet implemented. AutoIP requires ARP probing which embassy-net
+    /// does not support natively.
+    pub fn resolve_ip_assignment(&self) -> IpAssignmentResult {
+        let method = self.ip_assignment_method.get();
+
+        // ====================================================================
+        // Manual/static takes priority when its bit is set.
+        // ====================================================================
+        if method & 0x01 != 0 {
+            let addr = self.configured_ip.get();
+            let mask = self.configured_subnet.get();
+
+            if addr.is_unspecified() || mask.is_unspecified() {
+                // Static config is incomplete. Per the spec, if DHCP is also
+                // enabled we try DHCP (already the boot default). Without
+                // DHCP the spec says to try AutoIP, but that's not supported
+                // yet — so we fall back to DHCP regardless.
+                // TODO: AutoIP fallback (spec steps 4-5).
+                return IpAssignmentResult::StaticInvalidFallbackDhcp;
+            }
+
+            // Valid static config — apply it to the platform.
+            self.apply_current_config();
+            return IpAssignmentResult::StaticApplied;
+        }
+
+        // ====================================================================
+        // No Manual bit. DHCP is the boot default — nothing to change.
+        // ====================================================================
+        if method & 0x04 != 0 {
+            return IpAssignmentResult::DhcpActive;
+        }
+
+        // TODO: BootP (0x02) — not supported.
+        // TODO: AutoIP (0x08) as primary method — needs embassy-net link-local.
+
+        IpAssignmentResult::Unsupported(method)
     }
 }
 
@@ -216,7 +309,15 @@ impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> ExtensionState 
             let _ = additional.push(IndividualAddress::from_bytes(raw));
         }
 
-        let state = Self {
+        // Restore field values from the persisted config but do NOT call
+        // apply_current_config() here. The caller is responsible for applying
+        // the IP config to the platform at the appropriate time — typically
+        // only when the assignment method is Manual/static. Applying during
+        // from_config() would overwrite a DHCP lease that was already acquired
+        // before state was loaded from flash (common on embedded platforms
+        // where DHCP runs during hardware init, before persisted state is
+        // deserialized).
+        Self {
             platform: P::default(),
             friendly_name: Cell::new(config.friendly_name),
             friendly_name_len: Cell::new(config.friendly_name_len as usize),
@@ -228,10 +329,7 @@ impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> ExtensionState 
             ttl: Cell::new(config.ttl),
             project_installation_id: Cell::new(config.project_installation_id),
             additional_individual_addresses: RefCell::new(additional),
-        };
-        // Apply the restored config to the platform's network stack.
-        state.apply_current_config();
-        state
+        }
     }
 
     fn to_config(&self) -> PersistedIpConfig<N> {
@@ -317,7 +415,6 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpStackState for IpExtens
 
     fn set_configured_ip_address(&self, addr: Ipv4Addr) {
         self.configured_ip.set(addr);
-        self.apply_current_config();
     }
 
     fn configured_subnet_mask(&self) -> Ipv4Addr {
@@ -326,7 +423,6 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpStackState for IpExtens
 
     fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
         self.configured_subnet.set(mask);
-        self.apply_current_config();
     }
 
     fn configured_default_gateway(&self) -> Ipv4Addr {
@@ -335,7 +431,6 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpStackState for IpExtens
 
     fn set_configured_default_gateway(&self, gateway: Ipv4Addr) {
         self.configured_gateway.set(gateway);
-        self.apply_current_config();
     }
 
     fn ip_assignment_method(&self) -> u8 {
@@ -344,7 +439,6 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpStackState for IpExtens
 
     fn set_ip_assignment_method(&self, method: u8) {
         self.ip_assignment_method.set(method);
-        self.apply_current_config();
     }
 
     fn routing_multicast_address(&self) -> Ipv4Addr {
@@ -408,6 +502,31 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpStackState for IpExtens
         }
         *self.additional_individual_addresses.borrow_mut() = vec;
         Ok(())
+    }
+}
+
+// ============================================================================
+// HasDomainAddress — IP domain address is the routing multicast address
+// ============================================================================
+
+impl<P: IpPlatform + IpPlatformConfig, const N: usize> crate::state::HasDomainAddress
+    for IpExtensionState<P, N>
+{
+    /// KNX/IP domain address is 4 bytes (IPv4 routing multicast address).
+    ///
+    /// Per the KNX IP Communication Medium spec (03_02_06, section
+    /// 4.3.5.3.4), `A_DomainAddressSerialNumber_Write` carries a 4-octet
+    /// domain address which is the routing multicast address
+    /// (PID_ROUTING_MULTICAST_ADDRESS).
+    const DOMAIN_ADDRESS_LENGTH: usize = 4;
+
+    fn domain_address(&self, buf: &mut [u8]) {
+        buf[..4].copy_from_slice(&self.routing_multicast.get().octets());
+    }
+
+    fn set_domain_address(&self, addr: &[u8]) {
+        let octets: [u8; 4] = addr[..4].try_into().expect("domain address must be 4 bytes for IP");
+        self.routing_multicast.set(Ipv4Addr::from(octets));
     }
 }
 

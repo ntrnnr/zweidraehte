@@ -8,7 +8,7 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
-use embassy_net::{DhcpConfig, StackResources as NetStackResources};
+use embassy_net::{DhcpConfig, Ipv4Cidr, StackResources as NetStackResources, StaticConfigV4};
 use embassy_net_wiznet::chip::W5500;
 use embassy_rp::{
     flash,
@@ -93,6 +93,7 @@ impl StackDefinition for PicoEthLightSwitch {
         create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), (state.extension_state(), EasterEggAugment))
     }
 
+    type AlExtension = zweidraehte_device::layers::al_ext_domain_addr::DomainAddressExtension;
     type LayerBuilder = InsecureIpDeviceBuilder;
 }
 
@@ -406,31 +407,91 @@ async fn main(spawner: Spawner) {
     spawner.spawn(w5500_task(w5500_runner)).expect("w5500_task spawnable once");
 
     // ========================================================================
-    // Embassy-net stack init (DHCP)
+    // Early prog button read (before network init)
+    // ========================================================================
+
+    // Sample the programming button early: if held during boot, we force
+    // DHCP regardless of the persisted IP assignment method. The pin is
+    // read synchronously here, then later handed off to prog_task for
+    // runtime toggling.
+    let prog_btn_pin = Input::new(p.PIN_17, Pull::Up);
+    let prog_button_held = prog_btn_pin.is_low();
+    if prog_button_held {
+        info!("Prog button held at boot — forcing DHCP");
+    }
+
+    // ========================================================================
+    // Persistent storage — peek at IP config before creating the stack
+    // ========================================================================
+
+    // Read the persisted state from flash WITHOUT constructing the full
+    // runtime state. The runtime state needs the embassy-net stack (via
+    // EmbassyNetworkInfo::default()), but the stack's initial config
+    // (DHCP vs static) depends on the persisted IP assignment method.
+    // load_persisted() breaks this cycle by deserializing the raw config.
+    let mut storage = RpFlashStorage::<PicoEthState, _>::new(flash, identity_data);
+    let persisted = storage.load_persisted().ok().flatten();
+    let ip_config = persisted.as_ref().map(|p| &p.extension_config);
+
+    // ========================================================================
+    // IP assignment procedure (KNX spec Core 8.5, Figure 42)
+    // ========================================================================
+
+    // Determine the initial embassy-net config. The prog button forces
+    // DHCP as a recovery mechanism (ignoring persisted config).
+    let (net_config, using_dhcp) = if prog_button_held {
+        info!("Prog button override: using DHCP");
+        (embassy_net::Config::dhcpv4(DhcpConfig::default()), true)
+    } else if let Some(ip) = ip_config {
+        if ip.ip_assignment_method & 0x01 != 0 {
+            // Manual/static requested — validate the persisted address.
+            let addr = Ipv4Addr::from(ip.configured_ip);
+            let mask = Ipv4Addr::from(ip.configured_subnet);
+            if addr.is_unspecified() || mask.is_unspecified() {
+                warn!("Static IP config invalid — falling back to DHCP");
+                (embassy_net::Config::dhcpv4(DhcpConfig::default()), true)
+            } else {
+                let prefix = rp_common::mask_to_prefix(mask);
+                let gw = Ipv4Addr::from(ip.configured_gateway);
+                let gateway = if gw.is_unspecified() { None } else { Some(gw) };
+                info!("Using persisted static IP: {}/{}", addr, prefix);
+                (
+                    embassy_net::Config::ipv4_static(StaticConfigV4 {
+                        address: Ipv4Cidr::new(addr, prefix),
+                        gateway,
+                        dns_servers: Default::default(),
+                    }),
+                    false,
+                )
+            }
+        } else if ip.ip_assignment_method & 0x04 != 0 {
+            info!("IP assignment: DHCP");
+            (embassy_net::Config::dhcpv4(DhcpConfig::default()), true)
+        } else {
+            warn!("Unsupported IP assignment method 0x{:02x}, using DHCP", ip.ip_assignment_method);
+            (embassy_net::Config::dhcpv4(DhcpConfig::default()), true)
+        }
+    } else {
+        info!("No persisted state, using DHCP");
+        (embassy_net::Config::dhcpv4(DhcpConfig::default()), true)
+    };
+
+    // ========================================================================
+    // Embassy-net stack init
     // ========================================================================
 
     static NET_RESOURCES: StaticCell<NetStackResources<3>> = StaticCell::new();
     let (stack, net_runner) = embassy_net::new(
         net_device,
-        embassy_net::Config::dhcpv4(DhcpConfig::default()),
+        net_config,
         NET_RESOURCES.init(NetStackResources::new()),
         seed,
     );
 
     spawner.spawn(net_task(net_runner)).expect("net_task spawnable once");
 
-    // Wait for DHCP lease before proceeding.
-    info!("Waiting for DHCP...");
-    loop {
-        if let Some(config) = stack.config_v4() {
-            info!("DHCP acquired: {}", config.address);
-            break;
-        }
-        Timer::after(Duration::from_millis(100)).await;
-    }
-
     // ========================================================================
-    // Platform layer
+    // Platform + device state construction
     // ========================================================================
 
     // Initialize the global network context so EmbassyNetworkInfo::default()
@@ -438,15 +499,7 @@ async fn main(spawner: Spawner) {
     // calls P::default()).
     EmbassyNetworkInfo::init(stack, mac_addr);
 
-    // ========================================================================
-    // Persistent storage
-    // ========================================================================
-
-    // Flash storage for persistent device state (last 4 KiB sector).
-    // The `flash` handle was used transiently for identity provisioning
-    // above and is now passed to RpFlashStorage for config persistence.
-    let mut storage = RpFlashStorage::<PicoEthState, _>::new(flash, identity_data);
-
+    // Now construct the full runtime state (calls from_config() internally).
     let device_state = match storage.load() {
         Ok(Some(state)) => {
             info!("Loaded persisted state from flash");
@@ -462,6 +515,20 @@ async fn main(spawner: Spawner) {
         }
     };
 
+    // Wait for an IP address. For static this is immediate; for DHCP
+    // this waits for a lease.
+    if using_dhcp {
+        info!("Waiting for DHCP...");
+    }
+    loop {
+        if stack.config_v4().is_some() {
+            break;
+        }
+        Timer::after(Duration::from_millis(100)).await;
+    }
+    let ip = stack.config_v4().expect("IP config available after wait loop");
+    info!("IP ready: {}", ip.address);
+
     // Put storage in a static RefCell so both the restart handler and the
     // main loop can access it. Both run on the same single-threaded
     // executor, so RefCell is safe (no concurrent borrow possible).
@@ -472,7 +539,7 @@ async fn main(spawner: Spawner) {
     // KNX stack
     // ========================================================================
 
-    // The DHCP-assigned IP is used as the local address and control endpoint.
+    // Read the current IP (DHCP or static, depending on what was applied above).
     let local_ip = stack
         .config_v4()
         .map(|c| Ipv4Addr::from(c.address.address().octets()))
@@ -519,9 +586,9 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     // Push buttons — active low with internal pull-ups.
+    // (prog_btn_pin was created earlier for the boot-time prog button check.)
     let btn1_pin = Input::new(p.PIN_18, Pull::Up);
     let btn2_pin = Input::new(p.PIN_19, Pull::Up);
-    let prog_btn_pin = Input::new(p.PIN_17, Pull::Up);
 
     spawner
         .spawn(app_task(knx_stack, btn1_pin, btn2_pin))

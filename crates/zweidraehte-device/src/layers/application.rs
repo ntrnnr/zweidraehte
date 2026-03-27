@@ -113,6 +113,9 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     /// Pending group value send awaiting TL confirmation. When set, the next
     /// TL confirmation updates the communication object status accordingly.
     pending_group_send: Option<PendingGroupSend>,
+
+    /// Optional service extension for profile-specific APCI handlers.
+    extension: D::AlExtension,
 }
 
 /// Tracks a pending group value send for deferred CO status update.
@@ -171,6 +174,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             restart_sender,
             read_on_init: ReadOnInitState::Idle,
             pending_group_send: None,
+            extension: Default::default(),
         }
     }
 
@@ -326,7 +330,17 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
                         self.handle_restart(&msg, outbox);
                     }
                     _ => {
-                        warn!("Unhandled APCI code: {:?}", msg.get_apci_code());
+                        use crate::layers::al_extension::{AlExtensionContext, AlServiceExtension as _};
+                        let ctx = AlExtensionContext {
+                            buffer_manager: self.buffer_manager,
+                            state: self.state,
+                            interface_objects: self.interface_objects,
+                            memory_map: self.memory_map,
+                            access_ctx,
+                        };
+                        if !self.extension.try_handle(apci, &msg, &ctx, outbox) {
+                            warn!("Unhandled APCI code: {:?}", msg.get_apci_code());
+                        }
                     }
                 }
             }
