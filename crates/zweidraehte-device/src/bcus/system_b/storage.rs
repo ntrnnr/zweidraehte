@@ -88,6 +88,15 @@ pub trait ExtensionState: Sized {
 
     /// Reset to factory defaults.
     fn factory_reset(&self);
+
+    /// Receive link-layer-derived capabilities at boot time.
+    ///
+    /// Called once during stack initialisation with the value from
+    /// [`LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES`](crate::layers::LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES).
+    /// The default implementation is a no-op (correct for non-IP
+    /// extensions). [`IpExtensionState`](super::extensions::ip::IpExtensionState)
+    /// overrides this to store PID 68.
+    fn set_link_layer_capabilities(&self, _capabilities: u16) {}
 }
 
 impl ExtensionState for () {
@@ -99,6 +108,61 @@ impl ExtensionState for () {
 
     fn factory_reset(&self) {
         // No extension state to reset.
+    }
+}
+
+// ============================================================================
+// Extension — unified persistence + augmentation
+// ============================================================================
+
+/// A medium extension that contributes persistent state AND interface
+/// object augmentation to the device stack.
+///
+/// Unifies [`ExtensionState`] (persistence) with
+/// [`InterfaceObjectAugment`](crate::objects::interface::InterfaceObjectAugment)
+/// (property handling) into a single concept. Each extension knows how
+/// to create its own augment given a reference to the platform.
+///
+/// # Type Parameter
+///
+/// `Platform` flows from [`StackDefinition::Platform`](crate::StackDefinition::Platform).
+/// Extensions that need no external context (e.g., TP1) use `Platform = ()`.
+/// Extensions that need platform state (e.g., IP) are generic over
+/// `P: IpPlatform`.
+///
+/// # Implementations
+///
+/// - [`()`] — no extension, no augment
+/// - [`Tp1ExtensionState`](super::extensions::tp1::Tp1ExtensionState) — self-contained, IS its own augment
+/// - [`IpExtensionState<N>`](super::extensions::ip::IpExtensionState) — creates an
+///   [`IpAugment`](super::extensions::ip::IpAugment) from self + platform
+pub trait Extension<Platform = ()>: ExtensionState {
+    /// The augment type this extension creates.
+    ///
+    /// For TP1: `&'a Tp1ExtensionState` (the extension IS the augment).
+    /// For IP: `IpAugment<'a, P, N>` (wraps extension + platform).
+    /// For `()`: `()` (no augmentation).
+    type Augment<'a, S: crate::StackState>: crate::objects::interface::InterfaceObjectAugment<S>
+    where
+        Self: 'a,
+        Platform: 'a;
+
+    /// Create the augment from this extension state and the platform.
+    fn create_augment<'a, S: crate::StackState>(&'a self, platform: &'a Platform) -> Self::Augment<'a, S>
+    where
+        Platform: 'a;
+}
+
+impl Extension<()> for () {
+    type Augment<'a, S: crate::StackState>
+        = ()
+    where
+        Self: 'a;
+
+    fn create_augment<'a, S: crate::StackState>(&'a self, _platform: &'a ()) -> Self::Augment<'a, S>
+    where
+        (): 'a,
+    {
     }
 }
 

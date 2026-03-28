@@ -35,9 +35,9 @@ use crate::{
     device_model::DeviceModelNotifier,
     dpt::{InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, PDT_UnsignedInt, RoutingCount},
     objects::interface::{
-        AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject,
-        GroupObjectTableObject, InterfaceObject, InterfaceObjectAugment, PeiProgramObject,
-        PropertyAccess, PropertyDescriptor, PropertyError, pid,
+        AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
+        InterfaceObject, InterfaceObjectAugment, PeiProgramObject, PropertyAccess, PropertyDescriptor, PropertyError,
+        pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -418,4 +418,125 @@ where
         state.routing_count(),
         augment,
     )
+}
+
+// ============================================================================
+// Extension-based helpers
+// ============================================================================
+
+use super::device_state::HasExtensionState;
+use super::storage::Extension;
+
+/// Type alias that derives the correct [`DefaultSystemBInterfaceObjects`]
+/// from a [`StackDefinition`]'s `ES` and `Platform` types.
+///
+/// The augment type is produced by the `Extension` trait's GAT, so the
+/// user does not need to spell it out manually.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
+/// ```
+pub type SystemBInterfaceObjectsFor<'a, D> = DefaultSystemBInterfaceObjects<
+    'a,
+    <D as StackDefinition>::State,
+    <<D as StackDefinition>::ES as Extension<<D as StackDefinition>::Platform>>::Augment<
+        'a,
+        <D as StackDefinition>::State,
+    >,
+>;
+
+/// Create System B interface objects using the
+/// [`Extension`] trait.
+///
+/// The extension creates its own augment via
+/// [`Extension::create_augment`], eliminating manual
+/// `IpAugment`/`Tp1ExtensionState` wiring.
+///
+/// Use [`create_system_b_objects_with_extra`] when the device needs
+/// additional augments beyond what the medium extension provides.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// fn create_interface_objects<'a>(
+///     state: &'a Self::State, platform: &'a Self::Platform,
+/// ) -> Self::InterfaceObjects<'a> {
+///     create_system_b_objects_from_extension::<Self>(state, platform, &Self::memory_layout())
+/// }
+/// ```
+pub fn create_system_b_objects_from_extension<'a, D>(
+    state: &'a D::State,
+    platform: &'a D::Platform,
+    layout: &super::memory_map::MemoryLayout,
+) -> SystemBInterfaceObjectsFor<'a, D>
+where
+    D: StackDefinition,
+    D::State: StackState
+        + DeviceModelNotifier
+        + HasExtensionState<ES = D::ES>
+        + HasAddressTable
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasApplication
+        + HasPeiApplication
+        + HasRoutingCount,
+    <D::State as HasAddressTable>::ADT: HasLoadStateMachine,
+    <D::State as HasAssociationTable>::AST: HasLoadStateMachine,
+    <D::State as HasCommunicationObjectTable>::COT: HasLoadStateMachine,
+    <D::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
+    <D::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
+    D::ES: Extension<D::Platform>,
+    <D::ES as Extension<D::Platform>>::Augment<'a, D::State>: InterfaceObjectAugment<D::State>,
+{
+    let augment = state.extension_state().create_augment(platform);
+    create_system_b_objects::<D, _, _>(state, layout, augment)
+}
+
+/// Create System B interface objects with an additional augment
+/// beyond the medium extension.
+///
+/// The medium extension's augment is composed with `extra` as a tuple
+/// `(medium_augment, extra)`, so both contribute properties.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// fn create_interface_objects<'a>(
+///     state: &'a Self::State, platform: &'a Self::Platform,
+/// ) -> Self::InterfaceObjects<'a> {
+///     create_system_b_objects_with_extra::<Self, _>(
+///         state, platform, &Self::memory_layout(), EasterEggAugment,
+///     )
+/// }
+/// ```
+pub fn create_system_b_objects_with_extra<'a, D, A>(
+    state: &'a D::State,
+    platform: &'a D::Platform,
+    layout: &super::memory_map::MemoryLayout,
+    extra: A,
+) -> DefaultSystemBInterfaceObjects<'a, D::State, (<D::ES as Extension<D::Platform>>::Augment<'a, D::State>, A)>
+where
+    D: StackDefinition,
+    D::State: StackState
+        + DeviceModelNotifier
+        + HasExtensionState<ES = D::ES>
+        + HasAddressTable
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasApplication
+        + HasPeiApplication
+        + HasRoutingCount,
+    <D::State as HasAddressTable>::ADT: HasLoadStateMachine,
+    <D::State as HasAssociationTable>::AST: HasLoadStateMachine,
+    <D::State as HasCommunicationObjectTable>::COT: HasLoadStateMachine,
+    <D::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
+    <D::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
+    D::ES: Extension<D::Platform>,
+    <D::ES as Extension<D::Platform>>::Augment<'a, D::State>: InterfaceObjectAugment<D::State>,
+    A: InterfaceObjectAugment<D::State>,
+{
+    let augment = state.extension_state().create_augment(platform);
+    create_system_b_objects::<D, _, _>(state, layout, (augment, extra))
 }

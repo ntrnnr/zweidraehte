@@ -142,9 +142,36 @@ pub trait StackDefinition: Copy {
     /// which requires a real mutex to prevent `BorrowMutError` panics.
     type Mutex: RawMutex + 'static = NoopRawMutex;
 
+    /// Platform abstraction for querying/applying network configuration.
+    ///
+    /// For KNX/IP devices, implement [`NetworkInfo`](crate::IpPlatform) +
+    /// [`NetworkConfig`](crate::IpPlatformConfig) on your platform type.
+    /// For non-IP devices (TP1, USB), use the default `()`.
+    ///
+    /// The platform is stored in the stack's `Inner` and passed to
+    /// [`Extension::create_augment`](crate::bcus::system_b::Extension::create_augment)
+    /// during interface object construction.
+    type Platform: 'static = ();
+
     type P: ConstDefault;
     type CO: ComObjects;
-    type LLB: layers::LinkLayerBuilderBase + for<'a> layers::LinkLayerBuilder<StackContext<'a, Self>>;
+    type LLB: layers::LinkLayerBuilderBase
+        + layers::LinkLayerCapabilities
+        + for<'a> layers::LinkLayerBuilder<StackContext<'a, Self>>;
+
+    /// Medium extension providing both state persistence and interface
+    /// object augmentation.
+    ///
+    /// The `Extension<Platform>` trait unifies what were previously
+    /// separate `ExtensionState` and `InterfaceObjectAugment` concerns.
+    /// Each extension knows how to create its own augment given a
+    /// reference to the platform.
+    ///
+    /// Common choices:
+    /// - `()` — no extension (mock/test devices)
+    /// - [`Tp1ExtensionState`](crate::bcus::system_b::Tp1ExtensionState) — TP1 devices
+    /// - [`IpExtensionState<N>`](crate::bcus::system_b::IpExtensionState) — KNX/IP devices
+    type ES: crate::bcus::system_b::Extension<Self::Platform>;
 
     /// Unified device state containing both runtime state and tables.
     ///
@@ -200,10 +227,11 @@ pub trait StackDefinition: Copy {
     ///
     /// # Arguments
     /// * `state` - Reference to the unified device state (contains both runtime state and tables)
+    /// * `platform` - Reference to the platform abstraction (for IP property dispatch)
     ///
     /// # Returns
     /// The container holding all interface objects for this device.
-    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a;
 

@@ -23,7 +23,7 @@ use const_default::ConstDefault;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     AccessContext,
-    bcus::system_b::{DefaultSystemBInterfaceObjects, HasExtensionState, IpExtensionState, IpSystemBDeviceState, MemoryLayout, create_system_b_objects},
+    bcus::system_b::{IpSystemBDeviceState, MemoryLayout},
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::Application,
     storage::StaticIdentity,
@@ -530,10 +530,6 @@ impl IpPlatform for MockIpPlatform {
     fn ip_capabilities(&self) -> u8 {
         0x07 // BootP, DHCP, Manual supported
     }
-
-    fn knxnetip_device_capabilities(&self) -> u16 {
-        0x003F // Supports routing, tunneling, etc.
-    }
 }
 
 impl IpPlatformConfig for MockIpPlatform {
@@ -645,13 +641,8 @@ mod table_sizes {
 ///
 /// This is `IpSystemBDeviceState` parameterized with the conformance test's
 /// table sizes, `TestParameters`, and `MockIpPlatform`.
-type InnerState = IpSystemBDeviceState<
-    { table_sizes::ADT },
-    { table_sizes::AST },
-    { table_sizes::COT },
-    TestParameters,
-    MockIpPlatform,
->;
+type InnerState =
+    IpSystemBDeviceState<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, TestParameters>;
 
 /// Unified state for conformance tests.
 ///
@@ -811,27 +802,6 @@ impl zweidraehte_device::bcus::system_b::HasExtensionState for ConformanceState 
 // ============================================================================
 
 impl IpStackState for ConformanceState {
-    fn current_ip_address(&self) -> Ipv4Addr {
-        self.inner.extension_state().current_ip_address()
-    }
-    fn current_subnet_mask(&self) -> Ipv4Addr {
-        self.inner.extension_state().current_subnet_mask()
-    }
-    fn current_default_gateway(&self) -> Ipv4Addr {
-        self.inner.extension_state().current_default_gateway()
-    }
-    fn mac_address(&self) -> [u8; 6] {
-        self.inner.extension_state().mac_address()
-    }
-    fn current_ip_assignment_method(&self) -> u8 {
-        self.inner.extension_state().current_ip_assignment_method()
-    }
-    fn ip_capabilities(&self) -> u8 {
-        self.inner.extension_state().ip_capabilities()
-    }
-    fn knxnetip_device_capabilities(&self) -> u16 {
-        self.inner.extension_state().knxnetip_device_capabilities()
-    }
     fn configured_ip_address(&self) -> Ipv4Addr {
         self.inner.extension_state().configured_ip_address()
     }
@@ -1208,20 +1178,22 @@ impl StackDefinition for IpcConformanceTestStack {
     type P = TestParameters;
     type CO = ConformanceComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
+    type Platform = MockIpPlatform;
+    type ES = zweidraehte_device::bcus::system_b::IpExtensionState<0>;
     type State = ConformanceState;
     type Mem = ConformanceMemoryMap;
 
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
-        'a,
-        ConformanceState,
-        &'a IpExtensionState<MockIpPlatform>,
-    >;
+    type InterfaceObjects<'a> = zweidraehte_device::bcus::system_b::SystemBInterfaceObjectsFor<'a, Self>;
 
-    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_system_b_objects::<IpcConformanceTestStack, _, _>(state, &CONFORMANCE_MEMORY_LAYOUT, state.extension_state())
+        zweidraehte_device::bcus::system_b::create_system_b_objects_from_extension::<Self>(
+            state,
+            platform,
+            &CONFORMANCE_MEMORY_LAYOUT,
+        )
     }
 
     type LayerBuilder = InsecureDeviceBuilder;

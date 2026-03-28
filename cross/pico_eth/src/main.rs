@@ -38,7 +38,7 @@ use zweidraehte_device::{
 };
 
 use rp_common::button::DebouncedButton;
-use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, RpFlashStorage, FlashIdentityData};
+use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, FlashIdentityData, RpFlashStorage};
 
 // ================================================================================
 // Device Definition
@@ -56,7 +56,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Device state combining System B tables with IP link-layer state.
-type PicoEthState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, EmbassyNetworkInfo>;
+type PicoEthState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
@@ -78,19 +78,18 @@ impl StackDefinition for PicoEthLightSwitch {
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
+    type Platform = EmbassyNetworkInfo;
+    type ES = IpExtensionState<0>;
     type State = PicoEthState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
-        'a, PicoEthState, (&'a IpExtensionState<EmbassyNetworkInfo>, EasterEggAugment),
-    >;
+    type InterfaceObjects<'a> =
+        DefaultSystemBInterfaceObjects<'a, PicoEthState, (IpAugment<'a, EmbassyNetworkInfo>, EasterEggAugment)>;
 
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-    ) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), (state.extension_state(), EasterEggAugment))
+        create_system_b_objects_with_extra::<Self, _>(state, platform, &Self::memory_layout(), EasterEggAugment)
     }
 
     type AlExtension = zweidraehte_device::layers::al_ext_domain_addr::DomainAddressExtension;
@@ -149,10 +148,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, embassy_net_wiznet::D
 /// updated from the heartbeat loop so it also tracks remote changes
 /// from ETS without interfering with edge detection here.
 #[embassy_executor::task]
-async fn prog_task(
-    knx: Stack<'static, PicoEthLightSwitch>,
-    prog_btn_pin: Input<'static>,
-) -> ! {
+async fn prog_task(knx: Stack<'static, PicoEthLightSwitch>, prog_btn_pin: Input<'static>) -> ! {
     let mut btn = DebouncedButton::new(prog_btn_pin);
     let debounce = Duration::from_millis(50);
 
@@ -176,13 +172,10 @@ async fn prog_task(
 /// 3. Sends the A_Restart_Response back to the stack
 /// 4. Triggers a Cortex-M system reset
 #[embassy_executor::task]
-async fn restart_task(
-    knx: Stack<'static, PicoEthLightSwitch>,
-    storage: &'static RefCell<Storage>,
-) -> ! {
+async fn restart_task(knx: Stack<'static, PicoEthLightSwitch>, storage: &'static RefCell<Storage>) -> ! {
     use rp_common::CortexMSystem;
-    use zweidraehte_platform::SystemControl;
     use zweidraehte_device::restart::EraseCode;
+    use zweidraehte_platform::SystemControl;
 
     loop {
         let request = knx.receive_restart_request().await;
@@ -275,11 +268,7 @@ async fn lifecycle_task(knx: Stack<'static, PicoEthLightSwitch>) -> ! {
 /// (switch, dimmer, blind, scene), then publishes to the appropriate
 /// communication objects on the KNX bus.
 #[embassy_executor::task]
-async fn app_task(
-    knx: Stack<'static, PicoEthLightSwitch>,
-    btn1_pin: Input<'static>,
-    btn2_pin: Input<'static>,
-) -> ! {
+async fn app_task(knx: Stack<'static, PicoEthLightSwitch>, btn1_pin: Input<'static>, btn2_pin: Input<'static>) -> ! {
     let mut btn1 = DebouncedButton::new(btn1_pin);
     let mut btn2 = DebouncedButton::new(btn2_pin);
 
@@ -305,27 +294,16 @@ async fn app_task(
         let long_press = params.long_press_time.as_duration();
 
         // Race both buttons — whichever fires first gets processed.
-        match select(
-            btn1.wait_for_press(debounce, Some(long_press)),
-            btn2.wait_for_press(debounce, Some(long_press)),
-        )
-        .await
+        match select(btn1.wait_for_press(debounce, Some(long_press)), btn2.wait_for_press(debounce, Some(long_press)))
+            .await
         {
             Either::First(event) => {
                 let mut waiter = ReleaseWaiter { btn: &mut btn1, debounce };
-                app::handle_button_press(
-                    &knx, &params, event, ButtonId::Btn1,
-                    &mut waiter, &mut btn1_dim_up,
-                )
-                .await;
+                app::handle_button_press(&knx, &params, event, ButtonId::Btn1, &mut waiter, &mut btn1_dim_up).await;
             }
             Either::Second(event) => {
                 let mut waiter = ReleaseWaiter { btn: &mut btn2, debounce };
-                app::handle_button_press(
-                    &knx, &params, event, ButtonId::Btn2,
-                    &mut waiter, &mut btn2_dim_up,
-                )
-                .await;
+                app::handle_button_press(&knx, &params, event, ButtonId::Btn2, &mut waiter, &mut btn2_dim_up).await;
             }
         }
     }
@@ -362,10 +340,8 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     let mut flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    let identity_data = rp_common::read_or_provision_identity(
-        &mut flash,
-        LightSwitchDevice::MANUFACTURER_ID.to_be_bytes(),
-    );
+    let identity_data =
+        rp_common::read_or_provision_identity(&mut flash, LightSwitchDevice::MANUFACTURER_ID.to_be_bytes());
 
     let mac_addr = identity_data.derive_mac_address(MAC_OUI);
     let seed = identity_data.derive_seed();
@@ -380,16 +356,12 @@ async fn main(spawner: Spawner) {
     // Pin assignments: MISO=GP4, MOSI=GP3, SCK=GP2, CS=GP5, RST=GP10, INT=GP11
     let mut spi_cfg = SpiConfig::default();
     spi_cfg.frequency = 50_000_000;
-    let spi = Spi::new(
-        p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4,
-        p.DMA_CH0, p.DMA_CH1, spi_cfg,
-    );
+    let spi = Spi::new(p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4, p.DMA_CH0, p.DMA_CH1, spi_cfg);
     let cs = Output::new(p.PIN_5, Level::High);
     let w5500_int = Input::new(p.PIN_11, Pull::Up);
     let w5500_reset = Output::new(p.PIN_10, Level::High);
 
-    let spi_dev = ExclusiveDevice::new(spi, cs, Delay)
-        .expect("SPI ExclusiveDevice init infallible for Output CS");
+    let spi_dev = ExclusiveDevice::new(spi, cs, Delay).expect("SPI ExclusiveDevice init infallible for Output CS");
 
     static W5500_STATE: StaticCell<embassy_net_wiznet::State<8, 8>> = StaticCell::new();
     let (net_device, w5500_runner) = embassy_net_wiznet::new(
@@ -425,10 +397,9 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     // Read the persisted state from flash WITHOUT constructing the full
-    // runtime state. The runtime state needs the embassy-net stack (via
-    // EmbassyNetworkInfo::default()), but the stack's initial config
-    // (DHCP vs static) depends on the persisted IP assignment method.
-    // load_persisted() breaks this cycle by deserializing the raw config.
+    // runtime state. We need the IP assignment method to decide whether
+    // to configure the embassy-net stack with DHCP or static IP before
+    // creating it. load_persisted() deserializes the raw config for this.
     let mut storage = RpFlashStorage::<PicoEthState, _>::new(flash, identity_data);
     let persisted = storage.load_persisted().ok().flatten();
     let ip_config = persisted.as_ref().map(|p| &p.extension_config);
@@ -439,17 +410,19 @@ async fn main(spawner: Spawner) {
 
     // Determine the initial embassy-net config. The prog button forces
     // DHCP as a recovery mechanism (ignoring persisted config).
-    let (net_config, using_dhcp) = if prog_button_held {
+    use rp_common::{IP_ASSIGN_DHCP, IP_ASSIGN_MANUAL};
+
+    let (net_config, initial_ip_method) = if prog_button_held {
         info!("Prog button override: using DHCP");
-        (embassy_net::Config::dhcpv4(DhcpConfig::default()), true)
+        (embassy_net::Config::dhcpv4(DhcpConfig::default()), IP_ASSIGN_DHCP)
     } else if let Some(ip) = ip_config {
-        if ip.ip_assignment_method & 0x01 != 0 {
+        if ip.ip_assignment_method & IP_ASSIGN_MANUAL != 0 {
             // Manual/static requested — validate the persisted address.
             let addr = Ipv4Addr::from(ip.configured_ip);
             let mask = Ipv4Addr::from(ip.configured_subnet);
             if addr.is_unspecified() || mask.is_unspecified() {
                 warn!("Static IP config invalid — falling back to DHCP");
-                (embassy_net::Config::dhcpv4(DhcpConfig::default()), true)
+                (embassy_net::Config::dhcpv4(DhcpConfig::default()), IP_ASSIGN_DHCP)
             } else {
                 let prefix = rp_common::mask_to_prefix(mask);
                 let gw = Ipv4Addr::from(ip.configured_gateway);
@@ -461,19 +434,19 @@ async fn main(spawner: Spawner) {
                         gateway,
                         dns_servers: Default::default(),
                     }),
-                    false,
+                    IP_ASSIGN_MANUAL,
                 )
             }
-        } else if ip.ip_assignment_method & 0x04 != 0 {
+        } else if ip.ip_assignment_method & IP_ASSIGN_DHCP != 0 {
             info!("IP assignment: DHCP");
-            (embassy_net::Config::dhcpv4(DhcpConfig::default()), true)
+            (embassy_net::Config::dhcpv4(DhcpConfig::default()), IP_ASSIGN_DHCP)
         } else {
             warn!("Unsupported IP assignment method 0x{:02x}, using DHCP", ip.ip_assignment_method);
-            (embassy_net::Config::dhcpv4(DhcpConfig::default()), true)
+            (embassy_net::Config::dhcpv4(DhcpConfig::default()), IP_ASSIGN_DHCP)
         }
     } else {
         info!("No persisted state, using DHCP");
-        (embassy_net::Config::dhcpv4(DhcpConfig::default()), true)
+        (embassy_net::Config::dhcpv4(DhcpConfig::default()), IP_ASSIGN_DHCP)
     };
 
     // ========================================================================
@@ -481,12 +454,8 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     static NET_RESOURCES: StaticCell<NetStackResources<3>> = StaticCell::new();
-    let (stack, net_runner) = embassy_net::new(
-        net_device,
-        net_config,
-        NET_RESOURCES.init(NetStackResources::new()),
-        seed,
-    );
+    let (stack, net_runner) =
+        embassy_net::new(net_device, net_config, NET_RESOURCES.init(NetStackResources::new()), seed);
 
     spawner.spawn(net_task(net_runner)).expect("net_task spawnable once");
 
@@ -494,10 +463,7 @@ async fn main(spawner: Spawner) {
     // Platform + device state construction
     // ========================================================================
 
-    // Initialize the global network context so EmbassyNetworkInfo::default()
-    // works during device state construction (IpExtensionState::from_config
-    // calls P::default()).
-    EmbassyNetworkInfo::init(stack, mac_addr);
+    let platform = EmbassyNetworkInfo::new(stack, mac_addr, initial_ip_method);
 
     // Now construct the full runtime state (calls from_config() internally).
     let device_state = match storage.load() {
@@ -517,7 +483,7 @@ async fn main(spawner: Spawner) {
 
     // Wait for an IP address. For static this is immediate; for DHCP
     // this waits for a lease.
-    if using_dhcp {
+    if initial_ip_method == IP_ASSIGN_DHCP {
         info!("Waiting for DHCP...");
     }
     loop {
@@ -540,10 +506,8 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     // Read the current IP (DHCP or static, depending on what was applied above).
-    let local_ip = stack
-        .config_v4()
-        .map(|c| Ipv4Addr::from(c.address.address().octets()))
-        .unwrap_or(Ipv4Addr::UNSPECIFIED);
+    let local_ip =
+        stack.config_v4().map(|c| Ipv4Addr::from(c.address.address().octets())).unwrap_or(Ipv4Addr::UNSPECIFIED);
 
     let control_endpoint = SocketAddrV4::new(local_ip, 3671);
 
@@ -558,7 +522,11 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             PicoEthLightSwitch,
-            { zweidraehte_device::config::buffer_size_for_apdu(<PicoEthLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
+            {
+                zweidraehte_device::config::buffer_size_for_apdu(
+                    <PicoEthLightSwitch as StackDefinition>::MAX_APDU_LENGTH,
+                )
+            },
         >,
     > = StaticCell::new();
 
@@ -568,16 +536,19 @@ async fn main(spawner: Spawner) {
         (), // hook context — not needed, app logic runs via the stack handle
         link_layer_builder,
         device_state,
+        platform,
         PicoEthLightSwitch::memory_map(),
     );
 
-    spawner
-        .spawn(knx_task(knx_runner))
-        .expect("knx_task spawnable once");
+    spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 
     info!("KNX/IP stack started");
     info!("  Manufacturer: {:04x}", LightSwitchDevice::MANUFACTURER_ID);
-    info!("  Application:  {:04x} v{:02x}", LightSwitchDevice::APPLICATION_ID_IP, LightSwitchDevice::APPLICATION_VERSION);
+    info!(
+        "  Application:  {:04x} v{:02x}",
+        LightSwitchDevice::APPLICATION_ID_IP,
+        LightSwitchDevice::APPLICATION_VERSION
+    );
     info!("  Local IP:     {}", local_ip);
     info!("  Mask version: 57B0 (System B KNX/IP)");
 
@@ -590,18 +561,10 @@ async fn main(spawner: Spawner) {
     let btn1_pin = Input::new(p.PIN_18, Pull::Up);
     let btn2_pin = Input::new(p.PIN_19, Pull::Up);
 
-    spawner
-        .spawn(app_task(knx_stack, btn1_pin, btn2_pin))
-        .expect("app_task spawnable once");
-    spawner
-        .spawn(prog_task(knx_stack, prog_btn_pin))
-        .expect("prog_task spawnable once");
-    spawner
-        .spawn(restart_task(knx_stack, storage))
-        .expect("restart_task spawnable once");
-    spawner
-        .spawn(lifecycle_task(knx_stack))
-        .expect("lifecycle_task spawnable once");
+    spawner.spawn(app_task(knx_stack, btn1_pin, btn2_pin)).expect("app_task spawnable once");
+    spawner.spawn(prog_task(knx_stack, prog_btn_pin)).expect("prog_task spawnable once");
+    spawner.spawn(restart_task(knx_stack, storage)).expect("restart_task spawnable once");
+    spawner.spawn(lifecycle_task(knx_stack)).expect("lifecycle_task spawnable once");
 
     // ========================================================================
     // Main loop: heartbeat LED + programming mode LED + periodic save

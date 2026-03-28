@@ -14,11 +14,11 @@ use crate::{
     },
 };
 
+use super::runtime::KnxNetIp;
 use super::{
-    connections, features, services, EndpointType, KnxNetIpContext, KnxNetIpResources, SubnetLink,
+    EndpointType, KnxNetIpContext, KnxNetIpResources, SubnetLink, connections, features, services,
     transport::{SocketDescriptor, TcpManager, UdpManager},
 };
-use super::runtime::KnxNetIp;
 use features::{RemoteConfigFeature, RoutingFeature, TcpFeature, TunnelingFeature};
 
 /// Builder for KnxNetIp link layer.
@@ -235,9 +235,7 @@ impl<
     /// for Device Management and Tunneling. The Core service family
     /// version is bumped to v2 to indicate TCP support (KNX spec 3/8/2
     /// §9.2).
-    pub fn enable_tcp(
-        self,
-    ) -> KnxNetIpBuilder<T, features::Features<R, RC, TUN, features::WithTcp>, MS, MTS, MC> {
+    pub fn enable_tcp(self) -> KnxNetIpBuilder<T, features::Features<R, RC, TUN, features::WithTcp>, MS, MTS, MC> {
         KnxNetIpBuilder {
             interface_name: self.interface_name,
             local_addr: self.local_addr,
@@ -370,9 +368,7 @@ where
             let mut indices = Vec::<usize, 4>::new();
             // Discovery listens on multicast + unicast on KNX_PORT
             for desc_idx in 0..socket_descriptors.len() {
-                if socket_descriptors[desc_idx].port() == crate::KNX_PORT
-                    && !indices.contains(&desc_idx)
-                {
+                if socket_descriptors[desc_idx].port() == crate::KNX_PORT && !indices.contains(&desc_idx) {
                     let _ = indices.push(desc_idx);
                 }
             }
@@ -403,10 +399,7 @@ where
             indices
         };
 
-        info!(
-            "KnxNetIp builder: {} unique socket(s)",
-            socket_descriptors.len()
-        );
+        info!("KnxNetIp builder: {} unique socket(s)", socket_descriptors.len());
 
         let interface_addr = self.local_addr;
 
@@ -491,6 +484,16 @@ impl<
     }
 }
 
+impl<
+    T: IpTransport + 'static,
+    F: features::FeatureSet,
+    const MAX_SOCKETS: usize,
+    const MAX_TCP_STREAMS: usize,
+    const MAX_CHANNELS: usize,
+> crate::layers::LinkLayerCapabilities for KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+{
+    const KNXNETIP_DEVICE_CAPABILITIES: u16 = F::KNXNETIP_DEVICE_CAPABILITIES;
+}
 
 impl<
     CTX: KnxNetIpContext + crate::context::AddressTableContext,
@@ -516,12 +519,11 @@ where
         // Construct address filter while we still have the concrete context
         // type (before type-erasure to &dyn KnxNetIpContext). Same pattern
         // as TPUART's AutoAddressChecker → DeviceAddressChecker.
-        let address_filter = super::types::RoutingAddressFilter::new(
-            context.individual_address(),
-            context.address_table(),
-        );
+        let address_filter =
+            super::types::RoutingAddressFilter::new(context.individual_address(), context.address_table());
         async move {
-            let mut link_layer = self.build(resources, context, ll_endpoints, ind_tx, conf_tx, None, Some(&address_filter));
+            let mut link_layer =
+                self.build(resources, context, ll_endpoints, ind_tx, conf_tx, None, Some(&address_filter));
             link_layer.run(req_rx).await
         }
     }

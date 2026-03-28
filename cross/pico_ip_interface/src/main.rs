@@ -19,8 +19,7 @@ use embassy_executor::Spawner;
 use embassy_net::{DhcpConfig, StackResources as NetStackResources};
 use embassy_net_wiznet::chip::W5500;
 use embassy_rp::{
-    bind_interrupts,
-    flash,
+    bind_interrupts, flash,
     gpio::{Input, Level, Output, Pull},
     peripherals::{SPI0, UART0},
     spi::{Async, Config as SpiConfig, Spi},
@@ -31,9 +30,7 @@ use embedded_hal_bus::spi::ExclusiveDevice;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-use devices::ip_interface::{
-    IpInterfaceComObjects, IpInterfaceDevice, IpInterfaceParams, DEVICE_DESCRIPTOR,
-};
+use devices::ip_interface::{DEVICE_DESCRIPTOR, IpInterfaceComObjects, IpInterfaceDevice, IpInterfaceParams};
 
 use zweidraehte_device::{
     bcus::system_b::*,
@@ -77,7 +74,7 @@ const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 /// Maximum number of concurrent tunneling connections (additional individual addresses).
 const MAX_TUNNEL_CONNECTIONS: usize = 4;
 
-type IpIfState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, IpInterfaceParams, EmbassyNetworkInfo, MAX_TUNNEL_CONNECTIONS>;
+type IpIfState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, IpInterfaceParams, MAX_TUNNEL_CONNECTIONS>;
 
 type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 
@@ -101,20 +98,26 @@ impl StackDefinition for PicoIpInterface {
 
     type P = IpInterfaceParams;
     type CO = IpInterfaceComObjects;
-    type LLB = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, EmbassyIpTransport, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>, 2, 1, 1>;
+    type LLB = IpInterfaceLinkLayerBuilder<
+        DirectUartTx,
+        DirectUartRx,
+        EmbassyIpTransport,
+        KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>,
+        2,
+        1,
+        1,
+    >;
+    type Platform = EmbassyNetworkInfo;
+    type ES = IpExtensionState<MAX_TUNNEL_CONNECTIONS>;
     type State = IpIfState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
-        'a, IpIfState, &'a IpExtensionState<EmbassyNetworkInfo, MAX_TUNNEL_CONNECTIONS>,
-    >;
+    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
 
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-    ) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), state.extension_state())
+        create_system_b_objects_from_extension::<Self>(state, platform, &Self::memory_layout())
     }
 
     type LayerBuilder = InsecureIpDeviceBuilder;
@@ -149,10 +152,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, embassy_net_wiznet::D
 
 /// Programming mode button handler.
 #[embassy_executor::task]
-async fn prog_task(
-    knx: Stack<'static, PicoIpInterface>,
-    prog_btn_pin: Input<'static>,
-) -> ! {
+async fn prog_task(knx: Stack<'static, PicoIpInterface>, prog_btn_pin: Input<'static>) -> ! {
     let mut btn = DebouncedButton::new(prog_btn_pin);
     let debounce = Duration::from_millis(50);
 
@@ -167,13 +167,10 @@ async fn prog_task(
 
 /// Restart handler — executes resets from ETS, persists state, and reboots.
 #[embassy_executor::task]
-async fn restart_task(
-    knx: Stack<'static, PicoIpInterface>,
-    storage: &'static RefCell<Storage>,
-) -> ! {
-    use zweidraehte_platform::SystemControl;
+async fn restart_task(knx: Stack<'static, PicoIpInterface>, storage: &'static RefCell<Storage>) -> ! {
     use rp_common::CortexMSystem;
     use zweidraehte_device::restart::EraseCode;
+    use zweidraehte_platform::SystemControl;
 
     loop {
         let request = knx.receive_restart_request().await;
@@ -268,10 +265,8 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     let mut flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    let identity_data = rp_common::read_or_provision_identity(
-        &mut flash,
-        IpInterfaceDevice::MANUFACTURER_ID.to_be_bytes(),
-    );
+    let identity_data =
+        rp_common::read_or_provision_identity(&mut flash, IpInterfaceDevice::MANUFACTURER_ID.to_be_bytes());
 
     let mac_addr = identity_data.derive_mac_address(MAC_OUI);
     let seed = identity_data.derive_seed();
@@ -302,16 +297,12 @@ async fn main(spawner: Spawner) {
 
     let mut spi_cfg = SpiConfig::default();
     spi_cfg.frequency = 50_000_000;
-    let spi = Spi::new(
-        p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4,
-        p.DMA_CH0, p.DMA_CH1, spi_cfg,
-    );
+    let spi = Spi::new(p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4, p.DMA_CH0, p.DMA_CH1, spi_cfg);
     let cs = Output::new(p.PIN_5, Level::High);
     let w5500_int = Input::new(p.PIN_11, Pull::Up);
     let w5500_reset = Output::new(p.PIN_10, Level::High);
 
-    let spi_dev = ExclusiveDevice::new(spi, cs, Delay)
-        .expect("SPI ExclusiveDevice init infallible for Output CS");
+    let spi_dev = ExclusiveDevice::new(spi, cs, Delay).expect("SPI ExclusiveDevice init infallible for Output CS");
 
     static W5500_STATE: StaticCell<embassy_net_wiznet::State<8, 8>> = StaticCell::new();
     let (net_device, w5500_runner) = embassy_net_wiznet::new(
@@ -355,9 +346,7 @@ async fn main(spawner: Spawner) {
     // Platform layer
     // ========================================================================
 
-    // Initialize the global network context so EmbassyNetworkInfo::default()
-    // works during device state construction.
-    EmbassyNetworkInfo::init(stack, mac_addr);
+    let platform = EmbassyNetworkInfo::new(stack, mac_addr, rp_common::IP_ASSIGN_DHCP);
 
     // ========================================================================
     // Persistent storage
@@ -387,18 +376,15 @@ async fn main(spawner: Spawner) {
     // KNX stack — composite link layer (TPUART + KNX/IP)
     // ========================================================================
 
-    let local_ip = stack
-        .config_v4()
-        .map(|c| Ipv4Addr::from(c.address.address().octets()))
-        .unwrap_or(Ipv4Addr::UNSPECIFIED);
+    let local_ip =
+        stack.config_v4().map(|c| Ipv4Addr::from(c.address.address().octets())).unwrap_or(Ipv4Addr::UNSPECIFIED);
 
     let control_endpoint = SocketAddrV4::new(local_ip, 3671);
 
     // Build the KNX/IP part — tunneling + remote config (no routing).
-    let knxip_builder =
-        KnxNetIpBuilder::<EmbassyIpTransport, _, 2>::new("eth0", local_ip, control_endpoint, stack)
-            .enable_tunneling::<MAX_TUNNEL_CONNECTIONS>()
-            .enable_remote_config_server();
+    let knxip_builder = KnxNetIpBuilder::<EmbassyIpTransport, _, 2>::new("eth0", local_ip, control_endpoint, stack)
+        .enable_tunneling::<MAX_TUNNEL_CONNECTIONS>()
+        .enable_remote_config_server();
 
     // Wrap TPUART + KNX/IP into a single composite link layer.
     let link_layer_builder = IpInterfaceLinkLayerBuilder::new(uart_tx, uart_rx, knxip_builder);
@@ -416,12 +402,11 @@ async fn main(spawner: Spawner) {
         (),
         link_layer_builder,
         device_state,
+        platform,
         PicoIpInterface::memory_map(),
     );
 
-    spawner
-        .spawn(knx_task(knx_runner))
-        .expect("knx_task spawnable once");
+    spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 
     info!("KNX IP Interface started");
     info!("  Manufacturer: {:04x}", IpInterfaceDevice::MANUFACTURER_ID);
@@ -436,15 +421,9 @@ async fn main(spawner: Spawner) {
 
     let prog_btn_pin = Input::new(p.PIN_17, Pull::Up);
 
-    spawner
-        .spawn(prog_task(knx_stack, prog_btn_pin))
-        .expect("prog_task spawnable once");
-    spawner
-        .spawn(restart_task(knx_stack, storage))
-        .expect("restart_task spawnable once");
-    spawner
-        .spawn(lifecycle_task(knx_stack))
-        .expect("lifecycle_task spawnable once");
+    spawner.spawn(prog_task(knx_stack, prog_btn_pin)).expect("prog_task spawnable once");
+    spawner.spawn(restart_task(knx_stack, storage)).expect("restart_task spawnable once");
+    spawner.spawn(lifecycle_task(knx_stack)).expect("lifecycle_task spawnable once");
 
     // ========================================================================
     // Main loop: heartbeat LED + programming mode LED

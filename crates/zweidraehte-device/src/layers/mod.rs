@@ -5,8 +5,8 @@
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::channel::{DynamicSender, Receiver};
 
-use crate::messages::builder::{ConfirmationMessage, IndicationMessage};
 use crate::messages::buffers::Buffer;
+use crate::messages::builder::{ConfirmationMessage, IndicationMessage};
 
 /// Async message inbox that yields one message per call.
 pub trait Inbox<M> {
@@ -76,6 +76,24 @@ pub trait LinkLayerBuilderBase: Sized {
     /// in [`StackResources`](crate::StackResources) and passed by mutable
     /// reference to [`LinkLayerBuilder::build_and_run`] when the stack runs.
     fn create_resources(&self) -> Self::Resources;
+}
+
+/// Link-layer-derived device capabilities.
+///
+/// Allows the stack to query compile-time metadata from the link layer
+/// builder without the rest of the stack being parameterised on the
+/// builder's own type parameters (e.g. `FeatureSet`).
+///
+/// The default returns `0` for every constant, which is correct for all
+/// non-IP link layers (TPUART, USB, mock). The KNX/IP builder overrides
+/// [`KNXNETIP_DEVICE_CAPABILITIES`](Self::KNXNETIP_DEVICE_CAPABILITIES)
+/// by forwarding the value from its `FeatureSet`.
+pub trait LinkLayerCapabilities {
+    /// PID\_KNXNETIP\_DEVICE\_CAPABILITIES (PID 68) bitfield.
+    ///
+    /// Non-IP link layers leave this at the default `0`.
+    /// KNX/IP builders derive it from their [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet).
+    const KNXNETIP_DEVICE_CAPABILITIES: u16 = 0;
 }
 
 /// Build and run a link layer with a given runtime context.

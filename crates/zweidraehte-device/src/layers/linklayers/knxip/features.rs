@@ -25,11 +25,11 @@ use heapless::Vec;
 
 use crate::messages::buffers::Buffer;
 use crate::messages::knx::KnxMessageBuffer;
-use crate::messages::knxip::substructs::{self, SupportedService};
 use crate::messages::knxip::KNXnetIPServiceType;
+use crate::messages::knxip::substructs::{self, SupportedService};
 
-use super::services::routing::RoutingServer;
 use super::services::remote_config::RemoteConfigurationServer;
+use super::services::routing::RoutingServer;
 use super::{EndpointType, PendingResponse, ServerContext, ServerError};
 
 // ============================================================================
@@ -45,6 +45,21 @@ pub trait FeatureSet {
     type RemoteConfig: RemoteConfigFeature;
     type Tunneling: TunnelingFeature;
     type Tcp: TcpFeature;
+
+    /// PID_KNXNETIP_DEVICE_CAPABILITIES bitfield derived from enabled features.
+    ///
+    /// | Bit | Capability                        |
+    /// |-----|-----------------------------------|
+    /// |  0  | Device Management (always set)    |
+    /// |  1  | Tunneling                         |
+    /// |  2  | Routing                           |
+    /// |  3  | Remote Logging (not implemented)  |
+    /// |  4  | Remote Config & Diagnosis         |
+    /// |  5  | Object Server (not implemented)   |
+    const KNXNETIP_DEVICE_CAPABILITIES: u16 = 0x0001 // Device Management always present
+        | if Self::Routing::ENABLED { 1 << 2 } else { 0 }
+        | if Self::Tunneling::ENABLED { 1 << 1 } else { 0 }
+        | if Self::RemoteConfig::ENABLED { 1 << 4 } else { 0 };
 }
 
 /// Bundle of feature marker types, parameterizing the KNX/IP link layer.
@@ -110,6 +125,7 @@ pub type KnxIpInterfaceTcp<const N: usize> = Features<NoRouting, WithRemoteConfi
 /// delegates all dispatch calls. The disabled variant ([`NoRouting`])
 /// uses `Server = ()` and returns empty results from all methods.
 pub trait RoutingFeature: 'static {
+    const ENABLED: bool;
     type Server;
 
     fn create_server(multicast_addr: Ipv4Addr, port: u16) -> Self::Server;
@@ -142,6 +158,7 @@ pub trait RoutingFeature: 'static {
 pub struct WithRouting;
 
 impl RoutingFeature for WithRouting {
+    const ENABLED: bool = true;
     type Server = RoutingServer;
 
     fn create_server(multicast_addr: Ipv4Addr, port: u16) -> Self::Server {
@@ -200,6 +217,7 @@ impl RoutingFeature for WithRouting {
 pub struct NoRouting;
 
 impl RoutingFeature for NoRouting {
+    const ENABLED: bool = false;
     type Server = ();
 
     fn create_server(_multicast_addr: Ipv4Addr, _port: u16) -> Self::Server {}
@@ -245,6 +263,7 @@ impl RoutingFeature for NoRouting {
 
 /// Compile-time feature slot for Remote Diagnostics & Configuration.
 pub trait RemoteConfigFeature: 'static {
+    const ENABLED: bool;
     type Server;
 
     fn create_server() -> Self::Server;
@@ -270,6 +289,7 @@ pub trait RemoteConfigFeature: 'static {
 pub struct WithRemoteConfig;
 
 impl RemoteConfigFeature for WithRemoteConfig {
+    const ENABLED: bool = true;
     type Server = RemoteConfigurationServer;
 
     fn create_server() -> Self::Server {
@@ -318,6 +338,7 @@ impl RemoteConfigFeature for WithRemoteConfig {
 pub struct NoRemoteConfig;
 
 impl RemoteConfigFeature for NoRemoteConfig {
+    const ENABLED: bool = false;
     type Server = ();
 
     fn create_server() -> Self::Server {}
@@ -362,6 +383,8 @@ impl RemoteConfigFeature for NoRemoteConfig {
 /// in [`CompositeHandlers`](super::connections::CompositeHandlers).
 #[allow(private_interfaces)] // build_handlers takes &dyn KnxNetIpContext (pub(crate)), but that's fine — only called internally
 pub trait TunnelingFeature: 'static {
+    const ENABLED: bool;
+
     /// Maximum number of tunneling slots (additional individual addresses).
     ///
     /// Used to size Vecs in the connection manager and server context.
@@ -393,6 +416,7 @@ pub struct WithTunneling<const N: usize>;
 
 #[allow(private_interfaces)]
 impl<const N: usize> TunnelingFeature for WithTunneling<N> {
+    const ENABLED: bool = true;
     const CAPACITY: usize = N;
     type Tunnel = super::connections::WithTunnel<N>;
 
@@ -429,6 +453,7 @@ pub struct NoTunneling;
 
 #[allow(private_interfaces)]
 impl TunnelingFeature for NoTunneling {
+    const ENABLED: bool = false;
     const CAPACITY: usize = 0;
     type Tunnel = super::connections::NoTunnel;
 

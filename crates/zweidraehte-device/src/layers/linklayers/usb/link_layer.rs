@@ -143,9 +143,7 @@ impl UsbLinkLayerBuilder {
     async fn read_comm_mode<'a, D: UsbHidDevice>(
         transport: &mut UsbCemiTransport<'a, D>,
     ) -> Result<u8, super::device::UsbHidError> {
-        let data = transport
-            .read_property_value(properties::CEMI_SERVER_OBJECT, properties::PID_COMM_MODE)
-            .await?;
+        let data = transport.read_property_value(properties::CEMI_SERVER_OBJECT, properties::PID_COMM_MODE).await?;
 
         if data.is_empty() {
             return Err(super::device::UsbHidError::InvalidReport);
@@ -162,6 +160,8 @@ impl LinkLayerBuilderBase for UsbLinkLayerBuilder {
         UsbLinkLayerResources::new()
     }
 }
+
+impl crate::layers::LinkLayerCapabilities for UsbLinkLayerBuilder {}
 
 impl UsbLinkLayerBuilder {
     /// Open the USB device and negotiate cEMI mode.
@@ -229,9 +229,7 @@ impl UsbLinkLayerBuilder {
     }
 
     /// Query the interface's max APDU length, falling back to the default.
-    async fn query_max_apdu_length<'a, D: UsbHidDevice>(
-        transport: &mut UsbCemiTransport<'a, D>,
-    ) -> u16 {
+    async fn query_max_apdu_length<'a, D: UsbHidDevice>(transport: &mut UsbCemiTransport<'a, D>) -> u16 {
         match Self::read_max_apdu_length(transport).await {
             Ok(len) => {
                 info!("USB Link Layer: Interface max APDU length: {} bytes", len);
@@ -358,8 +356,7 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
             buffer.push_slice(cemi_data);
 
             // Create typed cEMI message and convert to internal format
-            let cemi_msg: KnxMessageBuffer<Buffer<'static>, CemiFormat> =
-                KnxMessageBuffer::from_cemi(buffer);
+            let cemi_msg: KnxMessageBuffer<Buffer<'static>, CemiFormat> = KnxMessageBuffer::from_cemi(buffer);
             let internal_msg = cemi_msg.into_internal();
 
             let indication = IndicationMessage::indication(internal_msg);
@@ -404,8 +401,7 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
         match self.transport.send_cemi_raw(&cemi_buffer[..]).await {
             Ok(()) => {
                 // Store pending transmission, wait for confirmation
-                self.pending_tx =
-                    Some(PendingTransmission { buffer: cemi_buffer, sent_at: Instant::now() });
+                self.pending_tx = Some(PendingTransmission { buffer: cemi_buffer, sent_at: Instant::now() });
                 self.timeout_deadline = Some(Instant::now() + TUNNEL_TIMEOUT);
             }
             Err(e) => {

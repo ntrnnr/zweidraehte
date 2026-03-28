@@ -1,5 +1,8 @@
 {
-    "rust-analyzer.checkOnSave.allTargets": false,
+    "rust-analyzer.linkedProjects": [
+        "Cargo.toml",
+        "cross/Cargo.toml"
+    ],
     "editor.formatOnSave": true,
     "rust-analyzer.cargo.features": "all"
 }

@@ -31,8 +31,7 @@ impl TcpListenerInner {
                 use std::ffi::OsString;
 
                 let interface_os: OsString = interface.into();
-                setsockopt(&s, BindToDevice, &interface_os)
-                    .map_err(std::io::Error::other)?;
+                setsockopt(&s, BindToDevice, &interface_os).map_err(std::io::Error::other)?;
             }
         }
 
@@ -113,12 +112,7 @@ impl embedded_io_async::Read for AsyncTcpStream {
     async fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, crate::Error> {
         // SAFETY: We don't move the Async wrapper while the I/O operation
         // is in progress — the borrow of `self` prevents that.
-        unsafe {
-            self.watcher
-                .read_with_mut(|io| io.read(buf))
-                .await
-                .map_err(|e| e.into())
-        }
+        unsafe { self.watcher.read_with_mut(|io| io.read(buf)).await.map_err(|e| e.into()) }
     }
 }
 
@@ -126,23 +120,13 @@ impl embedded_io_async::Write for AsyncTcpStream {
     async fn write(&mut self, buf: &[u8]) -> core::result::Result<usize, crate::Error> {
         // SAFETY: We don't move the Async wrapper while the I/O operation
         // is in progress — the borrow of `self` prevents that.
-        unsafe {
-            self.watcher
-                .write_with_mut(|io| io.write(buf))
-                .await
-                .map_err(|e| e.into())
-        }
+        unsafe { self.watcher.write_with_mut(|io| io.write(buf)).await.map_err(|e| e.into()) }
     }
 
     async fn flush(&mut self) -> core::result::Result<(), crate::Error> {
         // SAFETY: We don't move the Async wrapper while the I/O operation
         // is in progress — the borrow of `self` prevents that.
-        unsafe {
-            self.watcher
-                .write_with_mut(|io| io.flush())
-                .await
-                .map_err(|e| e.into())
-        }
+        unsafe { self.watcher.write_with_mut(|io| io.flush()).await.map_err(|e| e.into()) }
     }
 }
 

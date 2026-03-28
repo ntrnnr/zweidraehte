@@ -120,6 +120,17 @@ pub trait StackState {
         // Default: no-op for implementations that don't support this
     }
 
+    /// Receive link-layer-derived capabilities at boot time.
+    ///
+    /// Called once during stack initialisation with the value of
+    /// [`LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES`](crate::layers::LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES).
+    /// IP extensions store PID 68 here; non-IP devices ignore it.
+    ///
+    /// Default implementation does nothing.
+    fn set_link_layer_capabilities(&self, _capabilities: u16) {
+        // Default: no-op for implementations without IP extension state
+    }
+
     // =========================================================================
     // Programming Mode
     // =========================================================================
@@ -216,38 +227,4 @@ pub trait StackState {
     fn key_write(&self, _level: u8, _key: &[u8; 4], _ctx: AccessContext) -> u8 {
         0xFF // Not supported by default
     }
-}
-
-// ============================================================================
-// Domain Address
-// ============================================================================
-
-/// Trait for devices that store a domain address.
-///
-/// The domain address is a medium-specific identifier:
-/// - **KNX/IP**: 4-byte IPv4 multicast address (e.g., `224.0.23.12`)
-/// - **RF**: 6-byte RF domain address
-/// - **TP1**: Not applicable (domain address length is 0)
-///
-/// Used by `A_DomainAddressSerialNumber_Read/Write` services. The AL
-/// extension for domain address handling requires this trait on the
-/// device state.
-pub trait HasDomainAddress {
-    /// Domain address length in bytes.
-    ///
-    /// This determines how many bytes are included in
-    /// `A_DomainAddressSerialNumber_Response` and expected in
-    /// `A_DomainAddressSerialNumber_Write`.
-    const DOMAIN_ADDRESS_LENGTH: usize;
-
-    /// Get the current domain address.
-    ///
-    /// The returned slice must be exactly [`DOMAIN_ADDRESS_LENGTH`](Self::DOMAIN_ADDRESS_LENGTH) bytes.
-    /// For IP devices this is the routing multicast address in network byte order.
-    fn domain_address(&self, buf: &mut [u8]);
-
-    /// Set the domain address.
-    ///
-    /// `addr` is exactly [`DOMAIN_ADDRESS_LENGTH`](Self::DOMAIN_ADDRESS_LENGTH) bytes.
-    fn set_domain_address(&self, addr: &[u8]);
 }

@@ -160,10 +160,9 @@ pub async fn read_frame_async(stream: &Async<UnixStream>) -> io::Result<Option<I
     let len = u16::from_le_bytes([header[1], header[2]]) as usize;
 
     let mut payload = vec![0u8; len];
-    if len > 0
-        && !read_exact_async(stream, &mut payload).await? {
-            return Ok(None);
-        }
+    if len > 0 && !read_exact_async(stream, &mut payload).await? {
+        return Ok(None);
+    }
 
     Ok(Some(IpcFrame { tag, payload }))
 }
@@ -236,15 +235,11 @@ impl SharedMemory {
         let size = SHM_SIZE;
 
         // Create anonymous fd
-        let fd = memfd::memfd_create(
-            c"conformance_state",
-            memfd::MemFdCreateFlag::MFD_CLOEXEC,
-        )
-        .map_err(io::Error::other)?;
+        let fd =
+            memfd::memfd_create(c"conformance_state", memfd::MemFdCreateFlag::MFD_CLOEXEC).map_err(io::Error::other)?;
 
         // Set the size
-        nix::unistd::ftruncate(&fd, size as i64)
-            .map_err(io::Error::other)?;
+        nix::unistd::ftruncate(&fd, size as i64).map_err(io::Error::other)?;
 
         // Map into our address space
         let ptr = unsafe {
@@ -356,12 +351,10 @@ impl SharedMemory {
     pub fn clear_cloexec(&self) -> io::Result<()> {
         use nix::fcntl;
         let raw = self.fd.as_raw_fd();
-        let flags = fcntl::fcntl(raw, fcntl::FcntlArg::F_GETFD)
-            .map_err(io::Error::other)?;
+        let flags = fcntl::fcntl(raw, fcntl::FcntlArg::F_GETFD).map_err(io::Error::other)?;
         let mut fd_flags = nix::fcntl::FdFlag::from_bits_truncate(flags);
         fd_flags.remove(nix::fcntl::FdFlag::FD_CLOEXEC);
-        fcntl::fcntl(raw, fcntl::FcntlArg::F_SETFD(fd_flags))
-            .map_err(io::Error::other)?;
+        fcntl::fcntl(raw, fcntl::FcntlArg::F_SETFD(fd_flags)).map_err(io::Error::other)?;
         Ok(())
     }
 }
@@ -369,10 +362,8 @@ impl SharedMemory {
 impl Drop for SharedMemory {
     fn drop(&mut self) {
         unsafe {
-            let _ = nix::sys::mman::munmap(
-                std::ptr::NonNull::new(self.ptr as *mut _).expect("non-null ptr"),
-                self.size,
-            );
+            let _ =
+                nix::sys::mman::munmap(std::ptr::NonNull::new(self.ptr as *mut _).expect("non-null ptr"), self.size);
         }
         // OwnedFd closes the fd when dropped (happens automatically after this)
     }
@@ -450,9 +441,7 @@ impl<'a> IpcLinkLayer<'a> {
                             let converted_buf = tp1::tp1_to_knx_message_no_checksum(msg.into_inner());
                             let internal_msg = KnxMessageBuffer::new(converted_buf, ServiceType::L_Data_Ind);
                             log::debug!("IPC LL injecting message: {:x?}", internal_msg);
-                            self.ind_tx.send(
-                                IndicationMessage::indication(internal_msg)
-                            ).await;
+                            self.ind_tx.send(IndicationMessage::indication(internal_msg)).await;
                         }
                         TAG_SET_PROGRAMMING_MODE => {
                             let enabled = frame.payload.first().copied().unwrap_or(0) != 0;
@@ -619,6 +608,8 @@ impl LinkLayerBuilderBase for IpcLinkLayerBuilder {
     }
 }
 
+impl zweidraehte_device::layers::LinkLayerCapabilities for IpcLinkLayerBuilder {}
+
 impl<CTX> LinkLayerBuilder<CTX> for IpcLinkLayerBuilder {
     fn build_and_run<'a>(
         self,
@@ -629,13 +620,7 @@ impl<CTX> LinkLayerBuilder<CTX> for IpcLinkLayerBuilder {
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl Future<Output = !> + 'a {
-        let mut link_layer = IpcLinkLayer::new(
-            ind_tx,
-            conf_tx,
-            self.socket,
-            self.buffer_manager,
-            self.command_tx,
-        );
+        let mut link_layer = IpcLinkLayer::new(ind_tx, conf_tx, self.socket, self.buffer_manager, self.command_tx);
         async move { link_layer.process(req_rx).await }
     }
 }

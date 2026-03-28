@@ -8,8 +8,7 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_rp::{
-    bind_interrupts,
-    flash,
+    bind_interrupts, flash,
     gpio::{Input, Level, Output, Pull},
     peripherals::UART0,
     uart::{Config as UartConfig, Parity, Uart},
@@ -29,11 +28,8 @@ use devices::light_switch::{
 };
 
 use zweidraehte_device::{
-    bcus::system_b::*,
-    config::MAX_APDU_LENGTH_EXTENDED,
-    layers::linklayers::tpuart::TpUartLinkLayerBuilder,
-    prelude::*,
-    storage::DeviceStorage,
+    bcus::system_b::*, config::MAX_APDU_LENGTH_EXTENDED, layers::linklayers::tpuart::TpUartLinkLayerBuilder,
+    prelude::*, storage::DeviceStorage,
 };
 
 use rp_common::button::DebouncedButton;
@@ -89,17 +85,17 @@ impl StackDefinition for PicoTp1LightSwitch {
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
     type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
+    type ES = Tp1ExtensionState;
     type State = PicoTp1State;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, PicoTp1State, (&'a Tp1ExtensionState, EasterEggAugment)>;
+    type InterfaceObjects<'a> =
+        DefaultSystemBInterfaceObjects<'a, PicoTp1State, (&'a Tp1ExtensionState, EasterEggAugment)>;
 
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-    ) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), (state.extension_state(), EasterEggAugment))
+        create_system_b_objects_with_extra::<Self, _>(state, platform, &Self::memory_layout(), EasterEggAugment)
     }
 
     type LayerBuilder = InsecureDeviceBuilder;
@@ -143,10 +139,7 @@ async fn knx_task(runner: Runner<'static, PicoTp1LightSwitch>) -> ! {
 /// updated from the heartbeat loop so it also tracks remote changes
 /// from ETS without interfering with edge detection here.
 #[embassy_executor::task]
-async fn prog_task(
-    knx: Stack<'static, PicoTp1LightSwitch>,
-    prog_btn_pin: Input<'static>,
-) -> ! {
+async fn prog_task(knx: Stack<'static, PicoTp1LightSwitch>, prog_btn_pin: Input<'static>) -> ! {
     let mut btn = DebouncedButton::new(prog_btn_pin);
     let debounce = Duration::from_millis(50);
 
@@ -170,13 +163,10 @@ async fn prog_task(
 /// 3. Sends the A_Restart_Response back to the stack
 /// 4. Triggers a Cortex-M system reset
 #[embassy_executor::task]
-async fn restart_task(
-    knx: Stack<'static, PicoTp1LightSwitch>,
-    storage: &'static RefCell<Storage>,
-) -> ! {
+async fn restart_task(knx: Stack<'static, PicoTp1LightSwitch>, storage: &'static RefCell<Storage>) -> ! {
     use rp_common::CortexMSystem;
-    use zweidraehte_platform::SystemControl;
     use zweidraehte_device::restart::EraseCode;
+    use zweidraehte_platform::SystemControl;
 
     loop {
         let request = knx.receive_restart_request().await;
@@ -269,11 +259,7 @@ async fn lifecycle_task(knx: Stack<'static, PicoTp1LightSwitch>) -> ! {
 /// (switch, dimmer, blind, scene), then publishes to the appropriate
 /// communication objects on the KNX bus.
 #[embassy_executor::task]
-async fn app_task(
-    knx: Stack<'static, PicoTp1LightSwitch>,
-    btn1_pin: Input<'static>,
-    btn2_pin: Input<'static>,
-) -> ! {
+async fn app_task(knx: Stack<'static, PicoTp1LightSwitch>, btn1_pin: Input<'static>, btn2_pin: Input<'static>) -> ! {
     let mut btn1 = DebouncedButton::new(btn1_pin);
     let mut btn2 = DebouncedButton::new(btn2_pin);
 
@@ -299,27 +285,16 @@ async fn app_task(
         let long_press = params.long_press_time.as_duration();
 
         // Race both buttons — whichever fires first gets processed.
-        match select(
-            btn1.wait_for_press(debounce, Some(long_press)),
-            btn2.wait_for_press(debounce, Some(long_press)),
-        )
-        .await
+        match select(btn1.wait_for_press(debounce, Some(long_press)), btn2.wait_for_press(debounce, Some(long_press)))
+            .await
         {
             Either::First(event) => {
                 let mut waiter = ReleaseWaiter { btn: &mut btn1, debounce };
-                app::handle_button_press(
-                    &knx, &params, event, ButtonId::Btn1,
-                    &mut waiter, &mut btn1_dim_up,
-                )
-                .await;
+                app::handle_button_press(&knx, &params, event, ButtonId::Btn1, &mut waiter, &mut btn1_dim_up).await;
             }
             Either::Second(event) => {
                 let mut waiter = ReleaseWaiter { btn: &mut btn2, debounce };
-                app::handle_button_press(
-                    &knx, &params, event, ButtonId::Btn2,
-                    &mut waiter, &mut btn2_dim_up,
-                )
-                .await;
+                app::handle_button_press(&knx, &params, event, ButtonId::Btn2, &mut waiter, &mut btn2_dim_up).await;
             }
         }
     }
@@ -356,10 +331,8 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     let mut flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    let identity_data = rp_common::read_or_provision_identity(
-        &mut flash,
-        LightSwitchDevice::MANUFACTURER_ID.to_be_bytes(),
-    );
+    let identity_data =
+        rp_common::read_or_provision_identity(&mut flash, LightSwitchDevice::MANUFACTURER_ID.to_be_bytes());
 
     info!("Serial: {=[u8]:02x}", identity_data.serial_number);
 
@@ -424,7 +397,11 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             PicoTp1LightSwitch,
-            { zweidraehte_device::config::buffer_size_for_apdu(<PicoTp1LightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
+            {
+                zweidraehte_device::config::buffer_size_for_apdu(
+                    <PicoTp1LightSwitch as StackDefinition>::MAX_APDU_LENGTH,
+                )
+            },
         >,
     > = StaticCell::new();
 
@@ -434,16 +411,19 @@ async fn main(spawner: Spawner) {
         (), // hook context — not needed, app logic runs via the stack handle
         link_layer_builder,
         device_state,
+        (), // no platform needed for TP1
         PicoTp1LightSwitch::memory_map(),
     );
 
-    spawner
-        .spawn(knx_task(knx_runner))
-        .expect("knx_task spawnable once");
+    spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 
     info!("KNX TP1 stack started");
     info!("  Manufacturer: {:04x}", LightSwitchDevice::MANUFACTURER_ID);
-    info!("  Application:  {:04x} v{:02x}", LightSwitchDevice::APPLICATION_ID_TP1, LightSwitchDevice::APPLICATION_VERSION);
+    info!(
+        "  Application:  {:04x} v{:02x}",
+        LightSwitchDevice::APPLICATION_ID_TP1,
+        LightSwitchDevice::APPLICATION_VERSION
+    );
     info!("  Mask version: 07B0 (System B TP1)");
 
     // ========================================================================
@@ -455,18 +435,10 @@ async fn main(spawner: Spawner) {
     let btn2_pin = Input::new(p.PIN_19, Pull::Up);
     let prog_btn_pin = Input::new(p.PIN_17, Pull::Up);
 
-    spawner
-        .spawn(app_task(knx_stack, btn1_pin, btn2_pin))
-        .expect("app_task spawnable once");
-    spawner
-        .spawn(prog_task(knx_stack, prog_btn_pin))
-        .expect("prog_task spawnable once");
-    spawner
-        .spawn(restart_task(knx_stack, storage))
-        .expect("restart_task spawnable once");
-    spawner
-        .spawn(lifecycle_task(knx_stack))
-        .expect("lifecycle_task spawnable once");
+    spawner.spawn(app_task(knx_stack, btn1_pin, btn2_pin)).expect("app_task spawnable once");
+    spawner.spawn(prog_task(knx_stack, prog_btn_pin)).expect("prog_task spawnable once");
+    spawner.spawn(restart_task(knx_stack, storage)).expect("restart_task spawnable once");
+    spawner.spawn(lifecycle_task(knx_stack)).expect("lifecycle_task spawnable once");
 
     // ========================================================================
     // Main loop: heartbeat LED + programming mode LED + periodic save

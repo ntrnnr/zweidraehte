@@ -17,16 +17,16 @@ use crate::{
     AccessContext, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS, StackState,
     address::IndividualAddress,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
-    objects::interface::{HasMaxRetryCount, HasRoutingCount},
-    objects::tables::{
-        HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication,
-    },
-    objects::tables::{
-        HasLoadStateMachine, HasRunStateMachine, Table,
-        addr7::AddrTab7Impl,
-        app::{Application, PeiApplication},
-        asso6::AssoTab6Impl,
-        co7::CoTab7Impl,
+    objects::{
+        interface::{HasDomainAddress, HasMaxRetryCount, HasRoutingCount},
+        tables::{
+            HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine,
+            HasPeiApplication, HasRunStateMachine, Table,
+            addr7::AddrTab7Impl,
+            app::{Application, PeiApplication},
+            asso6::AssoTab6Impl,
+            co7::CoTab7Impl,
+        },
     },
 };
 
@@ -565,6 +565,10 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     fn mark_dirty(&self) {
         SystemBDeviceState::mark_dirty(self);
     }
+
+    fn set_link_layer_capabilities(&self, capabilities: u16) {
+        self.extension_state.set_link_layer_capabilities(capabilities);
+    }
 }
 
 // ============================================================================
@@ -664,6 +668,26 @@ impl<
 
     fn set_max_retry_count(&self, value: u8) {
         self.extension_state.set_max_retry_count(value);
+        self.mark_dirty();
+    }
+}
+
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    ES: ExtensionState + HasDomainAddress,
+> HasDomainAddress for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+{
+    const DOMAIN_ADDRESS_LENGTH: usize = ES::DOMAIN_ADDRESS_LENGTH;
+
+    fn domain_address(&self, buf: &mut [u8]) {
+        self.extension_state.domain_address(buf);
+    }
+
+    fn set_domain_address(&self, addr: &[u8]) {
+        self.extension_state.set_domain_address(addr);
         self.mark_dirty();
     }
 }

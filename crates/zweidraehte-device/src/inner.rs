@@ -23,6 +23,30 @@ use crate::{
 };
 
 // ============================================================================
+// IpCapableStack — bound bundle for IP context traits
+// ============================================================================
+
+/// Bound bundle for stack definitions with full IP context support.
+///
+/// Auto-implemented via blanket impl. Simplifies where clauses on
+/// [`StackContext`] trait impls that need IP extension state and platform.
+#[cfg(feature = "knxip")]
+pub trait IpCapableStack:
+    StackDefinition<State: crate::bcus::system_b::HasExtensionState<ES: crate::IpStackState>, Platform: crate::IpPlatform>
+{
+}
+
+#[cfg(feature = "knxip")]
+impl<D> IpCapableStack for D
+where
+    D: StackDefinition,
+    D::State: crate::bcus::system_b::HasExtensionState,
+    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::IpStackState,
+    D::Platform: crate::IpPlatform,
+{
+}
+
+// ============================================================================
 // Inner
 // ============================================================================
 
@@ -47,6 +71,11 @@ pub(crate) struct Inner<D: StackDefinition> {
     pub(crate) restart_channel: Channel<D::Mutex, restart::RestartRequest, 1>,
     /// Unified device state containing runtime state, tables, and configuration
     pub(crate) state: D::State,
+    /// Platform abstraction for querying/applying network configuration.
+    ///
+    /// For KNX/IP devices this provides current IP, MAC, capabilities, etc.
+    /// For non-IP devices this is `()`.
+    pub(crate) platform: D::Platform,
     /// Hook context for communication object hooks
     pub(crate) hook_context: <D::CO as ComObjects>::HookContext,
     /// Memory map for A_Memory_Read/Write services
@@ -135,12 +164,9 @@ impl<D: StackDefinition> crate::context::PropertyServiceContext for StackContext
 }
 
 #[cfg(feature = "knxip")]
-impl<D: StackDefinition> crate::context::DeviceInfoContext for StackContext<'_, D>
-where
-    D::State: crate::bcus::system_b::HasExtensionState,
-    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::IpStackState,
-{
+impl<D: IpCapableStack> crate::context::DeviceInfoContext for StackContext<'_, D> {
     fn device_information(&self) -> crate::messages::knxip::substructs::DeviceInformation {
+        use crate::IpPlatform;
         use crate::IpStackState;
         use crate::bcus::system_b::HasExtensionState;
         use crate::messages::knxip::substructs::{DeviceInformation, DeviceStatus, KNXMedium};
@@ -148,6 +174,7 @@ where
 
         let state = &self.inner.state;
         let ip = state.extension_state();
+        let platform = &self.inner.platform;
 
         DeviceInformation {
             medium: KNXMedium::KNXIP,
@@ -156,7 +183,7 @@ where
             project_installation_identifier: ip.project_installation_id(),
             knx_serial_number: *state.serial_number(),
             routing_multicast_address: ip.routing_multicast_address(),
-            mac_address: EthernetAddress(ip.mac_address()),
+            mac_address: EthernetAddress(platform.mac_address()),
             friendly_name: ip.friendly_name(),
         }
     }
@@ -177,47 +204,40 @@ where
 }
 
 #[cfg(feature = "knxip")]
-impl<D: StackDefinition> crate::context::IpDiagnosticsContext for StackContext<'_, D>
-where
-    D::State: crate::bcus::system_b::HasExtensionState,
-    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::IpStackState,
-{
+impl<D: IpCapableStack> crate::context::IpDiagnosticsContext for StackContext<'_, D> {
     fn ip_config(&self) -> crate::messages::knxip::substructs::IpConfig {
+        use crate::IpPlatform;
         use crate::IpStackState;
         use crate::bcus::system_b::HasExtensionState;
 
         let ip = self.inner.state.extension_state();
+        let platform = &self.inner.platform;
         crate::messages::knxip::substructs::IpConfig {
             ip_address: ip.configured_ip_address(),
             subnet_mask: ip.configured_subnet_mask(),
             default_gateway: ip.configured_default_gateway(),
-            ip_capabilities: ip.ip_capabilities(),
+            ip_capabilities: platform.ip_capabilities(),
             ip_assignment_method: ip.ip_assignment_method(),
         }
     }
 
     fn ip_current_config(&self) -> crate::messages::knxip::substructs::IpCurrentConfig {
-        use crate::IpStackState;
-        use crate::bcus::system_b::HasExtensionState;
+        use crate::IpPlatform;
 
-        let ip = self.inner.state.extension_state();
+        let platform = &self.inner.platform;
         crate::messages::knxip::substructs::IpCurrentConfig {
-            ip_address: ip.current_ip_address(),
-            subnet_mask: ip.current_subnet_mask(),
-            default_gateway: ip.current_default_gateway(),
+            ip_address: platform.current_ip_address(),
+            subnet_mask: platform.current_subnet_mask(),
+            default_gateway: platform.current_default_gateway(),
             // TODO: Track DHCP server address when DHCP is implemented
             dhcp_server: core::net::Ipv4Addr::UNSPECIFIED,
-            ip_assignment_method: ip.current_ip_assignment_method(),
+            ip_assignment_method: platform.current_ip_assignment_method(),
         }
     }
 }
 
 #[cfg(feature = "knxip")]
-impl<D: StackDefinition> crate::context::IpAdditionalIndividualAddressContext for StackContext<'_, D>
-where
-    D::State: crate::bcus::system_b::HasExtensionState,
-    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::IpStackState,
-{
+impl<D: IpCapableStack> crate::context::IpAdditionalIndividualAddressContext for StackContext<'_, D> {
     fn write_additional_individual_addresses(&self, buf: &mut [crate::address::IndividualAddress]) -> usize {
         use crate::IpStackState;
         use crate::bcus::system_b::HasExtensionState;

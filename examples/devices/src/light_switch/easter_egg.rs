@@ -4,38 +4,28 @@
 //! on the Device Object at a manufacturer-specific property ID.
 //! Send certain ASCII phrases, get witty replies.
 //!
-//! # Wiring (KNX/IP)
+//! # Wiring
+//!
+//! Pass `EasterEggAugment` as the extra augment via
+//! [`create_system_b_objects_with_extra`](zweidraehte_device::bcus::system_b::create_system_b_objects_with_extra):
 //!
 //! ```rust,ignore
 //! use devices::light_switch::easter_egg::EasterEggAugment;
 //! use zweidraehte_device::bcus::system_b::*;
 //!
-//! type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
-//!     'a, MyState, (&'a IpExtensionState<MyPlatform>, EasterEggAugment),
-//! >;
-//!
-//! fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a> {
-//!     create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), (state.extension_state(), EasterEggAugment))
-//! }
-//! ```
-//!
-//! # Wiring (TP1)
-//!
-//! ```rust,ignore
-//! type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, MyState, EasterEggAugment>;
-//!
-//! fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a> {
-//!     create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), EasterEggAugment)
+//! fn create_interface_objects<'a>(...) -> Self::InterfaceObjects<'a> {
+//!     create_system_b_objects_with_extra::<Self, _>(
+//!         state, platform, &Self::memory_layout(), EasterEggAugment,
+//!     )
 //! }
 //! ```
 
+use zweidraehte_device::StackState;
 use zweidraehte_device::dpt::{InterfaceObjectType, PDT_Function};
 use zweidraehte_device::objects::interface::{
-    FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment,
-    PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError,
-    PropertyLookup,
+    FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess,
+    PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup,
 };
-use zweidraehte_device::StackState;
 
 /// Manufacturer-specific property ID used for the easter egg.
 ///
@@ -84,18 +74,12 @@ impl<S: StackState> InterfaceObjectAugment<S> for EasterEggAugment {
 
         // Responses must fit in MAX_FUNCTION_PROPERTY_RESPONSE (64 bytes).
         Some(match req.service_data {
-            b"knock knock" => FunctionPropertyResult::success_with_data(
-                b"Who's there? ...a lost packet. Wrong subnet.",
-            ),
-            b"42" => FunctionPropertyResult::success_with_data(
-                b"Correct! But on KNX, we write it 0x2A.",
-            ),
-            b"hello" => FunctionPropertyResult::success_with_data(
-                b"Guten Tag! I flip bits on twisted pair.",
-            ),
-            _ => FunctionPropertyResult::success_with_data(
-                b"Try: knock knock / 42 / hello",
-            ),
+            b"knock knock" => {
+                FunctionPropertyResult::success_with_data(b"Who's there? ...a lost packet. Wrong subnet.")
+            }
+            b"42" => FunctionPropertyResult::success_with_data(b"Correct! But on KNX, we write it 0x2A."),
+            b"hello" => FunctionPropertyResult::success_with_data(b"Guten Tag! I flip bits on twisted pair."),
+            _ => FunctionPropertyResult::success_with_data(b"Try: knock knock / 42 / hello"),
         })
     }
 }

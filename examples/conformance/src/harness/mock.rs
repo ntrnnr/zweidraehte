@@ -89,10 +89,7 @@ impl<'a, const N: usize, const C: usize> MockLinkLayer<'a, N, C> {
 }
 
 impl<'a, const N: usize, const C: usize> MockLinkLayer<'a, N, C> {
-    async fn handle_request(
-        &mut self,
-        msg: RequestMessage<Buffer<'static>>,
-    ) -> ConfirmationMessage<Buffer<'static>> {
+    async fn handle_request(&mut self, msg: RequestMessage<Buffer<'static>>) -> ConfirmationMessage<Buffer<'static>> {
         log::trace!("Mock LL received request: {:?}", msg);
 
         // Capture the outgoing message if a capture sender is configured
@@ -196,11 +193,7 @@ impl<const N: usize, const C: usize> MockLinkLayerHandle<N, C> {
 
     /// Try to receive a captured outgoing message without blocking
     pub fn try_receive_captured(&self) -> Option<CapturedLinkLayerMessage> {
-        if let Some(ref capture_receiver) = self.capture_receiver {
-            capture_receiver.try_receive().ok()
-        } else {
-            None
-        }
+        if let Some(ref capture_receiver) = self.capture_receiver { capture_receiver.try_receive().ok() } else { None }
     }
 
     /// Drain all pending captured messages from the channel
@@ -292,6 +285,8 @@ impl<const N: usize, const C: usize> LinkLayerBuilderBase for MockLinkLayerBuild
         MockLinkLayerResources::new()
     }
 }
+
+impl<const N: usize, const C: usize> zweidraehte_device::layers::LinkLayerCapabilities for MockLinkLayerBuilder<N, C> {}
 
 impl<CTX, const N: usize, const C: usize> LinkLayerBuilder<CTX> for MockLinkLayerBuilder<N, C> {
     fn build_and_run<'a>(

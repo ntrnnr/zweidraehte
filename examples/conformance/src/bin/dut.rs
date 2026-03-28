@@ -18,9 +18,8 @@ use static_cell::StaticCell;
 
 use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilder, SharedMemory, TAG_LOG, TAG_READY};
 use zweidraehte_conformance::harness::stack::{
-    ConformanceHookContext, ConformanceMemoryMap,
-    ConformancePersistedState, ConformanceState, IpcConformanceTestStack,
-    comm_objs::ConformanceComObjects, device_info,
+    ConformanceHookContext, ConformanceMemoryMap, ConformancePersistedState, ConformanceState, IpcConformanceTestStack,
+    MockIpPlatform, comm_objs::ConformanceComObjects, device_info,
 };
 
 use zweidraehte_device::messages::buffers::{BufferManager, DynBufferManager};
@@ -108,10 +107,7 @@ async fn handle_commands(
 // survives in shared memory.
 
 #[embassy_executor::task]
-async fn handle_restarts(
-    stack: Stack<'static, IpcConformanceTestStack>,
-    shm: &'static ShmCell,
-) {
+async fn handle_restarts(stack: Stack<'static, IpcConformanceTestStack>, shm: &'static ShmCell) {
     loop {
         let request = stack.receive_restart_request().await;
         let state = stack.state();
@@ -280,8 +276,7 @@ async fn main(spawner: Spawner) {
 
     // Map the parent's shared memory region.
     // SAFETY: The parent passed us valid fds via command-line args.
-    let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }
-        .expect("map shared memory");
+    let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
     // Deserialize device state from shared memory.
     let snapshot: ConformancePersistedState = shm
@@ -309,8 +304,8 @@ async fn main(spawner: Spawner) {
     let command_tx = unsafe { core::mem::transmute(command_tx) };
 
     // Create IPC link layer builder from the socket fd.
-    let link_layer_builder = IpcLinkLayerBuilder::new(socket_fd, dyn_buffer_manager, command_tx)
-        .expect("create IPC link layer");
+    let link_layer_builder =
+        IpcLinkLayerBuilder::new(socket_fd, dyn_buffer_manager, command_tx).expect("create IPC link layer");
 
     // Create stack resources.
     let resources = STACK_RESOURCES.init(StackResources::new());
@@ -325,6 +320,7 @@ async fn main(spawner: Spawner) {
         hook_context,
         link_layer_builder,
         state,
+        MockIpPlatform::new(),
         ConformanceMemoryMap,
     );
 
@@ -340,11 +336,9 @@ async fn main(spawner: Spawner) {
         use std::os::unix::io::FromRawFd;
         use std::os::unix::net::UnixStream;
 
-        let dup_fd = nix::unistd::dup(socket_fd)
-            .expect("dup socket fd for Ready frame");
+        let dup_fd = nix::unistd::dup(socket_fd).expect("dup socket fd for Ready frame");
         let mut stream = unsafe { UnixStream::from_raw_fd(dup_fd) };
-        ipc::write_frame_blocking(&mut stream, TAG_READY, &[])
-            .expect("send Ready frame");
+        ipc::write_frame_blocking(&mut stream, TAG_READY, &[]).expect("send Ready frame");
     }
 
     // Spawn the stack runner, command handler, and restart handler.

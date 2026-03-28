@@ -306,6 +306,11 @@ impl<W: Send + 'static, R: Send + 'static, A: AddressChecker + Send + 'static> s
     }
 }
 
+impl<W: Send + 'static, R: Send + 'static, A: AddressChecker + Send + 'static> super::super::LinkLayerCapabilities
+    for TpUartLinkLayerBuilder<W, R, A>
+{
+}
+
 impl<CTX, W, R, A> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<W, R, A>
 where
     CTX: crate::context::BufferManagerContext + crate::context::MaxRetryCountContext,
@@ -353,6 +358,11 @@ impl<W: Send + 'static, R: Send + 'static> super::super::LinkLayerBuilderBase
     fn create_resources(&self) -> Self::Resources {
         TpUartResources
     }
+}
+
+impl<W: Send + 'static, R: Send + 'static> super::super::LinkLayerCapabilities
+    for TpUartLinkLayerBuilder<W, R, AutoAddressChecker>
+{
 }
 
 impl<CTX, W, R> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<W, R, AutoAddressChecker>

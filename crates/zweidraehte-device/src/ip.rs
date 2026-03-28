@@ -1,65 +1,34 @@
 //! KNX/IP state extension
 //!
-//! This module contains IP-specific stack state, constants, and platform
+//! This module contains IP-specific stack state traits, constants, and platform
 //! re-exports used by KNXnet/IP devices.
+//!
+//! The IP state is split into two traits:
+//!
+//! - [`IpStackState`] — persisted/configured values (ETS-programmable, stored in
+//!   [`IpExtensionState`](crate::bcus::system_b::IpExtensionState)). These are
+//!   available anywhere the extension state is accessible.
+//!
+//! - [`IpPlatformState`] — current runtime values queried from the platform/OS
+//!   (actual IP, MAC, capabilities). These require a platform reference and are
+//!   only available in contexts that have one (augment, context traits).
 
 use core::net::Ipv4Addr;
 
 use crate::address::IndividualAddress;
-use crate::StackState;
 
-/// Extended stack state for KNXnet/IP devices.
+// ============================================================================
+// IpStackState — persisted/configured IP parameters
+// ============================================================================
+
+/// Persisted IP configuration state for KNXnet/IP devices.
 ///
-/// This trait extends [`StackState`] with IP-specific configuration and
-/// platform queries needed by [`IpParameterObject`](crate::objects::interface::IpParameterObject).
+/// This trait provides access to ETS-programmable IP parameters that are
+/// stored in the device's extension state and survive power cycles.
 ///
-/// The trait separates:
-/// - **Current values** (read from platform/OS): `current_ip_address()`, `current_subnet_mask()`, etc.
-/// - **Configured values** (ETS-programmable, persisted): `configured_ip_address()`, etc.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use core::cell::RefCell;
-/// use core::net::Ipv4Addr;
-/// use zweidraehte_device::{StackState, IpStackState, address::IndividualAddress};
-///
-/// pub struct MyIpDeviceState {
-///     // Base state
-///     individual_address: RefCell<IndividualAddress>,
-///     // IP state
-///     configured_ip: RefCell<Ipv4Addr>,
-///     configured_subnet: RefCell<Ipv4Addr>,
-///     configured_gateway: RefCell<Ipv4Addr>,
-///     friendly_name: RefCell<[u8; 30]>,
-///     // Platform reference for current values
-///     // ...
-/// }
-/// ```
+/// For current runtime values (actual IP from OS/DHCP, MAC address, device
+/// capabilities), see [`IpPlatformState`].
 pub trait IpStackState {
-    // ========================================================================
-    // Current values (read from platform/OS - typically read-only)
-    // ========================================================================
-
-    /// Get the current IP address from the platform/OS.
-    ///
-    /// This reflects the actual IP address the device is using, which may
-    /// differ from the configured address if using DHCP.
-    fn current_ip_address(&self) -> Ipv4Addr;
-
-    /// Get the current subnet mask from the platform/OS.
-    fn current_subnet_mask(&self) -> Ipv4Addr;
-
-    /// Get the current default gateway from the platform/OS.
-    fn current_default_gateway(&self) -> Ipv4Addr;
-
-    /// Get the MAC address of the network interface.
-    fn mac_address(&self) -> [u8; 6];
-
-    // ========================================================================
-    // Configured values (ETS-programmable, persisted)
-    // ========================================================================
-
     /// Get the configured (static) IP address.
     ///
     /// This is the address configured via ETS, used when IP assignment
@@ -92,14 +61,6 @@ pub trait IpStackState {
     /// Set the IP assignment method.
     fn set_ip_assignment_method(&self, method: u8);
 
-    /// Get the current IP assignment method in use.
-    fn current_ip_assignment_method(&self) -> u8;
-
-    /// Get IP capabilities supported by this device.
-    ///
-    /// Bitfield indicating which assignment methods are supported.
-    fn ip_capabilities(&self) -> u8;
-
     /// Get the routing multicast address.
     ///
     /// Default is 224.0.23.12 (KNX multicast address).
@@ -127,16 +88,6 @@ pub trait IpStackState {
 
     /// Set the friendly name.
     fn set_friendly_name(&self, name: &[u8]);
-
-    /// Get the KNXnet/IP device capabilities.
-    ///
-    /// Bit 0: Device Management
-    /// Bit 1: Tunneling
-    /// Bit 2: Routing
-    /// Bit 3: Remote Logging
-    /// Bit 4: Remote Configuration & Diagnosis
-    /// Bit 5: Object Server
-    fn knxnetip_device_capabilities(&self) -> u16;
 
     /// Get the project installation ID.
     ///
@@ -167,11 +118,57 @@ pub trait IpStackState {
     }
 }
 
+// ============================================================================
+// IpPlatformState — current runtime values from the platform/OS
+// ============================================================================
+
+/// Current runtime network state from the platform/OS.
+///
+/// This trait provides read-only access to values that come from the
+/// operating system or network stack (actual IP address, MAC, capabilities).
+/// These are not persisted — they reflect the live state.
+///
+/// Implemented by [`IpAugment`](crate::bcus::system_b::IpAugment) which
+/// combines an [`IpExtensionState`](crate::bcus::system_b::IpExtensionState)
+/// reference (for config) with a platform reference (for current values).
+pub trait IpPlatformState: IpStackState {
+    /// Get the current IP address from the platform/OS.
+    ///
+    /// This reflects the actual IP address the device is using, which may
+    /// differ from the configured address if using DHCP.
+    fn current_ip_address(&self) -> Ipv4Addr;
+
+    /// Get the current subnet mask from the platform/OS.
+    fn current_subnet_mask(&self) -> Ipv4Addr;
+
+    /// Get the current default gateway from the platform/OS.
+    fn current_default_gateway(&self) -> Ipv4Addr;
+
+    /// Get the MAC address of the network interface.
+    fn mac_address(&self) -> [u8; 6];
+
+    /// Get the current IP assignment method in use.
+    fn current_ip_assignment_method(&self) -> u8;
+
+    /// Get IP capabilities supported by this device.
+    ///
+    /// Bitfield indicating which assignment methods are supported.
+    fn ip_capabilities(&self) -> u8;
+}
+
+// ============================================================================
+// Constants
+// ============================================================================
+
 /// Default KNX multicast address: 224.0.23.12
 pub const DEFAULT_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
 
 /// Default KNX/IP port
 pub const KNX_PORT: u16 = 3671;
+
+// ============================================================================
+// Platform re-exports
+// ============================================================================
 
 /// Platform abstraction for querying current network state.
 ///
@@ -184,12 +181,3 @@ pub use zweidraehte_platform::NetworkInfo as IpPlatform;
 /// On embedded platforms this reconfigures the network stack (e.g.,
 /// switching between DHCP and static IP). On Linux this is a no-op.
 pub use zweidraehte_platform::{IpConfig, NetworkConfig as IpPlatformConfig};
-
-/// Convenience trait alias for types that implement both [`StackState`] and
-/// [`IpStackState`].
-///
-/// This exists because `define_interface_object!` only accepts a single
-/// trait bound, so [`IpParameterObject`](crate::objects::interface::IpParameterObject) uses `S: IpDevice` instead of
-/// `S: StackState + IpStackState`.
-pub trait IpDevice: StackState + IpStackState {}
-impl<T: StackState + IpStackState> IpDevice for T {}

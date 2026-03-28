@@ -1,16 +1,19 @@
-//! `InterfaceObjectAugment` implementation on `IpExtensionState`.
+//! `IpAugment` and its `InterfaceObjectAugment` implementation.
 //!
-//! Provides the IP Parameter Object (Type 11) as an augment-provided
-//! interface object, handling all IP properties directly via `&self`.
-//! Tunneling PIDs (53, 79) are included, gated by the device's
-//! tunneling capability bit.
+//! [`IpAugment`] combines an [`IpExtensionState`] reference (persisted config)
+//! with a platform reference (current network state). It provides:
+//!
+//! - [`IpStackState`] — delegates config methods to the inner extension state
+//! - [`IpPlatformState`] — delegates current values to the platform
+//! - [`InterfaceObjectAugment`] — the IP Parameter Object (Type 11) with all
+//!   IP PIDs including tunneling
 
 use core::net::Ipv4Addr;
 
 use zerocopy::FromBytes;
 
 use crate::{
-    IpPlatform, IpPlatformConfig, IpStackState, StackState,
+    IpPlatform, IpPlatformState, IpStackState, StackState,
     address::IndividualAddress,
     dpt::{
         InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt,
@@ -24,6 +27,169 @@ use crate::{
 };
 
 use super::IpExtensionState;
+
+// ============================================================================
+// IpAugment — combines config + platform
+// ============================================================================
+
+/// Combines an [`IpExtensionState`] reference (persisted config) with a
+/// platform reference (current network values) for property dispatch.
+///
+/// Implements [`InterfaceObjectAugment`] to provide the IP Parameter
+/// Object (Type 11) with all IP PIDs including tunneling.
+///
+/// PID 68 (`KNXNETIP_DEVICE_CAPABILITIES`) is read from the extension
+/// state, which the stack sets on boot from
+/// [`LinkLayerCapabilities`](crate::layers::LinkLayerCapabilities).
+///
+/// # Construction
+///
+/// Normally created automatically via the [`Extension`](crate::bcus::system_b::Extension)
+/// trait. Manual construction is still possible:
+///
+/// ```rust,ignore
+/// let augment = IpAugment::new(state.extension_state(), platform);
+/// ```
+pub struct IpAugment<'a, P: IpPlatform, const N: usize = 0> {
+    /// Persisted IP configuration (from extension state).
+    pub config: &'a IpExtensionState<N>,
+    /// Platform for querying current network values.
+    pub platform: &'a P,
+}
+
+impl<'a, P: IpPlatform, const N: usize> IpAugment<'a, P, N> {
+    /// Create a new `IpAugment` combining config and platform references.
+    ///
+    /// PID 68 (device capabilities) is read from the extension state, which
+    /// the stack sets on boot from
+    /// [`LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES`](crate::layers::LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES).
+    pub fn new(config: &'a IpExtensionState<N>, platform: &'a P) -> Self {
+        Self { config, platform }
+    }
+
+    /// Get the KNXnet/IP device capabilities bitfield (PID 68).
+    ///
+    /// Read from the extension state (set on boot, not persisted).
+    pub fn knxnetip_device_capabilities(&self) -> u16 {
+        self.config.knxnetip_device_capabilities()
+    }
+}
+
+// ============================================================================
+// IpStackState delegation (config methods → inner extension state)
+// ============================================================================
+
+impl<P: IpPlatform, const N: usize> IpStackState for IpAugment<'_, P, N> {
+    fn configured_ip_address(&self) -> Ipv4Addr {
+        self.config.configured_ip_address()
+    }
+
+    fn set_configured_ip_address(&self, addr: Ipv4Addr) {
+        self.config.set_configured_ip_address(addr);
+    }
+
+    fn configured_subnet_mask(&self) -> Ipv4Addr {
+        self.config.configured_subnet_mask()
+    }
+
+    fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
+        self.config.set_configured_subnet_mask(mask);
+    }
+
+    fn configured_default_gateway(&self) -> Ipv4Addr {
+        self.config.configured_default_gateway()
+    }
+
+    fn set_configured_default_gateway(&self, gw: Ipv4Addr) {
+        self.config.set_configured_default_gateway(gw);
+    }
+
+    fn ip_assignment_method(&self) -> u8 {
+        self.config.ip_assignment_method()
+    }
+
+    fn set_ip_assignment_method(&self, method: u8) {
+        self.config.set_ip_assignment_method(method);
+    }
+
+    fn routing_multicast_address(&self) -> Ipv4Addr {
+        self.config.routing_multicast_address()
+    }
+
+    fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
+        self.config.set_routing_multicast_address(addr);
+    }
+
+    fn ttl(&self) -> u8 {
+        self.config.ttl()
+    }
+
+    fn set_ttl(&self, ttl: u8) {
+        self.config.set_ttl(ttl);
+    }
+
+    fn friendly_name_len(&self) -> usize {
+        self.config.friendly_name_len()
+    }
+
+    fn friendly_name(&self) -> [u8; 30] {
+        self.config.friendly_name()
+    }
+
+    fn set_friendly_name(&self, name: &[u8]) {
+        self.config.set_friendly_name(name);
+    }
+
+    fn project_installation_id(&self) -> u16 {
+        self.config.project_installation_id()
+    }
+
+    fn set_project_installation_id(&self, id: u16) {
+        self.config.set_project_installation_id(id);
+    }
+
+    fn additional_individual_address_capacity(&self) -> usize {
+        self.config.additional_individual_address_capacity()
+    }
+
+    fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize {
+        self.config.write_additional_individual_addresses(buf)
+    }
+
+    fn set_additional_individual_addresses(&self, addrs: &[IndividualAddress]) -> Result<(), ()> {
+        self.config.set_additional_individual_addresses(addrs)
+    }
+}
+
+// ============================================================================
+// IpPlatformState delegation (current values → platform)
+// ============================================================================
+
+impl<P: IpPlatform, const N: usize> IpPlatformState for IpAugment<'_, P, N> {
+    fn current_ip_address(&self) -> Ipv4Addr {
+        self.platform.current_ip_address()
+    }
+
+    fn current_subnet_mask(&self) -> Ipv4Addr {
+        self.platform.current_subnet_mask()
+    }
+
+    fn current_default_gateway(&self) -> Ipv4Addr {
+        self.platform.current_default_gateway()
+    }
+
+    fn mac_address(&self) -> [u8; 6] {
+        self.platform.mac_address()
+    }
+
+    fn current_ip_assignment_method(&self) -> u8 {
+        self.platform.current_ip_assignment_method()
+    }
+
+    fn ip_capabilities(&self) -> u8 {
+        self.platform.ip_capabilities()
+    }
+}
 
 // ============================================================================
 // Constants
@@ -76,10 +242,10 @@ static BASE_PROPS: &[PropertyDescriptor] = &[
 // Helper functions
 // ============================================================================
 
-impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpExtensionState<P, N> {
+impl<P: IpPlatform, const N: usize> IpAugment<'_, P, N> {
     /// Whether tunneling is enabled on this device.
     fn tunneling_enabled(&self) -> bool {
-        (self.platform().knxnetip_device_capabilities() & KNXNETIP_CAP_TUNNELING_BIT) != 0
+        (self.knxnetip_device_capabilities() & KNXNETIP_CAP_TUNNELING_BIT) != 0
     }
 
     /// Total property count for index scanning.
@@ -445,9 +611,7 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpExtensionState<P, N> {
 // InterfaceObjectAugment — provides IP Parameter Object (Type 11)
 // ============================================================================
 
-impl<S: StackState, P: IpPlatform + IpPlatformConfig, const N: usize> InterfaceObjectAugment<S>
-    for IpExtensionState<P, N>
-{
+impl<S: StackState, P: IpPlatform, const N: usize> InterfaceObjectAugment<S> for IpAugment<'_, P, N> {
     fn additional_object_count(&self) -> u16 {
         1 // IP Parameter Object
     }

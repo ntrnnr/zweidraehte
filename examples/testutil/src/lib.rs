@@ -15,7 +15,6 @@
 //! This crate also provides several useful binaries:
 //!
 //! - `stack_system_b` - Run a System B device demo
-//! - `stack_knxip` - Run a full KNX/IP stack
 //! - `gen_mtxml` - Generate MTXML files from device definitions
 //! - `compare_programs` - Compare two application programs for equivalence
 //! - `busmon` - TPUART bus monitor
@@ -27,9 +26,9 @@
 
 // Core modules
 pub mod devices;
+pub mod equivalence;
 pub mod storage;
 pub mod util;
-pub mod equivalence;
 
 // Re-export commonly used items for convenience
 pub use storage::{FileIdentity, JsonStorage};

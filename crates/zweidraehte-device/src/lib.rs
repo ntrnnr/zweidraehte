@@ -17,17 +17,16 @@ extern crate zweidraehte_proto;
 
 // Re-export protocol types from proto so downstream can use zweidraehte_device::address etc.
 pub use zweidraehte_proto::access;
-pub use zweidraehte_proto::{
-    AccessContext, AccessSource, ConnectionAuthLevels, HasConnectionAuth,
-    MAX_ACCESS_LEVELS, NUM_AUTH_KEYS,
-};
 pub use zweidraehte_proto::address;
+pub use zweidraehte_proto::device;
 pub use zweidraehte_proto::dpt;
 pub use zweidraehte_proto::encoding;
 pub use zweidraehte_proto::messages;
 pub use zweidraehte_proto::properties;
 pub use zweidraehte_proto::util;
-pub use zweidraehte_proto::device;
+pub use zweidraehte_proto::{
+    AccessContext, AccessSource, ConnectionAuthLevels, HasConnectionAuth, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS,
+};
 
 mod state;
 pub use state::{ReadObjectError, StackState, UpdateObjectError};
@@ -40,15 +39,11 @@ pub use definition::StackDefinition;
 #[cfg(feature = "knxip")]
 mod ip;
 #[cfg(feature = "knxip")]
-pub use ip::{
-    DEFAULT_MULTICAST_ADDR, IpConfig, IpDevice, IpPlatform, IpPlatformConfig, IpStackState,
-    KNX_PORT,
-};
+pub use ip::{DEFAULT_MULTICAST_ADDR, IpConfig, IpPlatform, IpPlatformConfig, IpPlatformState, IpStackState, KNX_PORT};
 
 mod composition;
 pub use composition::{
-    InsecureDeviceBuilder, InsecureDeviceLayers, LayerContext, LayerStackBuilder,
-    StandardDeviceLayers,
+    InsecureDeviceBuilder, InsecureDeviceLayers, LayerContext, LayerStackBuilder, StandardDeviceLayers,
 };
 #[cfg(feature = "knxip")]
 pub use composition::{InsecureIpDeviceBuilder, IpDeviceLayers};
@@ -60,7 +55,7 @@ mod resources;
 pub use resources::StackResources;
 
 mod runner;
-pub use runner::{new, Runner};
+pub use runner::{Runner, new};
 
 mod stack_handle;
 pub use stack_handle::Stack;

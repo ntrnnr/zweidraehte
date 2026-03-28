@@ -58,10 +58,7 @@ use crate::{
 };
 
 use super::{
-    knxip::{
-        KnxNetIpBuilder, KnxNetIpContext, KnxNetIpResources, SubnetIndication, SubnetLink,
-        features,
-    },
+    knxip::{KnxNetIpBuilder, KnxNetIpContext, KnxNetIpResources, SubnetIndication, SubnetLink, features},
     tpuart::{AddressChecker, DeviceAddressChecker, TpUartLinkLayer},
 };
 
@@ -85,7 +82,10 @@ pub struct IpInterfaceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine
 }
 
 impl<'a, ADT: AddressTable + HasLoadStateMachine, const N: usize> IpInterfaceAddressChecker<'a, ADT, N> {
-    pub fn new(inner: DeviceAddressChecker<'a, ADT>, additional_addresses: heapless::Vec<IndividualAddress, N>) -> Self {
+    pub fn new(
+        inner: DeviceAddressChecker<'a, ADT>,
+        additional_addresses: heapless::Vec<IndividualAddress, N>,
+    ) -> Self {
         Self { inner, additional_addresses }
     }
 }
@@ -173,8 +173,15 @@ impl IpInterfaceResources {
 
 // -- LinkLayerBuilderBase -----------------------------------------------------
 
-impl<W: Send + 'static, R: Send + 'static, T: IpTransport + 'static, F: features::FeatureSet + 'static, const MS: usize, const MTS: usize, const MC: usize>
-    LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
+impl<
+    W: Send + 'static,
+    R: Send + 'static,
+    T: IpTransport + 'static,
+    F: features::FeatureSet + 'static,
+    const MS: usize,
+    const MTS: usize,
+    const MC: usize,
+> LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
 {
     type Resources = IpInterfaceResources;
     type LLEndpoints<'a> = crate::context::CemiTransportLayerEndpoints<'a>;
@@ -182,6 +189,19 @@ impl<W: Send + 'static, R: Send + 'static, T: IpTransport + 'static, F: features
     fn create_resources(&self) -> Self::Resources {
         IpInterfaceResources::new()
     }
+}
+
+impl<
+    W: Send + 'static,
+    R: Send + 'static,
+    T: IpTransport + 'static,
+    F: features::FeatureSet + 'static,
+    const MS: usize,
+    const MTS: usize,
+    const MC: usize,
+> crate::layers::LinkLayerCapabilities for IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
+{
+    const KNXNETIP_DEVICE_CAPABILITIES: u16 = F::KNXNETIP_DEVICE_CAPABILITIES;
 }
 
 // -- LinkLayerBuilder ---------------------------------------------------------
@@ -198,8 +218,7 @@ where
     R: embedded_io_async::Read + Send + 'static,
     T: IpTransport + 'static,
     F: features::FeatureSet + 'static,
-    <F::Tunneling as features::TunnelingFeature>::Tunnel:
-        super::knxip::connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    <F::Tunneling as features::TunnelingFeature>::Tunnel: super::knxip::connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     fn build_and_run<'a>(
         self,
@@ -214,12 +233,14 @@ where
             // ==============================================================
             // Snapshot additional IAs and build address checker
             // ==============================================================
-            let mut addr_buf = [IndividualAddress::default();
-                <F::Tunneling as features::TunnelingFeature>::CAPACITY];
-            let addr_count = crate::context::IpAdditionalIndividualAddressContext
-                ::write_additional_individual_addresses(context, &mut addr_buf);
-            let mut additional_ias = heapless::Vec::<IndividualAddress,
-                { <F::Tunneling as features::TunnelingFeature>::CAPACITY }>::new();
+            let mut addr_buf = [IndividualAddress::default(); <F::Tunneling as features::TunnelingFeature>::CAPACITY];
+            let addr_count =
+                crate::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
+                    context,
+                    &mut addr_buf,
+                );
+            let mut additional_ias =
+                heapless::Vec::<IndividualAddress, { <F::Tunneling as features::TunnelingFeature>::CAPACITY }>::new();
             for &addr in &addr_buf[..addr_count] {
                 let _ = additional_ias.push(addr);
             }
@@ -276,10 +297,8 @@ where
             // Construct address filter for routing frames. The IP interface
             // uses the same filter as standalone — RoutingIndications only
             // go to the local NL, not to tunnel clients.
-            let routing_filter = super::knxip::types::RoutingAddressFilter::new(
-                context.individual_address(),
-                context.address_table(),
-            );
+            let routing_filter =
+                super::knxip::types::RoutingAddressFilter::new(context.individual_address(), context.address_table());
 
             let mut knxip = self.knxip_builder.build(
                 &mut resources.knxip,

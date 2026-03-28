@@ -41,24 +41,12 @@ name = "tpuart"
 path = "src/tpuart.rs"
 
 [[bin]]
-name = "knxip"
-path = "src/knxip.rs"
-
-[[bin]]
-name = "stack_knxip"
-path = "src/stack_knxip.rs"
-
-[[bin]]
 name = "busmon"
 path = "src/busmon.rs"
 
 [[bin]]
 name = "usb_test"
 path = "src/usb_test.rs"
-
-[[bin]]
-name = "seqno_test"
-path = "src/seqno_test.rs"
 
 [[bin]]
 name = "stack_system_b"

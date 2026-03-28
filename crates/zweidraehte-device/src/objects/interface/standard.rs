@@ -10,7 +10,6 @@
 //! - [`AssociationTableObject`] - Association Table Object (Type 2) - TSAP/ASAP mapping
 //! - [`ApplicationProgramObject`] - Application Program Object (Type 3)
 //! - [`RouterObject`] - Router Object (Type 6) - For line/backbone couplers
-//! - [`IpParameterObject`] - IP Parameter Object (Type 11) - For KNXnet/IP devices
 //!
 //! # Table Objects
 //!
@@ -148,117 +147,6 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
         obj.version = PDT_Version::with_value(KNXVersion::from_triplet(0, 0, 1));
         obj.device_descriptor = PDT_UnsignedInt::with_value(desc.mask_version.as_u16());
         obj
-    }
-}
-
-// ============================================================================
-// IP Parameter Object (Object Type 11 / 0x0B)
-// ============================================================================
-
-#[cfg(feature = "knxip")]
-use core::net::Ipv4Addr;
-
-#[cfg(feature = "knxip")]
-use crate::IpDevice;
-#[cfg(feature = "knxip")]
-use crate::dpt::{PDT_Bitset8, PDT_Bitset16};
-#[cfg(feature = "knxip")]
-use crate::objects::interface::Ipv4Property;
-
-#[cfg(feature = "knxip")]
-/// Default KNX System Setup multicast address: 224.0.23.12
-const SYSTEM_SETUP_MULTICAST: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
-
-#[cfg(feature = "knxip")]
-crate::define_interface_object! {
-    /// IP Parameter Object - Object Type 11 (0x0B)
-    ///
-    /// Contains KNXnet/IP configuration for IP-capable devices.
-    /// This object is mandatory for KNXnet/IP devices.
-    ///
-    /// # Properties
-    ///
-    /// | PID | Name | Type | Access |
-    /// |-----|------|------|--------|
-    /// | 1 | Object Type | PDT_UNSIGNED_INT | RO |
-    /// | 51 | Project Installation ID | PDT_UNSIGNED_INT | RW |
-    /// | 52 | KNX Individual Address | PDT_UNSIGNED_INT | RW | (state-backed, delegates to DeviceObject)
-    /// | 54 | Current IP Assignment Method | PDT_UNSIGNED_CHAR | RO |
-    /// | 55 | IP Assignment Method | PDT_UNSIGNED_CHAR | RW |
-    /// | 56 | IP Capabilities | PDT_BITSET8 | RO |
-    /// | 57 | Current IP Address | PDT_UNSIGNED_LONG | RO |
-    /// | 58 | Current Subnet Mask | PDT_UNSIGNED_LONG | RO |
-    /// | 59 | Current Default Gateway | PDT_UNSIGNED_LONG | RO |
-    /// | 60 | IP Address | PDT_UNSIGNED_LONG | RW |
-    /// | 61 | Subnet Mask | PDT_UNSIGNED_LONG | RW |
-    /// | 62 | Default Gateway | PDT_UNSIGNED_LONG | RW |
-    /// | 64 | MAC Address | PDT_GENERIC_06 | RO |
-    /// | 65 | System Setup Multicast Address | PDT_UNSIGNED_LONG | RO |
-    /// | 66 | Routing Multicast Address | PDT_UNSIGNED_LONG | RW |
-    /// | 67 | TTL | PDT_UNSIGNED_CHAR | RW |
-    /// | 68 | KNXnet/IP Device Capabilities | PDT_BITSET16 | RO |
-    /// | 76 | Friendly Name | `PDT_UNSIGNED_CHAR[30]` | RW |
-    pub struct IpParameterObject<'a, S: IpDevice>: InterfaceObjectType::IPParameter
-        with state: &'a S
-    {
-        // No static properties - all are state-backed for IP
-    }
-    // Properties requiring custom logic (complex types, constants, or special handling)
-    state {
-        // KNX Individual Address (uses IndividualAddress type, needs custom conversion)
-        pid::KNX_INDIVIDUAL_ADDRESS => {
-            read: |s| {
-                let addr = s.individual_address();
-                let bytes = addr.as_bytes();
-                [bytes[0], bytes[1]]
-            },
-            write: |s, data| {
-                if data.len() >= 2 {
-                    s.set_individual_address(crate::address::IndividualAddress::from_bytes(data));
-                    Ok(())
-                } else {
-                    Err(crate::objects::interface::PropertyError::BufferTooSmall)
-                }
-            }
-        }: PDT_UnsignedInt, ReadWrite,
-
-        // System Setup Multicast Address (fixed constant, not from state)
-        pid::SYSTEM_SETUP_MULTICAST_ADDRESS => {
-            read: |_s| u32::from(SYSTEM_SETUP_MULTICAST).to_be_bytes(),
-            write: |_s, _data| Err(crate::objects::interface::PropertyError::WriteNotAllowed)
-        }: PDT_UnsignedLong, ReadOnly
-    }
-    // Shorthand ReadWrite: auto-generates getter/setter calls
-    state_rw {
-        pid::PROJECT_INSTALLATION_ID => project_installation_id: PDT_UnsignedInt,
-        pid::IP_ASSIGNMENT_METHOD => ip_assignment_method: PDT_UnsignedChar,
-        pid::TTL => ttl: PDT_UnsignedChar,
-        pid::IP_ADDRESS => configured_ip_address: Ipv4Property,
-        pid::SUBNET_MASK => configured_subnet_mask: Ipv4Property,
-        pid::DEFAULT_GATEWAY => configured_default_gateway: Ipv4Property,
-        pid::ROUTING_MULTICAST_ADDRESS => routing_multicast_address: Ipv4Property
-    }
-    // Shorthand ReadOnly: auto-generates getter calls
-    state_ro {
-        pid::CURRENT_IP_ASSIGNMENT_METHOD => current_ip_assignment_method: PDT_UnsignedChar,
-        pid::IP_CAPABILITIES => ip_capabilities: PDT_Bitset8,
-        pid::MAC_ADDRESS => mac_address: PDT_Generic06,
-        pid::KNXNETIP_DEVICE_CAPABILITIES => knxnetip_device_capabilities: PDT_Bitset16,
-        pid::CURRENT_IP_ADDRESS => current_ip_address: Ipv4Property,
-        pid::CURRENT_SUBNET_MASK => current_subnet_mask: Ipv4Property,
-        pid::CURRENT_DEFAULT_GATEWAY => current_default_gateway: Ipv4Property
-    }
-    // Shorthand ReadWrite array properties
-    state_rw_array {
-        pid::FRIENDLY_NAME => friendly_name: PDT_UnsignedChar[30]
-    }
-}
-
-#[cfg(feature = "knxip")]
-impl<'a, S: IpDevice> IpParameterObject<'a, S> {
-    /// Create a new IP Parameter Object with a reference to the IP stack state.
-    pub fn with_state(state: &'a S) -> Self {
-        Self::new(state)
     }
 }
 

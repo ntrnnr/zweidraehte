@@ -4,13 +4,10 @@ use std::os::unix::io::{AsRawFd, RawFd};
 
 use async_io::Async;
 use embassy_time::{Duration, with_timeout};
-use nix::sys::socket::{
-    ControlMessageOwned, MsgFlags, SockaddrIn, recvmsg, setsockopt,
-    sockopt::Ipv4PacketInfo,
-};
 use nix::libc;
-use std::io::IoSliceMut;
+use nix::sys::socket::{ControlMessageOwned, MsgFlags, SockaddrIn, recvmsg, setsockopt, sockopt::Ipv4PacketInfo};
 use socket2::{Domain, Protocol, Socket, Type};
+use std::io::IoSliceMut;
 
 use crate::Result;
 use crate::traits::{AsyncUdpSocket, UdpSocketOptions};
@@ -36,16 +33,14 @@ impl UdpMulticastSocket {
                 use std::ffi::OsString;
 
                 let interface_os: OsString = interface.into();
-                setsockopt(&s, BindToDevice, &interface_os)
-                    .map_err(std::io::Error::other)?;
+                setsockopt(&s, BindToDevice, &interface_os).map_err(std::io::Error::other)?;
             }
         }
 
         // Enable IP_PKTINFO so recvmsg returns the destination IP address
         // of each incoming packet. This lets the stack distinguish unicast
         // from multicast traffic on shared sockets.
-        setsockopt(&s, Ipv4PacketInfo, &true)
-            .map_err(std::io::Error::other)?;
+        setsockopt(&s, Ipv4PacketInfo, &true).map_err(std::io::Error::other)?;
 
         // To be able to receive unicast and multicast traffic on the same socket,
         // we need to bind to INADDR_ANY
@@ -97,9 +92,7 @@ impl AsyncUdpMulticastSocket {
         let write_timeout = options.write_timeout.take();
 
         match UdpMulticastSocket::bind(options) {
-            Ok(socket) => {
-                Ok(AsyncUdpMulticastSocket { watcher: Async::new(socket)?, read_timeout, write_timeout })
-            }
+            Ok(socket) => Ok(AsyncUdpMulticastSocket { watcher: Async::new(socket)?, read_timeout, write_timeout }),
             Err(err) => Err(err),
         }
     }
@@ -230,7 +223,10 @@ impl AsyncUdpSocket for AsyncUdpMulticastSocket {
         }
     }
 
-    async fn recv_from(&self, buf: &mut [u8]) -> core::result::Result<(usize, SocketAddrV4, Option<Ipv4Addr>), crate::Error> {
+    async fn recv_from(
+        &self,
+        buf: &mut [u8],
+    ) -> core::result::Result<(usize, SocketAddrV4, Option<Ipv4Addr>), crate::Error> {
         AsyncUdpMulticastSocket::recv_from(self, buf).await
     }
 

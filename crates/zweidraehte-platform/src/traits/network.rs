@@ -27,10 +27,13 @@ pub trait NetworkInfo {
     fn current_ip_assignment_method(&self) -> u8;
 
     /// Get the IP capabilities supported by this platform.
+    ///
+    /// Bitfield of supported IP assignment methods:
+    /// - Bit 0: Manual (static IP)
+    /// - Bit 1: BootP
+    /// - Bit 2: DHCP
+    /// - Bit 3: AutoIP
     fn ip_capabilities(&self) -> u8;
-
-    /// Get the KNXnet/IP device capabilities.
-    fn knxnetip_device_capabilities(&self) -> u16;
 }
 
 // ============================================================================

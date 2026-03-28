@@ -16,7 +16,7 @@ use crate::{
     composition::{LayerContext, LayerStackBuilder},
     definition::StackDefinition,
     inner::{Inner, StackContext},
-    layers::{LinkLayerBuilderBase, transport::TlStyle},
+    layers::{LinkLayerBuilderBase, LinkLayerCapabilities, transport::TlStyle},
     messages::buffers::{Buffer, BufferManager},
     objects::comm::ComObjects,
     resources::StackResources,
@@ -259,6 +259,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     hook_context: <D::CO as ComObjects>::HookContext,
     link_layer_builder: D::LLB,
     state: D::State,
+    platform: D::Platform,
     memory_map: D::Mem,
 ) -> (Stack<'d, D>, Runner<'d, D>) {
     // Validate that runtime max_apdu_length doesn't exceed compile-time buffer allocation
@@ -285,11 +286,16 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         lifecycle_channel: PubSubChannel::new(),
         restart_channel: Channel::new(),
         state,
+        platform,
         hook_context,
         memory_map,
     };
 
     let inner = &*resources.inner.write(inner);
+
+    // Push link-layer-derived capabilities into the device state before
+    // interface objects are created (the IP augment reads PID 68 from state).
+    inner.state.set_link_layer_capabilities(D::LLB::KNXNETIP_DEVICE_CAPABILITIES);
 
     // Build interface objects with reference to the state stored in Inner.
     // SAFETY: Inner is now stable in memory (written to StackResources), so we can safely
@@ -297,7 +303,8 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     //         but the interface objects container needs 'static for its type parameter.
     let interface_objects = {
         let state_ref: &'static D::State = unsafe { core::mem::transmute(&inner.state) };
-        D::create_interface_objects(state_ref)
+        let platform_ref: &'static D::Platform = unsafe { core::mem::transmute(&inner.platform) };
+        D::create_interface_objects(state_ref, platform_ref)
     };
     let interface_objects = &*resources.interface_objects.write(interface_objects);
 

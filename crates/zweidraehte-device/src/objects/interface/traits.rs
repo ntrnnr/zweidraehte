@@ -569,30 +569,20 @@ pub trait PropertyServiceHandler {
     /// Handle A_PropertyValue_Read request.
     ///
     /// Reads property data into the provided buffer.
-    fn property_value_read(
-        &self,
-        req: &FullPropertyReadRequest,
-        buf: &mut [u8],
-    ) -> Result<usize, PropertyError>;
+    fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError>;
 
     /// Handle A_PropertyValue_Write request.
     ///
     /// Writes data to a property. Returns [`WriteResponse::Echo`] on success
     /// (caller echoes the input data) or [`WriteResponse::Data`] when the
     /// property transforms the input (e.g., `LOAD_STATE_CONTROL`).
-    fn property_value_write(
-        &self,
-        req: &FullPropertyWriteRequest<'_>,
-    ) -> Result<WriteResponse, PropertyError>;
+    fn property_value_write(&self, req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError>;
 
     /// Handle `A_FunctionPropertyCommand` request.
     ///
     /// Executes a function on a property. The default returns "not supported"
     /// since most interface objects don't implement function properties.
-    fn function_property_command(
-        &self,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn function_property_command(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         let _ = req;
         FunctionPropertyResult::not_supported()
     }
@@ -601,10 +591,7 @@ pub trait PropertyServiceHandler {
     ///
     /// Reads the state of a function property. The default returns
     /// "not supported".
-    fn function_property_state_read(
-        &self,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn function_property_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         let _ = req;
         FunctionPropertyResult::not_supported()
     }
@@ -1097,32 +1084,19 @@ impl PropertyServiceHandler for () {
         Err(PropertyError::InvalidObjectIndex)
     }
 
-    fn property_value_read(
-        &self,
-        _req: &FullPropertyReadRequest,
-        _buf: &mut [u8],
-    ) -> Result<usize, PropertyError> {
+    fn property_value_read(&self, _req: &FullPropertyReadRequest, _buf: &mut [u8]) -> Result<usize, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
     }
 
-    fn property_value_write(
-        &self,
-        _req: &FullPropertyWriteRequest<'_>,
-    ) -> Result<WriteResponse, PropertyError> {
+    fn property_value_write(&self, _req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
     }
 
-    fn function_property_command(
-        &self,
-        _req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn function_property_command(&self, _req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         FunctionPropertyResult::invalid_object_index()
     }
 
-    fn function_property_state_read(
-        &self,
-        _req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn function_property_state_read(&self, _req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         FunctionPropertyResult::invalid_object_index()
     }
 }
@@ -1201,11 +1175,7 @@ where
         }
     }
 
-    fn property_value_read(
-        &self,
-        req: &FullPropertyReadRequest,
-        buf: &mut [u8],
-    ) -> Result<usize, PropertyError> {
+    fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
         let base_count = self.0.object_count();
         if req.object_idx < base_count {
             self.0.property_value_read(req, buf)
@@ -1214,10 +1184,7 @@ where
         }
     }
 
-    fn property_value_write(
-        &self,
-        req: &FullPropertyWriteRequest<'_>,
-    ) -> Result<WriteResponse, PropertyError> {
+    fn property_value_write(&self, req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
         let base_count = self.0.object_count();
         if req.object_idx < base_count {
             self.0.property_value_write(req)
@@ -1226,10 +1193,7 @@ where
         }
     }
 
-    fn function_property_command(
-        &self,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn function_property_command(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         let base_count = self.0.object_count();
         if req.object_idx < base_count {
             self.0.function_property_command(req)
@@ -1238,10 +1202,7 @@ where
         }
     }
 
-    fn function_property_state_read(
-        &self,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn function_property_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         let base_count = self.0.object_count();
         if req.object_idx < base_count {
             self.0.function_property_state_read(req)
@@ -1434,4 +1395,38 @@ pub trait HasDeviceObject {
     fn set_routing_count_value(&self, value: u8) {
         self.set_routing_count(RoutingCount::from_value(value));
     }
+}
+
+// ============================================================================
+// Domain Address
+// ============================================================================
+
+/// Trait for devices that store a domain address.
+///
+/// The domain address is a medium-specific identifier:
+/// - **KNX/IP**: 4-byte IPv4 multicast address (e.g., `224.0.23.12`)
+/// - **RF**: 6-byte RF domain address
+/// - **TP1**: Not applicable (domain address length is 0)
+///
+/// Used by `A_DomainAddressSerialNumber_Read/Write` services. The AL
+/// extension for domain address handling requires this trait on the
+/// device state.
+pub trait HasDomainAddress {
+    /// Domain address length in bytes.
+    ///
+    /// This determines how many bytes are included in
+    /// `A_DomainAddressSerialNumber_Response` and expected in
+    /// `A_DomainAddressSerialNumber_Write`.
+    const DOMAIN_ADDRESS_LENGTH: usize;
+
+    /// Get the current domain address.
+    ///
+    /// The returned slice must be exactly [`DOMAIN_ADDRESS_LENGTH`](Self::DOMAIN_ADDRESS_LENGTH) bytes.
+    /// For IP devices this is the routing multicast address in network byte order.
+    fn domain_address(&self, buf: &mut [u8]);
+
+    /// Set the domain address.
+    ///
+    /// `addr` is exactly [`DOMAIN_ADDRESS_LENGTH`](Self::DOMAIN_ADDRESS_LENGTH) bytes.
+    fn set_domain_address(&self, addr: &[u8]);
 }

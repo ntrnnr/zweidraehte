@@ -10,8 +10,7 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::{DhcpConfig, StackResources as NetStackResources};
 use embassy_rp::{
-    bind_interrupts,
-    flash,
+    bind_interrupts, flash,
     gpio::{Level, Output},
     peripherals::{DMA_CH0, PIO0},
     pio::{self, Pio},
@@ -21,14 +20,12 @@ use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
-    self, LightSwitchDevice, LightSwitchParams,
-    comm_objs::LightSwitchComObjects,
-    easter_egg::EasterEggAugment,
+    self, LightSwitchDevice, LightSwitchParams, comm_objs::LightSwitchComObjects, easter_egg::EasterEggAugment,
 };
 use zweidraehte_device::{
     bcus::system_b::{
-        DefaultSystemBInterfaceObjects, IpExtensionState, IpSystemBDeviceState,
-        SystemBMemoryMap, SystemBStackDefinition, create_system_b_objects,
+        DefaultSystemBInterfaceObjects, IpAugment, IpExtensionState, IpSystemBDeviceState, SystemBMemoryMap,
+        SystemBStackDefinition, create_system_b_objects_with_extra,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
@@ -49,7 +46,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Device state combining System B tables with IP link-layer state.
-type PicoWState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, EmbassyNetworkInfo>;
+type PicoWState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
@@ -71,19 +68,18 @@ impl StackDefinition for PicoWLightSwitch {
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
+    type Platform = EmbassyNetworkInfo;
+    type ES = IpExtensionState<0>;
     type State = PicoWState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
-        'a, PicoWState, (&'a IpExtensionState<EmbassyNetworkInfo>, EasterEggAugment),
-    >;
+    type InterfaceObjects<'a> =
+        DefaultSystemBInterfaceObjects<'a, PicoWState, (IpAugment<'a, EmbassyNetworkInfo>, EasterEggAugment)>;
 
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-    ) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), (state.extension_state(), EasterEggAugment))
+        create_system_b_objects_with_extra::<Self, _>(state, platform, &Self::memory_layout(), EasterEggAugment)
     }
 
     type LayerBuilder = InsecureIpDeviceBuilder;
@@ -103,9 +99,7 @@ bind_interrupts!(struct Irqs {
 });
 
 #[embassy_executor::task]
-async fn cyw43_task(
-    runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
-) -> ! {
+async fn cyw43_task(runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>) -> ! {
     runner.run().await
 }
 
@@ -127,13 +121,10 @@ async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'sta
 /// 3. Sends the A_Restart_Response back to the stack
 /// 4. Triggers a Cortex-M system reset
 #[embassy_executor::task]
-async fn restart_task(
-    knx: Stack<'static, PicoWLightSwitch>,
-    storage: &'static RefCell<Storage>,
-) -> ! {
+async fn restart_task(knx: Stack<'static, PicoWLightSwitch>, storage: &'static RefCell<Storage>) -> ! {
     use rp_common::CortexMSystem;
-    use zweidraehte_platform::SystemControl;
     use zweidraehte_device::restart::EraseCode;
+    use zweidraehte_platform::SystemControl;
 
     loop {
         let request = knx.receive_restart_request().await;
@@ -234,10 +225,8 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     let mut flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    let identity_data = rp_common::read_or_provision_identity(
-        &mut flash,
-        LightSwitchDevice::MANUFACTURER_ID.to_be_bytes(),
-    );
+    let identity_data =
+        rp_common::read_or_provision_identity(&mut flash, LightSwitchDevice::MANUFACTURER_ID.to_be_bytes());
 
     let seed = identity_data.derive_seed();
     info!("Serial: {=[u8]:02x}", identity_data.serial_number);
@@ -267,14 +256,10 @@ async fn main(spawner: Spawner) {
     let state = STATE.init(cyw43::State::new());
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, &FW.0).await;
 
-    spawner
-        .spawn(cyw43_task(runner))
-        .expect("cyw43_task spawnable once");
+    spawner.spawn(cyw43_task(runner)).expect("cyw43_task spawnable once");
 
     control.init(&CLM.0).await;
-    control
-        .set_power_management(cyw43::PowerManagementMode::PowerSave)
-        .await;
+    control.set_power_management(cyw43::PowerManagementMode::PowerSave).await;
 
     // ========================================================================
     // WiFi connection
@@ -328,10 +313,7 @@ async fn main(spawner: Spawner) {
     let mac = control.address().await;
     info!("MAC address: {:02x}", mac);
 
-    // Initialize the global network context so EmbassyNetworkInfo::default()
-    // works during device state construction (IpExtensionState::from_config
-    // calls P::default()).
-    EmbassyNetworkInfo::init(stack, mac);
+    let platform = EmbassyNetworkInfo::new(stack, mac, rp_common::IP_ASSIGN_DHCP);
 
     // ========================================================================
     // Persistent storage
@@ -368,10 +350,8 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     // The DHCP-assigned IP is used as the local address and control endpoint.
-    let local_ip = stack
-        .config_v4()
-        .map(|c| Ipv4Addr::from(c.address.address().octets()))
-        .unwrap_or(Ipv4Addr::UNSPECIFIED);
+    let local_ip =
+        stack.config_v4().map(|c| Ipv4Addr::from(c.address.address().octets())).unwrap_or(Ipv4Addr::UNSPECIFIED);
 
     let control_endpoint = SocketAddrV4::new(local_ip, 3671);
 
@@ -386,7 +366,9 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             PicoWLightSwitch,
-            { zweidraehte_device::config::buffer_size_for_apdu(<PicoWLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
+            {
+                zweidraehte_device::config::buffer_size_for_apdu(<PicoWLightSwitch as StackDefinition>::MAX_APDU_LENGTH)
+            },
         >,
     > = StaticCell::new();
 
@@ -396,19 +378,20 @@ async fn main(spawner: Spawner) {
         (), // hook context — no application hooks yet
         link_layer_builder,
         device_state,
+        platform,
         PicoWLightSwitch::memory_map(),
     );
 
-    spawner
-        .spawn(knx_task(knx_runner))
-        .expect("knx_task spawnable once");
-    spawner
-        .spawn(restart_task(knx_stack, storage))
-        .expect("restart_task spawnable once");
+    spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
+    spawner.spawn(restart_task(knx_stack, storage)).expect("restart_task spawnable once");
 
     info!("KNX/IP stack started");
     info!("  Manufacturer: {:04x}", LightSwitchDevice::MANUFACTURER_ID);
-    info!("  Application:  {:04x} v{:02x}", LightSwitchDevice::APPLICATION_ID_IP, LightSwitchDevice::APPLICATION_VERSION);
+    info!(
+        "  Application:  {:04x} v{:02x}",
+        LightSwitchDevice::APPLICATION_ID_IP,
+        LightSwitchDevice::APPLICATION_VERSION
+    );
     info!("  Local IP:     {}", local_ip);
     info!("  Mask version: 57B0 (System B KNX/IP)");
 

@@ -7,18 +7,15 @@
 //!
 //! Run with: `cargo run --bin stack_system_b`
 
-
 use embassy_executor::Spawner;
 use embassy_sync::pubsub::WaitResult;
 use embassy_time::Duration;
 use env_logger::Env;
 use static_cell::StaticCell;
-use zweidraehte_device::prelude::*;
 use std::net::SocketAddrV4;
+use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    bcus::system_b::SystemBStackDefinition,
-    layers::linklayers::knxip::KnxNetIpBuilder,
-    restart::EraseCode,
+    bcus::system_b::SystemBStackDefinition, layers::linklayers::knxip::KnxNetIpBuilder, restart::EraseCode,
 };
 
 use testutil::devices::system_b_demo::*;
@@ -70,7 +67,6 @@ async fn run_stack(runner: Runner<'static, DemoStack>) {
 /// 5. Re-execs the process via `LinuxSystem::restart()`
 #[embassy_executor::task]
 async fn handle_restarts(stack: Stack<'static, DemoStack>) {
-
     println!("Restart handler task started");
 
     // The loop body either performs a process re-exec (which doesn't return)
@@ -130,9 +126,8 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
             // Construct a temporary storage with the same identity for the
             // restart handler. The identity file was already provisioned at
             // startup, so this just re-reads it.
-            let identity =
-                FileIdentity::load_or_provision(IDENTITY_FILE_PATH, SERIAL_NUMBER)
-                    .expect("load device identity for restart save");
+            let identity = FileIdentity::load_or_provision(IDENTITY_FILE_PATH, SERIAL_NUMBER)
+                .expect("load device identity for restart save");
             save_state(state, &mut JsonStorage::new(STATE_FILE_PATH, identity));
         }
 
@@ -192,16 +187,24 @@ async fn main(spawner: Spawner) {
     // Create KNX/IP link layer
     let control_endpoint = SocketAddrV4::new("192.168.1.200".parse().unwrap(), 3671);
 
-    let interface_addr = zweidraehte_platform::get_interface_address(INTERFACE_NAME).expect("Failed to get interface address");
-    let link_layer_builder =
-        KnxNetIpBuilder::<zweidraehte_platform::LinuxIpTransport, _, 2>::new(INTERFACE_NAME, interface_addr, control_endpoint, ())
-            .enable_routing_server()
-            .enable_remote_config_server()
-            .enable_tcp();
+    let interface_addr =
+        zweidraehte_platform::get_interface_address(INTERFACE_NAME).expect("Failed to get interface address");
+    let link_layer_builder = KnxNetIpBuilder::<zweidraehte_platform::LinuxIpTransport, _, 2>::new(
+        INTERFACE_NAME,
+        interface_addr,
+        control_endpoint,
+        (),
+    )
+    .enable_routing_server()
+    .enable_remote_config_server()
+    .enable_tcp();
 
     // Create stack resources and initialize the stack
     static RESOURCES: StaticCell<
-        StackResources<DemoStack, { zweidraehte_device::config::buffer_size_for_apdu(<DemoStack as StackDefinition>::MAX_APDU_LENGTH) }>,
+        StackResources<
+            DemoStack,
+            { zweidraehte_device::config::buffer_size_for_apdu(<DemoStack as StackDefinition>::MAX_APDU_LENGTH) },
+        >,
     > = StaticCell::new();
     let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
@@ -209,6 +212,7 @@ async fn main(spawner: Spawner) {
         (),
         link_layer_builder,
         device_state,
+        MockIpPlatform::default(),
         DemoStack::memory_map(),
     );
 

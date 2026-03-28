@@ -1,18 +1,21 @@
-//! IP extension: persistent config, runtime state, IpStackState, and augment.
+//! IP extension: persistent config, runtime state, and augment.
 //!
 //! Everything related to KNX/IP extension state lives here:
 //!
 //! - [`PersistedIpConfig`] — serializable IP configuration
 //! - [`IpExtensionState`] — runtime state with interior mutability
-//! - [`ExtensionState`] impl — persistence bridge
-//! - [`IpStackState`] impl — IP property accessors
-//! - [`InterfaceObjectAugment`] impl — provides the IP Parameter Object
-//!   (Type 11) and handles all IP PIDs including tunneling
+//! - [`ExtensionState`] + [`Extension<P>`](crate::bcus::system_b::Extension) impls
+//! - [`IpStackState`] impl — IP config property accessors
+//! - [`IpAugment`] — combines config + platform for property dispatch
 //!
-//! The augment impl is in a separate submodule (`augment`) for readability,
-//! but it's all one concept: the IP extension.
+//! PID 68 (`KNXNETIP_DEVICE_CAPABILITIES`) is stored in `IpExtensionState`
+//! and set on boot from [`LinkLayerCapabilities`](crate::layers::LinkLayerCapabilities).
+//! The platform (`P: IpPlatform`) is passed at the point of use via
+//! [`Extension::create_augment`](crate::bcus::system_b::Extension::create_augment).
 
 mod augment;
+
+pub use augment::IpAugment;
 
 use core::cell::{Cell, RefCell};
 use core::net::Ipv4Addr;
@@ -21,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use crate::bcus::system_b::{ExtensionConfig, ExtensionState, SystemBDeviceState};
-use crate::{IpConfig, IpPlatform, IpPlatformConfig, IpStackState, address::IndividualAddress};
+use crate::{IpConfig, IpPlatformConfig, IpStackState, address::IndividualAddress};
 
 // ============================================================================
 // Persisted IP Config
@@ -144,8 +147,9 @@ pub enum IpAssignmentResult {
 /// It bridges the serializable [`PersistedIpConfig`] and the runtime
 /// representation with `Cell`/`RefCell` fields.
 ///
-/// The platform `P` is used to query current network state
-/// (actual IP address, MAC address, etc.) from the operating system.
+/// The platform is NOT stored here — current network values (actual IP,
+/// MAC, etc.) are queried through [`IpAugment`] which combines this
+/// config state with a platform reference at the point of use.
 ///
 /// The const generic `N` is the maximum number of additional individual
 /// addresses (tunneling slots). Non-tunneling devices use the default
@@ -153,12 +157,8 @@ pub enum IpAssignmentResult {
 ///
 /// `IpExtensionState` implements:
 /// - [`ExtensionState`] — persistence (serialize/deserialize/factory reset)
-/// - [`IpStackState`] — IP property accessors for context traits
-/// - [`InterfaceObjectAugment`] — provides the IP Parameter Object (Type 11)
-pub struct IpExtensionState<P: IpPlatform + IpPlatformConfig, const N: usize = 0> {
-    /// Platform for querying current network values and applying config.
-    platform: P,
-
+/// - [`IpStackState`] — IP config property accessors
+pub struct IpExtensionState<const N: usize = 0> {
     // ========================================================================
     // Persistent IP configuration
     // ========================================================================
@@ -172,12 +172,38 @@ pub struct IpExtensionState<P: IpPlatform + IpPlatformConfig, const N: usize = 0
     ttl: Cell<u8>,
     project_installation_id: Cell<u16>,
     additional_individual_addresses: RefCell<heapless::Vec<IndividualAddress, N>>,
+
+    // ========================================================================
+    // Volatile runtime state (not persisted, set on every boot)
+    // ========================================================================
+    /// PID\_KNXNETIP\_DEVICE\_CAPABILITIES (PID 68) bitfield.
+    ///
+    /// Derived from the link layer's
+    /// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet)
+    /// via [`LinkLayerCapabilities`](crate::layers::LinkLayerCapabilities).
+    /// Set once during stack initialisation and read by the IP Parameter
+    /// Object augment when handling PID 68 property reads.
+    ///
+    /// Not persisted — the value is determined by the firmware's link layer
+    /// configuration, not by ETS.
+    knxnetip_device_capabilities: Cell<u16>,
 }
 
-impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpExtensionState<P, N> {
-    /// Get the platform (for querying current network state).
-    pub fn platform(&self) -> &P {
-        &self.platform
+impl<const N: usize> IpExtensionState<N> {
+    /// Get the KNXnet/IP device capabilities bitfield (PID 68).
+    ///
+    /// Returns 0 until [`set_knxnetip_device_capabilities`](Self::set_knxnetip_device_capabilities)
+    /// is called during stack initialisation.
+    pub fn knxnetip_device_capabilities(&self) -> u16 {
+        self.knxnetip_device_capabilities.get()
+    }
+
+    /// Set the KNXnet/IP device capabilities bitfield (PID 68).
+    ///
+    /// Called once during stack boot from
+    /// [`LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES`](crate::layers::LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES).
+    pub fn set_knxnetip_device_capabilities(&self, caps: u16) {
+        self.knxnetip_device_capabilities.set(caps);
     }
 
     /// Build the IP config for persistence.
@@ -210,7 +236,7 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpExtensionState<P, N> {
     /// calling `resolve_ip_assignment()` at boot — it validates the
     /// persisted config and follows the KNX IP assignment procedure
     /// before deciding whether to apply.
-    fn apply_current_config(&self) {
+    fn apply_current_config(&self, platform: &impl IpPlatformConfig) {
         let config = IpConfig {
             assignment_method: self.ip_assignment_method.get(),
             address: self.configured_ip.get(),
@@ -218,11 +244,11 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpExtensionState<P, N> {
             default_gateway: self.configured_gateway.get(),
         };
 
-        if let Err(e) = self.platform.apply_ip_config(&config) {
+        if let Err(_e) = platform.apply_ip_config(&config) {
             #[cfg(feature = "log")]
-            log::error!("Failed to apply IP config: {:?}", e);
+            log::error!("Failed to apply IP config: {:?}", _e);
             #[cfg(feature = "defmt")]
-            defmt::error!("Failed to apply IP config: {}", defmt::Debug2Format(&e));
+            defmt::error!("Failed to apply IP config: {}", defmt::Debug2Format(&_e));
         }
     }
 
@@ -254,7 +280,7 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpExtensionState<P, N> {
     /// The async DHCP timeout → AutoIP fallback path (spec steps 4-5, 8-9)
     /// is not yet implemented. AutoIP requires ARP probing which embassy-net
     /// does not support natively.
-    pub fn resolve_ip_assignment(&self) -> IpAssignmentResult {
+    pub fn resolve_ip_assignment(&self, platform: &impl IpPlatformConfig) -> IpAssignmentResult {
         let method = self.ip_assignment_method.get();
 
         // ====================================================================
@@ -274,7 +300,7 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpExtensionState<P, N> {
             }
 
             // Valid static config — apply it to the platform.
-            self.apply_current_config();
+            self.apply_current_config(platform);
             return IpAssignmentResult::StaticApplied;
         }
 
@@ -296,7 +322,7 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpExtensionState<P, N> {
 // ExtensionState
 // ============================================================================
 
-impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> ExtensionState for IpExtensionState<P, N> {
+impl<const N: usize> ExtensionState for IpExtensionState<N> {
     type Config = PersistedIpConfig<N>;
 
     fn from_config(config: PersistedIpConfig<N>) -> Self {
@@ -318,7 +344,6 @@ impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> ExtensionState 
         // where DHCP runs during hardware init, before persisted state is
         // deserialized).
         Self {
-            platform: P::default(),
             friendly_name: Cell::new(config.friendly_name),
             friendly_name_len: Cell::new(config.friendly_name_len as usize),
             configured_ip: Cell::new(Ipv4Addr::from(config.configured_ip)),
@@ -329,6 +354,7 @@ impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> ExtensionState 
             ttl: Cell::new(config.ttl),
             project_installation_id: Cell::new(config.project_installation_id),
             additional_individual_addresses: RefCell::new(additional),
+            knxnetip_device_capabilities: Cell::new(0),
         }
     }
 
@@ -348,6 +374,31 @@ impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> ExtensionState 
         self.ttl.set(defaults.ttl);
         self.project_installation_id.set(defaults.project_installation_id);
         self.additional_individual_addresses.borrow_mut().clear();
+        // knxnetip_device_capabilities is intentionally NOT reset here —
+        // it is firmware-derived (set on every boot), not ETS-configured.
+    }
+
+    fn set_link_layer_capabilities(&self, capabilities: u16) {
+        self.set_knxnetip_device_capabilities(capabilities);
+    }
+}
+
+// ============================================================================
+// Extension — unified persistence + augmentation
+// ============================================================================
+
+impl<P: crate::IpPlatform, const N: usize> crate::bcus::system_b::Extension<P> for IpExtensionState<N> {
+    type Augment<'a, S: crate::StackState>
+        = IpAugment<'a, P, N>
+    where
+        Self: 'a,
+        P: 'a;
+
+    fn create_augment<'a, S: crate::StackState>(&'a self, platform: &'a P) -> Self::Augment<'a, S>
+    where
+        P: 'a,
+    {
+        IpAugment::new(self, platform)
     }
 }
 
@@ -364,7 +415,6 @@ impl<P: IpPlatform + IpPlatformConfig + Default, const N: usize> ExtensionState 
 ///
 /// - `ADT_SIZE`, `AST_SIZE`, `COT_SIZE`: Table sizes (see [`SystemBDeviceState`])
 /// - `P`: Application parameters type
-/// - `Plat`: Platform type implementing [`IpPlatform`] for network queries
 /// - `N`: Maximum number of additional individual addresses (tunneling slots).
 ///   Non-tunneling devices use the default `N = 0`.
 pub type IpSystemBDeviceState<
@@ -372,43 +422,14 @@ pub type IpSystemBDeviceState<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P,
-    Plat,
     const N: usize = 0,
-> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpExtensionState<Plat, N>>;
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpExtensionState<N>>;
 
 // ============================================================================
-// IpStackState — used by context traits via HasExtensionState
+// IpStackState — persisted config accessors
 // ============================================================================
 
-impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpStackState for IpExtensionState<P, N> {
-    fn current_ip_address(&self) -> Ipv4Addr {
-        self.platform.current_ip_address()
-    }
-
-    fn current_subnet_mask(&self) -> Ipv4Addr {
-        self.platform.current_subnet_mask()
-    }
-
-    fn current_default_gateway(&self) -> Ipv4Addr {
-        self.platform.current_default_gateway()
-    }
-
-    fn mac_address(&self) -> [u8; 6] {
-        self.platform.mac_address()
-    }
-
-    fn current_ip_assignment_method(&self) -> u8 {
-        self.platform.current_ip_assignment_method()
-    }
-
-    fn ip_capabilities(&self) -> u8 {
-        self.platform.ip_capabilities()
-    }
-
-    fn knxnetip_device_capabilities(&self) -> u16 {
-        self.platform.knxnetip_device_capabilities()
-    }
-
+impl<const N: usize> IpStackState for IpExtensionState<N> {
     fn configured_ip_address(&self) -> Ipv4Addr {
         self.configured_ip.get()
     }
@@ -509,9 +530,7 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> IpStackState for IpExtens
 // HasDomainAddress — IP domain address is the routing multicast address
 // ============================================================================
 
-impl<P: IpPlatform + IpPlatformConfig, const N: usize> crate::state::HasDomainAddress
-    for IpExtensionState<P, N>
-{
+impl<const N: usize> crate::objects::interface::HasDomainAddress for IpExtensionState<N> {
     /// KNX/IP domain address is 4 bytes (IPv4 routing multicast address).
     ///
     /// Per the KNX IP Communication Medium spec (03_02_06, section
@@ -529,4 +548,3 @@ impl<P: IpPlatform + IpPlatformConfig, const N: usize> crate::state::HasDomainAd
         self.routing_multicast.set(Ipv4Addr::from(octets));
     }
 }
-

@@ -11,18 +11,20 @@
 //! [`HasDomainAddress`].
 
 use crate::{
+    StackState,
     address::GroupAddress,
     definition::StackDefinition,
     layers::al_extension::{AlExtensionContext, AlServiceExtension},
     messages::{
-        apdu::device::{DomainAddressSerialNumberRead, DomainAddressSerialNumberResponse, DomainAddressSerialNumberWrite},
+        apdu::device::{
+            DomainAddressSerialNumberRead, DomainAddressSerialNumberResponse, DomainAddressSerialNumberWrite,
+        },
         buffers::Buffer,
         builder::MessageBuilder,
         knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
     },
+    objects::interface::HasDomainAddress,
     router::Outbox,
-    state::HasDomainAddress,
-    StackState,
 };
 
 #[cfg(not(feature = "defmt"))]
@@ -103,16 +105,12 @@ fn handle_domain_address_serial_number_read<D>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
     outbox: &mut Outbox,
-)
-where
+) where
     D: StackDefinition,
     D::State: HasDomainAddress,
 {
     if ind.service_type() != ServiceType::T_Broadcast_Ind {
-        warn!(
-            "AL DomainAddressSerialNumberRead with unexpected service type: {:?}",
-            ind.service_type()
-        );
+        warn!("AL DomainAddressSerialNumberRead with unexpected service type: {:?}", ind.service_type());
         return;
     }
 
@@ -171,16 +169,12 @@ where
 fn handle_domain_address_serial_number_write<D>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-)
-where
+) where
     D: StackDefinition,
     D::State: HasDomainAddress,
 {
     if ind.service_type() != ServiceType::T_Broadcast_Ind {
-        warn!(
-            "AL DomainAddressSerialNumberWrite with unexpected service type: {:?}",
-            ind.service_type()
-        );
+        warn!("AL DomainAddressSerialNumberWrite with unexpected service type: {:?}", ind.service_type());
         return;
     }
 
@@ -202,10 +196,6 @@ where
         debug!("AL DomainAddressSerialNumberWrite: setting domain address ({} bytes)", doa_len);
         ctx.state.set_domain_address(&doa[..doa_len]);
     } else {
-        warn!(
-            "AL DomainAddressSerialNumberWrite: domain address too short ({} < {})",
-            doa.len(),
-            doa_len
-        );
+        warn!("AL DomainAddressSerialNumberWrite: domain address too short ({} < {})", doa.len(), doa_len);
     }
 }

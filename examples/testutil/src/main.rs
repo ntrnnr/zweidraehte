@@ -195,13 +195,17 @@ impl StackDefinition for MyKnxStack {
     type P = AppParameters;
     type CO = comm_objs::AppComObjects;
     type LLB = MockLinkLayerBuilder<8>;
+    type ES = ();
     type State = MyState;
     type Mem = NoMemoryMap;
 
     // Empty interface objects - this stack doesn't have interface objects
     type InterfaceObjects<'a> = ();
 
-    fn create_interface_objects<'a>(_state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(
+        _state: &'a Self::State,
+        _platform: &'a Self::Platform,
+    ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
@@ -281,6 +285,7 @@ async fn main(spawner: Spawner) {
         (), // hook_context
         link_layer_builder,
         state,
+        (), // platform (non-IP device)
         NoMemoryMap,
     );
 

@@ -4,15 +4,16 @@
 //! The DLL retry parameters encode busy_retry (bits 6-4) and nak_retry
 //! (bits 2-0), defaulting to 0x33 (3 busy retries, 3 NAK retries).
 //!
-//! `Tp1ExtensionState` implements both [`ExtensionState`] (for persistence)
-//! and [`InterfaceObjectAugment`] (for property handling). It IS the augment
-//! — pass `state.extension_state()` as the augment parameter:
+//! `Tp1ExtensionState` implements [`Extension<()>`](crate::bcus::system_b::Extension),
+//! providing both persistence and augmentation. It IS its own augment
+//! — `create_augment` returns `&self`.
 //!
 //! ```rust,ignore
-//! type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, MyState, &'a Tp1ExtensionState>;
+//! type ES = Tp1ExtensionState;
+//! type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
 //!
-//! fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a> {
-//!     create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), state.extension_state())
+//! fn create_interface_objects<'a>(...) -> Self::InterfaceObjects<'a> {
+//!     create_system_b_objects_from_extension::<Self>(state, platform, &Self::memory_layout())
 //! }
 //! ```
 
@@ -88,6 +89,24 @@ impl ExtensionState for Tp1ExtensionState {
 
     fn factory_reset(&self) {
         self.max_retry_count.set(default_max_retry_count());
+    }
+}
+
+// ============================================================================
+// Extension — unified persistence + augmentation
+// ============================================================================
+
+impl crate::bcus::system_b::Extension<()> for Tp1ExtensionState {
+    type Augment<'a, S: crate::StackState>
+        = &'a Tp1ExtensionState
+    where
+        Self: 'a;
+
+    fn create_augment<'a, S: crate::StackState>(&'a self, _platform: &'a ()) -> Self::Augment<'a, S>
+    where
+        (): 'a,
+    {
+        self
     }
 }
 

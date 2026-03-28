@@ -234,6 +234,8 @@ impl<const N: usize, const C: usize> LinkLayerBuilderBase for MockLinkLayerBuild
     }
 }
 
+impl<const N: usize, const C: usize> crate::layers::LinkLayerCapabilities for MockLinkLayerBuilder<N, C> {}
+
 impl<CTX, const N: usize, const C: usize> LinkLayerBuilder<CTX> for MockLinkLayerBuilder<N, C> {
     fn build_and_run<'a>(
         self,

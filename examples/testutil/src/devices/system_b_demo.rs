@@ -58,8 +58,8 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::bcus::system_b::{
-    DefaultSystemBInterfaceObjects, IpExtensionState, IpSystemBDeviceState, SystemBMemoryMap,
-    SystemBStackDefinition, create_system_b_objects,
+    IpExtensionState, IpSystemBDeviceState, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
+    create_system_b_objects_from_extension,
 };
 use zweidraehte_device::dpt::*;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceTcp};
@@ -520,9 +520,6 @@ impl IpPlatform for MockIpPlatform {
     fn ip_capabilities(&self) -> u8 {
         0x07
     }
-    fn knxnetip_device_capabilities(&self) -> u16 {
-        0x003F
-    }
 }
 
 impl zweidraehte_platform::NetworkConfig for MockIpPlatform {
@@ -542,7 +539,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Unified state type.
-pub type DemoState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, MockIpPlatform>;
+pub type DemoState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DemoStack;
@@ -556,15 +553,17 @@ impl StackDefinition for DemoStack {
     type P = DemoParams;
     type CO = comm_objs::DemoComObjects;
     type LLB = KnxNetIpBuilder<LinuxIpTransport, KnxIpDeviceTcp, 2>;
+    type Platform = MockIpPlatform;
+    type ES = IpExtensionState<0>;
     type State = DemoState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, DemoState, &'a IpExtensionState<MockIpPlatform>>;
+    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
 
-    fn create_interface_objects<'a>(state: &'a Self::State) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_system_b_objects::<Self, _, _>(state, &Self::memory_layout(), state.extension_state())
+        create_system_b_objects_from_extension::<Self>(state, platform, &Self::memory_layout())
     }
 
     type AlExtension = zweidraehte_device::layers::al_ext_domain_addr::DomainAddressExtension;
