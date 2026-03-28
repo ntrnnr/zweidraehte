@@ -16,14 +16,13 @@
 // FIXME: We should replace DPT_Colour_RGB with PDT_Generic03
 
 use core::cell::RefCell;
-use std::net::Ipv4Addr;
 
 use const_default::ConstDefault;
 
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     AccessContext,
-    bcus::system_b::{IpSystemBDeviceState, MemoryLayout},
+    bcus::system_b::{Tp1SystemBDeviceState, MemoryLayout},
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::Application,
     storage::StaticIdentity,
@@ -477,70 +476,6 @@ pub(crate) mod conformance_config {
 }
 
 // ============================================================================
-// Mock IP Platform
-// ============================================================================
-
-/// Mock platform for testing that provides static IP configuration.
-#[derive(Debug, Clone)]
-pub struct MockIpPlatform {
-    pub ip_address: Ipv4Addr,
-    pub subnet_mask: Ipv4Addr,
-    pub gateway: Ipv4Addr,
-    pub mac_address: [u8; 6],
-}
-
-impl Default for MockIpPlatform {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MockIpPlatform {
-    pub fn new() -> Self {
-        Self {
-            ip_address: Ipv4Addr::new(192, 168, 1, 100),
-            subnet_mask: Ipv4Addr::new(255, 255, 255, 0),
-            gateway: Ipv4Addr::new(192, 168, 1, 1),
-            mac_address: [0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E],
-        }
-    }
-}
-
-impl IpPlatform for MockIpPlatform {
-    fn current_ip_address(&self) -> Ipv4Addr {
-        self.ip_address
-    }
-
-    fn current_subnet_mask(&self) -> Ipv4Addr {
-        self.subnet_mask
-    }
-
-    fn current_default_gateway(&self) -> Ipv4Addr {
-        self.gateway
-    }
-
-    fn mac_address(&self) -> [u8; 6] {
-        self.mac_address
-    }
-
-    fn current_ip_assignment_method(&self) -> u8 {
-        0x02 // Manual
-    }
-
-    fn ip_capabilities(&self) -> u8 {
-        0x07 // BootP, DHCP, Manual supported
-    }
-}
-
-impl IpPlatformConfig for MockIpPlatform {
-    type Error = core::convert::Infallible;
-
-    fn apply_ip_config(&self, _config: &zweidraehte_device::IpConfig) -> Result<(), Self::Error> {
-        Ok(()) // No-op for tests — OS manages networking.
-    }
-}
-
-// ============================================================================
 // Device Information
 // ============================================================================
 
@@ -553,7 +488,7 @@ pub mod device_info {
     ///
     /// This is the single source of truth for all device/application metadata.
     pub const DEVICE: DeviceDescriptor = DeviceDescriptor {
-        mask_version: MaskVersion::SystemBKnxIp,
+        mask_version: MaskVersion::SystemBTp1,
         manufacturer_id: 0x00FA,
         hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
         application_id: 0x0100,
@@ -639,21 +574,20 @@ mod table_sizes {
 
 /// The inner device state type used by the conformance wrapper.
 ///
-/// This is `IpSystemBDeviceState` parameterized with the conformance test's
-/// table sizes, `TestParameters`, and `MockIpPlatform`.
+/// The inner System B device state for conformance testing.
 type InnerState =
-    IpSystemBDeviceState<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, TestParameters>;
+    Tp1SystemBDeviceState<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, TestParameters>;
 
 /// Unified state for conformance tests.
 ///
-/// Wraps [`IpSystemBDeviceState`](IpSystemBDeviceState)
-/// and adds test memory regions needed by the conformance memory map tests.
+/// Wraps [`Tp1SystemBDeviceState`] and adds test memory regions needed
+/// by the conformance memory map tests.
 ///
-/// All standard trait impls (`StackState`, `IpStackState`, `Has*Table`,
+/// All standard trait impls (`StackState`, `Has*Table`,
 /// `HasPeiApplication`, `HasRoutingCount`) are thin forwarding impls that
-/// delegate to the inner `IpSystemBDeviceState`.
+/// delegate to the inner state.
 pub struct ConformanceState {
-    /// Base device state (runtime + tables + IP config).
+    /// Base device state (runtime + tables + TP1 config).
     inner: InnerState,
 
     // ========================================================================
@@ -794,64 +728,6 @@ impl zweidraehte_device::bcus::system_b::HasExtensionState for ConformanceState 
 
     fn extension_state(&self) -> &Self::ES {
         self.inner.extension_state()
-    }
-}
-
-// ============================================================================
-// Trait Forwarding — IpStackState
-// ============================================================================
-
-impl IpStackState for ConformanceState {
-    fn configured_ip_address(&self) -> Ipv4Addr {
-        self.inner.extension_state().configured_ip_address()
-    }
-    fn set_configured_ip_address(&self, addr: Ipv4Addr) {
-        self.inner.extension_state().set_configured_ip_address(addr);
-    }
-    fn configured_subnet_mask(&self) -> Ipv4Addr {
-        self.inner.extension_state().configured_subnet_mask()
-    }
-    fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
-        self.inner.extension_state().set_configured_subnet_mask(mask);
-    }
-    fn configured_default_gateway(&self) -> Ipv4Addr {
-        self.inner.extension_state().configured_default_gateway()
-    }
-    fn set_configured_default_gateway(&self, gateway: Ipv4Addr) {
-        self.inner.extension_state().set_configured_default_gateway(gateway);
-    }
-    fn ip_assignment_method(&self) -> u8 {
-        self.inner.extension_state().ip_assignment_method()
-    }
-    fn set_ip_assignment_method(&self, method: u8) {
-        self.inner.extension_state().set_ip_assignment_method(method);
-    }
-    fn routing_multicast_address(&self) -> Ipv4Addr {
-        self.inner.extension_state().routing_multicast_address()
-    }
-    fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
-        self.inner.extension_state().set_routing_multicast_address(addr);
-    }
-    fn ttl(&self) -> u8 {
-        self.inner.extension_state().ttl()
-    }
-    fn set_ttl(&self, ttl: u8) {
-        self.inner.extension_state().set_ttl(ttl);
-    }
-    fn friendly_name_len(&self) -> usize {
-        self.inner.extension_state().friendly_name_len()
-    }
-    fn friendly_name(&self) -> [u8; 30] {
-        self.inner.extension_state().friendly_name()
-    }
-    fn set_friendly_name(&self, name: &[u8]) {
-        self.inner.extension_state().set_friendly_name(name);
-    }
-    fn project_installation_id(&self) -> u16 {
-        self.inner.extension_state().project_installation_id()
-    }
-    fn set_project_installation_id(&self, id: u16) {
-        self.inner.extension_state().set_project_installation_id(id);
     }
 }
 
@@ -1178,8 +1054,7 @@ impl StackDefinition for IpcConformanceTestStack {
     type P = TestParameters;
     type CO = ConformanceComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
-    type Platform = MockIpPlatform;
-    type ES = zweidraehte_device::bcus::system_b::IpExtensionState<0>;
+    type ES = zweidraehte_device::bcus::system_b::Tp1ExtensionState;
     type State = ConformanceState;
     type Mem = ConformanceMemoryMap;
 
@@ -1210,11 +1085,11 @@ impl StackDefinition for IpcConformanceTestStack {
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use zweidraehte_device::bcus::system_b::{HasPersistedState, PersistedIpConfig, PersistedState};
+use zweidraehte_device::bcus::system_b::{HasPersistedState, PersistedState, Tp1ExtensionConfig};
 
-/// The persisted state type for the inner `IpSystemBDeviceState`.
+/// The persisted state type for the inner `Tp1SystemBDeviceState`.
 type InnerPersistedState =
-    PersistedState<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, TestParameters, PersistedIpConfig>;
+    PersistedState<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, TestParameters, Tp1ExtensionConfig>;
 
 /// Full snapshot of conformance test state for shared memory.
 ///

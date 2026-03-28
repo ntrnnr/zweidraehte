@@ -199,7 +199,9 @@ pub struct IpExtensionState<const N: usize = 0, const CAPS: u16 = 0> {
   constant derived from the link layer's `FeatureSet`
 
 You typically don't specify `N` or `CAPS` directly. Use
-`IpExtension<F>` which derives both from a `FeatureSet` type:
+`IpExtension<F>` which derives both from a `FeatureSet` type.
+`IpAugmentFor<'a, P, F>` does the same for the augment type (needed
+when spelling out `InterfaceObjects` for devices with extra augments):
 
 ```rust
 // These are equivalent:
@@ -547,11 +549,14 @@ The `Extension` trait handles the differences internally.
 **With extra augments (e.g., EasterEggAugment):**
 
 When extra augments are needed beyond what the extension provides,
-use `create_system_b_objects_with_extra`:
+use `create_system_b_objects_with_extra`. The `InterfaceObjects` type
+must spell out the augment tuple — use `IpAugmentFor<'a, P, F>` to
+derive `N` and `CAPS` from the feature set (same as `IpExtension<F>`
+does for the extension state):
 
 ```rust
 type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
-    'a, MyState, (IpAugment<'a, MyPlatform>, EasterEggAugment),
+    'a, MyState, (IpAugmentFor<'a, MyPlatform, KnxIpDeviceUdp>, EasterEggAugment),
 >;
 
 fn create_interface_objects<'a>(

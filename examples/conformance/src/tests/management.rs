@@ -163,7 +163,7 @@ pub fn create_individual_address_write_suite() -> TestSuite {
 pub fn create_device_descriptor_type0_suite() -> TestSuite {
     let mut vars = create_test_variables();
     // DD0_RESPONSE: Device Descriptor Type 0 response (2 bytes, wildcard by default)
-    vars.insert("DD0_RESPONSE".to_string(), TestVariable::Bytes(vec![0x57, 0xB0]));
+    vars.insert("DD0_RESPONSE".to_string(), TestVariable::Bytes(vec![0x07, 0xB0]));
 
     let cases = vec![
         // ====================================================================

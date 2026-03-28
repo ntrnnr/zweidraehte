@@ -19,7 +19,7 @@ use static_cell::StaticCell;
 use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilder, SharedMemory, TAG_LOG, TAG_READY};
 use zweidraehte_conformance::harness::stack::{
     ConformanceHookContext, ConformanceMemoryMap, ConformancePersistedState, ConformanceState, IpcConformanceTestStack,
-    MockIpPlatform, comm_objs::ConformanceComObjects, device_info,
+    comm_objs::ConformanceComObjects, device_info,
 };
 
 use zweidraehte_device::messages::buffers::{BufferManager, DynBufferManager};
@@ -320,7 +320,7 @@ async fn main(spawner: Spawner) {
         hook_context,
         link_layer_builder,
         state,
-        MockIpPlatform::new(),
+        (),
         ConformanceMemoryMap,
     );
 
