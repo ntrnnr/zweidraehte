@@ -24,7 +24,7 @@ use devices::light_switch::{
 };
 use zweidraehte_device::{
     bcus::system_b::{
-        DefaultSystemBInterfaceObjects, IpAugment, IpExtensionState, IpSystemBDeviceState, SystemBMemoryMap,
+        DefaultSystemBInterfaceObjects, IpAugmentFor, IpDeviceState, IpExtension, SystemBMemoryMap,
         SystemBStackDefinition, create_system_b_objects_with_extra,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
@@ -46,7 +46,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Device state combining System B tables with IP link-layer state.
-type PicoWState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams>;
+type PicoWState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, KnxIpDeviceUdp>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
@@ -69,11 +69,14 @@ impl StackDefinition for PicoWLightSwitch {
     type CO = LightSwitchComObjects;
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
     type Platform = EmbassyNetworkInfo;
-    type ES = IpExtensionState<0>;
+    type ES = IpExtension<KnxIpDeviceUdp>;
     type State = PicoWState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> =
-        DefaultSystemBInterfaceObjects<'a, PicoWState, (IpAugment<'a, EmbassyNetworkInfo>, EasterEggAugment)>;
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
+        'a,
+        PicoWState,
+        (IpAugmentFor<'a, EmbassyNetworkInfo, KnxIpDeviceUdp>, EasterEggAugment),
+    >;
 
     fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
     where

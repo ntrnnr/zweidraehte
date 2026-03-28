@@ -120,17 +120,6 @@ pub trait StackState {
         // Default: no-op for implementations that don't support this
     }
 
-    /// Receive link-layer-derived capabilities at boot time.
-    ///
-    /// Called once during stack initialisation with the value of
-    /// [`LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES`](crate::layers::LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES).
-    /// IP extensions store PID 68 here; non-IP devices ignore it.
-    ///
-    /// Default implementation does nothing.
-    fn set_link_layer_capabilities(&self, _capabilities: u16) {
-        // Default: no-op for implementations without IP extension state
-    }
-
     // =========================================================================
     // Programming Mode
     // =========================================================================

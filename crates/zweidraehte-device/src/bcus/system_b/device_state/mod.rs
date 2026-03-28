@@ -565,10 +565,6 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     fn mark_dirty(&self) {
         SystemBDeviceState::mark_dirty(self);
     }
-
-    fn set_link_layer_capabilities(&self, capabilities: u16) {
-        self.extension_state.set_link_layer_capabilities(capabilities);
-    }
 }
 
 // ============================================================================

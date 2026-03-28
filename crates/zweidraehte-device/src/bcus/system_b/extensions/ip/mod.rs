@@ -158,10 +158,13 @@ pub enum IpAssignmentResult {
 /// `IpExtensionState` implements:
 /// - [`ExtensionState`] — persistence (serialize/deserialize/factory reset)
 /// - [`IpStackState`] — IP config property accessors
-pub struct IpExtensionState<const N: usize = 0> {
-    // ========================================================================
-    // Persistent IP configuration
-    // ========================================================================
+/// The const generic `CAPS` is the PID\_KNXNETIP\_DEVICE\_CAPABILITIES
+/// bitfield (PID 68). Set it to
+/// [`FeatureSet::KNXNETIP_DEVICE_CAPABILITIES`](crate::layers::linklayers::knxip::features::FeatureSet::KNXNETIP_DEVICE_CAPABILITIES)
+/// from your link layer's feature type (e.g.,
+/// `{ KnxIpDeviceUdp::KNXNETIP_DEVICE_CAPABILITIES }`). The value is
+/// baked into the type at compile time — no runtime setter needed.
+pub struct IpExtensionState<const N: usize = 0, const CAPS: u16 = 0> {
     friendly_name: Cell<[u8; 30]>,
     friendly_name_len: Cell<usize>,
     configured_ip: Cell<Ipv4Addr>,
@@ -172,38 +175,15 @@ pub struct IpExtensionState<const N: usize = 0> {
     ttl: Cell<u8>,
     project_installation_id: Cell<u16>,
     additional_individual_addresses: RefCell<heapless::Vec<IndividualAddress, N>>,
-
-    // ========================================================================
-    // Volatile runtime state (not persisted, set on every boot)
-    // ========================================================================
-    /// PID\_KNXNETIP\_DEVICE\_CAPABILITIES (PID 68) bitfield.
-    ///
-    /// Derived from the link layer's
-    /// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet)
-    /// via [`LinkLayerCapabilities`](crate::layers::LinkLayerCapabilities).
-    /// Set once during stack initialisation and read by the IP Parameter
-    /// Object augment when handling PID 68 property reads.
-    ///
-    /// Not persisted — the value is determined by the firmware's link layer
-    /// configuration, not by ETS.
-    knxnetip_device_capabilities: Cell<u16>,
 }
 
-impl<const N: usize> IpExtensionState<N> {
-    /// Get the KNXnet/IP device capabilities bitfield (PID 68).
+impl<const N: usize, const CAPS: u16> IpExtensionState<N, CAPS> {
+    /// KNXnet/IP device capabilities bitfield (PID 68).
     ///
-    /// Returns 0 until [`set_knxnetip_device_capabilities`](Self::set_knxnetip_device_capabilities)
-    /// is called during stack initialisation.
-    pub fn knxnetip_device_capabilities(&self) -> u16 {
-        self.knxnetip_device_capabilities.get()
-    }
-
-    /// Set the KNXnet/IP device capabilities bitfield (PID 68).
-    ///
-    /// Called once during stack boot from
-    /// [`LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES`](crate::layers::LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES).
-    pub fn set_knxnetip_device_capabilities(&self, caps: u16) {
-        self.knxnetip_device_capabilities.set(caps);
+    /// Compile-time constant derived from the link layer's
+    /// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet).
+    pub const fn knxnetip_device_capabilities(&self) -> u16 {
+        CAPS
     }
 
     /// Build the IP config for persistence.
@@ -322,7 +302,7 @@ impl<const N: usize> IpExtensionState<N> {
 // ExtensionState
 // ============================================================================
 
-impl<const N: usize> ExtensionState for IpExtensionState<N> {
+impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAPS> {
     type Config = PersistedIpConfig<N>;
 
     fn from_config(config: PersistedIpConfig<N>) -> Self {
@@ -354,7 +334,6 @@ impl<const N: usize> ExtensionState for IpExtensionState<N> {
             ttl: Cell::new(config.ttl),
             project_installation_id: Cell::new(config.project_installation_id),
             additional_individual_addresses: RefCell::new(additional),
-            knxnetip_device_capabilities: Cell::new(0),
         }
     }
 
@@ -374,12 +353,6 @@ impl<const N: usize> ExtensionState for IpExtensionState<N> {
         self.ttl.set(defaults.ttl);
         self.project_installation_id.set(defaults.project_installation_id);
         self.additional_individual_addresses.borrow_mut().clear();
-        // knxnetip_device_capabilities is intentionally NOT reset here —
-        // it is firmware-derived (set on every boot), not ETS-configured.
-    }
-
-    fn set_link_layer_capabilities(&self, capabilities: u16) {
-        self.set_knxnetip_device_capabilities(capabilities);
     }
 }
 
@@ -387,9 +360,11 @@ impl<const N: usize> ExtensionState for IpExtensionState<N> {
 // Extension — unified persistence + augmentation
 // ============================================================================
 
-impl<P: crate::IpPlatform, const N: usize> crate::bcus::system_b::Extension<P> for IpExtensionState<N> {
+impl<P: crate::IpPlatform, const N: usize, const CAPS: u16> crate::bcus::system_b::Extension<P>
+    for IpExtensionState<N, CAPS>
+{
     type Augment<'a, S: crate::StackState>
-        = IpAugment<'a, P, N>
+        = IpAugment<'a, P, N, CAPS>
     where
         Self: 'a,
         P: 'a;
@@ -417,19 +392,76 @@ impl<P: crate::IpPlatform, const N: usize> crate::bcus::system_b::Extension<P> f
 /// - `P`: Application parameters type
 /// - `N`: Maximum number of additional individual addresses (tunneling slots).
 ///   Non-tunneling devices use the default `N = 0`.
+/// - `CAPS`: KNXnet/IP device capabilities bitfield (PID 68). Set to
+///   `{ YourFeatureSet::KNXNETIP_DEVICE_CAPABILITIES }`.
 pub type IpSystemBDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P,
     const N: usize = 0,
-> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpExtensionState<N>>;
+    const CAPS: u16 = 0,
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpExtensionState<N, CAPS>>;
+
+/// [`IpExtensionState`] with `N` and `CAPS` derived from a
+/// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet).
+///
+/// Tunneling capacity and device capabilities are inferred from `F`,
+/// so the user only passes the same feature type used for the link
+/// layer builder:
+///
+/// ```rust,ignore
+/// type ES = IpExtension<KnxIpDeviceUdp>;            // N=0, CAPS derived
+/// type ES = IpExtension<KnxIpInterfaceUdp<4>>;      // N=4, CAPS derived
+/// ```
+pub type IpExtension<F: crate::layers::linklayers::knxip::features::FeatureSet> = IpExtensionState<
+    { <
+        <F as crate::layers::linklayers::knxip::features::FeatureSet>::Tunneling
+            as crate::layers::linklayers::knxip::features::TunnelingFeature
+    >::CAPACITY },
+    { <F as crate::layers::linklayers::knxip::features::FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES },
+>;
+
+/// [`IpAugment`] with `N` and `CAPS` derived from a
+/// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet).
+///
+/// Use this when spelling out the augment type for devices with extra
+/// augments (where `SystemBInterfaceObjectsFor` can't be used):
+///
+/// ```rust,ignore
+/// type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
+///     'a, MyState, (IpAugmentFor<'a, MyPlatform, KnxIpDeviceUdp>, EasterEggAugment),
+/// >;
+/// ```
+pub type IpAugmentFor<'a, P, F: crate::layers::linklayers::knxip::features::FeatureSet> = IpAugment<
+    'a,
+    P,
+    { <
+        <F as crate::layers::linklayers::knxip::features::FeatureSet>::Tunneling
+            as crate::layers::linklayers::knxip::features::TunnelingFeature
+    >::CAPACITY },
+    { <F as crate::layers::linklayers::knxip::features::FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES },
+>;
+
+/// Like [`IpSystemBDeviceState`], but derives `N` and `CAPS` from a
+/// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet).
+///
+/// ```rust,ignore
+/// type MyState = IpDeviceState<ADT, AST, COT, MyParams, KnxIpDeviceTcp>;
+/// ```
+pub type IpDeviceState<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P,
+    F: crate::layers::linklayers::knxip::features::FeatureSet,
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpExtension<F>>;
 
 // ============================================================================
 // IpStackState — persisted config accessors
 // ============================================================================
 
-impl<const N: usize> IpStackState for IpExtensionState<N> {
+impl<const N: usize, const CAPS: u16> IpStackState for IpExtensionState<N, CAPS> {
     fn configured_ip_address(&self) -> Ipv4Addr {
         self.configured_ip.get()
     }
@@ -530,7 +562,7 @@ impl<const N: usize> IpStackState for IpExtensionState<N> {
 // HasDomainAddress — IP domain address is the routing multicast address
 // ============================================================================
 
-impl<const N: usize> crate::objects::interface::HasDomainAddress for IpExtensionState<N> {
+impl<const N: usize, const CAPS: u16> crate::objects::interface::HasDomainAddress for IpExtensionState<N, CAPS> {
     /// KNX/IP domain address is 4 bytes (IPv4 routing multicast address).
     ///
     /// Per the KNX IP Communication Medium spec (03_02_06, section

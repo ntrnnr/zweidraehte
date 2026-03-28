@@ -14,7 +14,7 @@ use core::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::{
-    IpExtensionState, IpSystemBDeviceState, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
+    IpDeviceState, IpExtension, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
     create_system_b_objects_from_extension,
 };
 use zweidraehte_device::dpt::*;
@@ -3210,7 +3210,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Unified state type.
-pub type MdtState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MdtParams>;
+pub type MdtState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MdtParams, KnxIpDeviceUdp>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MdtStack;
@@ -3225,7 +3225,7 @@ impl StackDefinition for MdtStack {
     type CO = comm_objs::MdtComObjects;
     type LLB = KnxNetIpBuilder<zweidraehte_platform::LinuxIpTransport, KnxIpDeviceUdp, 2>;
     type Platform = MockIpPlatform;
-    type ES = IpExtensionState<0>;
+    type ES = IpExtension<KnxIpDeviceUdp>;
     type State = MdtState;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;

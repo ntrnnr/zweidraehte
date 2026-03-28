@@ -16,7 +16,7 @@ use crate::{
     composition::{LayerContext, LayerStackBuilder},
     definition::StackDefinition,
     inner::{Inner, StackContext},
-    layers::{LinkLayerBuilderBase, LinkLayerCapabilities, transport::TlStyle},
+    layers::{LinkLayerBuilderBase, transport::TlStyle},
     messages::buffers::{Buffer, BufferManager},
     objects::comm::ComObjects,
     resources::StackResources,
@@ -292,10 +292,6 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     };
 
     let inner = &*resources.inner.write(inner);
-
-    // Push link-layer-derived capabilities into the device state before
-    // interface objects are created (the IP augment reads PID 68 from state).
-    inner.state.set_link_layer_capabilities(D::LLB::KNXNETIP_DEVICE_CAPABILITIES);
 
     // Build interface objects with reference to the state stored in Inner.
     // SAFETY: Inner is now stable in memory (written to StackResources), so we can safely

@@ -50,28 +50,28 @@ use super::IpExtensionState;
 /// ```rust,ignore
 /// let augment = IpAugment::new(state.extension_state(), platform);
 /// ```
-pub struct IpAugment<'a, P: IpPlatform, const N: usize = 0> {
+pub struct IpAugment<'a, P: IpPlatform, const N: usize = 0, const CAPS: u16 = 0> {
     /// Persisted IP configuration (from extension state).
-    pub config: &'a IpExtensionState<N>,
+    pub config: &'a IpExtensionState<N, CAPS>,
     /// Platform for querying current network values.
     pub platform: &'a P,
 }
 
-impl<'a, P: IpPlatform, const N: usize> IpAugment<'a, P, N> {
+impl<'a, P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'a, P, N, CAPS> {
     /// Create a new `IpAugment` combining config and platform references.
     ///
-    /// PID 68 (device capabilities) is read from the extension state, which
-    /// the stack sets on boot from
-    /// [`LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES`](crate::layers::LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES).
-    pub fn new(config: &'a IpExtensionState<N>, platform: &'a P) -> Self {
+    /// PID 68 (device capabilities) is a compile-time constant from the
+    /// `CAPS` const generic, which propagates from
+    /// [`IpExtensionState<N, CAPS>`](IpExtensionState).
+    pub fn new(config: &'a IpExtensionState<N, CAPS>, platform: &'a P) -> Self {
         Self { config, platform }
     }
 
-    /// Get the KNXnet/IP device capabilities bitfield (PID 68).
+    /// KNXnet/IP device capabilities bitfield (PID 68).
     ///
-    /// Read from the extension state (set on boot, not persisted).
-    pub fn knxnetip_device_capabilities(&self) -> u16 {
-        self.config.knxnetip_device_capabilities()
+    /// Compile-time constant from the `CAPS` const generic.
+    pub const fn knxnetip_device_capabilities(&self) -> u16 {
+        CAPS
     }
 }
 
@@ -79,7 +79,7 @@ impl<'a, P: IpPlatform, const N: usize> IpAugment<'a, P, N> {
 // IpStackState delegation (config methods → inner extension state)
 // ============================================================================
 
-impl<P: IpPlatform, const N: usize> IpStackState for IpAugment<'_, P, N> {
+impl<P: IpPlatform, const N: usize, const CAPS: u16> IpStackState for IpAugment<'_, P, N, CAPS> {
     fn configured_ip_address(&self) -> Ipv4Addr {
         self.config.configured_ip_address()
     }
@@ -165,7 +165,7 @@ impl<P: IpPlatform, const N: usize> IpStackState for IpAugment<'_, P, N> {
 // IpPlatformState delegation (current values → platform)
 // ============================================================================
 
-impl<P: IpPlatform, const N: usize> IpPlatformState for IpAugment<'_, P, N> {
+impl<P: IpPlatform, const N: usize, const CAPS: u16> IpPlatformState for IpAugment<'_, P, N, CAPS> {
     fn current_ip_address(&self) -> Ipv4Addr {
         self.platform.current_ip_address()
     }
@@ -242,7 +242,7 @@ static BASE_PROPS: &[PropertyDescriptor] = &[
 // Helper functions
 // ============================================================================
 
-impl<P: IpPlatform, const N: usize> IpAugment<'_, P, N> {
+impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
     /// Whether tunneling is enabled on this device.
     fn tunneling_enabled(&self) -> bool {
         (self.knxnetip_device_capabilities() & KNXNETIP_CAP_TUNNELING_BIT) != 0
@@ -611,7 +611,8 @@ impl<P: IpPlatform, const N: usize> IpAugment<'_, P, N> {
 // InterfaceObjectAugment — provides IP Parameter Object (Type 11)
 // ============================================================================
 
-impl<S: StackState, P: IpPlatform, const N: usize> InterfaceObjectAugment<S> for IpAugment<'_, P, N> {
+impl<S: StackState, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObjectAugment<S>
+    for IpAugment<'_, P, N, CAPS> {
     fn additional_object_count(&self) -> u16 {
         1 // IP Parameter Object
     }

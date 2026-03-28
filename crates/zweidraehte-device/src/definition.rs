@@ -155,9 +155,7 @@ pub trait StackDefinition: Copy {
 
     type P: ConstDefault;
     type CO: ComObjects;
-    type LLB: layers::LinkLayerBuilderBase
-        + layers::LinkLayerCapabilities
-        + for<'a> layers::LinkLayerBuilder<StackContext<'a, Self>>;
+    type LLB: layers::LinkLayerBuilderBase + for<'a> layers::LinkLayerBuilder<StackContext<'a, Self>>;
 
     /// Medium extension providing both state persistence and interface
     /// object augmentation.

@@ -74,7 +74,8 @@ const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 /// Maximum number of concurrent tunneling connections (additional individual addresses).
 const MAX_TUNNEL_CONNECTIONS: usize = 4;
 
-type IpIfState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, IpInterfaceParams, MAX_TUNNEL_CONNECTIONS>;
+type IpIfState =
+    IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, IpInterfaceParams, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
 
 type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 
@@ -108,7 +109,7 @@ impl StackDefinition for PicoIpInterface {
         1,
     >;
     type Platform = EmbassyNetworkInfo;
-    type ES = IpExtensionState<MAX_TUNNEL_CONNECTIONS>;
+    type ES = IpExtension<KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
     type State = IpIfState;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;

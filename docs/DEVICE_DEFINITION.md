@@ -74,15 +74,43 @@ const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 ### Type Aliases
 
-For convenience, there are type aliases that fill in common extension states:
+For convenience, type aliases fill in the extension state automatically.
+
+**KNX/IP devices** — use `IpDeviceState` parameterized on a `FeatureSet`
+type (the same `F` used for the link layer builder). Tunneling capacity
+and device capabilities (PID 68) are derived from `F` at compile time:
 
 ```rust
-// KNX/IP device (IpExtensionState, N = tunneling slot count)
-type MyState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams>;
+// Routing device (KnxIpDeviceUdp → no tunneling, routing + remote config)
+type MyState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams, KnxIpDeviceUdp>;
 
-// TP1 device (Tp1ExtensionState)
+// Tunneling interface (KnxIpInterfaceUdp<4> → 4 tunneling slots)
+type MyState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams, KnxIpInterfaceUdp<4>>;
+```
+
+**TP1 devices:**
+
+```rust
 type MyState = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams>;
 ```
+
+Under the hood, `IpDeviceState` uses `IpExtension<F>` as the extension
+state, which is a type alias for `IpExtensionState<N, CAPS>` with both
+const generics derived from `F`:
+
+```rust
+pub type IpExtension<F: FeatureSet> = IpExtensionState<
+    { <F::Tunneling as TunnelingFeature>::CAPACITY },  // N
+    { F::KNXNETIP_DEVICE_CAPABILITIES },               // CAPS (PID 68)
+>;
+
+pub type IpDeviceState<..., P, F: FeatureSet> =
+    SystemBDeviceState<..., P, IpExtension<F>>;
+```
+
+The low-level aliases `IpExtensionState<N, CAPS>` and
+`IpSystemBDeviceState<..., N, CAPS>` still exist for cases where you
+need explicit control over the const generics.
 
 ## Extensions
 
@@ -147,13 +175,13 @@ pub struct Tp1ExtensionState {
 }
 ```
 
-**`IpExtensionState<N>`** — full IP configuration.
+**`IpExtensionState<N, CAPS>`** — full IP configuration.
 Implements `Extension<P>` for any `P: IpPlatform`. Creates an
-`IpAugment<'a, P, N>` that combines the persisted config with the
+`IpAugment<'a, P, N, CAPS>` that combines the persisted config with the
 platform reference for IP property dispatch.
 
 ```rust
-pub struct IpExtensionState<const N: usize = 0> {
+pub struct IpExtensionState<const N: usize = 0, const CAPS: u16 = 0> {
     friendly_name: Cell<[u8; 30]>,        // PID 70
     configured_ip: Cell<Ipv4Addr>,        // PID 62
     configured_subnet: Cell<Ipv4Addr>,    // PID 63
@@ -163,14 +191,21 @@ pub struct IpExtensionState<const N: usize = 0> {
     ttl: Cell<u8>,                        // PID 68
     project_installation_id: Cell<u16>,   // PID 54
     additional_individual_addresses: RefCell<heapless::Vec<IndividualAddress, N>>,
-    knxnetip_device_capabilities: Cell<u16>, // PID 68 (set on boot from link layer)
 }
 ```
 
-The const generic `N` is the maximum tunneling slot count. Non-tunneling
-devices use the default `N = 0`, paying zero storage. PID 68 (device
-capabilities) is derived from the link layer's `FeatureSet` via the
-`LinkLayerCapabilities` trait and set automatically during stack init.
+- `N` — maximum tunneling slot count (0 for non-tunneling devices)
+- `CAPS` — KNXnet/IP device capabilities bitfield (PID 68), compile-time
+  constant derived from the link layer's `FeatureSet`
+
+You typically don't specify `N` or `CAPS` directly. Use
+`IpExtension<F>` which derives both from a `FeatureSet` type:
+
+```rust
+// These are equivalent:
+type ES = IpExtension<KnxIpDeviceUdp>;
+type ES = IpExtensionState<0, 0x0015>;  // N=0, CAPS=routing+devmgmt+remoteconfig
+```
 
 ### One Extension State Per Device
 
@@ -410,15 +445,20 @@ pub struct MyComObjects {
 
 ### Step 3: State Type
 
-Choose the state type alias based on your medium:
+Choose the state type alias based on your medium. For KNX/IP devices,
+pass the same `FeatureSet` type used for the link layer builder —
+tunneling capacity and device capabilities are derived automatically:
 
 ```rust
 const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
 const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
-// KNX/IP device
-type MyState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams>;
+// KNX/IP routing device
+type MyState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams, KnxIpDeviceUdp>;
+
+// KNX/IP tunneling interface with 4 slots
+type MyState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams, KnxIpInterfaceUdp<4>>;
 
 // TP1 device
 type MyState = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams>;
@@ -430,6 +470,10 @@ The `Extension` trait and helper functions eliminate most of the
 boilerplate. For System B devices, `type ES` determines the augment type
 automatically, and `SystemBInterfaceObjectsFor` derives the
 `InterfaceObjects` type from it.
+
+For KNX/IP devices, `IpExtension<F>` derives both the tunneling
+capacity and the PID 68 capabilities bitfield from the same `FeatureSet`
+type used for the link layer builder:
 
 **KNX/IP device:**
 
@@ -447,7 +491,7 @@ impl StackDefinition for MyDevice {
     type CO = MyComObjects;
     type LLB = KnxNetIpBuilder<LinuxIpTransport, KnxIpDeviceUdp, 2>;
     type Platform = MyPlatform;
-    type ES = IpExtensionState<0>;
+    type ES = IpExtension<KnxIpDeviceUdp>;
     type State = MyState;
     type Mem = SystemBMemoryMap;
 
@@ -465,6 +509,9 @@ impl StackDefinition for MyDevice {
     type LayerBuilder = InsecureIpDeviceBuilder;
 }
 ```
+
+Note how `KnxIpDeviceUdp` appears in both `type LLB` and `type ES` —
+this is the single source of truth for the device's IP feature set.
 
 **TP1 device:**
 
@@ -579,12 +626,12 @@ async fn main(spawner: Spawner) {
      +-- individual_address
      +-- tables (ADT, AST, COT, APP)
      +-- extension_state: ES
-     |    +-- IpExtensionState<N> (KNX/IP devices)
+     |    +-- IpExtension<F> (KNX/IP — N and CAPS from FeatureSet)
      |    +-- Tp1ExtensionState (TP1 devices)
      |    +-- () (test/mock only)
      |
      +-- Extension<Platform>::create_augment()
-     |    +-- IpAugment (combines config + platform)
+     |    +-- IpAugment (combines config + platform + capabilities)
      |    +-- &Tp1ExtensionState (is its own augment)
      |    +-- () (no augment)
      |

@@ -58,7 +58,7 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::bcus::system_b::{
-    IpExtensionState, IpSystemBDeviceState, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
+    IpDeviceState, IpExtension, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
     create_system_b_objects_from_extension,
 };
 use zweidraehte_device::dpt::*;
@@ -539,7 +539,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Unified state type.
-pub type DemoState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams>;
+pub type DemoState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, KnxIpDeviceTcp>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DemoStack;
@@ -554,7 +554,7 @@ impl StackDefinition for DemoStack {
     type CO = comm_objs::DemoComObjects;
     type LLB = KnxNetIpBuilder<LinuxIpTransport, KnxIpDeviceTcp, 2>;
     type Platform = MockIpPlatform;
-    type ES = IpExtensionState<0>;
+    type ES = IpExtension<KnxIpDeviceTcp>;
     type State = DemoState;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;

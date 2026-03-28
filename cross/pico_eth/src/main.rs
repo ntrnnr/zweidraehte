@@ -56,7 +56,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Device state combining System B tables with IP link-layer state.
-type PicoEthState = IpSystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams>;
+type PicoEthState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, KnxIpDeviceUdp>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
@@ -79,11 +79,14 @@ impl StackDefinition for PicoEthLightSwitch {
     type CO = LightSwitchComObjects;
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
     type Platform = EmbassyNetworkInfo;
-    type ES = IpExtensionState<0>;
+    type ES = IpExtension<KnxIpDeviceUdp>;
     type State = PicoEthState;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> =
-        DefaultSystemBInterfaceObjects<'a, PicoEthState, (IpAugment<'a, EmbassyNetworkInfo>, EasterEggAugment)>;
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
+        'a,
+        PicoEthState,
+        (IpAugmentFor<'a, EmbassyNetworkInfo, KnxIpDeviceUdp>, EasterEggAugment),
+    >;
 
     fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
     where

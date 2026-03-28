@@ -88,15 +88,6 @@ pub trait ExtensionState: Sized {
 
     /// Reset to factory defaults.
     fn factory_reset(&self);
-
-    /// Receive link-layer-derived capabilities at boot time.
-    ///
-    /// Called once during stack initialisation with the value from
-    /// [`LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES`](crate::layers::LinkLayerCapabilities::KNXNETIP_DEVICE_CAPABILITIES).
-    /// The default implementation is a no-op (correct for non-IP
-    /// extensions). [`IpExtensionState`](super::extensions::ip::IpExtensionState)
-    /// overrides this to store PID 68.
-    fn set_link_layer_capabilities(&self, _capabilities: u16) {}
 }
 
 impl ExtensionState for () {
