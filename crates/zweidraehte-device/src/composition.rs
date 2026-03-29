@@ -519,7 +519,7 @@ impl<'a, D: StackDefinition> SecureDeviceLayers<'a, D, TransportLayer<'a, D>> {
             ctx.restart_sender,
         );
 
-        let secure_al = SecureApplicationLayer::new(application_layer);
+        let secure_al = SecureApplicationLayer::new(application_layer, ctx.state);
 
         let device_model = device_model::SystemBDeviceModel::new(
             ctx.state,
@@ -542,7 +542,11 @@ impl<'a, D: StackDefinition> SecureDeviceLayers<'a, D, TransportLayer<'a, D>> {
 
 // LayerStack impl for SecureDeviceLayers
 
-impl<'a, D: StackDefinition, TL: router::Layer + HandlesCemiEvent> LayerStack for SecureDeviceLayers<'a, D, TL> {
+impl<'a, D: StackDefinition, TL: router::Layer + HandlesCemiEvent> LayerStack for SecureDeviceLayers<'a, D, TL>
+where
+    D::State: crate::bcus::system_b::HasExtensionState,
+    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::bcus::system_b::HasSecurityState,
+{
     const DISPATCH_TABLE: router::DispatchTable = {
         type Inner<'a, D, TL> = (NetworkLayer<'a, D>, TL, SecureApplicationLayer<'a, D>);
         <Inner<'_, D, TL> as LayerStack>::DISPATCH_TABLE
@@ -617,6 +621,8 @@ pub struct SecureDeviceBuilder;
 impl<D: StackDefinition> LayerStackBuilder<D> for SecureDeviceBuilder
 where
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
+    D::State: crate::bcus::system_b::HasExtensionState,
+    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::bcus::system_b::HasSecurityState,
 {
     type Stack<'a>
         = StandardSecureDeviceLayers<'a, D>

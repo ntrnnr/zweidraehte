@@ -303,6 +303,53 @@ impl<const GRP: usize, const GO: usize> SecurityState<GRP, GO> {
     }
 }
 
+// ============================================================================
+// HasSecurityState — trait for accessing security state without const generics
+// ============================================================================
+
+/// Trait for device states that have KNX Data Secure support.
+///
+/// Provides access to security keys and flags without exposing the
+/// const-generic table sizes. The S-AL layer requires this trait on
+/// `D::State` to look up keys for decryption/encryption.
+///
+/// Implemented automatically for [`SystemBDeviceState`] when the extension
+/// state is [`SecureExtensionState`].
+///
+/// [`SystemBDeviceState`]: crate::bcus::system_b::SystemBDeviceState
+pub trait HasSecurityState {
+    /// Whether the device's Security Mode is currently enabled.
+    fn security_mode_enabled(&self) -> bool;
+
+    /// Get the 16-byte tool key.
+    fn tool_key(&self) -> [u8; 16];
+
+    /// Look up a group key by 1-based group address table index.
+    fn group_key_for_index(&self, ga_index: u16) -> Option<[u8; 16]>;
+
+    /// Look up GO security flags by 0-based group object index.
+    fn go_security_flags_for(&self, go_index: u16) -> Option<u8>;
+}
+
+/// Blanket impl: any `SecurityState<GRP, GO>` implements `HasSecurityState`.
+impl<const GRP: usize, const GO: usize> HasSecurityState for SecurityState<GRP, GO> {
+    fn security_mode_enabled(&self) -> bool {
+        self.security_mode_enabled()
+    }
+
+    fn tool_key(&self) -> [u8; 16] {
+        self.tool_key()
+    }
+
+    fn group_key_for_index(&self, ga_index: u16) -> Option<[u8; 16]> {
+        self.group_key_for_index(ga_index)
+    }
+
+    fn go_security_flags_for(&self, go_index: u16) -> Option<u8> {
+        self.go_security_flags_for(go_index)
+    }
+}
+
 impl<const GRP: usize, const GO: usize> ExtensionState for SecurityState<GRP, GO> {
     type Config = SecurityExtensionConfig;
 
@@ -355,6 +402,29 @@ pub struct SecureExtensionState<Inner: ExtensionState, const GRP: usize, const G
     pub inner: Inner,
     /// The security extension state.
     pub security: SecurityState<GRP, GO>,
+}
+
+/// `SecureExtensionState` delegates `HasSecurityState` to its inner
+/// `SecurityState`, so that `SystemBDeviceState` with a secure extension
+/// can satisfy `HasSecurityState` through `HasExtensionState`.
+impl<Inner: ExtensionState, const GRP: usize, const GO: usize> HasSecurityState
+    for SecureExtensionState<Inner, GRP, GO>
+{
+    fn security_mode_enabled(&self) -> bool {
+        self.security.security_mode_enabled()
+    }
+
+    fn tool_key(&self) -> [u8; 16] {
+        self.security.tool_key()
+    }
+
+    fn group_key_for_index(&self, ga_index: u16) -> Option<[u8; 16]> {
+        self.security.group_key_for_index(ga_index)
+    }
+
+    fn go_security_flags_for(&self, go_index: u16) -> Option<u8> {
+        self.security.go_security_flags_for(go_index)
+    }
 }
 
 /// Persisted config for the composed extension.

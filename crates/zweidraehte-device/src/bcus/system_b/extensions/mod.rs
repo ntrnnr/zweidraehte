@@ -16,6 +16,6 @@ pub use ip::*;
 
 pub mod security;
 pub use security::{
-    SecureExtensionConfig, SecureExtensionState, SecureTp1DeviceState, SecureTp1ExtensionState,
-    SecurityAugment, SecurityExtensionConfig, SecurityState,
+    HasSecurityState, SecureExtensionConfig, SecureExtensionState, SecureTp1DeviceState,
+    SecureTp1ExtensionState, SecurityAugment, SecurityExtensionConfig, SecurityState,
 };

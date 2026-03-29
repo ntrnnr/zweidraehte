@@ -15,11 +15,16 @@
 //! [`AccessContext`]: crate::access::AccessContext
 
 use crate::{
-    crypto::{ccm::CcmContext, scf::SecurityControlField},
+    access::{AccessContext, AccessSource, ClientRole, SecurityMode},
+    bcus::system_b::{HasExtensionState, HasSecurityState},
+    crypto::{
+        ccm::{self, CcmContext},
+        scf::SecurityControlField,
+    },
     definition::StackDefinition,
     layers::application::ApplicationLayer,
     messages::{
-        buffers::Buffer,
+        buffers::{Buffer, MessageBuffer},
         knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
     },
     router::{Layer, Outbox},
@@ -42,25 +47,33 @@ use defmt::{debug, trace, warn};
 /// Service APDUs (APCI 0x03F1) to decrypt/verify them before forwarding
 /// the plaintext to the inner AL.
 ///
-/// The security state (key tables, security mode) is accessed through
-/// a trait bound on the device state, allowing the S-AL to look up
-/// keys without being generic over the table sizes.
+/// Requires `D::State` to implement [`HasExtensionState`] with an
+/// extension state that implements [`HasSecurityState`], which is
+/// automatically satisfied when using [`SecureExtensionState`].
+///
+/// [`SecureExtensionState`]: crate::bcus::system_b::extensions::security::SecureExtensionState
 pub struct SecureApplicationLayer<'a, D: StackDefinition> {
-    /// The inner (plain) Application Layer.
     inner: ApplicationLayer<'a, D>,
+    state: &'a D::State,
 }
 
 impl<'a, D: StackDefinition> SecureApplicationLayer<'a, D> {
     /// Create a new S-AL wrapping the given plain Application Layer.
-    pub fn new(inner: ApplicationLayer<'a, D>) -> Self {
-        Self { inner }
+    pub fn new(inner: ApplicationLayer<'a, D>, state: &'a D::State) -> Self {
+        Self { inner, state }
     }
 
     /// Get a mutable reference to the inner Application Layer.
     pub fn inner_mut(&mut self) -> &mut ApplicationLayer<'a, D> {
         &mut self.inner
     }
+}
 
+impl<'a, D: StackDefinition> SecureApplicationLayer<'a, D>
+where
+    D::State: HasExtensionState,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
+{
     /// Try to process an incoming message as a Secure Service APDU.
     ///
     /// Returns `Some(msg)` with the decrypted plaintext message if the
@@ -75,7 +88,6 @@ impl<'a, D: StackDefinition> SecureApplicationLayer<'a, D> {
     ) -> Option<KnxMessageBuffer<Buffer<'static>>> {
         let apci = msg.get_apci_code();
 
-        // Not a secure APDU — pass through unchanged.
         if !matches!(apci, ApciCode::SecureService) {
             return Some(msg);
         }
@@ -83,22 +95,11 @@ impl<'a, D: StackDefinition> SecureApplicationLayer<'a, D> {
         // ============================================================
         // Parse the Secure ASDU
         // ============================================================
-        //
-        // Wire format after TPCI/APCI (offsets relative to buf start):
-        //   [8]      SCF (1 byte)
-        //   [9..15]  SeqNr (6 bytes)
-        //   [15..]   Secure payload + MAC(4)
-        //
-        // For Auth+Conf: payload is encrypted ciphertext
-        // For Auth-only: payload is plaintext, MAC appended
 
-        // Extract all metadata from immutable references first to avoid
-        // borrow conflicts when we need mutable access later.
         let src = u16::from_be_bytes(msg.get_source_addr().0);
         let buf = msg.buf_mut();
         let buf_len = buf.len();
 
-        // Minimum: TPCI/APCI(2) + SCF(1) + SeqNr(6) + MAC(4) = 13 bytes after offset 6
         if buf_len < offsets::MSG_APCI + 13 {
             warn!("S-AL: secure frame too short ({} bytes)", buf_len);
             return None;
@@ -114,9 +115,8 @@ impl<'a, D: StackDefinition> SecureApplicationLayer<'a, D> {
         };
 
         let mut seq_nr = [0u8; 6];
-        seq_nr.copy_from_slice(&buf[offsets::MSG_APDU + 1..offsets::MSG_APDU + 7]); // [9..15]
+        seq_nr.copy_from_slice(&buf[offsets::MSG_APDU + 1..offsets::MSG_APDU + 7]);
 
-        // Secure data starts after SCF + SeqNr.
         let secure_data_start = offsets::MSG_APDU + 7; // offset 15
         let secure_data_len = buf_len - secure_data_start;
 
@@ -125,46 +125,123 @@ impl<'a, D: StackDefinition> SecureApplicationLayer<'a, D> {
             return None;
         }
 
-        // Build crypto context from frame metadata.
         let dst = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
-        let addr_type = buf[offsets::MSG_ADDR_TYPE] & 0x80; // AT bit only
+        let addr_type = buf[offsets::MSG_ADDR_TYPE] & 0x80;
         let tpci_apci = u16::from_be_bytes([buf[offsets::MSG_TPCI], buf[offsets::MSG_TPCI + 1]]);
+
+        // ============================================================
+        // Look up key from security state
+        // ============================================================
+
+        let security_state = self.state.extension_state();
+
+        let key = if scf.tool_access {
+            security_state.tool_key()
+        } else {
+            // TODO: group key lookup based on destination GA.
+            // For now, only tool access is supported.
+            warn!("S-AL: non-tool secure APDU not yet supported");
+            return None;
+        };
+
+        // ============================================================
+        // Decrypt / Verify
+        // ============================================================
+
+        let mac_start = buf_len - 4;
+        let mut received_mac = [0u8; 4];
+        received_mac.copy_from_slice(&buf[mac_start..buf_len]);
+
+        // Payload is between secure_data_start and mac_start.
+        let payload_len = mac_start - secure_data_start;
 
         let ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci };
 
-        // ============================================================
-        // Look up key
-        // ============================================================
-        //
-        // For now: tool-key-only P2P. If SCF.T is set, use the tool key.
-        // TODO: group key lookup for multicast, P2P key table for non-tool.
+        if scf.confidentiality {
+            // Auth + Conf: decrypt payload in-place, verify MAC.
+            let result =
+                ccm::verify_and_decrypt(&key, &ctx, scf_byte, &mut buf[secure_data_start..mac_start], &received_mac);
+            if result.is_err() {
+                warn!("S-AL: MAC verification failed (A+C)");
+                return None;
+            }
+        } else {
+            // Auth only: verify MAC without decryption.
+            // For auth-only: A = SCF | payload, P = empty.
+            let result =
+                ccm::verify_mac_auth_only(&key, &ctx, scf_byte, &buf[secure_data_start..mac_start], &received_mac);
+            if result.is_err() {
+                warn!("S-AL: MAC verification failed (auth-only)");
+                return None;
+            }
+        }
 
-        // We need the tool key from the security state. Since we can't
-        // access the security extension's state through the generic D
-        // type system yet (that requires a HasSecurityState trait bound),
-        // we'll use a placeholder that always fails for now.
+        // TODO: Verify sequence number (anti-replay check).
+        // For now, accept any sequence number.
+
+        // ============================================================
+        // Reconstruct plaintext message
+        // ============================================================
         //
-        // TODO Phase 4b+: Add HasSecurityState trait and wire it in.
-        // For now this code path logs a warning and drops the frame.
-        warn!("S-AL: secure APDU received but key lookup not yet wired (Phase 4b incomplete)");
-        let _ = (ctx, scf, secure_data_start, secure_data_len);
-        None
+        // The decrypted payload at buf[secure_data_start..mac_start] is:
+        //   000000b | plain APCI + data
+        //
+        // We need to rewrite the buffer so the inner AL sees a normal
+        // KNX message with the plaintext APDU.
+        //
+        // The plaintext APDU starts at secure_data_start and is
+        // payload_len bytes. The first byte contains the 000000b prefix
+        // in the upper 6 bits — the lower 2 bits are the APCI high bits.
+        // Combined with the next byte, this forms the plain TPCI/APCI.
+
+        if payload_len < 2 {
+            warn!("S-AL: decrypted payload too short for APCI");
+            return None;
+        }
+
+        // Overwrite TPCI/APCI and data area with the plaintext APDU.
+        // The plaintext starts at secure_data_start. We copy it down
+        // to offset MSG_TPCI (6), which is where the inner AL expects it.
+        let plain_start = offsets::MSG_TPCI; // 6
+        buf.copy_within(secure_data_start..secure_data_start + payload_len, plain_start);
+
+        // Truncate the buffer to remove the secure overhead (SCF, SeqNr, MAC).
+        let new_len = plain_start + payload_len;
+        buf.set_len(new_len);
+
+        // ============================================================
+        // Populate AccessContext with security metadata
+        // ============================================================
+
+        let security_mode = if scf.confidentiality { SecurityMode::AuthConf } else { SecurityMode::AuthOnly };
+
+        let role = if scf.tool_access {
+            ClientRole::Tool
+        } else {
+            ClientRole::Unlisted // TODO: look up role from P2P key table
+        };
+
+        let access_ctx = AccessContext::with_security(0, security_mode, role);
+        // Release mutable borrow of buf before calling set_access_source.
+        let _ = buf;
+        msg.set_access_source(AccessSource::Explicit(access_ctx));
+
+        Some(msg)
     }
 }
 
-impl<D: StackDefinition> Layer for SecureApplicationLayer<'_, D> {
+impl<D: StackDefinition> Layer for SecureApplicationLayer<'_, D>
+where
+    D::State: HasExtensionState,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
+{
     const HANDLES: &'static [ServiceType] = ApplicationLayer::<D>::HANDLES;
 
     fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-        // Check if this is a secure APDU and try to process it.
         match self.try_process_secure(msg) {
-            Some(msg) => {
-                // Either not a secure APDU (pass-through) or successfully
-                // decrypted — forward to the inner AL.
-                self.inner.process(msg, outbox);
-            }
+            Some(msg) => self.inner.process(msg, outbox),
             None => {
-                // Verification failed — silently drop the frame.
+                // Verification failed — silently drop.
                 // (Security failure logging will be added in Phase 6.)
             }
         }
