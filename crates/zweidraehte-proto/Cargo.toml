@@ -21,6 +21,7 @@ log = { workspace = true, optional = true }
 heapless = { workspace = true }
 replace_with = { workspace = true }
 bitfield.workspace = true
+aes = { version = "0.8", default-features = false }
 
 [dev-dependencies]
 test-case = "3.3"
