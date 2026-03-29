@@ -13,3 +13,9 @@ pub use tp1::*;
 mod ip;
 #[cfg(feature = "knxip")]
 pub use ip::*;
+
+pub mod security;
+pub use security::{
+    SecureExtensionConfig, SecureExtensionState, SecureTp1DeviceState, SecureTp1ExtensionState,
+    SecurityAugment, SecurityExtensionConfig, SecurityState,
+};
