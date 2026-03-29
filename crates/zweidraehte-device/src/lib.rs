@@ -18,6 +18,7 @@ extern crate zweidraehte_proto;
 // Re-export protocol types from proto so downstream can use zweidraehte_device::address etc.
 pub use zweidraehte_proto::access;
 pub use zweidraehte_proto::address;
+pub use zweidraehte_proto::crypto;
 pub use zweidraehte_proto::device;
 pub use zweidraehte_proto::dpt;
 pub use zweidraehte_proto::encoding;
