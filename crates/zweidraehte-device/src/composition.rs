@@ -368,9 +368,7 @@ impl<'a, D: StackDefinition> InsecureDeviceLayers<'a, D, CemiTransportLayer<'a, 
 // LayerStack impl — generic over TL, unified service inputs
 // ----------------------------------------------------------------------------
 
-impl<'a, D: StackDefinition, TL: router::Layer + HandlesCemiEvent> LayerStack
-    for InsecureDeviceLayers<'a, D, TL>
-{
+impl<'a, D: StackDefinition, TL: router::Layer + HandlesCemiEvent> LayerStack for InsecureDeviceLayers<'a, D, TL> {
     const DISPATCH_TABLE: router::DispatchTable = {
         type Inner<'a, D, TL> = (NetworkLayer<'a, D>, TL, ApplicationLayer<'a, D>);
         <Inner<'_, D, TL> as LayerStack>::DISPATCH_TABLE
@@ -480,3 +478,168 @@ async fn recv_cemi_or_pend(rx: &Option<DynamicReceiver<'_, CemiEvent>>) -> CemiE
     }
 }
 
+// ============================================================================
+// Secure Device Layers
+// ============================================================================
+
+use crate::layers::secure_application::SecureApplicationLayer;
+
+/// Layer stack with Data Secure support: `(NL, TL, SecureAL<AL>)`.
+///
+/// Mirrors [`InsecureDeviceLayers`] but wraps the Application Layer with
+/// [`SecureApplicationLayer`] for KNX Data Secure processing.
+///
+/// In Phase 4a, the S-AL is a transparent pass-through — all messages
+/// are forwarded to the inner AL without security processing.
+pub struct SecureDeviceLayers<'a, D: StackDefinition, TL: router::Layer> {
+    layers: (NetworkLayer<'a, D>, TL, SecureApplicationLayer<'a, D>),
+    device_model: device_model::SystemBDeviceModel<'a, D>,
+    service_inputs: ServiceInputs<'a>,
+}
+
+/// Standard secure layer stack: `(NL, TL, SecureAL<AL>)`.
+pub type StandardSecureDeviceLayers<'a, D> = SecureDeviceLayers<'a, D, TransportLayer<'a, D>>;
+
+// Constructors
+
+impl<'a, D: StackDefinition> SecureDeviceLayers<'a, D, TransportLayer<'a, D>> {
+    /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
+    pub fn standard(ctx: &'a LayerContext<'a, D>) -> Self {
+        let network_layer = NetworkLayer::new(ctx.state, ctx.interface_objects);
+        let transport_layer = TransportLayer::new(ctx.buffer_manager, ctx.state, D::TL_STYLE);
+
+        let application_layer = ApplicationLayer::new(
+            ctx.buffer_manager,
+            ctx.state,
+            ctx.comm_objs,
+            ctx.hook_context,
+            ctx.event_channel,
+            ctx.interface_objects,
+            ctx.memory_map,
+            ctx.restart_sender,
+        );
+
+        let secure_al = SecureApplicationLayer::new(application_layer);
+
+        let device_model = device_model::SystemBDeviceModel::new(
+            ctx.state,
+            ctx.comm_objs,
+            ctx.lifecycle_channel,
+            ctx.interface_objects,
+        );
+
+        Self {
+            layers: (network_layer, transport_layer, secure_al),
+            device_model,
+            service_inputs: ServiceInputs {
+                app_rx: ctx.app_service_receiver,
+                #[cfg(feature = "knxip")]
+                cemi_rx: None,
+            },
+        }
+    }
+}
+
+// LayerStack impl for SecureDeviceLayers
+
+impl<'a, D: StackDefinition, TL: router::Layer + HandlesCemiEvent> LayerStack for SecureDeviceLayers<'a, D, TL> {
+    const DISPATCH_TABLE: router::DispatchTable = {
+        type Inner<'a, D, TL> = (NetworkLayer<'a, D>, TL, SecureApplicationLayer<'a, D>);
+        <Inner<'_, D, TL> as LayerStack>::DISPATCH_TABLE
+    };
+
+    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut router::Outbox) {
+        self.layers.dispatch(layer_idx, msg, outbox);
+    }
+
+    fn next_deadline(&self) -> Option<embassy_time::Instant> {
+        self.layers.next_deadline()
+    }
+
+    fn poll(&mut self, outbox: &mut router::Outbox) {
+        self.layers.poll(outbox);
+    }
+
+    fn init(&mut self) {
+        self.device_model.init();
+        self.layers.init();
+    }
+
+    type ServiceInput = ServiceInput;
+
+    fn recv_service_input(&self) -> impl core::future::Future<Output = ServiceInput> + '_ {
+        async {
+            #[cfg(feature = "knxip")]
+            {
+                use embassy_futures::select::{Either, select};
+                match select(self.service_inputs.app_rx.receive(), recv_cemi_or_pend(&self.service_inputs.cemi_rx))
+                    .await
+                {
+                    Either::First(req) => ServiceInput::AppRequest(req),
+                    Either::Second(evt) => ServiceInput::CemiEvent(evt),
+                }
+            }
+
+            #[cfg(not(feature = "knxip"))]
+            {
+                ServiceInput::AppRequest(self.service_inputs.app_rx.receive().await)
+            }
+        }
+    }
+
+    fn handle_service_input(&mut self, input: ServiceInput, outbox: &mut router::Outbox) {
+        match input {
+            ServiceInput::AppRequest(req) => {
+                self.layers.2.inner_mut().handle_app_request(&req, outbox);
+            }
+            #[cfg(feature = "knxip")]
+            ServiceInput::CemiEvent(evt) => {
+                self.layers.1.handle_cemi_event(evt, outbox);
+            }
+        }
+    }
+
+    fn drain_events(&mut self, _outbox: &mut router::Outbox) {
+        self.device_model.drain_dm_events();
+    }
+}
+
+// ============================================================================
+// Secure Device Builder
+// ============================================================================
+
+/// Builder for secure `(NL, TL, SecureAL<AL>)` layer stacks.
+///
+/// Drop-in replacement for [`InsecureDeviceBuilder`] in a device's
+/// [`StackDefinition::LayerBuilder`] to enable Data Secure support.
+pub struct SecureDeviceBuilder;
+
+impl<D: StackDefinition> LayerStackBuilder<D> for SecureDeviceBuilder
+where
+    for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
+{
+    type Stack<'a>
+        = StandardSecureDeviceLayers<'a, D>
+    where
+        D: 'a;
+    type Channels = ();
+
+    fn build<'a>(ctx: &'a LayerContext<'a, D>, _channels: &'a ()) -> StandardSecureDeviceLayers<'a, D>
+    where
+        D: 'a,
+    {
+        SecureDeviceLayers::standard(ctx)
+    }
+
+    fn run_link_layer<'a>(
+        _channels: &'a (),
+        builder: D::LLB,
+        resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
+        context: &'a crate::inner::StackContext<'a, D>,
+        ind_tx: DynamicSender<'a, crate::messages::builder::IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, crate::messages::builder::ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl layers::Inbox<crate::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+    ) -> impl core::future::Future<Output = !> + 'a {
+        builder.build_and_run(resources, context, Default::default(), ind_tx, conf_tx, req_rx)
+    }
+}

@@ -206,6 +206,8 @@ create_protocol_enum!(
         DomainAddressSerialNumberResponse,      0xed,   "A_DomainAddressSerialNumber_Response";
         DomainAddressSerialNumberWrite,         0xee,   "A_DomainAddressSerialNumber_Write";
 
+        SecureService,                          0xf1,   "A_Secure_Service";
+
         Empty,                      0,      "<Empty>";
         _,                                  "Unknown APCI code 0x{:x}";
     }
@@ -787,9 +789,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
         } else if addr_type != 0 {
             DestinationAddress::Group(GroupAddress::from_bytes(&self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2]))
         } else {
-            DestinationAddress::Individual(IndividualAddress::from_bytes(
-                &self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2],
-            ))
+            DestinationAddress::Individual(IndividualAddress::from_bytes(&self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2]))
         }
     }
 

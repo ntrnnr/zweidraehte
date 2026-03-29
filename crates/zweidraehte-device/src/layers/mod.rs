@@ -164,4 +164,5 @@ pub mod al_extension;
 pub mod application;
 pub mod linklayers;
 pub mod network;
+pub mod secure_application;
 pub mod transport;
