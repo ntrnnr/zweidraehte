@@ -3,6 +3,7 @@
 use core::fmt;
 
 use crate::AccessContext;
+use crate::access::AccessPolicy;
 use crate::dpt::PropertyDataDefinition;
 
 /// Property access rights
@@ -69,7 +70,16 @@ impl fmt::Display for PropertyError {
 /// Static property descriptor
 ///
 /// Describes a property's metadata including its ID, data type, element count,
-/// and access rights. This is returned by A_PropertyDescription_Read service.
+/// access rights, and access policy. This is returned by
+/// A_PropertyDescription_Read service.
+///
+/// Access control is enforced at two independent levels:
+/// 1. **Legacy access levels** (`read_level`/`write_level`): Checked against the
+///    connection's current A_Authorize level (0-3).
+/// 2. **Access policy**: Checked against the sender's security context (role,
+///    security mode). See [`AccessPolicy`] for details.
+///
+/// Both checks must pass for access to be granted.
 #[derive(Clone, Copy, Debug)]
 pub struct PropertyDescriptor {
     /// Property Identifier (PID)
@@ -84,16 +94,19 @@ pub struct PropertyDescriptor {
     pub write_level: u8,
     /// Read access level (0-3, 0 = most restricted, 3 = no restriction)
     pub read_level: u8,
+    /// KNX Data Secure access policy (per spec 03/04/01, section 6.2).
+    pub policy: AccessPolicy,
 }
 
 impl PropertyDescriptor {
-    /// Create a new property descriptor with specified access levels.
+    /// Create a new property descriptor with specified access levels and policy.
     ///
     /// Access levels range from 0-3, where:
     /// - 0 = most restricted (requires full access/authorization)
     /// - 3 = unrestricted (anyone can access)
     ///
     /// A caller with level N can access a property if their level <= the property's level.
+    /// The access policy provides additional KNX Data Secure access control.
     pub const fn new(
         pid: u8,
         pdt_id: u8,
@@ -102,7 +115,30 @@ impl PropertyDescriptor {
         read_level: u8,
         write_level: u8,
     ) -> Self {
-        Self { pid, pdt_id, max_elements, access, write_level: write_level & 0x0F, read_level: read_level & 0x0F }
+        Self {
+            pid, pdt_id, max_elements, access,
+            write_level: write_level & 0x0F,
+            read_level: read_level & 0x0F,
+            policy: AccessPolicy::READ_OPEN_WRITE_TOOL,
+        }
+    }
+
+    /// Create a new property descriptor with explicit access policy.
+    pub const fn with_policy(
+        pid: u8,
+        pdt_id: u8,
+        max_elements: u16,
+        access: PropertyAccess,
+        read_level: u8,
+        write_level: u8,
+        policy: AccessPolicy,
+    ) -> Self {
+        Self {
+            pid, pdt_id, max_elements, access,
+            write_level: write_level & 0x0F,
+            read_level: read_level & 0x0F,
+            policy,
+        }
     }
 
     /// Create a property descriptor for a type implementing PropertyDataDefinition
@@ -128,20 +164,41 @@ impl PropertyDescriptor {
 
     /// Check if reading is allowed under the given access context.
     ///
-    /// In KNX, lower access level = more permissions (0 = full access, 3 = minimal).
-    /// A property with `read_level=0` requires the caller to have access level 0.
-    /// A property with `read_level=3` can be read by anyone (levels 0-3).
+    /// Checks both the legacy access level and the access policy direction flag.
+    /// Both must permit the operation for access to be granted.
+    ///
+    /// The `device_security_on` parameter indicates whether the device's
+    /// Security Mode is enabled (PID_SECURITY_MODE). When Data Secure is not
+    /// in use, pass `false`.
     pub const fn can_read(&self, ctx: AccessContext) -> bool {
-        matches!(self.access, PropertyAccess::ReadOnly | PropertyAccess::ReadWrite) && ctx.access_level <= self.read_level
+        matches!(self.access, PropertyAccess::ReadOnly | PropertyAccess::ReadWrite)
+            && ctx.access_level <= self.read_level
+    }
+
+    /// Check if reading is allowed, including access policy evaluation.
+    ///
+    /// This is the full check that includes both legacy access levels and
+    /// KNX Data Secure access policies. Use this when the device's security
+    /// mode state is known.
+    pub const fn can_read_secure(&self, ctx: &AccessContext, device_security_on: bool) -> bool {
+        matches!(self.access, PropertyAccess::ReadOnly | PropertyAccess::ReadWrite)
+            && ctx.access_level <= self.read_level
+            && self.policy.can_read(ctx, device_security_on)
     }
 
     /// Check if writing is allowed under the given access context.
     ///
-    /// In KNX, lower access level = more permissions (0 = full access, 3 = minimal).
-    /// A property with `write_level=0` requires the caller to have access level 0.
-    /// A property with `write_level=3` can be written by anyone (levels 0-3).
+    /// Checks both the legacy access level and the write-enable flag.
     pub const fn can_write(&self, ctx: AccessContext) -> bool {
-        matches!(self.access, PropertyAccess::ReadWrite | PropertyAccess::WriteOnly) && ctx.access_level <= self.write_level
+        matches!(self.access, PropertyAccess::ReadWrite | PropertyAccess::WriteOnly)
+            && ctx.access_level <= self.write_level
+    }
+
+    /// Check if writing is allowed, including access policy evaluation.
+    pub const fn can_write_secure(&self, ctx: &AccessContext, device_security_on: bool) -> bool {
+        matches!(self.access, PropertyAccess::ReadWrite | PropertyAccess::WriteOnly)
+            && ctx.access_level <= self.write_level
+            && self.policy.can_write(ctx, device_security_on)
     }
 }
 

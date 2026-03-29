@@ -3,13 +3,19 @@
 //! Defines the minimum access level required to invoke each management
 //! service. This is the first line of defense — checked *before*
 //! dispatching to any handler. Individual handlers may perform additional
-//! fine-grained checks (e.g., per-property access levels).
+//! fine-grained checks (e.g., per-property access levels, access policies).
 //!
-//! The policy table is intentionally kept simple for legacy 4-level auth.
-//! When KNX Secure is added, this module will be extended with
-//! security-mode-aware policies (None/Auth/AuthConf) and role-based
-//! access (Tool/Unlisted).
+//! ## Two-Layer Access Control
+//!
+//! 1. **Service level** (this module): Coarse check based on legacy access
+//!    levels. Determines whether a service APCI is allowed at all.
+//! 2. **Data level** (per-property [`AccessPolicy`]): Fine-grained check
+//!    considering KNX Data Secure roles, security mode, and per-property
+//!    permission matrices.
+//!
+//! [`AccessPolicy`]: crate::access::AccessPolicy
 
+use crate::access::AccessPolicy;
 use crate::messages::knx::ApciCode;
 use crate::AccessContext;
 
@@ -109,6 +115,52 @@ const fn required_access_level(apci: ApciCode) -> Option<u8> {
     }
 }
 
+// ============================================================================
+// Restart Access Policies (KNX spec 03/04/01, Table 8)
+// ============================================================================
+
+/// Get the access policy for a restart with the given erase code.
+///
+/// Per KNX spec 03/04/01 Table 8, different restart/reset types have
+/// different access requirements:
+///
+/// | Erase Code | Description | Policy |
+/// |------------|-------------|--------|
+/// | 0x00 | Basic restart (type=0) | 3FF / 0CC |
+/// | 0x01 | Confirmed restart | 3FF / 0CC |
+/// | 0x02 | Reset to default state | 3FF / 00C |
+/// | 0x03 | Master reset | 3FF / 000 |
+/// | 0x05 | Reset parameters | 3FF / 00C |
+/// | 0x06 | Reset links | 3FF / 00C |
+/// | 0x07 | Reset to default w/o IA | 3FF / 00C |
+/// | 0x08 | Local reset to defaults | 3FF / 00C |
+///
+/// Note: Erase code 0x03 (master reset) has policy `3FF / 000`, meaning
+/// no remote write access is possible — it can only be triggered locally.
+pub const fn restart_access_policy(erase_code: u8) -> AccessPolicy {
+    match erase_code {
+        0x00 | 0x01 => AccessPolicy::READ_OPEN_WRITE_TOOL, // 3FF / 0CC
+        0x02 => AccessPolicy::TOOL_ONLY, // 3FF / 00C
+        0x03 => AccessPolicy::READ_ONLY_NO_REMOTE_WRITE, // 3FF / 000
+        0x05 | 0x06 | 0x07 | 0x08 => AccessPolicy::TOOL_ONLY, // 3FF / 00C
+        _ => AccessPolicy::TOOL_ONLY, // Unknown: conservative default
+    }
+}
+
+/// Get the required legacy access level for a restart erase code.
+///
+/// This provides backward compatibility for devices without Data Secure.
+/// The level check is a simplified version of the full access policy.
+pub const fn restart_required_level(erase_code: u8) -> u8 {
+    match erase_code {
+        0x00 | 0x01 => 3, // Basic/confirmed restart: anyone
+        0x02 => 0,        // Reset to default: level 0
+        0x03 => 0,        // Master reset: level 0 (and even then, policy says no remote)
+        0x05 | 0x06 | 0x07 | 0x08 => 0, // All resets: level 0
+        _ => 0,           // Unknown: conservative
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +255,27 @@ mod tests {
         assert!(ctx.has_level(3));  // exceeds requirement
         assert!(!ctx.has_level(1)); // insufficient
         assert!(!ctx.has_level(0)); // way insufficient
+    }
+
+    #[test]
+    fn restart_policies_match_spec() {
+        use crate::access::SecurityMode;
+        use crate::access::ClientRole;
+
+        // Basic restart: unlisted plain can trigger (sec off, 3FF bits 9,8 set)
+        let unlisted = AccessContext::new(3);
+        let policy = restart_access_policy(0x00);
+        assert!(policy.can_write(&unlisted, false));
+
+        // Master reset (0x03): nobody can write remotely (000)
+        let tool = AccessContext::with_security(0, SecurityMode::AuthConf, ClientRole::Tool);
+        let policy = restart_access_policy(0x03);
+        assert!(!policy.can_write(&tool, false));
+        assert!(!policy.can_write(&tool, true));
+
+        // Reset to default (0x02): only Tool can write
+        let policy = restart_access_policy(0x02);
+        assert!(policy.can_write(&tool, false)); // Tool A+C, sec off: bits 3,2 of 00C → bit 3 set
+        assert!(!policy.can_write(&unlisted, false));
     }
 }

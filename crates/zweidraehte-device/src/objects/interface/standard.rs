@@ -256,15 +256,19 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
     }
 
     /// Get property descriptors for application program object.
+    ///
+    /// Access levels per KNX spec: LOAD_STATE_CONTROL and RUN_STATE_CONTROL
+    /// require level 0 for write (ETS configuration), all others readable at level 3.
     fn property_descriptors() -> [PropertyDescriptor; 7] {
+        use crate::access::AccessPolicy;
         [
-            PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 3),
-            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 3),
-            PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 3),
-            PropertyDescriptor::new(pid::TABLE_REFERENCE, PDT_UnsignedLong::ID, 1, PropertyAccess::ReadOnly, 3, 3),
-            PropertyDescriptor::new(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadWrite, 3, 3),
-            PropertyDescriptor::new(pid::PEI_TYPE, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadOnly, 3, 3),
-            PropertyDescriptor::new(pid::MCB_TABLE, PDT_Generic08::ID, 1, PropertyAccess::ReadOnly, 3, 3),
+            PropertyDescriptor::with_policy(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 0, AccessPolicy::READ_OPEN_WRITE_TOOL),
+            PropertyDescriptor::with_policy(pid::LOAD_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 0, AccessPolicy::RESTRICTED),
+            PropertyDescriptor::with_policy(pid::RUN_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 0, AccessPolicy::RESTRICTED),
+            PropertyDescriptor::with_policy(pid::TABLE_REFERENCE, PDT_UnsignedLong::ID, 1, PropertyAccess::ReadOnly, 3, 0, AccessPolicy::READ_OPEN_WRITE_TOOL),
+            PropertyDescriptor::with_policy(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadWrite, 3, 0, AccessPolicy::READ_OPEN_WRITE_TOOL),
+            PropertyDescriptor::with_policy(pid::PEI_TYPE, PDT_UnsignedChar::ID, 1, PropertyAccess::ReadOnly, 3, 0, AccessPolicy::READ_OPEN_WRITE_TOOL),
+            PropertyDescriptor::with_policy(pid::MCB_TABLE, PDT_Generic08::ID, 1, PropertyAccess::ReadOnly, 3, 0, AccessPolicy::READ_OPEN_WRITE_TOOL),
         ]
     }
 }
@@ -407,12 +411,12 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> PeiProgramObject<'a, T> {
     /// Get property descriptors for PEI program object.
     /// Note: PEI_TYPE (PID 14) is omitted since it's not used for the PEI object itself.
     fn property_descriptors() -> [PropertyDescriptor; 4] {
+        use crate::access::AccessPolicy;
         [
-            PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 3),
-            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 0),
-            PropertyDescriptor::new(pid::RUN_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 0),
-            // PROGRAM_VERSION: ETS needs to write this during programming
-            PropertyDescriptor::new(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadWrite, 3, 0),
+            PropertyDescriptor::with_policy(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 0, AccessPolicy::READ_OPEN_WRITE_TOOL),
+            PropertyDescriptor::with_policy(pid::LOAD_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 0, AccessPolicy::RESTRICTED),
+            PropertyDescriptor::with_policy(pid::RUN_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 0, AccessPolicy::RESTRICTED),
+            PropertyDescriptor::with_policy(pid::PROGRAM_VERSION, PDT_Generic05::ID, 1, PropertyAccess::ReadWrite, 3, 0, AccessPolicy::READ_OPEN_WRITE_TOOL),
         ]
     }
 }
@@ -568,18 +572,18 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
         Self { table, alloc_address, _spec: PhantomData }
     }
 
-    /// Get property descriptors for table objects
+    /// Get property descriptors for table objects.
+    ///
+    /// LOAD_STATE_CONTROL requires level 0 write access (ETS configuration).
+    /// TABLE and TABLE_REFERENCE are writable during loading only.
     fn property_descriptors() -> [PropertyDescriptor; 5] {
+        use crate::access::AccessPolicy;
         [
-            PropertyDescriptor::new(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 3),
-            // LOAD_STATE_CONTROL: read/write access level 3/3 per KNX profile specification
-            // However, the access control check happens at the PropertyServiceHandler level,
-            // which requires caller's access_level <= write_level (lower = more access).
-            // So write_level=0 means only callers with level 0 (full access) can write.
-            PropertyDescriptor::new(pid::LOAD_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 0),
-            PropertyDescriptor::new(pid::TABLE_REFERENCE, PDT_UnsignedLong::ID, 1, PropertyAccess::ReadOnly, 3, 3),
-            PropertyDescriptor::new(pid::TABLE, S::TABLE_PDT, 0, PropertyAccess::ReadWrite, 3, 3), // max_elements set dynamically
-            PropertyDescriptor::new(pid::MCB_TABLE, PDT_Generic08::ID, 1, PropertyAccess::ReadOnly, 3, 3),
+            PropertyDescriptor::with_policy(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1, PropertyAccess::ReadOnly, 3, 0, AccessPolicy::READ_OPEN_WRITE_TOOL),
+            PropertyDescriptor::with_policy(pid::LOAD_STATE_CONTROL, PDT_Control::ID, 1, PropertyAccess::ReadWrite, 3, 0, AccessPolicy::RESTRICTED),
+            PropertyDescriptor::with_policy(pid::TABLE_REFERENCE, PDT_UnsignedLong::ID, 1, PropertyAccess::ReadOnly, 3, 0, AccessPolicy::READ_OPEN_WRITE_TOOL),
+            PropertyDescriptor::with_policy(pid::TABLE, S::TABLE_PDT, 0, PropertyAccess::ReadWrite, 3, 0, AccessPolicy::READ_OPEN_WRITE_TOOL), // max_elements set dynamically
+            PropertyDescriptor::with_policy(pid::MCB_TABLE, PDT_Generic08::ID, 1, PropertyAccess::ReadOnly, 3, 0, AccessPolicy::READ_OPEN_WRITE_TOOL),
         ]
     }
 }
@@ -1057,5 +1061,188 @@ mod tests {
             .unwrap();
         assert_eq!(len, 4);
         assert_eq!(&buf[0..4], &[0x00, 0x00, 0xAB, 0xCD]);
+    }
+}
+
+// ============================================================================
+// Security Interface Object (Object Type 17 / 0x11) — Skeleton
+// ============================================================================
+
+/// Security Interface Object - Object Type 17 (0x11)
+///
+/// Provides the KNX Data Secure configuration for the device. This object
+/// contains the security keys, individual address tables, and security mode
+/// settings required for secure communication.
+///
+/// This is a skeleton implementation — the actual cryptographic operations
+/// are not yet implemented. The object provides the correct property
+/// definitions with spec-compliant access policies so that the access
+/// control framework is complete.
+///
+/// # Properties (per KNX spec 03/05/01, section 6.3)
+///
+/// | PID | Name | Type | Access | Policy |
+/// |-----|------|------|--------|--------|
+/// | 1 | Object Type | U16 | RO | 3FF/0CC |
+/// | 5 | Load State Control | CONTROL | RW | 15F/04C |
+/// | 51 | Security Mode | U8 | RW | 15F/04C |
+/// | 52 | P2P Key Table | GENERIC | RW | 00C/00C |
+/// | 53 | Group Key Table | GENERIC | RW | 00C/00C |
+/// | 54 | Security IA Table | GENERIC | RW | 00C/00C |
+/// | 55 | Security Failures Log | GENERIC | RO | 15F/04C |
+/// | 56 | Tool Key | GENERIC_16 | WO | 008/008 |
+/// | 59 | Seq Number Sending | U48 | RW | 00C/008 |
+/// | 61 | GO Security Flags | GENERIC | RW | 15F/04C |
+pub struct SecurityInterfaceObject {
+    /// Whether security mode is enabled on this device.
+    security_mode_enabled: bool,
+}
+
+impl SecurityInterfaceObject {
+    /// Property descriptor table for the Security Interface Object.
+    ///
+    /// Access policies are set per KNX spec 03/04/01 Table 3 and
+    /// 03/05/01 section 6.3.
+    const DESCRIPTORS: &'static [PropertyDescriptor] = {
+        use crate::access::AccessPolicy;
+        &[
+            // PID_OBJECT_TYPE (1): always readable
+            PropertyDescriptor::with_policy(
+                pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 1,
+                PropertyAccess::ReadOnly, 3, 0,
+                AccessPolicy::READ_OPEN_WRITE_TOOL,
+            ),
+            // PID_LOAD_STATE_CONTROL (5): security config loading
+            PropertyDescriptor::with_policy(
+                pid::LOAD_STATE_CONTROL, PDT_Control::ID, 1,
+                PropertyAccess::ReadWrite, 2, 2,
+                AccessPolicy::RESTRICTED,
+            ),
+            // PID_SECURITY_MODE (51): enables/disables Data Secure
+            PropertyDescriptor::with_policy(
+                pid::SECURITY_MODE, PDT_UnsignedChar::ID, 1,
+                PropertyAccess::ReadWrite, 2, 2,
+                AccessPolicy::RESTRICTED,
+            ),
+            // PID_P2P_KEY_TABLE (52): point-to-point encryption keys + roles
+            PropertyDescriptor::with_policy(
+                pid::P2P_KEY_TABLE, PDT_Generic04::ID, 0,
+                PropertyAccess::ReadWrite, 2, 2,
+                AccessPolicy::TOOL_ONLY,
+            ),
+            // PID_GROUP_KEY_TABLE (53): group communication encryption keys
+            PropertyDescriptor::with_policy(
+                pid::GROUP_KEY_TABLE, PDT_Generic04::ID, 0,
+                PropertyAccess::ReadWrite, 2, 2,
+                AccessPolicy::TOOL_ONLY,
+            ),
+            // PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE (54): authorized IAs
+            PropertyDescriptor::with_policy(
+                pid::SECURITY_INDIVIDUAL_ADDRESS_TABLE, PDT_Generic04::ID, 0,
+                PropertyAccess::ReadWrite, 2, 2,
+                AccessPolicy::TOOL_ONLY,
+            ),
+            // PID_TOOL_KEY (56): write-only, Tool A+C access only
+            PropertyDescriptor::with_policy(
+                pid::TOOL_KEY, PDT_Generic08::ID, 1,
+                PropertyAccess::WriteOnly, 0, 0,
+                AccessPolicy::TOOL_ONLY_CONFIDENTIAL,
+            ),
+            // PID_SEQUENCE_NUMBER_SENDING (59): anti-replay counter
+            PropertyDescriptor::with_policy(
+                pid::SEQUENCE_NUMBER_SENDING, PDT_Generic06::ID, 1,
+                PropertyAccess::ReadWrite, 0, 0,
+                AccessPolicy::TOOL_READ_TOOL_CONF_WRITE,
+            ),
+            // PID_GO_SECURITY_FLAGS (61): per-GO security requirements
+            PropertyDescriptor::with_policy(
+                pid::GO_SECURITY_FLAGS, PDT_Generic02::ID, 0,
+                PropertyAccess::ReadWrite, 2, 2,
+                AccessPolicy::RESTRICTED,
+            ),
+        ]
+    };
+
+    /// Create a new Security Interface Object (security mode disabled by default).
+    pub fn new() -> Self {
+        Self { security_mode_enabled: false }
+    }
+
+    /// Whether the device's Security Mode is currently enabled.
+    ///
+    /// When enabled, the "Security Mode On" columns of the access policy
+    /// matrix apply; when disabled, the "Security Mode Off" columns apply.
+    pub fn security_mode_enabled(&self) -> bool {
+        self.security_mode_enabled
+    }
+}
+
+impl InterfaceObject for SecurityInterfaceObject {
+    fn object_type(&self) -> InterfaceObjectType {
+        InterfaceObjectType::Security
+    }
+
+    fn property_count(&self) -> u16 {
+        Self::DESCRIPTORS.len() as u16
+    }
+
+    fn property_descriptor_by_index(&self, prop_idx: u16) -> Option<PropertyDescriptor> {
+        Self::DESCRIPTORS.get(prop_idx as usize).copied()
+    }
+
+    fn property_descriptor_by_id(&self, pid: u8) -> Option<(u16, PropertyDescriptor)> {
+        Self::DESCRIPTORS
+            .iter()
+            .enumerate()
+            .find(|(_, d)| d.pid == pid)
+            .map(|(i, d)| (i as u16, *d))
+    }
+
+    fn read_property(
+        &self,
+        req: super::PropertyReadRequest,
+        buf: &mut [u8],
+    ) -> Result<usize, PropertyError> {
+        match req.pid {
+            pid::OBJECT_TYPE => {
+                let obj_type: u16 = InterfaceObjectType::Security.into();
+                obj_type.to_be_bytes().read_property(req.start_idx, req.count, buf)
+            }
+            pid::SECURITY_MODE => {
+                let val: u8 = if self.security_mode_enabled { 1 } else { 0 };
+                [val].read_property(req.start_idx, req.count, buf)
+            }
+            // Stub: all other security properties return empty/zero for now.
+            // The actual implementation will be added with the S-AL work.
+            _ => Err(PropertyError::InvalidPropertyId),
+        }
+    }
+
+    fn write_property(
+        &mut self,
+        req: super::PropertyWriteRequest<'_>,
+    ) -> Result<WriteResponse, PropertyError> {
+        match req.pid {
+            pid::SECURITY_MODE => {
+                if req.data.is_empty() {
+                    return Err(PropertyError::BufferTooSmall);
+                }
+                self.security_mode_enabled = req.data[0] != 0;
+                Ok(WriteResponse::Echo)
+            }
+            // Stub: other properties not yet implemented
+            _ => Err(PropertyError::InvalidPropertyId),
+        }
+    }
+
+    fn property_element_count(&self, pid_val: u8) -> Result<u16, PropertyError> {
+        match pid_val {
+            pid::OBJECT_TYPE | pid::SECURITY_MODE | pid::TOOL_KEY | pid::SEQUENCE_NUMBER_SENDING => Ok(1),
+            pid::LOAD_STATE_CONTROL => Ok(1),
+            // Table properties: 0 elements until loaded
+            pid::P2P_KEY_TABLE | pid::GROUP_KEY_TABLE
+            | pid::SECURITY_INDIVIDUAL_ADDRESS_TABLE | pid::GO_SECURITY_FLAGS => Ok(0),
+            _ => Err(PropertyError::InvalidPropertyId),
+        }
     }
 }
