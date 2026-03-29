@@ -238,3 +238,113 @@ impl DeviceIdentity for NoIdentity {
         &[0; 6]
     }
 }
+
+// ============================================================================
+// Sequence Number Storage — wear-resistant abstraction
+// ============================================================================
+
+/// Wear-resistant storage for security sequence numbers.
+///
+/// Sequence numbers increment on every outgoing secure message, so they
+/// cannot live in regular flash/EEPROM without wear-leveling.
+///
+/// Implementations may use:
+/// - FRAM (I2C/SPI) — unlimited write endurance, ideal
+/// - Battery-backed SRAM
+/// - A dedicated file (Linux userspace)
+/// - RAM-only (accepting reset on power cycle)
+///
+/// Per KNX spec 03/03/07 section 5.3.1, there are exactly two sending
+/// counters (regular + tool access) and per-peer receiving counters.
+pub trait SequenceNumberStorage {
+    /// Error type for storage operations.
+    type Error;
+
+    /// Load the two sending sequence numbers (regular + tool access).
+    /// Each is 6 bytes big-endian. Returns `(regular, tool_access)`.
+    fn load_sending_seqs(&self) -> Result<([u8; 6], [u8; 6]), Self::Error>;
+
+    /// Save the two sending sequence numbers.
+    /// Called after every outgoing secure message.
+    fn save_sending_seqs(&mut self, regular: &[u8; 6], tool: &[u8; 6]) -> Result<(), Self::Error>;
+
+    /// Load last-valid receiving sequence number for a peer.
+    /// Returns `None` if no sequence is stored for this peer.
+    fn load_receiving_seq(&self, peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error>;
+
+    /// Save last-valid receiving sequence number for a peer.
+    /// Called after successful MAC verification of an incoming message.
+    fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error>;
+}
+
+/// RAM-only sequence number storage.
+///
+/// Keeps counters in memory only — they reset to initial values on power
+/// cycle. Suitable for testing and devices that accept sequence reset on
+/// reboot. The initial sending sequence number is 1 (per spec, must be
+/// non-zero).
+pub struct RamSequenceStorage<const MAX_PEERS: usize> {
+    /// (regular, tool_access) sending sequence numbers.
+    sending: ([u8; 6], [u8; 6]),
+    /// Per-peer last-valid receiving sequence numbers.
+    peers: [(u16, [u8; 6]); MAX_PEERS],
+    /// Number of peers currently tracked.
+    peer_count: usize,
+}
+
+impl<const MAX_PEERS: usize> RamSequenceStorage<MAX_PEERS> {
+    /// Create a new RAM-only storage with initial sequence number 1.
+    pub const fn new() -> Self {
+        Self {
+            // Initial value must be non-zero (spec: 1–255 range).
+            sending: ([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]),
+            peers: [(0u16, [0u8; 6]); MAX_PEERS],
+            peer_count: 0,
+        }
+    }
+}
+
+impl<const MAX_PEERS: usize> Default for RamSequenceStorage<MAX_PEERS> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const MAX_PEERS: usize> SequenceNumberStorage for RamSequenceStorage<MAX_PEERS> {
+    type Error = core::convert::Infallible;
+
+    fn load_sending_seqs(&self) -> Result<([u8; 6], [u8; 6]), Self::Error> {
+        Ok(self.sending)
+    }
+
+    fn save_sending_seqs(&mut self, regular: &[u8; 6], tool: &[u8; 6]) -> Result<(), Self::Error> {
+        self.sending = (*regular, *tool);
+        Ok(())
+    }
+
+    fn load_receiving_seq(&self, peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error> {
+        for i in 0..self.peer_count {
+            if self.peers[i].0 == peer_ia {
+                return Ok(Some(self.peers[i].1));
+            }
+        }
+        Ok(None)
+    }
+
+    fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error> {
+        // Update existing entry if found.
+        for i in 0..self.peer_count {
+            if self.peers[i].0 == peer_ia {
+                self.peers[i].1 = *seq;
+                return Ok(());
+            }
+        }
+        // Add new entry if capacity allows.
+        if self.peer_count < MAX_PEERS {
+            self.peers[self.peer_count] = (peer_ia, *seq);
+            self.peer_count += 1;
+        }
+        // Silently drop if at capacity — bounded by const generic.
+        Ok(())
+    }
+}

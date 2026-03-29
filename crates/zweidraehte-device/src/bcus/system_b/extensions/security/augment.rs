@@ -217,14 +217,44 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
                 let val: u8 = if self.state.security_mode_enabled() { 1 } else { 0 };
                 [val].read_property(req.start_idx, req.count, buf)
             }
-            // Phase 2+: key tables, sequence numbers, etc.
-            pid::GROUP_KEY_TABLE
-            | pid::SECURITY_FAILURES_LOG
-            | pid::TOOL_KEY
-            | pid::SECURITY_REPORT
-            | pid::SECURITY_REPORT_CONTROL
-            | pid::SEQUENCE_NUMBER_SENDING
-            | pid::GO_SECURITY_FLAGS => Err(PropertyError::InvalidPropertyId),
+            // ---- Array property: Group Key Table (18 bytes/entry) ----
+            pid::GROUP_KEY_TABLE => {
+                let table = self.state.grp_keys().borrow();
+                if req.start_idx == 0 {
+                    // Element count query.
+                    if buf.len() < 2 {
+                        return Some(Err(PropertyError::BufferTooSmall));
+                    }
+                    buf[..2].copy_from_slice(&table.count().to_be_bytes());
+                    Ok(2)
+                } else {
+                    let start = (req.start_idx - 1) as u16;
+                    table.read_entries(start, req.count as u16, buf)
+                }
+            }
+            // ---- Array property: GO Security Flags (1 byte/entry) ----
+            pid::GO_SECURITY_FLAGS => {
+                let table = self.state.go_flags().borrow();
+                if req.start_idx == 0 {
+                    if buf.len() < 2 {
+                        return Some(Err(PropertyError::BufferTooSmall));
+                    }
+                    buf[..2].copy_from_slice(&table.count().to_be_bytes());
+                    Ok(2)
+                } else {
+                    let start = (req.start_idx - 1) as u16;
+                    table.read_entries(start, req.count as u16, buf)
+                }
+            }
+            // ---- Write-only: Tool Key (PID 56) ----
+            pid::TOOL_KEY => Err(PropertyError::ReadNotAllowed),
+            // ---- Sequence Number Sending (PID 59) ----
+            // TODO: delegate to SequenceNumberStorage in Phase 4
+            pid::SEQUENCE_NUMBER_SENDING => Err(PropertyError::InvalidPropertyId),
+            // ---- Stubs for Phase 6+ ----
+            pid::SECURITY_FAILURES_LOG | pid::SECURITY_REPORT | pid::SECURITY_REPORT_CONTROL => {
+                Err(PropertyError::InvalidPropertyId)
+            }
             _ => Err(PropertyError::InvalidPropertyId),
         })
     }
@@ -259,12 +289,39 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
                 self.state.set_security_mode_enabled(req.data[0] != 0);
                 Ok(WriteResponse::Echo)
             }
-            // Phase 2+: key tables, sequence numbers, etc.
-            pid::GROUP_KEY_TABLE
-            | pid::TOOL_KEY
-            | pid::SECURITY_REPORT_CONTROL
-            | pid::SEQUENCE_NUMBER_SENDING
-            | pid::GO_SECURITY_FLAGS => Err(PropertyError::InvalidPropertyId),
+            // ---- Array property: Group Key Table (18 bytes/entry) ----
+            pid::GROUP_KEY_TABLE => {
+                let start = req.start_idx.saturating_sub(1);
+                let mut table = self.state.grp_keys().borrow_mut();
+                match table.write_entries(start, req.data) {
+                    Ok(()) => Ok(WriteResponse::Echo),
+                    Err(e) => Err(e),
+                }
+            }
+            // ---- Array property: GO Security Flags (1 byte/entry) ----
+            pid::GO_SECURITY_FLAGS => {
+                let start = req.start_idx.saturating_sub(1);
+                let mut table = self.state.go_flags().borrow_mut();
+                match table.write_entries(start, req.data) {
+                    Ok(()) => Ok(WriteResponse::Echo),
+                    Err(e) => Err(e),
+                }
+            }
+            // ---- Tool Key (PID 56): write-only, 16 bytes ----
+            pid::TOOL_KEY => {
+                if req.data.len() < 16 {
+                    return Some(Err(PropertyError::BufferTooSmall));
+                }
+                let mut key = [0u8; 16];
+                key.copy_from_slice(&req.data[..16]);
+                self.state.set_tool_key(key);
+                Ok(WriteResponse::Echo)
+            }
+            // ---- Sequence Number Sending (PID 59) ----
+            // TODO: delegate to SequenceNumberStorage in Phase 4
+            pid::SEQUENCE_NUMBER_SENDING => Err(PropertyError::InvalidPropertyId),
+            // ---- Stubs for Phase 6+ ----
+            pid::SECURITY_REPORT_CONTROL => Err(PropertyError::InvalidPropertyId),
             _ => Err(PropertyError::InvalidPropertyId),
         })
     }
@@ -417,5 +474,200 @@ mod tests {
         assert!(!state.security_mode_enabled());
         assert_eq!(state.tool_key(), [0u8; 16]);
         assert_eq!(state.load_state(), LoadState::Unloaded);
+    }
+
+    // ================================================================
+    // Phase 2 tests: table properties
+    // ================================================================
+
+    #[test]
+    fn grp_key_table_write_and_read() {
+        let state = make_state();
+        let augment = SecurityAugment::<64, 32>::new(&state);
+        let mock = MockState;
+
+        // Write one group key entry (18 bytes: GA_index=0x0001 + 16-byte key)
+        let mut entry = [0u8; 18];
+        entry[0] = 0x00;
+        entry[1] = 0x01; // GA index 1
+        entry[2..18].copy_from_slice(&[0xAB; 16]); // key
+
+        let write_req = FullPropertyWriteRequest {
+            object_idx: 6,
+            pid: pid::GROUP_KEY_TABLE,
+            start_idx: 1,
+            data: &entry,
+            ctx: crate::AccessContext::MAX_ACCESS,
+        };
+        let result = augment.property_value_write(&mock, InterfaceObjectType::Security, &write_req);
+        assert!(result.expect("should handle").is_ok());
+
+        // Read element count (start_idx=0)
+        let read_req = FullPropertyReadRequest {
+            object_idx: 6,
+            pid: pid::GROUP_KEY_TABLE,
+            start_idx: 0,
+            count: 1,
+            ctx: crate::AccessContext::MAX_ACCESS,
+        };
+        let mut buf = [0u8; 32];
+        let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &read_req, &mut buf);
+        let len = result.expect("should handle").expect("should succeed");
+        assert_eq!(len, 2);
+        assert_eq!(u16::from_be_bytes([buf[0], buf[1]]), 1); // 1 entry
+
+        // Read the entry back (start_idx=1)
+        let read_req = FullPropertyReadRequest {
+            object_idx: 6,
+            pid: pid::GROUP_KEY_TABLE,
+            start_idx: 1,
+            count: 1,
+            ctx: crate::AccessContext::MAX_ACCESS,
+        };
+        let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &read_req, &mut buf);
+        let len = result.expect("should handle").expect("should succeed");
+        assert_eq!(len, 18);
+        assert_eq!(&buf[0..2], &[0x00, 0x01]); // GA index
+        assert_eq!(&buf[2..18], &[0xAB; 16]); // key
+    }
+
+    #[test]
+    fn group_key_lookup() {
+        let state = make_state();
+
+        // Write a group key entry directly to the table.
+        let mut entry = [0u8; 18];
+        entry[0] = 0x00;
+        entry[1] = 0x05; // GA index 5
+        entry[2..18].copy_from_slice(&[0xCC; 16]);
+        state.grp_keys().borrow_mut().write_entries(0, &entry).expect("write should succeed");
+
+        // Lookup by GA index.
+        assert_eq!(state.group_key_for_index(5), Some([0xCC; 16]));
+        assert_eq!(state.group_key_for_index(1), None);
+    }
+
+    #[test]
+    fn go_security_flags_write_and_lookup() {
+        let state = make_state();
+        let augment = SecurityAugment::<64, 32>::new(&state);
+        let mock = MockState;
+
+        // Write 3 GO flags
+        let write_req = FullPropertyWriteRequest {
+            object_idx: 6,
+            pid: pid::GO_SECURITY_FLAGS,
+            start_idx: 1,
+            data: &[0x01, 0x03, 0x00], // GO 0: auth, GO 1: auth+conf, GO 2: none
+            ctx: crate::AccessContext::MAX_ACCESS,
+        };
+        let result = augment.property_value_write(&mock, InterfaceObjectType::Security, &write_req);
+        assert!(result.expect("should handle").is_ok());
+
+        // Lookup flags
+        assert_eq!(state.go_security_flags_for(0), Some(0x01));
+        assert_eq!(state.go_security_flags_for(1), Some(0x03));
+        assert_eq!(state.go_security_flags_for(2), Some(0x00));
+        assert_eq!(state.go_security_flags_for(3), None);
+    }
+
+    #[test]
+    fn tool_key_is_write_only() {
+        let state = make_state();
+        let augment = SecurityAugment::<64, 32>::new(&state);
+        let mock = MockState;
+
+        // Write tool key
+        let write_req = FullPropertyWriteRequest {
+            object_idx: 6,
+            pid: pid::TOOL_KEY,
+            start_idx: 1,
+            data: &[0xDD; 16],
+            ctx: crate::AccessContext::MAX_ACCESS,
+        };
+        let result = augment.property_value_write(&mock, InterfaceObjectType::Security, &write_req);
+        assert!(result.expect("should handle").is_ok());
+        assert_eq!(state.tool_key(), [0xDD; 16]);
+
+        // Read should fail (write-only)
+        let read_req = FullPropertyReadRequest {
+            object_idx: 6,
+            pid: pid::TOOL_KEY,
+            start_idx: 1,
+            count: 1,
+            ctx: crate::AccessContext::MAX_ACCESS,
+        };
+        let mut buf = [0u8; 16];
+        let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &read_req, &mut buf);
+        assert!(result.expect("should handle").is_err());
+    }
+
+    #[test]
+    fn table_write_beyond_capacity_fails() {
+        let state: SecurityState<2, 2> = SecurityState::from_config(SecurityExtensionConfig::default());
+        let augment = SecurityAugment::<2, 2>::new(&state);
+        let mock = MockState;
+
+        // Write 3 entries to a table with capacity 2 — should fail.
+        let write_req = FullPropertyWriteRequest {
+            object_idx: 6,
+            pid: pid::GO_SECURITY_FLAGS,
+            start_idx: 1,
+            data: &[0x01, 0x02, 0x03],
+            ctx: crate::AccessContext::MAX_ACCESS,
+        };
+        let result = augment.property_value_write(&mock, InterfaceObjectType::Security, &write_req);
+        assert!(result.expect("should handle").is_err());
+    }
+
+    #[test]
+    fn read_out_of_range_returns_error() {
+        let state = make_state();
+        let augment = SecurityAugment::<64, 32>::new(&state);
+        let mock = MockState;
+
+        // Table is empty (0 entries). Reading at start_idx=1 should fail.
+        let read_req = FullPropertyReadRequest {
+            object_idx: 6,
+            pid: pid::GROUP_KEY_TABLE,
+            start_idx: 1,
+            count: 1,
+            ctx: crate::AccessContext::MAX_ACCESS,
+        };
+        let mut buf = [0u8; 32];
+        let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &read_req, &mut buf);
+        let err = result.expect("should handle").unwrap_err();
+        assert_eq!(err, PropertyError::InvalidStartIndex);
+    }
+
+    #[test]
+    fn read_with_small_buffer_returns_error() {
+        let state = make_state();
+        let augment = SecurityAugment::<64, 32>::new(&state);
+        let mock = MockState;
+
+        // Write one entry (18 bytes).
+        let entry = [0u8; 18];
+        let write_req = FullPropertyWriteRequest {
+            object_idx: 6,
+            pid: pid::GROUP_KEY_TABLE,
+            start_idx: 1,
+            data: &entry,
+            ctx: crate::AccessContext::MAX_ACCESS,
+        };
+        augment.property_value_write(&mock, InterfaceObjectType::Security, &write_req).unwrap().unwrap();
+
+        // Try to read with a buffer too small for 18 bytes.
+        let read_req = FullPropertyReadRequest {
+            object_idx: 6,
+            pid: pid::GROUP_KEY_TABLE,
+            start_idx: 1,
+            count: 1,
+            ctx: crate::AccessContext::MAX_ACCESS,
+        };
+        let mut buf = [0u8; 4]; // Too small for 18-byte entry.
+        let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &read_req, &mut buf);
+        let err = result.expect("should handle").unwrap_err();
+        assert_eq!(err, PropertyError::BufferTooSmall);
     }
 }

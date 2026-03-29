@@ -31,7 +31,7 @@ mod augment;
 
 pub use augment::SecurityAugment;
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 
 use serde::{Deserialize, Serialize};
 
@@ -40,28 +40,146 @@ use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState};
 use crate::objects::tables::LoadState;
 
 // ============================================================================
+// SecurityTable — const-generic fixed-capacity table
+// ============================================================================
+
+/// Fixed-capacity table for security data (group keys, GO security flags).
+///
+/// Each entry is `ENTRY_SIZE` bytes. Up to `N` entries can be stored.
+/// This type is `no_alloc`-compatible — all storage is inline.
+///
+/// Written by ETS during configuration (via the load state machine),
+/// read by the S-AL at runtime for key lookup and GO flag checks.
+#[derive(Clone)]
+pub struct SecurityTable<const N: usize, const ENTRY_SIZE: usize> {
+    /// Entry data. Only entries `0..count` are valid.
+    pub(crate) data: [[u8; ENTRY_SIZE]; N],
+    count: u16,
+}
+
+impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
+    /// Create an empty table.
+    pub const fn new() -> Self {
+        Self { data: [[0u8; ENTRY_SIZE]; N], count: 0 }
+    }
+
+    /// Current number of entries.
+    pub fn count(&self) -> u16 {
+        self.count
+    }
+
+    /// Get entry at 0-based index, or `None` if out of range.
+    pub fn get(&self, index: u16) -> Option<&[u8; ENTRY_SIZE]> {
+        if index < self.count { Some(&self.data[index as usize]) } else { None }
+    }
+
+    /// Read a range of entries into a byte buffer.
+    ///
+    /// `start` is 0-based. Returns the number of bytes written, or an
+    /// error if `start` is out of range or `buf` is too small.
+    pub fn read_entries(
+        &self,
+        start: u16,
+        count: u16,
+        buf: &mut [u8],
+    ) -> Result<usize, crate::objects::interface::PropertyError> {
+        use crate::objects::interface::PropertyError;
+
+        if start >= self.count {
+            return Err(PropertyError::InvalidStartIndex);
+        }
+        let end = ((start + count) as usize).min(self.count as usize);
+        let actual = end - start as usize;
+        let byte_count = actual * ENTRY_SIZE;
+        if buf.len() < byte_count {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        for (i, idx) in (start as usize..end).enumerate() {
+            let offset = i * ENTRY_SIZE;
+            buf[offset..offset + ENTRY_SIZE].copy_from_slice(&self.data[idx]);
+        }
+        Ok(byte_count)
+    }
+
+    /// Write entries from a byte buffer, replacing existing data.
+    ///
+    /// `start` is 0-based. `data` must be a multiple of `ENTRY_SIZE`.
+    /// Validates that the write stays within table capacity and that
+    /// the data length is aligned to the entry size.
+    pub fn write_entries(&mut self, start: u16, data: &[u8]) -> Result<(), crate::objects::interface::PropertyError> {
+        use crate::objects::interface::PropertyError;
+
+        if data.is_empty() {
+            return Ok(()); // Nothing to write.
+        }
+        if data.len() % ENTRY_SIZE != 0 {
+            return Err(PropertyError::TypeMismatch);
+        }
+        let entry_count = data.len() / ENTRY_SIZE;
+        let end = start as usize + entry_count;
+        if end > N {
+            return Err(PropertyError::InvalidStartIndex);
+        }
+        for i in 0..entry_count {
+            let src_offset = i * ENTRY_SIZE;
+            self.data[start as usize + i].copy_from_slice(&data[src_offset..src_offset + ENTRY_SIZE]);
+        }
+        // Update count if we wrote past the current end.
+        if end as u16 > self.count {
+            self.count = end as u16;
+        }
+        Ok(())
+    }
+
+    /// Clear all entries (reset count to 0).
+    pub fn clear(&mut self) {
+        self.count = 0;
+    }
+
+    /// Set the element count directly (for load state machine use).
+    pub fn set_count(&mut self, count: u16) {
+        self.count = count.min(N as u16);
+    }
+
+    /// View active entries as a flat byte slice.
+    ///
+    /// Returns `count * ENTRY_SIZE` bytes covering entries `0..count`.
+    pub fn as_flat_bytes(&self) -> &[u8] {
+        let byte_count = self.count as usize * ENTRY_SIZE;
+        // The data is [[u8; ENTRY_SIZE]; N], which is contiguous in memory.
+        let ptr = self.data.as_ptr() as *const u8;
+        // Safety: `byte_count <= N * ENTRY_SIZE`, and the layout of
+        // `[[u8; ENTRY_SIZE]; N]` is contiguous bytes.
+        unsafe { core::slice::from_raw_parts(ptr, byte_count) }
+    }
+}
+
+// SecurityTable serialization is handled by SecurityExtensionConfig,
+// which stores the table data inline as fixed arrays. The SecurityState
+// runtime type uses RefCell<SecurityTable<N, ES>> for interior mutability.
+
+// ============================================================================
 // Persisted Config
 // ============================================================================
 
 /// Persisted security extension configuration.
 ///
-/// Serialized to storage when the device state is saved. Contains the
-/// security mode flag, tool key, and load state. Key tables and sequence
-/// numbers are handled separately (tables via the load state machine,
-/// sequence numbers via [`SequenceNumberStorage`]).
+/// Contains only scalar fields — security mode, tool key, and load state.
+/// Security table data (group keys, GO flags) is loaded by ETS through
+/// property writes during the configuration phase and is NOT persisted
+/// in this config. After a power cycle, the load state will be
+/// `Unloaded` and ETS must reload the tables.
+///
+/// Sequence numbers are stored separately via [`SequenceNumberStorage`]
+/// due to their high write frequency.
 ///
 /// [`SequenceNumberStorage`]: crate::storage::SequenceNumberStorage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityExtensionConfig {
-    /// Whether security mode is enabled on this device.
     #[serde(default)]
     pub security_mode_enabled: bool,
-
-    /// The 16-byte tool key. All zeros when not yet commissioned.
     #[serde(default = "default_tool_key")]
     pub tool_key: [u8; 16],
-
-    /// Load state for the Security Interface Object.
     #[serde(default = "default_load_state")]
     pub load_state: LoadState,
 }
@@ -88,18 +206,17 @@ impl ExtensionConfig for SecurityExtensionConfig {}
 
 /// Runtime security state with interior mutability.
 ///
-/// This holds the security mode, tool key, and load state. Key tables
-/// (group keys, GO security flags) will be added in Phase 2 with
-/// const-generic sizing.
-///
-/// The const generics `GRP` and `GO` are reserved for Phase 2's table
-/// storage. For Phase 1, they don't affect the struct layout — they're
-/// present to establish the type signature early so that downstream
-/// type aliases don't need to change later.
+/// Holds security mode, tool key, load state, group key table, and
+/// GO security flags. Table data is behind `RefCell` for interior
+/// mutability during property writes.
 pub struct SecurityState<const GRP: usize, const GO: usize> {
     security_mode_enabled: Cell<bool>,
     tool_key: Cell<[u8; 16]>,
     load_state: Cell<LoadState>,
+    /// Group key table: GA_index(2) + key(16) = 18 bytes per entry.
+    grp_keys: RefCell<SecurityTable<GRP, 18>>,
+    /// GO security flags: 1 byte per group object.
+    go_flags: RefCell<SecurityTable<GO, 1>>,
 }
 
 impl<const GRP: usize, const GO: usize> SecurityState<GRP, GO> {
@@ -132,6 +249,58 @@ impl<const GRP: usize, const GO: usize> SecurityState<GRP, GO> {
     pub fn set_tool_key(&self, key: [u8; 16]) {
         self.tool_key.set(key);
     }
+
+    /// Get a reference to the group key table.
+    pub fn grp_keys(&self) -> &RefCell<SecurityTable<GRP, 18>> {
+        &self.grp_keys
+    }
+
+    /// Get a reference to the GO security flags table.
+    pub fn go_flags(&self) -> &RefCell<SecurityTable<GO, 1>> {
+        &self.go_flags
+    }
+
+    /// Look up a group key by 1-based group address table index.
+    ///
+    /// The group key table is sorted by GA index (ascending) as written
+    /// by ETS, so we use binary search for O(log n) lookup.
+    ///
+    /// TODO: Verify with the spec (03/05/01) that ETS always writes
+    /// entries in ascending GA index order. The Thelsing reference
+    /// implementation uses early exit on `index > addressIndex` which
+    /// implies sorted order, but this should be confirmed.
+    ///
+    /// Returns the 16-byte key if found, or `None` if the index is
+    /// not in the group key table.
+    pub fn group_key_for_index(&self, ga_index: u16) -> Option<[u8; 16]> {
+        let table = self.grp_keys.borrow();
+        let count = table.count() as usize;
+
+        // Binary search over sorted entries.
+        let mut lo = 0usize;
+        let mut hi = count;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let entry = &table.data[mid];
+            let stored_index = u16::from_be_bytes([entry[0], entry[1]]);
+            match stored_index.cmp(&ga_index) {
+                core::cmp::Ordering::Equal => {
+                    let mut key = [0u8; 16];
+                    key.copy_from_slice(&entry[2..18]);
+                    return Some(key);
+                }
+                core::cmp::Ordering::Less => lo = mid + 1,
+                core::cmp::Ordering::Greater => hi = mid,
+            }
+        }
+        None
+    }
+
+    /// Look up GO security flags by 0-based group object index.
+    pub fn go_security_flags_for(&self, go_index: u16) -> Option<u8> {
+        let table = self.go_flags.borrow();
+        table.get(go_index).map(|entry| entry[0])
+    }
 }
 
 impl<const GRP: usize, const GO: usize> ExtensionState for SecurityState<GRP, GO> {
@@ -142,6 +311,9 @@ impl<const GRP: usize, const GO: usize> ExtensionState for SecurityState<GRP, GO
             security_mode_enabled: Cell::new(config.security_mode_enabled),
             tool_key: Cell::new(config.tool_key),
             load_state: Cell::new(config.load_state),
+            // Tables start empty — ETS reloads them via property writes.
+            grp_keys: RefCell::new(SecurityTable::new()),
+            go_flags: RefCell::new(SecurityTable::new()),
         }
     }
 
@@ -157,6 +329,8 @@ impl<const GRP: usize, const GO: usize> ExtensionState for SecurityState<GRP, GO
         self.security_mode_enabled.set(false);
         self.tool_key.set([0u8; 16]);
         self.load_state.set(LoadState::Unloaded);
+        self.grp_keys.borrow_mut().clear();
+        self.go_flags.borrow_mut().clear();
     }
 }
 
