@@ -7,14 +7,14 @@
 use crate::StackState;
 use crate::access::AccessPolicy;
 use crate::dpt::{
-    InterfaceObjectType, PDT_Control, PDT_Generic06, PDT_Generic08, PDT_UnsignedChar,
-    PDT_UnsignedInt, PropertyDataDefinition,
+    InterfaceObjectType, PDT_Control, PDT_Generic06, PDT_Generic08, PDT_UnsignedChar, PDT_UnsignedInt,
+    PropertyDataDefinition,
 };
 use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, InterfaceObjectAugment, PropertyAccess,
-    PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, WriteResponse,
-    pid,
+    PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, WriteResponse, pid,
 };
+use crate::objects::tables::LoadState;
 use crate::properties::PropertyRead;
 
 use super::SecurityState;
@@ -153,11 +153,7 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
 
     /// Find a descriptor by PID.
     fn descriptor_by_pid(pid_val: u8) -> Option<(u8, &'static PropertyDescriptor)> {
-        Self::DESCRIPTORS
-            .iter()
-            .enumerate()
-            .find(|(_, d)| d.pid == pid_val)
-            .map(|(i, d)| (i as u8, d))
+        Self::DESCRIPTORS.iter().enumerate().find(|(_, d)| d.pid == pid_val).map(|(i, d)| (i as u8, d))
     }
 
     /// Find a descriptor by augment-local index.
@@ -166,19 +162,13 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
     }
 }
 
-impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugment<S>
-    for SecurityAugment<'a, GRP, GO>
-{
+impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugment<S> for SecurityAugment<'a, GRP, GO> {
     fn additional_object_count(&self) -> u16 {
         1
     }
 
     fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
-        if index == 0 {
-            Some(InterfaceObjectType::Security)
-        } else {
-            None
-        }
+        if index == 0 { Some(InterfaceObjectType::Security) } else { None }
     }
 
     fn property_description_read(
@@ -200,9 +190,7 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
             }
         };
 
-        Some(Ok(PropertyDescriptionResponse::from_descriptor(
-            object_idx, prop_idx, desc,
-        )))
+        Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, prop_idx, desc)))
     }
 
     fn property_value_read(
@@ -222,7 +210,8 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
                 obj_type.to_be_bytes().read_property(req.start_idx, req.count, buf)
             }
             pid::LOAD_STATE_CONTROL => {
-                [self.state.load_state()].read_property(req.start_idx, req.count, buf)
+                let val: u8 = self.state.load_state().into();
+                [val].read_property(req.start_idx, req.count, buf)
             }
             pid::SECURITY_MODE => {
                 let val: u8 = if self.state.security_mode_enabled() { 1 } else { 0 };
@@ -255,8 +244,13 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
                 if req.data.is_empty() {
                     return Some(Err(PropertyError::BufferTooSmall));
                 }
-                self.state.set_load_state(req.data[0]);
-                Ok(WriteResponse::Echo)
+                match LoadState::try_from(req.data[0]) {
+                    Ok(load_state) => {
+                        self.state.set_load_state(load_state);
+                        Ok(WriteResponse::Echo)
+                    }
+                    Err(_) => Err(PropertyError::InvalidLoadState),
+                }
             }
             pid::SECURITY_MODE => {
                 if req.data.is_empty() {
@@ -279,8 +273,8 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bcus::system_b::extensions::security::SecurityExtensionConfig;
     use crate::bcus::system_b::ExtensionState;
+    use crate::bcus::system_b::extensions::security::SecurityExtensionConfig;
 
     /// Minimal StackState impl for testing.
     struct MockState;
@@ -305,18 +299,12 @@ mod tests {
         let augment = SecurityAugment::<64, 32>::new(&state);
         let mock = MockState;
 
-        assert_eq!(
-            InterfaceObjectAugment::<MockState>::additional_object_count(&augment),
-            1
-        );
+        assert_eq!(InterfaceObjectAugment::<MockState>::additional_object_count(&augment), 1);
         assert_eq!(
             InterfaceObjectAugment::<MockState>::additional_object_type_at(&augment, 0),
             Some(InterfaceObjectType::Security)
         );
-        assert_eq!(
-            InterfaceObjectAugment::<MockState>::additional_object_type_at(&augment, 1),
-            None
-        );
+        assert_eq!(InterfaceObjectAugment::<MockState>::additional_object_type_at(&augment, 1), None);
         let _ = mock;
     }
 
@@ -334,12 +322,7 @@ mod tests {
             ctx: crate::AccessContext::MAX_ACCESS,
         };
         let mut buf = [0u8; 4];
-        let result = augment.property_value_read(
-            &mock,
-            InterfaceObjectType::Security,
-            &req,
-            &mut buf,
-        );
+        let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &req, &mut buf);
 
         let len = result.expect("should handle Security IO").expect("should succeed");
         assert_eq!(len, 2);
@@ -367,11 +350,7 @@ mod tests {
             data: &[1],
             ctx: crate::AccessContext::MAX_ACCESS,
         };
-        let result = augment.property_value_write(
-            &mock,
-            InterfaceObjectType::Security,
-            &req,
-        );
+        let result = augment.property_value_write(&mock, InterfaceObjectType::Security, &req);
         assert!(result.expect("should handle").is_ok());
         assert!(state.security_mode_enabled());
 
@@ -383,11 +362,7 @@ mod tests {
             data: &[0],
             ctx: crate::AccessContext::MAX_ACCESS,
         };
-        let result = augment.property_value_write(
-            &mock,
-            InterfaceObjectType::Security,
-            &req,
-        );
+        let result = augment.property_value_write(&mock, InterfaceObjectType::Security, &req);
         assert!(result.expect("should handle").is_ok());
         assert!(!state.security_mode_enabled());
     }
@@ -408,12 +383,7 @@ mod tests {
         let mut buf = [0u8; 4];
 
         // Should return None for Device object type
-        let result = augment.property_value_read(
-            &mock,
-            InterfaceObjectType::Device,
-            &req,
-            &mut buf,
-        );
+        let result = augment.property_value_read(&mock, InterfaceObjectType::Device, &req, &mut buf);
         assert!(result.is_none(), "should not handle Device object");
     }
 
@@ -422,17 +392,17 @@ mod tests {
         let state = make_state();
         state.set_security_mode_enabled(true);
         state.set_tool_key([0xAA; 16]);
-        state.set_load_state(3);
+        state.set_load_state(LoadState::Err);
 
         let config = state.to_config();
         assert!(config.security_mode_enabled);
         assert_eq!(config.tool_key, [0xAA; 16]);
-        assert_eq!(config.load_state, 3);
+        assert_eq!(config.load_state, LoadState::Err);
 
         let restored = SecurityState::<64, 32>::from_config(config);
         assert!(restored.security_mode_enabled());
         assert_eq!(restored.tool_key(), [0xAA; 16]);
-        assert_eq!(restored.load_state(), 3);
+        assert_eq!(restored.load_state(), LoadState::Err);
     }
 
     #[test]
@@ -440,12 +410,12 @@ mod tests {
         let state = make_state();
         state.set_security_mode_enabled(true);
         state.set_tool_key([0xFF; 16]);
-        state.set_load_state(3);
+        state.set_load_state(LoadState::Loaded);
 
         state.factory_reset();
 
         assert!(!state.security_mode_enabled());
         assert_eq!(state.tool_key(), [0u8; 16]);
-        assert_eq!(state.load_state(), 0);
+        assert_eq!(state.load_state(), LoadState::Unloaded);
     }
 }

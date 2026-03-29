@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::StackState;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState};
+use crate::objects::tables::LoadState;
 
 // ============================================================================
 // Persisted Config
@@ -61,21 +62,21 @@ pub struct SecurityExtensionConfig {
     pub tool_key: [u8; 16],
 
     /// Load state for the Security Interface Object.
-    #[serde(default)]
-    pub load_state: u8,
+    #[serde(default = "default_load_state")]
+    pub load_state: LoadState,
 }
 
 fn default_tool_key() -> [u8; 16] {
     [0u8; 16]
 }
 
+fn default_load_state() -> LoadState {
+    LoadState::Unloaded
+}
+
 impl Default for SecurityExtensionConfig {
     fn default() -> Self {
-        Self {
-            security_mode_enabled: false,
-            tool_key: [0u8; 16],
-            load_state: 0, // Unloaded
-        }
+        Self { security_mode_enabled: false, tool_key: [0u8; 16], load_state: LoadState::Unloaded }
     }
 }
 
@@ -98,7 +99,7 @@ impl ExtensionConfig for SecurityExtensionConfig {}
 pub struct SecurityState<const GRP: usize, const GO: usize> {
     security_mode_enabled: Cell<bool>,
     tool_key: Cell<[u8; 16]>,
-    load_state: Cell<u8>,
+    load_state: Cell<LoadState>,
 }
 
 impl<const GRP: usize, const GO: usize> SecurityState<GRP, GO> {
@@ -113,12 +114,12 @@ impl<const GRP: usize, const GO: usize> SecurityState<GRP, GO> {
     }
 
     /// Get the current load state.
-    pub fn load_state(&self) -> u8 {
+    pub fn load_state(&self) -> LoadState {
         self.load_state.get()
     }
 
     /// Set the load state.
-    pub fn set_load_state(&self, state: u8) {
+    pub fn set_load_state(&self, state: LoadState) {
         self.load_state.set(state);
     }
 
@@ -155,7 +156,7 @@ impl<const GRP: usize, const GO: usize> ExtensionState for SecurityState<GRP, GO
     fn factory_reset(&self) {
         self.security_mode_enabled.set(false);
         self.tool_key.set([0u8; 16]);
-        self.load_state.set(0);
+        self.load_state.set(LoadState::Unloaded);
     }
 }
 
@@ -184,10 +185,7 @@ pub struct SecureExtensionState<Inner: ExtensionState, const GRP: usize, const G
 
 /// Persisted config for the composed extension.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "InnerConfig: Serialize",
-    deserialize = "InnerConfig: serde::de::DeserializeOwned"
-))]
+#[serde(bound(serialize = "InnerConfig: Serialize", deserialize = "InnerConfig: serde::de::DeserializeOwned"))]
 pub struct SecureExtensionConfig<InnerConfig: ExtensionConfig> {
     /// Medium-specific persisted config.
     pub inner: InnerConfig,
@@ -197,32 +195,21 @@ pub struct SecureExtensionConfig<InnerConfig: ExtensionConfig> {
 
 impl<InnerConfig: ExtensionConfig> Default for SecureExtensionConfig<InnerConfig> {
     fn default() -> Self {
-        Self {
-            inner: InnerConfig::default(),
-            security: SecurityExtensionConfig::default(),
-        }
+        Self { inner: InnerConfig::default(), security: SecurityExtensionConfig::default() }
     }
 }
 
 impl<InnerConfig: ExtensionConfig> ExtensionConfig for SecureExtensionConfig<InnerConfig> {}
 
-impl<Inner: ExtensionState, const GRP: usize, const GO: usize> ExtensionState
-    for SecureExtensionState<Inner, GRP, GO>
-{
+impl<Inner: ExtensionState, const GRP: usize, const GO: usize> ExtensionState for SecureExtensionState<Inner, GRP, GO> {
     type Config = SecureExtensionConfig<Inner::Config>;
 
     fn from_config(config: Self::Config) -> Self {
-        Self {
-            inner: Inner::from_config(config.inner),
-            security: SecurityState::from_config(config.security),
-        }
+        Self { inner: Inner::from_config(config.inner), security: SecurityState::from_config(config.security) }
     }
 
     fn to_config(&self) -> Self::Config {
-        SecureExtensionConfig {
-            inner: self.inner.to_config(),
-            security: self.security.to_config(),
-        }
+        SecureExtensionConfig { inner: self.inner.to_config(), security: self.security.to_config() }
     }
 
     fn factory_reset(&self) {
@@ -235,8 +222,7 @@ impl<Inner: ExtensionState, const GRP: usize, const GO: usize> ExtensionState
 // Extension trait — produces (inner_augment, SecurityAugment) tuple
 // ============================================================================
 
-impl<Inner, Platform, const GRP: usize, const GO: usize> Extension<Platform>
-    for SecureExtensionState<Inner, GRP, GO>
+impl<Inner, Platform, const GRP: usize, const GO: usize> Extension<Platform> for SecureExtensionState<Inner, GRP, GO>
 where
     Inner: Extension<Platform>,
 {
@@ -246,10 +232,7 @@ where
         Self: 'a,
         Platform: 'a;
 
-    fn create_augment<'a, S: StackState>(
-        &'a self,
-        platform: &'a Platform,
-    ) -> Self::Augment<'a, S>
+    fn create_augment<'a, S: StackState>(&'a self, platform: &'a Platform) -> Self::Augment<'a, S>
     where
         Platform: 'a,
     {
@@ -275,19 +258,9 @@ pub type SecureTp1DeviceState<
     P,
     const GRP: usize,
     const GO: usize,
-> = crate::bcus::system_b::SystemBDeviceState<
-    ADT_SIZE,
-    AST_SIZE,
-    COT_SIZE,
-    P,
-    SecureTp1ExtensionState<GRP, GO>,
->;
+> = crate::bcus::system_b::SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, SecureTp1ExtensionState<GRP, GO>>;
 
 #[cfg(feature = "knxip")]
 /// KNX/IP extension state with Data Secure support.
-pub type SecureIpExtensionState<
-    const N: usize,
-    const CAPS: u16,
-    const GRP: usize,
-    const GO: usize,
-> = SecureExtensionState<super::ip::IpExtensionState<N, CAPS>, GRP, GO>;
+pub type SecureIpExtensionState<const N: usize, const CAPS: u16, const GRP: usize, const GO: usize> =
+    SecureExtensionState<super::ip::IpExtensionState<N, CAPS>, GRP, GO>;
