@@ -217,6 +217,109 @@ pub struct SecurityState<const GRP: usize, const GO: usize> {
     grp_keys: RefCell<SecurityTable<GRP, 18>>,
     /// GO security flags: 1 byte per group object.
     go_flags: RefCell<SecurityTable<GO, 1>>,
+    /// Security failures log — counters and recent failure entries.
+    failures_log: RefCell<SecurityFailuresLog>,
+}
+
+// ============================================================================
+// Security Failures Log
+// ============================================================================
+
+/// Security failure type indices (per spec 03/03/07 section 5.4).
+///
+/// Each type has its own 1-byte counter in the failures log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SecurityFailureType {
+    /// Invalid SCF field (unsupported algorithm, reserved bits set).
+    ScfError = 0,
+    /// Sequence number check failed (replay or out-of-order).
+    SeqNrError = 1,
+    /// MAC verification failed (wrong key or tampered message).
+    CryptoError = 2,
+    /// Access denied by access policy after successful verification.
+    AccessError = 3,
+    /// Sender not found in Security Individual Address Table.
+    RoleError = 4,
+    /// Other / unspecified failure.
+    Other5 = 5,
+    Other6 = 6,
+    Other7 = 7,
+}
+
+/// A single failure log entry recording a security event.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SecurityFailureEntry {
+    /// Failure type.
+    pub failure_type: u8,
+    /// Source individual address of the offending message.
+    pub source_addr: u16,
+}
+
+/// Security failures log with 8 type counters and a ring buffer of
+/// recent failure entries.
+///
+/// Accessed via Function Property on PID 55:
+/// - **StateRead(id=0, info=0)**: Returns 8 failure type counters.
+/// - **StateRead(id=1, info=N)**: Returns the Nth most recent failure entry.
+/// - **Command(id=0, info=0)**: Clears all counters and entries.
+#[derive(Debug, Clone)]
+pub struct SecurityFailuresLog {
+    /// Per-type failure counters (8 types, 1 byte each, saturating at 255).
+    counters: [u8; 8],
+    /// Ring buffer of recent failure entries.
+    entries: [SecurityFailureEntry; 8],
+    /// Write index into the ring buffer.
+    write_idx: u8,
+    /// Number of entries stored (capped at 8).
+    count: u8,
+}
+
+impl Default for SecurityFailuresLog {
+    fn default() -> Self {
+        Self { counters: [0; 8], entries: [SecurityFailureEntry::default(); 8], write_idx: 0, count: 0 }
+    }
+}
+
+impl SecurityFailuresLog {
+    /// Record a security failure.
+    pub fn log_failure(&mut self, failure_type: SecurityFailureType, source_addr: u16) {
+        // Increment the counter for this failure type (saturating).
+        let idx = failure_type as usize;
+        if idx < 8 {
+            self.counters[idx] = self.counters[idx].saturating_add(1);
+        }
+
+        // Add to ring buffer.
+        let entry = SecurityFailureEntry { failure_type: failure_type as u8, source_addr };
+        self.entries[self.write_idx as usize] = entry;
+        self.write_idx = (self.write_idx + 1) % 8;
+        if self.count < 8 {
+            self.count += 1;
+        }
+    }
+
+    /// Get the 8-byte failure counters.
+    pub fn counters(&self) -> &[u8; 8] {
+        &self.counters
+    }
+
+    /// Get a failure entry by reverse index (0 = most recent).
+    pub fn get_by_index(&self, index: u8) -> Option<&SecurityFailureEntry> {
+        if index >= self.count {
+            return None;
+        }
+        // Most recent is at (write_idx - 1), second most recent at (write_idx - 2), etc.
+        let actual = (self.write_idx as i16 - 1 - index as i16).rem_euclid(8) as usize;
+        Some(&self.entries[actual])
+    }
+
+    /// Clear all counters and entries.
+    pub fn clear(&mut self) {
+        self.counters = [0; 8];
+        self.count = 0;
+        self.write_idx = 0;
+    }
 }
 
 impl<const GRP: usize, const GO: usize> SecurityState<GRP, GO> {
@@ -296,6 +399,11 @@ impl<const GRP: usize, const GO: usize> SecurityState<GRP, GO> {
         None
     }
 
+    /// Get a reference to the security failures log.
+    pub fn failures_log(&self) -> &RefCell<SecurityFailuresLog> {
+        &self.failures_log
+    }
+
     /// Look up GO security flags by 0-based group object index.
     pub fn go_security_flags_for(&self, go_index: u16) -> Option<u8> {
         let table = self.go_flags.borrow();
@@ -329,6 +437,18 @@ pub trait HasSecurityState {
 
     /// Look up GO security flags by 0-based group object index.
     fn go_security_flags_for(&self, go_index: u16) -> Option<u8>;
+
+    /// Record a security failure in the failures log.
+    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16);
+
+    /// Get the 8-byte failure counters.
+    fn failure_counters(&self) -> [u8; 8];
+
+    /// Get a failure entry by reverse index (0 = most recent).
+    fn failure_entry(&self, index: u8) -> Option<SecurityFailureEntry>;
+
+    /// Clear all failure counters and entries.
+    fn clear_failure_log(&self);
 }
 
 /// Blanket impl: any `SecurityState<GRP, GO>` implements `HasSecurityState`.
@@ -348,6 +468,22 @@ impl<const GRP: usize, const GO: usize> HasSecurityState for SecurityState<GRP, 
     fn go_security_flags_for(&self, go_index: u16) -> Option<u8> {
         self.go_security_flags_for(go_index)
     }
+
+    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16) {
+        self.failures_log.borrow_mut().log_failure(failure_type, source_addr);
+    }
+
+    fn failure_counters(&self) -> [u8; 8] {
+        *self.failures_log.borrow().counters()
+    }
+
+    fn failure_entry(&self, index: u8) -> Option<SecurityFailureEntry> {
+        self.failures_log.borrow().get_by_index(index).copied()
+    }
+
+    fn clear_failure_log(&self) {
+        self.failures_log.borrow_mut().clear();
+    }
 }
 
 impl<const GRP: usize, const GO: usize> ExtensionState for SecurityState<GRP, GO> {
@@ -361,6 +497,8 @@ impl<const GRP: usize, const GO: usize> ExtensionState for SecurityState<GRP, GO
             // Tables start empty — ETS reloads them via property writes.
             grp_keys: RefCell::new(SecurityTable::new()),
             go_flags: RefCell::new(SecurityTable::new()),
+            // Failures log starts empty (not persisted).
+            failures_log: RefCell::new(SecurityFailuresLog::default()),
         }
     }
 
@@ -378,6 +516,7 @@ impl<const GRP: usize, const GO: usize> ExtensionState for SecurityState<GRP, GO
         self.load_state.set(LoadState::Unloaded);
         self.grp_keys.borrow_mut().clear();
         self.go_flags.borrow_mut().clear();
+        self.failures_log.borrow_mut().clear();
     }
 }
 
@@ -424,6 +563,22 @@ impl<Inner: ExtensionState, const GRP: usize, const GO: usize> HasSecurityState
 
     fn go_security_flags_for(&self, go_index: u16) -> Option<u8> {
         self.security.go_security_flags_for(go_index)
+    }
+
+    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16) {
+        self.security.failures_log.borrow_mut().log_failure(failure_type, source_addr);
+    }
+
+    fn failure_counters(&self) -> [u8; 8] {
+        *self.security.failures_log.borrow().counters()
+    }
+
+    fn failure_entry(&self, index: u8) -> Option<SecurityFailureEntry> {
+        self.security.failures_log.borrow().get_by_index(index).copied()
+    }
+
+    fn clear_failure_log(&self) {
+        self.security.failures_log.borrow_mut().clear();
     }
 }
 

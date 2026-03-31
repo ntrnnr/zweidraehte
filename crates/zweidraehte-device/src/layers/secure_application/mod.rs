@@ -14,7 +14,7 @@ use core::cell::Cell;
 
 use crate::{
     access::{AccessContext, AccessSource, ClientRole, SecurityMode},
-    bcus::system_b::{HasExtensionState, HasSecurityState},
+    bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailureType},
     crypto::{
         ccm::{self, CcmContext},
         scf::{SecureServiceType, SecurityControlField},
@@ -118,6 +118,7 @@ where
             return Some(msg);
         }
 
+        let security_state = self.state.extension_state();
         let src = u16::from_be_bytes(msg.get_source_addr().0);
         let buf = msg.buf_mut();
         let buf_len = buf.len();
@@ -132,6 +133,7 @@ where
             Ok(scf) => scf,
             Err(_) => {
                 warn!("S-AL: invalid SCF 0x{:02X}", scf_byte);
+                security_state.log_security_failure(SecurityFailureType::ScfError, src);
                 return None;
             }
         };
@@ -157,9 +159,7 @@ where
         let addr_type = buf[offsets::MSG_ADDR_TYPE] & 0x80;
         let tpci_apci = u16::from_be_bytes([buf[offsets::MSG_TPCI], buf[offsets::MSG_TPCI + 1]]);
 
-        // Look up key.
-        let security_state = self.state.extension_state();
-
+        // Look up key (security_state already obtained above).
         let key = if scf.tool_access {
             security_state.tool_key()
         } else {
@@ -181,6 +181,7 @@ where
                 ccm::verify_and_decrypt(&key, &ctx, scf_byte, &mut buf[secure_data_start..mac_start], &received_mac);
             if result.is_err() {
                 warn!("S-AL: MAC verification failed (A+C)");
+                security_state.log_security_failure(SecurityFailureType::CryptoError, src);
                 return None;
             }
         } else {
@@ -188,6 +189,7 @@ where
                 ccm::verify_mac_auth_only(&key, &ctx, scf_byte, &buf[secure_data_start..mac_start], &received_mac);
             if result.is_err() {
                 warn!("S-AL: MAC verification failed (auth-only)");
+                security_state.log_security_failure(SecurityFailureType::CryptoError, src);
                 return None;
             }
         }

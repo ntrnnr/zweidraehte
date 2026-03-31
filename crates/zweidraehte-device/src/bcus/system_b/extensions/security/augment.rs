@@ -11,8 +11,9 @@ use crate::dpt::{
     PropertyDataDefinition,
 };
 use crate::objects::interface::{
-    FullPropertyReadRequest, FullPropertyWriteRequest, InterfaceObjectAugment, PropertyAccess,
-    PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, WriteResponse, pid,
+    FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
+    InterfaceObjectAugment, PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError,
+    PropertyLookup, WriteResponse, pid,
 };
 use crate::objects::tables::LoadState;
 use crate::properties::PropertyRead;
@@ -320,10 +321,91 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
             // ---- Sequence Number Sending (PID 59) ----
             // TODO: delegate to SequenceNumberStorage in Phase 4
             pid::SEQUENCE_NUMBER_SENDING => Err(PropertyError::InvalidPropertyId),
-            // ---- Stubs for Phase 6+ ----
+            // ---- Stubs ----
             pid::SECURITY_REPORT_CONTROL => Err(PropertyError::InvalidPropertyId),
             _ => Err(PropertyError::InvalidPropertyId),
         })
+    }
+
+    // ================================================================
+    // Function Property handlers (PID 55: Security Failures Log)
+    // ================================================================
+
+    fn function_property_command(
+        &self,
+        _state: &S,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        if object_type != InterfaceObjectType::Security {
+            return None;
+        }
+        if req.prop_id != pid::SECURITY_FAILURES_LOG {
+            return None;
+        }
+
+        // Command format: [id, info]
+        if req.service_data.len() < 2 {
+            return Some(FunctionPropertyResult::not_supported());
+        }
+
+        let id = req.service_data[0];
+        let info = req.service_data[1];
+
+        // id=0, info=0: Clear the failure log.
+        if id == 0 && info == 0 {
+            self.state.failures_log().borrow_mut().clear();
+            return Some(FunctionPropertyResult::success_with_data(&[id]));
+        }
+
+        Some(FunctionPropertyResult::not_supported())
+    }
+
+    fn function_property_state_read(
+        &self,
+        _state: &S,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        if object_type != InterfaceObjectType::Security {
+            return None;
+        }
+        if req.prop_id != pid::SECURITY_FAILURES_LOG {
+            return None;
+        }
+
+        if req.service_data.len() < 2 {
+            return Some(FunctionPropertyResult::not_supported());
+        }
+
+        let id = req.service_data[0];
+        let info = req.service_data[1];
+
+        match id {
+            // id=0, info=0: Return 8-byte failure counters.
+            0 if info == 0 => {
+                let log = self.state.failures_log().borrow();
+                let counters = log.counters();
+                let mut data = [0u8; 10]; // id(1) + info(1) + counters(8)
+                data[0] = id;
+                data[1] = info;
+                data[2..10].copy_from_slice(counters);
+                Some(FunctionPropertyResult::success_with_data(&data))
+            }
+            // id=1, info=N: Return Nth most recent failure entry.
+            1 => {
+                let log = self.state.failures_log().borrow();
+                if let Some(entry) = log.get_by_index(info) {
+                    let src_bytes = entry.source_addr.to_be_bytes();
+                    let data = [id, info, entry.failure_type, src_bytes[0], src_bytes[1]];
+                    Some(FunctionPropertyResult::success_with_data(&data))
+                } else {
+                    // No entry at this index — DataVoid.
+                    Some(FunctionPropertyResult::success_with_data(&[id]))
+                }
+            }
+            _ => Some(FunctionPropertyResult::not_supported()),
+        }
     }
 }
 
@@ -669,5 +751,67 @@ mod tests {
         let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &read_req, &mut buf);
         let err = result.expect("should handle").unwrap_err();
         assert_eq!(err, PropertyError::BufferTooSmall);
+    }
+
+    // ================================================================
+    // Security Failures Log tests
+    // ================================================================
+
+    #[test]
+    fn failures_log_counters_and_entries() {
+        use super::super::{SecurityFailureType, SecurityFailuresLog};
+
+        let mut log = SecurityFailuresLog::default();
+
+        // Log some failures.
+        log.log_failure(SecurityFailureType::CryptoError, 0x1001);
+        log.log_failure(SecurityFailureType::CryptoError, 0x1002);
+        log.log_failure(SecurityFailureType::ScfError, 0x2001);
+
+        // Check counters.
+        let counters = log.counters();
+        assert_eq!(counters[SecurityFailureType::CryptoError as usize], 2);
+        assert_eq!(counters[SecurityFailureType::ScfError as usize], 1);
+        assert_eq!(counters[SecurityFailureType::SeqNrError as usize], 0);
+
+        // Check entries (most recent first).
+        let e0 = log.get_by_index(0).expect("entry 0");
+        assert_eq!(e0.failure_type, SecurityFailureType::ScfError as u8);
+        assert_eq!(e0.source_addr, 0x2001);
+
+        let e1 = log.get_by_index(1).expect("entry 1");
+        assert_eq!(e1.failure_type, SecurityFailureType::CryptoError as u8);
+        assert_eq!(e1.source_addr, 0x1002);
+
+        // Clear.
+        log.clear();
+        assert_eq!(log.counters()[SecurityFailureType::CryptoError as usize], 0);
+        assert!(log.get_by_index(0).is_none());
+    }
+
+    #[test]
+    fn failures_log_ring_buffer_wraps() {
+        use super::super::{SecurityFailureType, SecurityFailuresLog};
+
+        let mut log = SecurityFailuresLog::default();
+
+        // Fill beyond capacity (8 entries).
+        for i in 0..10u16 {
+            log.log_failure(SecurityFailureType::CryptoError, 0x1000 + i);
+        }
+
+        // Most recent should be 0x1009 (i=9).
+        let e0 = log.get_by_index(0).expect("entry 0");
+        assert_eq!(e0.source_addr, 0x1009);
+
+        // Oldest accessible should be 0x1002 (i=2, since 0 and 1 were evicted).
+        let e7 = log.get_by_index(7).expect("entry 7");
+        assert_eq!(e7.source_addr, 0x1002);
+
+        // Index 8 should be out of range.
+        assert!(log.get_by_index(8).is_none());
+
+        // Counter should be 10 (saturating).
+        assert_eq!(log.counters()[SecurityFailureType::CryptoError as usize], 10);
     }
 }
