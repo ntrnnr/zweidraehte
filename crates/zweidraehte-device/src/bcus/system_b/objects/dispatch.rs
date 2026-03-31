@@ -185,9 +185,10 @@ where
             return self.read_io_list(req.start_idx, req.count, buf);
         }
 
-        // Check access level
+        // Check access level + security policy.
         let desc = self.get_descriptor(req.object_idx, req.pid).ok_or(PropertyError::InvalidPropertyId)?;
-        if !desc.can_read(req.ctx) {
+        let security_on = self.state.security_mode_enabled();
+        if !desc.can_read_secure(&req.ctx, security_on) {
             return Err(PropertyError::AccessDenied);
         }
 
@@ -221,9 +222,10 @@ where
             return Err(PropertyError::InvalidPropertyId);
         }
 
-        // Check access level
+        // Check access level + security policy.
         let desc = self.get_descriptor(req.object_idx, req.pid).ok_or(PropertyError::InvalidPropertyId)?;
-        if !desc.can_write(req.ctx) {
+        let security_on = self.state.security_mode_enabled();
+        if !desc.can_write_secure(&req.ctx, security_on) {
             return Err(PropertyError::AccessDenied);
         }
 

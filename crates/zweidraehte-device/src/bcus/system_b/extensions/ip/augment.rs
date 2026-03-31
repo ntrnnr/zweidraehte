@@ -654,7 +654,7 @@ impl<S: StackState, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObj
         }
 
         let desc = self.ip_descriptor_by_pid(req.pid)?;
-        if !desc.can_read(req.ctx) {
+        if !desc.can_read_secure(&req.ctx, state.security_mode_enabled()) {
             return Some(Err(PropertyError::AccessDenied));
         }
 
@@ -672,7 +672,7 @@ impl<S: StackState, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObj
         }
 
         let desc = self.ip_descriptor_by_pid(req.pid)?;
-        if !desc.can_write(req.ctx) {
+        if !desc.can_write_secure(&req.ctx, state.security_mode_enabled()) {
             return Some(Err(PropertyError::AccessDenied));
         }
 

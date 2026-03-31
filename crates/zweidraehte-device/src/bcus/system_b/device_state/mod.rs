@@ -565,6 +565,10 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     fn mark_dirty(&self) {
         SystemBDeviceState::mark_dirty(self);
     }
+
+    fn security_mode_enabled(&self) -> bool {
+        self.extension_state.security_mode_enabled()
+    }
 }
 
 // ============================================================================

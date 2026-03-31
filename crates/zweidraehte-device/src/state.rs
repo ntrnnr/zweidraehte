@@ -159,6 +159,22 @@ pub trait StackState {
     }
 
     // =========================================================================
+    // KNX Data Secure
+    // =========================================================================
+
+    /// Whether the device's Security Mode is currently enabled.
+    ///
+    /// When `true`, the "Security Mode On" columns of the access policy
+    /// matrix apply; when `false`, the "Security Mode Off" columns apply.
+    ///
+    /// Default: `false` (non-secure devices always use "Security Mode Off").
+    /// Secure devices override this by delegating to the Security IO's
+    /// `security_mode_enabled` flag.
+    fn security_mode_enabled(&self) -> bool {
+        false
+    }
+
+    // =========================================================================
     // Authorization (A_Authorize_Request / A_Key_Write)
     // =========================================================================
 

@@ -460,6 +460,10 @@ impl<Inner: ExtensionState, const GRP: usize, const GO: usize> ExtensionState fo
         self.inner.factory_reset();
         self.security.factory_reset();
     }
+
+    fn security_mode_enabled(&self) -> bool {
+        self.security.security_mode_enabled()
+    }
 }
 
 // ============================================================================

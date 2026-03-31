@@ -88,6 +88,14 @@ pub trait ExtensionState: Sized {
 
     /// Reset to factory defaults.
     fn factory_reset(&self);
+
+    /// Whether the device's Security Mode is currently enabled.
+    ///
+    /// Non-secure extensions return `false` (the default). Secure
+    /// extensions delegate to the Security Interface Object's flag.
+    fn security_mode_enabled(&self) -> bool {
+        false
+    }
 }
 
 impl ExtensionState for () {
