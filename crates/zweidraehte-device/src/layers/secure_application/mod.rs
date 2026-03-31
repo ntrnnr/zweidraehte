@@ -159,9 +159,10 @@ where
         let addr_type = buf[offsets::MSG_ADDR_TYPE] & 0x80;
         let tpci_apci = u16::from_be_bytes([buf[offsets::MSG_TPCI], buf[offsets::MSG_TPCI + 1]]);
 
-        // Look up key (security_state already obtained above).
+        // Look up key. For tool access, use the effective tool key
+        // (configured key if non-zero, otherwise FDSK fallback).
         let key = if scf.tool_access {
-            security_state.tool_key()
+            security_state.effective_tool_key()
         } else {
             warn!("S-AL: non-tool secure APDU not yet supported");
             return None;

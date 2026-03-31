@@ -22,7 +22,7 @@ use const_default::ConstDefault;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     AccessContext,
-    bcus::system_b::{Tp1SystemBDeviceState, MemoryLayout},
+    bcus::system_b::{MemoryLayout, Tp1SystemBDeviceState},
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::Application,
     storage::StaticIdentity,
@@ -525,7 +525,7 @@ pub mod device_info {
 /// The conformance tests use a custom memory map with table addresses at
 /// fixed positions. This layout tells `create_knxip_objects` where the
 /// tables live in address space (for PID_TABLE_REFERENCE responses).
-const CONFORMANCE_MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calculate(
+pub(crate) const CONFORMANCE_MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calculate(
     ConformanceMemoryMap::ADT_BASE,
     // Use the conformance test's actual table entry counts.
     conformance_config::ConformanceTestConfig::NUM_GROUP_ADDRS,
@@ -564,7 +564,7 @@ pub const USER_MEMORY_SIZE: usize = 16;
 ///
 /// These match both the `ASSO6_SIZE` / `ADDR7_SIZE` / `CO7_SIZE` constants
 /// from `knx_stack_config!` and the `Table<*Impl<SIZE>>` type aliases.
-mod table_sizes {
+pub(crate) mod table_sizes {
     use super::conformance_config::ConformanceTestConfig;
 
     pub const ADT: usize = ConformanceTestConfig::ADDR7_SIZE;
@@ -1088,8 +1088,13 @@ use serde_with::serde_as;
 use zweidraehte_device::bcus::system_b::{HasPersistedState, PersistedState, Tp1ExtensionConfig};
 
 /// The persisted state type for the inner `Tp1SystemBDeviceState`.
-type InnerPersistedState =
-    PersistedState<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, TestParameters, Tp1ExtensionConfig>;
+type InnerPersistedState = PersistedState<
+    { table_sizes::ADT },
+    { table_sizes::AST },
+    { table_sizes::COT },
+    TestParameters,
+    Tp1ExtensionConfig,
+>;
 
 /// Full snapshot of conformance test state for shared memory.
 ///

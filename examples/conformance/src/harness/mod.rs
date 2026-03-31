@@ -12,6 +12,7 @@
 pub mod ipc;
 pub mod mock;
 pub mod multiprocess;
+pub mod secure_stack;
 pub mod stack;
 
 pub use mock::CapturedLinkLayerMessage;

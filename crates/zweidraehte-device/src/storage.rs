@@ -32,11 +32,22 @@ use crate::bcus::system_b::HasPersistedState;
 ///
 /// # Future Expansion
 ///
-/// - FDSK (Factory Default Setup Key) for KNX Secure
 /// - Hardware MAC address for embedded devices without an OS-level query
 pub trait DeviceIdentity {
     /// Get the factory-programmed serial number.
     fn serial_number(&self) -> &[u8; 6];
+
+    /// Get the Factory Default Setup Key (FDSK) for KNX Data Secure.
+    ///
+    /// The FDSK is a 16-byte key programmed at the factory and printed
+    /// on the device label. It is used as the initial tool key for the
+    /// first ETS commissioning session. After ETS writes a new tool key
+    /// (PID 56), the FDSK is no longer used for authentication.
+    ///
+    /// Returns `None` for devices without Data Secure support.
+    fn fdsk(&self) -> Option<&[u8; 16]> {
+        None
+    }
 }
 
 /// Compile-time constant identity for demos and testing.
@@ -55,18 +66,28 @@ pub trait DeviceIdentity {
 /// ```
 pub struct StaticIdentity {
     serial_number: [u8; 6],
+    fdsk: Option<[u8; 16]>,
 }
 
 impl StaticIdentity {
     /// Create a new static identity with the given serial number.
     pub const fn new(serial_number: [u8; 6]) -> Self {
-        Self { serial_number }
+        Self { serial_number, fdsk: None }
+    }
+
+    /// Create a new static identity with serial number and FDSK.
+    pub const fn with_fdsk(serial_number: [u8; 6], fdsk: [u8; 16]) -> Self {
+        Self { serial_number, fdsk: Some(fdsk) }
     }
 }
 
 impl DeviceIdentity for StaticIdentity {
     fn serial_number(&self) -> &[u8; 6] {
         &self.serial_number
+    }
+
+    fn fdsk(&self) -> Option<&[u8; 16]> {
+        self.fdsk.as_ref()
     }
 }
 

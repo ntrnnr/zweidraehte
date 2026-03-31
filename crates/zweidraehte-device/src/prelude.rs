@@ -6,8 +6,9 @@
 
 // Core stack
 pub use crate::{
-    AccessContext, InsecureDeviceBuilder, InsecureDeviceLayers, LayerContext, ReadObjectError, Runner, Stack,
-    StackDefinition, StackResources, StackState, StandardDeviceLayers, UpdateObjectError,
+    AccessContext, InsecureDeviceBuilder, InsecureDeviceLayers, LayerContext, ReadObjectError, Runner,
+    SecureDeviceBuilder, SecureDeviceLayers, Stack, StackDefinition, StackResources, StackState, StandardDeviceLayers,
+    StandardSecureDeviceLayers, UpdateObjectError,
 };
 
 // KNX/IP-specific types
