@@ -2,7 +2,7 @@
 //!
 //! These helpers provide a concise DSL for defining test steps in EITT-style tests.
 
-use crate::TestStep;
+use crate::{InvalidSecurityParam, SecureParams, TestStep};
 
 /// Helper to create an inject step from a template string
 pub fn inject(template: &str) -> TestStep {
@@ -96,4 +96,77 @@ pub fn drain(settle_ms: u32) -> TestStep {
 /// observe automatic post-restart behavior such as Read-On-Init scans.
 pub fn wait_for_restart(timeout_ms: u32) -> TestStep {
     TestStep::WaitForRestart { timeout_ms }
+}
+
+// ============================================================================
+// KNX Data Secure helpers
+// ============================================================================
+
+/// Inject a secure telegram with authentication + confidentiality using
+/// the tool key.
+pub fn inject_secure_ac(template: &str, key: &str) -> TestStep {
+    TestStep::InjectSecure {
+        template: template.to_string(),
+        sec_params: SecureParams::tool_auth_conf(key),
+        delay_before_ms: 0,
+    }
+}
+
+/// Inject a secure telegram with authentication only using the tool key.
+pub fn inject_secure_ao(template: &str, key: &str) -> TestStep {
+    TestStep::InjectSecure {
+        template: template.to_string(),
+        sec_params: SecureParams::tool_auth_only(key),
+        delay_before_ms: 0,
+    }
+}
+
+/// Inject a secure telegram with custom parameters.
+pub fn inject_secure(template: &str, params: SecureParams) -> TestStep {
+    TestStep::InjectSecure {
+        template: template.to_string(),
+        sec_params: params,
+        delay_before_ms: 0,
+    }
+}
+
+/// Inject a secure telegram with delay.
+pub fn inject_secure_delay(template: &str, params: SecureParams, delay_ms: u32) -> TestStep {
+    TestStep::InjectSecure {
+        template: template.to_string(),
+        sec_params: params,
+        delay_before_ms: delay_ms,
+    }
+}
+
+/// Expect a secure response with authentication + confidentiality.
+pub fn expect_secure_ac(template: &str, key: &str, timeout_ms: u32) -> TestStep {
+    TestStep::ExpectSecure {
+        template: template.to_string(),
+        sec_params: SecureParams::tool_auth_conf(key),
+        timeout_ms,
+    }
+}
+
+/// Expect a secure response with authentication only.
+pub fn expect_secure_ao(template: &str, key: &str, timeout_ms: u32) -> TestStep {
+    TestStep::ExpectSecure {
+        template: template.to_string(),
+        sec_params: SecureParams::tool_auth_only(key),
+        timeout_ms,
+    }
+}
+
+/// Inject a secure telegram with an intentionally invalid field.
+pub fn inject_secure_invalid(
+    template: &str,
+    params: SecureParams,
+    invalid: InvalidSecurityParam,
+) -> TestStep {
+    TestStep::InjectSecureInvalid {
+        template: template.to_string(),
+        sec_params: params,
+        invalid,
+        delay_before_ms: 0,
+    }
 }

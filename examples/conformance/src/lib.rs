@@ -180,6 +180,115 @@ pub enum TestStep {
 
     /// Custom action placeholder (for complex test scenarios)
     Custom,
+
+    // ================================================================
+    // KNX Data Secure steps
+    // ================================================================
+
+    /// Inject a secure telegram. The runner wraps the plaintext in a
+    /// Secure APDU (SCF + SeqNr + encrypted payload + MAC) before
+    /// injecting it into the DUT.
+    InjectSecure {
+        /// Plaintext telegram template (same format as InjectTemplate).
+        template: String,
+        /// Security parameters.
+        sec_params: SecureParams,
+        delay_before_ms: u32,
+    },
+
+    /// Expect a secure telegram from the DUT. The runner captures the
+    /// raw frame, decrypts it, and matches the plaintext against the
+    /// template.
+    ExpectSecure {
+        /// Expected plaintext telegram template.
+        template: String,
+        /// Security parameters for decryption.
+        sec_params: SecureParams,
+        timeout_ms: u32,
+    },
+
+    /// Inject a secure telegram with intentionally invalid security
+    /// parameters (for negative tests that verify the DUT rejects
+    /// malformed secure frames).
+    InjectSecureInvalid {
+        template: String,
+        sec_params: SecureParams,
+        /// Which field to corrupt.
+        invalid: InvalidSecurityParam,
+        delay_before_ms: u32,
+    },
+}
+
+// ============================================================================
+// Security Types for Conformance Tests
+// ============================================================================
+
+/// Security parameters for a secure test step.
+#[derive(Debug, Clone)]
+pub struct SecureParams {
+    /// Authentication mode.
+    pub sec_type: SecType,
+    /// Key name (e.g., "TK1", "GK1").
+    pub key_name: String,
+    /// Whether this is a tool access message (T flag in SCF).
+    pub tool_access: bool,
+    /// Sequence number source.
+    pub seq_source: SeqSource,
+    /// System broadcast flag.
+    pub system_broadcast: bool,
+}
+
+impl SecureParams {
+    /// Create params for tool-access A+C (most common for management).
+    pub fn tool_auth_conf(key: &str) -> Self {
+        Self {
+            sec_type: SecType::AuthConf,
+            key_name: key.to_string(),
+            tool_access: true,
+            seq_source: SeqSource::Tool,
+            system_broadcast: false,
+        }
+    }
+
+    /// Create params for tool-access auth-only.
+    pub fn tool_auth_only(key: &str) -> Self {
+        Self {
+            sec_type: SecType::AuthOnly,
+            key_name: key.to_string(),
+            tool_access: true,
+            seq_source: SeqSource::Tool,
+            system_broadcast: false,
+        }
+    }
+}
+
+/// Security algorithm mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecType {
+    /// Authentication only (MAC appended, payload in clear).
+    AuthOnly,
+    /// Authentication + Confidentiality (payload encrypted + MAC).
+    AuthConf,
+}
+
+/// Source for sequence number in a secure test step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeqSource {
+    /// Use the EITT's (test tool's) sending sequence number.
+    Tool,
+    /// Use the DUT's expected sequence number.
+    Table,
+}
+
+/// Which security field to corrupt for negative tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidSecurityParam {
+    /// Set reserved bits in the SCF byte.
+    InvalidScf,
+    /// Flip bits in the computed MAC.
+    InvalidMac,
+    /// Corrupt the ciphertext after encryption.
+    InvalidCipher,
 }
 
 impl TestStep {

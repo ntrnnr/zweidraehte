@@ -190,6 +190,15 @@ async fn execute_step(
             println!("  [{}] ❌ Unresolved template", index);
             false
         }
+
+        // Secure steps — resolved at execution time using SecurityTestContext.
+        // Full implementation in Step 3.
+        TestStep::InjectSecure { .. }
+        | TestStep::ExpectSecure { .. }
+        | TestStep::InjectSecureInvalid { .. } => {
+            println!("  [{}] ❌ Secure test steps not yet implemented in runner", index);
+            false
+        }
     }
 }
 

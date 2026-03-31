@@ -2,9 +2,10 @@
 //!
 //! This module contains the actual test definitions for each layer.
 
-mod helpers;
+pub mod helpers;
 
 pub mod group_objects;
+pub mod security;
 pub mod load_state_machines;
 pub mod management;
 pub mod network_layer;
