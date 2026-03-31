@@ -37,6 +37,8 @@ use log::LevelFilter;
 
 use zweidraehte_conformance::harness::MultiProcessHarness;
 use zweidraehte_conformance::logger;
+use zweidraehte_conformance::tests::security::context::SecurityTestContext;
+use zweidraehte_conformance::tests::security::crypto;
 use zweidraehte_conformance::*;
 
 // ============================================================================
@@ -51,10 +53,14 @@ use zweidraehte_conformance::*;
 /// Execute a single resolved test step.
 ///
 /// Returns `false` if the step failed (mismatch, timeout, error).
+/// `sec_ctx` is `Some` for security test suites, `None` for non-secure.
+/// `variables` is needed for resolving secure templates at execution time.
 async fn execute_step(
     harness: &mut MultiProcessHarness,
     step: &TestStep,
     index: usize,
+    sec_ctx: Option<&mut SecurityTestContext>,
+    variables: &std::collections::BTreeMap<String, TestVariable>,
 ) -> bool {
     match step {
         TestStep::Comment(text) => {
@@ -191,13 +197,119 @@ async fn execute_step(
             false
         }
 
-        // Secure steps — resolved at execution time using SecurityTestContext.
-        // Full implementation in Step 3.
-        TestStep::InjectSecure { .. }
-        | TestStep::ExpectSecure { .. }
-        | TestStep::InjectSecureInvalid { .. } => {
-            println!("  [{}] ❌ Secure test steps not yet implemented in runner", index);
-            false
+        // ============================================================
+        // Secure test steps — resolved at execution time
+        // ============================================================
+
+        TestStep::InjectSecure { template, sec_params, delay_before_ms } => {
+            let Some(ctx) = sec_ctx else {
+                println!("  [{}] ❌ InjectSecure used without SecurityTestContext", index);
+                return false;
+            };
+            // Resolve the plaintext template.
+            let plaintext = match Telegram::parse(template, variables) {
+                Ok(t) => t,
+                Err(e) => {
+                    println!("  [{}] ❌ Template error: {}", index, e);
+                    return false;
+                }
+            };
+            // Wrap in secure APDU.
+            let secure_frame = crypto::wrap_secure(&plaintext.data, sec_params, ctx);
+            println!("  [{}] 🔒⬇️  InjectSecure ({:?}, key={}): {} bytes",
+                index, sec_params.sec_type, sec_params.key_name, secure_frame.len());
+            if *delay_before_ms > 0 {
+                Timer::after(Duration::from_millis(*delay_before_ms as u64)).await;
+            }
+            if let Err(e) = harness.inject(&secure_frame).await {
+                println!("        ❌ Inject failed: {}", e);
+                return false;
+            }
+            true
+        }
+
+        TestStep::ExpectSecure { template, sec_params, timeout_ms } => {
+            let Some(ctx) = sec_ctx else {
+                println!("  [{}] ❌ ExpectSecure used without SecurityTestContext", index);
+                return false;
+            };
+            let timeout = Duration::from_millis(if *timeout_ms == 0 { 1000 } else { *timeout_ms as u64 });
+            println!("  [{}] 🔒⬆️  ExpectSecure ({:?}, key={}, timeout={}ms)",
+                index, sec_params.sec_type, sec_params.key_name, timeout.as_millis());
+
+            let captured = select(
+                harness.receive_captured(),
+                Timer::after(timeout),
+            ).await;
+
+            match captured {
+                Either::First(Some(msg)) => {
+                    // Decrypt the captured frame.
+                    match crypto::unwrap_secure(&msg.data, sec_params, ctx) {
+                        Some(plaintext_apdu) => {
+                            // Reconstruct a "plaintext frame" for matching:
+                            // header(6 bytes from captured) + decrypted APDU.
+                            let mut plain_frame = msg.data[..6].to_vec();
+                            plain_frame.extend_from_slice(&plaintext_apdu);
+
+                            // Parse expected template and match.
+                            let matcher = match TelegramMatcher::parse(template, variables) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    println!("        ❌ Template error: {}", e);
+                                    return false;
+                                }
+                            };
+                            if matcher.matches(&plain_frame) {
+                                println!("        ✅ Secure response matches");
+                                true
+                            } else {
+                                println!("        ❌ Plaintext mismatch:");
+                                println!("           {}", matcher.diff(&plain_frame));
+                                false
+                            }
+                        }
+                        None => {
+                            println!("        ❌ Decryption/verification failed");
+                            println!("           Raw: {:02X?}", msg.data);
+                            false
+                        }
+                    }
+                }
+                Either::First(None) => {
+                    println!("        ❌ DUT disconnected");
+                    false
+                }
+                Either::Second(_) => {
+                    println!("        ❌ Timeout (no secure response)");
+                    false
+                }
+            }
+        }
+
+        TestStep::InjectSecureInvalid { template, sec_params, invalid, delay_before_ms } => {
+            let Some(ctx) = sec_ctx else {
+                println!("  [{}] ❌ InjectSecureInvalid used without SecurityTestContext", index);
+                return false;
+            };
+            let plaintext = match Telegram::parse(template, variables) {
+                Ok(t) => t,
+                Err(e) => {
+                    println!("  [{}] ❌ Template error: {}", index, e);
+                    return false;
+                }
+            };
+            let secure_frame = crypto::wrap_secure_invalid(&plaintext.data, sec_params, ctx, *invalid);
+            println!("  [{}] 🔒💥⬇️  InjectSecureInvalid ({:?}): {} bytes",
+                index, invalid, secure_frame.len());
+            if *delay_before_ms > 0 {
+                Timer::after(Duration::from_millis(*delay_before_ms as u64)).await;
+            }
+            if let Err(e) = harness.inject(&secure_frame).await {
+                println!("        ❌ Inject failed: {}", e);
+                return false;
+            }
+            true
         }
     }
 }
@@ -420,7 +532,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(&mut harness, &resolved_step, i).await {
+                if !execute_step(&mut harness, &resolved_step, i, None, &suite.variables).await {
                     prep_passed = false;
                 }
                 total_steps += 1;
@@ -463,7 +575,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(&mut harness, &resolved_step, i).await {
+                if !execute_step(&mut harness, &resolved_step, i, None, &suite.variables).await {
                     test_passed = false;
                 }
             }
@@ -498,7 +610,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                execute_step(&mut harness, &resolved_step, i).await;
+                execute_step(&mut harness, &resolved_step, i, None, &suite.variables).await;
                 total_steps += 1;
             }
             println!("✅ Teardown completed\n");
