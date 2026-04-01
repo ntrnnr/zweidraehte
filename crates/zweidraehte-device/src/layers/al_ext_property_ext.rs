@@ -477,8 +477,8 @@ fn pdt_element_size(pdt: u8) -> usize {
         0x0B => 4,  // PDT_FLOAT32
         0x0C => 10, // PDT_CHAR_BLOCK
         0x0E => 5,  // PDT_SHORT_CHAR_BLOCK
-        // PDT_GENERIC_xx: code 0x11..0x1F → size = code - 0x10
-        c @ 0x11..=0x1F => (c - 0x10) as usize,
+        // PDT_GENERIC_xx: code 0x11..0x24 → size = code - 0x10
+        c @ 0x11..=0x24 => (c - 0x10) as usize,
         _ => 0,
     }
 }

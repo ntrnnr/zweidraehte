@@ -7,8 +7,8 @@
 use crate::StackState;
 use crate::access::AccessPolicy;
 use crate::dpt::{
-    InterfaceObjectType, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic06, PDT_Generic08, PDT_UnsignedChar,
-    PDT_UnsignedInt,
+    InterfaceObjectType, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic06, PDT_Generic08, PDT_Generic18,
+    PDT_UnsignedChar, PDT_UnsignedInt,
     PropertyDataDefinition,
 };
 use crate::objects::interface::{
@@ -77,10 +77,10 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
             2,
             AccessPolicy::RESTRICTED, // 15F/04C
         ),
-        // PID_GROUP_KEY_TABLE (53): group communication encryption keys
+        // PID_GROUP_KEY_TABLE (53): group communication encryption keys — PDT_GENERIC_18
         PropertyDescriptor::with_policy(
             pid::GROUP_KEY_TABLE,
-            PDT_Generic08::ID, // 18 bytes/entry, but PDT is generic
+            PDT_Generic18::ID,
             0,                 // 0 elements until loaded
             PropertyAccess::ReadWrite,
             2,
