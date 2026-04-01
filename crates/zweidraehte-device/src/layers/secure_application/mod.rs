@@ -103,7 +103,7 @@ impl<'a, D: StackDefinition> SecureApplicationLayer<'a, D> {
 
 impl<'a, D: StackDefinition> SecureApplicationLayer<'a, D>
 where
-    D::State: HasExtensionState,
+    D::State: HasExtensionState + crate::objects::tables::HasAddressTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     /// Try to process an incoming message as a Secure Service APDU.
@@ -160,12 +160,35 @@ where
         let addr_type = buf[offsets::MSG_ADDR_TYPE] & 0x80;
         let tpci_apci = u16::from_be_bytes([buf[offsets::MSG_TPCI], buf[offsets::MSG_TPCI + 1]]);
 
-        // Look up key. For tool access, use the effective tool key
-        // (configured key if non-zero, otherwise FDSK fallback).
+        // Look up key based on access type.
         let key = if scf.tool_access {
+            // Tool access: use configured tool key or FDSK fallback.
             security_state.effective_tool_key()
+        } else if addr_type != 0 {
+            // Group communication: look up group key by destination group address.
+            use crate::address::GroupAddress;
+            use crate::objects::tables::{AddressTable, HasAddressTable};
+
+            let ga = GroupAddress::from_bytes(&buf[offsets::MSG_DEST_ADDR..offsets::MSG_DEST_ADDR + 2]);
+            let adt = self.state.adt().borrow();
+            let tsap = match adt.get_tsap(ga) {
+                Some(t) => t,
+                None => {
+                    warn!("S-AL: group address {:?} not in address table", ga);
+                    security_state.log_security_failure(SecurityFailureType::CryptoError, src);
+                    return None;
+                }
+            };
+            match security_state.group_key_for_index(tsap) {
+                Some(k) => k,
+                None => {
+                    warn!("S-AL: no group key for TSAP {}", tsap);
+                    security_state.log_security_failure(SecurityFailureType::CryptoError, src);
+                    return None;
+                }
+            }
         } else {
-            warn!("S-AL: non-tool secure APDU not yet supported");
+            warn!("S-AL: P2P secure APDU without tool access not yet supported");
             return None;
         };
 
