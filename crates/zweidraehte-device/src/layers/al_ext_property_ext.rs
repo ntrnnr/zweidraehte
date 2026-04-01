@@ -119,6 +119,16 @@ fn handle_ext_value_read<D: StackDefinition>(
         return;
     };
 
+    // Per spec Figure 55: reject reads of PDT_CONTROL and PDT_FUNCTION properties
+    // with E_DATA_TYPE_CONFLICT. These must be accessed via FunctionProperty services.
+    if let Ok(desc) = ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
+        if is_function_pdt(desc.pdt) {
+            debug!("AL PropertyExtValueRead: PDT_CONTROL/FUNCTION (0x{:02X}) → type conflict", desc.pdt);
+            send_ext_read_error(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT);
+            return;
+        }
+    }
+
     const MAX_PROPERTY_DATA: usize = 64;
     let mut data_buf = [0u8; MAX_PROPERTY_DATA];
 
@@ -197,6 +207,15 @@ fn handle_ext_value_write_con<D: StackDefinition>(
         send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID);
         return;
     };
+
+    // Reject writes to PDT_CONTROL/FUNCTION properties (spec Figure 55).
+    if let Ok(desc) = ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
+        if is_function_pdt(desc.pdt) {
+            debug!("AL PropertyExtValueWriteCon: PDT_CONTROL/FUNCTION (0x{:02X}) → type conflict", desc.pdt);
+            send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT);
+            return;
+        }
+    }
 
     let req = FullPropertyWriteRequest {
         object_idx,
@@ -355,4 +374,11 @@ fn send_ext_write_con_error<D: StackDefinition>(
         });
 
     outbox.push(msg.into_inner());
+}
+
+/// Check whether a PDT code represents a function/control property type
+/// that cannot be accessed via regular property read/write services.
+fn is_function_pdt(pdt: u8) -> bool {
+    use crate::dpt::{PDT_Control, PDT_Function, PropertyDataDefinition};
+    pdt == PDT_Control::ID || pdt == PDT_Function::ID
 }

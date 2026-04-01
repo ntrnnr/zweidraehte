@@ -7,7 +7,8 @@
 use crate::StackState;
 use crate::access::AccessPolicy;
 use crate::dpt::{
-    InterfaceObjectType, PDT_Control, PDT_Generic01, PDT_Generic06, PDT_Generic08, PDT_UnsignedChar, PDT_UnsignedInt,
+    InterfaceObjectType, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic06, PDT_Generic08, PDT_UnsignedChar,
+    PDT_UnsignedInt,
     PropertyDataDefinition,
 };
 use crate::objects::interface::{
@@ -65,10 +66,11 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
             2,
             AccessPolicy::RESTRICTED, // 15F/04C
         ),
-        // PID_SECURITY_MODE (51): enables/disables Data Secure
+        // PID_SECURITY_MODE (51): enables/disables Data Secure — PDT_FUNCTION
+        // Accessed via A_FunctionPropertyCommand, not regular property read/write.
         PropertyDescriptor::with_policy(
             pid::SECURITY_MODE,
-            PDT_UnsignedChar::ID,
+            PDT_Function::ID,
             1,
             PropertyAccess::ReadWrite,
             2,
@@ -85,10 +87,10 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
             2,
             AccessPolicy::TOOL_ONLY, // 00C/00C
         ),
-        // PID_SECURITY_FAILURES_LOG (55): ring buffer of security events
+        // PID_SECURITY_FAILURES_LOG (55): ring buffer of security events — PDT_FUNCTION
         PropertyDescriptor::with_policy(
             pid::SECURITY_FAILURES_LOG,
-            PDT_Generic08::ID,
+            PDT_Function::ID,
             0,
             PropertyAccess::ReadOnly,
             3,
@@ -267,9 +269,7 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
                 }
             }
             // ---- Stubs for Phase 6+ ----
-            pid::SECURITY_FAILURES_LOG | pid::SECURITY_REPORT_CONTROL => {
-                Err(PropertyError::InvalidPropertyId)
-            }
+            pid::SECURITY_FAILURES_LOG | pid::SECURITY_REPORT_CONTROL => Err(PropertyError::InvalidPropertyId),
             _ => Err(PropertyError::InvalidPropertyId),
         })
     }

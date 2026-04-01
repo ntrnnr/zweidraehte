@@ -465,6 +465,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         zweidraehte_conformance::tests::run_state_machines::create_halted_state_suite(),
         // Data Security conformance tests
         zweidraehte_conformance::tests::security::section_3_1::create_section_3_1_suite(),
+        zweidraehte_conformance::tests::security::section_4_1::create_section_4_1_suite(),
         // zweidraehte_conformance::tests::run_state_machines::create_running_state_suite(),
         // zweidraehte_conformance::tests::run_state_machines::create_ready_state_suite(),
         // zweidraehte_conformance::tests::run_state_machines::create_terminated_state_suite(),
