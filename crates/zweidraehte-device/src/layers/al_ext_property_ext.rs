@@ -16,6 +16,7 @@
 use crate::{
     definition::StackDefinition,
     layers::al_extension::{AlExtensionContext, AlServiceExtension},
+    memory::MemoryMap,
     messages::{
         apdu::property_ext::{
             FunctionPropertyExtHeader, FunctionPropertyExtResponse, PropertyExtValueHeader, PropertyExtValueResponse,
@@ -88,12 +89,23 @@ where
                 handle_ext_description_read::<D>(msg, ctx, outbox);
                 true
             }
+            // Memory Extended services (24-bit addressing).
+            ApciCode::MemoryExtendedWrite => {
+                handle_memory_ext_write::<D>(msg, ctx, outbox);
+                true
+            }
+            ApciCode::MemoryExtendedRead => {
+                handle_memory_ext_read::<D>(msg, ctx, outbox);
+                true
+            }
             // Response APCIs — we are the responder, ignore if received.
             ApciCode::PropertyExtValueResponse
             | ApciCode::PropertyExtValueWriteConRes
             | ApciCode::PropertyExtValueInfoReport
             | ApciCode::FunctionPropertyExtStateResponse
-            | ApciCode::PropertyExtDescriptionResponse => {
+            | ApciCode::PropertyExtDescriptionResponse
+            | ApciCode::MemoryExtendedWriteResponse
+            | ApciCode::MemoryExtendedReadResponse => {
                 debug!("AL ignoring {:?} (response/report APCI)", apci);
                 true
             }
@@ -771,5 +783,181 @@ fn handle_ext_description_read<D: StackDefinition>(
         }
     });
 
+    outbox.push(msg.into_inner());
+}
+
+// ============================================================================
+// MemoryExtended Handlers
+// ============================================================================
+
+/// Handle `A_MemoryExtended_Write.ind`.
+///
+/// Wire format: APCI(2) + count(1) + address(3) + data(count)
+/// Response:    APCI(2) + return_code(1) + address(3)
+fn handle_memory_ext_write<D: StackDefinition>(
+    ind: &KnxMessageBuffer<Buffer<'static>>,
+    ctx: &AlExtensionContext<'_, D>,
+    outbox: &mut Outbox,
+) {
+    use crate::messages::knx::offsets;
+
+    if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
+        return;
+    }
+
+    let buf = ind.buf();
+    if buf.len() < offsets::MSG_APCI + 6 {
+        error!("MemoryExtendedWrite too short: {}", ind.len());
+        return;
+    }
+
+    let base = offsets::MSG_APCI;
+    let count = buf[base + 2] as usize;
+    let addr_hi = buf[base + 3];
+    let addr_mid = buf[base + 4];
+    let addr_lo = buf[base + 5];
+    let address = ((addr_hi as u32) << 16) | ((addr_mid as u32) << 8) | (addr_lo as u32);
+
+    let data_start = base + 6;
+    let data_end = data_start + count;
+
+    debug!("AL MemoryExtendedWrite: addr=0x{:06X}, count={}", address, count);
+
+    // Validate count > 0.
+    if count == 0 {
+        send_memory_ext_write_response(ind, ctx, outbox, 0xFD, addr_hi, addr_mid, addr_lo);
+        return;
+    }
+
+    // Validate data length matches count exactly.
+    let actual_data_len = buf.len() - data_start;
+    if actual_data_len != count {
+        let rc = 0xFEu8; // E_DATA_TYPE_CONFLICT (size mismatch)
+        send_memory_ext_write_response(ind, ctx, outbox, rc, addr_hi, addr_mid, addr_lo);
+        return;
+    }
+
+    let data = &buf[data_start..data_end];
+
+    // Use lower 16 bits of address for our memory map.
+    let addr16 = (address & 0xFFFF) as u16;
+    let result = ctx.memory_map.write(ctx.state, addr16, data, ctx.access_ctx);
+
+    let rc = match result {
+        Ok(_) => 0x00, // E_SUCCESS
+        Err(_) => 0xFD, // E_ADDRESS_VOID
+    };
+
+    send_memory_ext_write_response(ind, ctx, outbox, rc, addr_hi, addr_mid, addr_lo);
+}
+
+/// Handle `A_MemoryExtended_Read.ind`.
+///
+/// Wire format: APCI(2) + count(1) + address(3)
+/// Response:    APCI(2) + return_code(1) + address(3) + data(count)
+fn handle_memory_ext_read<D: StackDefinition>(
+    ind: &KnxMessageBuffer<Buffer<'static>>,
+    ctx: &AlExtensionContext<'_, D>,
+    outbox: &mut Outbox,
+) {
+    use crate::messages::knx::offsets;
+
+    if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
+        return;
+    }
+
+    let buf = ind.buf();
+    if buf.len() < offsets::MSG_APCI + 6 {
+        error!("MemoryExtendedRead too short: {}", ind.len());
+        return;
+    }
+
+    let base = offsets::MSG_APCI;
+    let count = buf[base + 2] as usize;
+    let addr_hi = buf[base + 3];
+    let addr_mid = buf[base + 4];
+    let addr_lo = buf[base + 5];
+    let address = ((addr_hi as u32) << 16) | ((addr_mid as u32) << 8) | (addr_lo as u32);
+
+    debug!("AL MemoryExtendedRead: addr=0x{:06X}, count={}", address, count);
+
+    if count == 0 {
+        // Error: count=0
+        let resp_len = offsets::MSG_APCI + 6; // APCI + rc + addr
+        let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::MemoryExtendedReadResponse)
+            .with_data(|buf| {
+                buf[base + 2] = 0xFD;
+                buf[base + 3] = addr_hi;
+                buf[base + 4] = addr_mid;
+                buf[base + 5] = addr_lo;
+            });
+        outbox.push(msg.into_inner());
+        return;
+    }
+
+    let addr16 = (address & 0xFFFF) as u16;
+    let mut data_buf = [0u8; 252]; // Max extended memory read
+    let read_len = count.min(data_buf.len());
+
+    let result = ctx.memory_map.read(ctx.state, addr16, &mut data_buf[..read_len], ctx.access_ctx);
+
+    match result {
+        Ok(n) => {
+            let resp_len = offsets::MSG_APCI + 6 + n;
+            let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
+            let msg = ind
+                .respond_with(msg_buf)
+                .with_application(ApciCode::MemoryExtendedReadResponse)
+                .with_data(|buf| {
+                    buf[base + 2] = 0x00; // E_SUCCESS
+                    buf[base + 3] = addr_hi;
+                    buf[base + 4] = addr_mid;
+                    buf[base + 5] = addr_lo;
+                    buf[base + 6..base + 6 + n].copy_from_slice(&data_buf[..n]);
+                });
+            outbox.push(msg.into_inner());
+        }
+        Err(_) => {
+            let resp_len = offsets::MSG_APCI + 6;
+            let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
+            let msg = ind
+                .respond_with(msg_buf)
+                .with_application(ApciCode::MemoryExtendedReadResponse)
+                .with_data(|buf| {
+                    buf[base + 2] = 0xFD;
+                    buf[base + 3] = addr_hi;
+                    buf[base + 4] = addr_mid;
+                    buf[base + 5] = addr_lo;
+                });
+            outbox.push(msg.into_inner());
+        }
+    }
+}
+
+fn send_memory_ext_write_response<D: StackDefinition>(
+    ind: &KnxMessageBuffer<Buffer<'static>>,
+    ctx: &AlExtensionContext<'_, D>,
+    outbox: &mut Outbox,
+    return_code: u8,
+    addr_hi: u8,
+    addr_mid: u8,
+    addr_lo: u8,
+) {
+    use crate::messages::knx::offsets;
+    let resp_len = offsets::MSG_APCI + 6; // APCI(2) + rc(1) + addr(3)
+    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
+    let base = offsets::MSG_APCI;
+    let msg = ind
+        .respond_with(msg_buf)
+        .with_application(ApciCode::MemoryExtendedWriteResponse)
+        .with_data(|buf| {
+            buf[base + 2] = return_code;
+            buf[base + 3] = addr_hi;
+            buf[base + 4] = addr_mid;
+            buf[base + 5] = addr_lo;
+        });
     outbox.push(msg.into_inner());
 }
