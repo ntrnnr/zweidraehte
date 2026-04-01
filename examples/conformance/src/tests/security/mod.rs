@@ -14,6 +14,8 @@ pub mod section_3_8_9;
 pub mod section_3_8_10;
 pub mod section_3_8_11;
 pub mod section_3_8_13;
+pub mod section_3_8_17;
+pub mod section_3_8_18;
 pub mod section_4_1;
 pub mod section_4_2;
 pub mod section_4_3;
