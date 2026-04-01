@@ -638,6 +638,19 @@ pub enum PropertyLookup {
 /// description/read/write behavior. Returning `None` delegates handling to the
 /// next augment (or the base object implementation).
 pub trait InterfaceObjectAugment<S: StackState> {
+    /// Get the full property descriptor for an augment-provided property.
+    ///
+    /// Returns `None` if this augment doesn't handle the given object type
+    /// or PID. Used by the dispatch layer to check access policies before
+    /// delegating reads/writes.
+    fn get_property_descriptor(
+        &self,
+        _object_type: InterfaceObjectType,
+        _prop_id: u8,
+    ) -> Option<PropertyDescriptor> {
+        None
+    }
+
     /// Optional override for `A_PropertyDescription_Read`.
     ///
     /// The `lookup` parameter tells the augment whether this is a direct
@@ -784,6 +797,16 @@ where
     Head: InterfaceObjectAugment<S>,
     Tail: InterfaceObjectAugment<S>,
 {
+    fn get_property_descriptor(
+        &self,
+        object_type: InterfaceObjectType,
+        prop_id: u8,
+    ) -> Option<PropertyDescriptor> {
+        self.0
+            .get_property_descriptor(object_type, prop_id)
+            .or_else(|| self.1.get_property_descriptor(object_type, prop_id))
+    }
+
     fn property_description_read(
         &self,
         state: &S,

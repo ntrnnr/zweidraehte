@@ -305,9 +305,11 @@ where
             3 => self.group_object_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             4 => self.application_program.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             5 => self.pei_program.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
-            // Augment-provided objects have no base descriptor — all their
-            // properties are handled by the augment.
-            _ => None,
+            // Augment-provided objects: query augment for the descriptor.
+            _ => {
+                let obj_type = self.object_type_for(obj_idx)?;
+                self.augment.get_property_descriptor(obj_type, prop_id)
+            }
         }
     }
 

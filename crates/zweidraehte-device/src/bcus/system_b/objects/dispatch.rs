@@ -181,6 +181,15 @@ where
     fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
         let obj_type = self.object_type_for(req.object_idx).ok_or(PropertyError::InvalidObjectIndex)?;
 
+        // Check access level + security policy before any read dispatch.
+        // This applies to both base objects and augment-provided objects.
+        if let Some(desc) = self.get_descriptor(req.object_idx, req.pid) {
+            let security_on = self.state.security_mode_enabled();
+            if !desc.can_read_secure(&req.ctx, security_on) {
+                return Err(PropertyError::AccessDenied);
+            }
+        }
+
         // Augment first (can intercept specific PIDs on base objects,
         // and is the sole handler for augment-provided objects).
         if let Some(result) = self.augment.property_value_read(self.state, obj_type, req, buf) {
@@ -200,13 +209,6 @@ where
             return self.read_io_list(req.start_idx, req.count, buf);
         }
 
-        // Check access level + security policy.
-        let desc = self.get_descriptor(req.object_idx, req.pid).ok_or(PropertyError::InvalidPropertyId)?;
-        let security_on = self.state.security_mode_enabled();
-        if !desc.can_read_secure(&req.ctx, security_on) {
-            return Err(PropertyError::AccessDenied);
-        }
-
         // Dispatch to the appropriate base object.
         let prop_req = req.property_request();
         match req.object_idx {
@@ -223,6 +225,17 @@ where
     fn property_value_write(&self, req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
         let obj_type = self.object_type_for(req.object_idx).ok_or(PropertyError::InvalidObjectIndex)?;
 
+        // Check access before any write dispatch (applies to base and augment objects).
+        if let Some(desc) = self.get_descriptor(req.object_idx, req.pid) {
+            if matches!(desc.access, PropertyAccess::ReadOnly) {
+                return Err(PropertyError::WriteNotAllowed);
+            }
+            let security_on = self.state.security_mode_enabled();
+            if !desc.can_write_secure(&req.ctx, security_on) {
+                return Err(PropertyError::AccessDenied);
+            }
+        }
+
         // Augment first (can intercept specific PIDs on base objects,
         // and is the sole handler for augment-provided objects).
         if let Some(result) = self.augment.property_value_write(self.state, obj_type, req) {
@@ -235,16 +248,6 @@ where
         // For augment-provided objects, the augment is the sole handler.
         if self.is_augment_object(req.object_idx) {
             return Err(PropertyError::InvalidPropertyId);
-        }
-
-        // Check access: read-only first (→ WriteNotAllowed), then level/policy (→ AccessDenied).
-        let desc = self.get_descriptor(req.object_idx, req.pid).ok_or(PropertyError::InvalidPropertyId)?;
-        if matches!(desc.access, PropertyAccess::ReadOnly) {
-            return Err(PropertyError::WriteNotAllowed);
-        }
-        let security_on = self.state.security_mode_enabled();
-        if !desc.can_write_secure(&req.ctx, security_on) {
-            return Err(PropertyError::AccessDenied);
         }
 
         // Dispatch to the appropriate base object.

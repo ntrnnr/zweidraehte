@@ -167,6 +167,17 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
 }
 
 impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugment<S> for SecurityAugment<'a, GRP, GO> {
+    fn get_property_descriptor(
+        &self,
+        object_type: InterfaceObjectType,
+        prop_id: u8,
+    ) -> Option<PropertyDescriptor> {
+        if object_type != InterfaceObjectType::Security {
+            return None;
+        }
+        Self::DESCRIPTORS.iter().find(|d| d.pid == prop_id).copied()
+    }
+
     fn additional_object_count(&self) -> u16 {
         1
     }
