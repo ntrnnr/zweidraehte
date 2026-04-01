@@ -13,6 +13,7 @@
 use core::cell::Cell;
 
 use crate::{
+    StackState,
     access::{AccessContext, AccessSource, ClientRole, SecurityMode},
     bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailureType},
     crypto::{
@@ -299,7 +300,10 @@ where
         buf[offsets::MSG_APDU + 1..offsets::MSG_APDU + 7].copy_from_slice(&seq_nr); // SeqNr
 
         // Step 3: Encrypt payload and compute MAC.
-        let src = u16::from_be_bytes([buf[offsets::MSG_SOURCE_ADDR], buf[offsets::MSG_SOURCE_ADDR + 1]]);
+        // Use the device's own address for src rather than reading from the
+        // buffer — the network layer hasn't filled in MSG_SOURCE_ADDR yet at
+        // this point in the outgoing path.
+        let src = u16::from_be_bytes(self.state.individual_address().0);
         let dst = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
         let addr_type = buf[offsets::MSG_ADDR_TYPE] & 0x80;
         let tpci_apci_secure = u16::from_be_bytes([buf[offsets::MSG_TPCI], buf[offsets::MSG_TPCI + 1]]);

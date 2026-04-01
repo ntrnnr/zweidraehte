@@ -42,6 +42,60 @@ use zweidraehte_conformance::tests::security::crypto;
 use zweidraehte_conformance::*;
 
 // ============================================================================
+// TP1 ↔ Internal Format Conversion Helpers
+// ============================================================================
+
+/// Convert TP1 wire format bytes to internal KNX message format.
+///
+/// Wraps the `tp1_to_knx_message_no_checksum` function for use with `Vec<u8>`.
+fn tp1_to_internal(tp1: &[u8]) -> Vec<u8> {
+    use zweidraehte_device::encoding::tp1;
+    let mut buf = tp1.to_vec();
+    buf = tp1::tp1_to_knx_message_no_checksum(buf);
+    buf
+}
+
+/// Convert internal KNX message format to TP1 wire format (no checksum).
+///
+/// Wraps the `knx_to_tp1_message_no_checksum` function for use with `Vec<u8>`.
+fn internal_to_tp1(internal: &[u8]) -> Vec<u8> {
+    use zweidraehte_device::encoding::tp1;
+    let mut buf = internal.to_vec();
+    buf = tp1::knx_to_tp1_message_no_checksum(buf);
+    buf
+}
+
+/// Shrink a wildcards array to match the internal format of a TP1 frame.
+///
+/// For extended frames (CTRL bit 7 = 0), the TP1 ext ctrl byte at position 1
+/// is removed during conversion, so we drop the wildcard at index 1.
+/// For standard frames, the length stays the same.
+fn tp1_shrink_wildcards(wildcards: &[bool], tp1_data: &[u8]) -> Vec<bool> {
+    if tp1_data.is_empty() {
+        return wildcards.to_vec();
+    }
+    // Extended frame: CTRL bit 7 = 0
+    if (tp1_data[0] & 0x80) == 0 && wildcards.len() > 1 {
+        // Remove the ext ctrl wildcard at index 1, and the length byte at
+        // index 6 (which becomes index 5 after removal).
+        let mut result: Vec<bool> = Vec::with_capacity(wildcards.len() - 1);
+        result.push(wildcards[0]); // CTRL
+        // Skip index 1 (ext ctrl — absorbed into position 5 by tp1_to_internal)
+        result.extend_from_slice(&wildcards[2..]);
+        // The length byte at TP1 index 6 became internal index 5. We need to
+        // also remove it since tp1_to_internal overwrites position 5.
+        // But actually tp1_to_internal moves ext_ctrl to position 5, overwriting
+        // the byte that was at position 6 (length). So we need to drop one more.
+        // Let me just shrink to match the internal length.
+        let internal_len = tp1_data.len() - 1; // extended frames shrink by 1
+        result.truncate(internal_len);
+        result
+    } else {
+        wildcards.to_vec()
+    }
+}
+
+// ============================================================================
 // Step Execution
 // ============================================================================
 //
@@ -206,7 +260,7 @@ async fn execute_step(
                 println!("  [{}] ❌ InjectSecure used without SecurityTestContext", index);
                 return false;
             };
-            // Resolve the plaintext template.
+            // Resolve the plaintext template (produces TP1 wire format bytes).
             let plaintext = match Telegram::parse(template, variables) {
                 Ok(t) => t,
                 Err(e) => {
@@ -214,14 +268,18 @@ async fn execute_step(
                     return false;
                 }
             };
-            // Wrap in secure APDU.
-            let secure_frame = crypto::wrap_secure(&plaintext.data, sec_params, ctx);
+            // Convert TP1 → internal format for wrap_secure.
+            let internal = tp1_to_internal(&plaintext.data);
+            // Wrap in secure APDU (internal format).
+            let secure_internal = crypto::wrap_secure(&internal, sec_params, ctx);
+            // Convert back to TP1 wire format for injection.
+            let secure_tp1 = internal_to_tp1(&secure_internal);
             println!("  [{}] 🔒⬇️  InjectSecure ({:?}, key={}): {} bytes",
-                index, sec_params.sec_type, sec_params.key_name, secure_frame.len());
+                index, sec_params.sec_type, sec_params.key_name, secure_tp1.len());
             if *delay_before_ms > 0 {
                 Timer::after(Duration::from_millis(*delay_before_ms as u64)).await;
             }
-            if let Err(e) = harness.inject(&secure_frame).await {
+            if let Err(e) = harness.inject(&secure_tp1).await {
                 println!("        ❌ Inject failed: {}", e);
                 return false;
             }
@@ -244,15 +302,19 @@ async fn execute_step(
 
             match captured {
                 Either::First(Some(msg)) => {
+                    // Captured data is in TP1 wire format. Convert to internal
+                    // format for unwrap_secure.
+                    let internal = tp1_to_internal(&msg.data);
                     // Decrypt the captured frame.
-                    match crypto::unwrap_secure(&msg.data, sec_params, ctx) {
+                    match crypto::unwrap_secure(&internal, sec_params, ctx) {
                         Some(plaintext_apdu) => {
-                            // Reconstruct a "plaintext frame" for matching:
-                            // header(6 bytes from captured) + decrypted APDU.
-                            let mut plain_frame = msg.data[..6].to_vec();
-                            plain_frame.extend_from_slice(&plaintext_apdu);
+                            // Reconstruct plaintext in internal format:
+                            // header (6 bytes from captured frame) + decrypted APDU.
+                            let mut plain_internal = internal[..6].to_vec();
+                            plain_internal.extend_from_slice(&plaintext_apdu);
 
-                            // Parse expected template and match.
+                            // Convert expected template from TP1 to internal format
+                            // for matching (avoids standard/extended frame ambiguity).
                             let matcher = match TelegramMatcher::parse(template, variables) {
                                 Ok(m) => m,
                                 Err(e) => {
@@ -260,12 +322,18 @@ async fn execute_step(
                                     return false;
                                 }
                             };
-                            if matcher.matches(&plain_frame) {
+                            let expected_internal = tp1_to_internal(&matcher.expected);
+                            let wildcards_internal = tp1_shrink_wildcards(&matcher.wildcards, &matcher.expected);
+                            let internal_matcher = TelegramMatcher {
+                                expected: expected_internal,
+                                wildcards: wildcards_internal,
+                            };
+                            if internal_matcher.matches(&plain_internal) {
                                 println!("        ✅ Secure response matches");
                                 true
                             } else {
                                 println!("        ❌ Plaintext mismatch:");
-                                println!("           {}", matcher.diff(&plain_frame));
+                                println!("           {}", internal_matcher.diff(&plain_internal));
                                 false
                             }
                         }
@@ -299,13 +367,15 @@ async fn execute_step(
                     return false;
                 }
             };
-            let secure_frame = crypto::wrap_secure_invalid(&plaintext.data, sec_params, ctx, *invalid);
+            let internal = tp1_to_internal(&plaintext.data);
+            let secure_internal = crypto::wrap_secure_invalid(&internal, sec_params, ctx, invalid);
+            let secure_tp1 = internal_to_tp1(&secure_internal);
             println!("  [{}] 🔒💥⬇️  InjectSecureInvalid ({:?}): {} bytes",
-                index, invalid, secure_frame.len());
+                index, invalid, secure_tp1.len());
             if *delay_before_ms > 0 {
                 Timer::after(Duration::from_millis(*delay_before_ms as u64)).await;
             }
-            if let Err(e) = harness.inject(&secure_frame).await {
+            if let Err(e) = harness.inject(&secure_tp1).await {
                 println!("        ❌ Inject failed: {}", e);
                 return false;
             }
@@ -393,6 +463,8 @@ async fn main(_spawner: embassy_executor::Spawner) {
         // preparations to use RelativeData segments.
         zweidraehte_conformance::tests::run_state_machines::create_preparation_suite(),
         zweidraehte_conformance::tests::run_state_machines::create_halted_state_suite(),
+        // Data Security conformance tests
+        zweidraehte_conformance::tests::security::section_3_1::create_section_3_1_suite(),
         // zweidraehte_conformance::tests::run_state_machines::create_running_state_suite(),
         // zweidraehte_conformance::tests::run_state_machines::create_ready_state_suite(),
         // zweidraehte_conformance::tests::run_state_machines::create_terminated_state_suite(),
@@ -482,7 +554,12 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let mut harness = MultiProcessHarness::new()
         .expect("create multi-process harness");
 
-    // Spawn the DUT child process and wait for it to be ready
+    // Track which DUT variant is currently running so we can switch
+    // between secure and non-secure DUT binaries when needed.
+    let mut current_dut_is_secure = false;
+
+    // Spawn the initial (non-secure) DUT child process.
+    // If the first suite needs the secure DUT, it will be switched below.
     harness.spawn_child().await
         .expect("spawn DUT child");
 
@@ -509,6 +586,34 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let mut total_tests = 0;
 
     for suite in &suites {
+        // Switch DUT binary if the suite requires a different variant.
+        if suite.use_secure_dut != current_dut_is_secure {
+            println!("🔄 Switching to {} DUT...",
+                if suite.use_secure_dut { "secure" } else { "non-secure" });
+
+            // Kill the current child and respawn with the correct binary.
+            harness.kill_child().await;
+            if suite.use_secure_dut {
+                harness.reset_shared_memory_secure().expect("reset shared memory for secure DUT");
+            } else {
+                harness.reset_shared_memory().expect("reset shared memory for DUT");
+            }
+
+            if suite.use_secure_dut {
+                harness.spawn_secure_child().await.expect("spawn secure DUT child");
+            } else {
+                harness.spawn_child().await.expect("spawn DUT child");
+            }
+            current_dut_is_secure = suite.use_secure_dut;
+
+            // Drain ROI messages from the new DUT.
+            loop {
+                Timer::after(Duration::from_millis(500)).await;
+                if harness.drain_captured() == 0 {
+                    break;
+                }
+            }
+        }
         println!("====================================================================");
         println!("Suite: {}", suite.name);
         println!("--------------------------------------------------------------------");
@@ -517,6 +622,13 @@ async fn main(_spawner: embassy_executor::Spawner) {
             println!("  #{}: {:02X?}", name, var.as_bytes());
         }
         println!();
+
+        // Create a SecurityTestContext for secure suites.
+        let mut sec_ctx = if suite.use_secure_dut {
+            Some(zweidraehte_conformance::tests::security::variables::create_security_context())
+        } else {
+            None
+        };
 
         // Run suite preparation steps if any
         if !suite.preparation.is_empty() {
@@ -532,7 +644,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(&mut harness, &resolved_step, i, None, &suite.variables).await {
+                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables).await {
                     prep_passed = false;
                 }
                 total_steps += 1;
@@ -575,7 +687,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(&mut harness, &resolved_step, i, None, &suite.variables).await {
+                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables).await {
                     test_passed = false;
                 }
             }
@@ -610,7 +722,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                execute_step(&mut harness, &resolved_step, i, None, &suite.variables).await;
+                execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables).await;
                 total_steps += 1;
             }
             println!("✅ Teardown completed\n");

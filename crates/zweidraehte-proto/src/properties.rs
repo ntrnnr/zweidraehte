@@ -67,6 +67,29 @@ impl fmt::Display for PropertyError {
     }
 }
 
+impl PropertyError {
+    /// Convert to an AN163 extended property service return code.
+    ///
+    /// See spec 03_03_07 section 3.4.5.5 "Return Codes".
+    pub fn to_ext_return_code(self) -> u8 {
+        use crate::messages::apdu::property_ext::return_code;
+        match self {
+            PropertyError::InvalidObjectIndex
+            | PropertyError::InvalidPropertyId
+            | PropertyError::InvalidPropertyIndex
+            | PropertyError::InvalidStartIndex
+            | PropertyError::InvalidElementCount => return_code::E_ADDRESS_VOID,
+            PropertyError::AccessDenied => return_code::E_ACCESS_DENIED,
+            PropertyError::WriteNotAllowed => return_code::E_ACCESS_READ_ONLY,
+            PropertyError::ReadNotAllowed => return_code::E_ACCESS_WRITE_ONLY,
+            PropertyError::TypeMismatch => return_code::E_DATA_TYPE_CONFLICT,
+            PropertyError::BufferTooSmall => return_code::E_LENGTH_EXCEEDS_MAX_APDU_LENGTH,
+            PropertyError::ValueOutOfRange => return_code::E_DATA_VOID,
+            PropertyError::InvalidLoadState => return_code::E_TEMPORARILY_NOT_AVAILABLE,
+        }
+    }
+}
+
 /// Static property descriptor
 ///
 /// Describes a property's metadata including its ID, data type, element count,
@@ -116,7 +139,10 @@ impl PropertyDescriptor {
         write_level: u8,
     ) -> Self {
         Self {
-            pid, pdt_id, max_elements, access,
+            pid,
+            pdt_id,
+            max_elements,
+            access,
             write_level: write_level & 0x0F,
             read_level: read_level & 0x0F,
             policy: AccessPolicy::READ_OPEN_WRITE_TOOL,
@@ -134,7 +160,10 @@ impl PropertyDescriptor {
         policy: AccessPolicy,
     ) -> Self {
         Self {
-            pid, pdt_id, max_elements, access,
+            pid,
+            pdt_id,
+            max_elements,
+            access,
             write_level: write_level & 0x0F,
             read_level: read_level & 0x0F,
             policy,
@@ -445,11 +474,7 @@ impl<T: AsMut<[u8]>> ArrayPropertyWrite for T {
         let target = self.as_mut();
 
         // Calculate byte offset (start_idx=0 means write at beginning)
-        let byte_start = if start_idx == 0 {
-            0
-        } else {
-            ((start_idx - 1) as usize) * element_size
-        };
+        let byte_start = if start_idx == 0 { 0 } else { ((start_idx - 1) as usize) * element_size };
 
         if byte_start + data.len() > target.len() {
             return Err(PropertyError::InvalidStartIndex);
@@ -540,11 +565,7 @@ impl<T: AsRef<[u8]>> ArrayPropertyWithPrefixRead for T {
 
     fn element_count_from_prefix(&self) -> u16 {
         let data = self.as_ref();
-        if data.len() >= 2 {
-            u16::from_be_bytes([data[0], data[1]])
-        } else {
-            0
-        }
+        if data.len() >= 2 { u16::from_be_bytes([data[0], data[1]]) } else { 0 }
     }
 }
 
@@ -572,4 +593,3 @@ impl<T: AsMut<[u8]>> ArrayPropertyWithPrefixWrite for T {
         Ok(data.len())
     }
 }
-

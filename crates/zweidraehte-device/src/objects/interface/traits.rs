@@ -540,15 +540,33 @@ pub trait PropertyServiceHandler {
     fn resolve_object_index(&self, object_type: u16, object_instance: u8) -> Option<u16> {
         let target_type = InterfaceObjectType::from(object_type);
         let mut instance_count: u8 = 0;
+
         for idx in 0..self.object_count() {
             if self.object_type_at(idx) == Some(target_type) {
                 instance_count += 1;
+
                 if instance_count == object_instance {
                     return Some(idx);
                 }
             }
         }
         None
+    }
+
+    /// Resolve an extended `(object_type, object_instance)` pair to a flat
+    /// object index for AN163 extended property services.
+    ///
+    /// The extended services use 16-bit object instances. The default
+    /// implementation delegates to [`resolve_object_index`] by truncating
+    /// the instance to `u8`. Devices that use a different instance numbering
+    /// convention (e.g., conformance test DUTs where instance 0x0010 means
+    /// "first instance") should override this method.
+    fn resolve_ext_object_index(&self, object_type: u16, object_instance: u16) -> Option<u16> {
+        if object_instance > u8::MAX as u16 {
+            return None;
+        }
+
+        self.resolve_object_index(object_type, object_instance as u8)
     }
 
     /// Handle A_PropertyDescription_Read request.

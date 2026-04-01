@@ -87,11 +87,21 @@ impl MultiProcessHarness {
         Ok(Self { shm, child: ChildState::Dead })
     }
 
-    /// Spawn the child process (conformance-dut).
+    /// Spawn the default (non-secure) DUT child process.
+    pub async fn spawn_child(&mut self) -> io::Result<()> {
+        self.spawn_child_binary("conformance-dut").await
+    }
+
+    /// Spawn the secure DUT child process (KNX Data Secure enabled).
+    pub async fn spawn_secure_child(&mut self) -> io::Result<()> {
+        self.spawn_child_binary("conformance-dut-secure").await
+    }
+
+    /// Spawn a DUT child process with the given binary name.
     ///
     /// Creates a Unix socketpair, clears CLOEXEC on the shared memory fd,
     /// and spawns the child with `--shm-fd` and `--socket-fd` arguments.
-    pub async fn spawn_child(&mut self) -> io::Result<()> {
+    async fn spawn_child_binary(&mut self, binary_name: &str) -> io::Result<()> {
         let (parent_stream, child_stream) = UnixStream::pair()?;
         parent_stream.set_nonblocking(true)?;
 
@@ -105,10 +115,10 @@ impl MultiProcessHarness {
         let shm_fd_str = self.shm.fd().to_string();
         let sock_fd_str = child_fd.to_string();
 
-        // Find the conformance-dut binary next to the runner binary.
+        // Find the DUT binary next to the runner binary.
         let dut_path = std::env::current_exe()
-            .map(|p| p.with_file_name("conformance-dut"))
-            .unwrap_or_else(|_| "conformance-dut".into());
+            .map(|p| p.with_file_name(binary_name))
+            .unwrap_or_else(|_| binary_name.into());
 
         let child = Command::new(&dut_path)
             .arg("--shm-fd")
@@ -178,6 +188,37 @@ impl MultiProcessHarness {
             // Reap the child to avoid zombies
             let _ = child.wait();
         }
+    }
+
+    /// Kill the current child process (if running) and mark it dead.
+    pub async fn kill_child(&mut self) {
+        if let ChildState::Running { ref mut child, .. } = self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.child = ChildState::Dead;
+    }
+
+    /// Re-initialize shared memory with the default conformance state.
+    pub fn reset_shared_memory(&mut self) -> io::Result<()> {
+        use super::stack::ConformanceState;
+
+        let default_state = ConformanceState::default();
+        let snapshot = default_state.to_persisted_snapshot();
+        self.shm.write_state(&snapshot).map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e))
+        })
+    }
+
+    /// Re-initialize shared memory with the default secure conformance state.
+    pub fn reset_shared_memory_secure(&mut self) -> io::Result<()> {
+        use super::secure_stack::SecureConformanceState;
+
+        let default_state = SecureConformanceState::default();
+        let snapshot = default_state.to_persisted_snapshot();
+        self.shm.write_state(&snapshot).map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e))
+        })
     }
 
     fn socket(&self) -> io::Result<&Async<UnixStream>> {

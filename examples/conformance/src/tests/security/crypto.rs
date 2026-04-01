@@ -99,22 +99,32 @@ pub fn wrap_secure_invalid(
     plaintext_frame: &[u8],
     params: &SecureParams,
     ctx: &mut SecurityTestContext,
-    invalid: InvalidSecurityParam,
+    invalid: &InvalidSecurityParam,
 ) -> Vec<u8> {
+    match invalid {
+        InvalidSecurityParam::WrongAddressType => {
+            // Build the frame with the correct key and params, but flip
+            // the address type bit in the CCM context so the MAC won't
+            // verify on the DUT side.
+            return wrap_secure_wrong_at(plaintext_frame, params, ctx);
+        }
+        _ => {}
+    }
+
     let mut frame = wrap_secure(plaintext_frame, params, ctx);
 
     match invalid {
-        InvalidSecurityParam::InvalidScf => {
-            // Set reserved bit 6 in the SCF byte (offset 8 in frame).
+        InvalidSecurityParam::InvalidScf(scf_byte) => {
+            // Override the SCF byte (offset 8 in frame: after header(6) + TPCI/APCI(2)).
             if frame.len() > 8 {
-                frame[8] |= 0x40;
+                frame[8] = *scf_byte;
             }
         }
-        InvalidSecurityParam::InvalidMac => {
-            // Flip a bit in the MAC (last 4 bytes).
+        InvalidSecurityParam::InvalidMac(mac_bytes) => {
+            // Replace the MAC (last 4 bytes) with the given bytes.
             let len = frame.len();
             if len >= 4 {
-                frame[len - 1] ^= 0x01;
+                frame[len - 4..].copy_from_slice(mac_bytes);
             }
         }
         InvalidSecurityParam::InvalidCipher => {
@@ -124,8 +134,68 @@ pub fn wrap_secure_invalid(
                 frame[15] ^= 0xFF;
             }
         }
+        InvalidSecurityParam::WrongAddressType => unreachable!("handled above"),
+        InvalidSecurityParam::AppendBytes(extra) => {
+            frame.extend_from_slice(extra);
+        }
+        InvalidSecurityParam::TruncateBytes(n) => {
+            let new_len = frame.len().saturating_sub(*n);
+            frame.truncate(new_len);
+        }
     }
 
+    frame
+}
+
+/// Wrap with wrong address type in the CCM context (AT=group instead of individual).
+fn wrap_secure_wrong_at(
+    plaintext_frame: &[u8],
+    params: &SecureParams,
+    ctx: &mut SecurityTestContext,
+) -> Vec<u8> {
+    use zweidraehte_device::crypto::scf::{SecureServiceType, SecurityControlField};
+
+    assert!(plaintext_frame.len() >= 7, "frame too short for wrapping");
+
+    let key = ctx.key(&params.key_name);
+    let seq_nr = match params.seq_source {
+        SeqSource::Tool => ctx.next_tool_seq(),
+        SeqSource::Table => ctx.current_table_seq(),
+    };
+
+    let scf = SecurityControlField {
+        service: SecureServiceType::Data,
+        system_broadcast: params.system_broadcast,
+        confidentiality: params.sec_type == SecType::AuthConf,
+        tool_access: params.tool_access,
+    };
+    let scf_byte = scf.encode();
+
+    let src = u16::from_be_bytes([plaintext_frame[1], plaintext_frame[2]]);
+    let dst = u16::from_be_bytes([plaintext_frame[3], plaintext_frame[4]]);
+    // Use wrong address type: group (0x80) instead of individual (0x00).
+    let addr_type = (plaintext_frame[5] & 0x80) ^ 0x80;
+
+    let plain_apdu = &plaintext_frame[6..];
+    let tpci_high = plain_apdu[0] & 0xFC;
+    let secure_tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
+
+    let ccm_ctx = ccm::CcmContext { seq_nr, src, dst, addr_type, tpci_apci: secure_tpci_apci };
+    let mut payload = plain_apdu.to_vec();
+
+    let mac = match params.sec_type {
+        SecType::AuthConf => ccm::encrypt_and_mac(&key, &ccm_ctx, scf_byte, &mut payload),
+        SecType::AuthOnly => ccm::compute_mac_auth_only(&key, &ccm_ctx, scf_byte, &payload),
+    };
+
+    let mut frame = Vec::with_capacity(6 + 2 + 1 + 6 + payload.len() + 4);
+    frame.extend_from_slice(&plaintext_frame[..6]);
+    frame.push(tpci_high | 0x03);
+    frame.push(0xF1);
+    frame.push(scf_byte);
+    frame.extend_from_slice(&seq_nr);
+    frame.extend_from_slice(&payload);
+    frame.extend_from_slice(&mac);
     frame
 }
 

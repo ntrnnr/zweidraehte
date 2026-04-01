@@ -281,14 +281,20 @@ pub enum SeqSource {
 }
 
 /// Which security field to corrupt for negative tests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidSecurityParam {
-    /// Set reserved bits in the SCF byte.
-    InvalidScf,
-    /// Flip bits in the computed MAC.
-    InvalidMac,
-    /// Corrupt the ciphertext after encryption.
+    /// Override the SCF byte with a specific value after wrapping.
+    InvalidScf(u8),
+    /// Replace the MAC with specific bytes.
+    InvalidMac([u8; 4]),
+    /// Corrupt the ciphertext after encryption (XOR first payload byte).
     InvalidCipher,
+    /// Use the wrong address type (group instead of individual) in CCM context.
+    WrongAddressType,
+    /// Append extra bytes after the MAC (frame too long).
+    AppendBytes(Vec<u8>),
+    /// Truncate N bytes from the end of the frame (frame too short).
+    TruncateBytes(usize),
 }
 
 impl TestStep {
@@ -345,11 +351,20 @@ pub struct TestSuite {
     pub cases: Vec<TestCase>,
     /// Optional teardown steps that run once after all test cases in the suite
     pub teardown: Vec<TestStep>,
+    /// Whether this suite requires the secure DUT (`conformance-dut-secure`).
+    pub use_secure_dut: bool,
 }
 
 impl TestSuite {
     pub fn new(name: &'static str, variables: BTreeMap<String, TestVariable>) -> Self {
-        Self { name, variables, preparation: Vec::new(), cases: Vec::new(), teardown: Vec::new() }
+        Self {
+            name,
+            variables,
+            preparation: Vec::new(),
+            cases: Vec::new(),
+            teardown: Vec::new(),
+            use_secure_dut: false,
+        }
     }
 
     pub fn with_preparation(mut self, preparation: Vec<TestStep>) -> Self {
@@ -364,6 +379,11 @@ impl TestSuite {
 
     pub fn with_teardown(mut self, teardown: Vec<TestStep>) -> Self {
         self.teardown = teardown;
+        self
+    }
+
+    pub fn secure(mut self) -> Self {
+        self.use_secure_dut = true;
         self
     }
 }

@@ -98,6 +98,10 @@ impl SecureConformanceState {
         // Set the secure conformance test individual address (1.1.1 = 0x1101).
         inner.set_individual_address(IndividualAddress::new(1, 1, 1));
 
+        // Store the FDSK in the security extension state so that the S-AL
+        // can use it as the effective tool key before TK1 is commissioned.
+        inner.extension_state().security.set_fdsk(Some(SECURE_FDSK));
+
         // Load pre-built tables.
         *inner.adt.borrow_mut() = addr_tab;
         *inner.ast.borrow_mut() = asso_tab;
@@ -474,6 +478,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         )
     }
 
+    type AlExtension = zweidraehte_device::layers::al_ext_property_ext::PropertyExtValueExtension;
     type LayerBuilder = SecureDeviceBuilder;
 }
 
@@ -512,6 +517,9 @@ impl SecureConformanceState {
     pub fn from_persisted_snapshot(snapshot: SecureConformancePersistedState) -> Self {
         let identity = StaticIdentity::with_fdsk(SECURE_SERIAL_NUMBER, SECURE_FDSK);
         let inner = SecureInnerState::from_persisted(&identity, snapshot.inner);
+
+        // FDSK is not persisted — set it from the static identity.
+        inner.extension_state().security.set_fdsk(Some(SECURE_FDSK));
 
         Self {
             inner,

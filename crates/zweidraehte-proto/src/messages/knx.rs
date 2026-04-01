@@ -183,6 +183,16 @@ create_protocol_enum!(
         FunctionPropertyStateRead,  0x88,   "A_FunctionPropertyState_Read";
         FunctionPropertyStateResponse, 0x89, "A_FunctionPropertyState_Response";
 
+        // Extended property services (AN163). Wire bytes: 0x01C8–0x01D1.
+        // Decoded via apci_raw=7 branch with & 0x7F mask, so stored codes
+        // are the low 7 bits of the wire byte.
+        PropertyExtValueRead,           0x4c,   "A_PropertyExtValue_Read";
+        PropertyExtValueResponse,       0x4d,   "A_PropertyExtValue_Response";
+        PropertyExtValueWriteCon,       0x4e,   "A_PropertyExtValue_WriteCon";
+        PropertyExtValueWriteConRes,    0x4f,   "A_PropertyExtValue_WriteConRes";
+        PropertyExtValueWriteUnCon,     0x50,   "A_PropertyExtValue_WriteUnCon";
+        PropertyExtValueInfoReport,     0x51,   "A_PropertyExtValue_InfoReport";
+
         MemoryBitWrite,             0xd0,   "A_MemoryBit_Write";
         AuthorizeRequest,           0xd1,   "A_Authorize_Request";
         AuthorizeResponse,          0xd2,   "A_Authorize_Response";

@@ -29,3 +29,7 @@ path = "src/bin/runner.rs"
 [[bin]]
 name = "conformance-dut"
 path = "src/bin/dut.rs"
+
+[[bin]]
+name = "conformance-dut-secure"
+path = "src/bin/dut_secure.rs"

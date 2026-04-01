@@ -7,7 +7,7 @@
 use crate::StackState;
 use crate::access::AccessPolicy;
 use crate::dpt::{
-    InterfaceObjectType, PDT_Control, PDT_Generic06, PDT_Generic08, PDT_UnsignedChar, PDT_UnsignedInt,
+    InterfaceObjectType, PDT_Control, PDT_Generic01, PDT_Generic06, PDT_Generic08, PDT_UnsignedChar, PDT_UnsignedInt,
     PropertyDataDefinition,
 };
 use crate::objects::interface::{
@@ -108,10 +108,10 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
             2,
             AccessPolicy::TOOL_ONLY_CONFIDENTIAL, // 008/008
         ),
-        // PID_SECURITY_REPORT (57): security status report
+        // PID_SECURITY_REPORT (57): security status report — PDT_BITSET8 (1 byte)
         PropertyDescriptor::with_policy(
             pid::SECURITY_REPORT,
-            PDT_Generic08::ID,
+            PDT_Generic01::ID,
             1,
             PropertyAccess::ReadOnly,
             3,
@@ -119,10 +119,11 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
             // 1FF/0CC
             AccessPolicy::new(0x1FF, 0x0CC),
         ),
-        // PID_SECURITY_REPORT_CONTROL (58): report control
+        // PID_SECURITY_REPORT_CONTROL (58): report control — PDT_BINARY_INFORMATION
+        // TODO: PDT_BINARY_INFORMATION is not yet defined, using PDT_Generic01 (1 byte)
         PropertyDescriptor::with_policy(
             pid::SECURITY_REPORT_CONTROL,
-            PDT_Generic08::ID,
+            PDT_Generic01::ID,
             1,
             PropertyAccess::ReadWrite,
             2,
@@ -252,8 +253,21 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
             // ---- Sequence Number Sending (PID 59) ----
             // TODO: delegate to SequenceNumberStorage in Phase 4
             pid::SEQUENCE_NUMBER_SENDING => Err(PropertyError::InvalidPropertyId),
+            // ---- Security Report (PID 57) — PDT_BITSET8 (1 byte) ----
+            // Returns the current security status as a bitfield.
+            // TODO: Implement actual security report bits per spec.
+            pid::SECURITY_REPORT => {
+                if req.start_idx == 0 {
+                    // Element count query.
+                    buf[0..2].copy_from_slice(&1u16.to_be_bytes());
+                    Ok(2)
+                } else {
+                    buf[0] = 0x00; // All bits clear = no issues reported.
+                    Ok(1)
+                }
+            }
             // ---- Stubs for Phase 6+ ----
-            pid::SECURITY_FAILURES_LOG | pid::SECURITY_REPORT | pid::SECURITY_REPORT_CONTROL => {
+            pid::SECURITY_FAILURES_LOG | pid::SECURITY_REPORT_CONTROL => {
                 Err(PropertyError::InvalidPropertyId)
             }
             _ => Err(PropertyError::InvalidPropertyId),

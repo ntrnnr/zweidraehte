@@ -160,6 +160,7 @@ pub trait LinkLayerBuilder<CTX>: LinkLayerBuilderBase {
 }
 
 pub mod al_ext_domain_addr;
+pub mod al_ext_property_ext;
 pub mod al_extension;
 pub mod application;
 pub mod linklayers;
