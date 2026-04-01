@@ -13,8 +13,8 @@ use crate::dpt::{
 };
 use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
-    InterfaceObjectAugment, PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError,
-    PropertyLookup, WriteResponse, pid,
+    InterfaceObjectAugment, PropertyAccess, PropertyBuf, PropertyDescriptionResponse, PropertyDescriptor,
+    PropertyError, PropertyLookup, WriteResponse, pid,
 };
 use crate::objects::tables::LoadState;
 use crate::properties::PropertyRead;
@@ -418,6 +418,12 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
         if object_type != InterfaceObjectType::Security {
             return None;
         }
+
+        // PID_SECURITY_MODE state read: returns current security mode.
+        if req.prop_id == pid::SECURITY_MODE {
+            return Some(self.handle_security_mode_state_read(req));
+        }
+
         if req.prop_id != pid::SECURITY_FAILURES_LOG {
             return None;
         }
@@ -487,8 +493,45 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
                 self.state.set_security_mode_enabled(true);
                 FunctionPropertyResult::success()
             }
-            _ => FunctionPropertyResult::not_supported(),
+            _ => {
+                // Invalid ServiceInfo → E_DATA_VOID (0xF8)
+                FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[]) }
+            }
         }
+    }
+
+    /// Handle PID_SECURITY_MODE FunctionPropertyStateRead.
+    ///
+    /// Service format: [reserved, ReadServiceID]
+    /// ReadServiceID 0x00: Read Security Mode → returns current mode byte.
+    fn handle_security_mode_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
+        if req.service_data.len() < 2 {
+            // Too few bytes.
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+        }
+
+        let reserved = req.service_data[0];
+        let read_service_id = req.service_data[1];
+
+        // Reserved byte must be 0.
+        if reserved != 0x00 {
+            return FunctionPropertyResult {
+                return_code: 0xA0,
+                data: PropertyBuf::new(&[reserved, read_service_id]),
+            };
+        }
+
+        // Only ReadServiceID 0x00 is supported.
+        if read_service_id != 0x00 {
+            return FunctionPropertyResult {
+                return_code: 0xF2,
+                data: PropertyBuf::new(&[read_service_id]),
+            };
+        }
+
+        let mode = if self.state.security_mode_enabled() { 0x01u8 } else { 0x00u8 };
+        // Response echoes the ReadServiceID (0x00) followed by the mode byte.
+        FunctionPropertyResult::success_with_data(&[0x00, mode])
     }
 }
 

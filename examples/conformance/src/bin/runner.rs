@@ -475,6 +475,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         zweidraehte_conformance::tests::security::section_3_8_3::create_section_3_8_3_suite(),
         zweidraehte_conformance::tests::security::section_3_8_4::create_section_3_8_4_suite(),
         zweidraehte_conformance::tests::security::section_3_8_6::create_section_3_8_6_suite(),
+        zweidraehte_conformance::tests::security::section_3_8_8::create_section_3_8_8_suite(),
         zweidraehte_conformance::tests::security::section_3_8_9::create_section_3_8_9_suite(),
         zweidraehte_conformance::tests::security::section_3_8_10::create_section_3_8_10_suite(),
         zweidraehte_conformance::tests::security::section_3_8_11::create_section_3_8_11_suite(),
