@@ -47,9 +47,9 @@ pub fn create_section_4_4_suite() -> TestSuite {
             test_4_4_6(),
             test_4_4_8(),
             test_4_4_9(),
-            // Skipped: 4.4.7 — start_index=0 with >2 octets data
-            // Skipped: 4.4.10 — connection-oriented
-            // Skipped: 4.4.11 — user objects
+            test_4_4_7(),
+            test_4_4_10(),
+            // Skipped: 4.4.11 — access level restrictions (needs Authorize sequence)
         ])
 }
 
@@ -182,5 +182,35 @@ fn test_4_4_9() -> TestCase {
         comment("Verify PID_SERIAL_NUMBER unchanged (6 bytes, wildcard)"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 0B 01 00 01"),
         expect("BC #BDUT_ADDR #EDI 6F 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 4.4.7 InfoReport index=0 with >2 octets → ignored
+// ============================================================================
+
+fn test_4_4_7() -> TestCase {
+    TestCase::new("4.4.7 InfoReport index=0 with >2 octets → ignored").with_steps(vec![
+        comment("InfoReport 6 bytes at start_index=0 to PID_PROG_MODE → silently ignored"),
+        inject("BC #EDI #BDUT_ADDR 6C 01 D1 00 00 00 10 36 01 00 01 01 01 01"),
+        wait(SETTLE),
+        comment("Verify PID_PROG_MODE unchanged"),
+        inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 4.4.10 InfoReport data type conflict → ignored
+// ============================================================================
+
+fn test_4_4_10() -> TestCase {
+    TestCase::new("4.4.10 InfoReport data type conflict → ignored").with_steps(vec![
+        comment("InfoReport 3 bytes to 1-byte PID_PROG_MODE → silently ignored"),
+        inject("BC #EDI #BDUT_ADDR 6C 01 D1 00 00 00 10 36 01 00 01 01 01 01"),
+        wait(SETTLE),
+        comment("Verify PID_PROG_MODE unchanged"),
+        inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }

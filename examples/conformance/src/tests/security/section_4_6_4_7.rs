@@ -22,12 +22,64 @@ pub fn create_section_4_6_4_7_suite() -> TestSuite {
             wait(1000),
         ])
         .with_cases(vec![
+            test_4_6_1(),
+            test_4_6_3(),
+            test_4_6_4(),
             test_4_6_5(),
-            // Skipped: 4.7.1 — LOAD_STATE_CONTROL FunctionPropertyStateRead not implemented
+            // TODO: 4.7.1 needs FunctionPropertyStateRead for LOAD_STATE_CONTROL on base objects
             test_4_7_2(),
+            test_4_7_3(),
             test_4_7_4(),
             test_4_7_5(),
         ])
+}
+
+// ============================================================================
+// 4.6.1 FunctionPropertyExtCommand — valid function property
+// ============================================================================
+//
+// Per XML: Command to Security IO PID_SECURITY_MODE (PDT_FUNCTION).
+
+fn test_4_6_1() -> TestCase {
+    TestCase::new("4.6.1 Command to valid function property → success").with_steps(vec![
+        // Read current security mode state first
+        comment("StateRead Security Mode on Security IO"),
+        inject("BC #EDI #BDUT_ADDR 68 01 D5 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 00 00"),
+        // Response: 01 D6 + IOT(2) + INST(2) + PID(1) + rc(1) + ServiceID echo(1) + mode(1) = 10 bytes → 0x69
+        expect("BC #BDUT_ADDR #EDI 69 01 D6 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 ?? ?? ??", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 4.6.3 FunctionPropertyExtCommand — non-existing IO type
+// ============================================================================
+
+fn test_4_6_3() -> TestCase {
+    TestCase::new("4.6.3 Command non-existing IO type").with_steps(vec![
+        comment("IOT 0x000F does not exist → return_code=0xFD"),
+        inject("BC #EDI #BDUT_ADDR 69 01 D4 00 0F 00 10 34 00 00 00"),
+        expect("BC #BDUT_ADDR #EDI 67 01 D6 00 0F 00 10 34 FD", TIMEOUT),
+
+        comment("IOT 0x8000 does not exist → return_code=0xFD"),
+        inject("BC #EDI #BDUT_ADDR 69 01 D4 80 00 00 10 34 00 00 00"),
+        expect("BC #BDUT_ADDR #EDI 67 01 D6 80 00 00 10 34 FD", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 4.6.4 FunctionPropertyExtCommand — non-existing PID
+// ============================================================================
+
+fn test_4_6_4() -> TestCase {
+    TestCase::new("4.6.4 Command non-existing PID").with_steps(vec![
+        comment("PID 3 on GO Table (IOT=0x0003) does not exist → 0xFD"),
+        inject("BC #EDI #BDUT_ADDR 69 01 D4 00 03 00 10 03 00 00 00"),
+        expect("BC #BDUT_ADDR #EDI 67 01 D6 00 03 00 10 03 FD", TIMEOUT),
+
+        comment("PID 0 on non-existing instance 0x0018 → 0xFD"),
+        inject("BC #EDI #BDUT_ADDR 69 01 D4 00 03 00 18 00 00 00 00"),
+        expect("BC #BDUT_ADDR #EDI 67 01 D6 00 03 00 18 00 FD", TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -75,6 +127,26 @@ fn test_4_7_2() -> TestCase {
         comment("IOT 0x8000 does not exist → return_code=0xFD"),
         inject("BC #EDI #BDUT_ADDR 68 01 D5 80 00 00 10 34 00 00"),
         expect("BC #BDUT_ADDR #EDI 67 01 D6 80 00 00 10 34 FD", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 4.7.3 FunctionPropertyExtStateRead — non-existing Object Instance
+// ============================================================================
+
+fn test_4_7_3() -> TestCase {
+    TestCase::new("4.7.3 StateRead non-existing Object Instance").with_steps(vec![
+        comment("Instance 0x0000 does not exist → return_code=0xFD"),
+        inject("BC #EDI #BDUT_ADDR 68 01 D5 #USER_OBJ_TYPE1 00 00 34 00 00"),
+        expect("BC #BDUT_ADDR #EDI 67 01 D6 #USER_OBJ_TYPE1 00 00 34 FD", TIMEOUT),
+
+        comment("Instance 0x0020 does not exist → return_code=0xFD"),
+        inject("BC #EDI #BDUT_ADDR 68 01 D5 #USER_OBJ_TYPE1 00 20 34 00 00"),
+        expect("BC #BDUT_ADDR #EDI 67 01 D6 #USER_OBJ_TYPE1 00 20 34 FD", TIMEOUT),
+
+        comment("Instance 0x8000 does not exist → return_code=0xFD"),
+        inject("BC #EDI #BDUT_ADDR 68 01 D5 #USER_OBJ_TYPE1 80 00 34 00 00"),
+        expect("BC #BDUT_ADDR #EDI 67 01 D6 #USER_OBJ_TYPE1 80 00 34 FD", TIMEOUT),
     ])
 }
 

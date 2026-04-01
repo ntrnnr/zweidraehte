@@ -8,8 +8,7 @@ use crate::StackState;
 use crate::access::AccessPolicy;
 use crate::dpt::{
     InterfaceObjectType, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic06, PDT_Generic08, PDT_Generic18,
-    PDT_UnsignedChar, PDT_UnsignedInt,
-    PropertyDataDefinition,
+    PDT_UnsignedChar, PDT_UnsignedInt, PropertyDataDefinition,
 };
 use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
@@ -130,12 +129,13 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
             2,
             AccessPolicy::TOOL_ONLY_CONFIDENTIAL, // 008/008
         ),
-        // PID_SECURITY_REPORT (57): security status report — PDT_BITSET8 (1 byte)
+        // PID_SECURITY_REPORT (57): security status report — PDT_GENERIC_01 (1 byte).
+        // ReadWrite: the report flags can be cleared by writing 0x00.
         PropertyDescriptor::with_policy(
             pid::SECURITY_REPORT,
             PDT_Generic01::ID,
             1,
-            PropertyAccess::ReadOnly,
+            PropertyAccess::ReadWrite,
             3,
             2,
             // 1FF/0CC
@@ -187,11 +187,7 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
 }
 
 impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugment<S> for SecurityAugment<'a, GRP, GO> {
-    fn get_property_descriptor(
-        &self,
-        object_type: InterfaceObjectType,
-        prop_id: u8,
-    ) -> Option<PropertyDescriptor> {
+    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
         if object_type != InterfaceObjectType::Security {
             return None;
         }
@@ -299,8 +295,18 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
                     Ok(1)
                 }
             }
+            // ---- Security Report Control (PID 58) — 1 byte ----
+            pid::SECURITY_REPORT_CONTROL => {
+                if req.start_idx == 0 {
+                    buf[0..2].copy_from_slice(&1u16.to_be_bytes());
+                    Ok(2)
+                } else {
+                    buf[0] = if self.state.security_report_enabled() { 0x01 } else { 0x00 };
+                    Ok(1)
+                }
+            }
             // ---- Stubs for Phase 6+ ----
-            pid::SECURITY_FAILURES_LOG | pid::SECURITY_REPORT_CONTROL => Err(PropertyError::InvalidPropertyId),
+            pid::SECURITY_FAILURES_LOG => Err(PropertyError::InvalidPropertyId),
             _ => Err(PropertyError::InvalidPropertyId),
         })
     }
@@ -366,8 +372,22 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
             // ---- Sequence Number Sending (PID 59) ----
             // TODO: delegate to SequenceNumberStorage in Phase 4
             pid::SEQUENCE_NUMBER_SENDING => Err(PropertyError::InvalidPropertyId),
-            // ---- Stubs ----
-            pid::SECURITY_REPORT_CONTROL => Err(PropertyError::InvalidPropertyId),
+            // ---- Security Report (PID 57): writable to clear report flags ----
+            pid::SECURITY_REPORT => {
+                if req.data.is_empty() {
+                    return Some(Err(PropertyError::BufferTooSmall));
+                }
+                self.state.set_security_report(req.data[0]);
+                Ok(WriteResponse::Echo)
+            }
+            // ---- Security Report Control (PID 58) ----
+            pid::SECURITY_REPORT_CONTROL => {
+                if req.data.is_empty() {
+                    return Some(Err(PropertyError::BufferTooSmall));
+                }
+                self.state.set_security_report_enabled(req.data[0] != 0);
+                Ok(WriteResponse::Echo)
+            }
             _ => Err(PropertyError::InvalidPropertyId),
         })
     }
@@ -515,18 +535,12 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
 
         // Reserved byte must be 0.
         if reserved != 0x00 {
-            return FunctionPropertyResult {
-                return_code: 0xA0,
-                data: PropertyBuf::new(&[reserved, read_service_id]),
-            };
+            return FunctionPropertyResult { return_code: 0xA0, data: PropertyBuf::new(&[reserved, read_service_id]) };
         }
 
         // Only ReadServiceID 0x00 is supported.
         if read_service_id != 0x00 {
-            return FunctionPropertyResult {
-                return_code: 0xF2,
-                data: PropertyBuf::new(&[read_service_id]),
-            };
+            return FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[read_service_id]) };
         }
 
         let mode = if self.state.security_mode_enabled() { 0x01u8 } else { 0x00u8 };

@@ -63,6 +63,22 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
     vars.insert("L2_PWD".into(), TestVariable::Bytes(vec![0x11, 0x22, 0x33, 0x44]));
     vars.insert("L3_PWD".into(), TestVariable::Bytes(vec![0x12, 0x34, 0x56, 0x78]));
 
+    // User-defined Interface Object: for our DUT, this is the Security IO.
+    vars.insert("USER_OBJ_TYPE1".into(), TestVariable::Bytes(vec![0x00, 0x11]));
+
+    // Accessible properties on USER_OBJ_TYPE1 (Security IO):
+    // PROP1: PDT_GENERIC_20 ReadWrite (PID_P2P_KEY_TABLE = 0x34)
+    vars.insert("ACCESSIBLE_PROP1".into(), TestVariable::Bytes(vec![0x34]));
+    // PROP3: PDT_FUNCTION (PID_SECURITY_MODE = 0x33)
+    vars.insert("ACCESSIBLE_PROP3".into(), TestVariable::Bytes(vec![0x33]));
+    // PROP4: PDT_GENERIC_01 ReadWrite (PID_SECURITY_REPORT = 0x39)
+    vars.insert("ACCESSIBLE_PROP4".into(), TestVariable::Bytes(vec![0x39]));
+
+    // Property indices within the Device Object for description-by-index tests.
+    // These are 0-based indices into our DUT's Device Object property table.
+    vars.insert("INDX_PID_SERIAL_NO".into(), TestVariable::Bytes(vec![0x08]));
+    vars.insert("INDX_PID_DEVICE_CTRL".into(), TestVariable::Bytes(vec![0x01]));
+
     vars
 }
 

@@ -222,6 +222,10 @@ pub struct SecurityState<const GRP: usize, const GO: usize> {
     go_flags: RefCell<SecurityTable<GO, 1>>,
     /// Security failures log — counters and recent failure entries.
     failures_log: RefCell<SecurityFailuresLog>,
+    /// PID_SECURITY_REPORT (57): 1-byte security status bitfield.
+    security_report: Cell<u8>,
+    /// PID_SECURITY_REPORT_CONTROL (58): whether security reporting is enabled.
+    security_report_enabled: Cell<bool>,
 }
 
 // ============================================================================
@@ -430,6 +434,26 @@ impl<const GRP: usize, const GO: usize> SecurityState<GRP, GO> {
         let table = self.go_flags.borrow();
         table.get(go_index).map(|entry| entry[0])
     }
+
+    /// Get the security report value (PID 57).
+    pub fn security_report(&self) -> u8 {
+        self.security_report.get()
+    }
+
+    /// Set the security report value (PID 57).
+    pub fn set_security_report(&self, value: u8) {
+        self.security_report.set(value);
+    }
+
+    /// Whether security reporting is enabled (PID 58).
+    pub fn security_report_enabled(&self) -> bool {
+        self.security_report_enabled.get()
+    }
+
+    /// Enable or disable security reporting (PID 58).
+    pub fn set_security_report_enabled(&self, enabled: bool) {
+        self.security_report_enabled.set(enabled);
+    }
 }
 
 // ============================================================================
@@ -534,6 +558,8 @@ impl<const GRP: usize, const GO: usize> ExtensionState for SecurityState<GRP, GO
             go_flags: RefCell::new(SecurityTable::new()),
             // Failures log starts empty (not persisted).
             failures_log: RefCell::new(SecurityFailuresLog::default()),
+            security_report: Cell::new(0),
+            security_report_enabled: Cell::new(false),
         }
     }
 

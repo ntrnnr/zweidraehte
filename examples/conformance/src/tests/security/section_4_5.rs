@@ -26,7 +26,7 @@ pub fn create_section_4_5_suite() -> TestSuite {
             test_4_5_5(),
             test_4_5_6(),
             test_4_5_7(),
-            // Skipped: 4.5.4 — needs #INDX_PID_SERIAL_NO / #INDX_PID_DEVICE_CTRL variables
+            test_4_5_4(),
         ])
 }
 
@@ -158,6 +158,33 @@ fn test_4_5_7() -> TestCase {
         inject("BC #EDI #BDUT_ADDR 68 01 D2 00 00 00 18 00 00 00"),
         expect(
             "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 00 00 18 00 00 00 00 00 00 00 00 00 00 00",
+            TIMEOUT,
+        ),
+    ])
+}
+
+// ============================================================================
+// 4.5.4 Description read by property index
+// ============================================================================
+//
+// Per XML: read description by property index (PID=0, prop_idx=#INDX_PID_SERIAL_NO).
+// The response should contain the PID of the property at that index.
+
+fn test_4_5_4() -> TestCase {
+    TestCase::new("4.5.4 description read by property index").with_steps(vec![
+        comment("Read description by property index for PID_SERIAL_NUMBER"),
+        inject("BC #EDI #BDUT_ADDR 68 01 D2 00 00 00 10 00 00 #INDX_PID_SERIAL_NO"),
+        // Response should contain PID 0x0B (SERIAL_NUMBER) in the PID field
+        expect(
+            "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 00 00 10 0B 00 #INDX_PID_SERIAL_NO ?? ?? ?? ?? ?? ?? ?? ??",
+            TIMEOUT,
+        ),
+
+        comment("Read description by property index for PID_DEVICE_CONTROL"),
+        inject("BC #EDI #BDUT_ADDR 68 01 D2 00 00 00 10 00 00 #INDX_PID_DEVICE_CTRL"),
+        // Response should contain PID 0x0E (DEVICE_CONTROL) in the PID field
+        expect(
+            "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 00 00 10 0E 00 #INDX_PID_DEVICE_CTRL ?? ?? ?? ?? ?? ?? ?? ??",
             TIMEOUT,
         ),
     ])

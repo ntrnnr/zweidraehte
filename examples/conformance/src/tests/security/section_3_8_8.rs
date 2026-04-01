@@ -84,9 +84,10 @@ const STATE_READ_RESP_FC: &str =
 const STATE_READ_INVALID_SERVICE_ID: &str =
     "3C 60 #EDI #BDUT_ADDR 08 01 D5 00 11 00 10 33 00 01";
 
-// State_Read response: return_code=0xF2 (invalid service ID).
+// State_Read response: return_code=0xF2 (invalid service ID), echoed ServiceID=0x01.
+// APDU: 01 D6 + 00 11 + 00 10 + 33 + F2 + 01 = 9 bytes → TP1 len = 0x08
 const STATE_READ_RESP_F2: &str =
-    "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 F2";
+    "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 F2 01";
 
 // ============================================================================
 // Plain (non-secure) FunctionPropertyExt templates

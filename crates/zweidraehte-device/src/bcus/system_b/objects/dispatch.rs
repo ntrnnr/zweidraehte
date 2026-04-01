@@ -10,10 +10,9 @@ use crate::{
     device_model::DeviceModelNotifier,
     dpt::{DeviceControl, ProgrammingMode, RoutingCount},
     objects::interface::{
-        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest,
-        FunctionPropertyResult, HasDeviceObject, InterfaceObject, InterfaceObjectAugment,
-        PropertyAccess, PropertyDescriptionResponse, PropertyError, PropertyServiceHandler,
-        WriteResponse, pid,
+        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
+        HasDeviceObject, InterfaceObject, InterfaceObjectAugment, PropertyAccess, PropertyDescriptionResponse,
+        PropertyError, PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -282,6 +281,14 @@ where
     }
 
     fn function_property_command(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
+        // Function property command is write-like — enforce write access policy.
+        if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
+            let security_on = self.state.security_mode_enabled();
+            if !desc.can_write_secure(&req.ctx, security_on) {
+                return FunctionPropertyResult::access_denied();
+            }
+        }
+
         if let Some(obj_type) = self.object_type_for(req.object_idx) {
             if let Some(result) = self.augment.function_property_command(self.state, obj_type, req) {
                 return result;
@@ -292,6 +299,14 @@ where
     }
 
     fn function_property_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
+        // Function property state read is read-like — enforce read access policy.
+        if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
+            let security_on = self.state.security_mode_enabled();
+            if !desc.can_read_secure(&req.ctx, security_on) {
+                return FunctionPropertyResult::access_denied();
+            }
+        }
+
         if let Some(obj_type) = self.object_type_for(req.object_idx) {
             if let Some(result) = self.augment.function_property_state_read(self.state, obj_type, req) {
                 return result;

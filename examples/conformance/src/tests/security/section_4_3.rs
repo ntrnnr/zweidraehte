@@ -46,10 +46,10 @@ pub fn create_section_4_3_suite() -> TestSuite {
             test_4_3_6(),
             test_4_3_8(),
             test_4_3_9(),
-            // Skipped: 4.3.7 — start_index=0 with >2 octets data
-            // Skipped: 4.3.10 — data type conflict (PDT_FUNCTION)
-            // Skipped: 4.3.11 — access level restrictions
-            // Skipped: 4.3.12 — PDT_FUNCTION write
+            test_4_3_7(),
+            test_4_3_10(),
+            test_4_3_12(),
+            // Skipped: 4.3.11 — access level restrictions (needs Authorize sequence)
         ])
 }
 
@@ -255,6 +255,63 @@ fn test_4_3_9() -> TestCase {
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 0B 01 00 01"),
         expect(
             "BC #BDUT_ADDR #EDI 6F 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??",
+            TIMEOUT,
+        ),
+    ])
+}
+
+// ============================================================================
+// 4.3.7 WriteUnCon start_index=0 with >2 octets → ignored
+// ============================================================================
+
+fn test_4_3_7() -> TestCase {
+    TestCase::new("4.3.7 start_index=0 with >2 octets → ignored").with_steps(vec![
+        comment("WriteUnCon 6 bytes at start_index=0 to PID_PROG_MODE → silently ignored"),
+        inject("BC #EDI #BDUT_ADDR 6C 01 D0 00 00 00 10 36 01 00 00 01 01 01"),
+        wait(SETTLE),
+
+        comment("Verify PID_PROG_MODE unchanged"),
+        inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
+        expect(
+            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
+            TIMEOUT,
+        ),
+    ])
+}
+
+// ============================================================================
+// 4.3.10 WriteUnCon data type conflict → ignored
+// ============================================================================
+
+fn test_4_3_10() -> TestCase {
+    TestCase::new("4.3.10 data type conflict → ignored").with_steps(vec![
+        comment("WriteUnCon 3 bytes to 1-byte PID_PROG_MODE → silently ignored"),
+        inject("BC #EDI #BDUT_ADDR 6B 01 D0 00 00 00 10 36 01 00 01 01 01"),
+        wait(SETTLE),
+
+        comment("Verify PID_PROG_MODE unchanged"),
+        inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
+        expect(
+            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
+            TIMEOUT,
+        ),
+    ])
+}
+
+// ============================================================================
+// 4.3.12 WriteUnCon to PDT_FUNCTION property → ignored
+// ============================================================================
+
+fn test_4_3_12() -> TestCase {
+    TestCase::new("4.3.12 WriteUnCon to PDT_FUNCTION → ignored").with_steps(vec![
+        comment("WriteUnCon to Security IO PID_SECURITY_MODE (PDT_FUNCTION) → ignored"),
+        inject("BC #EDI #BDUT_ADDR 6C 01 D0 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 01 00 01 00 00 01"),
+        wait(SETTLE),
+
+        comment("Verify Security Mode unchanged via FunctionPropertyStateRead"),
+        inject("BC #EDI #BDUT_ADDR 68 01 D5 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 00 00"),
+        expect(
+            "BC #BDUT_ADDR #EDI 69 01 D6 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 ?? ?? ??",
             TIMEOUT,
         ),
     ])

@@ -297,6 +297,11 @@ impl FunctionPropertyResult {
         Self { return_code: 0x02, data: PropertyBuf::new(&[]) }
     }
 
+    /// Error: access denied (security policy or access level).
+    pub fn access_denied() -> Self {
+        Self { return_code: 0xFC, data: PropertyBuf::new(&[]) }
+    }
+
     /// Error: invalid object index.
     pub fn invalid_object_index() -> Self {
         Self { return_code: 0x05, data: PropertyBuf::new(&[]) }
@@ -643,11 +648,7 @@ pub trait InterfaceObjectAugment<S: StackState> {
     /// Returns `None` if this augment doesn't handle the given object type
     /// or PID. Used by the dispatch layer to check access policies before
     /// delegating reads/writes.
-    fn get_property_descriptor(
-        &self,
-        _object_type: InterfaceObjectType,
-        _prop_id: u8,
-    ) -> Option<PropertyDescriptor> {
+    fn get_property_descriptor(&self, _object_type: InterfaceObjectType, _prop_id: u8) -> Option<PropertyDescriptor> {
         None
     }
 
@@ -797,11 +798,7 @@ where
     Head: InterfaceObjectAugment<S>,
     Tail: InterfaceObjectAugment<S>,
 {
-    fn get_property_descriptor(
-        &self,
-        object_type: InterfaceObjectType,
-        prop_id: u8,
-    ) -> Option<PropertyDescriptor> {
+    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
         self.0
             .get_property_descriptor(object_type, prop_id)
             .or_else(|| self.1.get_property_descriptor(object_type, prop_id))

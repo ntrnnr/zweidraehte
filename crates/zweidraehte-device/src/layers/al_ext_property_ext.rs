@@ -292,6 +292,13 @@ fn handle_ext_value_write_con<D: StackDefinition>(
         return;
     }
 
+    // Element-count write (start_index=0): data must be exactly 2 bytes.
+    if hdr.start_idx == 0 && data.len() != 2 {
+        debug!("AL PropertyExtValueWriteCon: element-count write with {} data bytes (expected 2)", data.len());
+        send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT);
+        return;
+    }
+
     let req =
         FullPropertyWriteRequest { object_idx, pid: hdr.prop_id, start_idx: hdr.start_idx, data, ctx: ctx.access_ctx };
     let result = ctx.interface_objects.property_value_write(&req);
@@ -377,8 +384,20 @@ fn handle_ext_value_write_uncon<D: StackDefinition>(
         return;
     };
 
-    // Validate count/start against property description. Ignore invalid writes.
+    // Validate against property description. Ignore invalid writes.
     if let Ok(desc) = ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
+        if is_function_pdt(desc.pdt) {
+            debug!("AL PropertyExtValueWriteUnCon: PDT_FUNCTION/CONTROL → ignoring");
+            return;
+        }
+        let elem_size = pdt_element_size(desc.pdt);
+        if elem_size > 0 && hdr.count > 0 && hdr.start_idx > 0 {
+            let expected_data_len = hdr.count as usize * elem_size;
+            if data.len() != expected_data_len {
+                debug!("AL PropertyExtValueWriteUnCon: data size mismatch, ignoring");
+                return;
+            }
+        }
         if hdr.start_idx > 0 && desc.max_elements > 0 {
             let end = hdr.start_idx as u32 + hdr.count as u32 - 1;
             if end > desc.max_elements as u32 {
@@ -386,6 +405,12 @@ fn handle_ext_value_write_uncon<D: StackDefinition>(
                 return;
             }
         }
+    }
+
+    // Element-count write (start_index=0): data must be exactly 2 bytes.
+    if hdr.start_idx == 0 && data.len() != 2 {
+        debug!("AL PropertyExtValueWriteUnCon: element-count write with {} bytes (expected 2), ignoring", data.len());
+        return;
     }
 
     let req =
@@ -858,7 +883,7 @@ fn handle_memory_ext_write<D: StackDefinition>(
     let result = ctx.memory_map.write(ctx.state, addr16, data, ctx.access_ctx);
 
     let rc = match result {
-        Ok(_) => 0x00, // E_SUCCESS
+        Ok(_) => 0x00,  // E_SUCCESS
         Err(_) => 0xFD, // E_ADDRESS_VOID
     };
 
@@ -899,15 +924,12 @@ fn handle_memory_ext_read<D: StackDefinition>(
         // Error: count=0
         let resp_len = offsets::MSG_APCI + 6; // APCI + rc + addr
         let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
-        let msg = ind
-            .respond_with(msg_buf)
-            .with_application(ApciCode::MemoryExtendedReadResponse)
-            .with_data(|buf| {
-                buf[base + 2] = 0xFD;
-                buf[base + 3] = addr_hi;
-                buf[base + 4] = addr_mid;
-                buf[base + 5] = addr_lo;
-            });
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
+            buf[base + 2] = 0xFD;
+            buf[base + 3] = addr_hi;
+            buf[base + 4] = addr_mid;
+            buf[base + 5] = addr_lo;
+        });
         outbox.push(msg.into_inner());
         return;
     }
@@ -922,10 +944,8 @@ fn handle_memory_ext_read<D: StackDefinition>(
         Ok(n) => {
             let resp_len = offsets::MSG_APCI + 6 + n;
             let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
-            let msg = ind
-                .respond_with(msg_buf)
-                .with_application(ApciCode::MemoryExtendedReadResponse)
-                .with_data(|buf| {
+            let msg =
+                ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
                     buf[base + 2] = 0x00; // E_SUCCESS
                     buf[base + 3] = addr_hi;
                     buf[base + 4] = addr_mid;
@@ -937,10 +957,8 @@ fn handle_memory_ext_read<D: StackDefinition>(
         Err(_) => {
             let resp_len = offsets::MSG_APCI + 6;
             let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
-            let msg = ind
-                .respond_with(msg_buf)
-                .with_application(ApciCode::MemoryExtendedReadResponse)
-                .with_data(|buf| {
+            let msg =
+                ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
                     buf[base + 2] = 0xFD;
                     buf[base + 3] = addr_hi;
                     buf[base + 4] = addr_mid;
@@ -964,14 +982,11 @@ fn send_memory_ext_write_response<D: StackDefinition>(
     let resp_len = offsets::MSG_APCI + 6; // APCI(2) + rc(1) + addr(3)
     let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
     let base = offsets::MSG_APCI;
-    let msg = ind
-        .respond_with(msg_buf)
-        .with_application(ApciCode::MemoryExtendedWriteResponse)
-        .with_data(|buf| {
-            buf[base + 2] = return_code;
-            buf[base + 3] = addr_hi;
-            buf[base + 4] = addr_mid;
-            buf[base + 5] = addr_lo;
-        });
+    let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedWriteResponse).with_data(|buf| {
+        buf[base + 2] = return_code;
+        buf[base + 3] = addr_hi;
+        buf[base + 4] = addr_mid;
+        buf[base + 5] = addr_lo;
+    });
     outbox.push(msg.into_inner());
 }
