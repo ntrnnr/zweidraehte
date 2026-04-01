@@ -342,7 +342,7 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
     }
 
     // ================================================================
-    // Function Property handlers (PID 55: Security Failures Log)
+    // Function Property handlers
     // ================================================================
 
     fn function_property_command(
@@ -354,11 +354,14 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
         if object_type != InterfaceObjectType::Security {
             return None;
         }
-        if req.prop_id != pid::SECURITY_FAILURES_LOG {
-            return None;
+
+        match req.prop_id {
+            pid::SECURITY_MODE => return Some(self.handle_security_mode_command(req)),
+            pid::SECURITY_FAILURES_LOG => {}
+            _ => return None,
         }
 
-        // Command format: [id, info]
+        // PID_SECURITY_FAILURES_LOG handler: Command format: [id, info]
         if req.service_data.len() < 2 {
             return Some(FunctionPropertyResult::not_supported());
         }
@@ -419,6 +422,41 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
                 }
             }
             _ => Some(FunctionPropertyResult::not_supported()),
+        }
+    }
+}
+
+// ============================================================================
+// Private Helpers
+// ============================================================================
+
+impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
+    /// Handle PID_SECURITY_MODE FunctionPropertyCommand.
+    ///
+    /// ServiceID 0x00: Write Security Mode.
+    /// ServiceInfo: 0x00 = disable, 0x01 = enable.
+    fn handle_security_mode_command(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
+        // Command format: [reserved, service_id, service_info]
+        if req.service_data.len() < 3 {
+            return FunctionPropertyResult::not_supported();
+        }
+        let service_id = req.service_data[1];
+        let service_info = req.service_data[2];
+
+        if service_id != 0x00 {
+            return FunctionPropertyResult::not_supported();
+        }
+
+        match service_info {
+            0x00 => {
+                self.state.set_security_mode_enabled(false);
+                FunctionPropertyResult::success()
+            }
+            0x01 => {
+                self.state.set_security_mode_enabled(true);
+                FunctionPropertyResult::success()
+            }
+            _ => FunctionPropertyResult::not_supported(),
         }
     }
 }
