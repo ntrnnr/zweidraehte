@@ -129,6 +129,12 @@ fn handle_ext_value_read<D: StackDefinition>(
         }
     }
 
+    // Per spec Figure 55: nr_of_elem must be > 0.
+    if hdr.count == 0 {
+        send_ext_read_error(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID);
+        return;
+    }
+
     const MAX_PROPERTY_DATA: usize = 64;
     let mut data_buf = [0u8; MAX_PROPERTY_DATA];
 
@@ -217,6 +223,12 @@ fn handle_ext_value_write_con<D: StackDefinition>(
         }
     }
 
+    // Per spec Figure 55: nr_of_elem must be > 0.
+    if hdr.count == 0 {
+        send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID);
+        return;
+    }
+
     let req = FullPropertyWriteRequest {
         object_idx,
         pid: hdr.prop_id,
@@ -293,6 +305,12 @@ fn handle_ext_value_write_uncon<D: StackDefinition>(
         "AL PropertyExtValueWriteUnCon: iot=0x{:04X}, inst=0x{:04X}, pid={}, count={}, start={}, data_len={}",
         hdr.object_type, hdr.object_instance, hdr.prop_id, hdr.count, hdr.start_idx, data.len()
     );
+
+    // Per spec: nr_of_elem must be > 0, otherwise ignore.
+    if hdr.count == 0 {
+        debug!("AL PropertyExtValueWriteUnCon: count=0, ignoring");
+        return;
+    }
 
     // Resolve (IOT, instance) → flat object index. Ignore if not found.
     let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
