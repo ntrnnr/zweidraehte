@@ -13,4 +13,5 @@ pub mod section_4_4;
 pub mod section_4_5;
 pub mod section_4_6_4_7;
 pub mod section_5;
+pub mod section_6;
 pub mod variables;
