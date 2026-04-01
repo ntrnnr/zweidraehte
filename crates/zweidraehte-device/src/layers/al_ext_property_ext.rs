@@ -18,6 +18,7 @@ use crate::{
     layers::al_extension::{AlExtensionContext, AlServiceExtension},
     messages::{
         apdu::property_ext::{
+            FunctionPropertyExtHeader, FunctionPropertyExtResponse,
             PropertyExtValueHeader, PropertyExtValueResponse, PropertyExtValueWriteConRes,
             return_code,
         },
@@ -25,7 +26,10 @@ use crate::{
         builder::IndicationExt,
         knx::{ApciCode, KnxMessageBuffer, ServiceType},
     },
-    objects::interface::{FullPropertyReadRequest, FullPropertyWriteRequest, PropertyServiceHandler},
+    objects::interface::{
+        FunctionPropertyRequest, FullPropertyReadRequest, FullPropertyWriteRequest,
+        PropertyServiceHandler,
+    },
     router::Outbox,
 };
 
@@ -73,11 +77,21 @@ where
                 handle_ext_value_write_uncon::<D>(msg, ctx);
                 true
             }
+            // Extended function property services.
+            ApciCode::FunctionPropertyExtCommand => {
+                handle_function_property_ext_command::<D>(msg, ctx, outbox);
+                true
+            }
+            ApciCode::FunctionPropertyExtStateRead => {
+                handle_function_property_ext_state_read::<D>(msg, ctx, outbox);
+                true
+            }
             // Response APCIs — we are the responder, ignore if received.
             ApciCode::PropertyExtValueResponse
             | ApciCode::PropertyExtValueWriteConRes
-            | ApciCode::PropertyExtValueInfoReport => {
-                debug!("AL ignoring PropertyExtValue_{:?} (response/report APCI)", apci);
+            | ApciCode::PropertyExtValueInfoReport
+            | ApciCode::FunctionPropertyExtStateResponse => {
+                debug!("AL ignoring {:?} (response/report APCI)", apci);
                 true
             }
             _ => false,
@@ -399,4 +413,153 @@ fn send_ext_write_con_error<D: StackDefinition>(
 fn is_function_pdt(pdt: u8) -> bool {
     use crate::dpt::{PDT_Control, PDT_Function, PropertyDataDefinition};
     pdt == PDT_Control::ID || pdt == PDT_Function::ID
+}
+
+// ============================================================================
+// Function Property Extended Handlers
+// ============================================================================
+
+/// Handle `A_FunctionPropertyExtCommand.ind`.
+///
+/// Resolves `(IOT, instance)` → flat object index, delegates to the
+/// existing `function_property_command` handler, responds with
+/// `A_FunctionPropertyExtState_Response`.
+fn handle_function_property_ext_command<D: StackDefinition>(
+    ind: &KnxMessageBuffer<Buffer<'static>>,
+    ctx: &AlExtensionContext<'_, D>,
+    outbox: &mut Outbox,
+) {
+    if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
+        warn!("AL FunctionPropertyExtCommand unexpected service type: {:?}", ind.service_type());
+        return;
+    }
+
+    let Some(hdr) = FunctionPropertyExtHeader::parse(ind.buf()) else {
+        error!("FunctionPropertyExtCommand message too short: {}", ind.len());
+        return;
+    };
+    let data = hdr.data(ind.buf());
+
+    debug!(
+        "AL FunctionPropertyExtCommand: iot=0x{:04X}, inst=0x{:04X}, pid={}, data_len={}",
+        hdr.object_type, hdr.object_instance, hdr.prop_id, data.len()
+    );
+
+    let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
+        // Non-existent object: respond without return_code or data (spec 3.4.7.3).
+        let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(FunctionPropertyExtResponse::EMPTY_MSG_LEN) else {
+            warn!("AL no buffer for FunctionPropertyExtState_Response");
+            return;
+        };
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::FunctionPropertyExtStateResponse)
+            .with_data(|buf| {
+                FunctionPropertyExtResponse::write_empty(buf, hdr.object_type, hdr.object_instance, hdr.prop_id);
+            });
+        outbox.push(msg.into_inner());
+        return;
+    };
+
+    let req = FunctionPropertyRequest {
+        object_idx,
+        prop_id: hdr.prop_id,
+        service_data: data,
+        ctx: ctx.access_ctx,
+    };
+    let result = ctx.interface_objects.function_property_command(&req);
+
+    let response_len = FunctionPropertyExtResponse::msg_len(result.data.len());
+    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(response_len) else {
+        warn!("AL no buffer for FunctionPropertyExtState_Response");
+        return;
+    };
+
+    let msg = ind
+        .respond_with(msg_buf)
+        .with_application(ApciCode::FunctionPropertyExtStateResponse)
+        .with_data(|buf| {
+            FunctionPropertyExtResponse::write(
+                buf,
+                hdr.object_type,
+                hdr.object_instance,
+                hdr.prop_id,
+                result.return_code,
+                result.data.as_slice(),
+            );
+        });
+
+    debug!("AL sending FunctionPropertyExtState_Response: rc=0x{:02X}", result.return_code);
+    outbox.push(msg.into_inner());
+}
+
+/// Handle `A_FunctionPropertyExtState_Read.ind`.
+///
+/// Same pattern as Command but delegates to `function_property_state_read`.
+fn handle_function_property_ext_state_read<D: StackDefinition>(
+    ind: &KnxMessageBuffer<Buffer<'static>>,
+    ctx: &AlExtensionContext<'_, D>,
+    outbox: &mut Outbox,
+) {
+    if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
+        warn!("AL FunctionPropertyExtStateRead unexpected service type: {:?}", ind.service_type());
+        return;
+    }
+
+    let Some(hdr) = FunctionPropertyExtHeader::parse(ind.buf()) else {
+        error!("FunctionPropertyExtStateRead message too short: {}", ind.len());
+        return;
+    };
+    let data = hdr.data(ind.buf());
+
+    debug!(
+        "AL FunctionPropertyExtStateRead: iot=0x{:04X}, inst=0x{:04X}, pid={}, data_len={}",
+        hdr.object_type, hdr.object_instance, hdr.prop_id, data.len()
+    );
+
+    let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
+        let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(FunctionPropertyExtResponse::EMPTY_MSG_LEN) else {
+            warn!("AL no buffer for FunctionPropertyExtState_Response");
+            return;
+        };
+        let msg = ind
+            .respond_with(msg_buf)
+            .with_application(ApciCode::FunctionPropertyExtStateResponse)
+            .with_data(|buf| {
+                FunctionPropertyExtResponse::write_empty(buf, hdr.object_type, hdr.object_instance, hdr.prop_id);
+            });
+        outbox.push(msg.into_inner());
+        return;
+    };
+
+    let req = FunctionPropertyRequest {
+        object_idx,
+        prop_id: hdr.prop_id,
+        service_data: data,
+        ctx: ctx.access_ctx,
+    };
+    let result = ctx.interface_objects.function_property_state_read(&req);
+
+    let response_len = FunctionPropertyExtResponse::msg_len(result.data.len());
+    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(response_len) else {
+        warn!("AL no buffer for FunctionPropertyExtState_Response");
+        return;
+    };
+
+    let msg = ind
+        .respond_with(msg_buf)
+        .with_application(ApciCode::FunctionPropertyExtStateResponse)
+        .with_data(|buf| {
+            FunctionPropertyExtResponse::write(
+                buf,
+                hdr.object_type,
+                hdr.object_instance,
+                hdr.prop_id,
+                result.return_code,
+                result.data.as_slice(),
+            );
+        });
+
+    debug!("AL sending FunctionPropertyExtState_Response: rc=0x{:02X}", result.return_code);
+    outbox.push(msg.into_inner());
 }

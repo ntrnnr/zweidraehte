@@ -201,6 +201,102 @@ pub mod return_code {
     pub const E_MEMORY_ERROR: u8 = 0xF1;
 }
 
+// ============================================================================
+// Function Property Extended Header
+// ============================================================================
+
+/// Parsed header from extended function property service PDUs.
+///
+/// Used by `A_FunctionPropertyExtCommand`, `A_FunctionPropertyExtState_Read`,
+/// and `A_FunctionPropertyExtState_Response`.
+///
+/// ## Wire format (APDU-relative offsets)
+///
+/// ```text
+/// [0-1]: APCI
+/// [2-3]: interface_object_type (u16 big-endian)
+/// [4-5]: object_instance (u16 big-endian)
+/// [6]:   property_id
+/// [7+]:  data (command/state-read) or return_code + data (response)
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionPropertyExtHeader {
+    pub object_type: u16,
+    pub object_instance: u16,
+    pub prop_id: u8,
+}
+
+impl FunctionPropertyExtHeader {
+    /// Minimum message length (APCI + IOT + instance + PID, no data).
+    pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 7;
+
+    /// Parse the fixed header from a full message buffer.
+    pub fn parse(buf: &[u8]) -> Option<Self> {
+        if buf.len() < Self::MIN_MSG_LEN {
+            return None;
+        }
+        let base = offsets::MSG_APCI;
+        Some(Self {
+            object_type: u16::from_be_bytes([buf[base + 2], buf[base + 3]]),
+            object_instance: u16::from_be_bytes([buf[base + 4], buf[base + 5]]),
+            prop_id: buf[base + 6],
+        })
+    }
+
+    /// Service data following the header (for Command / StateRead).
+    pub fn data<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
+        let start = offsets::MSG_APCI + 7;
+        if buf.len() > start { &buf[start..] } else { &[] }
+    }
+
+    /// Write the header fields into a buffer.
+    pub fn write_header(buf: &mut [u8], object_type: u16, object_instance: u16, prop_id: u8) {
+        let base = offsets::MSG_APCI;
+        let ot = object_type.to_be_bytes();
+        buf[base + 2] = ot[0];
+        buf[base + 3] = ot[1];
+        let oi = object_instance.to_be_bytes();
+        buf[base + 4] = oi[0];
+        buf[base + 5] = oi[1];
+        buf[base + 6] = prop_id;
+    }
+}
+
+/// Writer for `A_FunctionPropertyExtState_Response`.
+pub struct FunctionPropertyExtResponse;
+
+impl FunctionPropertyExtResponse {
+    /// Write a response with return code and optional data.
+    pub fn write(
+        buf: &mut [u8],
+        object_type: u16,
+        object_instance: u16,
+        prop_id: u8,
+        return_code: u8,
+        data: &[u8],
+    ) {
+        FunctionPropertyExtHeader::write_header(buf, object_type, object_instance, prop_id);
+        buf[offsets::MSG_APCI + 7] = return_code;
+        if !data.is_empty() {
+            let start = offsets::MSG_APCI + 8;
+            buf[start..start + data.len()].copy_from_slice(data);
+        }
+    }
+
+    /// Write a response with no return_code and no data (non-function PDT error).
+    pub fn write_empty(buf: &mut [u8], object_type: u16, object_instance: u16, prop_id: u8) {
+        FunctionPropertyExtHeader::write_header(buf, object_type, object_instance, prop_id);
+    }
+
+    /// Message length for a response with the given data size.
+    pub const fn msg_len(data_len: usize) -> usize {
+        offsets::MSG_APCI + 8 + data_len
+    }
+
+    /// Message length for an empty response (no return_code, no data).
+    pub const EMPTY_MSG_LEN: usize = offsets::MSG_APCI + 7;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
