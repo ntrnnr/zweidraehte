@@ -16,8 +16,6 @@
 //! - 3.8.13.2 — unloads/reloads Security IO and switches from TK1 to TK2;
 //!   requires LoadStateControl support not exercised elsewhere.
 //! - 3.8.13.6 — uses T_Connect (connection-oriented), not yet implemented.
-//! - 3.8.13.7 — uses A_PropertyExtDescription_Read (0x01D2), not yet
-//!   implemented.
 //! - 3.8.13.8 — uses FDSK key setup, not yet implemented.
 //!
 //! Note: The XML test template uses TK2 for tests 3.8.13.3–5 because it
@@ -120,6 +118,29 @@ const SECURE_STD_READ_TOOL_KEY_DENIED: &str =
     "3C 60 #BDUT_ADDR #EDI 05 03 D6 #SEC_INTF_OBJ_INDEX 38 00 01";
 
 // ============================================================================
+// PropertyExtDescription_Read / Response templates for PID 0x38 on Security IO
+// ============================================================================
+
+// Secure A+C A_PropertyExtDescription_Read (0x01D2): IOT=0x0011, instance=0x0010,
+// PID=0x38, description index=0x00, property index=0x00.
+// APDU: 01 D2 + 00 11 + 00 10 + 38 + 00 + 00 = 8 bytes → len = 0x08
+const SECURE_DESC_READ_PID38: &str =
+    "3C 60 #EDI #BDUT_ADDR 08 01 D2 00 11 00 10 38 00 00";
+
+// Secure A+C success response: valid descriptor (wildcard data bytes).
+// APDU: 01 D3 + 00 11 + 00 10 + 38 + ?? x10 = 16 bytes → len = 0x10
+const SECURE_DESC_READ_PID38_OK: &str =
+    "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 38 ?? ?? ?? ?? ?? ?? ?? ?? ?? ??";
+
+// Plain A_PropertyExtDescription_Read for PID 0x38.
+const PLAIN_DESC_READ_PID38: &str =
+    "BC #EDI #BDUT_ADDR 68 01 D2 00 11 00 10 38 00 00";
+
+// Plain all-zero descriptor response (access denied for 00C/00C — plain NEVER allowed).
+const PLAIN_DESC_READ_PID38_ZERO: &str =
+    "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 38 00 00 00 00 00 00 00 00 00 00";
+
+// ============================================================================
 // Suite Constructor
 // ============================================================================
 
@@ -135,7 +156,7 @@ pub fn create_section_3_8_13_suite() -> TestSuite {
             test_3_8_13_4(),
             test_3_8_13_5(),
             // Skipped: 3.8.13.6 — uses T_Connect (connection-oriented).
-            // Skipped: 3.8.13.7 — uses A_PropertyExtDescription_Read (0x01D2).
+            test_3_8_13_7(),
             // Skipped: 3.8.13.8 — uses FDSK key setup.
         ])
 }
@@ -270,5 +291,35 @@ fn test_3_8_13_5() -> TestCase {
         comment("A+C extended read → E_ACCESS_DENIED"),
         inject_secure_ac(SECURE_READ_TOOL_KEY, "TK1"),
         expect_secure_ac(SECURE_READ_TOOL_KEY_DENIED, "TK1", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.8.13.7 PropertyDescriptionRead
+// ============================================================================
+//
+// Access policy 008/008: A+C secure description read succeeds (A+C is always
+// allowed). Plain description read returns all-zero (plain NEVER allowed for
+// 008/008, regardless of security mode).
+
+fn test_3_8_13_7() -> TestCase {
+    TestCase::new("3.8.13.7 PropertyDescriptionRead").with_steps(vec![
+        // ==== Security Mode ON ====
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Secure A+C description read → success (valid descriptor)"),
+        inject_secure_ac(SECURE_DESC_READ_PID38, "TK1"),
+        expect_secure_ac(SECURE_DESC_READ_PID38_OK, "TK1", TIMEOUT),
+
+        // ==== Security Mode OFF ====
+        comment("Disable Security Mode"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Plain description read → all-zero (plain never allowed for 008/008)"),
+        inject(PLAIN_DESC_READ_PID38),
+        expect(PLAIN_DESC_READ_PID38_ZERO, TIMEOUT),
     ])
 }

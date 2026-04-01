@@ -15,7 +15,6 @@
 //! the actual entry at start=1 (20-byte payload).
 //!
 //! Skipped test cases:
-//! - 3.8.9.4 — uses A_PropertyExtDescription_Read (0x01D2), not yet implemented.
 //! - 3.8.9.5 — uses T_Connect (connection-oriented), not yet implemented.
 
 use crate::{TestCase, TestSuite};
@@ -146,6 +145,29 @@ const PLAIN_READ_ENTRY_DENIED: &str =
     "BC #BDUT_ADDR #EDI 6A 01 CD 00 11 00 10 34 00 00 01 FC";
 
 // ============================================================================
+// PropertyExtDescription_Read / Response templates for PID 0x34 on Security IO
+// ============================================================================
+
+// Secure A+C A_PropertyExtDescription_Read (0x01D2): IOT=0x0011, instance=0x0010,
+// PID=0x34, description index=0x00, property index=0x00.
+// APDU: 01 D2 + 00 11 + 00 10 + 34 + 00 + 00 = 8 bytes → len = 0x08
+const SECURE_DESC_READ_PID34: &str =
+    "3C 60 #EDI #BDUT_ADDR 08 01 D2 00 11 00 10 34 00 00";
+
+// Secure A+C success response: valid descriptor (wildcard data bytes).
+// APDU: 01 D3 + 00 11 + 00 10 + 34 + ?? x10 = 16 bytes → len = 0x10
+const SECURE_DESC_READ_PID34_OK: &str =
+    "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 34 ?? ?? ?? ?? ?? ?? ?? ?? ?? ??";
+
+// Plain A_PropertyExtDescription_Read for PID 0x34.
+const PLAIN_DESC_READ_PID34: &str =
+    "BC #EDI #BDUT_ADDR 68 01 D2 00 11 00 10 34 00 00";
+
+// Plain all-zero descriptor response (access denied for 00C/00C — plain NEVER allowed).
+const PLAIN_DESC_READ_PID34_ZERO: &str =
+    "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 34 00 00 00 00 00 00 00 00 00 00";
+
+// ============================================================================
 // Suite Constructor
 // ============================================================================
 
@@ -158,8 +180,7 @@ pub fn create_section_3_8_9_suite() -> TestSuite {
             // Skipped: 3.8.9.1 — P2P_KEY_TABLE storage not implemented
             test_3_8_9_2(),
             test_3_8_9_3(),
-            // Skipped: 3.8.9.4 — uses A_PropertyExtDescription_Read (0x01D2),
-            //   not yet implemented.
+            test_3_8_9_4(),
             // Skipped: 3.8.9.5 — uses T_Connect (connection-oriented),
             //   not yet implemented.
         ])
@@ -324,5 +345,35 @@ fn test_3_8_9_3() -> TestCase {
         comment("Auth-only read element count → E_ACCESS_DENIED"),
         inject_secure_ao(SECURE_READ_ELEM_COUNT, "TK1"),
         expect_secure_ao(SECURE_READ_ELEM_COUNT_DENIED, "TK1", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.8.9.4 PropertyDescriptionRead
+// ============================================================================
+//
+// Access policy 00C/00C: A+C secure description read succeeds (A+C is always
+// allowed). Plain description read returns all-zero (plain NEVER allowed for
+// 00C/00C, regardless of security mode).
+
+fn test_3_8_9_4() -> TestCase {
+    TestCase::new("3.8.9.4 PropertyDescriptionRead").with_steps(vec![
+        // ==== Security Mode ON ====
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Secure A+C description read → success (valid descriptor)"),
+        inject_secure_ac(SECURE_DESC_READ_PID34, "TK1"),
+        expect_secure_ac(SECURE_DESC_READ_PID34_OK, "TK1", TIMEOUT),
+
+        // ==== Security Mode OFF ====
+        comment("Disable Security Mode"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Plain description read → all-zero (plain never allowed for 00C/00C)"),
+        inject(PLAIN_DESC_READ_PID34),
+        expect(PLAIN_DESC_READ_PID34_ZERO, TIMEOUT),
     ])
 }

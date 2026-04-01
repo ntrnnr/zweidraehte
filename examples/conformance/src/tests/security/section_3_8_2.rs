@@ -1,4 +1,4 @@
-//! Section 3.8.2 — `PID_OBJECT_NAME` access policy `3FF/0CC` (3 cases).
+//! Section 3.8.2 — `PID_OBJECT_NAME` access policy `3FF/0CC`.
 //!
 //! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
 //! "3.8.2 PID_OBJECT_NAME".
@@ -93,6 +93,21 @@ const SECURE_WRITE_PID02_RO: &str =
     "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 02 00 00 01 ??";
 
 // ============================================================================
+// PropertyExtDescription_Read / Response templates for PID 2 on Security IO
+// ============================================================================
+
+// Plain A_PropertyExtDescription_Read (0x01D2): IOT=0x0011, instance=0x0010,
+// PID=0x02 (ObjectName), description index=0x00, property index=0x00.
+const PLAIN_DESC_READ_PID02: &str =
+    "BC #EDI #BDUT_ADDR 68 01 D2 00 11 00 10 02 00 00";
+
+// All-zero descriptor response. PID_OBJECT_NAME is not implemented on our
+// Security IO, so both denied and "success" cases return zeroed descriptors.
+// APDU: 01 D3 + 00 11 + 00 10 + 02 + 00 00 00 00 00 00 00 00 00 00 = 16 bytes
+const PLAIN_DESC_READ_PID02_ZERO: &str =
+    "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 02 00 00 00 00 00 00 00 00 00 00";
+
+// ============================================================================
 // Suite Constructor
 // ============================================================================
 
@@ -104,7 +119,7 @@ pub fn create_section_3_8_2_suite() -> TestSuite {
         .with_cases(vec![
             // Skipped: 3.8.2.1 — PID_OBJECT_NAME not implemented on Security IO
             test_3_8_2_2(),
-            // Skipped: 3.8.2.3 — uses A_PropertyExtDescription_Read
+            test_3_8_2_3(),
         ])
 }
 
@@ -189,5 +204,36 @@ fn test_3_8_2_2() -> TestCase {
         comment("A+C secure write → error"),
         inject_secure_ac(SECURE_WRITE_PID02, "TK1"),
         expect_secure_ac(SECURE_WRITE_PID02_RO, "TK1", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.8.2.3 PropertyDescriptionRead plain
+// ============================================================================
+//
+// Access policy 3FF/0CC: plain description read is denied when security mode
+// is ON. When security mode is OFF, plain access is allowed — but since
+// PID_OBJECT_NAME is not implemented on our Security IO, the response is
+// all-zero in both cases.
+
+fn test_3_8_2_3() -> TestCase {
+    TestCase::new("3.8.2.3 PropertyDescriptionRead plain").with_steps(vec![
+        // ==== Security Mode ON ====
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Plain description read → all-zero (access denied, sec mode ON)"),
+        inject(PLAIN_DESC_READ_PID02),
+        expect(PLAIN_DESC_READ_PID02_ZERO, TIMEOUT),
+
+        // ==== Security Mode OFF ====
+        comment("Disable Security Mode"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Plain description read → all-zero (PID not implemented)"),
+        inject(PLAIN_DESC_READ_PID02),
+        expect(PLAIN_DESC_READ_PID02_ZERO, TIMEOUT),
     ])
 }
