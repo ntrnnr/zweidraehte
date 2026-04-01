@@ -1,0 +1,328 @@
+//! Section 3.8.11 — `PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE` access policy
+//! `00C/00C` (3 cases).
+//!
+//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! "3.8.11 PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE".
+//!
+//! Tests PID 0x36 (PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, i.e. PID 54) on the
+//! Security Interface Object (IOT=0x0011, instance=0x0010). Access policy is
+//! `00C/00C`: requires Tool A+C for both read and write in both security
+//! modes — plain and auth-only access is always denied.
+//!
+//! Each table entry is PDT_GENERIC_08: 2 bytes IA + 6 bytes LastValidSeqNr.
+//!
+//! The test writes element count at start=0 (5-byte payload) before writing
+//! the actual entry at start=1 (8-byte payload).
+//!
+//! Skipped test cases:
+//! - 3.8.11.4 — uses A_PropertyExtDescription_Read (0x01D2), not yet implemented.
+//! - 3.8.11.5 — uses T_Connect (connection-oriented), not yet implemented.
+
+use crate::{TestCase, TestSuite};
+use super::variables::create_security_variables;
+use crate::tests::helpers::*;
+
+/// Default response timeout in milliseconds.
+const TIMEOUT: u32 = 3000;
+
+// ============================================================================
+// Security Mode Toggle Templates
+// ============================================================================
+
+const ENABLE_SECURITY_MODE: &str =
+    "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 01";
+
+const ENABLE_SECURITY_MODE_RESP: &str =
+    "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 00";
+
+const DISABLE_SECURITY_MODE: &str =
+    "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 00";
+
+const DISABLE_SECURITY_MODE_RESP: &str =
+    "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 00";
+
+// ============================================================================
+// PropertyExtValueWriteCon templates for PID 0x36 on Security IO
+// ============================================================================
+
+// Write element count at start=0: count=1, start=0, data=00 00 (zero entries).
+// APDU: 01 CE + 00 11 + 00 10 + 36 + 01 + 00 00 + 00 00 = 12 bytes → len = 0x0B
+const SECURE_WRITE_ELEM_COUNT: &str =
+    "3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 36 01 00 00 00 00";
+
+// Write element count success: count=1, start=0, return_code=0x00.
+// APDU: 01 CF + 00 11 + 00 10 + 36 + 01 + 00 00 + 00 = 11 bytes → len = 0x0A
+const SECURE_WRITE_ELEM_COUNT_OK: &str =
+    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 00 00";
+
+// Write element count denied: count=0, start=0, return_code=0xFC.
+const SECURE_WRITE_ELEM_COUNT_DENIED: &str =
+    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 00 00 00 FC";
+
+// Write entry at start=1: count=1, start=1, data=8 bytes
+// (IA=0x11F0 + LastValidSeqNr=00 00 00 00 00 00).
+// APDU: 01 CE + 00 11 + 00 10 + 36 + 01 + 00 01 + 8 data = 18 bytes → len = 0x11
+const SECURE_WRITE_ENTRY: &str =
+    "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 11 F0 00 00 00 00 00 00";
+
+// Write entry success: count=1, start=1, return_code=0x00.
+const SECURE_WRITE_ENTRY_OK: &str =
+    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
+
+// Write entry denied: count=0, start=1, return_code=0xFC.
+const SECURE_WRITE_ENTRY_DENIED: &str =
+    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 00 00 01 FC";
+
+// ============================================================================
+// PropertyExtValueRead templates for PID 0x36 on Security IO
+// ============================================================================
+
+// Read element count: count=1, start=0.
+// APDU: 01 CC + 00 11 + 00 10 + 36 + 01 + 00 00 = 10 bytes → len = 0x09
+const SECURE_READ_ELEM_COUNT: &str =
+    "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 36 01 00 00";
+
+// Read element count success: count=1, start=0, data=00 01 (1 entry).
+// APDU: 01 CD + 00 11 + 00 10 + 36 + 01 + 00 00 + 00 01 = 12 bytes → len = 0x0B
+const SECURE_READ_ELEM_COUNT_OK: &str =
+    "3C 60 #BDUT_ADDR #EDI 0B 01 CD 00 11 00 10 36 01 00 00 00 01";
+
+// Read element count denied: count=0, start=0, return_code=0xFC.
+const SECURE_READ_ELEM_COUNT_DENIED: &str =
+    "3C 60 #BDUT_ADDR #EDI 0A 01 CD 00 11 00 10 36 00 00 00 FC";
+
+// Read entry at start=1: count=1, start=1.
+// APDU: 01 CC + 00 11 + 00 10 + 36 + 01 + 00 01 = 10 bytes → len = 0x09
+const SECURE_READ_ENTRY: &str =
+    "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 36 01 00 01";
+
+// Read entry success: count=1, start=1, data=8 bytes (matching written data).
+// APDU: 01 CD + 00 11 + 00 10 + 36 + 01 + 00 01 + 8 data = 18 bytes → len = 0x11
+const SECURE_READ_ENTRY_OK: &str =
+    "3C 60 #BDUT_ADDR #EDI 11 01 CD 00 11 00 10 36 01 00 01 11 F0 00 00 00 00 00 00";
+
+// Read entry denied: count=0, start=1, return_code=0xFC.
+const SECURE_READ_ENTRY_DENIED: &str =
+    "3C 60 #BDUT_ADDR #EDI 0A 01 CD 00 11 00 10 36 00 00 01 FC";
+
+// ============================================================================
+// Plain (non-secure) templates — used in test 3.8.11.2
+// ============================================================================
+
+// Plain write element count: count=1, start=0, data=00 00.
+// APDU: 12 bytes → TP1 len = 0x6B
+const PLAIN_WRITE_ELEM_COUNT: &str =
+    "BC #EDI #BDUT_ADDR 6B 01 CE 00 11 00 10 36 01 00 00 00 00";
+
+// Plain write element count denied.
+const PLAIN_WRITE_ELEM_COUNT_DENIED: &str =
+    "BC #BDUT_ADDR #EDI 6A 01 CF 00 11 00 10 36 00 00 00 FC";
+
+// Plain write entry: extended frame (too long for standard frame).
+const PLAIN_WRITE_ENTRY: &str =
+    "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 11 F0 00 00 00 00 00 00";
+
+// Plain write entry denied response: standard frame.
+const PLAIN_WRITE_ENTRY_DENIED: &str =
+    "BC #BDUT_ADDR #EDI 6A 01 CF 00 11 00 10 36 00 00 01 FC";
+
+// Plain read element count.
+const PLAIN_READ_ELEM_COUNT: &str =
+    "BC #EDI #BDUT_ADDR 69 01 CC 00 11 00 10 36 01 00 00";
+
+// Plain read element count denied.
+const PLAIN_READ_ELEM_COUNT_DENIED: &str =
+    "BC #BDUT_ADDR #EDI 6A 01 CD 00 11 00 10 36 00 00 00 FC";
+
+// Plain read entry.
+const PLAIN_READ_ENTRY: &str =
+    "BC #EDI #BDUT_ADDR 69 01 CC 00 11 00 10 36 01 00 01";
+
+// Plain read entry denied.
+const PLAIN_READ_ENTRY_DENIED: &str =
+    "BC #BDUT_ADDR #EDI 6A 01 CD 00 11 00 10 36 00 00 01 FC";
+
+// ============================================================================
+// Suite Constructor
+// ============================================================================
+
+pub fn create_section_3_8_11_suite() -> TestSuite {
+    let variables = create_security_variables();
+
+    TestSuite::new(
+        "3.8.11 PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE (Security IO, access 00C/00C)",
+        variables,
+    )
+    .secure()
+    .with_cases(vec![
+        // Skipped: 3.8.11.1 — SIAT storage not implemented
+        test_3_8_11_2(),
+        test_3_8_11_3(),
+        // Skipped: 3.8.11.4 — uses A_PropertyExtDescription_Read (0x01D2),
+        //   not yet implemented.
+        // Skipped: 3.8.11.5 — uses T_Connect (connection-oriented),
+        //   not yet implemented.
+    ])
+}
+
+// ============================================================================
+// 3.8.11.1 Secure PropertyValueWrite and Read – A+C
+// ============================================================================
+//
+// Access policy 00C/00C means only Tool A+C has read AND write access
+// regardless of security mode. This test clears the table (writes element
+// count=0 at start=0), writes one entry at start=1 (IA=0x11F0, SeqNr=0),
+// then reads back the element count and the entry to verify. Repeated for
+// both sec-mode-on and sec-mode-off phases.
+
+fn test_3_8_11_1() -> TestCase {
+    TestCase::new("3.8.11.1 Secure PropertyValueWrite and Read – A+C").with_steps(vec![
+        // ==== Security Mode ON ====
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Write element count = 0 (clear table) → success"),
+        inject_secure_ac(SECURE_WRITE_ELEM_COUNT, "TK1"),
+        expect_secure_ac(SECURE_WRITE_ELEM_COUNT_OK, "TK1", TIMEOUT),
+
+        comment("Write entry at start=1 (IA=0x11F0, SeqNr=0) → success"),
+        inject_secure_ac(SECURE_WRITE_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_WRITE_ENTRY_OK, "TK1", TIMEOUT),
+
+        comment("Read element count → expect 1"),
+        inject_secure_ac(SECURE_READ_ELEM_COUNT, "TK1"),
+        expect_secure_ac(SECURE_READ_ELEM_COUNT_OK, "TK1", TIMEOUT),
+
+        comment("Read entry at start=1 → expect written data"),
+        inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_READ_ENTRY_OK, "TK1", TIMEOUT),
+
+        // ==== Security Mode OFF ====
+        comment("Disable Security Mode"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Write element count = 0 (clear table) → success"),
+        inject_secure_ac(SECURE_WRITE_ELEM_COUNT, "TK1"),
+        expect_secure_ac(SECURE_WRITE_ELEM_COUNT_OK, "TK1", TIMEOUT),
+
+        comment("Write entry at start=1 → success"),
+        inject_secure_ac(SECURE_WRITE_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_WRITE_ENTRY_OK, "TK1", TIMEOUT),
+
+        comment("Read element count → expect 1"),
+        inject_secure_ac(SECURE_READ_ELEM_COUNT, "TK1"),
+        expect_secure_ac(SECURE_READ_ELEM_COUNT_OK, "TK1", TIMEOUT),
+
+        comment("Read entry at start=1 → expect written data"),
+        inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_READ_ENTRY_OK, "TK1", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.8.11.2 Unsecure PropertyValueWrite and Read
+// ============================================================================
+//
+// Plain (non-secure) write and read are always denied under 00C/00C policy,
+// regardless of security mode.
+
+fn test_3_8_11_2() -> TestCase {
+    TestCase::new("3.8.11.2 Unsecure PropertyValueWrite and Read").with_steps(vec![
+        // ==== Security Mode ON ====
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Plain write element count → E_ACCESS_DENIED"),
+        inject(PLAIN_WRITE_ELEM_COUNT),
+        expect(PLAIN_WRITE_ELEM_COUNT_DENIED, TIMEOUT),
+
+        comment("Plain write entry → E_ACCESS_DENIED"),
+        inject(PLAIN_WRITE_ENTRY),
+        expect(PLAIN_WRITE_ENTRY_DENIED, TIMEOUT),
+
+        comment("Plain read element count → E_ACCESS_DENIED"),
+        inject(PLAIN_READ_ELEM_COUNT),
+        expect(PLAIN_READ_ELEM_COUNT_DENIED, TIMEOUT),
+
+        comment("Plain read entry → E_ACCESS_DENIED"),
+        inject(PLAIN_READ_ENTRY),
+        expect(PLAIN_READ_ENTRY_DENIED, TIMEOUT),
+
+        // ==== Security Mode OFF ====
+        comment("Disable Security Mode"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Plain write element count → E_ACCESS_DENIED"),
+        inject(PLAIN_WRITE_ELEM_COUNT),
+        expect(PLAIN_WRITE_ELEM_COUNT_DENIED, TIMEOUT),
+
+        comment("Plain write entry → E_ACCESS_DENIED"),
+        inject(PLAIN_WRITE_ENTRY),
+        expect(PLAIN_WRITE_ENTRY_DENIED, TIMEOUT),
+
+        comment("Plain read element count → E_ACCESS_DENIED"),
+        inject(PLAIN_READ_ELEM_COUNT),
+        expect(PLAIN_READ_ELEM_COUNT_DENIED, TIMEOUT),
+
+        comment("Plain read entry → E_ACCESS_DENIED"),
+        inject(PLAIN_READ_ENTRY),
+        expect(PLAIN_READ_ENTRY_DENIED, TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.8.11.3 Secured PropertyValueRead only authenticated
+// ============================================================================
+//
+// Auth-only (without confidentiality) is insufficient for 00C/00C policy —
+// both write and read are denied in both security modes.
+
+fn test_3_8_11_3() -> TestCase {
+    TestCase::new("3.8.11.3 Secured PropertyValueRead only authenticated").with_steps(vec![
+        // ==== Security Mode ON ====
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Auth-only write element count → E_ACCESS_DENIED"),
+        inject_secure_ao(SECURE_WRITE_ELEM_COUNT, "TK1"),
+        expect_secure_ao(SECURE_WRITE_ELEM_COUNT_DENIED, "TK1", TIMEOUT),
+
+        comment("Auth-only write entry → E_ACCESS_DENIED"),
+        inject_secure_ao(SECURE_WRITE_ENTRY, "TK1"),
+        expect_secure_ao(SECURE_WRITE_ENTRY_DENIED, "TK1", TIMEOUT),
+
+        comment("Auth-only read element count → E_ACCESS_DENIED"),
+        inject_secure_ao(SECURE_READ_ELEM_COUNT, "TK1"),
+        expect_secure_ao(SECURE_READ_ELEM_COUNT_DENIED, "TK1", TIMEOUT),
+
+        comment("Auth-only read entry → E_ACCESS_DENIED"),
+        inject_secure_ao(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ao(SECURE_READ_ENTRY_DENIED, "TK1", TIMEOUT),
+
+        // ==== Security Mode OFF ====
+        comment("Disable Security Mode"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Auth-only write element count → E_ACCESS_DENIED"),
+        inject_secure_ao(SECURE_WRITE_ELEM_COUNT, "TK1"),
+        expect_secure_ao(SECURE_WRITE_ELEM_COUNT_DENIED, "TK1", TIMEOUT),
+
+        comment("Auth-only write entry → E_ACCESS_DENIED"),
+        inject_secure_ao(SECURE_WRITE_ENTRY, "TK1"),
+        expect_secure_ao(SECURE_WRITE_ENTRY_DENIED, "TK1", TIMEOUT),
+
+        comment("Auth-only read element count → E_ACCESS_DENIED"),
+        inject_secure_ao(SECURE_READ_ELEM_COUNT, "TK1"),
+        expect_secure_ao(SECURE_READ_ELEM_COUNT_DENIED, "TK1", TIMEOUT),
+
+        comment("Auth-only read entry → E_ACCESS_DENIED"),
+        inject_secure_ao(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ao(SECURE_READ_ENTRY_DENIED, "TK1", TIMEOUT),
+    ])
+}

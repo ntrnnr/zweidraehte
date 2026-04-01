@@ -77,11 +77,31 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
             2,
             AccessPolicy::RESTRICTED, // 15F/04C
         ),
+        // PID_P2P_KEY_TABLE (52): point-to-point encryption keys — PDT_GENERIC_20
+        PropertyDescriptor::with_policy(
+            pid::P2P_KEY_TABLE,
+            0x24, // PDT_GENERIC_20 = 0x10 + 20
+            0,
+            PropertyAccess::ReadWrite,
+            2,
+            2,
+            AccessPolicy::TOOL_ONLY, // 00C/00C
+        ),
         // PID_GROUP_KEY_TABLE (53): group communication encryption keys — PDT_GENERIC_18
         PropertyDescriptor::with_policy(
             pid::GROUP_KEY_TABLE,
             PDT_Generic18::ID,
-            0,                 // 0 elements until loaded
+            0,
+            PropertyAccess::ReadWrite,
+            2,
+            2,
+            AccessPolicy::TOOL_ONLY, // 00C/00C
+        ),
+        // PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE (54): IA→SeqNr mapping — PDT_GENERIC_08
+        PropertyDescriptor::with_policy(
+            pid::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+            PDT_Generic08::ID,
+            0,
             PropertyAccess::ReadWrite,
             2,
             2,
@@ -98,10 +118,10 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
             // 1FF/0CC per Profiles spec (not 15F/04C as in earlier skeleton)
             AccessPolicy::new(0x1FF, 0x0CC),
         ),
-        // PID_TOOL_KEY (56): write-only 16-byte key
+        // PID_TOOL_KEY (56): write-only 16-byte key — PDT_GENERIC_16
         PropertyDescriptor::with_policy(
             pid::TOOL_KEY,
-            PDT_Generic08::ID,
+            0x20, // PDT_GENERIC_16
             1,
             PropertyAccess::WriteOnly,
             // X/2: no read access, write at level 2
