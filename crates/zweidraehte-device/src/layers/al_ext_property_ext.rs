@@ -18,17 +18,15 @@ use crate::{
     layers::al_extension::{AlExtensionContext, AlServiceExtension},
     messages::{
         apdu::property_ext::{
-            FunctionPropertyExtHeader, FunctionPropertyExtResponse,
-            PropertyExtValueHeader, PropertyExtValueResponse, PropertyExtValueWriteConRes,
-            return_code,
+            FunctionPropertyExtHeader, FunctionPropertyExtResponse, PropertyExtValueHeader, PropertyExtValueResponse,
+            PropertyExtValueWriteConRes, return_code,
         },
         buffers::Buffer,
         builder::IndicationExt,
         knx::{ApciCode, KnxMessageBuffer, ServiceType},
     },
     objects::interface::{
-        FunctionPropertyRequest, FullPropertyReadRequest, FullPropertyWriteRequest,
-        PropertyServiceHandler,
+        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, PropertyServiceHandler,
     },
     router::Outbox,
 };
@@ -86,13 +84,15 @@ where
                 handle_function_property_ext_state_read::<D>(msg, ctx, outbox);
                 true
             }
-            // TODO: PropertyExtDescriptionRead handler not yet implemented.
+            ApciCode::PropertyExtDescriptionRead => {
+                handle_ext_description_read::<D>(msg, ctx, outbox);
+                true
+            }
             // Response APCIs — we are the responder, ignore if received.
             ApciCode::PropertyExtValueResponse
             | ApciCode::PropertyExtValueWriteConRes
             | ApciCode::PropertyExtValueInfoReport
             | ApciCode::FunctionPropertyExtStateResponse
-            | ApciCode::PropertyExtDescriptionRead
             | ApciCode::PropertyExtDescriptionResponse => {
                 debug!("AL ignoring {:?} (response/report APCI)", apci);
                 true
@@ -183,20 +183,17 @@ fn handle_ext_value_read<D: StackDefinition>(
             // Per spec: if start_idx=0 (element count query), response count=1.
             let response_count = if hdr.start_idx == 0 { 1 } else { hdr.count };
 
-            let msg = ind
-                .respond_with(msg_buf)
-                .with_application(ApciCode::PropertyExtValueResponse)
-                .with_data(|buf| {
-                    PropertyExtValueResponse::write(
-                        buf,
-                        hdr.object_type,
-                        hdr.object_instance,
-                        hdr.prop_id,
-                        response_count,
-                        hdr.start_idx,
-                        &data_buf[..data_len],
-                    );
-                });
+            let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtValueResponse).with_data(|buf| {
+                PropertyExtValueResponse::write(
+                    buf,
+                    hdr.object_type,
+                    hdr.object_instance,
+                    hdr.prop_id,
+                    response_count,
+                    hdr.start_idx,
+                    &data_buf[..data_len],
+                );
+            });
 
             debug!("AL sending PropertyExtValueResponse: {} bytes", data_len);
             outbox.push(msg.into_inner());
@@ -230,7 +227,12 @@ fn handle_ext_value_write_con<D: StackDefinition>(
 
     debug!(
         "AL PropertyExtValueWriteCon: iot=0x{:04X}, inst=0x{:04X}, pid={}, count={}, start={}, data_len={}",
-        hdr.object_type, hdr.object_instance, hdr.prop_id, hdr.count, hdr.start_idx, data.len()
+        hdr.object_type,
+        hdr.object_instance,
+        hdr.prop_id,
+        hdr.count,
+        hdr.start_idx,
+        data.len()
     );
 
     // Resolve (IOT, instance) → flat object index.
@@ -251,7 +253,12 @@ fn handle_ext_value_write_con<D: StackDefinition>(
         if elem_size > 0 && hdr.count > 0 && hdr.start_idx > 0 {
             let expected_data_len = hdr.count as usize * elem_size;
             if data.len() != expected_data_len {
-                debug!("AL PropertyExtValueWriteCon: data size {} != count {} × elem_size {}", data.len(), hdr.count, elem_size);
+                debug!(
+                    "AL PropertyExtValueWriteCon: data size {} != count {} × elem_size {}",
+                    data.len(),
+                    hdr.count,
+                    elem_size
+                );
                 send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT);
                 return;
             }
@@ -273,13 +280,8 @@ fn handle_ext_value_write_con<D: StackDefinition>(
         return;
     }
 
-    let req = FullPropertyWriteRequest {
-        object_idx,
-        pid: hdr.prop_id,
-        start_idx: hdr.start_idx,
-        data,
-        ctx: ctx.access_ctx,
-    };
+    let req =
+        FullPropertyWriteRequest { object_idx, pid: hdr.prop_id, start_idx: hdr.start_idx, data, ctx: ctx.access_ctx };
     let result = ctx.interface_objects.property_value_write(&req);
 
     let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
@@ -289,10 +291,8 @@ fn handle_ext_value_write_con<D: StackDefinition>(
 
     match result {
         Ok(_write_response) => {
-            let msg = ind
-                .respond_with(msg_buf)
-                .with_application(ApciCode::PropertyExtValueWriteConRes)
-                .with_data(|buf| {
+            let msg =
+                ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtValueWriteConRes).with_data(|buf| {
                     PropertyExtValueWriteConRes::write_success(
                         buf,
                         hdr.object_type,
@@ -308,10 +308,8 @@ fn handle_ext_value_write_con<D: StackDefinition>(
         }
         Err(e) => {
             warn!("AL PropertyExtValueWriteCon failed: {:?}", e);
-            let msg = ind
-                .respond_with(msg_buf)
-                .with_application(ApciCode::PropertyExtValueWriteConRes)
-                .with_data(|buf| {
+            let msg =
+                ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtValueWriteConRes).with_data(|buf| {
                     PropertyExtValueWriteConRes::write_error(
                         buf,
                         hdr.object_type,
@@ -347,7 +345,12 @@ fn handle_ext_value_write_uncon<D: StackDefinition>(
 
     debug!(
         "AL PropertyExtValueWriteUnCon: iot=0x{:04X}, inst=0x{:04X}, pid={}, count={}, start={}, data_len={}",
-        hdr.object_type, hdr.object_instance, hdr.prop_id, hdr.count, hdr.start_idx, data.len()
+        hdr.object_type,
+        hdr.object_instance,
+        hdr.prop_id,
+        hdr.count,
+        hdr.start_idx,
+        data.len()
     );
 
     // Per spec: nr_of_elem must be > 0, otherwise ignore.
@@ -373,13 +376,8 @@ fn handle_ext_value_write_uncon<D: StackDefinition>(
         }
     }
 
-    let req = FullPropertyWriteRequest {
-        object_idx,
-        pid: hdr.prop_id,
-        start_idx: hdr.start_idx,
-        data,
-        ctx: ctx.access_ctx,
-    };
+    let req =
+        FullPropertyWriteRequest { object_idx, pid: hdr.prop_id, start_idx: hdr.start_idx, data, ctx: ctx.access_ctx };
     if let Err(e) = ctx.interface_objects.property_value_write(&req) {
         debug!("AL PropertyExtValueWriteUnCon write failed (ignored): {:?}", e);
     }
@@ -402,19 +400,16 @@ fn send_ext_read_error<D: StackDefinition>(
         return;
     };
 
-    let msg = ind
-        .respond_with(msg_buf)
-        .with_application(ApciCode::PropertyExtValueResponse)
-        .with_data(|buf| {
-            PropertyExtValueResponse::write_error(
-                buf,
-                hdr.object_type,
-                hdr.object_instance,
-                hdr.prop_id,
-                hdr.start_idx,
-                return_code,
-            );
-        });
+    let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtValueResponse).with_data(|buf| {
+        PropertyExtValueResponse::write_error(
+            buf,
+            hdr.object_type,
+            hdr.object_instance,
+            hdr.prop_id,
+            hdr.start_idx,
+            return_code,
+        );
+    });
 
     outbox.push(msg.into_inner());
 }
@@ -432,19 +427,16 @@ fn send_ext_write_con_error<D: StackDefinition>(
         return;
     };
 
-    let msg = ind
-        .respond_with(msg_buf)
-        .with_application(ApciCode::PropertyExtValueWriteConRes)
-        .with_data(|buf| {
-            PropertyExtValueWriteConRes::write_error(
-                buf,
-                hdr.object_type,
-                hdr.object_instance,
-                hdr.prop_id,
-                hdr.start_idx,
-                return_code,
-            );
-        });
+    let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtValueWriteConRes).with_data(|buf| {
+        PropertyExtValueWriteConRes::write_error(
+            buf,
+            hdr.object_type,
+            hdr.object_instance,
+            hdr.prop_id,
+            hdr.start_idx,
+            return_code,
+        );
+    });
 
     outbox.push(msg.into_inner());
 }
@@ -506,7 +498,10 @@ fn handle_function_property_ext_command<D: StackDefinition>(
 
     debug!(
         "AL FunctionPropertyExtCommand: iot=0x{:04X}, inst=0x{:04X}, pid={}, data_len={}",
-        hdr.object_type, hdr.object_instance, hdr.prop_id, data.len()
+        hdr.object_type,
+        hdr.object_instance,
+        hdr.prop_id,
+        data.len()
     );
 
     let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
@@ -531,12 +526,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
         Ok(_) => {} // PDT_FUNCTION or PDT_CONTROL — proceed.
     }
 
-    let req = FunctionPropertyRequest {
-        object_idx,
-        prop_id: hdr.prop_id,
-        service_data: data,
-        ctx: ctx.access_ctx,
-    };
+    let req = FunctionPropertyRequest { object_idx, prop_id: hdr.prop_id, service_data: data, ctx: ctx.access_ctx };
     let result = ctx.interface_objects.function_property_command(&req);
 
     let response_len = FunctionPropertyExtResponse::msg_len(result.data.len());
@@ -545,19 +535,16 @@ fn handle_function_property_ext_command<D: StackDefinition>(
         return;
     };
 
-    let msg = ind
-        .respond_with(msg_buf)
-        .with_application(ApciCode::FunctionPropertyExtStateResponse)
-        .with_data(|buf| {
-            FunctionPropertyExtResponse::write(
-                buf,
-                hdr.object_type,
-                hdr.object_instance,
-                hdr.prop_id,
-                result.return_code,
-                result.data.as_slice(),
-            );
-        });
+    let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
+        FunctionPropertyExtResponse::write(
+            buf,
+            hdr.object_type,
+            hdr.object_instance,
+            hdr.prop_id,
+            result.return_code,
+            result.data.as_slice(),
+        );
+    });
 
     debug!("AL sending FunctionPropertyExtState_Response: rc=0x{:02X}", result.return_code);
     outbox.push(msg.into_inner());
@@ -584,7 +571,10 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
 
     debug!(
         "AL FunctionPropertyExtStateRead: iot=0x{:04X}, inst=0x{:04X}, pid={}, data_len={}",
-        hdr.object_type, hdr.object_instance, hdr.prop_id, data.len()
+        hdr.object_type,
+        hdr.object_instance,
+        hdr.prop_id,
+        data.len()
     );
 
     let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
@@ -606,12 +596,7 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
         Ok(_) => {}
     }
 
-    let req = FunctionPropertyRequest {
-        object_idx,
-        prop_id: hdr.prop_id,
-        service_data: data,
-        ctx: ctx.access_ctx,
-    };
+    let req = FunctionPropertyRequest { object_idx, prop_id: hdr.prop_id, service_data: data, ctx: ctx.access_ctx };
     let result = ctx.interface_objects.function_property_state_read(&req);
 
     let response_len = FunctionPropertyExtResponse::msg_len(result.data.len());
@@ -620,19 +605,16 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
         return;
     };
 
-    let msg = ind
-        .respond_with(msg_buf)
-        .with_application(ApciCode::FunctionPropertyExtStateResponse)
-        .with_data(|buf| {
-            FunctionPropertyExtResponse::write(
-                buf,
-                hdr.object_type,
-                hdr.object_instance,
-                hdr.prop_id,
-                result.return_code,
-                result.data.as_slice(),
-            );
-        });
+    let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
+        FunctionPropertyExtResponse::write(
+            buf,
+            hdr.object_type,
+            hdr.object_instance,
+            hdr.prop_id,
+            result.return_code,
+            result.data.as_slice(),
+        );
+    });
 
     debug!("AL sending FunctionPropertyExtState_Response: rc=0x{:02X}", result.return_code);
     outbox.push(msg.into_inner());
@@ -656,12 +638,9 @@ fn send_function_ext_response<D: StackDefinition>(
         warn!("AL no buffer for FunctionPropertyExtState_Response");
         return;
     };
-    let msg = ind
-        .respond_with(msg_buf)
-        .with_application(ApciCode::FunctionPropertyExtStateResponse)
-        .with_data(|buf| {
-            FunctionPropertyExtResponse::write(buf, hdr.object_type, hdr.object_instance, hdr.prop_id, rc, data);
-        });
+    let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
+        FunctionPropertyExtResponse::write(buf, hdr.object_type, hdr.object_instance, hdr.prop_id, rc, data);
+    });
     outbox.push(msg.into_inner());
 }
 
@@ -679,11 +658,118 @@ fn send_function_ext_empty_response<D: StackDefinition>(
         warn!("AL no buffer for FunctionPropertyExtState_Response");
         return;
     };
-    let msg = ind
-        .respond_with(msg_buf)
-        .with_application(ApciCode::FunctionPropertyExtStateResponse)
-        .with_data(|buf| {
-            FunctionPropertyExtResponse::write_empty(buf, hdr.object_type, hdr.object_instance, hdr.prop_id);
-        });
+    let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
+        FunctionPropertyExtResponse::write_empty(buf, hdr.object_type, hdr.object_instance, hdr.prop_id);
+    });
+    outbox.push(msg.into_inner());
+}
+
+// ============================================================================
+// PropertyExtDescription Handler
+// ============================================================================
+
+/// Handle `A_PropertyExtDescription_Read.ind`.
+///
+/// Wire format request (APDU-relative):
+/// ```text
+/// [0-1]: APCI (0x01D2)
+/// [2-3]: IOT (u16)
+/// [4-5]: instance (u16)
+/// [6]:   PID (0 = search by prop_index)
+/// [7-8]: desc_type (high nibble of [7]) | prop_index (low 12 bits of [7-8])
+/// ```
+///
+/// Response: APCI(2) + IOT(2) + INST(2) + PID(1) + propIdx(2) + descType(1) +
+///           PDT+WrEnable(1) + MaxElem(2) + Access(1) = 14 data + 2 APCI = 16 bytes.
+/// Error: all descriptor bytes zero.
+fn handle_ext_description_read<D: StackDefinition>(
+    ind: &KnxMessageBuffer<Buffer<'static>>,
+    ctx: &AlExtensionContext<'_, D>,
+    outbox: &mut Outbox,
+) {
+    use crate::messages::knx::offsets;
+
+    if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
+        warn!("AL PropertyExtDescriptionRead unexpected service type: {:?}", ind.service_type());
+        return;
+    }
+
+    let buf = ind.buf();
+    // Min length: APCI(2) + IOT(2) + INST(2) + PID(1) + descType_propIdx(2) = 9 bytes from MSG_APCI
+    if buf.len() < offsets::MSG_APCI + 9 {
+        error!("PropertyExtDescriptionRead too short: {}", ind.len());
+        return;
+    }
+
+    let base = offsets::MSG_APCI;
+    let object_type = u16::from_be_bytes([buf[base + 2], buf[base + 3]]);
+    let object_instance = u16::from_be_bytes([buf[base + 4], buf[base + 5]]);
+    let pid = buf[base + 6];
+    let desc_type_prop_idx_hi = buf[base + 7];
+    let prop_idx_lo = buf[base + 8];
+    // prop_index is in the lower 12 bits: high nibble of [7] low 4 bits + all of [8]
+    let prop_idx = (((desc_type_prop_idx_hi & 0x0F) as u16) << 8) | prop_idx_lo as u16;
+
+    debug!(
+        "AL PropertyExtDescriptionRead: iot=0x{:04X}, inst=0x{:04X}, pid={}, prop_idx={}",
+        object_type, object_instance, pid, prop_idx
+    );
+
+    // Response is always 16 bytes APDU.
+    const RESP_LEN: usize = offsets::MSG_APCI + 17;
+
+    // Resolve IOT + instance.
+    let object_idx = ctx.interface_objects.resolve_ext_object_index(object_type, object_instance);
+
+    let desc_result = object_idx.and_then(|idx| {
+        // Extended prop_idx is 12 bits; if > 255, no property can match.
+        if prop_idx > 255 {
+            return None;
+        }
+        ctx.interface_objects.property_description_read(idx, pid, prop_idx as u8).ok()
+    });
+
+    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(RESP_LEN) else {
+        warn!("AL no buffer for PropertyExtDescriptionResponse");
+        return;
+    };
+
+    let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtDescriptionResponse).with_data(|buf| {
+        // Write IOT + INST + PID header.
+        let b = offsets::MSG_APCI;
+        buf[b + 2..b + 4].copy_from_slice(&object_type.to_be_bytes());
+        buf[b + 4..b + 6].copy_from_slice(&object_instance.to_be_bytes());
+
+        match desc_result {
+            Some(desc) => {
+                buf[b + 6] = desc.prop_id;
+                // PropIdx as 2 bytes (big-endian, low 12 bits used).
+                buf[b + 7] = 0x00; // desc_type = 0 in response + high prop_idx
+                buf[b + 8] = desc.prop_idx;
+                // PDT + Writeable flag
+                buf[b + 9] = if desc.writeable { 0x80 } else { 0x00 } | (desc.pdt & 0x3F);
+                // MaxElements (2 bytes, upper 4 bits from PDT)
+                let pdt_max = ((desc.pdt as u16 & 0x3F) << 12) | (desc.max_elements & 0x0FFF);
+                buf[b + 10] = (pdt_max >> 8) as u8;
+                buf[b + 11] = pdt_max as u8;
+                // Access levels
+                buf[b + 12] = (desc.read_level << 4) | desc.write_level;
+                // Remaining bytes zero (padding to 16 bytes APDU).
+                for i in (b + 13)..(b + 16) {
+                    buf[i] = 0;
+                }
+            }
+            None => {
+                // Error: echo PID, zero everything else.
+                buf[b + 6] = pid;
+                buf[b + 7] = desc_type_prop_idx_hi;
+                buf[b + 8] = prop_idx_lo;
+                for i in (b + 9)..(b + 16) {
+                    buf[i] = 0;
+                }
+            }
+        }
+    });
+
     outbox.push(msg.into_inner());
 }
