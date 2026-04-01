@@ -193,6 +193,8 @@ create_protocol_enum!(
         PropertyExtValueWriteUnCon,     0x50,   "A_PropertyExtValue_WriteUnCon";
         PropertyExtValueInfoReport,     0x51,   "A_PropertyExtValue_InfoReport";
         // Extended function property services (AN163). Wire: 0x01D4–0x01D6.
+        PropertyExtDescriptionRead,     0x52,   "A_PropertyExtDescription_Read";
+        PropertyExtDescriptionResponse, 0x53,   "A_PropertyExtDescription_Response";
         FunctionPropertyExtCommand,     0x54,   "A_FunctionPropertyExtCommand";
         FunctionPropertyExtStateRead,   0x55,   "A_FunctionPropertyExtState_Read";
         FunctionPropertyExtStateResponse, 0x56, "A_FunctionPropertyExtState_Response";

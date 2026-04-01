@@ -86,11 +86,14 @@ where
                 handle_function_property_ext_state_read::<D>(msg, ctx, outbox);
                 true
             }
+            // TODO: PropertyExtDescriptionRead handler not yet implemented.
             // Response APCIs — we are the responder, ignore if received.
             ApciCode::PropertyExtValueResponse
             | ApciCode::PropertyExtValueWriteConRes
             | ApciCode::PropertyExtValueInfoReport
-            | ApciCode::FunctionPropertyExtStateResponse => {
+            | ApciCode::FunctionPropertyExtStateResponse
+            | ApciCode::PropertyExtDescriptionRead
+            | ApciCode::PropertyExtDescriptionResponse => {
                 debug!("AL ignoring {:?} (response/report APCI)", apci);
                 true
             }
