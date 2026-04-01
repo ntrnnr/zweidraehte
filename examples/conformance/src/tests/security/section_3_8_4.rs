@@ -81,6 +81,23 @@ const SECURE_WRITE_PID0C_RO: &str =
     "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 00 00 10 0C 00 00 01 FB";
 
 // ============================================================================
+// PropertyExtDescription_Read / Response templates for PID 0x0C on Device Object
+// ============================================================================
+
+// Plain A_PropertyExtDescription_Read (0x01D2): IOT=0x0000, instance=0x0010,
+// PID=0x0C (ManufacturerID), description index=0x00, property index=0x00.
+const PLAIN_DESC_READ_PID0C: &str =
+    "BC #EDI #BDUT_ADDR 68 01 D2 00 00 00 10 0C 00 00";
+
+// Plain error response: all-zero descriptor (access denied, no error code — just zeroed).
+const PLAIN_DESC_READ_PID0C_DENIED: &str =
+    "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 00 00 10 0C 00 00 00 00 00 00 00 00 00 00";
+
+// Plain success response: valid descriptor (wildcard data bytes).
+const PLAIN_DESC_READ_PID0C_OK: &str =
+    "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 00 00 10 0C ?? ?? ?? ?? ?? ?? ?? ?? ?? ??";
+
+// ============================================================================
 // Suite Constructor
 // ============================================================================
 
@@ -92,8 +109,7 @@ pub fn create_section_3_8_4_suite() -> TestSuite {
         .with_cases(vec![
             test_3_8_4_1(),
             test_3_8_4_2(),
-            // Skipped: 3.8.4.3 — uses A_PropertyExtDescription_Read (0x01D2),
-            //   which is not yet implemented.
+            test_3_8_4_3(),
         ])
 }
 
@@ -178,5 +194,31 @@ fn test_3_8_4_2() -> TestCase {
         comment("A+C secure write → E_ACCESS_READ_ONLY"),
         inject_secure_ac(SECURE_WRITE_PID0C, "TK1"),
         expect_secure_ac(SECURE_WRITE_PID0C_RO, "TK1", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.8.4.3 PropertyDescriptionRead plain
+// ============================================================================
+
+fn test_3_8_4_3() -> TestCase {
+    TestCase::new("3.8.4.3 PropertyDescriptionRead plain").with_steps(vec![
+        // ==== Security Mode ON ====
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Plain description read → all-zero response (access denied)"),
+        inject(PLAIN_DESC_READ_PID0C),
+        expect(PLAIN_DESC_READ_PID0C_DENIED, TIMEOUT),
+
+        // ==== Security Mode OFF ====
+        comment("Disable Security Mode"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Plain description read → valid descriptor"),
+        inject(PLAIN_DESC_READ_PID0C),
+        expect(PLAIN_DESC_READ_PID0C_OK, TIMEOUT),
     ])
 }

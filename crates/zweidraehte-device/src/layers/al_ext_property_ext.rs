@@ -734,11 +734,25 @@ fn handle_ext_description_read<D: StackDefinition>(
     let object_idx = ctx.interface_objects.resolve_ext_object_index(object_type, object_instance);
 
     let desc_result = object_idx.and_then(|idx| {
-        // Extended prop_idx is 12 bits; if > 255, no property can match.
         if prop_idx > 255 {
             return None;
         }
-        ctx.interface_objects.property_description_read(idx, pid, prop_idx as u8).ok()
+        let desc_resp = ctx.interface_objects.property_description_read(idx, pid, prop_idx as u8).ok()?;
+
+        // Check access policy: attempt a dummy element-count read (start=0).
+        // If access is denied, return None (all-zero response = not visible).
+        let test_req = FullPropertyReadRequest {
+            object_idx: idx,
+            pid: desc_resp.prop_id,
+            start_idx: 0,
+            count: 1,
+            ctx: ctx.access_ctx,
+        };
+        let mut dummy = [0u8; 4];
+        match ctx.interface_objects.property_value_read(&test_req, &mut dummy) {
+            Err(crate::objects::interface::PropertyError::AccessDenied) => None,
+            _ => Some(desc_resp),
+        }
     });
 
     let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(RESP_LEN) else {
