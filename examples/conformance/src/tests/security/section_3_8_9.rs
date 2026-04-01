@@ -177,7 +177,7 @@ pub fn create_section_3_8_9_suite() -> TestSuite {
     TestSuite::new("3.8.9 PID_P2P_KEY_TABLE (Security IO, access 00C/00C)", variables)
         .secure()
         .with_cases(vec![
-            // Skipped: 3.8.9.1 — P2P_KEY_TABLE storage not implemented
+            test_3_8_9_1(),
             test_3_8_9_2(),
             test_3_8_9_3(),
             test_3_8_9_4(),

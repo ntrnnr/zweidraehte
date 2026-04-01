@@ -42,6 +42,8 @@ use super::stack::{
 pub mod sec_table_sizes {
     /// Max group key entries (covers all 11 group addresses + headroom).
     pub const GRP: usize = 16;
+    /// Max P2P key entries.
+    pub const P2P: usize = 8;
     /// Max GO security flag entries (covers all 11 comm objects + headroom).
     pub const GO: usize = 16;
 }
@@ -64,6 +66,7 @@ type SecureInnerState = SecureTp1DeviceState<
     { table_sizes::COT },
     TestParameters,
     { sec_table_sizes::GRP },
+    { sec_table_sizes::P2P },
     { sec_table_sizes::GO },
 >;
 
@@ -461,7 +464,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type P = TestParameters;
     type CO = super::stack::comm_objs::ConformanceComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
-    type ES = SecureTp1ExtensionState<{ sec_table_sizes::GRP }, { sec_table_sizes::GO }>;
+    type ES = SecureTp1ExtensionState<{ sec_table_sizes::GRP }, { sec_table_sizes::P2P }, { sec_table_sizes::GO }>;
     type State = SecureConformanceState;
     type Mem = ConformanceMemoryMap;
 

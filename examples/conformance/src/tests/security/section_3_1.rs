@@ -95,8 +95,9 @@ pub fn create_section_3_1_suite() -> TestSuite {
             test_3_1_27(),
             test_3_1_29(),
 
+            test_3_1_24(),
+
             // Skipped: 3.1.4 and 3.1.16 (deactivated in XML, 0 active telegrams)
-            // Skipped: 3.1.24 (uses PropertyDescription services not yet in our DSL)
         ])
 }
 
@@ -473,4 +474,54 @@ fn test_3_1_29() -> TestCase {
             expect_none(TIMEOUT),
         ],
     )
+}
+
+// ============================================================================
+// 3.1.24 correct S-A_Data A+C, Plain APDU
+// ============================================================================
+//
+// Per XML: sends an A+C frame but the ciphertext is the plaintext APDU
+// (not encrypted). The DUT must reject this because the MAC will not verify
+// when the ciphertext doesn't match the actual encrypted payload.
+//
+// The XML enables Security Mode first, sends the bad frame, expects no
+// response (DUT silently drops it), then disables Security Mode.
+
+fn test_3_1_24() -> TestCase {
+    // Per XML InvalCypher: the plain APDU bytes that replace the ciphertext.
+    // This is A_PropertyExtValueRead for PID 0x39 on Security IO:
+    // 01 CC 00 11 00 10 39 01 00 00 (10 bytes)
+    let plain_apdu = vec![0x01, 0xCC, 0x00, 0x11, 0x00, 0x10, 0x39, 0x01, 0x00, 0x00];
+
+    TestCase::new("3.1.24 A+C with plain APDU (not encrypted) → reject").with_steps(vec![
+        comment("Enable Security Mode"),
+        inject_secure_ac(
+            "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 01",
+            "TK1",
+        ),
+        expect_secure_ac(
+            "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 00",
+            "TK1",
+            TIMEOUT,
+        ),
+
+        comment("A+C frame with plaintext as ciphertext → reject (MAC mismatch)"),
+        inject_secure_invalid(
+            READ_PID57,
+            SecureParams::tool_auth_conf("TK1"),
+            InvalidSecurityParam::PlainCipher(plain_apdu),
+        ),
+        expect_none(TIMEOUT),
+
+        comment("Disable Security Mode"),
+        inject_secure_ac(
+            "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 00",
+            "TK1",
+        ),
+        expect_secure_ac(
+            "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 00",
+            "TK1",
+            TIMEOUT,
+        ),
+    ])
 }

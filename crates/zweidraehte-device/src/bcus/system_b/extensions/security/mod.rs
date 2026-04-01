@@ -209,7 +209,7 @@ impl ExtensionConfig for SecurityExtensionConfig {}
 /// Holds security mode, tool key, load state, group key table, and
 /// GO security flags. Table data is behind `RefCell` for interior
 /// mutability during property writes.
-pub struct SecurityState<const GRP: usize, const GO: usize> {
+pub struct SecurityState<const GRP: usize, const P2P: usize, const GO: usize> {
     security_mode_enabled: Cell<bool>,
     tool_key: Cell<[u8; 16]>,
     load_state: Cell<LoadState>,
@@ -218,6 +218,8 @@ pub struct SecurityState<const GRP: usize, const GO: usize> {
     fdsk: Cell<Option<[u8; 16]>>,
     /// Group key table: GA_index(2) + key(16) = 18 bytes per entry.
     grp_keys: RefCell<SecurityTable<GRP, 18>>,
+    /// P2P key table: IA_index(2) + key(16) + role(2) = 20 bytes per entry.
+    p2p_keys: RefCell<SecurityTable<P2P, 20>>,
     /// GO security flags: 1 byte per group object.
     go_flags: RefCell<SecurityTable<GO, 1>>,
     /// Security failures log — counters and recent failure entries.
@@ -329,7 +331,7 @@ impl SecurityFailuresLog {
     }
 }
 
-impl<const GRP: usize, const GO: usize> SecurityState<GRP, GO> {
+impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P, GO> {
     /// Whether the device's Security Mode is currently enabled.
     pub fn security_mode_enabled(&self) -> bool {
         self.security_mode_enabled.get()
@@ -381,6 +383,11 @@ impl<const GRP: usize, const GO: usize> SecurityState<GRP, GO> {
     /// Get a reference to the group key table.
     pub fn grp_keys(&self) -> &RefCell<SecurityTable<GRP, 18>> {
         &self.grp_keys
+    }
+
+    /// Get a reference to the P2P key table.
+    pub fn p2p_keys(&self) -> &RefCell<SecurityTable<P2P, 20>> {
+        &self.p2p_keys
     }
 
     /// Get a reference to the GO security flags table.
@@ -504,8 +511,8 @@ pub trait HasSecurityState {
     fn clear_failure_log(&self);
 }
 
-/// Blanket impl: any `SecurityState<GRP, GO>` implements `HasSecurityState`.
-impl<const GRP: usize, const GO: usize> HasSecurityState for SecurityState<GRP, GO> {
+/// Blanket impl: any `SecurityState<GRP, P2P, GO>` implements `HasSecurityState`.
+impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState for SecurityState<GRP, P2P, GO> {
     fn security_mode_enabled(&self) -> bool {
         self.security_mode_enabled()
     }
@@ -543,7 +550,7 @@ impl<const GRP: usize, const GO: usize> HasSecurityState for SecurityState<GRP, 
     }
 }
 
-impl<const GRP: usize, const GO: usize> ExtensionState for SecurityState<GRP, GO> {
+impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for SecurityState<GRP, P2P, GO> {
     type Config = SecurityExtensionConfig;
 
     fn from_config(config: SecurityExtensionConfig) -> Self {
@@ -555,6 +562,7 @@ impl<const GRP: usize, const GO: usize> ExtensionState for SecurityState<GRP, GO
             fdsk: Cell::new(None),
             // Tables start empty — ETS reloads them via property writes.
             grp_keys: RefCell::new(SecurityTable::new()),
+            p2p_keys: RefCell::new(SecurityTable::new()),
             go_flags: RefCell::new(SecurityTable::new()),
             // Failures log starts empty (not persisted).
             failures_log: RefCell::new(SecurityFailuresLog::default()),
@@ -597,18 +605,18 @@ impl<const GRP: usize, const GO: usize> ExtensionState for SecurityState<GRP, GO
 /// Devices that don't need Data Secure simply use the inner extension
 /// directly (e.g., `Tp1ExtensionState`). This wrapper is only used
 /// when security is desired.
-pub struct SecureExtensionState<Inner: ExtensionState, const GRP: usize, const GO: usize> {
+pub struct SecureExtensionState<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> {
     /// The medium-specific extension state.
     pub inner: Inner,
     /// The security extension state.
-    pub security: SecurityState<GRP, GO>,
+    pub security: SecurityState<GRP, P2P, GO>,
 }
 
 /// `SecureExtensionState` delegates `HasSecurityState` to its inner
 /// `SecurityState`, so that `SystemBDeviceState` with a secure extension
 /// can satisfy `HasSecurityState` through `HasExtensionState`.
-impl<Inner: ExtensionState, const GRP: usize, const GO: usize> HasSecurityState
-    for SecureExtensionState<Inner, GRP, GO>
+impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState
+    for SecureExtensionState<Inner, GRP, P2P, GO>
 {
     fn security_mode_enabled(&self) -> bool {
         self.security.security_mode_enabled()
@@ -665,7 +673,7 @@ impl<InnerConfig: ExtensionConfig> Default for SecureExtensionConfig<InnerConfig
 
 impl<InnerConfig: ExtensionConfig> ExtensionConfig for SecureExtensionConfig<InnerConfig> {}
 
-impl<Inner: ExtensionState, const GRP: usize, const GO: usize> ExtensionState for SecureExtensionState<Inner, GRP, GO> {
+impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for SecureExtensionState<Inner, GRP, P2P, GO> {
     type Config = SecureExtensionConfig<Inner::Config>;
 
     fn from_config(config: Self::Config) -> Self {
@@ -690,12 +698,12 @@ impl<Inner: ExtensionState, const GRP: usize, const GO: usize> ExtensionState fo
 // Extension trait — produces (inner_augment, SecurityAugment) tuple
 // ============================================================================
 
-impl<Inner, Platform, const GRP: usize, const GO: usize> Extension<Platform> for SecureExtensionState<Inner, GRP, GO>
+impl<Inner, Platform, const GRP: usize, const P2P: usize, const GO: usize> Extension<Platform> for SecureExtensionState<Inner, GRP, P2P, GO>
 where
     Inner: Extension<Platform>,
 {
     type Augment<'a, S: StackState>
-        = (Inner::Augment<'a, S>, SecurityAugment<'a, GRP, GO>)
+        = (Inner::Augment<'a, S>, SecurityAugment<'a, GRP, P2P, GO>)
     where
         Self: 'a,
         Platform: 'a;
@@ -715,8 +723,8 @@ where
 // ============================================================================
 
 /// TP1 extension state with Data Secure support.
-pub type SecureTp1ExtensionState<const GRP: usize, const GO: usize> =
-    SecureExtensionState<super::tp1::Tp1ExtensionState, GRP, GO>;
+pub type SecureTp1ExtensionState<const GRP: usize, const P2P: usize, const GO: usize> =
+    SecureExtensionState<super::tp1::Tp1ExtensionState, GRP, P2P, GO>;
 
 /// TP1 device state with Data Secure support.
 pub type SecureTp1DeviceState<
@@ -725,10 +733,11 @@ pub type SecureTp1DeviceState<
     const COT_SIZE: usize,
     P,
     const GRP: usize,
+    const P2P: usize,
     const GO: usize,
-> = crate::bcus::system_b::SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, SecureTp1ExtensionState<GRP, GO>>;
+> = crate::bcus::system_b::SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, SecureTp1ExtensionState<GRP, P2P, GO>>;
 
 #[cfg(feature = "knxip")]
 /// KNX/IP extension state with Data Secure support.
-pub type SecureIpExtensionState<const N: usize, const CAPS: u16, const GRP: usize, const GO: usize> =
-    SecureExtensionState<super::ip::IpExtensionState<N, CAPS>, GRP, GO>;
+pub type SecureIpExtensionState<const N: usize, const CAPS: u16, const GRP: usize, const P2P: usize, const GO: usize> =
+    SecureExtensionState<super::ip::IpExtensionState<N, CAPS>, GRP, P2P, GO>;

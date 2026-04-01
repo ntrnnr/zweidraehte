@@ -134,6 +134,22 @@ pub fn wrap_secure_invalid(
                 frame[15] ^= 0xFF;
             }
         }
+        InvalidSecurityParam::PlainCipher(plain_bytes) => {
+            // Replace the ciphertext portion with the given plaintext bytes.
+            // In an A+C frame, the encrypted payload starts at offset 15
+            // (after SCF(1) + SeqNr(6) = 7 bytes of secure header at offset 8).
+            // The MAC occupies the last 4 bytes. We replace the payload between
+            // SeqNr and MAC with the given plain bytes.
+            let payload_start = 15; // 8 (APDU start in internal fmt) + 1 (SCF) + 6 (SeqNr)
+            let mac_len = 4;
+            if frame.len() > payload_start + mac_len {
+                let payload_end = frame.len() - mac_len;
+                let avail = payload_end - payload_start;
+                let copy_len = plain_bytes.len().min(avail);
+                frame[payload_start..payload_start + copy_len]
+                    .copy_from_slice(&plain_bytes[..copy_len]);
+            }
+        }
         InvalidSecurityParam::WrongAddressType => unreachable!("handled above"),
         InvalidSecurityParam::AppendBytes(extra) => {
             frame.extend_from_slice(extra);

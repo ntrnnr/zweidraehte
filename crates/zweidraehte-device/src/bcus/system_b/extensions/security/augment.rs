@@ -17,6 +17,7 @@ use crate::objects::interface::{
 };
 use crate::objects::tables::LoadState;
 use crate::properties::PropertyRead;
+use super::SecurityTable;
 
 use super::SecurityState;
 
@@ -31,13 +32,13 @@ use super::SecurityState;
 /// all Security IO PIDs. In Phase 1, only PIDs 1 (OBJECT_TYPE),
 /// 5 (LOAD_STATE_CONTROL), and 51 (SECURITY_MODE) are functional.
 /// Remaining PIDs return `InvalidPropertyId` until Phase 2+.
-pub struct SecurityAugment<'a, const GRP: usize, const GO: usize> {
-    state: &'a SecurityState<GRP, GO>,
+pub struct SecurityAugment<'a, const GRP: usize, const P2P: usize, const GO: usize> {
+    state: &'a SecurityState<GRP, P2P, GO>,
 }
 
-impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
+impl<'a, const GRP: usize, const P2P: usize, const GO: usize> SecurityAugment<'a, GRP, P2P, GO> {
     /// Create a new security augment backed by the given state.
-    pub fn new(state: &'a SecurityState<GRP, GO>) -> Self {
+    pub fn new(state: &'a SecurityState<GRP, P2P, GO>) -> Self {
         Self { state }
     }
 
@@ -186,7 +187,7 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
     }
 }
 
-impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugment<S> for SecurityAugment<'a, GRP, GO> {
+impl<'a, S: StackState, const GRP: usize, const P2P: usize, const GO: usize> InterfaceObjectAugment<S> for SecurityAugment<'a, GRP, P2P, GO> {
     fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
         if object_type != InterfaceObjectType::Security {
             return None;
@@ -247,6 +248,20 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
             pid::SECURITY_MODE => {
                 let val: u8 = if self.state.security_mode_enabled() { 1 } else { 0 };
                 [val].read_property(req.start_idx, req.count, buf)
+            }
+            // ---- Array property: P2P Key Table (20 bytes/entry) ----
+            pid::P2P_KEY_TABLE => {
+                let table = self.state.p2p_keys().borrow();
+                if req.start_idx == 0 {
+                    if buf.len() < 2 {
+                        return Some(Err(PropertyError::BufferTooSmall));
+                    }
+                    buf[..2].copy_from_slice(&table.count().to_be_bytes());
+                    Ok(2)
+                } else {
+                    let start = (req.start_idx - 1) as u16;
+                    table.read_entries(start, req.count as u16, buf)
+                }
             }
             // ---- Array property: Group Key Table (18 bytes/entry) ----
             pid::GROUP_KEY_TABLE => {
@@ -341,23 +356,20 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
                 self.state.set_security_mode_enabled(req.data[0] != 0);
                 Ok(WriteResponse::Echo)
             }
+            // ---- Array property: P2P Key Table (20 bytes/entry) ----
+            pid::P2P_KEY_TABLE => {
+                let mut table = self.state.p2p_keys().borrow_mut();
+                write_security_table(&mut table, req)
+            }
             // ---- Array property: Group Key Table (18 bytes/entry) ----
             pid::GROUP_KEY_TABLE => {
-                let start = req.start_idx.saturating_sub(1);
                 let mut table = self.state.grp_keys().borrow_mut();
-                match table.write_entries(start, req.data) {
-                    Ok(()) => Ok(WriteResponse::Echo),
-                    Err(e) => Err(e),
-                }
+                write_security_table(&mut table, req)
             }
             // ---- Array property: GO Security Flags (1 byte/entry) ----
             pid::GO_SECURITY_FLAGS => {
-                let start = req.start_idx.saturating_sub(1);
                 let mut table = self.state.go_flags().borrow_mut();
-                match table.write_entries(start, req.data) {
-                    Ok(()) => Ok(WriteResponse::Echo),
-                    Err(e) => Err(e),
-                }
+                write_security_table(&mut table, req)
             }
             // ---- Tool Key (PID 56): write-only, 16 bytes ----
             pid::TOOL_KEY => {
@@ -487,7 +499,7 @@ impl<'a, S: StackState, const GRP: usize, const GO: usize> InterfaceObjectAugmen
 // Private Helpers
 // ============================================================================
 
-impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
+impl<'a, const GRP: usize, const P2P: usize, const GO: usize> SecurityAugment<'a, GRP, P2P, GO> {
     /// Handle PID_SECURITY_MODE FunctionPropertyCommand.
     ///
     /// ServiceID 0x00: Write Security Mode.
@@ -546,6 +558,36 @@ impl<'a, const GRP: usize, const GO: usize> SecurityAugment<'a, GRP, GO> {
         let mode = if self.state.security_mode_enabled() { 0x01u8 } else { 0x00u8 };
         // Response echoes the ReadServiceID (0x00) followed by the mode byte.
         FunctionPropertyResult::success_with_data(&[0x00, mode])
+    }
+}
+
+/// Write to a SecurityTable, handling element-count writes (start_idx=0)
+/// vs data writes (start_idx>0).
+///
+/// Element-count writes expect exactly 2 bytes (u16 BE new count).
+/// Setting count to 0 clears the table.
+fn write_security_table<const N: usize, const ES: usize>(
+    table: &mut SecurityTable<N, ES>,
+    req: &FullPropertyWriteRequest<'_>,
+) -> Result<WriteResponse, PropertyError> {
+    if req.start_idx == 0 {
+        // Element count write.
+        if req.data.len() < 2 {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        let new_count = u16::from_be_bytes([req.data[0], req.data[1]]);
+        if new_count == 0 {
+            table.clear();
+        }
+        // Non-zero element count writes just set the count (pre-allocate).
+        // The actual entries are written via start_idx > 0.
+        Ok(WriteResponse::Echo)
+    } else {
+        let start = req.start_idx.saturating_sub(1);
+        match table.write_entries(start, req.data) {
+            Ok(()) => Ok(WriteResponse::Echo),
+            Err(e) => Err(e),
+        }
     }
 }
 

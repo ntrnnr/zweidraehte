@@ -289,6 +289,9 @@ pub enum InvalidSecurityParam {
     InvalidMac([u8; 4]),
     /// Corrupt the ciphertext after encryption (XOR first payload byte).
     InvalidCipher,
+    /// Replace ciphertext with specific plaintext bytes (send unencrypted
+    /// data in an A+C frame — the "plain APDU" attack from 3.1.24).
+    PlainCipher(Vec<u8>),
     /// Use the wrong address type (group instead of individual) in CCM context.
     WrongAddressType,
     /// Append extra bytes after the MAC (frame too long).
