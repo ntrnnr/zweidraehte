@@ -248,13 +248,13 @@ fn test_4_3_8() -> TestCase {
 fn test_4_3_9() -> TestCase {
     TestCase::new("4.3.9 write to read-only property → ignored").with_steps(vec![
         comment("WriteUnCon to PID_SERIAL_NUMBER (PID 0x0B, read-only) → silently ignored"),
-        inject("BC #EDI #BDUT_ADDR 6E 01 D0 00 00 00 10 0B 01 00 01 00 00 00 00 00 00"),
+        inject("BC #EDI #BDUT_ADDR 6F 01 D0 00 00 00 10 0B 01 00 01 00 00 00 00 00 00"),
         wait(SETTLE),
 
         comment("Verify PID_SERIAL_NUMBER unchanged (6 bytes, wildcard)"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 0B 01 00 01"),
         expect(
-            "BC #BDUT_ADDR #EDI 6E 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??",
+            "BC #BDUT_ADDR #EDI 6F 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??",
             TIMEOUT,
         ),
     ])

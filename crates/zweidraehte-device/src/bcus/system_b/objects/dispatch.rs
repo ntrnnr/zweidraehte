@@ -12,7 +12,8 @@ use crate::{
     objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest,
         FunctionPropertyResult, HasDeviceObject, InterfaceObject, InterfaceObjectAugment,
-        PropertyDescriptionResponse, PropertyError, PropertyServiceHandler, WriteResponse, pid,
+        PropertyAccess, PropertyDescriptionResponse, PropertyError, PropertyServiceHandler,
+        WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -236,8 +237,11 @@ where
             return Err(PropertyError::InvalidPropertyId);
         }
 
-        // Check access level + security policy.
+        // Check access: read-only first (→ WriteNotAllowed), then level/policy (→ AccessDenied).
         let desc = self.get_descriptor(req.object_idx, req.pid).ok_or(PropertyError::InvalidPropertyId)?;
+        if matches!(desc.access, PropertyAccess::ReadOnly) {
+            return Err(PropertyError::WriteNotAllowed);
+        }
         let security_on = self.state.security_mode_enabled();
         if !desc.can_write_secure(&req.ctx, security_on) {
             return Err(PropertyError::AccessDenied);

@@ -136,13 +136,21 @@ fn handle_ext_value_read<D: StackDefinition>(
         return;
     };
 
-    // Per spec Figure 55: reject reads of PDT_CONTROL and PDT_FUNCTION properties
-    // with E_DATA_TYPE_CONFLICT. These must be accessed via FunctionProperty services.
+    // Validate per spec Figure 55 using the property description.
     if let Ok(desc) = ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
         if is_function_pdt(desc.pdt) {
-            debug!("AL PropertyExtValueRead: PDT_CONTROL/FUNCTION (0x{:02X}) → type conflict", desc.pdt);
+            debug!("AL PropertyExtValueRead: PDT_CONTROL/FUNCTION → type conflict");
             send_ext_read_error(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT);
             return;
+        }
+        // Check start_index + count doesn't exceed max_elements (for non-count-query reads).
+        if hdr.start_idx > 0 && desc.max_elements > 0 {
+            let end = hdr.start_idx as u32 + hdr.count as u32 - 1;
+            if end > desc.max_elements as u32 {
+                debug!("AL PropertyExtValueRead: range exceeds max_elements");
+                send_ext_read_error(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID);
+                return;
+            }
         }
     }
 
@@ -231,12 +239,31 @@ fn handle_ext_value_write_con<D: StackDefinition>(
         return;
     };
 
-    // Reject writes to PDT_CONTROL/FUNCTION properties (spec Figure 55).
+    // Validate per spec Figure 55 using the property description.
     if let Ok(desc) = ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
         if is_function_pdt(desc.pdt) {
-            debug!("AL PropertyExtValueWriteCon: PDT_CONTROL/FUNCTION (0x{:02X}) → type conflict", desc.pdt);
+            debug!("AL PropertyExtValueWriteCon: PDT_CONTROL/FUNCTION → type conflict");
             send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT);
             return;
+        }
+        // Check data size matches element count × element size.
+        let elem_size = pdt_element_size(desc.pdt);
+        if elem_size > 0 && hdr.count > 0 && hdr.start_idx > 0 {
+            let expected_data_len = hdr.count as usize * elem_size;
+            if data.len() != expected_data_len {
+                debug!("AL PropertyExtValueWriteCon: data size {} != count {} × elem_size {}", data.len(), hdr.count, elem_size);
+                send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT);
+                return;
+            }
+        }
+        // Check start_index + count doesn't exceed max_elements.
+        if hdr.start_idx > 0 && desc.max_elements > 0 {
+            let end = hdr.start_idx as u32 + hdr.count as u32 - 1;
+            if end > desc.max_elements as u32 {
+                debug!("AL PropertyExtValueWriteCon: range {}..{} > max {}", hdr.start_idx, end, desc.max_elements);
+                send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID);
+                return;
+            }
         }
     }
 
@@ -335,6 +362,17 @@ fn handle_ext_value_write_uncon<D: StackDefinition>(
         return;
     };
 
+    // Validate count/start against property description. Ignore invalid writes.
+    if let Ok(desc) = ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
+        if hdr.start_idx > 0 && desc.max_elements > 0 {
+            let end = hdr.start_idx as u32 + hdr.count as u32 - 1;
+            if end > desc.max_elements as u32 {
+                debug!("AL PropertyExtValueWriteUnCon: range exceeds max_elements, ignoring");
+                return;
+            }
+        }
+    }
+
     let req = FullPropertyWriteRequest {
         object_idx,
         pid: hdr.prop_id,
@@ -416,6 +454,29 @@ fn send_ext_write_con_error<D: StackDefinition>(
 fn is_function_pdt(pdt: u8) -> bool {
     use crate::dpt::{PDT_Control, PDT_Function, PropertyDataDefinition};
     pdt == PDT_Control::ID || pdt == PDT_Function::ID
+}
+
+/// Get the element size in bytes for a given PDT code.
+///
+/// Returns 0 for unknown/variable-size PDTs.
+fn pdt_element_size(pdt: u8) -> usize {
+    match pdt {
+        0x01 => 1,  // PDT_CHAR
+        0x02 => 1,  // PDT_UNSIGNED_CHAR
+        0x03 => 2,  // PDT_INT
+        0x04 => 2,  // PDT_UNSIGNED_INT
+        0x06 => 4,  // PDT_FLOAT
+        0x07 => 3,  // PDT_DATE
+        0x08 => 3,  // PDT_TIME
+        0x09 => 4,  // PDT_LONG
+        0x0A => 4,  // PDT_UNSIGNED_LONG
+        0x0B => 4,  // PDT_FLOAT32
+        0x0C => 10, // PDT_CHAR_BLOCK
+        0x0E => 5,  // PDT_SHORT_CHAR_BLOCK
+        // PDT_GENERIC_xx: code 0x11..0x1F → size = code - 0x10
+        c @ 0x11..=0x1F => (c - 0x10) as usize,
+        _ => 0,
+    }
 }
 
 // ============================================================================

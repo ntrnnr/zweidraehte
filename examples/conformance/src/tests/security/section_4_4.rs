@@ -10,9 +10,9 @@
 //! Skipped: 4.4.7 (start_index=0 with >2 octets), 4.4.10 (connection-oriented),
 //! 4.4.11 (user objects).
 
-use crate::{TestCase, TestSuite};
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
+use crate::{TestCase, TestSuite};
 
 /// Default response timeout.
 const TIMEOUT: u32 = 3000;
@@ -62,13 +62,9 @@ fn test_4_4_1() -> TestCase {
         comment("InfoReport PID_PROG_MODE = 0x01 → must be ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D1 00 00 00 10 36 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged (still 0x00)"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -81,24 +77,15 @@ fn test_4_4_2() -> TestCase {
         comment("InfoReport to IOT 0x000F → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D1 00 0F 00 10 36 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
         comment("InfoReport to IOT 0x8000 → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D1 80 00 00 10 36 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -111,24 +98,15 @@ fn test_4_4_3() -> TestCase {
         comment("InfoReport to instance 0x0020 → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D1 00 00 00 20 36 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
         comment("InfoReport to instance 0x8000 → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D1 00 00 80 00 36 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -141,13 +119,9 @@ fn test_4_4_4() -> TestCase {
         comment("InfoReport PID 3 on Device Object → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D1 00 00 00 10 03 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -160,13 +134,9 @@ fn test_4_4_5() -> TestCase {
         comment("InfoReport PID_PROG_MODE with count=0 → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D1 00 00 00 10 36 00 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -179,13 +149,9 @@ fn test_4_4_6() -> TestCase {
         comment("InfoReport PID_PROG_MODE with count=2 (only 1 element) → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6B 01 D1 00 00 00 10 36 02 00 01 01 00"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -198,13 +164,9 @@ fn test_4_4_8() -> TestCase {
         comment("InfoReport PID_PROG_MODE at start_index=2 → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D1 00 00 00 10 36 01 00 02 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -215,14 +177,10 @@ fn test_4_4_8() -> TestCase {
 fn test_4_4_9() -> TestCase {
     TestCase::new("4.4.9 InfoReport to read-only property → ignored").with_steps(vec![
         comment("InfoReport to PID_SERIAL_NUMBER (PID 0x0B, read-only) → silently ignored"),
-        inject("BC #EDI #BDUT_ADDR 6E 01 D1 00 00 00 10 0B 01 00 01 00 00 00 00 00 00"),
+        inject("BC #EDI #BDUT_ADDR 6F 01 D1 00 00 00 10 0B 01 00 01 00 00 00 00 00 00"),
         wait(SETTLE),
-
         comment("Verify PID_SERIAL_NUMBER unchanged (6 bytes, wildcard)"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 0B 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6E 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6F 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??", TIMEOUT),
     ])
 }

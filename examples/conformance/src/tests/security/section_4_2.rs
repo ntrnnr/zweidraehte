@@ -262,12 +262,12 @@ fn test_4_2_9() -> TestCase {
         comment("Read PID_SERIAL_NUMBER (PID 0x0B) to capture original value"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 0B 01 00 01"),
         expect(
-            "BC #BDUT_ADDR #EDI 6E 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??",
+            "BC #BDUT_ADDR #EDI 6F 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??",
             TIMEOUT,
         ),
 
         comment("Write to PID_SERIAL_NUMBER → E_ACCESS_READ_ONLY (0xFB)"),
-        inject("BC #EDI #BDUT_ADDR 6E 01 CE 00 00 00 10 0B 01 00 01 00 00 00 00 00 00"),
+        inject("BC #EDI #BDUT_ADDR 6F 01 CE 00 00 00 10 0B 01 00 01 00 00 00 00 00 00"),
         expect(
             "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 0B 00 00 01 FB",
             TIMEOUT,
@@ -276,7 +276,7 @@ fn test_4_2_9() -> TestCase {
         comment("Verify PID_SERIAL_NUMBER unchanged via read"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 0B 01 00 01"),
         expect(
-            "BC #BDUT_ADDR #EDI 6E 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??",
+            "BC #BDUT_ADDR #EDI 6F 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??",
             TIMEOUT,
         ),
     ])
