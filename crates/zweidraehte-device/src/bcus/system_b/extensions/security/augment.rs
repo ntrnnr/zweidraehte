@@ -177,12 +177,12 @@ impl<'a, const GRP: usize, const P2P: usize, const GO: usize> SecurityAugment<'a
     ];
 
     /// Find a descriptor by PID.
-    fn descriptor_by_pid(pid_val: u8) -> Option<(u8, &'static PropertyDescriptor)> {
-        Self::DESCRIPTORS.iter().enumerate().find(|(_, d)| d.pid == pid_val).map(|(i, d)| (i as u8, d))
+    fn descriptor_by_pid(pid_val: u8) -> Option<(u16, &'static PropertyDescriptor)> {
+        Self::DESCRIPTORS.iter().enumerate().find(|(_, d)| d.pid == pid_val).map(|(i, d)| (i as u16, d))
     }
 
     /// Find a descriptor by augment-local index.
-    fn descriptor_by_index(index: u8) -> Option<&'static PropertyDescriptor> {
+    fn descriptor_by_index(index: u16) -> Option<&'static PropertyDescriptor> {
         Self::DESCRIPTORS.get(index as usize)
     }
 }

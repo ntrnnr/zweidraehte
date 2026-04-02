@@ -290,8 +290,8 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
     }
 
     /// Look up a property descriptor by augment-local 0-based index.
-    fn ip_descriptor_by_index(&self, idx: u8) -> Option<PropertyDescriptor> {
-        let base_len = BASE_PROPS.len() as u8;
+    fn ip_descriptor_by_index(&self, idx: u16) -> Option<PropertyDescriptor> {
+        let base_len = BASE_PROPS.len() as u16;
         if idx < base_len {
             return Some(BASE_PROPS[idx as usize]);
         }

@@ -586,7 +586,7 @@ pub trait PropertyServiceHandler {
         &self,
         object_idx: u16,
         prop_id: u8,
-        prop_idx: u8,
+        prop_idx: u16,
     ) -> Result<PropertyDescriptionResponse, PropertyError>;
 
     /// Handle A_PropertyValue_Read request.
@@ -634,7 +634,7 @@ pub enum PropertyLookup {
     /// Look up by Property ID (direct access).
     ByPid(u8),
     /// Look up by augment-local 0-based index (during property scanning).
-    ByIndex(u8),
+    ByIndex(u16),
 }
 
 /// Extension hooks for augmenting interface object property handling.
@@ -1061,18 +1061,18 @@ pub trait InterfaceObject {
         &self,
         object_idx: u16,
         prop_id: u8,
-        prop_idx: u8,
+        prop_idx: u16,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
         let (idx, desc) = if prop_id != 0 {
             // Search by property ID
             self.property_descriptor_by_id(prop_id).ok_or(PropertyError::InvalidPropertyId)?
         } else {
             // Search by property index
-            let desc = self.property_descriptor_by_index(prop_idx as u16).ok_or(PropertyError::InvalidPropertyIndex)?;
-            (prop_idx as u16, desc)
+            let desc = self.property_descriptor_by_index(prop_idx).ok_or(PropertyError::InvalidPropertyIndex)?;
+            (prop_idx, desc)
         };
 
-        Ok(PropertyDescriptionResponse::from_descriptor(object_idx, idx as u8, &desc))
+        Ok(PropertyDescriptionResponse::from_descriptor(object_idx, idx, &desc))
     }
 }
 
@@ -1117,7 +1117,7 @@ impl PropertyServiceHandler for () {
         &self,
         _object_idx: u16,
         _prop_id: u8,
-        _prop_idx: u8,
+        _prop_idx: u16,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
     }
@@ -1200,7 +1200,7 @@ where
         &self,
         object_idx: u16,
         prop_id: u8,
-        prop_idx: u8,
+        prop_idx: u16,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
         let base_count = self.0.object_count();
         if object_idx < base_count {

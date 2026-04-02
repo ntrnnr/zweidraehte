@@ -316,8 +316,8 @@ where
     /// Get the number of properties in a base interface object.
     ///
     /// Returns 0 for augment-provided objects (they have no base properties).
-    fn base_property_count(&self, object_idx: u16) -> u8 {
-        let count = match object_idx {
+    fn base_property_count(&self, object_idx: u16) -> u16 {
+        match object_idx {
             0 => self.device.borrow().property_count(),
             1 => self.address_table.borrow().property_count(),
             2 => self.association_table.borrow().property_count(),
@@ -325,8 +325,7 @@ where
             4 => self.application_program.borrow().property_count(),
             5 => self.pei_program.borrow().property_count(),
             _ => 0,
-        };
-        count as u8
+        }
     }
 
     /// Resolve the object type for a given index.

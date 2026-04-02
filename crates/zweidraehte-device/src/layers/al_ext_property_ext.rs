@@ -763,10 +763,7 @@ fn handle_ext_description_read<D: StackDefinition>(
     // is 3FF/3FF (Table 11). Property metadata is always returned regardless of
     // the caller's access level or Data Secure role.
     let desc_result = object_idx.and_then(|idx| {
-        if prop_idx > 255 {
-            return None;
-        }
-        ctx.interface_objects.property_description_read(idx, pid, prop_idx as u8).ok()
+        ctx.interface_objects.property_description_read(idx, pid, prop_idx).ok()
     });
 
     let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(RESP_LEN) else {
@@ -783,9 +780,10 @@ fn handle_ext_description_read<D: StackDefinition>(
         match desc_result {
             Some(desc) => {
                 buf[b + 6] = desc.prop_id;
-                // PropIdx as 2 bytes (big-endian, low 12 bits used).
-                buf[b + 7] = 0x00; // desc_type = 0 in response + high prop_idx
-                buf[b + 8] = desc.prop_idx;
+                // PropIdx as 12 bits: desc_type (high nibble of [7]) = 0,
+                // prop_idx high nibble in low nibble of [7], low byte in [8].
+                buf[b + 7] = (desc.prop_idx >> 8) as u8 & 0x0F;
+                buf[b + 8] = desc.prop_idx as u8;
                 // PDT + Writeable flag
                 buf[b + 9] = if desc.writeable { 0x80 } else { 0x00 } | (desc.pdt & 0x3F);
                 // MaxElements (2 bytes, upper 4 bits from PDT)

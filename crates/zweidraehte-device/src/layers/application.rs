@@ -922,7 +922,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             req.object_idx, req.prop_id, req.prop_idx
         );
 
-        let response = self.interface_objects.property_description_read(req.object_idx, req.prop_id, req.prop_idx);
+        let response = self.interface_objects.property_description_read(req.object_idx, req.prop_id, req.prop_idx as u16);
 
         match response {
             Ok(desc) => {

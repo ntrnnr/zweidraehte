@@ -239,8 +239,8 @@ pub struct PropertyDescriptionResponse {
     pub object_idx: u16,
     /// Property ID
     pub prop_id: u8,
-    /// Property index (0-based)
-    pub prop_idx: u8,
+    /// Property index (0-based, up to 12 bits for extended services)
+    pub prop_idx: u16,
     /// Writability flag (1 = writable)
     pub writeable: bool,
     /// Property Data Type
@@ -255,7 +255,7 @@ pub struct PropertyDescriptionResponse {
 
 impl PropertyDescriptionResponse {
     /// Create from a property descriptor
-    pub fn from_descriptor(object_idx: u16, prop_idx: u8, desc: &PropertyDescriptor) -> Self {
+    pub fn from_descriptor(object_idx: u16, prop_idx: u16, desc: &PropertyDescriptor) -> Self {
         Self {
             object_idx,
             prop_id: desc.pid,
@@ -278,7 +278,7 @@ impl PropertyDescriptionResponse {
         }
         buf[0] = self.object_idx as u8;
         buf[1] = self.prop_id;
-        buf[2] = self.prop_idx;
+        buf[2] = self.prop_idx as u8;
         // Type+MaxElements: [Writeable:1][reserved:1][PDT:6][MaxElements:12] - but overlaps!
         // Actually per spec: byte3=[W:1][PDT:7], bytes 4-5 = [PDT:4][MaxElements:12]
         // The PDT upper 4 bits go into byte 4 upper nibble

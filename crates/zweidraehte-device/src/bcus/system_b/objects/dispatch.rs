@@ -60,7 +60,7 @@ where
         &self,
         object_idx: u16,
         prop_id: u8,
-        prop_idx: u8,
+        prop_idx: u16,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
         use crate::objects::interface::PropertyLookup;
 
