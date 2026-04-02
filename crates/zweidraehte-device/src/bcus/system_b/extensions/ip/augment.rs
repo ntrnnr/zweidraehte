@@ -642,6 +642,10 @@ impl<S: StackState, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObj
         Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &desc)))
     }
 
+    // Access checks are centralized in dispatch.rs (lines 183-196 for reads,
+    // 233-246 for writes) using get_descriptor() which queries this augment's
+    // get_property_descriptor(). No per-augment access check needed here.
+
     fn property_value_read(
         &self,
         state: &S,
@@ -652,12 +656,6 @@ impl<S: StackState, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObj
         if object_type != InterfaceObjectType::IPParameter {
             return None;
         }
-
-        let desc = self.ip_descriptor_by_pid(req.pid)?;
-        if !desc.can_read_secure(&req.ctx, state.security_mode_enabled()) {
-            return Some(Err(PropertyError::AccessDenied));
-        }
-
         self.read_ip_property(state, req, buf)
     }
 
@@ -670,12 +668,6 @@ impl<S: StackState, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObj
         if object_type != InterfaceObjectType::IPParameter {
             return None;
         }
-
-        let desc = self.ip_descriptor_by_pid(req.pid)?;
-        if !desc.can_write_secure(&req.ctx, state.security_mode_enabled()) {
-            return Some(Err(PropertyError::AccessDenied));
-        }
-
         self.write_ip_property(state, req)
     }
 }
