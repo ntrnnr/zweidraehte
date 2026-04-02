@@ -4,6 +4,7 @@
 //! augment-provided object. This adds one additional object to the
 //! device's IO list without modifying the base System B objects.
 
+use super::SecurityTable;
 use crate::StackState;
 use crate::access::AccessPolicy;
 use crate::dpt::{
@@ -17,7 +18,6 @@ use crate::objects::interface::{
 };
 use crate::objects::tables::LoadState;
 use crate::properties::PropertyRead;
-use super::SecurityTable;
 
 use super::SecurityState;
 
@@ -187,7 +187,9 @@ impl<'a, const GRP: usize, const P2P: usize, const GO: usize> SecurityAugment<'a
     }
 }
 
-impl<'a, S: StackState, const GRP: usize, const P2P: usize, const GO: usize> InterfaceObjectAugment<S> for SecurityAugment<'a, GRP, P2P, GO> {
+impl<'a, S: StackState, const GRP: usize, const P2P: usize, const GO: usize> InterfaceObjectAugment<S>
+    for SecurityAugment<'a, GRP, P2P, GO>
+{
     fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
         if object_type != InterfaceObjectType::Security {
             return None;
@@ -610,14 +612,14 @@ mod tests {
         }
     }
 
-    fn make_state() -> SecurityState<64, 32> {
+    fn make_state() -> SecurityState<64, 8, 32> {
         SecurityState::from_config(SecurityExtensionConfig::default())
     }
 
     #[test]
     fn augment_reports_one_additional_object() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 32>::new(&state);
+        let augment = SecurityAugment::<64, 8, 32>::new(&state);
         let mock = MockState;
 
         assert_eq!(InterfaceObjectAugment::<MockState>::additional_object_count(&augment), 1);
@@ -632,7 +634,7 @@ mod tests {
     #[test]
     fn read_object_type_returns_security() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 32>::new(&state);
+        let augment = SecurityAugment::<64, 8, 32>::new(&state);
         let mock = MockState;
 
         let req = FullPropertyReadRequest {
@@ -660,7 +662,7 @@ mod tests {
     #[test]
     fn write_security_mode_toggles() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 32>::new(&state);
+        let augment = SecurityAugment::<64, 8, 32>::new(&state);
         let mock = MockState;
 
         // Write security mode = 1 (enabled)
@@ -691,7 +693,7 @@ mod tests {
     #[test]
     fn ignores_non_security_objects() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 32>::new(&state);
+        let augment = SecurityAugment::<64, 8, 32>::new(&state);
         let mock = MockState;
 
         let req = FullPropertyReadRequest {
@@ -720,7 +722,7 @@ mod tests {
         assert_eq!(config.tool_key, [0xAA; 16]);
         assert_eq!(config.load_state, LoadState::Err);
 
-        let restored = SecurityState::<64, 32>::from_config(config);
+        let restored = SecurityState::<64, 8, 32>::from_config(config);
         assert!(restored.security_mode_enabled());
         assert_eq!(restored.tool_key(), [0xAA; 16]);
         assert_eq!(restored.load_state(), LoadState::Err);
@@ -747,7 +749,7 @@ mod tests {
     #[test]
     fn grp_key_table_write_and_read() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 32>::new(&state);
+        let augment = SecurityAugment::<64, 8, 32>::new(&state);
         let mock = MockState;
 
         // Write one group key entry (18 bytes: GA_index=0x0001 + 16-byte key)
@@ -814,7 +816,7 @@ mod tests {
     #[test]
     fn go_security_flags_write_and_lookup() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 32>::new(&state);
+        let augment = SecurityAugment::<64, 8, 32>::new(&state);
         let mock = MockState;
 
         // Write 3 GO flags
@@ -838,7 +840,7 @@ mod tests {
     #[test]
     fn tool_key_is_write_only() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 32>::new(&state);
+        let augment = SecurityAugment::<64, 8, 32>::new(&state);
         let mock = MockState;
 
         // Write tool key
@@ -868,8 +870,8 @@ mod tests {
 
     #[test]
     fn table_write_beyond_capacity_fails() {
-        let state: SecurityState<2, 2> = SecurityState::from_config(SecurityExtensionConfig::default());
-        let augment = SecurityAugment::<2, 2>::new(&state);
+        let state: SecurityState<2, 2, 2> = SecurityState::from_config(SecurityExtensionConfig::default());
+        let augment = SecurityAugment::<2, 2, 2>::new(&state);
         let mock = MockState;
 
         // Write 3 entries to a table with capacity 2 — should fail.
@@ -887,7 +889,7 @@ mod tests {
     #[test]
     fn read_out_of_range_returns_error() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 32>::new(&state);
+        let augment = SecurityAugment::<64, 8, 32>::new(&state);
         let mock = MockState;
 
         // Table is empty (0 entries). Reading at start_idx=1 should fail.
@@ -907,7 +909,7 @@ mod tests {
     #[test]
     fn read_with_small_buffer_returns_error() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 32>::new(&state);
+        let augment = SecurityAugment::<64, 8, 32>::new(&state);
         let mock = MockState;
 
         // Write one entry (18 bytes).

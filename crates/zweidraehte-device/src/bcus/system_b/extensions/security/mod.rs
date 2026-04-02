@@ -9,9 +9,9 @@
 //! Non-secure devices are unaffected. Security is opt-in:
 //!
 //! ```text
-//! SecureExtensionState<Tp1ExtensionState, 64, 32>
-//!   ├── inner: Tp1ExtensionState        (medium-specific state)
-//!   └── security: SecurityState<64, 32> (security tables + mode)
+//! SecureExtensionState<Tp1ExtensionState, 64, 8, 32>
+//!   ├── inner: Tp1ExtensionState           (medium-specific state)
+//!   └── security: SecurityState<64, 8, 32> (security tables + mode)
 //!
 //! Extension::create_augment() produces:
 //!   (Tp1Augment, SecurityAugment)       (tuple augment composition)
@@ -673,7 +673,9 @@ impl<InnerConfig: ExtensionConfig> Default for SecureExtensionConfig<InnerConfig
 
 impl<InnerConfig: ExtensionConfig> ExtensionConfig for SecureExtensionConfig<InnerConfig> {}
 
-impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for SecureExtensionState<Inner, GRP, P2P, GO> {
+impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> ExtensionState
+    for SecureExtensionState<Inner, GRP, P2P, GO>
+{
     type Config = SecureExtensionConfig<Inner::Config>;
 
     fn from_config(config: Self::Config) -> Self {
@@ -698,7 +700,8 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
 // Extension trait — produces (inner_augment, SecurityAugment) tuple
 // ============================================================================
 
-impl<Inner, Platform, const GRP: usize, const P2P: usize, const GO: usize> Extension<Platform> for SecureExtensionState<Inner, GRP, P2P, GO>
+impl<Inner, Platform, const GRP: usize, const P2P: usize, const GO: usize> Extension<Platform>
+    for SecureExtensionState<Inner, GRP, P2P, GO>
 where
     Inner: Extension<Platform>,
 {
@@ -727,17 +730,49 @@ pub type SecureTp1ExtensionState<const GRP: usize, const P2P: usize, const GO: u
     SecureExtensionState<super::tp1::Tp1ExtensionState, GRP, P2P, GO>;
 
 /// TP1 device state with Data Secure support.
+///
+/// `GRP` (group key table size) and `GO` (GO security flags table size)
+/// are derived from `ADT_SIZE` and `COT_SIZE` respectively, since the
+/// group key table is indexed by GA index (one per address table entry)
+/// and the GO flags table has one entry per communication object.
 pub type SecureTp1DeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P,
-    const GRP: usize,
     const P2P: usize,
-    const GO: usize,
-> = crate::bcus::system_b::SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, SecureTp1ExtensionState<GRP, P2P, GO>>;
+> = crate::bcus::system_b::SystemBDeviceState<
+    ADT_SIZE,
+    AST_SIZE,
+    COT_SIZE,
+    P,
+    SecureTp1ExtensionState<ADT_SIZE, P2P, COT_SIZE>,
+>;
 
 #[cfg(feature = "knxip")]
 /// KNX/IP extension state with Data Secure support.
 pub type SecureIpExtensionState<const N: usize, const CAPS: u16, const GRP: usize, const P2P: usize, const GO: usize> =
     SecureExtensionState<super::ip::IpExtensionState<N, CAPS>, GRP, P2P, GO>;
+
+#[cfg(feature = "knxip")]
+/// KNX/IP device state with Data Secure support.
+///
+/// Like [`SecureTp1DeviceState`], `GRP` and `GO` are derived from
+/// `ADT_SIZE` and `COT_SIZE`. Only `P2P` and the IP-specific `N`
+/// (max tunnelling connections) and `CAPS` (capability flags) remain
+/// as independent parameters.
+pub type SecureIpDeviceState<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P,
+    const P2P: usize,
+    const N: usize,
+    const CAPS: u16,
+> = crate::bcus::system_b::SystemBDeviceState<
+    ADT_SIZE,
+    AST_SIZE,
+    COT_SIZE,
+    P,
+    SecureIpExtensionState<N, CAPS, ADT_SIZE, P2P, COT_SIZE>,
+>;

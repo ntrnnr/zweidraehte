@@ -39,13 +39,12 @@ use super::stack::{
 // ============================================================================
 
 /// Security table sizes for const generics.
+///
+/// `GRP` and `GO` are no longer needed — `SecureTp1DeviceState` derives
+/// them from `ADT_SIZE` and `COT_SIZE` respectively.
 pub mod sec_table_sizes {
-    /// Max group key entries (covers all 11 group addresses + headroom).
-    pub const GRP: usize = 16;
     /// Max P2P key entries.
     pub const P2P: usize = 8;
-    /// Max GO security flag entries (covers all 11 comm objects + headroom).
-    pub const GO: usize = 16;
 }
 
 /// Serial number for the secure DUT (matches XML: FE ED BA BE CA FE).
@@ -65,9 +64,7 @@ type SecureInnerState = SecureTp1DeviceState<
     { table_sizes::AST },
     { table_sizes::COT },
     TestParameters,
-    { sec_table_sizes::GRP },
     { sec_table_sizes::P2P },
-    { sec_table_sizes::GO },
 >;
 
 // ============================================================================
@@ -464,7 +461,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type P = TestParameters;
     type CO = super::stack::comm_objs::ConformanceComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
-    type ES = SecureTp1ExtensionState<{ sec_table_sizes::GRP }, { sec_table_sizes::P2P }, { sec_table_sizes::GO }>;
+    type ES = SecureTp1ExtensionState<{ table_sizes::ADT }, { sec_table_sizes::P2P }, { table_sizes::COT }>;
     type State = SecureConformanceState;
     type Mem = ConformanceMemoryMap;
 
