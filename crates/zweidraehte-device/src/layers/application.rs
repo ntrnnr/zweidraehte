@@ -922,8 +922,33 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             req.object_idx, req.prop_id, req.prop_idx
         );
 
+        let access_ctx = self.resolve_access(ind);
         let response =
             self.interface_objects.property_description_read(req.object_idx, req.prop_id, req.prop_idx as u16);
+
+        // Apply per-property Data Secure access policy: if the caller can't
+        // read the property value, hide the descriptor too. This prevents
+        // the non-ext service from leaking property metadata that the ext
+        // version would hide.
+        let response = match response {
+            Ok(desc) => {
+                let test_req = FullPropertyReadRequest {
+                    object_idx: req.object_idx,
+                    pid: desc.prop_id,
+                    start_idx: 0,
+                    count: 1,
+                    ctx: access_ctx,
+                };
+                let mut dummy = [0u8; 4];
+                match self.interface_objects.property_value_read(&test_req, &mut dummy) {
+                    Err(crate::objects::interface::PropertyError::AccessDenied) => {
+                        Err(crate::objects::interface::PropertyError::AccessDenied)
+                    }
+                    _ => Ok(desc),
+                }
+            }
+            err => err,
+        };
 
         match response {
             Ok(desc) => {
