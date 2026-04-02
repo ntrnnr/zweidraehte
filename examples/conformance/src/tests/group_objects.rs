@@ -99,8 +99,7 @@
 use std::collections::BTreeMap;
 
 use super::helpers::{
-    comment, expect, expect_none, inject, inject_delay, trigger_read, trigger_write,
-    wait_for_restart,
+    comment, expect, expect_none, inject, inject_delay, trigger_read, trigger_write, wait_for_restart,
 };
 use crate::{TestCase, TestSuite, TestVariable};
 
@@ -125,8 +124,8 @@ pub fn create_test_variables() -> BTreeMap<String, TestVariable> {
     vars.insert("GO_1_B3_ADDR".to_string(), TestVariable::Bytes(vec![0x11, 0x01])); // 2/1/1 = 0x1101
     vars.insert("GO_2_B3_ADDR".to_string(), TestVariable::Bytes(vec![0x11, 0x02])); // 2/1/2 = 0x1102
     vars.insert("GO_3_B3_ADDR".to_string(), TestVariable::Bytes(vec![0x11, 0x03])); // 2/1/3 = 0x1103
-                                                                                    // Additional variables for test 1.4.1.7 (invalid APCI tests)
-                                                                                    // Memory addresses - these are device-specific placeholders
+    // Additional variables for test 1.4.1.7 (invalid APCI tests)
+    // Memory addresses - these are device-specific placeholders
     vars.insert("MEM_ACCESSIBLE_START_CC".to_string(), TestVariable::Bytes(vec![0x01, 0x00]));
     vars.insert("MEM_ACCESSIBLE_START_AC".to_string(), TestVariable::Bytes(vec![0x01, 0x00]));
     // Interface object IDs and properties
@@ -170,7 +169,9 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 inject("BC #EDI #GO_1_ADDR E1 00 87"),
                 // NOTE: Explicit trigger required - our stack doesn't auto-send on flag change
                 trigger_read(1), // GO0 = ASAP 1
-                comment("Acceptance: BDUT sends A_GroupValue_Read with low priority and Comm. flags are set accordingly."),
+                comment(
+                    "Acceptance: BDUT sends A_GroupValue_Read with low priority and Comm. flags are set accordingly.",
+                ),
                 // BDUT sends Value Read request (low priority = BC)
                 expect("BC #BDUT #GO_0_ADDR E1 00 00", 200),
                 // Read communication flags
@@ -391,24 +392,24 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 trigger_write(1), // GO0 = ASAP 1
                 comment("Acceptance: BDUT sends message with correct data and Comm. flags are set accordingly."),
                 expect("BC #BDUT #GO_0_ADDR E1 00 81", 200), // generated valueWrite
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),       // read communication-flags
                 expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Comm.-flags = idle/OK
                 // --------------------------------------------------------
                 comment("Normal priority"),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 DD", 200), // set priority to normal
-                inject("BC #EDI #GO_1_ADDR E1 00 83"), // set transmit request
+                inject("BC #EDI #GO_1_ADDR E1 00 83"),               // set transmit request
                 trigger_write(1),
                 expect("B4 #BDUT #GO_0_ADDR E1 00 81", 200), // generated valueWrite
                 // --------------------------------------------------------
                 comment("Urgent priority"),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 DE", 200), // set priority to urgent
-                inject("BC #EDI #GO_1_ADDR E1 00 83"), // set transmit request
+                inject("BC #EDI #GO_1_ADDR E1 00 83"),               // set transmit request
                 trigger_write(1),
                 expect("B8 #BDUT #GO_0_ADDR E1 00 81", 200), // generated valueWrite
                 // --------------------------------------------------------
                 comment("System priority"),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 DC", 200), // set priority to system
-                inject("BC #EDI #GO_1_ADDR E1 00 83"), // set transmit request
+                inject("BC #EDI #GO_1_ADDR E1 00 83"),               // set transmit request
                 trigger_write(1),
                 expect("B0 #BDUT #GO_0_ADDR E1 00 81", 200), // generated valueWrite
                 // --------------------------------------------------------
@@ -416,46 +417,46 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 comment("Disable 'communication'"),
                 comment("Acceptance: No telegram generated, check Communication flags."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 DB", 200), // disable communication
-                inject_delay("BC #EDI #GO_1_ADDR E1 00 83", 200), // set transmit request
-                trigger_write(1), // Should fail due to disabled comm flag
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 83", 200),    // set transmit request
+                trigger_write(1),                                    // Should fail due to disabled comm flag
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
                 expect("BC #BDUT #GO_1_ADDR E1 00 41", 200), // Comm.-flags = idle/error (BCU 2), transmit request (BCU1)
                 inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // reset Comm. flags
                 // --------------------------------------------------------
                 comment("Disable 'read'"),
                 comment("Acceptance: generate telegram, check Comm. flags."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 D7", 200), // disable read
-                inject("BC #EDI #GO_1_ADDR E1 00 83"), // set transmit request
+                inject("BC #EDI #GO_1_ADDR E1 00 83"),               // set transmit request
                 trigger_write(1),
                 expect("BC #BDUT #GO_0_ADDR E1 00 81", 200), // generated valueWrite
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),       // read communication-flags
                 expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Comm.-flags = idle/OK
                 // --------------------------------------------------------
                 comment("Disable 'write'"),
                 comment("Acceptance: generate telegram, check Comm. flags."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 CF", 200), // disable write
-                inject("BC #EDI #GO_1_ADDR E1 00 83"), // set transmit request
+                inject("BC #EDI #GO_1_ADDR E1 00 83"),               // set transmit request
                 trigger_write(1),
                 expect("BC #BDUT #GO_0_ADDR E1 00 81", 200), // generated valueWrite
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),       // read communication-flags
                 expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Comm.-flags = idle/OK
                 // --------------------------------------------------------
                 comment("Disable 'transmission'"),
                 comment("Acceptance: no telegram generated, check Comm. flags."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 9F", 200), // disable transmission
-                inject_delay("BC #EDI #GO_1_ADDR E1 00 83", 200), // set transmit request
-                trigger_write(1), // Should fail due to disabled transmission flag
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
-                expect("BC #BDUT #GO_1_ADDR E1 00 41", 200), // Comm.-flags = idle/error
-                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // reset Comm. flags
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 83", 200),    // set transmit request
+                trigger_write(1),                                    // Should fail due to disabled transmission flag
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
+                expect("BC #BDUT #GO_1_ADDR E1 00 41", 200),         // Comm.-flags = idle/error
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // reset Comm. flags
                 // --------------------------------------------------------
                 comment("Disable 'read response update'"),
                 comment("Acceptance: generate telegram, check Comm. flags."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 5F", 200), // disable read response update
-                inject("BC #EDI #GO_1_ADDR E1 00 83"), // set transmit request
+                inject("BC #EDI #GO_1_ADDR E1 00 83"),               // set transmit request
                 trigger_write(1),
                 expect("BC #BDUT #GO_0_ADDR E1 00 81", 200), // generated valueWrite
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),       // read communication-flags
                 expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Comm.-flags = idle/OK
             ],
         },
@@ -485,52 +486,52 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 comment("Disable 'communication'"),
                 comment("Acceptance: Update flag not set."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 DB", 200), // disable comm
-                inject_delay("BC #EDI #GO_0_ADDR E1 00 81", 200), // Value Write sent by EITT
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
-                expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Comm.-flags = update flag not set
-                inject("BC #EDI #GO_3_ADDR E1 00 00"), // Value read of object value
-                expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200), // Value Response of BDUT
-                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. flags
+                inject_delay("BC #EDI #GO_0_ADDR E1 00 81", 200),    // Value Write sent by EITT
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
+                expect("BC #BDUT #GO_1_ADDR E1 00 40", 200),         // Comm.-flags = update flag not set
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),               // Value read of object value
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200),      // Value Response of BDUT
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. flags
                 // --------------------------------------------------------
                 comment("Disable 'read'"),
                 comment("Acceptance: Update flag set."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 D7", 200), // disable read
-                inject_delay("BC #EDI #GO_0_ADDR E1 00 81", 200), // Value Write sent by EITT
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
-                expect("BC #BDUT #GO_1_ADDR E1 00 48", 200), // Comm.-flags = update flag
-                inject("BC #EDI #GO_3_ADDR E1 00 00"), // Value read of object value
-                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200), // Value Response of BDUT
-                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. flags
+                inject_delay("BC #EDI #GO_0_ADDR E1 00 81", 200),    // Value Write sent by EITT
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
+                expect("BC #BDUT #GO_1_ADDR E1 00 48", 200),         // Comm.-flags = update flag
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),               // Value read of object value
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200),      // Value Response of BDUT
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. flags
                 // --------------------------------------------------------
                 comment("Disable 'write'"),
                 comment("Acceptance: Update flag not set."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 CF", 200), // disable write
-                inject_delay("BC #EDI #GO_0_ADDR E1 00 80", 200), // Value Write sent by EITT
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
-                expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Comm.-flags = update flag not set
-                inject("BC #EDI #GO_3_ADDR E1 00 00"), // Value read of object value
-                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200), // Value Response of BDUT
-                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. flags
+                inject_delay("BC #EDI #GO_0_ADDR E1 00 80", 200),    // Value Write sent by EITT
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
+                expect("BC #BDUT #GO_1_ADDR E1 00 40", 200),         // Comm.-flags = update flag not set
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),               // Value read of object value
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200),      // Value Response of BDUT
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. flags
                 // --------------------------------------------------------
                 comment("Disable 'transmission'"),
                 comment("Acceptance: Update flag set."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 9F", 200), // disable transmission
-                inject_delay("BC #EDI #GO_0_ADDR E1 00 80", 200), // Value Write from EITT
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
-                expect("BC #BDUT #GO_1_ADDR E1 00 48", 200), // Comm.-flags = update flag
-                inject("BC #EDI #GO_3_ADDR E1 00 00"), // Value read of object value
-                expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200), // Value Response of BDUT
-                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. flags
+                inject_delay("BC #EDI #GO_0_ADDR E1 00 80", 200),    // Value Write from EITT
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
+                expect("BC #BDUT #GO_1_ADDR E1 00 48", 200),         // Comm.-flags = update flag
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),               // Value read of object value
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200),      // Value Response of BDUT
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. flags
                 // --------------------------------------------------------
                 comment("Disable 'read response update'"),
                 comment("Acceptance: Update flag set."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 5F", 200), // disable read response update
-                inject_delay("BC #EDI #GO_0_ADDR E1 00 81", 200), // Value Write sent by EITT
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
-                expect("BC #BDUT #GO_1_ADDR E1 00 48", 200), // Comm.-flags = update flag
-                inject("BC #EDI #GO_3_ADDR E1 00 00"), // Value read of object value
-                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200), // Value Response of BDUT
-                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. Flags
+                inject_delay("BC #EDI #GO_0_ADDR E1 00 81", 200),    // Value Write sent by EITT
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
+                expect("BC #BDUT #GO_1_ADDR E1 00 48", 200),         // Comm.-flags = update flag
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),               // Value read of object value
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200),      // Value Response of BDUT
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. Flags
             ],
         },
         // ====================================================================
@@ -548,22 +549,22 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 comment("Acceptance: Comm.-flags = no update flag and value unchanged."),
                 inject_delay("BC #EDI #GO_2_B3_ADDR E2 00 80 FF", 200), // enable all flags on GO0_BYTE3
                 inject_delay("BC #EDI #GO_0_B3_ADDR E4 00 80 12 34 56", 200), // Value Write (3 bytes) - valid
-                inject_delay("BC #EDI #GO_1_B3_ADDR E1 00 80", 200), // clear Comm. flags
+                inject_delay("BC #EDI #GO_1_B3_ADDR E1 00 80", 200),    // clear Comm. flags
                 inject_delay("BC #EDI #GO_0_B3_ADDR E5 00 80 12 34 56 78", 200), // Value Write (4 bytes - too large)
-                inject("BC #EDI #GO_1_B3_ADDR E1 00 00"), // read communication-flags
-                expect("BC #BDUT #GO_1_B3_ADDR E1 00 40", 200), // Comm.-flags = no update flag
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"), // Value read of object value
+                inject("BC #EDI #GO_1_B3_ADDR E1 00 00"),               // read communication-flags
+                expect("BC #BDUT #GO_1_B3_ADDR E1 00 40", 200),         // Comm.-flags = no update flag
+                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),               // Value read of object value
                 expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 12 34 56", 200), // Value Response (unchanged)
-                inject_delay("BC #EDI #GO_1_B3_ADDR E1 00 80", 200), // clear Comm. Flags
+                inject_delay("BC #EDI #GO_1_B3_ADDR E1 00 80", 200),    // clear Comm. Flags
                 // --------------------------------------------------------
                 comment("Data smaller than the expected size"),
                 comment("Acceptance: Comm.-flags = no update flag and value unchanged."),
                 inject_delay("BC #EDI #GO_0_B3_ADDR E3 00 80 AB CD", 200), // Value Write (2 bytes - too small)
-                inject("BC #EDI #GO_1_B3_ADDR E1 00 00"), // read communication-flags
-                expect("BC #BDUT #GO_1_B3_ADDR E1 00 40", 200), // Comm.-flags = no update flag
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"), // Value read of object value
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 12 34 56", 200), // Value Response (unchanged)
-                inject_delay("BC #EDI #GO_1_B3_ADDR E1 00 80", 200), // clear Comm. Flags
+                inject("BC #EDI #GO_1_B3_ADDR E1 00 00"),                  // read communication-flags
+                expect("BC #BDUT #GO_1_B3_ADDR E1 00 40", 200),            // Comm.-flags = no update flag
+                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),                  // Value read of object value
+                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 12 34 56", 200),   // Value Response (unchanged)
+                inject_delay("BC #EDI #GO_1_B3_ADDR E1 00 80", 200),       // clear Comm. Flags
             ],
         },
         // ====================================================================
@@ -582,66 +583,66 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 comment("Disable \"communication\""),
                 comment("Acceptance: Update flag not set."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 DB", 200), // disable comm in configuration flags
-                inject_delay("BC #EDI #GO_0_ADDR E1 00 40", 200), // ValueResponse by EITT to BDUT
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
-                expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Comm.-flags = update flag not set
-                inject("BC #EDI #GO_3_ADDR E1 00 00"), // Value read of object value
-                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200), // Value Response of BDUT
-                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. flags
+                inject_delay("BC #EDI #GO_0_ADDR E1 00 40", 200),    // ValueResponse by EITT to BDUT
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
+                expect("BC #BDUT #GO_1_ADDR E1 00 40", 200),         // Comm.-flags = update flag not set
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),               // Value read of object value
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200),      // Value Response of BDUT
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. flags
                 // --------------------------------------------------------
                 comment("Disable \"read\""),
                 comment("Acceptance: Update flag set."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 D7", 200), // disable read in configuration flags
-                inject_delay("BC #EDI #GO_0_ADDR E1 00 40", 200), // ValueResponse by EITT to BDUT
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
-                expect("BC #BDUT #GO_1_ADDR E1 00 48", 200), // Comm.-flags = update flag
-                inject("BC #EDI #GO_3_ADDR E1 00 00"), // Value read of object value
-                expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200), // Value Response of BDUT
-                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. flags
+                inject_delay("BC #EDI #GO_0_ADDR E1 00 40", 200),    // ValueResponse by EITT to BDUT
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
+                expect("BC #BDUT #GO_1_ADDR E1 00 48", 200),         // Comm.-flags = update flag
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),               // Value read of object value
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200),      // Value Response of BDUT
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. flags
                 // --------------------------------------------------------
                 comment("Disable \"write\""),
                 comment("Acceptance: Update flag not set."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 CF", 200), // disable write in configuration flags
-                inject_delay("BC #EDI #GO_0_ADDR E1 00 41", 200), // ValueResponse by EITT to BDUT
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
-                expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Comm.-flags = update flag not set
-                inject("BC #EDI #GO_3_ADDR E1 00 00"), // Value read of object value
-                expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200), // Value Response of BDUT
-                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. flags
+                inject_delay("BC #EDI #GO_0_ADDR E1 00 41", 200),    // ValueResponse by EITT to BDUT
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
+                expect("BC #BDUT #GO_1_ADDR E1 00 40", 200),         // Comm.-flags = update flag not set
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),               // Value read of object value
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200),      // Value Response of BDUT
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. flags
                 // --------------------------------------------------------
                 comment("Disable \"transmission\""),
                 comment("Acceptance: Update flag set."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 9F", 200), // disable transmission in configuration flags
-                inject_delay("BC #EDI #GO_0_ADDR E1 00 41", 200), // ValueResponse by EITT to BDUT
-                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
-                expect("BC #BDUT #GO_1_ADDR E1 00 48", 200), // Comm.-flags = update flag
-                inject("BC #EDI #GO_3_ADDR E1 00 00"), // Value read of object value
-                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200), // Value Response of BDUT
-                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. flags
-                // --------------------------------------------------------
-                // NOTE: The following "Disable read response update" test clause is for devices
-                // that do NOT support deactivation of the update flag. Our implementation properly
-                // supports update flag deactivation (BCU2 behavior), so this test is not applicable.
-                //
-                // When update_enable is disabled, we correctly:
-                // 1. Do NOT set the Updated flag (verified by expect 0x40 above)
-                // 2. Do NOT update the object value (value remains unchanged)
-                //
-                // The original EITT test expects value=0x00 which would only happen if the device
-                // ignores the update_enable flag and updates anyway (BCU1 behavior).
-                //
-                // comment("Disable \"read response update\" (if possible)"),
-                // comment("Acceptance: Update flag not set"),
-                // inject_delay("BC #EDI #GO_2_ADDR E2 00 80 5F", 200), // disable read response update
-                // inject_delay("BC #EDI #GO_0_ADDR E1 00 40", 200), // ValueResponse by EITT to BDUT
-                // inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
-                // comment("Next telegram: Update flag not set (BCU2), update flag set (BCU1)."),
-                // expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Update flag not set
-                // inject("BC #EDI #GO_3_ADDR E1 00 00"), // Value read of object value
-                // comment("The group object value remains unchanged for devices supporting deactivation of the update flag and vice versa."),
-                // comment("The underneath frame shows the reaction in the case where the device does not support deactivation of the update flag."),
-                // expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200), // Value Response of BDUT (BCU1: updated to 0x00)
-                // inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. Flags
+                inject_delay("BC #EDI #GO_0_ADDR E1 00 41", 200),    // ValueResponse by EITT to BDUT
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
+                expect("BC #BDUT #GO_1_ADDR E1 00 48", 200),         // Comm.-flags = update flag
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),               // Value read of object value
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200),      // Value Response of BDUT
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. flags
+                                                                     // --------------------------------------------------------
+                                                                     // NOTE: The following "Disable read response update" test clause is for devices
+                                                                     // that do NOT support deactivation of the update flag. Our implementation properly
+                                                                     // supports update flag deactivation (BCU2 behavior), so this test is not applicable.
+                                                                     //
+                                                                     // When update_enable is disabled, we correctly:
+                                                                     // 1. Do NOT set the Updated flag (verified by expect 0x40 above)
+                                                                     // 2. Do NOT update the object value (value remains unchanged)
+                                                                     //
+                                                                     // The original EITT test expects value=0x00 which would only happen if the device
+                                                                     // ignores the update_enable flag and updates anyway (BCU1 behavior).
+                                                                     //
+                                                                     // comment("Disable \"read response update\" (if possible)"),
+                                                                     // comment("Acceptance: Update flag not set"),
+                                                                     // inject_delay("BC #EDI #GO_2_ADDR E2 00 80 5F", 200), // disable read response update
+                                                                     // inject_delay("BC #EDI #GO_0_ADDR E1 00 40", 200), // ValueResponse by EITT to BDUT
+                                                                     // inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
+                                                                     // comment("Next telegram: Update flag not set (BCU2), update flag set (BCU1)."),
+                                                                     // expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Update flag not set
+                                                                     // inject("BC #EDI #GO_3_ADDR E1 00 00"), // Value read of object value
+                                                                     // comment("The group object value remains unchanged for devices supporting deactivation of the update flag and vice versa."),
+                                                                     // comment("The underneath frame shows the reaction in the case where the device does not support deactivation of the update flag."),
+                                                                     // expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200), // Value Response of BDUT (BCU1: updated to 0x00)
+                                                                     // inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. Flags
             ],
         },
         // ====================================================================
@@ -660,6 +661,12 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 comment("a Group Value Read request for group objects with the read-on-init flag set."),
                 comment("GO3 (ASAP 4, addr 2/0/3) and GO4 (ASAP 9, addr 2/0/5) have ROI enabled."),
                 comment("GO0-GO2 do not have ROI."),
+                // Reset COT flags that prior tests may have modified, so the
+                // ROI scan after restart only fires for the intended objects.
+                // ASAP 1 (GO0): tests 1.4.1.1-1.4.1.5 modify via GO2.
+                inject_delay("BC #EDI #GO_2_ADDR E2 00 80 DF", 200),
+                // ASAP 5 (GO0_BYTE3): test 1.4.1.4a sets 0xFF which enables ROI.
+                inject_delay("BC #EDI #GO_2_B3_ADDR E2 00 80 DF", 200),
                 // Send a basic A_Restart (connectionless) to trigger a reboot.
                 inject("BC #EDI #BDUT 61 03 80"),
                 // Wait for the child to exit and respawn without draining ROI
@@ -693,7 +700,9 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 inject_delay("BC #EDI #GO_0_B3_ADDR E1 00 3F", 200),
                 comment("Acceptance: No value response may be sent."),
                 // --------------------------------------------------------
-                comment("Test 2 – Checking acceptance of frames with unsupported APCI's or APCI's not valid for group communication."),
+                comment(
+                    "Test 2 – Checking acceptance of frames with unsupported APCI's or APCI's not valid for group communication.",
+                ),
                 comment("ACTION: Make sure the BDUT is in programming mode (programming LED on)."),
                 // --------------------------------------------------------
                 comment("Test: APCI - IndividualAddress_Write"),
