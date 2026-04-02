@@ -209,6 +209,8 @@ pub struct FullPropertyWriteRequest<'a> {
     pub object_idx: u16,
     /// Property ID to write.
     pub pid: u8,
+    /// Number of elements to write (from the wire header).
+    pub count: u16,
     /// 1-based start index for array properties.
     pub start_idx: u16,
     /// Data to write.

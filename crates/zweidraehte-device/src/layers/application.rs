@@ -922,7 +922,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             req.object_idx, req.prop_id, req.prop_idx
         );
 
-        let response = self.interface_objects.property_description_read(req.object_idx, req.prop_id, req.prop_idx as u16);
+        let response =
+            self.interface_objects.property_description_read(req.object_idx, req.prop_id, req.prop_idx as u16);
 
         match response {
             Ok(desc) => {
@@ -1114,6 +1115,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let req = FullPropertyWriteRequest {
             object_idx: hdr.object_idx,
             pid: hdr.prop_id,
+            count: hdr.count,
             start_idx: hdr.start_idx,
             data,
             ctx: access_ctx,

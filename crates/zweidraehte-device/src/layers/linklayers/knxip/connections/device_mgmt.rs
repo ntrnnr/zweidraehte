@@ -216,6 +216,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         let req = FullPropertyWriteRequest {
             object_idx,
             pid: frame.property_id,
+            count: frame.count,
             start_idx: frame.start_index,
             data: frame.data,
             ctx: AccessContext::MAX_ACCESS,

@@ -299,8 +299,14 @@ fn handle_ext_value_write_con<D: StackDefinition>(
         return;
     }
 
-    let req =
-        FullPropertyWriteRequest { object_idx, pid: hdr.prop_id, start_idx: hdr.start_idx, data, ctx: ctx.access_ctx };
+    let req = FullPropertyWriteRequest {
+        object_idx,
+        pid: hdr.prop_id,
+        count: hdr.count as u16,
+        start_idx: hdr.start_idx,
+        data,
+        ctx: ctx.access_ctx,
+    };
     let result = ctx.interface_objects.property_value_write(&req);
 
     let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
@@ -413,8 +419,14 @@ fn handle_ext_value_write_uncon<D: StackDefinition>(
         return;
     }
 
-    let req =
-        FullPropertyWriteRequest { object_idx, pid: hdr.prop_id, start_idx: hdr.start_idx, data, ctx: ctx.access_ctx };
+    let req = FullPropertyWriteRequest {
+        object_idx,
+        pid: hdr.prop_id,
+        count: hdr.count as u16,
+        start_idx: hdr.start_idx,
+        data,
+        ctx: ctx.access_ctx,
+    };
     if let Err(e) = ctx.interface_objects.property_value_write(&req) {
         debug!("AL PropertyExtValueWriteUnCon write failed (ignored): {:?}", e);
     }
@@ -762,9 +774,8 @@ fn handle_ext_description_read<D: StackDefinition>(
     // service shall not be subject to authorisation." Service-level access policy
     // is 3FF/3FF (Table 11). Property metadata is always returned regardless of
     // the caller's access level or Data Secure role.
-    let desc_result = object_idx.and_then(|idx| {
-        ctx.interface_objects.property_description_read(idx, pid, prop_idx).ok()
-    });
+    let desc_result =
+        object_idx.and_then(|idx| ctx.interface_objects.property_description_read(idx, pid, prop_idx).ok());
 
     let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(RESP_LEN) else {
         warn!("AL no buffer for PropertyExtDescriptionResponse");

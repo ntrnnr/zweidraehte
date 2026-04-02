@@ -230,7 +230,8 @@ where
     fn property_value_write(&self, req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
         let obj_type = self.object_type_for(req.object_idx).ok_or(PropertyError::InvalidObjectIndex)?;
 
-        // Check access before any write dispatch (applies to base and augment objects).
+        // Check access and bounds before any write dispatch (applies to base
+        // and augment objects).
         if let Some(desc) = self.get_descriptor(req.object_idx, req.pid) {
             if matches!(desc.access, PropertyAccess::ReadOnly) {
                 return Err(PropertyError::WriteNotAllowed);
@@ -242,6 +243,18 @@ where
                 }
             } else if !desc.can_write(req.ctx) {
                 return Err(PropertyError::AccessDenied);
+            }
+
+            // Validate element count and start index bounds.
+            if req.start_idx > 0 && desc.max_elements > 0 {
+                // start_idx is 1-based; last element written is at
+                // start_idx + count - 1 which must be <= max_elements.
+                if req.count == 0 {
+                    return Err(PropertyError::InvalidStartIndex);
+                }
+                if req.start_idx + req.count - 1 > desc.max_elements {
+                    return Err(PropertyError::InvalidStartIndex);
+                }
             }
         }
 

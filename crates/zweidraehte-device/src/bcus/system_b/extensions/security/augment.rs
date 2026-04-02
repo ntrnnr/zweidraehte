@@ -669,6 +669,7 @@ mod tests {
         let req = FullPropertyWriteRequest {
             object_idx: 6,
             pid: pid::SECURITY_MODE,
+            count: 1,
             start_idx: 1,
             data: &[1],
             ctx: crate::AccessContext::MAX_ACCESS,
@@ -681,6 +682,7 @@ mod tests {
         let req = FullPropertyWriteRequest {
             object_idx: 6,
             pid: pid::SECURITY_MODE,
+            count: 1,
             start_idx: 1,
             data: &[0],
             ctx: crate::AccessContext::MAX_ACCESS,
@@ -761,6 +763,7 @@ mod tests {
         let write_req = FullPropertyWriteRequest {
             object_idx: 6,
             pid: pid::GROUP_KEY_TABLE,
+            count: 1,
             start_idx: 1,
             data: &entry,
             ctx: crate::AccessContext::MAX_ACCESS,
@@ -823,6 +826,7 @@ mod tests {
         let write_req = FullPropertyWriteRequest {
             object_idx: 6,
             pid: pid::GO_SECURITY_FLAGS,
+            count: 3,
             start_idx: 1,
             data: &[0x01, 0x03, 0x00], // GO 0: auth, GO 1: auth+conf, GO 2: none
             ctx: crate::AccessContext::MAX_ACCESS,
@@ -847,6 +851,7 @@ mod tests {
         let write_req = FullPropertyWriteRequest {
             object_idx: 6,
             pid: pid::TOOL_KEY,
+            count: 1,
             start_idx: 1,
             data: &[0xDD; 16],
             ctx: crate::AccessContext::MAX_ACCESS,
@@ -878,6 +883,7 @@ mod tests {
         let write_req = FullPropertyWriteRequest {
             object_idx: 6,
             pid: pid::GO_SECURITY_FLAGS,
+            count: 3,
             start_idx: 1,
             data: &[0x01, 0x02, 0x03],
             ctx: crate::AccessContext::MAX_ACCESS,
