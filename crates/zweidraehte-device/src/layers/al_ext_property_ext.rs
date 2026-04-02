@@ -770,12 +770,30 @@ fn handle_ext_description_read<D: StackDefinition>(
     // Resolve IOT + instance.
     let object_idx = ctx.interface_objects.resolve_ext_object_index(object_type, object_instance);
 
-    // Per KNX spec 03/03/07 section 3.4.3.2: "The A_PropertyExtDescription_Read-
-    // service shall not be subject to authorisation." Service-level access policy
-    // is 3FF/3FF (Table 11). Property metadata is always returned regardless of
-    // the caller's access level or Data Secure role.
-    let desc_result =
-        object_idx.and_then(|idx| ctx.interface_objects.property_description_read(idx, pid, prop_idx).ok());
+    // The service-level access policy is 3FF/3FF (spec 03/03/07 Table 11),
+    // so the service itself is never rejected. However, the per-property
+    // Data Secure access policy still determines whether the descriptor is
+    // visible: properties with restrictive policies (e.g. 00C/00C on
+    // Security IO) return all-zero when accessed in plain mode with
+    // security mode enabled.
+    let desc_result = object_idx.and_then(|idx| {
+        let desc_resp = ctx.interface_objects.property_description_read(idx, pid, prop_idx).ok()?;
+
+        // Check per-property access policy via a dummy element-count read.
+        // If the property value is access-denied, hide the descriptor too.
+        let test_req = FullPropertyReadRequest {
+            object_idx: idx,
+            pid: desc_resp.prop_id,
+            start_idx: 0,
+            count: 1,
+            ctx: ctx.access_ctx,
+        };
+        let mut dummy = [0u8; 4];
+        match ctx.interface_objects.property_value_read(&test_req, &mut dummy) {
+            Err(crate::objects::interface::PropertyError::AccessDenied) => None,
+            _ => Some(desc_resp),
+        }
+    });
 
     let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(RESP_LEN) else {
         warn!("AL no buffer for PropertyExtDescriptionResponse");

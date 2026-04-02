@@ -322,6 +322,41 @@ where
             }
         }
 
+        // PDT_CONTROL properties on base objects: write the service data via the
+        // data property path and return the new state. Per KNX spec 03/04/01
+        // Table 2, this is the recommended access method for PDT_CONTROL.
+        if !self.is_augment_object(req.object_idx) {
+            if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
+                use crate::dpt::{PDT_Control, PropertyDataDefinition};
+                if desc.pdt_id == PDT_Control::ID {
+                    let write_req = FullPropertyWriteRequest {
+                        object_idx: req.object_idx,
+                        pid: req.prop_id,
+                        count: 1,
+                        start_idx: 1,
+                        data: req.service_data,
+                        ctx: req.ctx,
+                    };
+                    if let Err(_) = self.property_value_write(&write_req) {
+                        return FunctionPropertyResult::not_supported();
+                    }
+                    // Read back the new state after writing.
+                    let read_req = FullPropertyReadRequest {
+                        object_idx: req.object_idx,
+                        pid: req.prop_id,
+                        start_idx: 1,
+                        count: 1,
+                        ctx: req.ctx,
+                    };
+                    let mut buf = [0u8; 16];
+                    match self.property_value_read(&read_req, &mut buf) {
+                        Ok(len) => return FunctionPropertyResult::success_with_data(&buf[..len]),
+                        Err(_) => return FunctionPropertyResult::not_supported(),
+                    }
+                }
+            }
+        }
+
         FunctionPropertyResult::not_supported()
     }
 
@@ -341,6 +376,30 @@ where
         if let Some(obj_type) = self.object_type_for(req.object_idx) {
             if let Some(result) = self.augment.function_property_state_read(self.state, obj_type, req) {
                 return result;
+            }
+        }
+
+        // PDT_CONTROL properties on base objects: read the current value via the
+        // data property path and return it as function property data. Per KNX spec
+        // 03/04/01 Table 2, PDT_CONTROL is mandatory for extended function property
+        // services and this is the recommended access method.
+        if !self.is_augment_object(req.object_idx) {
+            if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
+                use crate::dpt::{PDT_Control, PropertyDataDefinition};
+                if desc.pdt_id == PDT_Control::ID {
+                    let read_req = FullPropertyReadRequest {
+                        object_idx: req.object_idx,
+                        pid: req.prop_id,
+                        start_idx: 1,
+                        count: 1,
+                        ctx: req.ctx,
+                    };
+                    let mut buf = [0u8; 16];
+                    match self.property_value_read(&read_req, &mut buf) {
+                        Ok(len) => return FunctionPropertyResult::success_with_data(&buf[..len]),
+                        Err(_) => return FunctionPropertyResult::not_supported(),
+                    }
+                }
             }
         }
 

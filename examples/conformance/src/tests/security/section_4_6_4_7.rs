@@ -26,7 +26,7 @@ pub fn create_section_4_6_4_7_suite() -> TestSuite {
             test_4_6_3(),
             test_4_6_4(),
             test_4_6_5(),
-            // TODO: 4.7.1 needs FunctionPropertyStateRead for LOAD_STATE_CONTROL on base objects
+            test_4_7_1(),
             test_4_7_2(),
             test_4_7_3(),
             test_4_7_4(),
