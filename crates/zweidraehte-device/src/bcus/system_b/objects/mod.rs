@@ -350,6 +350,15 @@ where
     fn is_augment_object(&self, object_idx: u16) -> bool {
         object_idx >= Self::BASE_OBJECT_COUNT && object_idx < self.total_object_count()
     }
+
+    /// Whether the device has a secure extension (augment provides objects).
+    ///
+    /// When true, property access checks enforce full Data Secure access
+    /// policies (per-property `AccessPolicy` bitfields). When false, only
+    /// legacy access levels are checked.
+    fn has_secure_extension(&self) -> bool {
+        self.augment.additional_object_type_at(0).is_some()
+    }
 }
 
 // PropertyServiceHandler and HasDeviceObject impls are in `dispatch.rs`.

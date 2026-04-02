@@ -180,11 +180,17 @@ where
     fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
         let obj_type = self.object_type_for(req.object_idx).ok_or(PropertyError::InvalidObjectIndex)?;
 
-        // Check access level + security policy before any read dispatch.
-        // This applies to both base objects and augment-provided objects.
+        // Check access before any read dispatch.
+        // On secure devices (with augment objects), enforce both legacy
+        // access levels AND Data Secure access policies. On non-secure
+        // devices, only enforce legacy access levels.
         if let Some(desc) = self.get_descriptor(req.object_idx, req.pid) {
-            let security_on = self.state.security_mode_enabled();
-            if !desc.can_read_secure(&req.ctx, security_on) {
+            if self.has_secure_extension() {
+                let security_on = self.state.security_mode_enabled();
+                if !desc.can_read_secure(&req.ctx, security_on) {
+                    return Err(PropertyError::AccessDenied);
+                }
+            } else if !desc.can_read(req.ctx) {
                 return Err(PropertyError::AccessDenied);
             }
         }
@@ -229,8 +235,12 @@ where
             if matches!(desc.access, PropertyAccess::ReadOnly) {
                 return Err(PropertyError::WriteNotAllowed);
             }
-            let security_on = self.state.security_mode_enabled();
-            if !desc.can_write_secure(&req.ctx, security_on) {
+            if self.has_secure_extension() {
+                let security_on = self.state.security_mode_enabled();
+                if !desc.can_write_secure(&req.ctx, security_on) {
+                    return Err(PropertyError::AccessDenied);
+                }
+            } else if !desc.can_write(req.ctx) {
                 return Err(PropertyError::AccessDenied);
             }
         }
@@ -281,10 +291,14 @@ where
     }
 
     fn function_property_command(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
-        // Function property command is write-like — enforce write access policy.
+        // Function property command is write-like — enforce access policy.
         if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
-            let security_on = self.state.security_mode_enabled();
-            if !desc.can_write_secure(&req.ctx, security_on) {
+            if self.has_secure_extension() {
+                let security_on = self.state.security_mode_enabled();
+                if !desc.can_write_secure(&req.ctx, security_on) {
+                    return FunctionPropertyResult::access_denied();
+                }
+            } else if !desc.can_write(req.ctx) {
                 return FunctionPropertyResult::access_denied();
             }
         }
@@ -299,10 +313,14 @@ where
     }
 
     fn function_property_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
-        // Function property state read is read-like — enforce read access policy.
+        // Function property state read is read-like — enforce access policy.
         if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
-            let security_on = self.state.security_mode_enabled();
-            if !desc.can_read_secure(&req.ctx, security_on) {
+            if self.has_secure_extension() {
+                let security_on = self.state.security_mode_enabled();
+                if !desc.can_read_secure(&req.ctx, security_on) {
+                    return FunctionPropertyResult::access_denied();
+                }
+            } else if !desc.can_read(req.ctx) {
                 return FunctionPropertyResult::access_denied();
             }
         }
