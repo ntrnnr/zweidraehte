@@ -179,6 +179,7 @@ macro_rules! define_interface_object {
         $vis:vis struct $name:ident : $obj_type:tt :: $obj_variant:tt {
             $(
                 $pid_path:path => $field_name:ident : $pdt:ty , $access:ident
+                $([$($access_spec:tt)*])?
                 $(= $default:expr)?
             );* $(;)?
         }
@@ -197,23 +198,15 @@ macro_rules! define_interface_object {
             /// Subsequent indices correspond to the properties in definition order.
             pub const PROPERTY_DESCRIPTORS: &'static [$crate::objects::interface::PropertyDescriptor] = &[
                 // PID_OBJECT_TYPE is always the first property (index 0)
-                $crate::objects::interface::PropertyDescriptor::new(
+                $crate::define_interface_object!(@make_descriptor
                     $crate::objects::interface::pid::OBJECT_TYPE,
-                    <$crate::dpt::PDT_UnsignedInt as $crate::dpt::PropertyDataDefinition>::ID,
-                    1,
-                    $crate::objects::interface::PropertyAccess::ReadOnly,
-                    3, // read_level
-                    3, // write_level
+                    $crate::dpt::PDT_UnsignedInt, 1, ReadOnly,
                 ),
                 // User-defined properties follow
                 $(
-                    $crate::objects::interface::PropertyDescriptor::new(
-                        $pid_path,
-                        <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
-                        1,
-                        $crate::objects::interface::PropertyAccess::$access,
-                        3, // read_level
-                        3, // write_level
+                    $crate::define_interface_object!(@make_descriptor
+                        $pid_path, $pdt, 1, $access,
+                        $([$($access_spec)*])?
                     ),
                 )*
             ];
@@ -376,51 +369,42 @@ macro_rules! define_interface_object {
             with state : & $state_lt:lifetime $state_ty2:ident
         {
             $(
-                // Static property: pid => field_name: Type, Access [= default]
+                // Static property: pid => field_name: Type, Access [rl, wl, policy] [= default]
                 $pid_path:path => $field_name:ident : $pdt:ty , $access:ident
+                $([$($access_spec:tt)*])?
                 $(= $default:expr)?
             ),*
         }
         // State-backed properties with closures (for complex logic)
+        // Optional [rl, wl] or [rl, wl, policy] after the access mode
         $(state {
             $(
                 $state_pid_path:path => {
                     read : | $read_state:ident | $read_expr:expr ,
                     write : | $write_state:ident , $write_data:ident | $write_expr:expr
                 } : $state_pdt:ty , $state_access:ident
+                $([$($state_access_spec:tt)*])?
             ),*
         })?
         // Shorthand ReadWrite properties: auto getter/setter
-        // Syntax: pid::FOO => getter_name: Type
-        // Generates: read calls s.getter_name(), write calls s.set_getter_name(value)
         $(state_rw {
             $(
                 $rw_pid_path:path => $rw_getter:ident : $rw_pdt:ty
+                $([$($rw_access_spec:tt)*])?
             ),*
         })?
         // Shorthand ReadOnly properties: getter only
-        // Syntax: pid::FOO => getter_name: Type
-        // Generates: read calls s.getter_name(), write returns WriteNotAllowed
         $(state_ro {
             $(
                 $ro_pid_path:path => $ro_getter:ident : $ro_pdt:ty
+                $([$($ro_access_spec:tt)*])?
             ),*
         })?
-        // Shorthand ReadWrite array properties: auto getter/setter for multi-element arrays.
-        //
-        // Syntax: pid::FOO => getter_name: PDT_Type[max_elements]
-        //
-        // Naming convention (derived from getter_name via paste):
-        //   - Read:  s.getter_name()      → [u8; N] (full fixed-size buffer, zero-padded)
-        //   - Len:   s.getter_name_len()  → usize   (actual element count)
-        //   - Write: s.set_getter_name(data: &[u8])
-        //
-        // Generates array property semantics:
-        //   - start_idx=0 returns element count as 2 big-endian bytes
-        //   - start_idx>=1 reads/writes elements with bounds checking
+        // Shorthand ReadWrite array properties
         $(state_rw_array {
             $(
                 $rwa_pid_path:path => $rwa_getter:ident : $rwa_pdt:ty [$rwa_max:expr]
+                $([$($rwa_access_spec:tt)*])?
             ),*
         })?
     ) => {
@@ -436,66 +420,43 @@ macro_rules! define_interface_object {
             /// Property descriptors for this interface object (const array)
             pub const PROPERTY_DESCRIPTORS: &'static [$crate::objects::interface::PropertyDescriptor] = &[
                 // PID_OBJECT_TYPE is always the first property (index 0)
-                $crate::objects::interface::PropertyDescriptor::new(
+                $crate::define_interface_object!(@make_descriptor
                     $crate::objects::interface::pid::OBJECT_TYPE,
-                    <$crate::dpt::PDT_UnsignedInt as $crate::dpt::PropertyDataDefinition>::ID,
-                    1,
-                    $crate::objects::interface::PropertyAccess::ReadOnly,
-                    3, // read_level
-                    3, // write_level
+                    $crate::dpt::PDT_UnsignedInt, 1, ReadOnly,
                 ),
                 // Static properties
                 $(
-                    $crate::objects::interface::PropertyDescriptor::new(
-                        $pid_path,
-                        <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
-                        1,
-                        $crate::objects::interface::PropertyAccess::$access,
-                        3, // read_level
-                        3, // write_level
+                    $crate::define_interface_object!(@make_descriptor
+                        $pid_path, $pdt, 1, $access,
+                        $([$($access_spec)*])?
                     ),
                 )*
                 // State-backed properties (closure-based)
                 $($(
-                    $crate::objects::interface::PropertyDescriptor::new(
-                        $state_pid_path,
-                        <$state_pdt as $crate::dpt::PropertyDataDefinition>::ID,
-                        1,
-                        $crate::objects::interface::PropertyAccess::$state_access,
-                        3, // read_level
-                        3, // write_level
+                    $crate::define_interface_object!(@make_descriptor
+                        $state_pid_path, $state_pdt, 1, $state_access,
+                        $([$($state_access_spec)*])?
                     ),
                 )*)?
                 // Shorthand ReadWrite properties
                 $($(
-                    $crate::objects::interface::PropertyDescriptor::new(
-                        $rw_pid_path,
-                        <$rw_pdt as $crate::dpt::PropertyDataDefinition>::ID,
-                        1,
-                        $crate::objects::interface::PropertyAccess::ReadWrite,
-                        3, // read_level
-                        3, // write_level
+                    $crate::define_interface_object!(@make_descriptor
+                        $rw_pid_path, $rw_pdt, 1, ReadWrite,
+                        $([$($rw_access_spec)*])?
                     ),
                 )*)?
                 // Shorthand ReadOnly properties
                 $($(
-                    $crate::objects::interface::PropertyDescriptor::new(
-                        $ro_pid_path,
-                        <$ro_pdt as $crate::dpt::PropertyDataDefinition>::ID,
-                        1,
-                        $crate::objects::interface::PropertyAccess::ReadOnly,
-                        3, // read_level
-                        3, // write_level
+                    $crate::define_interface_object!(@make_descriptor
+                        $ro_pid_path, $ro_pdt, 1, ReadOnly,
+                        $([$($ro_access_spec)*])?
                     ),
                 )*)?
                 // Shorthand ReadWrite array properties
                 $($(
-                    $crate::objects::interface::PropertyDescriptor::array::<$rwa_pdt>(
-                        $rwa_pid_path,
-                        $rwa_max,
-                        $crate::objects::interface::PropertyAccess::ReadWrite,
-                        3, // read_level
-                        3, // write_level
+                    $crate::define_interface_object!(@make_array_descriptor
+                        $rwa_pid_path, $rwa_pdt, $rwa_max,
+                        $([$($rwa_access_spec)*])?
                     ),
                 )*)?
             ];
@@ -802,6 +763,95 @@ macro_rules! define_interface_object {
             Ok(())
         }
     }};
+
+    // ========================================================================
+    // Internal descriptor builder helpers
+    // ========================================================================
+    // These normalize the optional [read_level, write_level, policy] access
+    // specification into a PropertyDescriptor::with_policy() call.
+
+    // With levels and policy: [rl, wl, policy]
+    (@make_descriptor $pid:expr, $pdt:ty, $max:expr, $access:ident, [$rl:expr, $wl:expr, $policy:expr]) => {
+        $crate::objects::interface::PropertyDescriptor::with_policy(
+            $pid,
+            <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
+            $max,
+            $crate::objects::interface::PropertyAccess::$access,
+            $rl,
+            $wl,
+            $policy,
+        )
+    };
+
+    // With levels only: [rl, wl] — default policy
+    (@make_descriptor $pid:expr, $pdt:ty, $max:expr, $access:ident, [$rl:expr, $wl:expr]) => {
+        $crate::objects::interface::PropertyDescriptor::with_policy(
+            $pid,
+            <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
+            $max,
+            $crate::objects::interface::PropertyAccess::$access,
+            $rl,
+            $wl,
+            $crate::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
+        )
+    };
+
+    // No access spec — defaults to 3/3, READ_OPEN_WRITE_TOOL
+    (@make_descriptor $pid:expr, $pdt:ty, $max:expr, $access:ident,) => {
+        $crate::objects::interface::PropertyDescriptor::with_policy(
+            $pid,
+            <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
+            $max,
+            $crate::objects::interface::PropertyAccess::$access,
+            3,
+            3,
+            $crate::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
+        )
+    };
+
+    // ========================================================================
+    // Array descriptor builder helpers (for state_rw_array)
+    // ========================================================================
+    // Same as @make_descriptor but takes max_elements from the property spec.
+
+    // With levels and policy
+    (@make_array_descriptor $pid:expr, $pdt:ty, $max:expr, [$rl:expr, $wl:expr, $policy:expr]) => {
+        $crate::objects::interface::PropertyDescriptor::with_policy(
+            $pid,
+            <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
+            $max,
+            $crate::objects::interface::PropertyAccess::ReadWrite,
+            $rl,
+            $wl,
+            $policy,
+        )
+    };
+
+    // With levels only
+    (@make_array_descriptor $pid:expr, $pdt:ty, $max:expr, [$rl:expr, $wl:expr]) => {
+        $crate::objects::interface::PropertyDescriptor::with_policy(
+            $pid,
+            <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
+            $max,
+            $crate::objects::interface::PropertyAccess::ReadWrite,
+            $rl,
+            $wl,
+            $crate::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
+        )
+    };
+
+    // No access spec
+    (@make_array_descriptor $pid:expr, $pdt:ty, $max:expr,) => {
+        $crate::objects::interface::PropertyDescriptor::with_policy(
+            $pid,
+            <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
+            $max,
+            $crate::objects::interface::PropertyAccess::ReadWrite,
+            3,
+            3,
+            $crate::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
+        )
+    };
 }
 
 /// Marker trait for typed property access
