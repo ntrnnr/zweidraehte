@@ -111,6 +111,13 @@ pub struct SystemBDeviceState<
     /// Format: 2 bytes manufacturer ID + 4 bytes device-specific.
     serial_number: [u8; 6],
 
+    /// Factory Default Setup Key (FDSK) for KNX Data Secure (16 bytes).
+    ///
+    /// Factory-programmed, printed on the device label. Used as the
+    /// initial tool key before ETS writes a new one. `None` for devices
+    /// without Data Secure support.
+    fdsk: Option<[u8; 16]>,
+
     /// Authorization keys for levels 0-2.
     auth_keys: RefCell<[[u8; 4]; NUM_AUTH_KEYS]>,
 
@@ -213,6 +220,7 @@ impl<
         Self {
             individual_address: Cell::new(IndividualAddress::new(15, 15, 255)),
             serial_number: *identity.serial_number(),
+            fdsk: identity.fdsk().copied(),
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
             routing_count: Cell::new(6),
             programming_mode: Cell::new(false),
@@ -419,6 +427,7 @@ impl<
         Self {
             individual_address: Cell::new(individual_address),
             serial_number: *identity.serial_number(),
+            fdsk: identity.fdsk().copied(),
             auth_keys: RefCell::new(auth_keys),
             routing_count: Cell::new(routing_count),
             programming_mode: Cell::new(false),
@@ -522,6 +531,10 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 
     fn serial_number(&self) -> &[u8; 6] {
         &self.serial_number
+    }
+
+    fn fdsk(&self) -> Option<&[u8; 16]> {
+        self.fdsk.as_ref()
     }
 
     fn max_access_levels(&self) -> u8 {

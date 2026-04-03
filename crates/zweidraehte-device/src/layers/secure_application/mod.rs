@@ -162,8 +162,10 @@ where
 
         // Look up key based on access type.
         let key = if scf.tool_access {
-            // Tool access: use configured tool key or FDSK fallback.
-            security_state.effective_tool_key()
+            // Tool access: use configured tool key, or FDSK as fallback
+            // when the device is in factory state (tool key all zeros).
+            let tk = security_state.tool_key();
+            if tk != [0u8; 16] { tk } else { self.state.fdsk().copied().unwrap_or([0u8; 16]) }
         } else if addr_type != 0 {
             // Group communication: look up group key by destination group address.
             use crate::address::GroupAddress;

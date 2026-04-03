@@ -82,6 +82,16 @@ pub trait StackState {
     /// 4 bytes device-specific identifier. Used for `A_IndividualAddressSerialNumber_Read/Write`.
     fn serial_number(&self) -> &[u8; 6];
 
+    /// Get the Factory Default Setup Key (FDSK) for KNX Data Secure.
+    ///
+    /// The FDSK is a 16-byte key programmed at the factory and printed on
+    /// the device label. It is used as the initial tool key for the first
+    /// ETS commissioning session. Returns `None` for devices without Data
+    /// Secure support.
+    fn fdsk(&self) -> Option<&[u8; 16]> {
+        None
+    }
+
     /// Get the runtime maximum APDU length.
     ///
     /// This value is reported via PID 56 (MAX_APDU_LENGTH) in the Device Object.

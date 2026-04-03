@@ -213,9 +213,6 @@ pub struct SecurityState<const GRP: usize, const P2P: usize, const GO: usize> {
     security_mode_enabled: Cell<bool>,
     tool_key: Cell<[u8; 16]>,
     load_state: Cell<LoadState>,
-    /// Factory Default Setup Key — set from `DeviceIdentity` during
-    /// device initialization. Used as fallback when tool_key is all zeros.
-    fdsk: Cell<Option<[u8; 16]>>,
     /// Group key table: GA_index(2) + key(16) = 18 bytes per entry.
     grp_keys: RefCell<SecurityTable<GRP, 18>>,
     /// P2P key table: IA_index(2) + key(16) + role(2) = 20 bytes per entry.
@@ -362,24 +359,6 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
         self.tool_key.set(key);
     }
 
-    /// Set the FDSK from the device identity.
-    ///
-    /// Called during device initialization to provide the factory key
-    /// as a fallback for initial commissioning.
-    pub fn set_fdsk(&self, fdsk: Option<[u8; 16]>) {
-        self.fdsk.set(fdsk);
-    }
-
-    /// Get the effective tool key: configured key if non-zero, else FDSK.
-    pub fn effective_tool_key(&self) -> [u8; 16] {
-        let key = self.tool_key.get();
-        if key != [0u8; 16] {
-            return key;
-        }
-        // Fall back to FDSK if available.
-        self.fdsk.get().unwrap_or([0u8; 16])
-    }
-
     /// Get a reference to the group key table.
     pub fn grp_keys(&self) -> &RefCell<SecurityTable<GRP, 18>> {
         &self.grp_keys
@@ -490,14 +469,6 @@ pub trait HasSecurityState {
     /// Look up GO security flags by 0-based group object index.
     fn go_security_flags_for(&self, go_index: u16) -> Option<u8>;
 
-    /// Get the effective tool key for secure communication.
-    ///
-    /// Returns the configured tool key if non-zero (device has been
-    /// commissioned by ETS). If the tool key is all zeros (factory
-    /// state), returns the FDSK if one has been set. Returns all
-    /// zeros if neither is available.
-    fn effective_tool_key(&self) -> [u8; 16];
-
     /// Record a security failure in the failures log.
     fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16);
 
@@ -544,10 +515,6 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState for S
     fn clear_failure_log(&self) {
         self.failures_log.borrow_mut().clear();
     }
-
-    fn effective_tool_key(&self) -> [u8; 16] {
-        self.effective_tool_key()
-    }
 }
 
 impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for SecurityState<GRP, P2P, GO> {
@@ -558,8 +525,6 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for Sec
             security_mode_enabled: Cell::new(config.security_mode_enabled),
             tool_key: Cell::new(config.tool_key),
             load_state: Cell::new(config.load_state),
-            // FDSK set later via set_fdsk() during device initialization.
-            fdsk: Cell::new(None),
             // Tables start empty — ETS reloads them via property writes.
             grp_keys: RefCell::new(SecurityTable::new()),
             p2p_keys: RefCell::new(SecurityTable::new()),
@@ -648,10 +613,6 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
 
     fn clear_failure_log(&self) {
         self.security.failures_log.borrow_mut().clear();
-    }
-
-    fn effective_tool_key(&self) -> [u8; 16] {
-        self.security.effective_tool_key()
     }
 }
 
