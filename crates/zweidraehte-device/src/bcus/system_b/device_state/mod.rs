@@ -492,6 +492,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
                 self.reset_parameters();
                 Ok(0)
             }
+            // Standard erase code per 03/05/02 §3.7.1.2 Table 4 — resets
+            // Group Address Table and Group Object Association Table.
             EraseCode::ResetLinks => {
                 self.reset_address_table();
                 self.reset_association_table();
