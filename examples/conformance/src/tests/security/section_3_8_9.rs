@@ -181,8 +181,10 @@ pub fn create_section_3_8_9_suite() -> TestSuite {
             test_3_8_9_2(),
             test_3_8_9_3(),
             test_3_8_9_4(),
-            // Skipped: 3.8.9.5 — uses T_Connect (connection-oriented),
-            //   not yet implemented.
+            // TODO: 3.8.9.5 — restart resets the S-AL and sequence numbers.
+            // The SecurityTestContext needs a way to reset tool/table sequence
+            // counters after restart. Also, the confirmed restart may fully
+            // reinitialize the secure stack, losing the security mode state.
         ])
 }
 
@@ -375,5 +377,87 @@ fn test_3_8_9_4() -> TestCase {
         comment("Plain description read → all-zero (plain never allowed for 00C/00C)"),
         inject(PLAIN_DESC_READ_PID34),
         expect(PLAIN_DESC_READ_PID34_ZERO, TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.8.9.5 Secure PropertyValueRead after power down and master reset
+// ============================================================================
+//
+// Verifies that PID_P2P_KEY_TABLE survives confirmed restart and basic
+// restart. The test assumes the table was populated by tests 3.8.9.1
+// (which writes element count + one entry via secure A+C).
+//
+// Phase A: Confirmed Restart (erase code 0x01) — table unchanged
+// Phase B: Basic Restart — table unchanged
+
+#[allow(dead_code)] // Blocked on SecurityTestContext restart support.
+fn test_3_8_9_5() -> TestCase {
+    // Connection-oriented A_Restart: master reset (restart_type=1).
+    // TPCI = 0x43 (numbered seq 0 + APCI high 0x03), APCI = 0x81 01 00
+    // = A_Restart master reset, erase_code=0x01 (Confirmed), channel=0x00.
+    const CONNECTED_RESTART_CONFIRMED: &str =
+        "3C 60 #EDI #BDUT_ADDR 03 43 81 01 00";
+
+    // A_Restart_Response: error_code=0x00, process_time=?? (2 bytes).
+    const CONNECTED_RESTART_CONFIRMED_RESP: &str =
+        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+
+    // Connection-oriented basic restart (restart_type=0).
+    // Standard frame: BC prefix, TPCI = 0x43 (numbered seq 0), APCI = 0x0380.
+    const CONNECTED_BASIC_RESTART: &str =
+        "BC #EDI #BDUT_ADDR 61 43 80";
+
+    TestCase::new("3.8.9.5 Secure PropertyValueRead after power down and master reset").with_steps(vec![
+        // ==== Phase A: Confirmed Restart ====
+        comment("A. Confirmed Restart — T_Connect + master reset"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+
+        comment("Secure A+C numbered: A_Restart (Confirmed, erase=0x01)"),
+        inject_secure_ac(CONNECTED_RESTART_CONFIRMED, "TK1"),
+
+        comment("Expect T_ACK"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+
+        comment("Expect secure A+C numbered: A_Restart_Response"),
+        expect_secure_ac(CONNECTED_RESTART_CONFIRMED_RESP, "TK1", TIMEOUT),
+
+        comment("ACK the response"),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+
+        comment("T_Disconnect"),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+
+        comment("Wait for DUT to process confirmed restart"),
+        wait(1000),
+
+        comment("Read P2P key table entry → unchanged after confirmed restart"),
+        inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_READ_ENTRY_OK, "TK1", TIMEOUT),
+
+        comment("Read again → same"),
+        inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_READ_ENTRY_OK, "TK1", TIMEOUT),
+
+        // ==== Phase B: Basic Restart ====
+        comment("B. Basic Restart — T_Connect + basic restart"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+
+        comment("Secure A+C numbered: A_Restart (basic)"),
+        inject_secure_ac(CONNECTED_BASIC_RESTART, "TK1"),
+
+        comment("Expect T_ACK"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+
+        comment("Wait for DUT to process basic restart"),
+        wait(1000),
+
+        comment("Read P2P key table entry → unchanged after basic restart"),
+        inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_READ_ENTRY_OK, "TK1", TIMEOUT),
+
+        comment("Read again → same"),
+        inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_READ_ENTRY_OK, "TK1", TIMEOUT),
     ])
 }
