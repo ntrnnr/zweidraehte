@@ -48,11 +48,15 @@ struct OutgoingSecurityCtx {
     scf_byte: u8,
     /// Source address of the original request (becomes destination of response).
     request_src: u16,
+    /// TL outgoing sequence number for connection-oriented responses.
+    /// When set, the S-AL pre-sets the TPCI to `DataConnected(seq)` before
+    /// encrypting so the CCM B0 block includes the correct TPCI bits.
+    outgoing_tl_seq: Option<u8>,
 }
 
 impl Default for OutgoingSecurityCtx {
     fn default() -> Self {
-        Self { active: false, key: [0u8; 16], scf_byte: 0, request_src: 0 }
+        Self { active: false, key: [0u8; 16], scf_byte: 0, request_src: 0, outgoing_tl_seq: None }
     }
 }
 
@@ -131,6 +135,7 @@ where
 
         let security_state = self.state.extension_state();
         let src = u16::from_be_bytes(msg.get_source_addr().0);
+        let outgoing_tl_seq = msg.outgoing_tl_seq();
         let buf = msg.buf_mut();
 
         // Parse the secure frame header.
@@ -216,7 +221,7 @@ where
         buf.set_len(new_len);
 
         // Set outgoing security context so the response gets encrypted.
-        self.outgoing_ctx.set(OutgoingSecurityCtx { active: true, key, scf_byte, request_src: src });
+        self.outgoing_ctx.set(OutgoingSecurityCtx { active: true, key, scf_byte, request_src: src, outgoing_tl_seq });
 
         // Populate AccessContext.
         let security_mode = if scf.confidentiality { SecurityMode::AuthConf } else { SecurityMode::AuthOnly };
@@ -270,6 +275,22 @@ where
         // TPCI/APCI + data, which is currently at buf[MSG_TPCI..end].
 
         let buf = msg.buf_mut();
+
+        // For connection-oriented responses, pre-set the TPCI sequence
+        // number bits on the plaintext before encrypting. The CCM B0
+        // block must include the correct TPCI with TL sequence bits
+        // (spec 03/03/07 §5.1.3.2 Figure 101). Without this, the MAC
+        // would be computed with the plain TPCI (0x00) but the TL later
+        // sets the numbered-data TPCI on the already-encrypted frame,
+        // causing a mismatch at the receiver.
+        if let Some(seq) = ctx.outgoing_tl_seq {
+            // DataConnected TPCI: DC=0 (bit 7, Data), N=1 (bit 6, Numbered),
+            // seq in bits 5-2. Preserve the lower 2 bits (APCI high).
+            let tpci_bits = 0x40 | ((seq & 0x0F) << 2);
+            let apci_high = buf[offsets::MSG_TPCI] & 0x03;
+            buf[offsets::MSG_TPCI] = tpci_bits | apci_high;
+        }
+
         let plain_content_len = buf.len();
         let needed_len = plain_content_len + secure::OVERHEAD;
 

@@ -659,6 +659,13 @@ pub struct KnxMessageBuffer<B: Deref<Target = [u8]>, F: MessageFormat = Internal
     /// Set by the transport layer (or link layer for special paths like
     /// KNX/IP Device Management).
     access_source: AccessSource,
+    /// TL outgoing sequence number for connection-oriented messages.
+    ///
+    /// Set by the TL on incoming `T_Data_Ind` to tell the S-AL what
+    /// sequence number the TL will use when sending the response on
+    /// this connection. The S-AL needs this to include the correct
+    /// TPCI bits in the CCM B0 block before encrypting.
+    outgoing_tl_seq: Option<u8>,
     /// Marker for the message format
     _format: PhantomData<F>,
 }
@@ -716,6 +723,16 @@ impl<B: Deref<Target = [u8]>, F: MessageFormat> KnxMessageBuffer<B, F> {
         self.access_source = source;
     }
 
+    /// Get the TL outgoing sequence number hint for this message.
+    pub fn outgoing_tl_seq(&self) -> Option<u8> {
+        self.outgoing_tl_seq
+    }
+
+    /// Set the TL outgoing sequence number hint.
+    pub fn set_outgoing_tl_seq(&mut self, seq: u8) {
+        self.outgoing_tl_seq = Some(seq);
+    }
+
     pub fn len(&self) -> usize {
         self.buf.len()
     }
@@ -732,7 +749,13 @@ impl<B: Deref<Target = [u8]>, F: MessageFormat> KnxMessageBuffer<B, F> {
 impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
     /// Create a new KnxMessageBuffer in internal format.
     pub fn new(buf: B, service_type: ServiceType) -> Self {
-        KnxMessageBuffer { service_type, buf, access_source: AccessSource::Default, _format: PhantomData }
+        KnxMessageBuffer {
+            service_type,
+            buf,
+            access_source: AccessSource::Default,
+            outgoing_tl_seq: None,
+            _format: PhantomData,
+        }
     }
 
     /// Create a KnxMessageBuffer from a buffer, using a default service type.
@@ -744,6 +767,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
             service_type: ServiceType::L_Data_Ind,
             buf,
             access_source: AccessSource::Default,
+            outgoing_tl_seq: None,
             _format: PhantomData,
         }
     }
@@ -1118,7 +1142,13 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, CemiFormat> {
     pub fn from_cemi(buf: B) -> Self {
         let message_code = buf[0];
         let service_type = ServiceType::from(message_code);
-        KnxMessageBuffer { service_type, buf, access_source: AccessSource::Default, _format: PhantomData }
+        KnxMessageBuffer {
+            service_type,
+            buf,
+            access_source: AccessSource::Default,
+            outgoing_tl_seq: None,
+            _format: PhantomData,
+        }
     }
 
     /// Get the cEMI message code byte.
@@ -1167,6 +1197,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, CemiFormat> {
                 service_type: self.service_type,
                 buf: self.buf,
                 access_source: self.access_source,
+                outgoing_tl_seq: self.outgoing_tl_seq,
                 _format: PhantomData,
             };
         }
@@ -1221,6 +1252,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, CemiFormat> {
             service_type: self.service_type,
             buf: self.buf,
             access_source: self.access_source,
+            outgoing_tl_seq: self.outgoing_tl_seq,
             _format: PhantomData,
         }
     }
@@ -1278,6 +1310,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, InternalFormat> {
             service_type: self.service_type,
             buf: self.buf,
             access_source: self.access_source,
+            outgoing_tl_seq: self.outgoing_tl_seq,
             _format: PhantomData,
         }
     }
@@ -1306,7 +1339,13 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, InternalFormat> {
 impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, Tp1Format> {
     /// Create a new KnxMessageBuffer wrapping a TP1-formatted buffer.
     pub fn from_tp1(buf: B, service_type: ServiceType) -> Self {
-        KnxMessageBuffer { service_type, buf, access_source: AccessSource::Default, _format: PhantomData }
+        KnxMessageBuffer {
+            service_type,
+            buf,
+            access_source: AccessSource::Default,
+            outgoing_tl_seq: None,
+            _format: PhantomData,
+        }
     }
 }
 

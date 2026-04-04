@@ -824,9 +824,13 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                 TlAction::IndicateData { source: _ } => {
                     if let Some(mut msg) = msg_for_data.take() {
                         msg.set_service_type(ServiceType::T_Data_Ind);
-                        // Tag with connection slot so AL can look up access level
+                        // Tag with connection slot so AL can look up access level,
+                        // and embed the outgoing TL sequence number so the S-AL can
+                        // include the correct TPCI in the CCM B0 block when encrypting
+                        // the response (spec 03/03/07 §5.1.3.2 Figure 101).
                         if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
                             msg.set_access_source(AccessSource::Connection(conn.slot_index));
+                            msg.set_outgoing_tl_seq(conn.seq_no_send);
                         }
                         outbox.push(msg);
                     }
@@ -863,6 +867,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                         if let Some(mut queued_msg) = conn.queued_incoming.take() {
                             queued_msg.set_service_type(ServiceType::T_Data_Ind);
                             queued_msg.set_access_source(AccessSource::Connection(slot));
+                            queued_msg.set_outgoing_tl_seq(conn.seq_no_send);
                             debug!("TL delivering queued data from {}", remote_addr);
                             outbox.push(queued_msg);
                         }
