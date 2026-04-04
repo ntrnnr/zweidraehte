@@ -32,13 +32,13 @@ const ENABLE_SECURITY_MODE: &str =
     "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 01";
 
 const ENABLE_SECURITY_MODE_RESP: &str =
-    "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 00";
+    "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
 
 const DISABLE_SECURITY_MODE: &str =
     "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 00";
 
 const DISABLE_SECURITY_MODE_RESP: &str =
-    "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 00";
+    "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
 
 // ============================================================================
 // PropertyExtValueWriteCon templates for PID 0x34 on Security IO

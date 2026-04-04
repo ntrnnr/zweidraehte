@@ -39,11 +39,11 @@ const COMMAND_DISABLE: &str =
 // A_FunctionPropertyExtState_Response (0x01D6): return_code=0x00 (success).
 // APDU: 01 D6 + 00 11 + 00 10 + 33 + 00 = 8 bytes → TP1 len = 0x07
 const COMMAND_RESP_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 00";
+    "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
 
 // A_FunctionPropertyExtState_Response: return_code=0xF8 (invalid service info).
 const COMMAND_RESP_F8: &str =
-    "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 F8";
+    "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 F8 00";
 
 // A_FunctionPropertyExtState_Response: return_code=0xFC (access denied).
 const COMMAND_RESP_FC: &str =

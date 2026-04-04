@@ -500,7 +500,7 @@ fn test_3_1_24() -> TestCase {
             "TK1",
         ),
         expect_secure_ac(
-            "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 00",
+            "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00",
             "TK1",
             TIMEOUT,
         ),
@@ -519,7 +519,7 @@ fn test_3_1_24() -> TestCase {
             "TK1",
         ),
         expect_secure_ac(
-            "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 00",
+            "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00",
             "TK1",
             TIMEOUT,
         ),

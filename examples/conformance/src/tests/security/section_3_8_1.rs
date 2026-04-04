@@ -27,16 +27,16 @@ const ENABLE_SECURITY_MODE: &str =
     "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 01";
 
 // Expected A_FunctionPropertyExtState_Response (0x01D6): return_code=0x00 (success).
-// APDU: 01 D6(APCI) + 00 11(IOT) + 00 10(inst) + 33(PID) + 00(rc) = 8 bytes → TP1 len = 07
+// APDU: 01 D6(APCI) + 00 11(IOT) + 00 10(inst) + 33(PID) + 00(rc) = 9 bytes → TP1 len = 08
 const ENABLE_SECURITY_MODE_RESP: &str =
-    "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 00";
+    "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
 
 // Same as above but ServiceInfo=0x00 (Disable).
 const DISABLE_SECURITY_MODE: &str =
     "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 00";
 
 const DISABLE_SECURITY_MODE_RESP: &str =
-    "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 00";
+    "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
 
 // ============================================================================
 // PropertyExtValueRead / Response templates for PID 1 on Security IO

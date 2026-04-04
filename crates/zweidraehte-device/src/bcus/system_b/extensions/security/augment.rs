@@ -521,15 +521,15 @@ impl<'a, const GRP: usize, const P2P: usize, const GO: usize> SecurityAugment<'a
         match service_info {
             0x00 => {
                 self.state.set_security_mode_enabled(false);
-                FunctionPropertyResult::success()
+                FunctionPropertyResult::success_with_data(&[service_id])
             }
             0x01 => {
                 self.state.set_security_mode_enabled(true);
-                FunctionPropertyResult::success()
+                FunctionPropertyResult::success_with_data(&[service_id])
             }
             _ => {
                 // Invalid ServiceInfo → E_DATA_VOID (0xF8)
-                FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[]) }
+                FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) }
             }
         }
     }
