@@ -29,12 +29,7 @@ use crate::{
     router::{Layer, Outbox},
 };
 
-#[cfg(not(feature = "defmt"))]
-#[allow(unused_imports)]
-use log::{debug, trace, warn};
-
-#[cfg(feature = "defmt")]
-use defmt::{debug, trace, warn};
+use crate::logging::warn;
 
 // ============================================================================
 // Outgoing security context — tracks whether to encrypt the response

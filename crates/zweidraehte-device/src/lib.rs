@@ -64,6 +64,8 @@ pub use stack_handle::Stack;
 
 pub use zweidraehte_proto::error;
 
+pub(crate) mod logging;
+
 // Device-specific modules
 pub mod access_policy;
 pub mod bcus;

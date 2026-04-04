@@ -32,11 +32,7 @@ use crate::{
     router::Outbox,
 };
 
-#[cfg(not(feature = "defmt"))]
-use log::{debug, error, warn};
-
-#[cfg(feature = "defmt")]
-use defmt::{debug, error, warn};
+use crate::logging::{debug, error, warn};
 
 // ============================================================================
 // Extension Type
