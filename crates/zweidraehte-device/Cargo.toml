@@ -43,6 +43,7 @@ knxip = ["zweidraehte-proto/knxip"]
 tp1 = []
 ip-interface = ["knxip", "tp1"]
 usb = ["std", "dep:async-hid", "dep:futures-lite"]
+conformance = ["std"]
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
 async-hid = { workspace = true, optional = true }

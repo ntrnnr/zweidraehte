@@ -10,16 +10,20 @@
 //! while persistent state survives in shared memory.
 //!
 //! Usage:
-//!   cargo run --bin conformance-runner [filter...]
+//!   cargo run --bin conformance-runner [--realtime] [filter...]
 //!
 //! Arguments:
-//!   filter  Optional filters (case-insensitive substring match)
-//!           - Suite filters: "network", "transport", "NL", "TL"
-//!           - Test case filters: "2.1", "3.4", "broadcast"
-//!           Multiple filters are OR'd together
+//!   --realtime  Use spec-compliant timeouts (for real hardware testing).
+//!               Without this flag, timeouts are divided by 50 for fast
+//!               IPC-connected testing.
+//!   filter      Optional filters (case-insensitive substring match)
+//!               - Suite filters: "network", "transport", "NL", "TL"
+//!               - Test case filters: "2.1", "3.4", "broadcast"
+//!               Multiple filters are OR'd together
 //!
 //! Examples:
-//!   cargo run --bin conformance-runner              # Run all tests
+//!   cargo run --bin conformance-runner              # Run all tests (fast mode)
+//!   cargo run --bin conformance-runner --realtime   # Run with spec timeouts
 //!   cargo run --bin conformance-runner network      # Run network layer suite
 //!   cargo run --bin conformance-runner 2.3          # Run test 2.3 only
 //!   cargo run --bin conformance-runner 2.1 2.3      # Run tests 2.1 and 2.3
@@ -31,7 +35,7 @@
 
 use std::env;
 
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Timer};
 use log::LevelFilter;
 
@@ -96,6 +100,53 @@ fn tp1_shrink_wildcards(wildcards: &[bool], tp1_data: &[u8]) -> Vec<bool> {
 }
 
 // ============================================================================
+// Time Scaling
+// ============================================================================
+//
+// When running against an IPC-connected DUT (the default), protocol-level
+// delays and expect windows can be shortened dramatically since there is no
+// real bus latency. The `time_divisor` divides all test-step timeouts at
+// execution time. A floor prevents values from collapsing to zero.
+//
+// Default divisor is 50 (fast mode). Pass `--realtime` to use divisor 1.
+
+const DEFAULT_TIME_DIVISOR: u64 = 50;
+
+/// Minimum time (ms) for an IPC round-trip: inject → DUT processes →
+/// response captured. Even with zero protocol delay, the embassy executor
+/// needs a few ticks and the IPC socket needs to deliver frames.
+const IPC_FLOOR_MS: u64 = 15;
+
+/// Compute the floor for an expect/wait timeout.
+///
+/// Short timeouts (≤ 1s original) are protocol response waits — the
+/// DUT's TL timeouts are scaled, so `IPC_FLOOR_MS` suffices. Longer
+/// timeouts wait for DUT-internal behaviour (ROI scans, connection
+/// timeouts) whose timing is NOT scaled, so the floor must be the
+/// original value to avoid false timeouts.
+fn expect_floor(original_ms: u32) -> u64 {
+    if original_ms > 1000 {
+        // DUT-internal timing: don't scale at all
+        original_ms as u64
+    } else {
+        IPC_FLOOR_MS
+    }
+}
+
+/// Scale a millisecond value by the time divisor, clamping to a floor.
+fn scale_ms(ms: u32, divisor: u64, floor: u64) -> u64 {
+    if divisor <= 1 {
+        return ms as u64;
+    }
+    (ms as u64 / divisor).max(floor)
+}
+
+/// Scale the hardcoded post-inject/trigger processing delay.
+fn processing_delay(divisor: u64) -> Duration {
+    Duration::from_millis(scale_ms(10, divisor, 2))
+}
+
+// ============================================================================
 // Step Execution
 // ============================================================================
 //
@@ -109,12 +160,14 @@ fn tp1_shrink_wildcards(wildcards: &[bool], tp1_data: &[u8]) -> Vec<bool> {
 /// Returns `false` if the step failed (mismatch, timeout, error).
 /// `sec_ctx` is `Some` for security test suites, `None` for non-secure.
 /// `variables` is needed for resolving secure templates at execution time.
+/// `time_divisor` scales all delays and timeouts (1 = realtime, 50 = fast).
 async fn execute_step(
     harness: &mut MultiProcessHarness,
     step: &TestStep,
     index: usize,
     sec_ctx: Option<&mut SecurityTestContext>,
     variables: &std::collections::BTreeMap<String, TestVariable>,
+    time_divisor: u64,
 ) -> bool {
     match step {
         TestStep::Comment(text) => {
@@ -125,21 +178,29 @@ async fn execute_step(
         TestStep::Inject { telegram, delay_before_ms } => {
             println!("  [{}] ⬇️  Inject: {:02X?}", index, telegram.data);
             if *delay_before_ms > 0 {
-                println!("        (delay: {}ms)", delay_before_ms);
-                Timer::after(Duration::from_millis(*delay_before_ms as u64)).await;
+                let delay = scale_ms(*delay_before_ms, time_divisor, 10);
+                println!("        (delay: {}ms)", delay);
+                Timer::after(Duration::from_millis(delay)).await;
             }
+            // If the child died (e.g., after a restart inject), the
+            // inject below triggers a respawn + ROI drain. No extra
+            // delay needed here — send_command handles it.
             if let Err(e) = harness.inject(&telegram.data).await {
                 println!("        ❌ Inject failed: {}", e);
                 return false;
             }
-            // Give the DUT time to process
-            Timer::after(Duration::from_millis(10)).await;
+            Timer::after(processing_delay(time_divisor)).await;
             true
         }
 
         TestStep::Expect { matcher, timeout_ms } => {
-            println!("  [{}] ⬆️  Expect: {:02X?}", index, matcher.expected);
-            let timeout = Duration::from_millis(if *timeout_ms > 0 { *timeout_ms as u64 } else { 1000 });
+            let effective_ms = if *timeout_ms > 0 {
+                scale_ms(*timeout_ms, time_divisor, expect_floor(*timeout_ms))
+            } else {
+                scale_ms(1000, time_divisor, IPC_FLOOR_MS)
+            };
+            println!("  [{}] ⬆️  Expect: {:02X?} ({}ms)", index, matcher.expected, effective_ms);
+            let timeout = Duration::from_millis(effective_ms);
             match select(harness.receive_captured(), Timer::after(timeout)).await {
                 Either::First(Some(msg)) => {
                     if matcher.matches(&msg.data) {
@@ -164,8 +225,9 @@ async fn execute_step(
         }
 
         TestStep::ExpectNone { timeout_ms } => {
-            println!("  [{}] 🚫 ExpectNone (timeout {}ms)", index, timeout_ms);
-            let timeout = Duration::from_millis(*timeout_ms as u64);
+            let effective_ms = scale_ms(*timeout_ms, time_divisor, expect_floor(*timeout_ms));
+            println!("  [{}] 🚫 ExpectNone (timeout {}ms)", index, effective_ms);
+            let timeout = Duration::from_millis(effective_ms);
             match select(harness.receive_captured(), Timer::after(timeout)).await {
                 Either::First(Some(msg)) => {
                     println!("        ❌ Unexpected message received!");
@@ -185,8 +247,9 @@ async fn execute_step(
         }
 
         TestStep::Wait { duration_ms } => {
-            println!("  [{}] ⏳ Wait {}ms", index, duration_ms);
-            Timer::after(Duration::from_millis(*duration_ms as u64)).await;
+            let effective_ms = scale_ms(*duration_ms, time_divisor, 2);
+            println!("  [{}] ⏳ Wait {}ms", index, effective_ms);
+            Timer::after(Duration::from_millis(effective_ms)).await;
             true
         }
 
@@ -210,8 +273,7 @@ async fn execute_step(
                 println!("        ❌ Failed: {}", e);
                 return false;
             }
-            // Give the DUT time to process
-            Timer::after(Duration::from_millis(10)).await;
+            Timer::after(processing_delay(time_divisor)).await;
             true
         }
 
@@ -221,22 +283,23 @@ async fn execute_step(
                 println!("        ❌ Failed: {}", e);
                 return false;
             }
-            // Give the DUT time to process
-            Timer::after(Duration::from_millis(10)).await;
+            Timer::after(processing_delay(time_divisor)).await;
             true
         }
 
         TestStep::Drain { settle_ms } => {
-            println!("  [{}] 🧹 Drain (settle {}ms)", index, settle_ms);
-            Timer::after(Duration::from_millis(*settle_ms as u64)).await;
+            let effective_ms = scale_ms(*settle_ms, time_divisor, 10);
+            println!("  [{}] 🧹 Drain (settle {}ms)", index, effective_ms);
+            Timer::after(Duration::from_millis(effective_ms)).await;
             let drained = harness.drain_captured();
             println!("        Drained {} messages", drained);
             true
         }
 
         TestStep::WaitForRestart { timeout_ms } => {
-            println!("  [{}] 🔄 WaitForRestart (timeout {}ms)", index, timeout_ms);
-            let timeout = Duration::from_millis(*timeout_ms as u64);
+            let effective_ms = scale_ms(*timeout_ms, time_divisor, 50);
+            println!("  [{}] 🔄 WaitForRestart (timeout {}ms)", index, effective_ms);
+            let timeout = Duration::from_millis(effective_ms);
             if let Err(e) = harness.wait_for_restart(timeout).await {
                 println!("        ❌ Failed: {}", e);
                 return false;
@@ -254,7 +317,6 @@ async fn execute_step(
         // ============================================================
         // Secure test steps — resolved at execution time
         // ============================================================
-
         TestStep::InjectSecure { template, sec_params, delay_before_ms } => {
             let Some(ctx) = sec_ctx else {
                 println!("  [{}] ❌ InjectSecure used without SecurityTestContext", index);
@@ -274,10 +336,15 @@ async fn execute_step(
             let secure_internal = crypto::wrap_secure(&internal, sec_params, ctx);
             // Convert back to TP1 wire format for injection.
             let secure_tp1 = internal_to_tp1(&secure_internal);
-            println!("  [{}] 🔒⬇️  InjectSecure ({:?}, key={}): {} bytes",
-                index, sec_params.sec_type, sec_params.key_name, secure_tp1.len());
+            println!(
+                "  [{}] 🔒⬇️  InjectSecure ({:?}, key={}): {} bytes",
+                index,
+                sec_params.sec_type,
+                sec_params.key_name,
+                secure_tp1.len()
+            );
             if *delay_before_ms > 0 {
-                Timer::after(Duration::from_millis(*delay_before_ms as u64)).await;
+                Timer::after(Duration::from_millis(scale_ms(*delay_before_ms, time_divisor, 10))).await;
             }
             if let Err(e) = harness.inject(&secure_tp1).await {
                 println!("        ❌ Inject failed: {}", e);
@@ -291,14 +358,18 @@ async fn execute_step(
                 println!("  [{}] ❌ ExpectSecure used without SecurityTestContext", index);
                 return false;
             };
-            let timeout = Duration::from_millis(if *timeout_ms == 0 { 1000 } else { *timeout_ms as u64 });
-            println!("  [{}] 🔒⬆️  ExpectSecure ({:?}, key={}, timeout={}ms)",
-                index, sec_params.sec_type, sec_params.key_name, timeout.as_millis());
+            let effective_ms = if *timeout_ms == 0 {
+                scale_ms(1000, time_divisor, IPC_FLOOR_MS)
+            } else {
+                scale_ms(*timeout_ms, time_divisor, expect_floor(*timeout_ms))
+            };
+            let timeout = Duration::from_millis(effective_ms);
+            println!(
+                "  [{}] 🔒⬆️  ExpectSecure ({:?}, key={}, timeout={}ms)",
+                index, sec_params.sec_type, sec_params.key_name, effective_ms
+            );
 
-            let captured = select(
-                harness.receive_captured(),
-                Timer::after(timeout),
-            ).await;
+            let captured = select(harness.receive_captured(), Timer::after(timeout)).await;
 
             match captured {
                 Either::First(Some(msg)) => {
@@ -324,10 +395,8 @@ async fn execute_step(
                             };
                             let expected_internal = tp1_to_internal(&matcher.expected);
                             let wildcards_internal = tp1_shrink_wildcards(&matcher.wildcards, &matcher.expected);
-                            let internal_matcher = TelegramMatcher {
-                                expected: expected_internal,
-                                wildcards: wildcards_internal,
-                            };
+                            let internal_matcher =
+                                TelegramMatcher { expected: expected_internal, wildcards: wildcards_internal };
                             if internal_matcher.matches(&plain_internal) {
                                 println!("        ✅ Secure response matches");
                                 true
@@ -370,10 +439,9 @@ async fn execute_step(
             let internal = tp1_to_internal(&plaintext.data);
             let secure_internal = crypto::wrap_secure_invalid(&internal, sec_params, ctx, invalid);
             let secure_tp1 = internal_to_tp1(&secure_internal);
-            println!("  [{}] 🔒💥⬇️  InjectSecureInvalid ({:?}): {} bytes",
-                index, invalid, secure_tp1.len());
+            println!("  [{}] 🔒💥⬇️  InjectSecureInvalid ({:?}): {} bytes", index, invalid, secure_tp1.len());
             if *delay_before_ms > 0 {
-                Timer::after(Duration::from_millis(*delay_before_ms as u64)).await;
+                Timer::after(Duration::from_millis(scale_ms(*delay_before_ms, time_divisor, 10))).await;
             }
             if let Err(e) = harness.inject(&secure_tp1).await {
                 println!("        ❌ Inject failed: {}", e);
@@ -390,9 +458,17 @@ async fn execute_step(
 
 #[embassy_executor::main]
 async fn main(_spawner: embassy_executor::Spawner) {
-    // Parse command line arguments for filters
+    // Parse command line arguments: `--realtime` flag and test name filters
     let args: Vec<String> = env::args().collect();
-    let filters: Vec<&str> = args.iter().skip(1).map(|s| s.as_str()).collect();
+    let realtime = args.iter().any(|a| a == "--realtime");
+    let time_divisor: u64 = if realtime { 1 } else { DEFAULT_TIME_DIVISOR };
+
+    // Export the divisor so the DUT child process (which inherits our
+    // environment) scales its transport layer timeouts to match.
+    // Safety: this runs single-threaded before any child is spawned.
+    unsafe { env::set_var("KNX_TIME_DIVISOR", time_divisor.to_string()) };
+
+    let filters: Vec<&str> = args.iter().skip(1).filter(|s| *s != "--realtime").map(|s| s.as_str()).collect();
 
     // Parse log level from RUST_LOG env var
     let log_level = match env::var("RUST_LOG").ok().as_deref() {
@@ -413,6 +489,11 @@ async fn main(_spawner: embassy_executor::Spawner) {
     println!("╔═════════════════════════════════════════════════════════════╗");
     println!("║                 KNX Conformance Test Runner                 ║");
     println!("╚═════════════════════════════════════════════════════════════╝\n");
+    if time_divisor > 1 {
+        println!("Time scale: {}x fast mode (use --realtime for spec timeouts)", time_divisor);
+    } else {
+        println!("Time scale: realtime (spec-compliant timeouts)");
+    }
     println!("Log level: {:?}, Live logs: {}\n", log_level, live_logs);
 
     // Collect all test suites
@@ -574,8 +655,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     }
 
     // Create the multi-process harness (shared memory + child management)
-    let mut harness = MultiProcessHarness::new()
-        .expect("create multi-process harness");
+    let mut harness = MultiProcessHarness::new().expect("create multi-process harness");
 
     // Track which DUT variant is currently running so we can switch
     // between secure and non-secure DUT binaries when needed.
@@ -583,8 +663,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
     // Spawn the initial (non-secure) DUT child process.
     // If the first suite needs the secure DUT, it will be switched below.
-    harness.spawn_child().await
-        .expect("spawn DUT child");
+    harness.spawn_child().await.expect("spawn DUT child");
 
     // Drain read-on-init messages sent during startup. The ROI scan
     // processes one object per ~100ms tick, so we need to wait long enough
@@ -592,7 +671,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     // messages arrive within a settle window.
     let mut roi_drained = 0;
     loop {
-        Timer::after(Duration::from_millis(500)).await;
+        Timer::after(Duration::from_millis(scale_ms(500, time_divisor, 100))).await;
         let batch = harness.drain_captured();
         roi_drained += batch;
         if batch == 0 {
@@ -611,8 +690,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     for suite in &suites {
         // Switch DUT binary if the suite requires a different variant.
         if suite.use_secure_dut != current_dut_is_secure {
-            println!("🔄 Switching to {} DUT...",
-                if suite.use_secure_dut { "secure" } else { "non-secure" });
+            println!("🔄 Switching to {} DUT...", if suite.use_secure_dut { "secure" } else { "non-secure" });
 
             // Kill the current child and respawn with the correct binary.
             harness.kill_child().await;
@@ -631,7 +709,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
             // Drain ROI messages from the new DUT.
             loop {
-                Timer::after(Duration::from_millis(500)).await;
+                Timer::after(Duration::from_millis(scale_ms(500, time_divisor, 100))).await;
                 if harness.drain_captured() == 0 {
                     break;
                 }
@@ -667,7 +745,9 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables).await {
+                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor)
+                    .await
+                {
                     prep_passed = false;
                 }
                 total_steps += 1;
@@ -691,7 +771,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
             // Drain any leftover captured messages from previous tests.
             // Wait for in-flight messages to arrive, then drain.
-            Timer::after(Duration::from_millis(100)).await;
+            Timer::after(Duration::from_millis(scale_ms(100, time_divisor, 10))).await;
             let drained = harness.drain_captured();
             if drained > 0 {
                 println!("(Drained {} leftover messages from previous test)", drained);
@@ -710,7 +790,9 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables).await {
+                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor)
+                    .await
+                {
                     test_passed = false;
                 }
             }
@@ -745,7 +827,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables).await;
+                execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor).await;
                 total_steps += 1;
             }
             println!("✅ Teardown completed\n");

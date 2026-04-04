@@ -128,23 +128,55 @@ pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1,
     /// will arrive. Capacity 4 covers the worst case of `execute_actions`
     /// sending multiple PDUs (e.g., ACK + retransmit + queued outgoing).
     pending_nl: heapless::Deque<PendingNlRequest, 4>,
+
+    /// Effective ACK timeout. Defaults to `ACK_TIMEOUT_MS` (3s per KNX spec).
+    /// With the `conformance` feature, scaled down by the `KNX_TIME_DIVISOR`
+    /// environment variable for fast IPC-based conformance testing.
+    ack_timeout: Duration,
+    /// Effective connection timeout. Defaults to `CONNECTION_TIMEOUT_MS` (6s).
+    conn_timeout: Duration,
 }
 
 impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>
 {
     /// Create a new Transport Layer.
+    ///
+    /// With the `conformance` feature enabled, reads `KNX_TIME_DIVISOR` from
+    /// the environment to scale protocol timeouts for fast IPC-based testing.
+    /// If absent or unparseable, spec-compliant timeouts are used.
     pub fn new(
         buffer_manager: &'a crate::messages::buffers::DynBufferManager<'static>,
         state: &'a D::State,
         style: TlStyle,
     ) -> Self {
+        #[cfg(feature = "conformance")]
+        let (ack_timeout, conn_timeout) = {
+            extern crate std;
+            let divisor: u64 =
+                std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1);
+            if divisor > 1 {
+                log::info!(
+                    "TL time scaling: divisor={}, ACK={}ms, conn={}ms",
+                    divisor,
+                    ACK_TIMEOUT_MS / divisor,
+                    CONNECTION_TIMEOUT_MS / divisor
+                );
+            }
+            (Duration::from_millis(ACK_TIMEOUT_MS / divisor), Duration::from_millis(CONNECTION_TIMEOUT_MS / divisor))
+        };
+        #[cfg(not(feature = "conformance"))]
+        let (ack_timeout, conn_timeout) =
+            (Duration::from_millis(ACK_TIMEOUT_MS), Duration::from_millis(CONNECTION_TIMEOUT_MS));
+
         Self {
             buffer_manager,
             state,
             connections: ConnectionTable::new(),
             style,
             pending_nl: heapless::Deque::new(),
+            ack_timeout,
+            conn_timeout,
         }
     }
 
@@ -189,8 +221,8 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     }
 }
 
-impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
-    Layer for TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
+impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> Layer
+    for TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
 {
     const HANDLES: &'static [ServiceType] = &[
         // Indications from NL (upward — connectionless)
@@ -215,11 +247,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         ServiceType::T_Data_Req,
     ];
 
-    fn process(
-        &mut self,
-        msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         match msg.service_type() {
             // =================================================================
             // Indications from Network Layer (upward)
@@ -276,11 +304,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
 {
     /// Handle an indication from the network layer.
-    fn handle_indication(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         debug!("TL indication: {:?}", msg);
 
         match msg.service_type() {
@@ -336,11 +360,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     }
 
     /// Handle connection-oriented indications (N_Data_Ind).
-    fn handle_connection_indication(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_connection_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         use crate::messages::knx::offsets::MSG_TPCI;
 
         let tpci = match msg.get_tpci() {
@@ -454,11 +474,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     ///
     /// Transforms T_*_Req into N_*_Req and pushes to the outbox for NL,
     /// tracking what kind of confirmation to expect.
-    fn handle_request(
-        &mut self,
-        msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         debug!("TL request: {:?}", msg);
 
         match msg.service_type() {
@@ -495,11 +511,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     // Connectionless Request Handlers
     // ========================================================================
 
-    fn handle_group_data_request(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_group_data_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         trace!("T_GroupData_Req: {:?}", msg);
 
         let dst_addr = {
@@ -530,11 +542,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         }
     }
 
-    fn handle_broadcast_request(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_broadcast_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         msg.set_tpci(Tpci::DataBroadcast);
         msg.set_service_type(ServiceType::N_Broadcast_Req);
 
@@ -547,11 +555,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         outbox.push(msg);
     }
 
-    fn handle_system_broadcast_request(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_system_broadcast_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         msg.set_tpci(Tpci::DataSystemBroadcast);
         msg.set_service_type(ServiceType::N_SystemBroadcast_Req);
 
@@ -564,11 +568,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         outbox.push(msg);
     }
 
-    fn handle_data_unack_request(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_data_unack_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         msg.set_tpci(Tpci::DataIndividual);
         msg.set_service_type(ServiceType::N_Data_Req);
 
@@ -585,11 +585,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     // Connection-Oriented Request Handlers
     // ========================================================================
 
-    fn handle_connect_request(
-        &mut self,
-        msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_connect_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
             _ => {
@@ -615,11 +611,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         outbox.push(msg.confirm().build().into_inner());
     }
 
-    fn handle_disconnect_request(
-        &mut self,
-        msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_disconnect_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
             _ => {
@@ -638,11 +630,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         outbox.push(msg.confirm().build().into_inner());
     }
 
-    fn handle_data_request(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_data_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
             _ => {
@@ -706,8 +694,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         let send_msg = {
             let pending = self.connections.find_any(dest).and_then(|c| c.pending_msg.as_ref());
             if let Some(pm) = pending {
-                self.buffer_manager.try_alloc_from_slice(pm.buf())
-                    .map(|buf| KnxMessageBuffer::new(buf, service_type))
+                self.buffer_manager.try_alloc_from_slice(pm.buf()).map(|buf| KnxMessageBuffer::new(buf, service_type))
             } else {
                 None
             }
@@ -894,7 +881,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                 }
                 TlAction::StartAckTimer => {
                     if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
-                        let deadline = Instant::now() + Duration::from_millis(ACK_TIMEOUT_MS);
+                        let deadline = Instant::now() + self.ack_timeout;
                         conn.start_ack_timeout(deadline);
                     }
                 }
@@ -905,7 +892,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                 }
                 TlAction::StartConnTimer => {
                     if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
-                        let deadline = Instant::now() + Duration::from_millis(CONNECTION_TIMEOUT_MS);
+                        let deadline = Instant::now() + self.conn_timeout;
                         conn.start_conn_timeout(deadline);
                     }
                 }
@@ -980,8 +967,8 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
             msg.set_service_type(ServiceType::N_Data_Req);
             conn.pending_msg = Some(msg);
 
-            conn.start_ack_timeout(Instant::now() + Duration::from_millis(ACK_TIMEOUT_MS));
-            conn.start_conn_timeout(Instant::now() + Duration::from_millis(CONNECTION_TIMEOUT_MS));
+            conn.start_ack_timeout(Instant::now() + self.ack_timeout);
+            conn.start_conn_timeout(Instant::now() + self.conn_timeout);
             conn.state = ConnectionState::OpenWait;
 
             // Send a copy (original stored for retransmission).
@@ -1009,11 +996,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     ///
     /// Matches against the pending NL request FIFO to determine whether to
     /// forward the confirmation to AL or just drop it (fire-and-forget).
-    fn handle_nl_confirmation(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn handle_nl_confirmation(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         debug!("TL NL confirmation: {:?}", msg);
 
         match self.pending_nl.pop_front() {

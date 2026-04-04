@@ -200,16 +200,21 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 
                 // Drain the outbox: dispatch each message through the table
                 // until all messages are consumed or sent to the LL.
+                //
+                // After each LL send we yield so the LL task can transmit
+                // the frame before the router produces the next one. This
+                // preserves wire ordering (e.g., ACK before data response)
+                // which matters for conformance tests that check message
+                // order.
                 while let Some(msg) = outbox.take_next() {
                     let st = msg.service_type();
                     if st == ServiceType::L_Data_Req {
-                        // Terminal: send to link layer
                         ll_req.send(RequestMessage::request(msg)).await;
+                        embassy_futures::yield_now().await;
                     } else if let Some(layer_idx) = Layers::<'_, D>::DISPATCH_TABLE.get(st) {
                         layers.dispatch(layer_idx, msg, &mut outbox);
                     } else {
                         warn!("Router: no layer for {:?}, dropping", st);
-                        // Buffer is dropped, returned to pool
                     }
                 }
 

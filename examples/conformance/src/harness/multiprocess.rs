@@ -414,7 +414,7 @@ impl MultiProcessHarness {
                 // test's expected responses.
                 let mut drained = 0;
                 loop {
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
                     let batch = self.drain_captured();
                     drained += batch;
                     if batch == 0 {

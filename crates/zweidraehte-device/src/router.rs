@@ -117,6 +117,14 @@ impl Outbox {
         self.count += 1;
     }
 
+    /// Peek at the service type of the next message without removing it.
+    pub fn peek_service_type(&self) -> Option<ServiceType> {
+        if self.count == 0 {
+            return None;
+        }
+        self.messages[self.head].as_ref().map(|m| m.service_type())
+    }
+
     /// Take the next message from the outbox, if any.
     pub fn take_next(&mut self) -> Option<KnxMessageBuffer<Buffer<'static>>> {
         if self.count == 0 {

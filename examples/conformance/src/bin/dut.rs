@@ -122,8 +122,9 @@ async fn handle_restarts(stack: Stack<'static, IpcConformanceTestStack>, shm: &'
         }
 
         // Give the stack a moment to send the response over IPC
-        // before we apply state changes and exit.
-        Timer::after(Duration::from_millis(50)).await;
+        // before we apply state changes and exit. Over a Unix socketpair
+        // this is nearly instant; 1ms is plenty.
+        Timer::after(Duration::from_millis(1)).await;
 
         // Apply the erase-code-specific state changes.
         match erase_code {

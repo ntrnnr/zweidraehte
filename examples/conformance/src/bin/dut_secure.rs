@@ -20,7 +20,7 @@ use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilde
 use zweidraehte_conformance::harness::secure_stack::{
     IpcSecureConformanceTestStack, SecureConformancePersistedState, SecureConformanceState,
 };
-use zweidraehte_conformance::harness::stack::{comm_objs::ConformanceComObjects, device_info, ConformanceMemoryMap};
+use zweidraehte_conformance::harness::stack::{ConformanceMemoryMap, comm_objs::ConformanceComObjects, device_info};
 
 use zweidraehte_device::messages::buffers::{BufferManager, DynBufferManager};
 use zweidraehte_device::objects::comm::ComObjects;
@@ -97,7 +97,8 @@ async fn handle_restarts(stack: Stack<'static, IpcSecureConformanceTestStack>, s
             continue;
         }
 
-        Timer::after(Duration::from_millis(50)).await;
+        // Give the stack a moment to flush the IPC response before exit.
+        Timer::after(Duration::from_millis(1)).await;
 
         match erase_code {
             EraseCode::Basic | EraseCode::Confirmed => {}
