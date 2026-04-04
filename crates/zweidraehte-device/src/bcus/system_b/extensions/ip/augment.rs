@@ -560,13 +560,28 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
     }
 
     fn write_additional_addrs(&self, start_idx: u16, data: &[u8]) -> Result<WriteResponse, PropertyError> {
-        if start_idx != 1 {
+        if start_idx == 0 {
             return Err(PropertyError::InvalidStartIndex);
         }
 
-        let addrs = <[IndividualAddress]>::ref_from_bytes(data).map_err(|_| PropertyError::TypeMismatch)?;
+        let new_addrs = <[IndividualAddress]>::ref_from_bytes(data).map_err(|_| PropertyError::TypeMismatch)?;
+        let start = (start_idx - 1) as usize;
+        let end = start + new_addrs.len();
+        let capacity = self.additional_individual_address_capacity();
 
-        self.set_additional_individual_addresses(addrs).map_err(|_| PropertyError::WriteNotAllowed)?;
+        if end > capacity {
+            return Err(PropertyError::InvalidStartIndex);
+        }
+
+        // Read-modify-write: read current addresses, patch the range, write back.
+        let mut buf = [IndividualAddress::default(); N];
+        let current_len = self.write_additional_individual_addresses(&mut buf);
+
+        // Extend with zeros if writing past the current populated range.
+        let new_len = end.max(current_len);
+        buf[start..end].copy_from_slice(new_addrs);
+
+        self.set_additional_individual_addresses(&buf[..new_len]).map_err(|_| PropertyError::WriteNotAllowed)?;
         Ok(WriteResponse::Echo)
     }
 
@@ -612,7 +627,8 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
 // ============================================================================
 
 impl<S: StackState, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObjectAugment<S>
-    for IpAugment<'_, P, N, CAPS> {
+    for IpAugment<'_, P, N, CAPS>
+{
     fn additional_object_count(&self) -> u16 {
         1 // IP Parameter Object
     }
