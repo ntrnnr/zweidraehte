@@ -24,6 +24,7 @@
 //! - [`auth`] — `A_Authorize_*`, `A_Key_*`
 //! - [`property_ext`] — `A_PropertyExtValue_*` (AN163 extended interface object addressing)
 //! - [`restart`] — `A_Restart` (basic and master reset)
+//! - [`secure`] — Secure APDU (S-A_Data) frame parser and builder
 
 pub mod auth;
 pub mod device;
@@ -32,3 +33,4 @@ pub mod memory;
 pub mod property;
 pub mod property_ext;
 pub mod restart;
+pub mod secure;
