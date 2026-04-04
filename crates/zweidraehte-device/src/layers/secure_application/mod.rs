@@ -115,6 +115,20 @@ where
             return Some(msg);
         }
 
+        // Don't try to decrypt confirmation frames — they echo our own
+        // outgoing encrypted response and would fail MAC verification.
+        let st = msg.service_type();
+        if matches!(
+            st,
+            ServiceType::T_Data_Con
+                | ServiceType::T_DataUnack_Con
+                | ServiceType::T_GroupData_Con
+                | ServiceType::T_Broadcast_Con
+                | ServiceType::T_SystemBroadcast_Con
+        ) {
+            return Some(msg);
+        }
+
         let security_state = self.state.extension_state();
         let src = u16::from_be_bytes(msg.get_source_addr().0);
         let buf = msg.buf_mut();

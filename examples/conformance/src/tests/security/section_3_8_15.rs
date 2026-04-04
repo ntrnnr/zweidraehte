@@ -129,9 +129,9 @@ pub fn create_section_3_8_15_suite() -> TestSuite {
             test_3_8_15_2(),
             test_3_8_15_4(),
             test_3_8_15_5(),
-            // TODO: 3.8.15.8 — connection-oriented secure transport has a CCM
-            // context mismatch: the TL modifies TPCI sequence bits before the
-            // S-AL computes the MAC, causing verification failure. See SESSION.md.
+            // TODO: 3.8.15.8 — outgoing secure response uses wrong TPCI in
+            // CCM context. S-AL encrypts before TL adds connection sequence
+            // bits. See SESSION.md "Connection-Oriented Secure Transport".
         ])
 }
 
@@ -248,7 +248,7 @@ fn test_3_8_15_5() -> TestCase {
 // DUT should reject (sequence number must not be set to 0). Uses T_ACK
 // handshake for the connection-oriented exchange.
 
-#[allow(dead_code)] // Blocked on connection-oriented secure transport fix.
+#[allow(dead_code)] // Blocked on outgoing TPCI mismatch fix.
 fn test_3_8_15_8() -> TestCase {
     // Connection-oriented secure write: TPCI=0x41 (numbered data seq 0).
     // PropExtValueWriteCon (0x01CE) on Security IO PID 0x3B, value = 6 zero bytes.
