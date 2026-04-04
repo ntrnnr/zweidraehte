@@ -58,7 +58,11 @@ fn parse_variable_expr(expr: &str, variables: &BTreeMap<String, TestVariable>) -
                     let new_value = (value + offset) as u8;
                     Ok(vec![new_value])
                 } else {
-                    Err(format!("Arithmetic only supported for 1 or 2 byte values, {} has {} bytes", var_name, bytes.len()))
+                    Err(format!(
+                        "Arithmetic only supported for 1 or 2 byte values, {} has {} bytes",
+                        var_name,
+                        bytes.len()
+                    ))
                 }
             }
             None => Err(format!("Unknown variable: {}", var_name)),
@@ -80,7 +84,11 @@ fn parse_variable_expr(expr: &str, variables: &BTreeMap<String, TestVariable>) -
                     let new_value = (value - offset) as u8;
                     Ok(vec![new_value])
                 } else {
-                    Err(format!("Arithmetic only supported for 1 or 2 byte values, {} has {} bytes", var_name, bytes.len()))
+                    Err(format!(
+                        "Arithmetic only supported for 1 or 2 byte values, {} has {} bytes",
+                        var_name,
+                        bytes.len()
+                    ))
                 }
             }
             None => Err(format!("Unknown variable: {}", var_name)),
@@ -151,56 +159,81 @@ impl Telegram {
 /// Matches telegrams with support for wildcards
 #[derive(Debug, Clone)]
 pub struct TelegramMatcher {
-    /// Expected bytes (0x00 with wildcard flag means "any")
+    /// Expected byte values.
     pub expected: Vec<u8>,
-    /// Which positions are wildcards (true = any byte accepted)
+    /// Per-byte comparison mask. `0xFF` = exact match, `0x00` = full
+    /// wildcard (`??`), `0xF0`/`0x0F` = nibble wildcard (`F?`/`?F`).
+    pub masks: Vec<u8>,
+    /// Legacy accessor — `true` when `masks[i] == 0x00`.
     pub wildcards: Vec<bool>,
 }
 
 impl TelegramMatcher {
     /// Create a matcher from raw bytes (no wildcards)
     pub fn exact(data: &[u8]) -> Self {
-        Self { expected: data.to_vec(), wildcards: vec![false; data.len()] }
+        let len = data.len();
+        Self { expected: data.to_vec(), masks: vec![0xFF; len], wildcards: vec![false; len] }
     }
 
-    /// Parse a matcher from a hex string with variable references and wildcards
+    /// Parse a matcher from a hex string with variable references and wildcards.
     ///
-    /// Format: "BC #BDUT #EDI 63 43 40 ?? ??"
-    /// - ?? means any byte at that position
-    /// - Variable expressions: #VAR, #VAR.N (array index), #VAR+N (arithmetic)
+    /// Format: `"BC #BDUT #EDI 63 43 40 ?? F?"`
+    /// - `??` — full byte wildcard (any value accepted)
+    /// - `F?` — high nibble fixed, low nibble wild
+    /// - `?F` — high nibble wild, low nibble fixed
+    /// - Variable expressions: `#VAR`, `#VAR.N` (array index), `#VAR+N` (arithmetic)
     pub fn parse(input: &str, variables: &BTreeMap<String, TestVariable>) -> Result<Self, String> {
         let mut expected = Vec::new();
-        let mut wildcards = Vec::new();
+        let mut masks = Vec::new();
 
         for token in input.split_whitespace() {
             if let Some(expr) = token.strip_prefix('#') {
-                // Variable expression
                 let bytes = parse_variable_expr(expr, variables)?;
-                expected.extend(&bytes);
-                wildcards.extend(vec![false; bytes.len()]);
-            } else if token == "??" {
-                // Wildcard
-                expected.push(0x00);
-                wildcards.push(true);
+                for &b in &bytes {
+                    expected.push(b);
+                    masks.push(0xFF);
+                }
+            } else if token.len() == 2 && token.contains('?') {
+                // Wildcard token: ??, F?, ?F, etc.
+                let chars: Vec<char> = token.chars().collect();
+                let (value, mask) = match (chars[0], chars[1]) {
+                    ('?', '?') => (0x00u8, 0x00u8),
+                    ('?', lo) => {
+                        let lo = u8::from_str_radix(&lo.to_string(), 16)
+                            .map_err(|_| format!("Invalid nibble wildcard: {}", token))?;
+                        (lo, 0x0F)
+                    }
+                    (hi, '?') => {
+                        let hi = u8::from_str_radix(&hi.to_string(), 16)
+                            .map_err(|_| format!("Invalid nibble wildcard: {}", token))?;
+                        (hi << 4, 0xF0)
+                    }
+                    _ => {
+                        let byte = u8::from_str_radix(token, 16).map_err(|_| format!("Invalid hex byte: {}", token))?;
+                        (byte, 0xFF)
+                    }
+                };
+                expected.push(value);
+                masks.push(mask);
             } else {
-                // Hex byte
                 let byte = u8::from_str_radix(token, 16).map_err(|_| format!("Invalid hex byte: {}", token))?;
                 expected.push(byte);
-                wildcards.push(false);
+                masks.push(0xFF);
             }
         }
 
-        Ok(Self { expected, wildcards })
+        let wildcards = masks.iter().map(|&m| m == 0x00).collect();
+        Ok(Self { expected, masks, wildcards })
     }
 
-    /// Check if an actual telegram matches this pattern
+    /// Check if an actual telegram matches this pattern.
     pub fn matches(&self, actual: &[u8]) -> bool {
         if actual.len() != self.expected.len() {
             return false;
         }
 
         for (i, (exp, act)) in self.expected.iter().zip(actual.iter()).enumerate() {
-            if !self.wildcards[i] && exp != act {
+            if (act & self.masks[i]) != (exp & self.masks[i]) {
                 return false;
             }
         }
@@ -208,7 +241,7 @@ impl TelegramMatcher {
         true
     }
 
-    /// Get a diff description between expected and actual
+    /// Get a diff description between expected and actual.
     pub fn diff(&self, actual: &[u8]) -> String {
         use core::fmt::Write;
         let mut result = String::new();
@@ -219,8 +252,13 @@ impl TelegramMatcher {
 
         let _ = write!(result, "Expected: ");
         for (i, b) in self.expected.iter().enumerate() {
-            if self.wildcards[i] {
+            let m = self.masks[i];
+            if m == 0x00 {
                 let _ = write!(result, "?? ");
+            } else if m == 0xF0 {
+                let _ = write!(result, "{:X}? ", b >> 4);
+            } else if m == 0x0F {
+                let _ = write!(result, "?{:X} ", b & 0x0F);
             } else {
                 let _ = write!(result, "{:02X} ", b);
             }
@@ -229,8 +267,11 @@ impl TelegramMatcher {
 
         let _ = write!(result, "Actual:   ");
         for (i, b) in actual.iter().enumerate() {
-            if i < self.wildcards.len() && !self.wildcards[i] && *b != self.expected[i] {
-                let _ = write!(result, "[{:02X}] ", b); // Highlight mismatch
+            if i < self.masks.len()
+                && self.masks[i] != 0x00
+                && (b & self.masks[i]) != (self.expected[i] & self.masks[i])
+            {
+                let _ = write!(result, "[{:02X}] ", b);
             } else {
                 let _ = write!(result, "{:02X} ", b);
             }
@@ -400,10 +441,7 @@ mod tests {
 
         // Example from test 2.6.1: "BC #EDI #BDUT 6F 42 8C #MEMPOS #MEM.0 #MEM.1 #MEM.2"
         let telegram = Telegram::parse("BC #EDI #BDUT 6F 42 8C #MEMPOS #MEM.0 #MEM.1 #MEM.2", &vars).unwrap();
-        assert_eq!(
-            telegram.data,
-            vec![0xBC, 0xAF, 0xFE, 0x10, 0x01, 0x6F, 0x42, 0x8C, 0x02, 0x00, 0x01, 0x02, 0x03]
-        );
+        assert_eq!(telegram.data, vec![0xBC, 0xAF, 0xFE, 0x10, 0x01, 0x6F, 0x42, 0x8C, 0x02, 0x00, 0x01, 0x02, 0x03]);
 
         // Example with offset: "#MEMPOS+12"
         let telegram2 = Telegram::parse("BC #EDI #BDUT 6F 46 8C #MEMPOS+12 #MEM.0", &vars).unwrap();

@@ -69,33 +69,26 @@ fn internal_to_tp1(internal: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// Shrink a wildcards array to match the internal format of a TP1 frame.
+/// Shrink a per-byte metadata array to match the internal format of a TP1 frame.
 ///
 /// For extended frames (CTRL bit 7 = 0), the TP1 ext ctrl byte at position 1
-/// is removed during conversion, so we drop the wildcard at index 1.
+/// is removed during conversion, so we drop the entry at index 1.
 /// For standard frames, the length stays the same.
-fn tp1_shrink_wildcards(wildcards: &[bool], tp1_data: &[u8]) -> Vec<bool> {
+fn tp1_shrink_per_byte<T: Copy>(per_byte: &[T], tp1_data: &[u8]) -> Vec<T> {
     if tp1_data.is_empty() {
-        return wildcards.to_vec();
+        return per_byte.to_vec();
     }
     // Extended frame: CTRL bit 7 = 0
-    if (tp1_data[0] & 0x80) == 0 && wildcards.len() > 1 {
-        // Remove the ext ctrl wildcard at index 1, and the length byte at
-        // index 6 (which becomes index 5 after removal).
-        let mut result: Vec<bool> = Vec::with_capacity(wildcards.len() - 1);
-        result.push(wildcards[0]); // CTRL
+    if (tp1_data[0] & 0x80) == 0 && per_byte.len() > 1 {
+        let mut result: Vec<T> = Vec::with_capacity(per_byte.len() - 1);
+        result.push(per_byte[0]); // CTRL
         // Skip index 1 (ext ctrl — absorbed into position 5 by tp1_to_internal)
-        result.extend_from_slice(&wildcards[2..]);
-        // The length byte at TP1 index 6 became internal index 5. We need to
-        // also remove it since tp1_to_internal overwrites position 5.
-        // But actually tp1_to_internal moves ext_ctrl to position 5, overwriting
-        // the byte that was at position 6 (length). So we need to drop one more.
-        // Let me just shrink to match the internal length.
+        result.extend_from_slice(&per_byte[2..]);
         let internal_len = tp1_data.len() - 1; // extended frames shrink by 1
         result.truncate(internal_len);
         result
     } else {
-        wildcards.to_vec()
+        per_byte.to_vec()
     }
 }
 
@@ -394,9 +387,13 @@ async fn execute_step(
                                 }
                             };
                             let expected_internal = tp1_to_internal(&matcher.expected);
-                            let wildcards_internal = tp1_shrink_wildcards(&matcher.wildcards, &matcher.expected);
-                            let internal_matcher =
-                                TelegramMatcher { expected: expected_internal, wildcards: wildcards_internal };
+                            let masks_internal = tp1_shrink_per_byte(&matcher.masks, &matcher.expected);
+                            let wildcards_internal = tp1_shrink_per_byte(&matcher.wildcards, &matcher.expected);
+                            let internal_matcher = TelegramMatcher {
+                                expected: expected_internal,
+                                masks: masks_internal,
+                                wildcards: wildcards_internal,
+                            };
                             if internal_matcher.matches(&plain_internal) {
                                 println!("        ✅ Secure response matches");
                                 true
