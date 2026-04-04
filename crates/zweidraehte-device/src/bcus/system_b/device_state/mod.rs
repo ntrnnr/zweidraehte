@@ -30,7 +30,7 @@ use crate::{
     },
 };
 
-use super::{ExtensionState, HasPersistedState, PersistedState};
+use super::{ExtensionState, HasPersistedState, HasSecurityMode, PersistedState};
 use crate::storage::DeviceIdentity;
 
 // ============================================================================
@@ -519,8 +519,13 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 // StackState Implementation
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
-    StackState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    ES: ExtensionState + HasSecurityMode,
+> StackState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
 {
     fn individual_address(&self) -> IndividualAddress {
         self.individual_address.get()

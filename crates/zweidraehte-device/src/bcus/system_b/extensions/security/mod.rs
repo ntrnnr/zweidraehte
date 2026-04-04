@@ -36,7 +36,7 @@ use core::cell::{Cell, RefCell};
 use serde::{Deserialize, Serialize};
 
 use crate::StackState;
-use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState};
+use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode};
 use crate::objects::tables::LoadState;
 
 // ============================================================================
@@ -559,6 +559,12 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for Sec
     }
 }
 
+impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode for SecurityState<GRP, P2P, GO> {
+    fn security_mode_enabled(&self) -> bool {
+        self.security_mode_enabled.get()
+    }
+}
+
 // ============================================================================
 // Composed Extension — wraps a medium extension with security
 // ============================================================================
@@ -656,7 +662,11 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
         self.inner.factory_reset();
         self.security.factory_reset();
     }
+}
 
+impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode
+    for SecureExtensionState<Inner, GRP, P2P, GO>
+{
     fn security_mode_enabled(&self) -> bool {
         self.security.security_mode_enabled()
     }

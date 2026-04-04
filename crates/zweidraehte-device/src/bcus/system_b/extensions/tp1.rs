@@ -22,7 +22,7 @@ use core::cell::Cell;
 use serde::{Deserialize, Serialize};
 
 use crate::StackState;
-use crate::bcus::system_b::{ExtensionConfig, ExtensionState};
+use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode};
 use crate::dpt::{InterfaceObjectType, PDT_Generic01};
 use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, HasMaxRetryCount, InterfaceObjectAugment, PropertyAccess,
@@ -92,11 +92,13 @@ impl ExtensionState for Tp1ExtensionState {
     }
 }
 
+impl HasSecurityMode for Tp1ExtensionState {}
+
 // ============================================================================
 // Extension — unified persistence + augmentation
 // ============================================================================
 
-impl crate::bcus::system_b::Extension<()> for Tp1ExtensionState {
+impl Extension<()> for Tp1ExtensionState {
     type Augment<'a, S: crate::StackState>
         = &'a Tp1ExtensionState
     where

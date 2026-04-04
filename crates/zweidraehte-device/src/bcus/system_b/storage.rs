@@ -88,15 +88,25 @@ pub trait ExtensionState: Sized {
 
     /// Reset to factory defaults.
     fn factory_reset(&self);
+}
 
-    /// Whether the device's Security Mode is currently enabled.
-    ///
-    /// Non-secure extensions return `false` (the default). Secure
-    /// extensions delegate to the Security Interface Object's flag.
+/// Whether the device's Security Mode is currently enabled.
+///
+/// Extension state types that include security (e.g.,
+/// [`SecureExtensionState`]) implement this to delegate to the Security
+/// Interface Object's flag. Non-secure extensions use the default
+/// (`false`).
+///
+/// Separated from [`ExtensionState`] because security mode is not a
+/// persistence concern — TP1 and IP extensions should not need to know
+/// about it.
+pub trait HasSecurityMode {
     fn security_mode_enabled(&self) -> bool {
         false
     }
 }
+
+impl HasSecurityMode for () {}
 
 impl ExtensionState for () {
     type Config = ();

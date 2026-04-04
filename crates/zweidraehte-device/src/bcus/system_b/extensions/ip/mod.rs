@@ -356,6 +356,8 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAP
     }
 }
 
+impl<const N: usize, const CAPS: u16> crate::bcus::system_b::HasSecurityMode for IpExtensionState<N, CAPS> {}
+
 // ============================================================================
 // Extension — unified persistence + augmentation
 // ============================================================================
