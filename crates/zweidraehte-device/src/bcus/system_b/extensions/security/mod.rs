@@ -376,13 +376,9 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
 
     /// Look up a group key by 1-based group address table index.
     ///
-    /// The group key table is sorted by GA index (ascending) as written
-    /// by ETS, so we use binary search for O(log n) lookup.
-    ///
-    /// TODO: Verify with the spec (03/05/01) that ETS always writes
-    /// entries in ascending GA index order. The Thelsing reference
-    /// implementation uses early exit on `index > addressIndex` which
-    /// implies sorted order, but this should be confirmed.
+    /// Uses binary search — the spec (03/05/01 §6.3.7.2) requires the
+    /// table to be sorted by GA_Index ascending, and §6.3.7.3 requires
+    /// the MaC (ETS) to maintain this order.
     ///
     /// Returns the 16-byte key if found, or `None` if the index is
     /// not in the group key table.
