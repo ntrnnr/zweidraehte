@@ -304,10 +304,13 @@ pub trait SequenceNumberStorage {
 /// cycle. Suitable for testing and devices that accept sequence reset on
 /// reboot. The initial sending sequence number is 1 (per spec, must be
 /// non-zero).
+///
+/// The peers array is kept sorted by individual address for O(log n)
+/// lookup via binary search.
 pub struct RamSequenceStorage<const MAX_PEERS: usize> {
     /// (regular, tool_access) sending sequence numbers.
     sending: ([u8; 6], [u8; 6]),
-    /// Per-peer last-valid receiving sequence numbers.
+    /// Per-peer last-valid receiving sequence numbers, sorted by IA.
     peers: [(u16, [u8; 6]); MAX_PEERS],
     /// Number of peers currently tracked.
     peer_count: usize,
@@ -344,28 +347,29 @@ impl<const MAX_PEERS: usize> SequenceNumberStorage for RamSequenceStorage<MAX_PE
     }
 
     fn load_receiving_seq(&self, peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error> {
-        for i in 0..self.peer_count {
-            if self.peers[i].0 == peer_ia {
-                return Ok(Some(self.peers[i].1));
-            }
+        let slice = &self.peers[..self.peer_count];
+        match slice.binary_search_by_key(&peer_ia, |e| e.0) {
+            Ok(idx) => Ok(Some(self.peers[idx].1)),
+            Err(_) => Ok(None),
         }
-        Ok(None)
     }
 
     fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error> {
-        // Update existing entry if found.
-        for i in 0..self.peer_count {
-            if self.peers[i].0 == peer_ia {
-                self.peers[i].1 = *seq;
-                return Ok(());
+        let slice = &self.peers[..self.peer_count];
+        match slice.binary_search_by_key(&peer_ia, |e| e.0) {
+            Ok(idx) => {
+                self.peers[idx].1 = *seq;
+            }
+            Err(idx) => {
+                if self.peer_count < MAX_PEERS {
+                    // Shift elements right to make room at the sorted position.
+                    self.peers.copy_within(idx..self.peer_count, idx + 1);
+                    self.peers[idx] = (peer_ia, *seq);
+                    self.peer_count += 1;
+                }
+                // Silently drop if at capacity — bounded by const generic.
             }
         }
-        // Add new entry if capacity allows.
-        if self.peer_count < MAX_PEERS {
-            self.peers[self.peer_count] = (peer_ia, *seq);
-            self.peer_count += 1;
-        }
-        // Silently drop if at capacity — bounded by const generic.
         Ok(())
     }
 }
