@@ -164,7 +164,7 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
 
 /// Persisted security extension configuration.
 ///
-/// Contains only scalar fields — security mode, tool key, and load state.
+/// Contains scalar fields and the security failures log.
 /// Security table data (group keys, GO flags) is loaded by ETS through
 /// property writes during the configuration phase and is NOT persisted
 /// in this config. After a power cycle, the load state will be
@@ -182,6 +182,10 @@ pub struct SecurityExtensionConfig {
     pub tool_key: [u8; 16],
     #[serde(default = "default_load_state")]
     pub load_state: LoadState,
+    /// Security failures log — spec (03/05/01 §6.3.9.2) requires it to
+    /// be saved at power-down and restored at power-up.
+    #[serde(default)]
+    pub failures_log: SecurityFailuresLog,
 }
 
 fn default_tool_key() -> [u8; 16] {
@@ -194,7 +198,12 @@ fn default_load_state() -> LoadState {
 
 impl Default for SecurityExtensionConfig {
     fn default() -> Self {
-        Self { security_mode_enabled: false, tool_key: [0u8; 16], load_state: LoadState::Unloaded }
+        Self {
+            security_mode_enabled: false,
+            tool_key: [0u8; 16],
+            load_state: LoadState::Unloaded,
+            failures_log: SecurityFailuresLog::default(),
+        }
     }
 }
 
@@ -254,7 +263,7 @@ pub enum SecurityFailureType {
 }
 
 /// A single failure log entry recording a security event.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct SecurityFailureEntry {
     /// Failure type.
     pub failure_type: u8,
@@ -269,7 +278,7 @@ pub struct SecurityFailureEntry {
 /// - **StateRead(id=0, info=0)**: Returns 8 failure type counters.
 /// - **StateRead(id=1, info=N)**: Returns the Nth most recent failure entry.
 /// - **Command(id=0, info=0)**: Clears all counters and entries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityFailuresLog {
     /// Per-type failure counters (8 types, 1 byte each, saturating at 255).
     counters: [u8; 8],
@@ -525,8 +534,7 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for Sec
             grp_keys: RefCell::new(SecurityTable::new()),
             p2p_keys: RefCell::new(SecurityTable::new()),
             go_flags: RefCell::new(SecurityTable::new()),
-            // Failures log starts empty (not persisted).
-            failures_log: RefCell::new(SecurityFailuresLog::default()),
+            failures_log: RefCell::new(config.failures_log),
             security_report: Cell::new(0),
             security_report_enabled: Cell::new(false),
         }
@@ -537,6 +545,7 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for Sec
             security_mode_enabled: self.security_mode_enabled.get(),
             tool_key: self.tool_key.get(),
             load_state: self.load_state.get(),
+            failures_log: self.failures_log.borrow().clone(),
         }
     }
 
