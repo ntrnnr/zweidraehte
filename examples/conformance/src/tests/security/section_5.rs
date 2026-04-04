@@ -64,8 +64,9 @@ pub fn create_section_5_suite() -> TestSuite {
             test_5_2_1(),
             test_5_2_5(),
             test_5_2_6(),
-            // Skipped: 5.1.2-5.1.5, 5.2.2-5.2.4 — need connection-oriented
-            // auth or extended frames with huge payloads.
+            test_5_1_2(),
+            // Skipped: 5.1.3-5.1.5, 5.2.2-5.2.4 — need connection-oriented
+            // authorize sequences.
         ])
 }
 
@@ -91,6 +92,46 @@ fn test_5_1_1() -> TestCase {
             "BC #BDUT_ADDR #EDI 6B 01 FE 00 #READWRITE_MEM_START 01 02 03 04 05 06",
             TIMEOUT,
         ),
+    ])
+}
+
+// ============================================================================
+// 5.1.2 A_MemoryExtended_Write up to MAX_APDU_LENGTH
+// ============================================================================
+//
+// Write 249 bytes (the maximum for a 254-byte APDU: 2 APCI + 1 count +
+// 3 address + 249 data = 256, but APDU length field is 254 = count + data).
+// Uses an extended frame (3C 60 prefix).
+
+fn test_5_1_2() -> TestCase {
+    // 249 bytes: 01 02 03 ... F9
+    let data_bytes: String = (1..=0xF9u8)
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let write_template = format!(
+        "3C 60 #EDI #BDUT_ADDR FE 01 FB F9 #READWRITE_MEM_START {}",
+        data_bytes
+    );
+
+    let read_response = format!(
+        "3C 60 #BDUT_ADDR #EDI FE 01 FE 00 #READWRITE_MEM_START {}",
+        data_bytes
+    );
+
+    TestCase::new("5.1.2 MemoryExtended_Write up to MAX_APDU_LENGTH").with_steps(vec![
+        comment("Write 249 bytes (01..F9) to READWRITE_MEM_START"),
+        inject(&write_template),
+        expect(
+            "BC #BDUT_ADDR #EDI 65 01 FC 00 #READWRITE_MEM_START",
+            TIMEOUT,
+        ),
+        comment("Read back 249 bytes to verify"),
+        inject(
+            "BC #EDI #BDUT_ADDR 65 01 FD F9 #READWRITE_MEM_START",
+        ),
+        expect(&read_response, TIMEOUT),
     ])
 }
 

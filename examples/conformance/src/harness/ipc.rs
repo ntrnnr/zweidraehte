@@ -58,8 +58,9 @@ use zweidraehte_device::{
 /// Frame header size: 1 byte tag + 2 bytes length.
 const HEADER_SIZE: usize = 3;
 
-/// Maximum payload size. KNX messages are at most ~300 bytes in TP1 format.
-const MAX_PAYLOAD: usize = 512;
+/// Maximum payload size. KNX messages are at most ~300 bytes in TP1 format,
+/// but log messages with hex dumps can be much larger.
+const MAX_PAYLOAD: usize = 2048;
 
 // Tag values — parent-to-child
 pub const TAG_INJECT: u8 = 0x01;
