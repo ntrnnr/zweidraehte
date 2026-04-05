@@ -348,6 +348,16 @@ impl SharedMemory {
         self.fd.as_raw_fd()
     }
 
+    /// Raw pointer to the sequence number region at the end of the shared
+    /// memory. Layout: `[magic: 4B "SEQ\0"] [regular: 6B] [tool: 6B]`.
+    ///
+    /// The caller must ensure the pointer is only used while the
+    /// `SharedMemory` is alive.
+    pub fn seq_region_ptr(&self) -> *mut u8 {
+        // Reserve last 16 bytes of the shared memory.
+        unsafe { self.ptr.add(self.size - 16) }
+    }
+
     /// Clear the `FD_CLOEXEC` flag so the fd is inherited by the child.
     pub fn clear_cloexec(&self) -> io::Result<()> {
         use nix::fcntl;

@@ -485,41 +485,73 @@ impl StackDefinition for IpcSecureConformanceTestStack {
 // Sequence Number Storage
 // ============================================================================
 
-use core::cell::Cell;
 use zweidraehte_device::storage::{HasSequenceStorage, SequenceNumberStorage};
 
-/// Simple Cell-based sequence number storage for the conformance DUT.
+/// Sequence number storage backed by shared memory.
 ///
-/// Stores counters in process memory. For the conformance harness, sequence
-/// numbers are included in the `SecureConformancePersistedState` which is
-/// serialized to shared memory on restart, so they survive child process
-/// restarts.
-pub struct ConformanceSeqStorage {
-    regular: Cell<[u8; 6]>,
-    tool: Cell<[u8; 6]>,
+/// Reads and writes directly to the `mmap(MAP_SHARED)` region at a fixed
+/// offset. Writes are immediately visible to the parent and survive child
+/// process restarts (the parent holds the memfd).
+///
+/// Layout at `ptr`: `[magic: 4B "SEQ\0"] [regular: 6B] [tool: 6B]`
+pub struct ShmSeqStorage {
+    ptr: *mut u8,
 }
 
-impl ConformanceSeqStorage {
-    pub fn new() -> Self {
-        Self { regular: Cell::new([0, 0, 0, 0, 0, 1]), tool: Cell::new([0, 0, 0, 0, 0, 1]) }
+const SEQ_MAGIC: [u8; 4] = *b"SEQ\0";
+
+// SAFETY: The embassy executor is single-threaded — no concurrent access.
+unsafe impl Send for ShmSeqStorage {}
+unsafe impl Sync for ShmSeqStorage {}
+
+impl ShmSeqStorage {
+    /// Create from a raw pointer to the 16-byte seq region in shared memory.
+    ///
+    /// # Safety
+    /// `ptr` must be valid for the lifetime of this storage and point to
+    /// at least 16 writable bytes in a `MAP_SHARED` region.
+    pub unsafe fn from_ptr(ptr: *mut u8) -> Self {
+        Self { ptr }
+    }
+
+    fn has_magic(&self) -> bool {
+        let mut magic = [0u8; 4];
+        unsafe { core::ptr::copy_nonoverlapping(self.ptr, magic.as_mut_ptr(), 4) };
+        magic == SEQ_MAGIC
+    }
+
+    fn write_magic(&mut self) {
+        unsafe { core::ptr::copy_nonoverlapping(SEQ_MAGIC.as_ptr(), self.ptr, 4) };
     }
 }
 
-impl SequenceNumberStorage for ConformanceSeqStorage {
+impl SequenceNumberStorage for ShmSeqStorage {
     type Error = core::convert::Infallible;
 
     fn load_sending_seqs(&self) -> Result<([u8; 6], [u8; 6]), Self::Error> {
-        Ok((self.regular.get(), self.tool.get()))
+        if !self.has_magic() {
+            return Ok(([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]));
+        }
+        let mut regular = [0u8; 6];
+        let mut tool = [0u8; 6];
+        unsafe {
+            core::ptr::copy_nonoverlapping(self.ptr.add(4), regular.as_mut_ptr(), 6);
+            core::ptr::copy_nonoverlapping(self.ptr.add(10), tool.as_mut_ptr(), 6);
+        }
+        Ok((regular, tool))
     }
 
     fn save_sending_seqs(&mut self, regular: &[u8; 6], tool: &[u8; 6]) -> Result<(), Self::Error> {
-        self.regular.set(*regular);
-        self.tool.set(*tool);
+        self.write_magic();
+        unsafe {
+            core::ptr::copy_nonoverlapping(regular.as_ptr(), self.ptr.add(4), 6);
+            core::ptr::copy_nonoverlapping(tool.as_ptr(), self.ptr.add(10), 6);
+        }
         Ok(())
     }
 
     fn load_receiving_seq(&self, _peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error> {
-        // TODO: implement peer sequence tracking when needed
+        // TODO: implement peer sequence tracking when needed.
         Ok(None)
     }
 
@@ -528,12 +560,23 @@ impl SequenceNumberStorage for ConformanceSeqStorage {
     }
 }
 
+/// Static pointer to the seq region in shared memory.
+/// Set by `dut_secure.rs` before stack creation.
+static SEQ_PTR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
 impl HasSequenceStorage for IpcSecureConformanceTestStack {
-    type SeqStorage = ConformanceSeqStorage;
+    type SeqStorage = ShmSeqStorage;
 
     fn create_seq_storage() -> Self::SeqStorage {
-        ConformanceSeqStorage::new()
+        let ptr = *SEQ_PTR.get().expect("set_seq_shm_ptr() must be called before stack creation");
+        unsafe { ShmSeqStorage::from_ptr(ptr as *mut u8) }
     }
+}
+
+/// Set the shared memory seq pointer. Must be called once before the
+/// stack is created.
+pub fn set_seq_shm_ptr(ptr: *mut u8) {
+    SEQ_PTR.set(ptr as usize).expect("SEQ_PTR already set");
 }
 
 // ============================================================================

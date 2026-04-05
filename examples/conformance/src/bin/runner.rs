@@ -698,10 +698,9 @@ async fn main(_spawner: embassy_executor::Spawner) {
             }
 
             if suite.use_secure_dut {
-                harness.spawn_secure_child().await.expect("spawn secure DUT child");
-            } else {
-                harness.spawn_child().await.expect("spawn DUT child");
+                harness.use_secure_dut();
             }
+            harness.spawn_child().await.expect("spawn DUT child");
             current_dut_is_secure = suite.use_secure_dut;
 
             // Drain ROI messages from the new DUT.

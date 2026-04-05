@@ -54,6 +54,8 @@ enum ChildState {
 pub struct MultiProcessHarness {
     shm: SharedMemory,
     child: ChildState,
+    /// Which DUT binary to spawn (and respawn after restart).
+    dut_binary: &'static str,
 }
 
 impl MultiProcessHarness {
@@ -84,17 +86,17 @@ impl MultiProcessHarness {
         let snapshot = state.to_persisted_snapshot();
         shm.write_state(&snapshot)?;
 
-        Ok(Self { shm, child: ChildState::Dead })
+        Ok(Self { shm, child: ChildState::Dead, dut_binary: "conformance-dut" })
     }
 
-    /// Spawn the default (non-secure) DUT child process.
+    /// Spawn the DUT child process (uses whichever binary was configured).
     pub async fn spawn_child(&mut self) -> io::Result<()> {
-        self.spawn_child_binary("conformance-dut").await
+        self.spawn_child_binary(self.dut_binary).await
     }
 
-    /// Spawn the secure DUT child process (KNX Data Secure enabled).
-    pub async fn spawn_secure_child(&mut self) -> io::Result<()> {
-        self.spawn_child_binary("conformance-dut-secure").await
+    /// Set the DUT binary to the secure variant for subsequent spawns.
+    pub fn use_secure_dut(&mut self) {
+        self.dut_binary = "conformance-dut-secure";
     }
 
     /// Spawn a DUT child process with the given binary name.

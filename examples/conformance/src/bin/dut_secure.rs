@@ -241,6 +241,12 @@ async fn main(spawner: Spawner) {
 
     let state = SecureConformanceState::from_persisted_snapshot(snapshot);
 
+    // Set the shared memory pointer for sequence number persistence.
+    // Sequence numbers are stored at the end of the shared memory region
+    // and written directly on every outgoing secure frame. This ensures
+    // they survive child process restarts.
+    zweidraehte_conformance::harness::secure_stack::set_seq_shm_ptr(shm.seq_region_ptr());
+
     let shm = SHM.init(ShmCell(UnsafeCell::new(shm)));
 
     let buffers = INJECTION_BUFFERS.init([[0u8; device_info::BUFFER_SIZE]; 16]);
