@@ -381,13 +381,28 @@ impl<'a, S: StackState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P:
                 if req.data.is_empty() {
                     return Some(Err(PropertyError::BufferTooSmall));
                 }
-                match LoadState::try_from(req.data[0]) {
-                    Ok(load_state) => {
-                        self.state.set_load_state(load_state);
-                        Ok(WriteResponse::Echo)
-                    }
-                    Err(_) => Err(PropertyError::InvalidLoadState),
-                }
+                // Interpret byte 0 as a load event and apply the standard
+                // Realisation Type 1 state machine (spec 03/05/01 §4.23.2).
+                use crate::objects::tables::LoadEvent;
+                let event = LoadEvent::from(req.data[0]);
+                let cur = self.state.load_state();
+                let new_state = match event {
+                    LoadEvent::NoOp => cur,
+                    LoadEvent::StartLoading => match cur {
+                        LoadState::Err => cur,
+                        _ => LoadState::Loading,
+                    },
+                    LoadEvent::LoadCompleted => match cur {
+                        LoadState::Loading => LoadState::Loaded,
+                        _ => cur,
+                    },
+                    LoadEvent::Unload => LoadState::Unloaded,
+                    // AdditionalLoadControls and unknown events: no state change.
+                    _ => cur,
+                };
+                self.state.set_load_state(new_state);
+                // Return the new state in the response (echo format).
+                Ok(WriteResponse::byte(new_state.into()))
             }
             pid::SECURITY_MODE => {
                 if req.data.is_empty() {

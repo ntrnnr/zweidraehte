@@ -188,6 +188,18 @@ where
         let received_mac = secure_ref.mac();
         let ctx = secure_ref.ccm_context(src);
 
+        // Per KNX spec 03/05/01 §6.3.6-8: if the Security IO load state
+        // is not "Loaded", security tables (P2P keys, group keys, SIAT) must
+        // not be evaluated. Tool Key is independent of load state.
+        if !scf.tool_access {
+            use crate::objects::tables::LoadState;
+            if security_state.security_load_state() != LoadState::Loaded {
+                warn!("S-AL: security tables not loaded (state={:?}), dropping non-tool frame",
+                      security_state.security_load_state());
+                return None;
+            }
+        }
+
         // Look up key based on access type.
         let key = if scf.tool_access {
             // Tool access: use configured tool key, or FDSK as fallback

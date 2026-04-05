@@ -515,6 +515,13 @@ pub trait HasSecurityState {
     /// Whether the device's Security Mode is currently enabled.
     fn security_mode_enabled(&self) -> bool;
 
+    /// Current load state of the Security Interface Object.
+    ///
+    /// Per KNX spec 03/05/01 §6.3.4: security tables (P2P keys, group
+    /// keys, SIAT) are only evaluated by the S-AL when this is `Loaded`.
+    /// Tool Key and Security Mode are independent of load state.
+    fn security_load_state(&self) -> crate::objects::tables::LoadState;
+
     /// Get the 16-byte tool key.
     fn tool_key(&self) -> [u8; 16];
 
@@ -541,6 +548,10 @@ pub trait HasSecurityState {
 impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState for SecurityState<GRP, P2P, GO> {
     fn security_mode_enabled(&self) -> bool {
         self.security_mode_enabled()
+    }
+
+    fn security_load_state(&self) -> LoadState {
+        self.load_state()
     }
 
     fn tool_key(&self) -> [u8; 16] {
@@ -668,6 +679,10 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: u
 {
     fn security_mode_enabled(&self) -> bool {
         self.security.security_mode_enabled()
+    }
+
+    fn security_load_state(&self) -> LoadState {
+        self.security.load_state()
     }
 
     fn tool_key(&self) -> [u8; 16] {
