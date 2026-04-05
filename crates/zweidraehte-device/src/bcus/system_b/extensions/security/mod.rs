@@ -50,11 +50,19 @@ use crate::objects::tables::LoadState;
 ///
 /// Written by ETS during configuration (via the load state machine),
 /// read by the S-AL at runtime for key lookup and GO flag checks.
-#[derive(Clone)]
+#[serde_with::serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityTable<const N: usize, const ENTRY_SIZE: usize> {
     /// Entry data. Only entries `0..count` are valid.
+    #[serde_as(as = "[[_; ENTRY_SIZE]; N]")]
     pub(crate) data: [[u8; ENTRY_SIZE]; N],
     count: u16,
+}
+
+impl<const N: usize, const ENTRY_SIZE: usize> Default for SecurityTable<N, ENTRY_SIZE> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
@@ -164,18 +172,16 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
 
 /// Persisted security extension configuration.
 ///
-/// Contains scalar fields and the security failures log.
-/// Security table data (group keys, GO flags) is loaded by ETS through
-/// property writes during the configuration phase and is NOT persisted
-/// in this config. After a power cycle, the load state will be
-/// `Unloaded` and ETS must reload the tables.
+/// Contains scalar fields, security tables (P2P keys, group keys, GO
+/// flags), and the security failures log. Tables persist across
+/// Confirmed and Basic restarts per spec (03/05/01 §6.3.6-§6.3.15).
 ///
 /// Sequence numbers are stored separately via [`SequenceNumberStorage`]
 /// due to their high write frequency.
 ///
 /// [`SequenceNumberStorage`]: crate::storage::SequenceNumberStorage
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecurityExtensionConfig {
+pub struct SecurityExtensionConfig<const GRP: usize, const P2P: usize, const GO: usize> {
     #[serde(default)]
     pub security_mode_enabled: bool,
     #[serde(default = "default_tool_key")]
@@ -186,6 +192,15 @@ pub struct SecurityExtensionConfig {
     /// be saved at power-down and restored at power-up.
     #[serde(default)]
     pub failures_log: SecurityFailuresLog,
+    /// Group key table: GA_Index(2) + Key(16) = 18 bytes per entry.
+    #[serde(default)]
+    pub grp_keys: SecurityTable<GRP, 18>,
+    /// P2P key table: IA_Index(2) + Key(16) + Roles(2) = 20 bytes per entry.
+    #[serde(default)]
+    pub p2p_keys: SecurityTable<P2P, 20>,
+    /// GO security flags: 1 byte per group object.
+    #[serde(default)]
+    pub go_flags: SecurityTable<GO, 1>,
 }
 
 fn default_tool_key() -> [u8; 16] {
@@ -196,18 +211,21 @@ fn default_load_state() -> LoadState {
     LoadState::Unloaded
 }
 
-impl Default for SecurityExtensionConfig {
+impl<const GRP: usize, const P2P: usize, const GO: usize> Default for SecurityExtensionConfig<GRP, P2P, GO> {
     fn default() -> Self {
         Self {
             security_mode_enabled: false,
             tool_key: [0u8; 16],
             load_state: LoadState::Unloaded,
             failures_log: SecurityFailuresLog::default(),
+            grp_keys: SecurityTable::new(),
+            p2p_keys: SecurityTable::new(),
+            go_flags: SecurityTable::new(),
         }
     }
 }
 
-impl ExtensionConfig for SecurityExtensionConfig {}
+impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionConfig for SecurityExtensionConfig<GRP, P2P, GO> {}
 
 // ============================================================================
 // Runtime State
@@ -523,29 +541,31 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState for S
 }
 
 impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for SecurityState<GRP, P2P, GO> {
-    type Config = SecurityExtensionConfig;
+    type Config = SecurityExtensionConfig<GRP, P2P, GO>;
 
-    fn from_config(config: SecurityExtensionConfig) -> Self {
+    fn from_config(config: SecurityExtensionConfig<GRP, P2P, GO>) -> Self {
         Self {
             security_mode_enabled: Cell::new(config.security_mode_enabled),
             tool_key: Cell::new(config.tool_key),
             load_state: Cell::new(config.load_state),
-            // Tables start empty — ETS reloads them via property writes.
-            grp_keys: RefCell::new(SecurityTable::new()),
-            p2p_keys: RefCell::new(SecurityTable::new()),
-            go_flags: RefCell::new(SecurityTable::new()),
+            grp_keys: RefCell::new(config.grp_keys),
+            p2p_keys: RefCell::new(config.p2p_keys),
+            go_flags: RefCell::new(config.go_flags),
             failures_log: RefCell::new(config.failures_log),
             security_report: Cell::new(0),
             security_report_enabled: Cell::new(false),
         }
     }
 
-    fn to_config(&self) -> SecurityExtensionConfig {
+    fn to_config(&self) -> SecurityExtensionConfig<GRP, P2P, GO> {
         SecurityExtensionConfig {
             security_mode_enabled: self.security_mode_enabled.get(),
             tool_key: self.tool_key.get(),
             load_state: self.load_state.get(),
             failures_log: self.failures_log.borrow().clone(),
+            grp_keys: self.grp_keys.borrow().clone(),
+            p2p_keys: self.p2p_keys.borrow().clone(),
+            go_flags: self.go_flags.borrow().clone(),
         }
     }
 
@@ -630,25 +650,30 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
 /// Persisted config for the composed extension.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "InnerConfig: Serialize", deserialize = "InnerConfig: serde::de::DeserializeOwned"))]
-pub struct SecureExtensionConfig<InnerConfig: ExtensionConfig> {
+pub struct SecureExtensionConfig<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO: usize> {
     /// Medium-specific persisted config.
     pub inner: InnerConfig,
     /// Security persisted config.
-    pub security: SecurityExtensionConfig,
+    pub security: SecurityExtensionConfig<GRP, P2P, GO>,
 }
 
-impl<InnerConfig: ExtensionConfig> Default for SecureExtensionConfig<InnerConfig> {
+impl<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO: usize> Default
+    for SecureExtensionConfig<InnerConfig, GRP, P2P, GO>
+{
     fn default() -> Self {
         Self { inner: InnerConfig::default(), security: SecurityExtensionConfig::default() }
     }
 }
 
-impl<InnerConfig: ExtensionConfig> ExtensionConfig for SecureExtensionConfig<InnerConfig> {}
+impl<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO: usize> ExtensionConfig
+    for SecureExtensionConfig<InnerConfig, GRP, P2P, GO>
+{
+}
 
 impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> ExtensionState
     for SecureExtensionState<Inner, GRP, P2P, GO>
 {
-    type Config = SecureExtensionConfig<Inner::Config>;
+    type Config = SecureExtensionConfig<Inner::Config, GRP, P2P, GO>;
 
     fn from_config(config: Self::Config) -> Self {
         Self { inner: Inner::from_config(config.inner), security: SecurityState::from_config(config.security) }

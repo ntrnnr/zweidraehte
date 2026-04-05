@@ -592,7 +592,7 @@ type SecureInnerPersistedState = PersistedState<
     { table_sizes::AST },
     { table_sizes::COT },
     TestParameters,
-    SecureExtensionConfig<Tp1ExtensionConfig>,
+    SecureExtensionConfig<Tp1ExtensionConfig, { table_sizes::ADT }, { sec_table_sizes::P2P }, { table_sizes::COT }>,
 >;
 
 /// Full snapshot for the secure conformance DUT.

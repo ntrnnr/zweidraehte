@@ -181,10 +181,10 @@ pub fn create_section_3_8_9_suite() -> TestSuite {
             test_3_8_9_2(),
             test_3_8_9_3(),
             test_3_8_9_4(),
-            // TODO: 3.8.9.5 — P2P key table (and other security tables) are
-            // not persisted across restarts. SecurityExtensionConfig only saves
-            // scalar fields; table data is wiped on from_config(). Need to
-            // persist tables for restart tests to pass.
+            // TODO: 3.8.9.5 — tables persist in config but the runtime state
+            // shows count=0 at restart time. The write succeeds during the test
+            // but the data is lost by the time the restart handler runs.
+            // Needs investigation.
         ])
 }
 
@@ -391,7 +391,7 @@ fn test_3_8_9_4() -> TestCase {
 // Phase A: Confirmed Restart (erase code 0x01) — table unchanged
 // Phase B: Basic Restart — table unchanged
 
-#[allow(dead_code)] // Blocked on security table persistence.
+#[allow(dead_code)]
 fn test_3_8_9_5() -> TestCase {
     // Connection-oriented A_Restart: master reset (restart_type=1).
     // TPCI = 0x43 (numbered seq 0 + APCI high 0x03), APCI = 0x81 01 00
@@ -428,8 +428,8 @@ fn test_3_8_9_5() -> TestCase {
         comment("T_Disconnect"),
         inject("B0 #EDI #BDUT_ADDR 60 81"),
 
-        comment("Wait for DUT to restart"),
-        wait_for_restart(50000),
+        comment("Wait for DUT to restart (auto-respawn on broken pipe)"),
+        wait(500),
 
         comment("Read P2P key table entry → unchanged after confirmed restart"),
         inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
@@ -449,8 +449,8 @@ fn test_3_8_9_5() -> TestCase {
         comment("Expect T_ACK"),
         expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
 
-        comment("Wait for DUT to restart"),
-        wait_for_restart(50000),
+        comment("Wait for DUT to restart (auto-respawn on broken pipe)"),
+        wait(500),
 
         comment("Read P2P key table entry → unchanged after basic restart"),
         inject_secure_ac(SECURE_READ_ENTRY, "TK1"),

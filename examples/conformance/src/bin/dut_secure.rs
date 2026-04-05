@@ -121,7 +121,6 @@ async fn handle_restarts(stack: Stack<'static, IpcSecureConformanceTestStack>, s
             log::error!("Failed to flush state to shared memory: {}", e);
         }
 
-        log::info!("Restart: flushed state to shm, exiting");
         std::process::exit(0);
     }
 }
