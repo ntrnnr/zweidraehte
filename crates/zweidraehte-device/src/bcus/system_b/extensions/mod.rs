@@ -18,7 +18,7 @@ pub mod security;
 pub use security::{
     HasSecurityState, HasSeqStorage, SecureExtensionConfig, SecureExtensionState, SecureTp1DeviceState,
     SecureTp1ExtensionState, SecurityAugment, SecurityExtensionConfig, SecurityFailureType, SecurityFailuresLog,
-    SecurityState,
+    SecurityState, SecurityTable,
 };
 #[cfg(feature = "knxip")]
 pub use security::{SecureIpDeviceState, SecureIpExtensionState};

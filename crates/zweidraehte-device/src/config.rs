@@ -56,6 +56,45 @@ pub const WE: u8 = ComObjectFlags::WE_FLAG_MASK; // Write Enable
 pub const RE: u8 = ComObjectFlags::RE_FLAG_MASK; // Read Enable
 pub const CE: u8 = ComObjectFlags::CE_FLAG_MASK; // Communication Enable
 
+/// Parse a space-separated hex string into a fixed-size byte array at
+/// compile time. Used by `knx_stack_config!` to parse security keys.
+///
+/// Example: `parse_hex_key::<16>("00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F")`
+pub const fn parse_hex_key<const N: usize>(s: &str) -> [u8; N] {
+    let bytes = s.as_bytes();
+    let mut result = [0u8; N];
+    let mut ri = 0; // result index
+    let mut i = 0; // string index
+
+    while i < bytes.len() {
+        // Skip spaces.
+        if bytes[i] == b' ' {
+            i += 1;
+            continue;
+        }
+
+        // Parse two hex digits.
+        let hi = const_hex_digit(bytes[i]);
+        let lo = const_hex_digit(bytes[i + 1]);
+        assert!(ri < N, "hex string has more bytes than expected");
+        result[ri] = (hi << 4) | lo;
+        ri += 1;
+        i += 2;
+    }
+
+    assert!(ri == N, "hex string has fewer bytes than expected");
+    result
+}
+
+const fn const_hex_digit(b: u8) -> u8 {
+    match b {
+        b'0'..=b'9' => b - b'0',
+        b'a'..=b'f' => b - b'a' + 10,
+        b'A'..=b'F' => b - b'A' + 10,
+        _ => panic!("invalid hex digit"),
+    }
+}
+
 /// Macro to define a complete KNX stack configuration
 ///
 /// This generates const-compatible data structures for all KNX tables
@@ -276,6 +315,115 @@ macro_rules! knx_stack_config {
                 let co_tab = Table::with_data(CONFIG.co7_data(), cot_address);
 
                 (addr_tab, asso_tab, co_tab)
+            }
+        }
+    };
+
+    // ====================================================================
+    // Security-extended arm: base tables + security configuration
+    // ====================================================================
+    (
+        name: $name:ident,
+        individual_address: $addr:expr,
+
+        group_addresses: {
+            $($tsap:expr => $group_addr:expr),* $(,)?
+        },
+
+        comm_objects: {
+            $($asap:expr => ($size:expr, $flags:expr $(, @priority($prio:ident))?)),* $(,)?
+        },
+
+        associations: {
+            $($assoc_tsap:expr => [$($assoc_asap:expr),* $(,)?]),* $(,)?
+        },
+
+        security: {
+            p2p_key_capacity: $p2p_cap:expr,
+            tool_key: $tool_key_hex:expr,
+
+            group_keys: {
+                $($gk_tsap:expr => $gk_hex:expr),* $(,)?
+            },
+
+            go_flags: {
+                $($gf_co:expr => $gf_val:expr),* $(,)?
+            } $(,)?
+        } $(,)?
+    ) => {
+        // Generate the base tables by invoking the non-security arm.
+        $crate::knx_stack_config! {
+            name: $name,
+            individual_address: $addr,
+            group_addresses: { $($tsap => $group_addr),* },
+            comm_objects: { $($asap => ($size, $flags $(, @priority($prio))?)),* },
+            associations: { $($assoc_tsap => [$($assoc_asap),*]),* },
+        }
+
+        // Add security-specific constants and methods.
+        impl $name {
+            /// Max P2P key entries (independent of table sizes).
+            pub const P2P_CAPACITY: usize = $p2p_cap;
+
+            /// Number of pre-configured group key entries.
+            pub const NUM_GROUP_KEYS: usize = $crate::knx_stack_config!(@count $($gk_tsap)*);
+
+            /// Number of pre-configured GO security flag entries.
+            pub const NUM_GO_FLAGS: usize = $crate::knx_stack_config!(@count $($gf_co)*);
+
+            /// Create a pre-populated security extension config.
+            ///
+            /// Group keys and GO flags are built at compile time from the
+            /// `security` block in `knx_stack_config!`.
+            pub fn create_security_config() -> $crate::bcus::system_b::SecurityExtensionConfig<
+                { Self::ADDR7_SIZE },
+                { Self::P2P_CAPACITY },
+                { Self::CO7_SIZE },
+            > {
+                use $crate::bcus::system_b::{SecurityExtensionConfig, SecurityTable};
+
+                let tool_key = $crate::config::parse_hex_key::<16>($tool_key_hex);
+
+                // Build group key table: each entry is 18 bytes (2-byte TSAP + 16-byte key).
+                let mut grp_data = [[0u8; 18]; Self::ADDR7_SIZE];
+                let mut _gk_idx = 0usize;
+                $(
+                    {
+                        let tsap_bytes = ($gk_tsap as u16).to_be_bytes();
+                        let key = $crate::config::parse_hex_key::<16>($gk_hex);
+                        grp_data[_gk_idx][0] = tsap_bytes[0];
+                        grp_data[_gk_idx][1] = tsap_bytes[1];
+                        let mut ki = 0;
+                        while ki < 16 {
+                            grp_data[_gk_idx][2 + ki] = key[ki];
+                            ki += 1;
+                        }
+                        _gk_idx += 1;
+                    }
+                )*
+                let grp_keys = SecurityTable::from_entries(grp_data, _gk_idx as u16);
+
+                // Build GO security flags table: each entry is 1 byte.
+                let mut go_data = [[0u8; 1]; Self::CO7_SIZE];
+                $(
+                    // CO indices are 1-based in the config but 0-based in the table.
+                    go_data[$gf_co - 1] = [$gf_val];
+                )*
+                // Count of populated entries = max CO index used.
+                // The GO flags table count should equal the number of comm objects
+                // so that all GOs have an entry (defaulting to 0x00 = plain).
+                let go_flags = SecurityTable::from_entries(go_data, Self::NUM_COMM_OBJECTS as u16);
+
+                SecurityExtensionConfig {
+                    security_mode_enabled: false,
+                    tool_key,
+                    load_state: $crate::objects::tables::LoadState::Unloaded,
+                    failures_log: Default::default(),
+                    grp_keys,
+                    p2p_keys: SecurityTable::new(),
+                    siat: SecurityTable::new(),
+                    go_flags,
+                }
             }
         }
     };

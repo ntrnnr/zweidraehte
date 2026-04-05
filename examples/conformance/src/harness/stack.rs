@@ -513,6 +513,25 @@ pub(crate) mod conformance_config {
             14 => [13],  // TSAP 14 (4/4/4) → CO 13 (GO_SEC_1, security test transmit)
             15 => [11],  // TSAP 15 (5/5/5) → CO 11 (GO6, transport + security GO_SEC_2)
         },
+
+        // Security configuration for Data Secure conformance tests.
+        security: {
+            p2p_key_capacity: 8,
+            tool_key: "00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F",
+
+            // Group keys: TSAP → 16-byte key.
+            // Sorted by TSAP for binary search in the S-AL.
+            group_keys: {
+                2  => "20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F",  // TSAP 2  (1/1/1) → GK1
+                12 => "30 31 32 33 34 35 36 37 38 39 3A 3B 3C 3D 3E 3F",  // TSAP 12 (2/2/2) → GK2
+                13 => "40 41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E 4F",  // TSAP 13 (3/3/3) → GK3
+                14 => "50 51 52 53 54 55 56 57 58 59 5A 5B 5C 5D 5E 5F",  // TSAP 14 (4/4/4) → GK4
+            },
+
+            // GO security flags are written dynamically by the test,
+            // so we start with all zeros (plain).
+            go_flags: {},
+        },
     }
 }
 

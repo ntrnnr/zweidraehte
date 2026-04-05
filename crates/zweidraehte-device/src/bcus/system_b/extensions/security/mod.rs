@@ -72,6 +72,14 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
         Self { data: [[0u8; ENTRY_SIZE]; N], count: 0 }
     }
 
+    /// Create a table from pre-built entry data and a count.
+    ///
+    /// Useful for compile-time construction in `knx_stack_config!`.
+    /// Entries `0..count` are considered valid; the rest are zero-filled.
+    pub const fn from_entries(data: [[u8; ENTRY_SIZE]; N], count: u16) -> Self {
+        Self { data, count }
+    }
+
     /// Current number of entries.
     pub fn count(&self) -> u16 {
         self.count
