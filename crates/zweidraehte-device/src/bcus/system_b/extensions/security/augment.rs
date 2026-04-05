@@ -4,6 +4,8 @@
 //! augment-provided object. This adds one additional object to the
 //! device's IO list without modifying the base System B objects.
 
+use core::cell::RefCell;
+
 use super::SecurityTable;
 use crate::StackState;
 use crate::access::AccessPolicy;
@@ -18,6 +20,7 @@ use crate::objects::interface::{
 };
 use crate::objects::tables::LoadState;
 use crate::properties::PropertyRead;
+use crate::storage::SequenceNumberStorage;
 
 use super::SecurityState;
 
@@ -32,14 +35,18 @@ use super::SecurityState;
 /// all Security IO PIDs. In Phase 1, only PIDs 1 (OBJECT_TYPE),
 /// 5 (LOAD_STATE_CONTROL), and 51 (SECURITY_MODE) are functional.
 /// Remaining PIDs return `InvalidPropertyId` until Phase 2+.
-pub struct SecurityAugment<'a, const GRP: usize, const P2P: usize, const GO: usize> {
+pub struct SecurityAugment<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize> {
     state: &'a SecurityState<GRP, P2P, GO>,
+    seq_storage: &'a RefCell<SEQ>,
 }
 
-impl<'a, const GRP: usize, const P2P: usize, const GO: usize> SecurityAugment<'a, GRP, P2P, GO> {
-    /// Create a new security augment backed by the given state.
-    pub fn new(state: &'a SecurityState<GRP, P2P, GO>) -> Self {
-        Self { state }
+impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize>
+    SecurityAugment<'a, SEQ, GRP, P2P, GO>
+{
+    /// Create a new security augment backed by the given state and
+    /// sequence number storage.
+    pub fn new(state: &'a SecurityState<GRP, P2P, GO>, seq_storage: &'a RefCell<SEQ>) -> Self {
+        Self { state, seq_storage }
     }
 
     /// Property descriptor table for the Security Interface Object.
@@ -187,8 +194,8 @@ impl<'a, const GRP: usize, const P2P: usize, const GO: usize> SecurityAugment<'a
     }
 }
 
-impl<'a, S: StackState, const GRP: usize, const P2P: usize, const GO: usize> InterfaceObjectAugment<S>
-    for SecurityAugment<'a, GRP, P2P, GO>
+impl<'a, S: StackState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize>
+    InterfaceObjectAugment<S> for SecurityAugment<'a, SEQ, GRP, P2P, GO>
 {
     fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
         if object_type != InterfaceObjectType::Security {
@@ -296,9 +303,26 @@ impl<'a, S: StackState, const GRP: usize, const P2P: usize, const GO: usize> Int
             }
             // ---- Write-only: Tool Key (PID 56) ----
             pid::TOOL_KEY => Err(PropertyError::ReadNotAllowed),
-            // ---- Sequence Number Sending (PID 59) ----
-            // TODO: delegate to SequenceNumberStorage in Phase 4
-            pid::SEQUENCE_NUMBER_SENDING => Err(PropertyError::InvalidPropertyId),
+            // ---- Sequence Number Sending (PID 59): 6-byte tool counter ----
+            pid::SEQUENCE_NUMBER_SENDING => {
+                if req.start_idx == 0 {
+                    // Element count: always 1 (single-element property).
+                    buf[0..2].copy_from_slice(&1u16.to_be_bytes());
+                    Ok(2)
+                } else {
+                    if buf.len() < 6 {
+                        return Some(Err(PropertyError::BufferTooSmall));
+                    }
+                    // PID 59 returns the tool-access sending counter (access
+                    // policy 00C/00C means only tool access reads it).
+                    let storage = self.seq_storage.borrow();
+                    let Ok((_regular, tool)) = storage.load_sending_seqs() else {
+                        return Some(Err(PropertyError::InvalidPropertyId));
+                    };
+                    buf[..6].copy_from_slice(&tool);
+                    Ok(6)
+                }
+            }
             // ---- Security Report (PID 57) — PDT_BITSET8 (1 byte) ----
             // Returns the current security status as a bitfield.
             // TODO: Implement actual security report bits per spec.
@@ -383,9 +407,30 @@ impl<'a, S: StackState, const GRP: usize, const P2P: usize, const GO: usize> Int
                 self.state.set_tool_key(key);
                 Ok(WriteResponse::Echo)
             }
-            // ---- Sequence Number Sending (PID 59) ----
-            // TODO: delegate to SequenceNumberStorage in Phase 4
-            pid::SEQUENCE_NUMBER_SENDING => Err(PropertyError::InvalidPropertyId),
+            // ---- Sequence Number Sending (PID 59): write tool counter ----
+            pid::SEQUENCE_NUMBER_SENDING => {
+                if req.start_idx == 0 {
+                    // Element count write — single-element property, nothing to do.
+                    Ok(WriteResponse::Echo)
+                } else {
+                    if req.data.len() < 6 {
+                        return Some(Err(PropertyError::BufferTooSmall));
+                    }
+                    let mut tool = [0u8; 6];
+                    tool.copy_from_slice(&req.data[..6]);
+                    // Per KNX spec, the sequence number must not be set to 0.
+                    if tool == [0u8; 6] {
+                        return Some(Err(PropertyError::ValueOutOfRange));
+                    }
+                    // Write the new tool counter; preserve the regular counter.
+                    let mut storage = self.seq_storage.borrow_mut();
+                    let regular = storage.load_sending_seqs()
+                        .map(|(r, _)| r)
+                        .unwrap_or([0, 0, 0, 0, 0, 1]);
+                    let _ = storage.save_sending_seqs(&regular, &tool);
+                    Ok(WriteResponse::Echo)
+                }
+            }
             // ---- Security Report (PID 57): writable to clear report flags ----
             pid::SECURITY_REPORT => {
                 if req.data.is_empty() {
@@ -501,7 +546,9 @@ impl<'a, S: StackState, const GRP: usize, const P2P: usize, const GO: usize> Int
 // Private Helpers
 // ============================================================================
 
-impl<'a, const GRP: usize, const P2P: usize, const GO: usize> SecurityAugment<'a, GRP, P2P, GO> {
+impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize>
+    SecurityAugment<'a, SEQ, GRP, P2P, GO>
+{
     /// Handle PID_SECURITY_MODE FunctionPropertyCommand.
     ///
     /// ServiceID 0x00: Write Security Mode.
@@ -615,14 +662,37 @@ mod tests {
         }
     }
 
+    /// No-op sequence number storage for unit tests.
+    struct NullSeqStorage;
+    impl SequenceNumberStorage for NullSeqStorage {
+        type Error = ();
+        fn load_sending_seqs(&self) -> Result<([u8; 6], [u8; 6]), ()> {
+            Ok(([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]))
+        }
+        fn save_sending_seqs(&mut self, _regular: &[u8; 6], _tool: &[u8; 6]) -> Result<(), ()> {
+            Ok(())
+        }
+        fn load_receiving_seq(&self, _peer_ia: u16) -> Result<Option<[u8; 6]>, ()> {
+            Ok(None)
+        }
+        fn save_receiving_seq(&mut self, _peer_ia: u16, _seq: &[u8; 6]) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+
     fn make_state() -> SecurityState<64, 8, 32> {
         SecurityState::from_config(SecurityExtensionConfig::default())
+    }
+
+    fn make_seq_storage() -> RefCell<NullSeqStorage> {
+        RefCell::new(NullSeqStorage)
     }
 
     #[test]
     fn augment_reports_one_additional_object() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 8, 32>::new(&state);
+        let seq_storage = make_seq_storage();
+        let augment = SecurityAugment::<NullSeqStorage, 64, 8, 32>::new(&state, &seq_storage);
         let mock = MockState;
 
         assert_eq!(InterfaceObjectAugment::<MockState>::additional_object_count(&augment), 1);
@@ -637,7 +707,8 @@ mod tests {
     #[test]
     fn read_object_type_returns_security() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 8, 32>::new(&state);
+        let seq_storage = make_seq_storage();
+        let augment = SecurityAugment::<NullSeqStorage, 64, 8, 32>::new(&state, &seq_storage);
         let mock = MockState;
 
         let req = FullPropertyReadRequest {
@@ -665,7 +736,8 @@ mod tests {
     #[test]
     fn write_security_mode_toggles() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 8, 32>::new(&state);
+        let seq_storage = make_seq_storage();
+        let augment = SecurityAugment::<NullSeqStorage, 64, 8, 32>::new(&state, &seq_storage);
         let mock = MockState;
 
         // Write security mode = 1 (enabled)
@@ -698,7 +770,8 @@ mod tests {
     #[test]
     fn ignores_non_security_objects() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 8, 32>::new(&state);
+        let seq_storage = make_seq_storage();
+        let augment = SecurityAugment::<NullSeqStorage, 64, 8, 32>::new(&state, &seq_storage);
         let mock = MockState;
 
         let req = FullPropertyReadRequest {
@@ -754,7 +827,8 @@ mod tests {
     #[test]
     fn grp_key_table_write_and_read() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 8, 32>::new(&state);
+        let seq_storage = make_seq_storage();
+        let augment = SecurityAugment::<NullSeqStorage, 64, 8, 32>::new(&state, &seq_storage);
         let mock = MockState;
 
         // Write one group key entry (18 bytes: GA_index=0x0001 + 16-byte key)
@@ -822,7 +896,8 @@ mod tests {
     #[test]
     fn go_security_flags_write_and_lookup() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 8, 32>::new(&state);
+        let seq_storage = make_seq_storage();
+        let augment = SecurityAugment::<NullSeqStorage, 64, 8, 32>::new(&state, &seq_storage);
         let mock = MockState;
 
         // Write 3 GO flags
@@ -847,7 +922,8 @@ mod tests {
     #[test]
     fn tool_key_is_write_only() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 8, 32>::new(&state);
+        let seq_storage = make_seq_storage();
+        let augment = SecurityAugment::<NullSeqStorage, 64, 8, 32>::new(&state, &seq_storage);
         let mock = MockState;
 
         // Write tool key
@@ -879,7 +955,8 @@ mod tests {
     #[test]
     fn table_write_beyond_capacity_fails() {
         let state: SecurityState<2, 2, 2> = SecurityState::from_config(SecurityExtensionConfig::default());
-        let augment = SecurityAugment::<2, 2, 2>::new(&state);
+        let seq_storage = make_seq_storage();
+        let augment = SecurityAugment::<NullSeqStorage, 2, 2, 2>::new(&state, &seq_storage);
         let mock = MockState;
 
         // Write 3 entries to a table with capacity 2 — should fail.
@@ -898,7 +975,8 @@ mod tests {
     #[test]
     fn read_out_of_range_returns_error() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 8, 32>::new(&state);
+        let seq_storage = make_seq_storage();
+        let augment = SecurityAugment::<NullSeqStorage, 64, 8, 32>::new(&state, &seq_storage);
         let mock = MockState;
 
         // Table is empty (0 entries). Reading at start_idx=1 should fail.
@@ -918,7 +996,8 @@ mod tests {
     #[test]
     fn read_with_small_buffer_returns_error() {
         let state = make_state();
-        let augment = SecurityAugment::<64, 8, 32>::new(&state);
+        let seq_storage = make_seq_storage();
+        let augment = SecurityAugment::<NullSeqStorage, 64, 8, 32>::new(&state, &seq_storage);
         let mock = MockState;
 
         // Write one entry (18 bytes).

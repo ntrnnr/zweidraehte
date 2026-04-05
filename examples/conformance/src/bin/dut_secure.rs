@@ -26,6 +26,7 @@ use zweidraehte_device::messages::buffers::{BufferManager, DynBufferManager};
 use zweidraehte_device::objects::comm::ComObjects;
 use zweidraehte_device::objects::interface::HasDeviceObject;
 use zweidraehte_device::restart::EraseCode;
+use zweidraehte_device::storage::HasSequenceStorage;
 use zweidraehte_device::{Runner, Stack, StackResources};
 
 // ============================================================================
@@ -238,13 +239,11 @@ async fn main(spawner: Spawner) {
         .expect("read shared memory")
         .expect("shared memory uninitialized — parent should have written initial state");
 
-    let state = SecureConformanceState::from_persisted_snapshot(snapshot);
-
-    // Set the shared memory pointer for sequence number persistence.
-    // Sequence numbers are stored at the end of the shared memory region
-    // and written directly on every outgoing secure frame. This ensures
-    // they survive child process restarts.
+    // Create the sequence number storage from the shared memory region,
+    // then pass it to the state constructor so the extension state owns it.
     zweidraehte_conformance::harness::secure_stack::set_seq_shm_ptr(shm.seq_region_ptr());
+    let seq_storage = IpcSecureConformanceTestStack::create_seq_storage();
+    let state = SecureConformanceState::from_persisted_snapshot(snapshot, seq_storage);
 
     let shm = SHM.init(ShmCell(UnsafeCell::new(shm)));
 

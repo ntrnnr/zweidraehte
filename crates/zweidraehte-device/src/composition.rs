@@ -28,6 +28,7 @@ use crate::{
     router::{self, LayerStack},
     storage::HasSequenceStorage,
 };
+use crate::bcus::system_b::{HasExtensionState, HasSeqStorage};
 
 use core::cell::RefCell;
 use embassy_sync::pubsub::PubSubChannel;
@@ -503,7 +504,11 @@ pub type StandardSecureDeviceLayers<'a, D> = SecureDeviceLayers<'a, D, Transport
 
 // Constructors
 
-impl<'a, D: StackDefinition + HasSequenceStorage> SecureDeviceLayers<'a, D, TransportLayer<'a, D>> {
+impl<'a, D: StackDefinition + HasSequenceStorage> SecureDeviceLayers<'a, D, TransportLayer<'a, D>>
+where
+    D::State: crate::bcus::system_b::HasExtensionState,
+    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::bcus::system_b::HasSeqStorage<SeqStorage = D::SeqStorage>,
+{
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
     pub fn standard(ctx: &'a LayerContext<'a, D>) -> Self {
         let network_layer = NetworkLayer::new(ctx.state, ctx.interface_objects);
@@ -520,7 +525,8 @@ impl<'a, D: StackDefinition + HasSequenceStorage> SecureDeviceLayers<'a, D, Tran
             ctx.restart_sender,
         );
 
-        let secure_al = SecureApplicationLayer::new(application_layer, ctx.state, D::create_seq_storage());
+        let seq_storage = ctx.state.extension_state().seq_storage();
+        let secure_al = SecureApplicationLayer::new(application_layer, ctx.state, seq_storage);
 
         let device_model = device_model::SystemBDeviceModel::new(
             ctx.state,
@@ -624,8 +630,8 @@ pub struct SecureDeviceBuilder;
 impl<D: StackDefinition + HasSequenceStorage> LayerStackBuilder<D> for SecureDeviceBuilder
 where
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
-    D::State: crate::bcus::system_b::HasExtensionState,
-    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::bcus::system_b::HasSecurityState,
+    D::State: HasExtensionState,
+    <D::State as HasExtensionState>::ES: crate::bcus::system_b::HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
 {
     type Stack<'a>
         = StandardSecureDeviceLayers<'a, D>

@@ -12,8 +12,7 @@
 //!
 //! Skipped test cases:
 //! - 3.8.15.1 — writes a new sequence number and verifies immediate usage
-//!   in subsequent secure exchanges. Needs precise sequence number tracking.
-//! - 3.8.15.3 — power-down persistence test.
+//!   in subsequent secure exchanges. Needs SyncReq support.
 //! - 3.8.15.6 — overflow check (sequence number at max 0xFFFFFFFFFFFF).
 //! - 3.8.15.7 — master reset tests (complex reset/persistence scenarios).
 
@@ -127,6 +126,7 @@ pub fn create_section_3_8_15_suite() -> TestSuite {
         .secure()
         .with_cases(vec![
             test_3_8_15_2(),
+            test_3_8_15_3(),
             test_3_8_15_4(),
             test_3_8_15_5(),
             test_3_8_15_8(),
@@ -168,6 +168,59 @@ fn test_3_8_15_2() -> TestCase {
         comment("Plain read → E_ACCESS_DENIED"),
         inject(PLAIN_READ),
         expect(PLAIN_READ_DENIED, TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.8.15.3 Secure PropertyValueWrite and Read — verify counter increments
+// ============================================================================
+//
+// Writes a known value to PID_SEQUENCE_NUMBER_SENDING, then reads it back.
+// The read-back value is the written value + 1 because the encrypted
+// write-response consumed one sequence number.
+//
+// Repeated in both sec-mode-on and sec-mode-off phases.
+
+fn test_3_8_15_3() -> TestCase {
+    // Secure A+C write: PID 0x3B, count=1, start=1, data = 00 00 00 00 1F 32.
+    const WRITE_SEQ: &str =
+        "3C 60 #EDI #BDUT_ADDR 0F 01 CE 00 11 00 10 3B 01 00 01 00 00 00 00 1F 32";
+    const WRITE_SEQ_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3B 01 00 01 00";
+
+    // Secure A+C read: PID 0x3B, count=1, start=1.
+    const READ_SEQ: &str =
+        "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3B 01 00 01";
+    // Expected read-back: 00 00 00 00 1F 33 (written value + 1).
+    const READ_SEQ_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 1F 33";
+
+    TestCase::new("3.8.15.3 Secure PropertyValueRead after power down check SeqNb").with_steps(vec![
+        // ==== Security Mode ON ====
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Write sequence number = 0x1F32"),
+        inject_secure_ac(WRITE_SEQ, "TK1"),
+        expect_secure_ac(WRITE_SEQ_OK, "TK1", TIMEOUT),
+
+        comment("Read back → expect 0x1F33 (written + 1, consumed by write response)"),
+        inject_secure_ac(READ_SEQ, "TK1"),
+        expect_secure_ac(READ_SEQ_OK, "TK1", TIMEOUT),
+
+        // ==== Security Mode OFF ====
+        comment("Disable Security Mode"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Write sequence number = 0x1F32 again"),
+        inject_secure_ac(WRITE_SEQ, "TK1"),
+        expect_secure_ac(WRITE_SEQ_OK, "TK1", TIMEOUT),
+
+        comment("Read back → expect 0x1F33 again"),
+        inject_secure_ac(READ_SEQ, "TK1"),
+        expect_secure_ac(READ_SEQ_OK, "TK1", TIMEOUT),
     ])
 }
 

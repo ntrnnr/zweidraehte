@@ -64,6 +64,7 @@ type SecureInnerState = SecureTp1DeviceState<
     { table_sizes::AST },
     { table_sizes::COT },
     TestParameters,
+    ShmSeqStorage,
     { sec_table_sizes::P2P },
 >;
 
@@ -460,7 +461,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type P = TestParameters;
     type CO = super::stack::comm_objs::ConformanceComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
-    type ES = SecureTp1ExtensionState<{ table_sizes::ADT }, { sec_table_sizes::P2P }, { table_sizes::COT }>;
+    type ES = SecureTp1ExtensionState<ShmSeqStorage, { table_sizes::ADT }, { sec_table_sizes::P2P }, { table_sizes::COT }>;
     type State = SecureConformanceState;
     type Mem = ConformanceMemoryMap;
 
@@ -503,6 +504,15 @@ const SEQ_MAGIC: [u8; 4] = *b"SEQ\0";
 // SAFETY: The embassy executor is single-threaded — no concurrent access.
 unsafe impl Send for ShmSeqStorage {}
 unsafe impl Sync for ShmSeqStorage {}
+
+/// Default creates a null-pointer storage that panics on use.
+/// Call `set_seq_storage()` on the extension state to inject the
+/// real storage after `SystemBDeviceState` construction.
+impl Default for ShmSeqStorage {
+    fn default() -> Self {
+        Self { ptr: core::ptr::null_mut() }
+    }
+}
 
 impl ShmSeqStorage {
     /// Create from a raw pointer to the 16-byte seq region in shared memory.
@@ -611,9 +621,10 @@ pub struct SecureConformancePersistedState {
 }
 
 impl SecureConformanceState {
-    pub fn from_persisted_snapshot(snapshot: SecureConformancePersistedState) -> Self {
+    pub fn from_persisted_snapshot(snapshot: SecureConformancePersistedState, seq_storage: ShmSeqStorage) -> Self {
         let identity = StaticIdentity::with_fdsk(SECURE_SERIAL_NUMBER, SECURE_FDSK);
         let inner = SecureInnerState::from_persisted(&identity, snapshot.inner);
+        inner.extension_state().set_seq_storage(seq_storage);
 
         Self {
             inner,

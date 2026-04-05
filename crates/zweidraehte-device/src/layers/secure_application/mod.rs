@@ -77,18 +77,19 @@ pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberSto
     state: &'a D::State,
     /// Security context for encrypting the outgoing response.
     outgoing_ctx: Cell<OutgoingSecurityCtx>,
-    /// Sequence number storage backend (wear-resistant, separate from
-    /// main device config due to high write frequency).
-    seq_storage: RefCell<SEQ>,
+    /// Borrowed reference to the sequence number storage that lives on
+    /// `SecureExtensionState`. Shared with the Security IO augment which
+    /// handles PID 59 (PID_SEQUENCE_NUMBER_SENDING) read/write.
+    seq_storage: &'a RefCell<SEQ>,
 }
 
 impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<'a, D, SEQ> {
-    pub fn new(inner: ApplicationLayer<'a, D>, state: &'a D::State, seq_storage: SEQ) -> Self {
+    pub fn new(inner: ApplicationLayer<'a, D>, state: &'a D::State, seq_storage: &'a RefCell<SEQ>) -> Self {
         Self {
             inner,
             state,
             outgoing_ctx: Cell::new(OutgoingSecurityCtx::default()),
-            seq_storage: RefCell::new(seq_storage),
+            seq_storage,
         }
     }
 

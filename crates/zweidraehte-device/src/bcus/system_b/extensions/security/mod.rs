@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::StackState;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode};
+use crate::storage::SequenceNumberStorage;
 use crate::objects::tables::LoadState;
 
 // ============================================================================
@@ -471,6 +472,17 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
 
 /// Trait for device states that have KNX Data Secure support.
 ///
+/// Provides access to the sending sequence number storage on the
+/// extension state. Used by the S-AL to borrow the `RefCell<SEQ>`
+/// that the augment also reads/writes for PID 59.
+pub trait HasSeqStorage {
+    /// The concrete sequence number storage type.
+    type SeqStorage: SequenceNumberStorage;
+
+    /// Borrow the sequence number storage RefCell.
+    fn seq_storage(&self) -> &RefCell<Self::SeqStorage>;
+}
+
 /// Provides access to security keys and flags without exposing the
 /// const-generic table sizes. The S-AL layer requires this trait on
 /// `D::State` to look up keys for decryption/encryption.
@@ -601,18 +613,35 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode for Se
 /// Devices that don't need Data Secure simply use the inner extension
 /// directly (e.g., `Tp1ExtensionState`). This wrapper is only used
 /// when security is desired.
-pub struct SecureExtensionState<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> {
+pub struct SecureExtensionState<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: usize> {
     /// The medium-specific extension state.
     pub inner: Inner,
     /// The security extension state.
     pub security: SecurityState<GRP, P2P, GO>,
+    /// Sequence number storage for sending counters.
+    ///
+    /// Shared between the Security IO augment (PID 59 read/write) and
+    /// the Secure Application Layer (frame encryption). Wrapped in
+    /// `RefCell` for interior mutability since both read and write
+    /// through shared references.
+    pub seq_storage: RefCell<SEQ>,
 }
 
 /// `SecureExtensionState` delegates `HasSecurityState` to its inner
 /// `SecurityState`, so that `SystemBDeviceState` with a secure extension
 /// can satisfy `HasSecurityState` through `HasExtensionState`.
-impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState
-    for SecureExtensionState<Inner, GRP, P2P, GO>
+impl<Inner: ExtensionState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize> HasSeqStorage
+    for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
+{
+    type SeqStorage = SEQ;
+
+    fn seq_storage(&self) -> &RefCell<SEQ> {
+        &self.seq_storage
+    }
+}
+
+impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState
+    for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
 {
     fn security_mode_enabled(&self) -> bool {
         self.security.security_mode_enabled()
@@ -670,13 +699,30 @@ impl<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO:
 {
 }
 
-impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> ExtensionState
-    for SecureExtensionState<Inner, GRP, P2P, GO>
+impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: usize>
+    SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
+{
+    /// Replace the sequence number storage backend.
+    ///
+    /// Call this after `SystemBDeviceState::new()` or `from_persisted()` to
+    /// inject a platform-specific storage that requires runtime construction
+    /// (e.g., a shared memory pointer or flash handle).
+    pub fn set_seq_storage(&self, storage: SEQ) {
+        *self.seq_storage.borrow_mut() = storage;
+    }
+}
+
+impl<Inner: ExtensionState, SEQ: Default, const GRP: usize, const P2P: usize, const GO: usize> ExtensionState
+    for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
 {
     type Config = SecureExtensionConfig<Inner::Config, GRP, P2P, GO>;
 
     fn from_config(config: Self::Config) -> Self {
-        Self { inner: Inner::from_config(config.inner), security: SecurityState::from_config(config.security) }
+        Self {
+            inner: Inner::from_config(config.inner),
+            security: SecurityState::from_config(config.security),
+            seq_storage: RefCell::new(SEQ::default()),
+        }
     }
 
     fn to_config(&self) -> Self::Config {
@@ -689,8 +735,8 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
     }
 }
 
-impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode
-    for SecureExtensionState<Inner, GRP, P2P, GO>
+impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode
+    for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
 {
     fn security_mode_enabled(&self) -> bool {
         self.security.security_mode_enabled()
@@ -701,13 +747,14 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
 // Extension trait — produces (inner_augment, SecurityAugment) tuple
 // ============================================================================
 
-impl<Inner, Platform, const GRP: usize, const P2P: usize, const GO: usize> Extension<Platform>
-    for SecureExtensionState<Inner, GRP, P2P, GO>
+impl<Inner, Platform, SEQ, const GRP: usize, const P2P: usize, const GO: usize> Extension<Platform>
+    for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
 where
     Inner: Extension<Platform>,
+    SEQ: SequenceNumberStorage + Default,
 {
     type Augment<'a, S: StackState>
-        = (Inner::Augment<'a, S>, SecurityAugment<'a, GRP, P2P, GO>)
+        = (Inner::Augment<'a, S>, SecurityAugment<'a, SEQ, GRP, P2P, GO>)
     where
         Self: 'a,
         Platform: 'a;
@@ -717,7 +764,7 @@ where
         Platform: 'a,
     {
         let inner_augment = self.inner.create_augment(platform);
-        let security_augment = SecurityAugment::new(&self.security);
+        let security_augment = SecurityAugment::new(&self.security, &self.seq_storage);
         (inner_augment, security_augment)
     }
 }
@@ -727,8 +774,8 @@ where
 // ============================================================================
 
 /// TP1 extension state with Data Secure support.
-pub type SecureTp1ExtensionState<const GRP: usize, const P2P: usize, const GO: usize> =
-    SecureExtensionState<super::tp1::Tp1ExtensionState, GRP, P2P, GO>;
+pub type SecureTp1ExtensionState<SEQ, const GRP: usize, const P2P: usize, const GO: usize> =
+    SecureExtensionState<super::tp1::Tp1ExtensionState, SEQ, GRP, P2P, GO>;
 
 /// TP1 device state with Data Secure support.
 ///
@@ -741,19 +788,20 @@ pub type SecureTp1DeviceState<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P,
+    SEQ,
     const P2P: usize,
 > = crate::bcus::system_b::SystemBDeviceState<
     ADT_SIZE,
     AST_SIZE,
     COT_SIZE,
     P,
-    SecureTp1ExtensionState<ADT_SIZE, P2P, COT_SIZE>,
+    SecureTp1ExtensionState<SEQ, ADT_SIZE, P2P, COT_SIZE>,
 >;
 
 #[cfg(feature = "knxip")]
 /// KNX/IP extension state with Data Secure support.
-pub type SecureIpExtensionState<const N: usize, const CAPS: u16, const GRP: usize, const P2P: usize, const GO: usize> =
-    SecureExtensionState<super::ip::IpExtensionState<N, CAPS>, GRP, P2P, GO>;
+pub type SecureIpExtensionState<SEQ, const N: usize, const CAPS: u16, const GRP: usize, const P2P: usize, const GO: usize> =
+    SecureExtensionState<super::ip::IpExtensionState<N, CAPS>, SEQ, GRP, P2P, GO>;
 
 #[cfg(feature = "knxip")]
 /// KNX/IP device state with Data Secure support.
@@ -767,6 +815,7 @@ pub type SecureIpDeviceState<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P,
+    SEQ,
     const P2P: usize,
     const N: usize,
     const CAPS: u16,
@@ -775,5 +824,5 @@ pub type SecureIpDeviceState<
     AST_SIZE,
     COT_SIZE,
     P,
-    SecureIpExtensionState<N, CAPS, ADT_SIZE, P2P, COT_SIZE>,
+    SecureIpExtensionState<SEQ, N, CAPS, ADT_SIZE, P2P, COT_SIZE>,
 >;
