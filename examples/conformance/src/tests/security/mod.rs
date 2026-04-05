@@ -10,6 +10,7 @@ pub mod section_3_8_2;
 pub mod section_3_8_3;
 pub mod section_3_8_4;
 pub mod section_3_8_6;
+pub mod section_3_8_7;
 pub mod section_3_8_8;
 pub mod section_3_8_9;
 pub mod section_3_8_10;

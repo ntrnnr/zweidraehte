@@ -115,9 +115,22 @@ pub mod comm_objs {
         #[ets(index = 10)]
         pub go_5_network_test: ComObject<DPT_Value_1_Ucount>,
 
-        /// GO6: 1-bit object for transport layer test 2.1
+        /// GO6: 1-bit object for transport layer test 2.1 + security GO test
         #[ets(index = 11)]
         pub go_6_transport_test: ComObject<DPT_Switch>,
+
+        // ================================================================
+        // Security GO test objects (ASAP 12-13) — for section 3.8.17
+        // ================================================================
+        /// GO_SEC_0: 1-bit object for security GO flag testing.
+        /// Receives on 1/1/1 (TSAP 2), transmits on 2/2/2 (TSAP 12).
+        #[ets(index = 12)]
+        pub go_sec_0: ComObject<DPT_Switch>,
+
+        /// GO_SEC_1: 1-bit object for security GO flag testing.
+        /// Receives on 3/3/3 (TSAP 13), transmits on 4/4/4 (TSAP 14).
+        #[ets(index = 13)]
+        pub go_sec_1: ComObject<DPT_Switch>,
     }
 }
 
@@ -202,6 +215,9 @@ impl ComObjects for ConformanceComObjects {
             go_4: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
             go_5_network_test: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
             go_6_transport_test: ComObject::new(DPT_Switch::from(false)),
+            // Security GO test objects
+            go_sec_0: ComObject::new(DPT_Switch::from(false)),
+            go_sec_1: ComObject::new(DPT_Switch::from(false)),
         }
     }
 
@@ -242,6 +258,8 @@ impl ComObjects for ConformanceComObjects {
                 status: &self.go_6_transport_test.status,
                 value: self.go_6_transport_test.value.as_ref(),
             },
+            CoIndex::GoSec0 => ComObjectInfo { status: &self.go_sec_0.status, value: self.go_sec_0.value.as_ref() },
+            CoIndex::GoSec1 => ComObjectInfo { status: &self.go_sec_1.status, value: self.go_sec_1.value.as_ref() },
         }
     }
 
@@ -286,6 +304,12 @@ impl ComObjects for ConformanceComObjects {
                 status: &mut self.go_6_transport_test.status,
                 value: self.go_6_transport_test.value.as_mut(),
             },
+            CoIndex::GoSec0 => {
+                ComObjectInfoMut { status: &mut self.go_sec_0.status, value: self.go_sec_0.value.as_mut() }
+            }
+            CoIndex::GoSec1 => {
+                ComObjectInfoMut { status: &mut self.go_sec_1.status, value: self.go_sec_1.value.as_mut() }
+            }
         }
     }
 
@@ -409,16 +433,20 @@ pub(crate) mod conformance_config {
         group_addresses: {
             // Sorted order by encoded value:
             1 => "1/0/1",  // 0x0801 - for network layer test 3.1 (8-bit, long format)
-            2 => "2/0/0",  // 0x1000 (main object GO0)
-            3 => "2/0/1",  // 0x1001 (comm flags GO1)
-            4 => "2/0/2",  // 0x1002 (config flags GO2)
-            5 => "2/0/3",  // 0x1003 (value GO3)
-            6 => "2/0/5",  // 0x1005 (read on init GO4)
-            7 => "2/1/0",  // 0x1100 (3-byte main object GO0_BYTE3 for test 1.4.1.4a)
-            8 => "2/1/1",  // 0x1101 (comm flags GO1_BYTE3)
-            9 => "2/1/2",  // 0x1102 (config flags GO2_BYTE3)
-            10 => "2/1/3", // 0x1103 (value GO3_BYTE3)
-            11 => "5/5/5", // 0x2D05 - for transport layer test 2.1 (1-bit)
+            2 => "1/1/1",  // 0x0901 - security GO test (GO_SEC_0 receive)
+            3 => "2/0/0",  // 0x1000 (main object GO0)
+            4 => "2/0/1",  // 0x1001 (comm flags GO1)
+            5 => "2/0/2",  // 0x1002 (config flags GO2)
+            6 => "2/0/3",  // 0x1003 (value GO3)
+            7 => "2/0/5",  // 0x1005 (read on init GO4)
+            8 => "2/1/0",  // 0x1100 (3-byte main object GO0_BYTE3 for test 1.4.1.4a)
+            9 => "2/1/1",  // 0x1101 (comm flags GO1_BYTE3)
+            10 => "2/1/2", // 0x1102 (config flags GO2_BYTE3)
+            11 => "2/1/3", // 0x1103 (value GO3_BYTE3)
+            12 => "2/2/2", // 0x1202 - security GO test (GO_SEC_0 transmit)
+            13 => "3/3/3", // 0x1B03 - security GO test (GO_SEC_1 receive)
+            14 => "4/4/4", // 0x2404 - security GO test (GO_SEC_1 transmit)
+            15 => "5/5/5", // 0x2D05 - for transport layer test 2.1 + security GO test (GO_SEC_2)
         },
 
         comm_objects: {
@@ -454,23 +482,36 @@ pub(crate) mod conformance_config {
             9 => (7, CE | TE | RE | WE | UE | ROI),
             // GO5: 8-bit object for network layer test 3.1 (long format response)
             10 => (7, CE | TE | RE | WE | UE),
-            // GO6: 1-bit object for transport layer test 2.1
+            // GO6: 1-bit object for transport layer test 2.1 + security GO test
             11 => (1, CE | TE | RE | WE | UE),
+
+            // ================================================================
+            // Security GO test objects (ASAP 12-13) — for section 3.8.17
+            // ================================================================
+            // GO_SEC_0: 1-bit object, receives on 1/1/1, transmits on 2/2/2
+            12 => (1, CE | TE | RE | WE | UE),
+            // GO_SEC_1: 1-bit object, receives on 3/3/3, transmits on 4/4/4
+            13 => (1, CE | TE | RE | WE | UE),
         },
 
         associations: {
-            // Note: TSAPs are assigned based on sorted group address positions
-            1 => [10],  // TSAP 1 (1/0/1) → CO 10 (GO5, 8-bit for network layer test)
-            2 => [1],   // TSAP 2 (2/0/0) → CO 1 (GO0, 1-bit main object)
-            3 => [2],   // TSAP 3 (2/0/1) → CO 2 (GO1, comm flags)
-            4 => [3],   // TSAP 4 (2/0/2) → CO 3 (GO2, config flags)
-            5 => [4],   // TSAP 5 (2/0/3) → CO 4 (GO3, value)
-            6 => [9],   // TSAP 6 (2/0/5) → CO 9 (GO4, read on init)
-            7 => [5],   // TSAP 7 (2/1/0) → CO 5 (GO0_BYTE3, 3-byte main object)
-            8 => [6],   // TSAP 8 (2/1/1) → CO 6 (GO1_BYTE3, comm flags)
-            9 => [7],   // TSAP 9 (2/1/2) → CO 7 (GO2_BYTE3, config flags)
-            10 => [8],  // TSAP 10 (2/1/3) → CO 8 (GO3_BYTE3, value)
-            11 => [11], // TSAP 11 (5/5/5) → CO 11 (GO6, 1-bit for transport layer)
+            // Note: TSAPs are assigned based on sorted group address positions.
+            // TSAP numbers match the GA index in the sorted address table.
+            1 => [10],   // TSAP 1  (1/0/1) → CO 10 (GO5, 8-bit for network layer test)
+            2 => [12],   // TSAP 2  (1/1/1) → CO 12 (GO_SEC_0, security test receive)
+            3 => [1],    // TSAP 3  (2/0/0) → CO 1  (GO0, 1-bit main object)
+            4 => [2],    // TSAP 4  (2/0/1) → CO 2  (GO1, comm flags)
+            5 => [3],    // TSAP 5  (2/0/2) → CO 3  (GO2, config flags)
+            6 => [4],    // TSAP 6  (2/0/3) → CO 4  (GO3, value)
+            7 => [9],    // TSAP 7  (2/0/5) → CO 9  (GO4, read on init)
+            8 => [5],    // TSAP 8  (2/1/0) → CO 5  (GO0_BYTE3, 3-byte main object)
+            9 => [6],    // TSAP 9  (2/1/1) → CO 6  (GO1_BYTE3, comm flags)
+            10 => [7],   // TSAP 10 (2/1/2) → CO 7  (GO2_BYTE3, config flags)
+            11 => [8],   // TSAP 11 (2/1/3) → CO 8  (GO3_BYTE3, value)
+            12 => [12],  // TSAP 12 (2/2/2) → CO 12 (GO_SEC_0, security test transmit)
+            13 => [13],  // TSAP 13 (3/3/3) → CO 13 (GO_SEC_1, security test receive)
+            14 => [13],  // TSAP 14 (4/4/4) → CO 13 (GO_SEC_1, security test transmit)
+            15 => [11],  // TSAP 15 (5/5/5) → CO 11 (GO6, transport + security GO_SEC_2)
         },
     }
 }

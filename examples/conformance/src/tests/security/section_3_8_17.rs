@@ -11,8 +11,6 @@
 //! Each entry is PDT_GENERIC_01 × count (3 GO flags bytes for 3 group objects).
 //!
 //! Skipped test cases:
-//! - 3.8.17.1 — writes actual GO flag data and verifies group object behavior;
-//!   needs a fully populated GO_FLAGS table and group communication setup.
 //! - 3.8.17.5 — uses T_Connect (connection-oriented power-down test), not yet
 //!   implemented.
 
@@ -131,14 +129,197 @@ pub fn create_section_3_8_17_suite() -> TestSuite {
     TestSuite::new("3.8.17 PID_GO_SECURITY_FLAGS (Security IO, access 00C/00C)", variables)
         .secure()
         .with_cases(vec![
+            test_3_8_17_1(),
             test_3_8_17_2(),
             test_3_8_17_3(),
             test_3_8_17_4(),
-            // Skipped: 3.8.17.1 — writes actual GO flag data and verifies group
-            //   object behavior; needs fully populated GO_FLAGS table.
             // Skipped: 3.8.17.5 — uses T_Connect (connection-oriented),
             //   not yet implemented.
         ])
+}
+
+// ============================================================================
+// 3.8.17.1 Secure PropertyValueWrite and Read of GO Security Flags
+// ============================================================================
+//
+// Writes GO security flags via secure A+C, then injects group telegrams
+// (both plain and secured) to verify the DUT applies the flags correctly.
+// The test does NOT expect the DUT to generate group responses — all group
+// telegrams are injected by the test tool.
+//
+// Phases (repeated for SM=ON and SM=OFF):
+// 1. Load Security IO (Loading → Loaded)
+// 2. Write GO flags = 00 00 00 (all plain), inject plain group traffic
+// 3. Write GO flags = 01 03 00 (mixed), read back, inject secured group traffic
+// 4. Write GO flags = FD FF FC (max), inject secured group traffic
+
+fn test_3_8_17_1() -> TestCase {
+    // ---- Security IO Load State Control (PID 5) ----
+    // Write PID 5 = 0x01 (Loaded) — 10-byte load procedure record.
+    const LOAD_LOADED: &str =
+        "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 01 00 00 00 00 00 00 00 00 00";
+    const LOAD_LOADED_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
+    // Write PID 5 = 0x02 (Loading).
+    const LOAD_LOADING: &str =
+        "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
+    const LOAD_LOADING_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
+
+    // ---- GO Flags Write/Read (PID 0x3D, count=3, start=1) ----
+    // Write flags = 00 00 00 (all unsecured).
+    const WRITE_FLAGS_PLAIN: &str =
+        "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 01 00 00 00";
+    // Write flags = 01 03 00 (GO0=auth-only, GO1=auth+conf, GO2=plain).
+    const WRITE_FLAGS_MIXED: &str =
+        "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 01 01 03 00";
+    // Write flags = FD FF FC (all max).
+    const WRITE_FLAGS_MAX: &str =
+        "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 01 FD FF FC";
+    // Write success: count=3, return_code=0x00.
+    const WRITE_FLAGS_OK: &str =
+        "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 03 00 01 00";
+    // Read flags: count=3, start=1.
+    const READ_FLAGS: &str =
+        "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3D 03 00 01";
+    // Read response: flags = 01 03 00.
+    const READ_FLAGS_MIXED_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0C 01 CD 00 11 00 10 3D 03 00 01 01 03 00";
+
+    // ---- Plain group telegrams ----
+    // GroupValue_Write(0) to GA 5/5/5 (0x2D05) from EDI.
+    const PLAIN_GW_555: &str = "BC #EDI 2D 05 E1 00 00";
+    // GroupValue_Response(0x40) to GA 5/5/5 from BDUT_ADDR.
+    const PLAIN_GR_555: &str = "BC #BDUT_ADDR 2D 05 E1 00 40";
+    // GroupValue_Write(0) to GA 1/1/1 (0x0901) from EDI.
+    const PLAIN_GW_111: &str = "BC #EDI 09 01 E1 00 00";
+    // GroupValue_Response(0x40) to GA 2/2/2 (0x1202) from BDUT_ADDR.
+    const PLAIN_GR_222: &str = "BC #BDUT_ADDR 12 02 E1 00 40";
+    // GroupValue_Write(0) to GA 3/3/3 (0x1B03) from EDI.
+    const PLAIN_GW_333: &str = "BC #EDI 1B 03 E1 00 00";
+    // GroupValue_Response(0x40) to GA 4/4/4 (0x2404) from BDUT_ADDR.
+    const PLAIN_GR_444: &str = "BC #BDUT_ADDR 24 04 E1 00 40";
+
+    // ---- Secured group telegrams (same data, different security) ----
+    // Auth-only GroupValue_Write(0) to 1/1/1 with GK1.
+    const SEC_GW_111: &str = "BC #EDI 09 01 E1 00 00";
+    // Auth+conf GroupValue_Response(0x40) to 2/2/2 with GK2.
+    const SEC_GR_222: &str = "BC #BDUT_ADDR 12 02 E1 00 40";
+    // Auth+conf GroupValue_Write(0) to 3/3/3 with GK3.
+    const SEC_GW_333: &str = "BC #EDI 1B 03 E1 00 00";
+    // Auth+conf GroupValue_Response(0x40) to 4/4/4 with GK4.
+    const SEC_GR_444: &str = "BC #BDUT_ADDR 24 04 E1 00 40";
+
+    TestCase::new("3.8.17.1 Secure PropertyValueWrite and Read of GO Security Flags").with_steps(vec![
+        // ================================================================
+        // Security Mode ON
+        // ================================================================
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        // ---- Load Security IO ----
+        comment("Security IO: Loading → Loaded"),
+        inject_secure_ac(LOAD_LOADED, "TK1"),
+        expect_secure_ac(LOAD_LOADED_OK, "TK1", TIMEOUT),
+        inject_secure_ac(LOAD_LOADING, "TK1"),
+        expect_secure_ac(LOAD_LOADING_OK, "TK1", TIMEOUT),
+
+        // ---- Phase 1: GO flags = 00 00 00 (all plain) ----
+        comment("Write GO flags = 00 00 00 (all unsecured)"),
+        inject_secure_ac(WRITE_FLAGS_PLAIN, "TK1"),
+        expect_secure_ac(WRITE_FLAGS_OK, "TK1", TIMEOUT),
+
+        comment("Inject plain group traffic (all accepted when flags=00)"),
+        inject(PLAIN_GW_555),
+        inject(PLAIN_GR_555),
+        inject(PLAIN_GW_111),
+        inject(PLAIN_GR_222),
+        inject(PLAIN_GW_333),
+        inject(PLAIN_GR_444),
+
+        // ---- Phase 2: GO flags = 01 03 00 (mixed) ----
+        comment("Write GO flags = 01 03 00 (GO0=auth, GO1=auth+conf, GO2=plain)"),
+        inject_secure_ac(WRITE_FLAGS_MIXED, "TK1"),
+        expect_secure_ac(WRITE_FLAGS_OK, "TK1", TIMEOUT),
+
+        comment("Read back GO flags → 01 03 00"),
+        inject_secure_ac(READ_FLAGS, "TK1"),
+        expect_secure_ac(READ_FLAGS_MIXED_OK, "TK1", TIMEOUT),
+
+        comment("Inject plain group traffic on 5/5/5 (GO2=plain, accepted)"),
+        inject(PLAIN_GW_555),
+        inject(PLAIN_GR_555),
+        comment("Inject secured group traffic on 1/1/1→2/2/2 (GO0=auth, GK1/GK2)"),
+        inject_secure_ao(SEC_GW_111, "GK1"),
+        inject_secure_ao(SEC_GR_222, "GK2"),
+        comment("Inject secured group traffic on 3/3/3→4/4/4 (GO1=auth+conf, GK3/GK4)"),
+        inject_secure_ac(SEC_GW_333, "GK3"),
+        inject_secure_ac(SEC_GR_444, "GK4"),
+
+        // ---- Phase 3: GO flags = FD FF FC (max flags) ----
+        comment("Write GO flags = FD FF FC (max)"),
+        inject_secure_ac(WRITE_FLAGS_MAX, "TK1"),
+        expect_secure_ac(WRITE_FLAGS_OK, "TK1", TIMEOUT),
+
+        comment("Inject plain 5/5/5 + secured group traffic (same as phase 2)"),
+        inject(PLAIN_GW_555),
+        inject(PLAIN_GR_555),
+        inject_secure_ao(SEC_GW_111, "GK1"),
+        inject_secure_ao(SEC_GR_222, "GK2"),
+        inject_secure_ac(SEC_GW_333, "GK3"),
+        inject_secure_ac(SEC_GR_444, "GK4"),
+
+        // ================================================================
+        // Security Mode OFF — repeat all phases
+        // ================================================================
+        comment("Disable Security Mode"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        // ---- Phase 1 (SM OFF): GO flags = 00 00 00 ----
+        comment("Write GO flags = 00 00 00"),
+        inject_secure_ac(WRITE_FLAGS_PLAIN, "TK1"),
+        expect_secure_ac(WRITE_FLAGS_OK, "TK1", TIMEOUT),
+
+        comment("Inject plain group traffic"),
+        inject(PLAIN_GW_555),
+        inject(PLAIN_GR_555),
+        inject(PLAIN_GW_111),
+        inject(PLAIN_GR_222),
+        inject(PLAIN_GW_333),
+        inject(PLAIN_GR_444),
+
+        // ---- Phase 2 (SM OFF): GO flags = 01 03 00 ----
+        comment("Write GO flags = 01 03 00"),
+        inject_secure_ac(WRITE_FLAGS_MIXED, "TK1"),
+        expect_secure_ac(WRITE_FLAGS_OK, "TK1", TIMEOUT),
+
+        comment("Read back GO flags → 01 03 00"),
+        inject_secure_ac(READ_FLAGS, "TK1"),
+        expect_secure_ac(READ_FLAGS_MIXED_OK, "TK1", TIMEOUT),
+
+        comment("Inject plain 5/5/5 + secured group traffic"),
+        inject(PLAIN_GW_555),
+        inject(PLAIN_GR_555),
+        inject_secure_ao(SEC_GW_111, "GK1"),
+        inject_secure_ao(SEC_GR_222, "GK2"),
+        inject_secure_ac(SEC_GW_333, "GK3"),
+        inject_secure_ac(SEC_GR_444, "GK4"),
+
+        // ---- Phase 3 (SM OFF): GO flags = FD FF FC ----
+        comment("Write GO flags = FD FF FC"),
+        inject_secure_ac(WRITE_FLAGS_MAX, "TK1"),
+        expect_secure_ac(WRITE_FLAGS_OK, "TK1", TIMEOUT),
+
+        comment("Inject plain 5/5/5 + secured group traffic"),
+        inject(PLAIN_GW_555),
+        inject(PLAIN_GR_555),
+        inject_secure_ao(SEC_GW_111, "GK1"),
+        inject_secure_ao(SEC_GR_222, "GK2"),
+        inject_secure_ac(SEC_GW_333, "GK3"),
+        inject_secure_ac(SEC_GR_444, "GK4"),
+    ])
 }
 
 // ============================================================================

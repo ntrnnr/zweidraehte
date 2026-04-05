@@ -251,11 +251,17 @@ fn handle_ext_value_write_con<D: StackDefinition>(
 
     // Validate per spec Figure 55 using the property description.
     if let Ok(desc) = ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
-        if is_function_pdt(desc.pdt) {
+        // PDT_CONTROL and PDT_FUNCTION properties are normally accessed via
+        // FunctionPropertyCommand, not PropertyValueWrite. However,
+        // LOAD_STATE_CONTROL (PID 5) is a special case — the spec allows
+        // writing it via property value services to trigger load state
+        // transitions. Allow it through; reject other function PDTs.
+        if is_function_pdt(desc.pdt) && hdr.prop_id != crate::objects::interface::pid::LOAD_STATE_CONTROL {
             debug!("AL PropertyExtValueWriteCon: PDT_CONTROL/FUNCTION → type conflict");
             send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT);
             return;
         }
+
         // Check data size matches element count × element size.
         let elem_size = pdt_element_size(desc.pdt);
         if elem_size > 0 && hdr.count > 0 && hdr.start_idx > 0 {
@@ -271,6 +277,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
                 return;
             }
         }
+
         // Check start_index + count doesn't exceed max_elements.
         if hdr.start_idx > 0 && desc.max_elements > 0 {
             let end = hdr.start_idx as u32 + hdr.count as u32 - 1;

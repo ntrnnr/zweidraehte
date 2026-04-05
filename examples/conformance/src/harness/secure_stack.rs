@@ -123,7 +123,36 @@ impl SecureConformanceState {
 impl Default for SecureConformanceState {
     fn default() -> Self {
         use zweidraehte_device::objects::tables::Table;
-        Self::new(Table::new(), Table::new(), Table::new(), Application::new())
+        let state = Self::new(Table::new(), Table::new(), Table::new(), Application::new());
+
+        // Pre-populate the group key table for security GO tests (section 3.8.17).
+        // Entries are 18 bytes each: 2-byte GA_Index (TSAP, big-endian) + 16-byte key.
+        // The table must be sorted by GA_Index for binary search.
+        {
+            use crate::tests::security::variables::{GK1, GK2, GK3, GK4};
+
+            let grp_keys = state.inner().extension_state().security.grp_keys();
+            let mut table = grp_keys.borrow_mut();
+
+            // Helper: build an 18-byte group key table entry.
+            let entry = |tsap: u16, key: &[u8; 16]| -> [u8; 18] {
+                let mut e = [0u8; 18];
+                e[0..2].copy_from_slice(&tsap.to_be_bytes());
+                e[2..18].copy_from_slice(key);
+                e
+            };
+
+            // TSAP indices from the sorted address table (1-based).
+            // 1/1/1 = TSAP 2, 2/2/2 = TSAP 12, 3/3/3 = TSAP 13, 4/4/4 = TSAP 14.
+            let entries: &[([u8; 18], u16)] =
+                &[(entry(2, &GK1), 0), (entry(12, &GK2), 1), (entry(13, &GK3), 2), (entry(14, &GK4), 3)];
+
+            for (e, idx) in entries {
+                table.write_entries(*idx, e).expect("group key entry fits");
+            }
+        }
+
+        state
     }
 }
 
@@ -461,7 +490,8 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type P = TestParameters;
     type CO = super::stack::comm_objs::ConformanceComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
-    type ES = SecureTp1ExtensionState<ShmSeqStorage, { table_sizes::ADT }, { sec_table_sizes::P2P }, { table_sizes::COT }>;
+    type ES =
+        SecureTp1ExtensionState<ShmSeqStorage, { table_sizes::ADT }, { sec_table_sizes::P2P }, { table_sizes::COT }>;
     type State = SecureConformanceState;
     type Mem = ConformanceMemoryMap;
 
