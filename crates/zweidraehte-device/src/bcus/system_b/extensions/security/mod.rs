@@ -199,6 +199,10 @@ pub struct SecurityExtensionConfig<const GRP: usize, const P2P: usize, const GO:
     /// P2P key table: IA_Index(2) + Key(16) + Roles(2) = 20 bytes per entry.
     #[serde(default)]
     pub p2p_keys: SecurityTable<P2P, 20>,
+    /// Security Individual Address Table: IA(2) + LastValidSeqNr(6) = 8 bytes per entry.
+    /// One entry per P2P peer, so capacity matches `P2P`.
+    #[serde(default)]
+    pub siat: SecurityTable<P2P, 8>,
     /// GO security flags: 1 byte per group object.
     #[serde(default)]
     pub go_flags: SecurityTable<GO, 1>,
@@ -221,6 +225,7 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> Default for SecurityEx
             failures_log: SecurityFailuresLog::default(),
             grp_keys: SecurityTable::new(),
             p2p_keys: SecurityTable::new(),
+            siat: SecurityTable::new(),
             go_flags: SecurityTable::new(),
         }
     }
@@ -245,6 +250,8 @@ pub struct SecurityState<const GRP: usize, const P2P: usize, const GO: usize> {
     grp_keys: RefCell<SecurityTable<GRP, 18>>,
     /// P2P key table: IA_index(2) + key(16) + role(2) = 20 bytes per entry.
     p2p_keys: RefCell<SecurityTable<P2P, 20>>,
+    /// Security Individual Address Table: IA(2) + LastValidSeqNr(6) = 8 bytes per entry.
+    siat: RefCell<SecurityTable<P2P, 8>>,
     /// GO security flags: 1 byte per group object.
     go_flags: RefCell<SecurityTable<GO, 1>>,
     /// Security failures log — counters and recent failure entries.
@@ -395,6 +402,11 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
     /// Get a reference to the P2P key table.
     pub fn p2p_keys(&self) -> &RefCell<SecurityTable<P2P, 20>> {
         &self.p2p_keys
+    }
+
+    /// Get a reference to the Security Individual Address Table.
+    pub fn siat(&self) -> &RefCell<SecurityTable<P2P, 8>> {
+        &self.siat
     }
 
     /// Get a reference to the GO security flags table.
@@ -562,6 +574,7 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for Sec
             load_state: Cell::new(config.load_state),
             grp_keys: RefCell::new(config.grp_keys),
             p2p_keys: RefCell::new(config.p2p_keys),
+            siat: RefCell::new(config.siat),
             go_flags: RefCell::new(config.go_flags),
             failures_log: RefCell::new(config.failures_log),
             security_report: Cell::new(0),
@@ -577,6 +590,7 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for Sec
             failures_log: self.failures_log.borrow().clone(),
             grp_keys: self.grp_keys.borrow().clone(),
             p2p_keys: self.p2p_keys.borrow().clone(),
+            siat: self.siat.borrow().clone(),
             go_flags: self.go_flags.borrow().clone(),
         }
     }
@@ -586,6 +600,7 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for Sec
         self.tool_key.set([0u8; 16]);
         self.load_state.set(LoadState::Unloaded);
         self.grp_keys.borrow_mut().clear();
+        self.siat.borrow_mut().clear();
         self.go_flags.borrow_mut().clear();
         self.failures_log.borrow_mut().clear();
     }

@@ -287,6 +287,20 @@ impl<'a, S: StackState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P:
                     table.read_entries(start, req.count as u16, buf)
                 }
             }
+            // ---- Array property: Security Individual Address Table (8 bytes/entry) ----
+            pid::SECURITY_INDIVIDUAL_ADDRESS_TABLE => {
+                let table = self.state.siat().borrow();
+                if req.start_idx == 0 {
+                    if buf.len() < 2 {
+                        return Some(Err(PropertyError::BufferTooSmall));
+                    }
+                    buf[..2].copy_from_slice(&table.count().to_be_bytes());
+                    Ok(2)
+                } else {
+                    let start = (req.start_idx - 1) as u16;
+                    table.read_entries(start, req.count as u16, buf)
+                }
+            }
             // ---- Array property: GO Security Flags (1 byte/entry) ----
             pid::GO_SECURITY_FLAGS => {
                 let table = self.state.go_flags().borrow();
@@ -390,6 +404,11 @@ impl<'a, S: StackState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P:
             // ---- Array property: Group Key Table (18 bytes/entry) ----
             pid::GROUP_KEY_TABLE => {
                 let mut table = self.state.grp_keys().borrow_mut();
+                write_security_table(&mut table, req)
+            }
+            // ---- Array property: Security Individual Address Table (8 bytes/entry) ----
+            pid::SECURITY_INDIVIDUAL_ADDRESS_TABLE => {
+                let mut table = self.state.siat().borrow_mut();
                 write_security_table(&mut table, req)
             }
             // ---- Array property: GO Security Flags (1 byte/entry) ----

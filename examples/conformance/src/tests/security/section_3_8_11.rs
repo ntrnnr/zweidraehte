@@ -14,9 +14,7 @@
 //! The test writes element count at start=0 (5-byte payload) before writing
 //! the actual entry at start=1 (8-byte payload).
 //!
-//! Skipped test cases:
-//! - 3.8.11.1 — SIAT read/write handler not implemented yet.
-//! - 3.8.11.5 — depends on 3.8.11.1 (SIAT data must be populated).
+//! All 5 test cases implemented.
 
 use crate::{TestCase, TestSuite};
 use super::variables::create_security_variables;
@@ -178,11 +176,11 @@ pub fn create_section_3_8_11_suite() -> TestSuite {
     )
     .secure()
     .with_cases(vec![
-        // Skipped: 3.8.11.1 — SIAT read/write handler not implemented yet.
+        test_3_8_11_1(),
         test_3_8_11_2(),
         test_3_8_11_3(),
         test_3_8_11_4(),
-        // Skipped: 3.8.11.5 — depends on 3.8.11.1 (SIAT data must be populated).
+        test_3_8_11_5(),
     ])
 }
 
