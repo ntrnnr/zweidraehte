@@ -580,9 +580,12 @@ fn write_security_table<const N: usize, const ES: usize>(
         let new_count = u16::from_be_bytes([req.data[0], req.data[1]]);
         if new_count == 0 {
             table.clear();
+        } else {
+            // Pre-allocate: set the count so subsequent entry writes at
+            // start_idx > 0 land within the valid range. The actual entry
+            // data is written via separate requests with start_idx > 0.
+            table.set_count(new_count);
         }
-        // Non-zero element count writes just set the count (pre-allocate).
-        // The actual entries are written via start_idx > 0.
         Ok(WriteResponse::Echo)
     } else {
         let start = req.start_idx.saturating_sub(1);

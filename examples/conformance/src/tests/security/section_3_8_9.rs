@@ -181,10 +181,7 @@ pub fn create_section_3_8_9_suite() -> TestSuite {
             test_3_8_9_2(),
             test_3_8_9_3(),
             test_3_8_9_4(),
-            // TODO: 3.8.9.5 — tables persist in config but the runtime state
-            // shows count=0 at restart time. The write succeeds during the test
-            // but the data is lost by the time the restart handler runs.
-            // Needs investigation.
+            test_3_8_9_5(),
         ])
 }
 
@@ -391,7 +388,6 @@ fn test_3_8_9_4() -> TestCase {
 // Phase A: Confirmed Restart (erase code 0x01) — table unchanged
 // Phase B: Basic Restart — table unchanged
 
-#[allow(dead_code)]
 fn test_3_8_9_5() -> TestCase {
     // Connection-oriented A_Restart: master reset (restart_type=1).
     // TPCI = 0x43 (numbered seq 0 + APCI high 0x03), APCI = 0x81 01 00
