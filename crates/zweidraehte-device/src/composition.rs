@@ -26,6 +26,7 @@ use crate::{
     objects::comm::{ComObjectEvent, ComObjects, LifecycleEvent},
     restart,
     router::{self, LayerStack},
+    storage::HasSequenceStorage,
 };
 
 use core::cell::RefCell;
@@ -491,8 +492,8 @@ use crate::layers::secure_application::SecureApplicationLayer;
 ///
 /// In Phase 4a, the S-AL is a transparent pass-through — all messages
 /// are forwarded to the inner AL without security processing.
-pub struct SecureDeviceLayers<'a, D: StackDefinition, TL: router::Layer> {
-    layers: (NetworkLayer<'a, D>, TL, SecureApplicationLayer<'a, D>),
+pub struct SecureDeviceLayers<'a, D: StackDefinition + HasSequenceStorage, TL: router::Layer> {
+    layers: (NetworkLayer<'a, D>, TL, SecureApplicationLayer<'a, D, D::SeqStorage>),
     device_model: device_model::SystemBDeviceModel<'a, D>,
     service_inputs: ServiceInputs<'a>,
 }
@@ -502,7 +503,7 @@ pub type StandardSecureDeviceLayers<'a, D> = SecureDeviceLayers<'a, D, Transport
 
 // Constructors
 
-impl<'a, D: StackDefinition> SecureDeviceLayers<'a, D, TransportLayer<'a, D>> {
+impl<'a, D: StackDefinition + HasSequenceStorage> SecureDeviceLayers<'a, D, TransportLayer<'a, D>> {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
     pub fn standard(ctx: &'a LayerContext<'a, D>) -> Self {
         let network_layer = NetworkLayer::new(ctx.state, ctx.interface_objects);
@@ -519,7 +520,7 @@ impl<'a, D: StackDefinition> SecureDeviceLayers<'a, D, TransportLayer<'a, D>> {
             ctx.restart_sender,
         );
 
-        let secure_al = SecureApplicationLayer::new(application_layer, ctx.state);
+        let secure_al = SecureApplicationLayer::new(application_layer, ctx.state, D::create_seq_storage());
 
         let device_model = device_model::SystemBDeviceModel::new(
             ctx.state,
@@ -542,13 +543,15 @@ impl<'a, D: StackDefinition> SecureDeviceLayers<'a, D, TransportLayer<'a, D>> {
 
 // LayerStack impl for SecureDeviceLayers
 
-impl<'a, D: StackDefinition, TL: router::Layer + HandlesCemiEvent> LayerStack for SecureDeviceLayers<'a, D, TL>
+impl<'a, D: StackDefinition + HasSequenceStorage, TL: router::Layer + HandlesCemiEvent> LayerStack
+    for SecureDeviceLayers<'a, D, TL>
 where
     D::State: crate::bcus::system_b::HasExtensionState,
     <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::bcus::system_b::HasSecurityState,
 {
     const DISPATCH_TABLE: router::DispatchTable = {
-        type Inner<'a, D, TL> = (NetworkLayer<'a, D>, TL, SecureApplicationLayer<'a, D>);
+        type Inner<'a, D: StackDefinition + HasSequenceStorage, TL> =
+            (NetworkLayer<'a, D>, TL, SecureApplicationLayer<'a, D, D::SeqStorage>);
         <Inner<'_, D, TL> as LayerStack>::DISPATCH_TABLE
     };
 
@@ -618,7 +621,7 @@ where
 /// [`StackDefinition::LayerBuilder`] to enable Data Secure support.
 pub struct SecureDeviceBuilder;
 
-impl<D: StackDefinition> LayerStackBuilder<D> for SecureDeviceBuilder
+impl<D: StackDefinition + HasSequenceStorage> LayerStackBuilder<D> for SecureDeviceBuilder
 where
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
     D::State: crate::bcus::system_b::HasExtensionState,

@@ -482,6 +482,61 @@ impl StackDefinition for IpcSecureConformanceTestStack {
 }
 
 // ============================================================================
+// Sequence Number Storage
+// ============================================================================
+
+use core::cell::Cell;
+use zweidraehte_device::storage::{HasSequenceStorage, SequenceNumberStorage};
+
+/// Simple Cell-based sequence number storage for the conformance DUT.
+///
+/// Stores counters in process memory. For the conformance harness, sequence
+/// numbers are included in the `SecureConformancePersistedState` which is
+/// serialized to shared memory on restart, so they survive child process
+/// restarts.
+pub struct ConformanceSeqStorage {
+    regular: Cell<[u8; 6]>,
+    tool: Cell<[u8; 6]>,
+}
+
+impl ConformanceSeqStorage {
+    pub fn new() -> Self {
+        Self { regular: Cell::new([0, 0, 0, 0, 0, 1]), tool: Cell::new([0, 0, 0, 0, 0, 1]) }
+    }
+}
+
+impl SequenceNumberStorage for ConformanceSeqStorage {
+    type Error = core::convert::Infallible;
+
+    fn load_sending_seqs(&self) -> Result<([u8; 6], [u8; 6]), Self::Error> {
+        Ok((self.regular.get(), self.tool.get()))
+    }
+
+    fn save_sending_seqs(&mut self, regular: &[u8; 6], tool: &[u8; 6]) -> Result<(), Self::Error> {
+        self.regular.set(*regular);
+        self.tool.set(*tool);
+        Ok(())
+    }
+
+    fn load_receiving_seq(&self, _peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error> {
+        // TODO: implement peer sequence tracking when needed
+        Ok(None)
+    }
+
+    fn save_receiving_seq(&mut self, _peer_ia: u16, _seq: &[u8; 6]) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+impl HasSequenceStorage for IpcSecureConformanceTestStack {
+    type SeqStorage = ConformanceSeqStorage;
+
+    fn create_seq_storage() -> Self::SeqStorage {
+        ConformanceSeqStorage::new()
+    }
+}
+
+// ============================================================================
 // Shared Memory Persistence
 // ============================================================================
 

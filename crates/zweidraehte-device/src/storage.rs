@@ -298,78 +298,17 @@ pub trait SequenceNumberStorage {
     fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error>;
 }
 
-/// RAM-only sequence number storage.
+/// Trait for stack definitions that provide sequence number storage.
 ///
-/// Keeps counters in memory only — they reset to initial values on power
-/// cycle. Suitable for testing and devices that accept sequence reset on
-/// reboot. The initial sending sequence number is 1 (per spec, must be
-/// non-zero).
+/// Only implemented by secure device stacks. Non-secure stacks don't
+/// need it. The [`SecureDeviceBuilder`] requires this bound.
 ///
-/// The peers array is kept sorted by individual address for O(log n)
-/// lookup via binary search.
-pub struct RamSequenceStorage<const MAX_PEERS: usize> {
-    /// (regular, tool_access) sending sequence numbers.
-    sending: ([u8; 6], [u8; 6]),
-    /// Per-peer last-valid receiving sequence numbers, sorted by IA.
-    peers: [(u16, [u8; 6]); MAX_PEERS],
-    /// Number of peers currently tracked.
-    peer_count: usize,
-}
+/// [`SecureDeviceBuilder`]: crate::composition::SecureDeviceBuilder
+pub trait HasSequenceStorage {
+    /// The concrete sequence number storage type.
+    type SeqStorage: SequenceNumberStorage;
 
-impl<const MAX_PEERS: usize> RamSequenceStorage<MAX_PEERS> {
-    /// Create a new RAM-only storage with initial sequence number 1.
-    pub const fn new() -> Self {
-        Self {
-            // Initial value must be non-zero (spec: 1–255 range).
-            sending: ([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]),
-            peers: [(0u16, [0u8; 6]); MAX_PEERS],
-            peer_count: 0,
-        }
-    }
-}
-
-impl<const MAX_PEERS: usize> Default for RamSequenceStorage<MAX_PEERS> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<const MAX_PEERS: usize> SequenceNumberStorage for RamSequenceStorage<MAX_PEERS> {
-    type Error = core::convert::Infallible;
-
-    fn load_sending_seqs(&self) -> Result<([u8; 6], [u8; 6]), Self::Error> {
-        Ok(self.sending)
-    }
-
-    fn save_sending_seqs(&mut self, regular: &[u8; 6], tool: &[u8; 6]) -> Result<(), Self::Error> {
-        self.sending = (*regular, *tool);
-        Ok(())
-    }
-
-    fn load_receiving_seq(&self, peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error> {
-        let slice = &self.peers[..self.peer_count];
-        match slice.binary_search_by_key(&peer_ia, |e| e.0) {
-            Ok(idx) => Ok(Some(self.peers[idx].1)),
-            Err(_) => Ok(None),
-        }
-    }
-
-    fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error> {
-        let slice = &self.peers[..self.peer_count];
-        match slice.binary_search_by_key(&peer_ia, |e| e.0) {
-            Ok(idx) => {
-                self.peers[idx].1 = *seq;
-            }
-            Err(idx) => {
-                if self.peer_count < MAX_PEERS {
-                    // Shift elements right to make room at the sorted position.
-                    self.peers.copy_within(idx..self.peer_count, idx + 1);
-                    self.peers[idx] = (peer_ia, *seq);
-                    self.peer_count += 1;
-                }
-                // Silently drop if at capacity — bounded by const generic.
-            }
-        }
-        Ok(())
-    }
+    /// Create a new sequence storage instance, e.g., by loading
+    /// persisted values from flash or shared memory.
+    fn create_seq_storage() -> Self::SeqStorage;
 }

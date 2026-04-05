@@ -10,7 +10,7 @@
 //! [`ApplicationLayer`]: crate::layers::application::ApplicationLayer
 //! [`AccessContext`]: crate::access::AccessContext
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 
 use crate::{
     StackState,
@@ -27,7 +27,9 @@ use crate::{
         buffers::{Buffer, MessageBuffer},
         knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
     },
+    prelude::HasAddressTable,
     router::{Layer, Outbox},
+    storage::SequenceNumberStorage,
 };
 
 use crate::logging::warn;
@@ -65,23 +67,28 @@ impl Default for OutgoingSecurityCtx {
 // ============================================================================
 
 /// Secure Application Layer wrapper.
-pub struct SecureApplicationLayer<'a, D: StackDefinition> {
+///
+/// Generic over `SEQ`: the sequence number storage backend. This is
+/// kept separate from the main device config because sequence numbers
+/// change on every outgoing secure frame and need wear-resistant
+/// storage (e.g., dedicated flash sector with wear leveling).
+pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberStorage> {
     inner: ApplicationLayer<'a, D>,
     state: &'a D::State,
     /// Security context for encrypting the outgoing response.
     outgoing_ctx: Cell<OutgoingSecurityCtx>,
-    /// Sending sequence number (regular traffic). Incremented after each
-    /// outgoing secure frame. TODO: persist via SequenceNumberStorage.
-    seq_nr_sending: Cell<u64>,
+    /// Sequence number storage backend (wear-resistant, separate from
+    /// main device config due to high write frequency).
+    seq_storage: RefCell<SEQ>,
 }
 
-impl<'a, D: StackDefinition> SecureApplicationLayer<'a, D> {
-    pub fn new(inner: ApplicationLayer<'a, D>, state: &'a D::State) -> Self {
+impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<'a, D, SEQ> {
+    pub fn new(inner: ApplicationLayer<'a, D>, state: &'a D::State, seq_storage: SEQ) -> Self {
         Self {
             inner,
             state,
             outgoing_ctx: Cell::new(OutgoingSecurityCtx::default()),
-            seq_nr_sending: Cell::new(1), // Initial value must be non-zero per spec.
+            seq_storage: RefCell::new(seq_storage),
         }
     }
 
@@ -89,21 +96,33 @@ impl<'a, D: StackDefinition> SecureApplicationLayer<'a, D> {
         &mut self.inner
     }
 
-    /// Get the next sending sequence number and increment it.
-    fn next_seq_nr(&self) -> [u8; 6] {
-        let val = self.seq_nr_sending.get();
-        self.seq_nr_sending.set(val.wrapping_add(1));
-        let bytes = val.to_be_bytes();
-        // Take the lower 6 bytes (48-bit counter).
-        let mut seq = [0u8; 6];
-        seq.copy_from_slice(&bytes[2..8]);
+    /// Get the next sending sequence number for the given access type
+    /// and increment it. Persists the updated value to storage.
+    fn next_seq_nr(&self, tool_access: bool) -> [u8; 6] {
+        let mut storage = self.seq_storage.borrow_mut();
+        let (regular, tool) = storage.load_sending_seqs().unwrap_or(([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]));
+        let seq = if tool_access { tool } else { regular };
+
+        // Increment: treat as 48-bit big-endian counter.
+        let val = u64::from_be_bytes([0, 0, seq[0], seq[1], seq[2], seq[3], seq[4], seq[5]]);
+        let next_bytes = (val.wrapping_add(1)).to_be_bytes();
+        let mut next_seq = [0u8; 6];
+        next_seq.copy_from_slice(&next_bytes[2..8]);
+
+        // Save both counters with only the relevant one changed.
+        if tool_access {
+            let _ = storage.save_sending_seqs(&regular, &next_seq);
+        } else {
+            let _ = storage.save_sending_seqs(&next_seq, &tool);
+        }
+
         seq
     }
 }
 
-impl<'a, D: StackDefinition> SecureApplicationLayer<'a, D>
+impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<'a, D, SEQ>
 where
-    D::State: HasExtensionState + crate::objects::tables::HasAddressTable,
+    D::State: HasExtensionState + HasAddressTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     /// Try to process an incoming message as a Secure Service APDU.
@@ -302,7 +321,8 @@ where
         // Expand buffer so wrap_plaintext has room to shift the payload.
         buf.set_len(needed_len);
 
-        let seq_nr = self.next_seq_nr();
+        let tool_access = (ctx.scf_byte & 0x80) != 0; // bit 7 = Tool Access flag
+        let seq_nr = self.next_seq_nr(tool_access);
         let layout = secure::wrap_plaintext(buf, plain_content_len, ctx.scf_byte, &seq_nr)
             .expect("buffer capacity already verified");
 
@@ -328,7 +348,7 @@ where
     }
 }
 
-impl<D: StackDefinition> Layer for SecureApplicationLayer<'_, D>
+impl<D: StackDefinition, SEQ: SequenceNumberStorage> Layer for SecureApplicationLayer<'_, D, SEQ>
 where
     D::State: HasExtensionState,
     <D::State as HasExtensionState>::ES: HasSecurityState,
