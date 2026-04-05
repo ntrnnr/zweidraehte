@@ -10,8 +10,7 @@
 //!
 //! Each table entry is PDT_GENERIC_18: 2 bytes GA_Index + 16 bytes Key.
 //!
-//! Skipped test cases:
-//! - 3.8.10.5 — uses T_Connect (connection-oriented), not yet implemented.
+//! All 5 test cases implemented.
 
 use crate::{TestCase, TestSuite};
 use super::variables::create_security_variables;
@@ -146,8 +145,7 @@ pub fn create_section_3_8_10_suite() -> TestSuite {
             test_3_8_10_2(),
             test_3_8_10_3(),
             test_3_8_10_4(),
-            // Skipped: 3.8.10.5 — uses T_Connect (connection-oriented),
-            //   not yet implemented.
+            test_3_8_10_5(),
         ])
 }
 
@@ -290,5 +288,74 @@ fn test_3_8_10_4() -> TestCase {
         comment("Plain description read → all-zero (plain never allowed for 00C/00C)"),
         inject(PLAIN_DESC_READ_PID35),
         expect(PLAIN_DESC_READ_PID35_ZERO, TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.8.10.5 Secure PropertyValueRead after power down and master reset
+// ============================================================================
+//
+// Verifies that PID_GRP_KEY_TABLE survives confirmed restart and basic
+// restart. The test assumes the table was populated by test 3.8.10.1
+// (which writes entry B in the sec-mode-off phase).
+//
+// Phase A: Confirmed Restart (erase code 0x01) — table unchanged
+// Phase B: Basic Restart — table unchanged
+
+fn test_3_8_10_5() -> TestCase {
+    const CONNECTED_RESTART_CONFIRMED: &str =
+        "3C 60 #EDI #BDUT_ADDR 03 43 81 01 00";
+
+    const CONNECTED_RESTART_CONFIRMED_RESP: &str =
+        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+
+    const CONNECTED_BASIC_RESTART: &str =
+        "BC #EDI #BDUT_ADDR 61 43 80";
+
+    TestCase::new("3.8.10.5 Secure PropertyValueRead after power down and master reset").with_steps(vec![
+        // The reference test enables security mode first.
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        // ==== Phase A: Confirmed Restart ====
+        comment("A. T_Connect + Confirmed Restart (erase=0x01)"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+
+        inject_secure_ac(CONNECTED_RESTART_CONFIRMED, "TK1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        expect_secure_ac(CONNECTED_RESTART_CONFIRMED_RESP, "TK1", TIMEOUT),
+
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+
+        comment("Wait for DUT to restart"),
+        wait(500),
+
+        comment("Read GRP key table entry → unchanged after confirmed restart"),
+        inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_READ_ENTRY_B_OK, "TK1", TIMEOUT),
+
+        inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_READ_ENTRY_B_OK, "TK1", TIMEOUT),
+
+        // ==== Phase B: Basic Restart ====
+        comment("B. T_Connect + Basic Restart"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+
+        inject_secure_ac(CONNECTED_BASIC_RESTART, "TK1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+
+        comment("Wait for DUT to restart"),
+        wait(500),
+
+        comment("Read GRP key table entry → unchanged after basic restart"),
+        inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_READ_ENTRY_B_OK, "TK1", TIMEOUT),
+
+        // Restore: disable security mode for next suite.
+        comment("Disable Security Mode"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
     ])
 }

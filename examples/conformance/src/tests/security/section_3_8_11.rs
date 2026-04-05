@@ -15,7 +15,8 @@
 //! the actual entry at start=1 (8-byte payload).
 //!
 //! Skipped test cases:
-//! - 3.8.11.5 — uses T_Connect (connection-oriented), not yet implemented.
+//! - 3.8.11.1 — SIAT read/write handler not implemented yet.
+//! - 3.8.11.5 — depends on 3.8.11.1 (SIAT data must be populated).
 
 use crate::{TestCase, TestSuite};
 use super::variables::create_security_variables;
@@ -177,12 +178,11 @@ pub fn create_section_3_8_11_suite() -> TestSuite {
     )
     .secure()
     .with_cases(vec![
-        // Skipped: 3.8.11.1 — SIAT storage not implemented
+        // Skipped: 3.8.11.1 — SIAT read/write handler not implemented yet.
         test_3_8_11_2(),
         test_3_8_11_3(),
         test_3_8_11_4(),
-        // Skipped: 3.8.11.5 — uses T_Connect (connection-oriented),
-        //   not yet implemented.
+        // Skipped: 3.8.11.5 — depends on 3.8.11.1 (SIAT data must be populated).
     ])
 }
 
@@ -375,5 +375,69 @@ fn test_3_8_11_4() -> TestCase {
         comment("Plain description read → all-zero (plain never allowed for 00C/00C)"),
         inject(PLAIN_DESC_READ_PID36),
         expect(PLAIN_DESC_READ_PID36_ZERO, TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.8.11.5 Secure PropertyValueRead after power down and master reset
+// ============================================================================
+//
+// Verifies that PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE survives confirmed
+// restart and basic restart. The reference test starts by writing an entry
+// to ensure the table is populated, then restarts and reads back.
+//
+// Phase A: Confirmed Restart (erase code 0x01) — table unchanged
+// Phase B: Basic Restart — table unchanged
+
+fn test_3_8_11_5() -> TestCase {
+    const CONNECTED_RESTART_CONFIRMED: &str =
+        "3C 60 #EDI #BDUT_ADDR 03 43 81 01 00";
+
+    const CONNECTED_RESTART_CONFIRMED_RESP: &str =
+        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+
+    const CONNECTED_BASIC_RESTART: &str =
+        "BC #EDI #BDUT_ADDR 61 43 80";
+
+    TestCase::new("3.8.11.5 Secure PropertyValueRead after power down and master reset").with_steps(vec![
+        // Write an entry to ensure the table is populated (per reference).
+        comment("Write SIAT entry (IA=0x11F0, SeqNr=0)"),
+        inject_secure_ac(SECURE_WRITE_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_WRITE_ENTRY_OK, "TK1", TIMEOUT),
+
+        // ==== Phase A: Confirmed Restart ====
+        comment("A. T_Connect + Confirmed Restart (erase=0x01)"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+
+        inject_secure_ac(CONNECTED_RESTART_CONFIRMED, "TK1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        expect_secure_ac(CONNECTED_RESTART_CONFIRMED_RESP, "TK1", TIMEOUT),
+
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+
+        comment("Wait for DUT to restart"),
+        wait(500),
+
+        comment("Read SIAT entry → unchanged after confirmed restart"),
+        inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_READ_ENTRY_OK, "TK1", TIMEOUT),
+
+        inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_READ_ENTRY_OK, "TK1", TIMEOUT),
+
+        // ==== Phase B: Basic Restart ====
+        comment("B. T_Connect + Basic Restart"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+
+        inject_secure_ac(CONNECTED_BASIC_RESTART, "TK1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+
+        comment("Wait for DUT to restart"),
+        wait(500),
+
+        comment("Read SIAT entry → unchanged after basic restart"),
+        inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
+        expect_secure_ac(SECURE_READ_ENTRY_OK, "TK1", TIMEOUT),
     ])
 }
