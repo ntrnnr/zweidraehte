@@ -214,10 +214,7 @@ where
     }
 
     /// Try to process an incoming message as a Secure Service APDU.
-    fn try_process_secure(
-        &self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> SecureResult {
+    fn try_process_secure(&self, mut msg: KnxMessageBuffer<Buffer<'static>>) -> SecureResult {
         let apci = msg.get_apci_code();
 
         if !matches!(apci, ApciCode::SecureService) {
@@ -474,10 +471,7 @@ where
         // Step 3: KNX Serial Number check.
         let device_serial = self.state.serial_number();
         let is_broadcast = addr_type != 0
-            || matches!(
-                incoming_service_type,
-                ServiceType::T_Broadcast_Ind | ServiceType::T_SystemBroadcast_Ind
-            );
+            || matches!(incoming_service_type, ServiceType::T_Broadcast_Ind | ServiceType::T_SystemBroadcast_Ind);
 
         if is_broadcast {
             // Broadcast/system broadcast: serial must be non-zero and match.
@@ -524,9 +518,9 @@ where
         let mut challenge = [0u8; 6];
         challenge.copy_from_slice(&buf[secure::sync::CHALLENGE..secure::sync::CHALLENGE + 6]);
 
-        if ccm::verify_and_decrypt_sync_req(
-            &key, &ccm_ctx, scf_byte, &serial_number, &mut challenge, &received_mac,
-        ).is_err() {
+        if ccm::verify_and_decrypt_sync_req(&key, &ccm_ctx, scf_byte, &serial_number, &mut challenge, &received_mac)
+            .is_err()
+        {
             warn!("S-AL: sync req MAC verification failed");
             security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
             return SecureResult::Dropped;
@@ -586,7 +580,9 @@ where
 
         // Swap src/dst for the response.
         let device_addr = u16::from_be_bytes(self.state.individual_address().0);
-        let dst_for_response = src; // Send back to the requester.
+        // For broadcast responses, the NL will rewrite dst to 0x0000 on the
+        // wire — the CCM context must match what the receiver sees.
+        let dst_for_response = if is_broadcast { 0x0000 } else { src };
 
         let buf = msg.buf_mut();
         let ctrl_byte = buf[0];
