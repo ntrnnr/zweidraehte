@@ -23,7 +23,7 @@ use crate::{
     definition::StackDefinition,
     layers::application::ApplicationLayer,
     messages::{
-        apdu::secure::{self, SecureApduMut, SecureApduRef},
+        apdu::secure::{self, SecureApduMut, SecureApduRef, SyncReqRef},
         buffers::{Buffer, MessageBuffer},
         knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
     },
@@ -34,6 +34,39 @@ use crate::{
 };
 
 use crate::logging::warn;
+
+// ============================================================================
+// Processing result for try_process_secure
+// ============================================================================
+
+/// Result of secure frame processing.
+enum SecureResult {
+    /// Forward the (decrypted) message to the inner Application Layer.
+    Forward(KnxMessageBuffer<Buffer<'static>>),
+    /// Frame was silently dropped (verification failed, etc.).
+    Dropped,
+    /// A sync response was generated — push directly to outbox.
+    SyncResponse(KnxMessageBuffer<Buffer<'static>>),
+}
+
+// ============================================================================
+// Sequence number helpers
+// ============================================================================
+
+/// Convert a 6-byte big-endian sequence number to u64.
+fn seq_to_u64(seq: &[u8; 6]) -> u64 {
+    let mut full = [0u8; 8];
+    full[2..8].copy_from_slice(seq);
+    u64::from_be_bytes(full)
+}
+
+/// Convert a u64 to a 6-byte big-endian sequence number.
+fn u64_to_seq(val: u64) -> [u8; 6] {
+    let full = val.to_be_bytes();
+    let mut seq = [0u8; 6];
+    seq.copy_from_slice(&full[2..8]);
+    seq
+}
 
 // ============================================================================
 // Outgoing security context — tracks whether to encrypt the response
@@ -82,11 +115,19 @@ pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberSto
     /// `SecureExtensionState`. Shared with the Security IO augment which
     /// handles PID 59 (PID_SEQUENCE_NUMBER_SENDING) read/write.
     seq_storage: &'a RefCell<SEQ>,
+    /// Timestamp of the last sync response sent (1-second rate limit per spec).
+    last_sync_response: Cell<Option<embassy_time::Instant>>,
 }
 
 impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<'a, D, SEQ> {
     pub fn new(inner: ApplicationLayer<'a, D>, state: &'a D::State, seq_storage: &'a RefCell<SEQ>) -> Self {
-        Self { inner, state, outgoing_ctx: Cell::new(OutgoingSecurityCtx::default()), seq_storage }
+        Self {
+            inner,
+            state,
+            outgoing_ctx: Cell::new(OutgoingSecurityCtx::default()),
+            seq_storage,
+            last_sync_response: Cell::new(None),
+        }
     }
 
     pub fn inner_mut(&mut self) -> &mut ApplicationLayer<'a, D> {
@@ -176,7 +217,7 @@ where
     fn try_process_secure(
         &self,
         mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> Option<KnxMessageBuffer<Buffer<'static>>> {
+    ) -> SecureResult {
         let apci = msg.get_apci_code();
 
         if !matches!(apci, ApciCode::SecureService) {
@@ -193,11 +234,11 @@ where
                     let security_state = self.state.extension_state();
                     warn!("S-AL: plain group frame rejected — GO requires security");
                     security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
-                    return None;
+                    return SecureResult::Dropped;
                 }
             }
 
-            return Some(msg);
+            return SecureResult::Forward(msg);
         }
 
         // Don't try to decrypt confirmation frames — they echo our own
@@ -211,7 +252,7 @@ where
                 | ServiceType::T_Broadcast_Con
                 | ServiceType::T_SystemBroadcast_Con
         ) {
-            return Some(msg);
+            return SecureResult::Forward(msg);
         }
 
         let security_state = self.state.extension_state();
@@ -224,7 +265,7 @@ where
             Ok(r) => r,
             Err(_) => {
                 warn!("S-AL: secure frame too short ({} bytes)", buf.len());
-                return None;
+                return SecureResult::Dropped;
             }
         };
 
@@ -234,15 +275,29 @@ where
             Err(_) => {
                 warn!("S-AL: invalid SCF 0x{:02X}", scf_byte);
                 security_state.log_security_failure(SecurityFailureType::ScfError, src, &[]);
-                return None;
+                return SecureResult::Dropped;
             }
         };
+        drop(secure_ref);
 
-        // Only handle S-A_Data for now.
-        if scf.service != SecureServiceType::Data {
-            warn!("S-AL: sync services not yet implemented");
-            return None;
+        // ================================================================
+        // S-A_Sync handling
+        // ================================================================
+
+        if scf.service == SecureServiceType::SyncRequest {
+            return self.process_sync_request(msg, scf, scf_byte, src, st);
         }
+
+        if scf.service == SecureServiceType::SyncResponse {
+            // We don't initiate sync requests, so unsolicited responses
+            // are silently dropped per spec.
+            return SecureResult::Dropped;
+        }
+
+        // From here on, only S-A_Data is handled.
+        // Re-parse the secure frame header for data-specific fields.
+        let buf = msg.buf_mut();
+        let secure_ref = SecureApduRef::parse(buf).expect("already validated length");
 
         // Sequence number validation: reject seq_nr == 0 unconditionally.
         // A zero sequence number is always invalid per spec.
@@ -253,7 +308,7 @@ where
         if seq_nr == [0u8; 6] {
             warn!("S-AL: sequence number is zero — rejected");
             security_state.log_security_failure(SecurityFailureType::SeqNrError, src, &[]);
-            return None;
+            return SecureResult::Dropped;
         }
         let received_mac = secure_ref.mac();
         let addr_type = secure_ref.addr_type();
@@ -283,7 +338,7 @@ where
                     "S-AL: security tables not loaded (state={:?}), dropping non-tool frame",
                     security_state.security_load_state()
                 );
-                return None;
+                return SecureResult::Dropped;
             }
         }
 
@@ -293,7 +348,7 @@ where
         if scf.tool_access && addr_type != 0 {
             warn!("S-AL: tool access on group communication rejected");
             security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
-            return None;
+            return SecureResult::Dropped;
         }
 
         // Look up key based on access type.
@@ -315,12 +370,12 @@ where
                 None => {
                     warn!("S-AL: no group key for TSAP {}", tsap);
                     security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
-                    return None;
+                    return SecureResult::Dropped;
                 }
             }
         } else {
             warn!("S-AL: P2P secure APDU without tool access not yet supported");
-            return None;
+            return SecureResult::Dropped;
         };
 
         // Decrypt / verify, then collapse to plaintext.
@@ -330,12 +385,12 @@ where
             if ccm::verify_and_decrypt(&key, &ctx, scf_byte, secure_mut.payload_mut(), &received_mac).is_err() {
                 warn!("S-AL: MAC verification failed (A+C)");
                 security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
-                return None;
+                return SecureResult::Dropped;
             }
         } else if ccm::verify_mac_auth_only(&key, &ctx, scf_byte, secure_mut.payload(), &received_mac).is_err() {
             warn!("S-AL: MAC verification failed (auth-only)");
             security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
-            return None;
+            return SecureResult::Dropped;
         }
 
         let new_len = secure_mut.unwrap_to_plaintext();
@@ -356,7 +411,7 @@ where
             if !self.check_go_security_flags(tsap, received_bits) {
                 warn!("S-AL: GO security flag mismatch for TSAP {} (received={:#04X})", tsap, received_bits);
                 security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
-                return None;
+                return SecureResult::Dropped;
             }
         }
 
@@ -371,7 +426,214 @@ where
         let _ = buf;
         msg.set_access_source(AccessSource::Explicit(access_ctx));
 
-        Some(msg)
+        SecureResult::Forward(msg)
+    }
+
+    // ========================================================================
+    // S-A_Sync_Req processing (spec 03/03/07 §5.3.2)
+    // ========================================================================
+
+    /// Process an incoming S-A_Sync_Req and generate an S-A_Sync_Res.
+    ///
+    /// Implements the remote S-AL side of the sync protocol. The device
+    /// responds with its sequence numbers so the requester can synchronize.
+    fn process_sync_request(
+        &self,
+        mut msg: KnxMessageBuffer<Buffer<'static>>,
+        scf: SecurityControlField,
+        scf_byte: u8,
+        src: u16,
+        incoming_service_type: ServiceType,
+    ) -> SecureResult {
+        let security_state = self.state.extension_state();
+
+        // Step 1: Rate limit — ignore if we responded less than 1 second ago.
+        if let Some(last) = self.last_sync_response.get() {
+            if embassy_time::Instant::now() - last < embassy_time::Duration::from_secs(1) {
+                return SecureResult::Dropped;
+            }
+        }
+
+        // Step 2: Parse sync request fields.
+        let buf = msg.buf_mut();
+        let sync_ref = match SyncReqRef::parse(buf) {
+            Ok(r) => r,
+            Err(_) => {
+                warn!("S-AL: sync req frame too short ({} bytes)", buf.len());
+                return SecureResult::Dropped;
+            }
+        };
+
+        let seq_nr_local_received = sync_ref.seq_nr_local();
+        let serial_number = sync_ref.knx_serial_number();
+        let received_mac = sync_ref.mac();
+        let addr_type = sync_ref.addr_type();
+        let ccm_ctx = sync_ref.ccm_context();
+        drop(sync_ref);
+
+        // Step 3: KNX Serial Number check.
+        let device_serial = self.state.serial_number();
+        let is_broadcast = addr_type != 0
+            || matches!(
+                incoming_service_type,
+                ServiceType::T_Broadcast_Ind | ServiceType::T_SystemBroadcast_Ind
+            );
+
+        if is_broadcast {
+            // Broadcast/system broadcast: serial must be non-zero and match.
+            if serial_number == [0u8; 6] || serial_number != *device_serial {
+                return SecureResult::Dropped;
+            }
+        } else {
+            // P2P: serial must be all-zero or match the device's serial.
+            if serial_number != [0u8; 6] && serial_number != *device_serial {
+                return SecureResult::Dropped;
+            }
+        }
+
+        // Step 4: Key lookup.
+        let key = if scf.tool_access {
+            let tk = security_state.tool_key();
+            if tk != [0u8; 16] { tk } else { self.state.fdsk().copied().unwrap_or([0u8; 16]) }
+        } else {
+            // Non-tool: look up P2P key for sender's IA.
+            match security_state.p2p_key_for_ia(src) {
+                Some(k) => k,
+                None => {
+                    warn!("S-AL: sync req — no P2P key for IA {:#06X}", src);
+                    return SecureResult::Dropped;
+                }
+            }
+        };
+
+        // Step 5: SIAT check (non-tool only).
+        if !scf.tool_access {
+            use crate::objects::tables::LoadState;
+            if security_state.security_load_state() != LoadState::Loaded {
+                return SecureResult::Dropped;
+            }
+            if !security_state.is_in_siat(src) {
+                warn!("S-AL: sync req — sender {:#06X} not in SIAT", src);
+                security_state.log_security_failure(SecurityFailureType::RoleError, src, &[]);
+                return SecureResult::Dropped;
+            }
+        }
+
+        // Step 6: Verify and decrypt the challenge.
+        let buf = msg.buf_mut();
+        let mut challenge = [0u8; 6];
+        challenge.copy_from_slice(&buf[secure::sync::CHALLENGE..secure::sync::CHALLENGE + 6]);
+
+        if ccm::verify_and_decrypt_sync_req(
+            &key, &ccm_ctx, scf_byte, &serial_number, &mut challenge, &received_mac,
+        ).is_err() {
+            warn!("S-AL: sync req MAC verification failed");
+            security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
+            return SecureResult::Dropped;
+        }
+
+        // Step 7: Compute response SeqNr_local.
+        //
+        // The "stored" value is the last-valid receiving sequence number
+        // for this communication partner, read from wear-resistant storage.
+        // Tool access uses a sentinel peer IA (0xFFFF).
+        let peer_ia = if scf.tool_access { 0xFFFF } else { src };
+        let mut storage = self.seq_storage.borrow_mut();
+        let stored_seq = storage.load_receiving_seq(peer_ia).ok().flatten().unwrap_or([0u8; 6]);
+        let stored_val = seq_to_u64(&stored_seq);
+        let received_val = seq_to_u64(&seq_nr_local_received);
+
+        // If (received - 1) > stored, update stored to (received - 1).
+        let new_stored = if received_val > 0 && (received_val - 1) > stored_val {
+            let updated = received_val - 1;
+            let updated_bytes = u64_to_seq(updated);
+            let _ = storage.save_receiving_seq(peer_ia, &updated_bytes);
+            updated
+        } else {
+            stored_val
+        };
+
+        // Response SeqNr_local = max(received - 1, stored) + 1
+        let received_minus_1 = received_val.saturating_sub(1);
+        let response_seq_local = received_minus_1.max(new_stored) + 1;
+        let response_seq_local_bytes = u64_to_seq(response_seq_local);
+
+        // Step 8: SeqNr_remote = device's own Sequence Number Sending.
+        // Use tool counter when T flag is set, regular counter otherwise.
+        // Do NOT increment — spec says sync does not alter SeqNoSending.
+        let (regular_seq, tool_seq) = storage.load_sending_seqs().unwrap_or(([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]));
+        let seq_nr_remote = if scf.tool_access { tool_seq } else { regular_seq };
+        drop(storage);
+
+        // Step 9: Generate random.
+        let mut random = [0u8; 6];
+        self.state.fill_random(&mut random);
+
+        // Step 10: Build response — reuse the incoming buffer.
+        let mut challenge_xor_random = [0u8; 6];
+        for i in 0..6 {
+            challenge_xor_random[i] = challenge[i] ^ random[i];
+        }
+
+        // Build the response SCF: same T, SBC, A+C flags but SyncResponse service.
+        let response_scf = SecurityControlField {
+            service: SecureServiceType::SyncResponse,
+            system_broadcast: scf.system_broadcast,
+            confidentiality: true, // Sync always uses A+C.
+            tool_access: scf.tool_access,
+        };
+        let response_scf_byte = response_scf.encode();
+
+        // Swap src/dst for the response.
+        let device_addr = u16::from_be_bytes(self.state.individual_address().0);
+        let dst_for_response = src; // Send back to the requester.
+
+        let buf = msg.buf_mut();
+        let ctrl_byte = buf[0];
+        let npdu_byte = buf[offsets::MSG_ADDR_TYPE];
+        let tpci_high = buf[offsets::MSG_TPCI];
+
+        let mac_offset = secure::build_sync_response(
+            buf,
+            ctrl_byte,
+            device_addr,
+            dst_for_response,
+            npdu_byte,
+            tpci_high,
+            response_scf_byte,
+            &challenge_xor_random,
+            &seq_nr_remote,
+            &response_seq_local_bytes,
+        );
+
+        // Encrypt the payload and compute MAC.
+        let tpci_apci = u16::from_be_bytes([buf[offsets::MSG_TPCI], buf[offsets::MSG_TPCI + 1]]);
+        let mac = ccm::encrypt_and_mac_sync_res(
+            &key,
+            &random,
+            device_addr,
+            dst_for_response,
+            addr_type,
+            tpci_apci,
+            response_scf_byte,
+            &mut buf[secure::sync::SEQ_NR_REMOTE..secure::sync::SEQ_NR_REMOTE + 12],
+        );
+        buf[mac_offset..mac_offset + secure::MAC_LEN].copy_from_slice(&mac);
+        buf.set_len(secure::sync::FRAME_LEN);
+
+        // Step 11: Set appropriate response service type.
+        let response_st = match incoming_service_type {
+            ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
+            ServiceType::T_Broadcast_Ind => ServiceType::T_Broadcast_Req,
+            ServiceType::T_SystemBroadcast_Ind => ServiceType::T_SystemBroadcast_Req,
+            _ => ServiceType::T_DataUnack_Req,
+        };
+        msg.set_service_type(response_st);
+
+        // Step 12: Update rate limit timestamp.
+        self.last_sync_response.set(Some(embassy_time::Instant::now()));
+
+        SecureResult::SyncResponse(msg)
     }
 
     /// Encrypt an outgoing message if the current context requires it.
@@ -518,7 +780,7 @@ where
 
     fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
         match self.try_process_secure(msg) {
-            Some(msg) => {
+            SecureResult::Forward(msg) => {
                 // Use a local outbox to intercept outgoing messages.
                 let mut local_outbox = Outbox::new();
                 self.inner.process(msg, &mut local_outbox);
@@ -532,7 +794,11 @@ where
                 // Clear outgoing context after processing.
                 self.outgoing_ctx.set(OutgoingSecurityCtx::default());
             }
-            None => {
+            SecureResult::SyncResponse(msg) => {
+                // Sync response is already fully encrypted — push directly.
+                outbox.push(msg);
+            }
+            SecureResult::Dropped => {
                 // Verification failed — silently drop.
             }
         }

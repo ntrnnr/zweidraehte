@@ -309,3 +309,175 @@ pub struct SecureFrameLayout {
     /// Where to write the 4-byte MAC.
     pub mac_start: usize,
 }
+
+// ============================================================================
+// S-A_Sync frame types
+// ============================================================================
+
+/// Byte offsets for S-A_Sync_Req fields within a message buffer.
+///
+/// Sync request layout (after header):
+/// ```text
+/// [TPCI/APCI(2)] [SCF(1)] [SeqNr_local(6)] [KNX_Serial(6)] [Challenge_enc(6)] [MAC(4)]
+///  6..8           8        9..15             15..21           21..27              27..31
+/// ```
+///
+/// Total frame length = 31 bytes.
+pub mod sync {
+    use super::*;
+
+    /// Total frame length of an S-A_Sync_Req or S-A_Sync_Res.
+    pub const FRAME_LEN: usize = 31;
+
+    /// Byte offset where KNX Serial Number starts in a sync request.
+    pub const SERIAL_NUMBER: usize = PAYLOAD; // 15
+
+    /// Byte offset where the encrypted challenge starts in a sync request.
+    pub const CHALLENGE: usize = PAYLOAD + 6; // 21
+
+    /// Byte offset where Challenge XOR Random starts in a sync response
+    /// (same position as SeqNr in the general secure frame layout).
+    pub const CHALLENGE_XOR_RANDOM: usize = SEQ_NR; // 9
+
+    /// Byte offset where the encrypted SeqNr_remote starts in a sync response.
+    pub const SEQ_NR_REMOTE: usize = PAYLOAD; // 15
+
+    /// Byte offset where the encrypted SeqNr_local starts in a sync response.
+    pub const SEQ_NR_LOCAL: usize = PAYLOAD + 6; // 21
+}
+
+/// Read-only view of an S-A_Sync_Req frame.
+pub struct SyncReqRef<'a> {
+    buf: &'a [u8],
+}
+
+impl<'a> SyncReqRef<'a> {
+    /// Parse a sync request from a raw message buffer.
+    ///
+    /// Validates that the frame is exactly 31 bytes.
+    pub fn parse(buf: &'a [u8]) -> Result<Self, SecureApduError> {
+        if buf.len() < sync::FRAME_LEN {
+            return Err(SecureApduError::TooShort);
+        }
+        Ok(Self { buf })
+    }
+
+    /// Raw SCF byte.
+    pub fn scf_byte(&self) -> u8 {
+        self.buf[SCF]
+    }
+
+    /// Parsed Security Control Field.
+    pub fn scf(&self) -> Result<SecurityControlField, InvalidScf> {
+        SecurityControlField::parse(self.scf_byte())
+    }
+
+    /// 6-byte SeqNr_local (sender's assumed next SeqNr for the device).
+    pub fn seq_nr_local(&self) -> [u8; 6] {
+        let mut seq = [0u8; 6];
+        seq.copy_from_slice(&self.buf[SEQ_NR..SEQ_NR + 6]);
+        seq
+    }
+
+    /// 6-byte KNX Serial Number (target device serial for broadcast, or 0 for P2P).
+    pub fn knx_serial_number(&self) -> [u8; 6] {
+        let mut sn = [0u8; 6];
+        sn.copy_from_slice(&self.buf[sync::SERIAL_NUMBER..sync::SERIAL_NUMBER + 6]);
+        sn
+    }
+
+    /// Mutable slice of the 6-byte encrypted challenge region (for in-place decryption).
+    /// Must use `parse_mut` to get a mutable reference.
+    pub fn challenge(&self) -> &[u8] {
+        &self.buf[sync::CHALLENGE..sync::CHALLENGE + 6]
+    }
+
+    /// 4-byte MAC.
+    pub fn mac(&self) -> [u8; 4] {
+        let mut mac = [0u8; 4];
+        mac.copy_from_slice(&self.buf[self.buf.len() - MAC_LEN..]);
+        mac
+    }
+
+    /// Source address from the message header.
+    pub fn src(&self) -> u16 {
+        u16::from_be_bytes([self.buf[offsets::MSG_SOURCE_ADDR], self.buf[offsets::MSG_SOURCE_ADDR + 1]])
+    }
+
+    /// Destination address from the message header.
+    pub fn dst(&self) -> u16 {
+        u16::from_be_bytes([self.buf[offsets::MSG_DEST_ADDR], self.buf[offsets::MSG_DEST_ADDR + 1]])
+    }
+
+    /// Address type byte (bit 7 of NPDU byte).
+    pub fn addr_type(&self) -> u8 {
+        self.buf[offsets::MSG_ADDR_TYPE] & 0x80
+    }
+
+    /// TPCI/APCI field.
+    pub fn tpci_apci(&self) -> u16 {
+        u16::from_be_bytes([self.buf[offsets::MSG_TPCI], self.buf[offsets::MSG_TPCI + 1]])
+    }
+
+    /// Build a [`CcmContext`] for verifying this sync request.
+    ///
+    /// The `seq_nr` in the context is the SeqNr_local from the request
+    /// (used as the nonce in B0/Ctr blocks).
+    pub fn ccm_context(&self) -> CcmContext {
+        CcmContext {
+            seq_nr: self.seq_nr_local(),
+            src: self.src(),
+            dst: self.dst(),
+            addr_type: self.addr_type(),
+            tpci_apci: self.tpci_apci(),
+        }
+    }
+}
+
+/// Build an S-A_Sync_Res frame in a buffer.
+///
+/// Writes header, SCF, challenge_xor_random, and plaintext
+/// SeqNr_remote + SeqNr_local. The caller must then encrypt the
+/// payload region (bytes 15..27) and write the MAC (bytes 27..31)
+/// using [`ccm::encrypt_and_mac_sync_res`].
+///
+/// `buf` must be at least 31 bytes.
+///
+/// Returns the byte offset where the MAC should be written (27).
+pub fn build_sync_response(
+    buf: &mut [u8],
+    ctrl_byte: u8,
+    src: u16,
+    dst: u16,
+    npdu_byte: u8,
+    tpci_high: u8,
+    scf_byte: u8,
+    challenge_xor_random: &[u8; 6],
+    seq_nr_remote: &[u8; 6],
+    seq_nr_local: &[u8; 6],
+) -> usize {
+    assert!(buf.len() >= sync::FRAME_LEN, "buffer too small for sync response");
+
+    // Header: CTRL(1) + SRC(2) + DST(2) + NPDU(1)
+    buf[0] = ctrl_byte;
+    buf[offsets::MSG_SOURCE_ADDR..offsets::MSG_SOURCE_ADDR + 2].copy_from_slice(&src.to_be_bytes());
+    buf[offsets::MSG_DEST_ADDR..offsets::MSG_DEST_ADDR + 2].copy_from_slice(&dst.to_be_bytes());
+    buf[offsets::MSG_ADDR_TYPE] = npdu_byte;
+
+    // TPCI/APCI: preserve TPCI high bits, set Secure APCI (0x03F1).
+    buf[offsets::MSG_TPCI] = (tpci_high & 0xFC) | 0x03;
+    buf[offsets::MSG_TPCI + 1] = 0xF1;
+
+    // SCF
+    buf[SCF] = scf_byte;
+
+    // Challenge XOR Random (6 bytes, plaintext — goes where SeqNr normally is)
+    buf[SEQ_NR..SEQ_NR + 6].copy_from_slice(challenge_xor_random);
+
+    // Plaintext payload: SeqNr_remote(6) + SeqNr_local(6)
+    buf[sync::SEQ_NR_REMOTE..sync::SEQ_NR_REMOTE + 6].copy_from_slice(seq_nr_remote);
+    buf[sync::SEQ_NR_LOCAL..sync::SEQ_NR_LOCAL + 6].copy_from_slice(seq_nr_local);
+
+    // Return MAC offset. Caller writes 4 bytes of MAC here.
+    sync::FRAME_LEN - MAC_LEN
+}

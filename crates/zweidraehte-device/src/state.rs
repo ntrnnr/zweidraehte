@@ -92,6 +92,15 @@ pub trait StackState {
         None
     }
 
+    /// Fill a buffer with random bytes for KNX Data Secure operations.
+    ///
+    /// Required for S-A_Sync responses (6-byte random per response).
+    /// Default panics — only secure stacks need to implement this.
+    fn fill_random(&self, buf: &mut [u8]) {
+        let _ = buf;
+        panic!("fill_random not implemented — required for secure stacks");
+    }
+
     /// Get the runtime maximum APDU length.
     ///
     /// This value is reported via PID 56 (MAX_APDU_LENGTH) in the Device Object.

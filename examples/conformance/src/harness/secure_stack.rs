@@ -162,6 +162,9 @@ impl StackState for SecureConformanceState {
     fn fdsk(&self) -> Option<&[u8; 16]> {
         self.inner.fdsk()
     }
+    fn fill_random(&self, buf: &mut [u8]) {
+        getrandom::fill(buf).expect("getrandom failed");
+    }
     fn max_apdu_length(&self) -> u16 {
         device_info::MAX_APDU_LENGTH
     }

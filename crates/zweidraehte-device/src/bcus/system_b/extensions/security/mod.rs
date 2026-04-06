@@ -511,6 +511,42 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
         None
     }
 
+    /// Look up a P2P key by peer individual address.
+    ///
+    /// Linearly scans the P2P key table. Each entry is 20 bytes:
+    /// IA_Index(2) + Key(16) + Roles(2). Returns the 16-byte key if
+    /// a matching IA is found.
+    pub fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<[u8; 16]> {
+        let table = self.p2p_keys.borrow();
+        let count = table.count() as usize;
+        let peer_bytes = peer_ia.to_be_bytes();
+        for i in 0..count {
+            let entry = &table.data[i];
+            if entry[0] == peer_bytes[0] && entry[1] == peer_bytes[1] {
+                let mut key = [0u8; 16];
+                key.copy_from_slice(&entry[2..18]);
+                return Some(key);
+            }
+        }
+        None
+    }
+
+    /// Check whether a peer IA exists in the Security Individual Address Table.
+    ///
+    /// Linearly scans the SIAT. Each entry is 8 bytes: IA(2) + LastValidSeqNr(6).
+    pub fn is_in_siat(&self, peer_ia: u16) -> bool {
+        let table = self.siat.borrow();
+        let count = table.count() as usize;
+        let peer_bytes = peer_ia.to_be_bytes();
+        for i in 0..count {
+            let entry = &table.data[i];
+            if entry[0] == peer_bytes[0] && entry[1] == peer_bytes[1] {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Get a reference to the security failures log.
     pub fn failures_log(&self) -> &RefCell<SecurityFailuresLog> {
         &self.failures_log
@@ -588,6 +624,12 @@ pub trait HasSecurityState {
     /// Look up GO security flags by 0-based group object index.
     fn go_security_flags_for(&self, go_index: u16) -> Option<u8>;
 
+    /// Look up a P2P key by peer individual address.
+    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<[u8; 16]>;
+
+    /// Check whether a peer IA exists in the Security Individual Address Table.
+    fn is_in_siat(&self, peer_ia: u16) -> bool;
+
     /// Record a security failure in the failures log.
     ///
     /// `frame_fragment` should be the first bytes of the offending frame
@@ -624,6 +666,14 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState for S
 
     fn go_security_flags_for(&self, go_index: u16) -> Option<u8> {
         self.go_security_flags_for(go_index)
+    }
+
+    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<[u8; 16]> {
+        self.p2p_key_for_ia(peer_ia)
+    }
+
+    fn is_in_siat(&self, peer_ia: u16) -> bool {
+        self.is_in_siat(peer_ia)
     }
 
     fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {
@@ -755,6 +805,14 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: u
 
     fn go_security_flags_for(&self, go_index: u16) -> Option<u8> {
         self.security.go_security_flags_for(go_index)
+    }
+
+    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<[u8; 16]> {
+        self.security.p2p_key_for_ia(peer_ia)
+    }
+
+    fn is_in_siat(&self, peer_ia: u16) -> bool {
+        self.security.is_in_siat(peer_ia)
     }
 
     fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {

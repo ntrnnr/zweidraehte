@@ -122,6 +122,9 @@ Subdirectories:
 
 Run with: `cargo run --bin conformance-runner [test_name_filter]`
 
+When running the conformance tests, make sure the two DUTs that are separate
+executables are rebuilt with `cargo build`!
+
 Key modules:
 - `lib.rs` - Test framework definition and data structures
 - `bin/runner.rs` - Test runner executable

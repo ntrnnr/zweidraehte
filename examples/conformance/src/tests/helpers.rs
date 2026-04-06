@@ -2,7 +2,7 @@
 //!
 //! These helpers provide a concise DSL for defining test steps in EITT-style tests.
 
-use crate::{InvalidSecurityParam, SecureParams, SeqSource, TestStep};
+use crate::{InvalidSecurityParam, SecureParams, SeqSource, SyncReqParams, SyncResExpect, TestStep};
 
 /// Helper to create an inject step from a template string
 pub fn inject(template: &str) -> TestStep {
@@ -195,4 +195,98 @@ pub fn inject_secure_ac_seq0(template: &str, key: &str) -> TestStep {
 /// Inject a secure telegram with an intentionally invalid field.
 pub fn inject_secure_invalid(template: &str, params: SecureParams, invalid: InvalidSecurityParam) -> TestStep {
     TestStep::InjectSecureInvalid { template: template.to_string(), sec_params: params, invalid, delay_before_ms: 0 }
+}
+
+// ============================================================================
+// S-A_Sync helpers
+// ============================================================================
+
+/// Inject a P2P sync request with tool key (connectionless).
+pub fn inject_sync_req_tool(
+    src: &str,
+    dst: &str,
+    key: &str,
+    seq_nr_local: u64,
+    challenge: [u8; 6],
+) -> TestStep {
+    TestStep::InjectSyncReq {
+        sync_params: SyncReqParams {
+            key_name: key.to_string(),
+            tool_access: true,
+            system_broadcast: false,
+            src_template: src.to_string(),
+            dst_template: dst.to_string(),
+            npdu_byte: 0x60,
+            ctrl_byte: 0x3C,
+            seq_nr_local,
+            serial_number: [0; 6],
+            challenge,
+            tpci_high: 0x00,
+        },
+        delay_before_ms: 0,
+    }
+}
+
+/// Inject a broadcast sync request with tool key.
+pub fn inject_sync_req_broadcast(
+    src: &str,
+    key: &str,
+    seq_nr_local: u64,
+    serial: [u8; 6],
+    challenge: [u8; 6],
+    system_broadcast: bool,
+) -> TestStep {
+    TestStep::InjectSyncReq {
+        sync_params: SyncReqParams {
+            key_name: key.to_string(),
+            tool_access: true,
+            system_broadcast,
+            src_template: src.to_string(),
+            dst_template: "00 00".to_string(),
+            npdu_byte: 0xE0,
+            ctrl_byte: 0x3C,
+            seq_nr_local,
+            serial_number: serial,
+            challenge,
+            tpci_high: 0x00,
+        },
+        delay_before_ms: 0,
+    }
+}
+
+/// Expect a sync response from the DUT with tool key.
+pub fn expect_sync_res_tool(
+    key: &str,
+    challenge: [u8; 6],
+    expected_seq_remote: Option<u64>,
+    expected_seq_local: Option<u64>,
+    timeout_ms: u32,
+) -> TestStep {
+    TestStep::ExpectSyncRes {
+        sync_expect: SyncResExpect {
+            key_name: key.to_string(),
+            tool_access: true,
+            system_broadcast: false,
+            expected_seq_remote,
+            expected_seq_local,
+            challenge,
+            expected_src_template: "#BDUT_ADDR".to_string(),
+        },
+        timeout_ms,
+    }
+}
+
+/// Inject a sync request with custom SyncReqParams.
+pub fn inject_sync_req(params: SyncReqParams) -> TestStep {
+    TestStep::InjectSyncReq { sync_params: params, delay_before_ms: 0 }
+}
+
+/// Inject a sync request with an intentionally invalid field.
+pub fn inject_sync_req_invalid(params: SyncReqParams, invalid: InvalidSecurityParam) -> TestStep {
+    TestStep::InjectSyncReqInvalid { sync_params: params, invalid, delay_before_ms: 0 }
+}
+
+/// Expect a sync response with custom SyncResExpect.
+pub fn expect_sync_res(expect: SyncResExpect, timeout_ms: u32) -> TestStep {
+    TestStep::ExpectSyncRes { sync_expect: expect, timeout_ms }
 }

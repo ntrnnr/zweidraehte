@@ -216,6 +216,33 @@ pub enum TestStep {
         invalid: InvalidSecurityParam,
         delay_before_ms: u32,
     },
+
+    // ================================================================
+    // S-A_Sync steps
+    // ================================================================
+
+    /// Inject an S-A_Sync_Req frame. The frame is built from scratch
+    /// (not wrapping a plaintext template like InjectSecure).
+    InjectSyncReq {
+        /// Sync request parameters.
+        sync_params: SyncReqParams,
+        delay_before_ms: u32,
+    },
+
+    /// Expect an S-A_Sync_Res frame from the DUT. Verifies the
+    /// challenge/random, SeqNr_remote, and SeqNr_local fields.
+    ExpectSyncRes {
+        /// Expected sync response parameters.
+        sync_expect: SyncResExpect,
+        timeout_ms: u32,
+    },
+
+    /// Inject an S-A_Sync_Req with intentionally invalid fields.
+    InjectSyncReqInvalid {
+        sync_params: SyncReqParams,
+        invalid: InvalidSecurityParam,
+        delay_before_ms: u32,
+    },
 }
 
 // ============================================================================
@@ -321,6 +348,56 @@ pub enum InvalidSecurityParam {
     AppendBytes(Vec<u8>),
     /// Truncate N bytes from the end of the frame (frame too short).
     TruncateBytes(usize),
+}
+
+/// Parameters for injecting an S-A_Sync_Req.
+#[derive(Debug, Clone)]
+pub struct SyncReqParams {
+    /// Key name (e.g., "TK1", "P2PK1").
+    pub key_name: String,
+    /// Tool access flag (T in SCF).
+    pub tool_access: bool,
+    /// System broadcast flag (SBC in SCF).
+    pub system_broadcast: bool,
+    /// Source address template (e.g., "#EDI", "FF FE").
+    pub src_template: String,
+    /// Destination address template (e.g., "#BDUT_ADDR", "00 00").
+    pub dst_template: String,
+    /// NPDU byte (addr_type in bit 7 + hop count).
+    /// Typically 0x60 for P2P, 0xE0 for broadcast.
+    pub npdu_byte: u8,
+    /// Control byte (typically 0x3C for extended frame).
+    pub ctrl_byte: u8,
+    /// SeqNr_local value to include in the request.
+    pub seq_nr_local: u64,
+    /// KNX Serial Number (6 bytes). Zero for P2P, device serial for broadcast.
+    pub serial_number: [u8; 6],
+    /// Challenge value (6 bytes).
+    pub challenge: [u8; 6],
+    /// TPCI high bits (e.g., 0x03 for connectionless, 0x43 for connection-oriented).
+    pub tpci_high: u8,
+}
+
+/// Expected values for an S-A_Sync_Res from the DUT.
+#[derive(Debug, Clone)]
+pub struct SyncResExpect {
+    /// Key name for decryption.
+    pub key_name: String,
+    /// Tool access flag expected in response SCF.
+    pub tool_access: bool,
+    /// System broadcast flag expected in response SCF.
+    pub system_broadcast: bool,
+    /// Expected SeqNr_remote value (the DUT's Sequence Number Sending).
+    /// `None` means accept any value.
+    pub expected_seq_remote: Option<u64>,
+    /// Expected SeqNr_local value (what the DUT expects from us next).
+    /// `None` means accept any value.
+    pub expected_seq_local: Option<u64>,
+    /// The challenge that was sent in the corresponding request
+    /// (needed to recover the random value for decryption).
+    pub challenge: [u8; 6],
+    /// Expected source address of the response (typically #BDUT_ADDR).
+    pub expected_src_template: String,
 }
 
 impl TestStep {

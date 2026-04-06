@@ -446,6 +446,182 @@ async fn execute_step(
             }
             true
         }
+
+        // ================================================================
+        // S-A_Sync steps
+        // ================================================================
+
+        TestStep::InjectSyncReq { sync_params, delay_before_ms } => {
+            let Some(ctx) = sec_ctx else {
+                println!("  [{}] ❌ InjectSyncReq requires security context", index);
+                return false;
+            };
+
+            let key = ctx.key(&sync_params.key_name);
+            let seq_nr_local = zweidraehte_conformance::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
+
+            // Resolve src/dst templates.
+            let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
+                .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
+                .unwrap_or(0);
+            let dst_bytes = Telegram::parse(&format!("00 00 00 00 {} 00 00", sync_params.dst_template), variables)
+                .map(|t| u16::from_be_bytes([t.data[4], t.data[5]]))
+                .unwrap_or(0);
+
+            // Build SCF byte.
+            let scf = zweidraehte_device::crypto::scf::SecurityControlField {
+                service: zweidraehte_device::crypto::scf::SecureServiceType::SyncRequest,
+                system_broadcast: sync_params.system_broadcast,
+                confidentiality: true,
+                tool_access: sync_params.tool_access,
+            };
+            let scf_byte = scf.encode();
+
+            let frame = crypto::wrap_sync_req(
+                sync_params.ctrl_byte,
+                src_bytes,
+                dst_bytes,
+                sync_params.npdu_byte,
+                sync_params.tpci_high,
+                &key,
+                scf_byte,
+                &seq_nr_local,
+                &sync_params.serial_number,
+                &sync_params.challenge,
+            );
+
+            let tp1 = internal_to_tp1(&frame);
+            println!("  [{}] 🔄⬇️  InjectSyncReq: {} bytes, seqLocal={}", index, tp1.len(), sync_params.seq_nr_local);
+
+            if *delay_before_ms > 0 {
+                Timer::after(Duration::from_millis(scale_ms(*delay_before_ms, time_divisor, 10))).await;
+            }
+            if let Err(e) = harness.inject(&tp1).await {
+                println!("        ❌ Inject failed: {}", e);
+                return false;
+            }
+            true
+        }
+
+        TestStep::InjectSyncReqInvalid { sync_params, invalid, delay_before_ms } => {
+            let Some(ctx) = sec_ctx else {
+                println!("  [{}] ❌ InjectSyncReqInvalid requires security context", index);
+                return false;
+            };
+
+            let key = ctx.key(&sync_params.key_name);
+            let seq_nr_local = zweidraehte_conformance::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
+
+            let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
+                .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
+                .unwrap_or(0);
+            let dst_bytes = Telegram::parse(&format!("00 00 00 00 {} 00 00", sync_params.dst_template), variables)
+                .map(|t| u16::from_be_bytes([t.data[4], t.data[5]]))
+                .unwrap_or(0);
+
+            let scf = zweidraehte_device::crypto::scf::SecurityControlField {
+                service: zweidraehte_device::crypto::scf::SecureServiceType::SyncRequest,
+                system_broadcast: sync_params.system_broadcast,
+                confidentiality: true,
+                tool_access: sync_params.tool_access,
+            };
+            let scf_byte = scf.encode();
+
+            let frame = crypto::wrap_sync_req_invalid(
+                sync_params.ctrl_byte,
+                src_bytes,
+                dst_bytes,
+                sync_params.npdu_byte,
+                sync_params.tpci_high,
+                &key,
+                scf_byte,
+                &seq_nr_local,
+                &sync_params.serial_number,
+                &sync_params.challenge,
+                invalid,
+            );
+
+            let tp1 = internal_to_tp1(&frame);
+            println!("  [{}] 🔄💥⬇️  InjectSyncReqInvalid ({:?}): {} bytes", index, invalid, tp1.len());
+
+            if *delay_before_ms > 0 {
+                Timer::after(Duration::from_millis(scale_ms(*delay_before_ms, time_divisor, 10))).await;
+            }
+            if let Err(e) = harness.inject(&tp1).await {
+                println!("        ❌ Inject failed: {}", e);
+                return false;
+            }
+            true
+        }
+
+        TestStep::ExpectSyncRes { sync_expect, timeout_ms } => {
+            let Some(ctx) = sec_ctx else {
+                println!("  [{}] ❌ ExpectSyncRes requires security context", index);
+                return false;
+            };
+
+            let effective_ms = scale_ms(*timeout_ms, time_divisor, 100);
+            let timeout = Duration::from_millis(effective_ms);
+
+            println!("  [{}] 🔄⬆️  ExpectSyncRes (timeout={}ms)", index, effective_ms);
+
+            let captured = embassy_futures::select::select(
+                harness.receive_captured(),
+                Timer::after(timeout),
+            ).await;
+
+            match captured {
+                embassy_futures::select::Either::First(Some(msg)) => {
+                    let internal = tp1_to_internal(&msg.data);
+                    let key = ctx.key(&sync_expect.key_name);
+
+                    match crypto::unwrap_sync_res(&internal, &key, &sync_expect.challenge) {
+                        Some(decoded) => {
+                            let seq_remote = zweidraehte_conformance::tests::security::context::seq_from_bytes(&decoded.seq_nr_remote);
+                            let seq_local = zweidraehte_conformance::tests::security::context::seq_from_bytes(&decoded.seq_nr_local);
+
+                            println!("        SeqNr_remote={}, SeqNr_local={}", seq_remote, seq_local);
+
+                            // Verify expected values if specified.
+                            let mut ok = true;
+                            if let Some(expected) = sync_expect.expected_seq_remote {
+                                if seq_remote != expected {
+                                    println!("        ❌ SeqNr_remote: expected {}, got {}", expected, seq_remote);
+                                    ok = false;
+                                }
+                            }
+                            if let Some(expected) = sync_expect.expected_seq_local {
+                                if seq_local != expected {
+                                    println!("        ❌ SeqNr_local: expected {}, got {}", expected, seq_local);
+                                    ok = false;
+                                }
+                            }
+
+                            // Update runner's table_seq_nr from the DUT's response.
+                            // The DUT reported its sending seqnr as seq_remote.
+                            ctx.update_table_seq(seq_remote);
+
+                            if ok {
+                                println!("        ✅ Sync response matches");
+                            }
+                            ok
+                        }
+                        None => {
+                            println!("        ❌ Sync response decryption/verification failed");
+                            false
+                        }
+                    }
+                }
+                embassy_futures::select::Either::First(None) => {
+                    println!("        ❌ DUT disconnected while waiting for sync response");
+                    false
+                }
+                embassy_futures::select::Either::Second(_) => {
+                    println!("        ❌ Timeout waiting for sync response");
+                    false
+                }
+            }
+        }
     }
 }
 
@@ -543,6 +719,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         zweidraehte_conformance::tests::run_state_machines::create_halted_state_suite(),
         // Data Security conformance tests
         zweidraehte_conformance::tests::security::section_3_1::create_section_3_1_suite(),
+        zweidraehte_conformance::tests::security::section_3_3::create_section_3_3_suite(),
         zweidraehte_conformance::tests::security::section_4_1::create_section_4_1_suite(),
         zweidraehte_conformance::tests::security::section_4_2::create_section_4_2_suite(),
         zweidraehte_conformance::tests::security::section_4_3::create_section_4_3_suite(),

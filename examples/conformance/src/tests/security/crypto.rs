@@ -273,3 +273,178 @@ pub fn unwrap_secure(
         Some(plaintext)
     }
 }
+
+// ============================================================================
+// S-A_Sync frame wrapping/unwrapping (runner side)
+// ============================================================================
+
+/// Build a complete S-A_Sync_Req frame for injection.
+///
+/// Unlike `wrap_secure` which wraps a plaintext template, this builds
+/// the sync frame from scratch since sync requests have a different
+/// internal structure (no inner APDU).
+///
+/// Returns the complete frame in internal format (CTRL + SRC + DST + ...).
+pub fn wrap_sync_req(
+    ctrl: u8,
+    src: u16,
+    dst: u16,
+    npdu: u8,
+    tpci_high: u8,
+    key: &[u8; 16],
+    scf_byte: u8,
+    seq_nr_local: &[u8; 6],
+    serial_number: &[u8; 6],
+    challenge: &[u8; 6],
+) -> Vec<u8> {
+    use zweidraehte_device::crypto::ccm::{CcmContext, encrypt_and_mac_sync_req};
+
+    let tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
+
+    let ccm_ctx = CcmContext {
+        seq_nr: *seq_nr_local,
+        src,
+        dst,
+        addr_type: npdu & 0x80,
+        tpci_apci,
+    };
+
+    let mut challenge_enc = *challenge;
+    let mac = encrypt_and_mac_sync_req(key, &ccm_ctx, scf_byte, serial_number, &mut challenge_enc);
+
+    // Assemble frame: CTRL(1) + SRC(2) + DST(2) + NPDU(1) + TPCI/APCI(2)
+    // + SCF(1) + SeqNr_local(6) + SerialNumber(6) + Challenge_enc(6) + MAC(4)
+    // = 31 bytes total.
+    let mut frame = Vec::with_capacity(31);
+    frame.push(ctrl);
+    frame.extend_from_slice(&src.to_be_bytes());
+    frame.extend_from_slice(&dst.to_be_bytes());
+    frame.push(npdu);
+    frame.push(tpci_high | 0x03);
+    frame.push(0xF1);
+    frame.push(scf_byte);
+    frame.extend_from_slice(seq_nr_local);
+    frame.extend_from_slice(serial_number);
+    frame.extend_from_slice(&challenge_enc);
+    frame.extend_from_slice(&mac);
+
+    frame
+}
+
+/// Wrap a sync request with an intentionally invalid field.
+pub fn wrap_sync_req_invalid(
+    ctrl: u8,
+    src: u16,
+    dst: u16,
+    npdu: u8,
+    tpci_high: u8,
+    key: &[u8; 16],
+    scf_byte: u8,
+    seq_nr_local: &[u8; 6],
+    serial_number: &[u8; 6],
+    challenge: &[u8; 6],
+    invalid: &crate::InvalidSecurityParam,
+) -> Vec<u8> {
+    use crate::InvalidSecurityParam;
+
+    // For WrongAddressType, flip the AT bit in CCM context.
+    let effective_npdu = match invalid {
+        InvalidSecurityParam::WrongAddressType => npdu ^ 0x80,
+        _ => npdu,
+    };
+
+    let mut frame = wrap_sync_req(
+        ctrl, src, dst, effective_npdu, tpci_high,
+        key, scf_byte, seq_nr_local, serial_number, challenge,
+    );
+
+    // For WrongAddressType, the frame header should use the original npdu,
+    // but the CCM was computed with flipped AT. Restore original npdu.
+    if matches!(invalid, InvalidSecurityParam::WrongAddressType) {
+        frame[5] = npdu;
+    }
+
+    match invalid {
+        InvalidSecurityParam::InvalidScf(scf) => {
+            if frame.len() > 8 { frame[8] = *scf; }
+        }
+        InvalidSecurityParam::InvalidMac(mac_bytes) => {
+            let len = frame.len();
+            if len >= 4 {
+                frame[len - 4..].copy_from_slice(mac_bytes);
+            }
+        }
+        InvalidSecurityParam::AppendBytes(extra) => {
+            frame.extend_from_slice(extra);
+        }
+        InvalidSecurityParam::TruncateBytes(n) => {
+            let new_len = frame.len().saturating_sub(*n);
+            frame.truncate(new_len);
+        }
+        InvalidSecurityParam::WrongAddressType => { /* Already handled above */ }
+        _ => {}
+    }
+
+    frame
+}
+
+/// Parsed S-A_Sync_Res from the DUT.
+pub struct SyncResDecrypted {
+    /// The random value the DUT used (recovered from challenge_xor_random).
+    pub random: [u8; 6],
+    /// Decrypted SeqNr_remote (DUT's Sequence Number Sending).
+    pub seq_nr_remote: [u8; 6],
+    /// Decrypted SeqNr_local (what DUT expects from us next).
+    pub seq_nr_local: [u8; 6],
+    /// SCF byte from the response.
+    pub scf_byte: u8,
+}
+
+/// Parse and verify an S-A_Sync_Res captured from the DUT.
+///
+/// Takes the original challenge (from the request we sent) to recover
+/// the random value. Returns the decrypted fields or None on failure.
+pub fn unwrap_sync_res(
+    secure_frame: &[u8],
+    key: &[u8; 16],
+    challenge: &[u8; 6],
+) -> Option<SyncResDecrypted> {
+    if secure_frame.len() < 31 {
+        return None;
+    }
+
+    let src = u16::from_be_bytes([secure_frame[1], secure_frame[2]]);
+    let dst = u16::from_be_bytes([secure_frame[3], secure_frame[4]]);
+    let addr_type = secure_frame[5] & 0x80;
+    let tpci_apci = u16::from_be_bytes([secure_frame[6], secure_frame[7]]);
+    let scf_byte = secure_frame[8];
+
+    // Extract challenge_xor_random (6 bytes at offset 9).
+    let mut challenge_xor_random = [0u8; 6];
+    challenge_xor_random.copy_from_slice(&secure_frame[9..15]);
+
+    // Recover random: random = challenge XOR challenge_xor_random.
+    let mut random = [0u8; 6];
+    for i in 0..6 {
+        random[i] = challenge[i] ^ challenge_xor_random[i];
+    }
+
+    // Extract encrypted payload (12 bytes at offset 15) and MAC (4 bytes at end).
+    let mut payload = [0u8; 12];
+    payload.copy_from_slice(&secure_frame[15..27]);
+    let mut received_mac = [0u8; 4];
+    received_mac.copy_from_slice(&secure_frame[27..31]);
+
+    // Verify and decrypt using the recovered random as nonce.
+    ccm::verify_and_decrypt_sync_res(
+        key, &random, src, dst, addr_type, tpci_apci, scf_byte,
+        &mut payload, &received_mac,
+    ).ok()?;
+
+    let mut seq_nr_remote = [0u8; 6];
+    let mut seq_nr_local = [0u8; 6];
+    seq_nr_remote.copy_from_slice(&payload[0..6]);
+    seq_nr_local.copy_from_slice(&payload[6..12]);
+
+    Some(SyncResDecrypted { random, seq_nr_remote, seq_nr_local, scf_byte })
+}
