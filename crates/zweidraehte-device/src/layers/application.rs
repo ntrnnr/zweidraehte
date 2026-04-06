@@ -623,7 +623,12 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             // Determine the size and offset for the response
             let (object_size, msg_offset) = Self::get_object_size_and_offset(&cot_info);
 
-            info!("AL sending GroupValueResponse for ASAP {} TSAP {} size {}", asap, tsap, object_size);
+            // Use the ASAP's sending TSAP for the response destination.
+            // For GOs with separate receive/send GAs, this differs from the
+            // incoming TSAP (which is the receiving GA's TSAP).
+            let response_tsap = self.state.ast().borrow().get_sending_tsap(asap).unwrap_or(tsap);
+
+            info!("AL sending GroupValueResponse for ASAP {} TSAP {} size {}", asap, response_tsap, object_size);
 
             // Call read hook
             self.comm_objects.borrow_mut().prepare_read(asap, self.hook_context);
@@ -638,7 +643,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 msg_buf,
                 ServiceType::T_GroupData_Req,
                 request_priority,
-                DestinationAddress::ConnectionNr(tsap),
+                DestinationAddress::ConnectionNr(response_tsap),
             )
             .with_application(ApciCode::GroupValueResponse)
             .with_data(|buf| {

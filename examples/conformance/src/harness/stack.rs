@@ -131,6 +131,11 @@ pub mod comm_objs {
         /// Receives on 3/3/3 (TSAP 13), transmits on 4/4/4 (TSAP 14).
         #[ets(index = 13)]
         pub go_sec_1: ComObject<DPT_Switch>,
+
+        /// GO_SEC_3: 1-bit object for security GO flag testing (C-only).
+        /// Receives on 6/6/6 (TSAP 16).
+        #[ets(index = 14)]
+        pub go_sec_3: ComObject<DPT_Switch>,
     }
 }
 
@@ -218,6 +223,7 @@ impl ComObjects for ConformanceComObjects {
             // Security GO test objects
             go_sec_0: ComObject::new(DPT_Switch::from(false)),
             go_sec_1: ComObject::new(DPT_Switch::from(false)),
+            go_sec_3: ComObject::new(DPT_Switch::from(false)),
         }
     }
 
@@ -260,6 +266,7 @@ impl ComObjects for ConformanceComObjects {
             },
             CoIndex::GoSec0 => ComObjectInfo { status: &self.go_sec_0.status, value: self.go_sec_0.value.as_ref() },
             CoIndex::GoSec1 => ComObjectInfo { status: &self.go_sec_1.status, value: self.go_sec_1.value.as_ref() },
+            CoIndex::GoSec3 => ComObjectInfo { status: &self.go_sec_3.status, value: self.go_sec_3.value.as_ref() },
         }
     }
 
@@ -309,6 +316,9 @@ impl ComObjects for ConformanceComObjects {
             }
             CoIndex::GoSec1 => {
                 ComObjectInfoMut { status: &mut self.go_sec_1.status, value: self.go_sec_1.value.as_mut() }
+            }
+            CoIndex::GoSec3 => {
+                ComObjectInfoMut { status: &mut self.go_sec_3.status, value: self.go_sec_3.value.as_mut() }
             }
         }
     }
@@ -447,6 +457,7 @@ pub(crate) mod conformance_config {
             13 => "3/3/3", // 0x1B03 - security GO test (GO_SEC_1 receive)
             14 => "4/4/4", // 0x2404 - security GO test (GO_SEC_1 transmit)
             15 => "5/5/5", // 0x2D05 - for transport layer test 2.1 + security GO test (GO_SEC_2)
+            16 => "6/6/6", // 0x3606 - security GO test (GO_SEC_3, C-only flag)
         },
 
         comm_objects: {
@@ -492,12 +503,21 @@ pub(crate) mod conformance_config {
             12 => (1, CE | TE | RE | WE | UE),
             // GO_SEC_1: 1-bit object, receives on 3/3/3, transmits on 4/4/4
             13 => (1, CE | TE | RE | WE | UE),
+            // GO_SEC_3: 1-bit object, receives on 6/6/6 (C-only flag test)
+            14 => (1, CE | TE | RE | WE | UE),
         },
 
         associations: {
             // Note: TSAPs are assigned based on sorted group address positions.
             // TSAP numbers match the GA index in the sorted address table.
+            //
+            // IMPORTANT: For COs with separate receive/send GAs, the SENDING
+            // TSAP must come FIRST because get_sending_tsap() returns the
+            // first match for a given ASAP. This means the sending association
+            // (12→CO12, 14→CO13) must appear before the receiving association
+            // (2→CO12, 13→CO13).
             1 => [10],   // TSAP 1  (1/0/1) → CO 10 (GO5, 8-bit for network layer test)
+            12 => [12],  // TSAP 12 (2/2/2) → CO 12 (GO_SEC_0, security test SEND)
             2 => [12],   // TSAP 2  (1/1/1) → CO 12 (GO_SEC_0, security test receive)
             3 => [1],    // TSAP 3  (2/0/0) → CO 1  (GO0, 1-bit main object)
             4 => [2],    // TSAP 4  (2/0/1) → CO 2  (GO1, comm flags)
@@ -508,10 +528,10 @@ pub(crate) mod conformance_config {
             9 => [6],    // TSAP 9  (2/1/1) → CO 6  (GO1_BYTE3, comm flags)
             10 => [7],   // TSAP 10 (2/1/2) → CO 7  (GO2_BYTE3, config flags)
             11 => [8],   // TSAP 11 (2/1/3) → CO 8  (GO3_BYTE3, value)
-            12 => [12],  // TSAP 12 (2/2/2) → CO 12 (GO_SEC_0, security test transmit)
+            14 => [13],  // TSAP 14 (4/4/4) → CO 13 (GO_SEC_1, security test SEND)
             13 => [13],  // TSAP 13 (3/3/3) → CO 13 (GO_SEC_1, security test receive)
-            14 => [13],  // TSAP 14 (4/4/4) → CO 13 (GO_SEC_1, security test transmit)
             15 => [11],  // TSAP 15 (5/5/5) → CO 11 (GO6, transport + security GO_SEC_2)
+            16 => [14],  // TSAP 16 (6/6/6) → CO 14 (GO_SEC_3, C-only flag test)
         },
 
         // Security configuration for Data Secure conformance tests.
@@ -526,6 +546,7 @@ pub(crate) mod conformance_config {
                 12 => "30 31 32 33 34 35 36 37 38 39 3A 3B 3C 3D 3E 3F",  // TSAP 12 (2/2/2) → GK2
                 13 => "40 41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E 4F",  // TSAP 13 (3/3/3) → GK3
                 14 => "50 51 52 53 54 55 56 57 58 59 5A 5B 5C 5D 5E 5F",  // TSAP 14 (4/4/4) → GK4
+                16 => "60 61 62 63 64 65 66 67 68 69 6A 6B 6C 6D 6E 6F",  // TSAP 16 (6/6/6) → GK5
             },
 
             // GO security flags are written dynamically by the test,

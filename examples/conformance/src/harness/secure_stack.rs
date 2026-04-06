@@ -23,7 +23,7 @@ use zweidraehte_device::{
     objects::interface::HasRoutingCount,
     objects::tables::{
         Application, HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
-        HasPeiApplication,
+        HasLoadStateMachine, HasPeiApplication, LoadEvent,
     },
     storage::StaticIdentity,
 };
@@ -122,8 +122,18 @@ impl SecureConformanceState {
 
 impl Default for SecureConformanceState {
     fn default() -> Self {
-        use zweidraehte_device::objects::tables::Table;
-        let state = Self::new(Table::new(), Table::new(), Table::new(), Application::new());
+        // Build populated tables (same as the non-secure DUT) so that group
+        // addressing, association lookup, and comm object access all work.
+        let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables(
+            ConformanceMemoryMap::ADT_BASE as u32,
+            ConformanceMemoryMap::AST_BASE as u32,
+            ConformanceMemoryMap::COT_BASE as u32,
+        );
+        let mut app_table = Application::<TestParameters>::new();
+        app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+
+        let state = Self::new(addr_tab, asso_tab, co_tab, app_table);
 
         // Apply security config from the macro (group keys, tool key, etc.).
         let sec_config = conformance_config::ConformanceTestConfig::create_security_config();

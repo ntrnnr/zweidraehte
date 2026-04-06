@@ -184,7 +184,6 @@ pub enum TestStep {
     // ================================================================
     // KNX Data Secure steps
     // ================================================================
-
     /// Inject a secure telegram. The runner wraps the plaintext in a
     /// Secure APDU (SCF + SeqNr + encrypted payload + MAC) before
     /// injecting it into the DUT.
@@ -256,6 +255,28 @@ impl SecureParams {
             sec_type: SecType::AuthOnly,
             key_name: key.to_string(),
             tool_access: true,
+            seq_source: SeqSource::Tool,
+            system_broadcast: false,
+        }
+    }
+
+    /// Create params for group-key A+C (no tool access flag).
+    pub fn group_auth_conf(key: &str) -> Self {
+        Self {
+            sec_type: SecType::AuthConf,
+            key_name: key.to_string(),
+            tool_access: false,
+            seq_source: SeqSource::Tool,
+            system_broadcast: false,
+        }
+    }
+
+    /// Create params for group-key auth-only (no tool access flag).
+    pub fn group_auth_only(key: &str) -> Self {
+        Self {
+            sec_type: SecType::AuthOnly,
+            key_name: key.to_string(),
+            tool_access: false,
             seq_source: SeqSource::Tool,
             system_broadcast: false,
         }

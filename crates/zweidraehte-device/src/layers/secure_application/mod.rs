@@ -27,6 +27,7 @@ use crate::{
         buffers::{Buffer, MessageBuffer},
         knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
     },
+    objects::tables::{AssociationTable, HasAssociationTable},
     prelude::HasAddressTable,
     router::{Layer, Outbox},
     storage::SequenceNumberStorage,
@@ -85,12 +86,7 @@ pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberSto
 
 impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<'a, D, SEQ> {
     pub fn new(inner: ApplicationLayer<'a, D>, state: &'a D::State, seq_storage: &'a RefCell<SEQ>) -> Self {
-        Self {
-            inner,
-            state,
-            outgoing_ctx: Cell::new(OutgoingSecurityCtx::default()),
-            seq_storage,
-        }
+        Self { inner, state, outgoing_ctx: Cell::new(OutgoingSecurityCtx::default()), seq_storage }
     }
 
     pub fn inner_mut(&mut self) -> &mut ApplicationLayer<'a, D> {
@@ -123,9 +119,59 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<
 
 impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<'a, D, SEQ>
 where
-    D::State: HasExtensionState + HasAddressTable,
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
+    // ========================================================================
+    // GO Security Flag Enforcement
+    // ========================================================================
+
+    /// Check whether the received security level matches the GO security flags
+    /// for all group objects associated with the given TSAP.
+    ///
+    /// `received_security_bits` encodes what the frame provides:
+    /// - 0x00 = plain (no security)
+    /// - 0x01 = authentication only
+    /// - 0x03 = authentication + confidentiality
+    ///
+    /// Returns `true` if the frame should be accepted, `false` if it should
+    /// be rejected. The check is **exact match**: the received bits must equal
+    /// the GO's required security flag bits (bits 0-1).
+    fn check_go_security_flags(&self, tsap: u16, received_security_bits: u8) -> bool {
+        let security_state = self.state.extension_state();
+        let ast = self.state.ast().borrow();
+
+        for asap in ast.asaps_for_tsap(tsap) {
+            // The GO flags table is indexed by 0-based position, written via
+            // PID_GO_SECURITY_FLAGS with 1-based property indexing. The ASAP
+            // from the association table is the 1-based communication object
+            // number, so we subtract 1 to get the 0-based GO flag index.
+            let go_index = asap.saturating_sub(1);
+            if let Some(go_flag) = security_state.go_security_flags_for(go_index) {
+                let required = go_flag & 0x03;
+                if required != received_security_bits {
+                    return false;
+                }
+            }
+            // If no GO flag entry exists for this ASAP, the GO has no
+            // security requirement — accept any security level.
+        }
+
+        true
+    }
+
+    /// Check GO security flags for a plain (non-secure) group frame.
+    ///
+    /// At this point the TL has already resolved the destination GA to a TSAP
+    /// and stored it in the destination address bytes. We read the TSAP directly
+    /// and verify that all associated GOs have security flags = 0x00 (plain allowed).
+    /// Returns `true` if the frame should be accepted.
+    fn check_plain_group_allowed(&self, msg: &KnxMessageBuffer<Buffer<'static>>) -> bool {
+        let buf = msg.buf();
+        let tsap = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
+        self.check_go_security_flags(tsap, 0x00)
+    }
+
     /// Try to process an incoming message as a Secure Service APDU.
     fn try_process_secure(
         &self,
@@ -136,6 +182,21 @@ where
         if !matches!(apci, ApciCode::SecureService) {
             // Not secure — clear any pending outgoing security context.
             self.outgoing_ctx.set(OutgoingSecurityCtx::default());
+
+            // For plain group frames, verify that the GO security flags
+            // allow plain access. If a GO requires authentication or
+            // confidentiality, plain frames must be rejected.
+            let st = msg.service_type();
+            if matches!(st, ServiceType::T_GroupData_Ind) {
+                if !self.check_plain_group_allowed(&msg) {
+                    let src = u16::from_be_bytes(msg.get_source_addr().0);
+                    let security_state = self.state.extension_state();
+                    warn!("S-AL: plain group frame rejected — GO requires security");
+                    security_state.log_security_failure(SecurityFailureType::CryptoError, src);
+                    return None;
+                }
+            }
+
             return Some(msg);
         }
 
@@ -184,9 +245,26 @@ where
         }
 
         // TODO: validate seq_nr against last-valid receiving sequence number
+        // Extract all needed fields from the immutable reference before dropping
+        // it, so we can get a mutable reference later for decryption.
         let _seq_nr = secure_ref.seq_nr();
         let received_mac = secure_ref.mac();
-        let ctx = secure_ref.ccm_context(src);
+        let addr_type = secure_ref.addr_type();
+        let mut ctx = secure_ref.ccm_context(src);
+        drop(secure_ref);
+
+        // For group-addressed frames, the TL has replaced the destination GA
+        // with the TSAP in MSG_DEST_ADDR. The CCM context was built with the
+        // TSAP as `dst`, but the MAC was computed with the original GA. We
+        // must restore the original GA for correct MAC verification.
+        if addr_type != 0 {
+            use crate::objects::tables::AddressTable;
+            let tsap = ctx.dst; // Currently holds the TSAP, not the GA.
+            let adt = self.state.adt().borrow();
+            if let Some(ga) = adt.get_address(tsap) {
+                ctx.dst = u16::from_be_bytes(ga.0);
+            }
+        }
 
         // Per KNX spec 03/05/01 §6.3.6-8: if the Security IO load state
         // is not "Loaded", security tables (P2P keys, group keys, SIAT) must
@@ -194,10 +272,21 @@ where
         if !scf.tool_access {
             use crate::objects::tables::LoadState;
             if security_state.security_load_state() != LoadState::Loaded {
-                warn!("S-AL: security tables not loaded (state={:?}), dropping non-tool frame",
-                      security_state.security_load_state());
+                warn!(
+                    "S-AL: security tables not loaded (state={:?}), dropping non-tool frame",
+                    security_state.security_load_state()
+                );
                 return None;
             }
+        }
+
+        // Per AN158 §2.2.1.5.3.2: tool key access on group communication
+        // is forbidden. Reject frames with tool_access=true that are
+        // group-addressed.
+        if scf.tool_access && addr_type != 0 {
+            warn!("S-AL: tool access on group communication rejected");
+            security_state.log_security_failure(SecurityFailureType::CryptoError, src);
+            return None;
         }
 
         // Look up key based on access type.
@@ -206,21 +295,14 @@ where
             // when the device is in factory state (tool key all zeros).
             let tk = security_state.tool_key();
             if tk != [0u8; 16] { tk } else { self.state.fdsk().copied().unwrap_or([0u8; 16]) }
-        } else if secure_ref.addr_type() != 0 {
-            // Group communication: look up group key by destination group address.
-            use crate::address::GroupAddress;
-            use crate::objects::tables::{AddressTable, HasAddressTable};
-
-            let ga = GroupAddress::from_bytes(&buf[offsets::MSG_DEST_ADDR..offsets::MSG_DEST_ADDR + 2]);
-            let adt = self.state.adt().borrow();
-            let tsap = match adt.get_tsap(ga) {
-                Some(t) => t,
-                None => {
-                    warn!("S-AL: group address {:?} not in address table", ga);
-                    security_state.log_security_failure(SecurityFailureType::CryptoError, src);
-                    return None;
-                }
-            };
+        } else if addr_type != 0 {
+            // Group communication: look up group key by TSAP.
+            //
+            // At this point in the stack, the TL has already resolved the
+            // destination group address to a TSAP and stored it in the
+            // destination address bytes (via set_connection_nr). We read
+            // the TSAP directly instead of re-resolving through the ADT.
+            let tsap = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
             match security_state.group_key_for_index(tsap) {
                 Some(k) => k,
                 None => {
@@ -251,6 +333,25 @@ where
 
         let new_len = secure_mut.unwrap_to_plaintext();
         buf.set_len(new_len);
+
+        // ================================================================
+        // GO Security Flag Enforcement (group-addressed frames only)
+        // ================================================================
+        //
+        // For non-tool group communication, verify that the received security
+        // level exactly matches the GO's required security flags. The rule is
+        // exact match: auth-only frames are only accepted by GOs requiring
+        // auth-only (flag 0x01), auth+conf by flag 0x03, etc.
+        if !scf.tool_access && addr_type != 0 {
+            let received_bits = if scf.confidentiality { 0x03 } else { 0x01 };
+            // TSAP is in the destination bytes (set by TL's set_connection_nr).
+            let tsap = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
+            if !self.check_go_security_flags(tsap, received_bits) {
+                warn!("S-AL: GO security flag mismatch for TSAP {} (received={:#04X})", tsap, received_bits);
+                security_state.log_security_failure(SecurityFailureType::CryptoError, src);
+                return None;
+            }
+        }
 
         // Set outgoing security context so the response gets encrypted.
         self.outgoing_ctx.set(OutgoingSecurityCtx { active: true, key, scf_byte, request_src: src, outgoing_tl_seq });
@@ -308,6 +409,20 @@ where
 
         let buf = msg.buf_mut();
 
+        // For group-addressed responses, look up the outgoing group key
+        // based on the destination TSAP (which is still in MSG_DEST_ADDR as
+        // a ConnectionNr). The incoming key (ctx.key) was for the receiving
+        // GA's TSAP; the outgoing key may differ when the GO has separate
+        // send/receive GAs.
+        let tool_access = (ctx.scf_byte & 0x80) != 0;
+        let encryption_key = if matches!(st, ServiceType::T_GroupData_Req) && !tool_access {
+            let out_tsap = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
+            let security_state = self.state.extension_state();
+            security_state.group_key_for_index(out_tsap).unwrap_or(ctx.key)
+        } else {
+            ctx.key
+        };
+
         // For connection-oriented responses, pre-set the TPCI sequence
         // number bits on the plaintext before encrypting. The CCM B0
         // block must include the correct TPCI with TL sequence bits
@@ -345,14 +460,39 @@ where
         // this point in the outgoing path.
         let src = u16::from_be_bytes(self.state.individual_address().0);
         let secure_ref = SecureApduRef::parse(buf).expect("just built a valid secure frame");
-        let ccm_ctx = secure_ref.ccm_context(src);
+        let mut ccm_ctx = secure_ref.ccm_context(src);
+
+        // For outgoing group responses, MSG_DEST_ADDR still contains the TSAP
+        // (ConnectionNr) — the TL hasn't resolved it to the actual GA yet.
+        // Reverse-lookup the real GA for the CCM context so the receiver can
+        // verify the MAC. Also set the group address type bit in the CCM context.
+        if matches!(st, ServiceType::T_GroupData_Req) {
+            use crate::objects::tables::AddressTable;
+            let tsap = ccm_ctx.dst;
+            let adt = self.state.adt().borrow();
+            if let Some(ga) = adt.get_address(tsap) {
+                ccm_ctx.dst = u16::from_be_bytes(ga.0);
+                ccm_ctx.addr_type = 0x80; // Group addressed
+            }
+        }
+        drop(secure_ref);
 
         let scf = SecurityControlField::parse(ctx.scf_byte).expect("valid SCF from incoming");
 
         let mac = if scf.confidentiality {
-            ccm::encrypt_and_mac(&ctx.key, &ccm_ctx, ctx.scf_byte, &mut buf[layout.payload_start..layout.payload_end])
+            ccm::encrypt_and_mac(
+                &encryption_key,
+                &ccm_ctx,
+                ctx.scf_byte,
+                &mut buf[layout.payload_start..layout.payload_end],
+            )
         } else {
-            ccm::compute_mac_auth_only(&ctx.key, &ccm_ctx, ctx.scf_byte, &buf[layout.payload_start..layout.payload_end])
+            ccm::compute_mac_auth_only(
+                &encryption_key,
+                &ccm_ctx,
+                ctx.scf_byte,
+                &buf[layout.payload_start..layout.payload_end],
+            )
         };
 
         buf[layout.mac_start..layout.mac_start + secure::MAC_LEN].copy_from_slice(&mac);
@@ -363,7 +503,7 @@ where
 
 impl<D: StackDefinition, SEQ: SequenceNumberStorage> Layer for SecureApplicationLayer<'_, D, SEQ>
 where
-    D::State: HasExtensionState,
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     const HANDLES: &'static [ServiceType] = ApplicationLayer::<D>::HANDLES;
