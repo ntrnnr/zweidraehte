@@ -84,7 +84,7 @@ pub fn wait(duration_ms: u32) -> TestStep {
 ///
 /// Use after operations that produce side-effect messages (e.g., restart
 /// triggers ROI reads) that would interfere with subsequent Expect steps.
-#[allow(dead_code)] // Future: not yet used
+#[allow(dead_code)]
 pub fn drain(settle_ms: u32) -> TestStep {
     TestStep::Drain { settle_ms }
 }

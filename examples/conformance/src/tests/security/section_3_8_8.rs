@@ -36,18 +36,22 @@ const COMMAND_ENABLE: &str =
 const COMMAND_DISABLE: &str =
     "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 00";
 
-// A_FunctionPropertyExtState_Response (0x01D6): return_code=0x00 (success).
-// APDU: 01 D6 + 00 11 + 00 10 + 33 + 00 = 8 bytes → TP1 len = 0x07
+// A_FunctionPropertyExtState_Response (0x01D6): return_code=0x00 (success),
+// echoed ServiceID=0x00.
+// APDU: 01 D6 + 00 11 + 00 10 + 33 + 00 + 00 = 9 bytes → TP1 len = 0x08
 const COMMAND_RESP_OK: &str =
     "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
 
-// A_FunctionPropertyExtState_Response: return_code=0xF8 (invalid service info).
+// A_FunctionPropertyExtState_Response: return_code=0xF8 (invalid service info),
+// echoed ServiceID=0x00.
 const COMMAND_RESP_F8: &str =
     "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 F8 00";
 
-// A_FunctionPropertyExtState_Response: return_code=0xFC (access denied).
+// A_FunctionPropertyExtState_Response: return_code=0xFC (access denied),
+// echoed ServiceID=0x00.
+// APDU: 01 D6 + 00 11 + 00 10 + 33 + FC + 00 = 9 bytes → TP1 len = 0x08
 const COMMAND_RESP_FC: &str =
-    "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 FC";
+    "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 FC 00";
 
 // ============================================================================
 // FunctionPropertyExtCommand with invalid ServiceID / ServiceInfo
@@ -76,9 +80,10 @@ const STATE_READ_RESP_ON: &str =
 const STATE_READ_RESP_OFF: &str =
     "3C 60 #BDUT_ADDR #EDI 09 01 D6 00 11 00 10 33 00 00 00";
 
-// State_Read response: return_code=0xFC (access denied).
+// State_Read response: return_code=0xFC (access denied), echoed ServiceID=0x00.
+// APDU: 01 D6 + 00 11 + 00 10 + 33 + FC + 00 = 9 bytes → TP1 len = 0x08
 const STATE_READ_RESP_FC: &str =
-    "3C 60 #BDUT_ADDR #EDI 07 01 D6 00 11 00 10 33 FC";
+    "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 FC 00";
 
 // State_Read with invalid ServiceID=0x01 (only 0x00 is valid for StateRead).
 const STATE_READ_INVALID_SERVICE_ID: &str =
@@ -102,10 +107,10 @@ const PLAIN_COMMAND_ENABLE: &str =
 const PLAIN_COMMAND_DISABLE: &str =
     "BC #EDI #BDUT_ADDR 69 01 D4 00 11 00 10 33 00 00 00";
 
-// Plain Command response: return_code=0xFC (access denied).
-// APDU: 01 D6 + 00 11 + 00 10 + 33 + FC = 8 bytes → TP1 len = 0x67
+// Plain Command response: return_code=0xFC (access denied), echoed ServiceID=0x00.
+// APDU: 01 D6 + 00 11 + 00 10 + 33 + FC + 00 = 9 bytes → TP1 len = 0x68
 const PLAIN_COMMAND_RESP_FC: &str =
-    "BC #BDUT_ADDR #EDI 67 01 D6 00 11 00 10 33 FC";
+    "BC #BDUT_ADDR #EDI 68 01 D6 00 11 00 10 33 FC 00";
 
 // Plain A_FunctionPropertyExtState_Read.
 // APDU: 9 bytes → TP1 standard frame len = 0x68
@@ -117,10 +122,10 @@ const PLAIN_STATE_READ: &str =
 const PLAIN_STATE_READ_RESP_OFF: &str =
     "BC #BDUT_ADDR #EDI 69 01 D6 00 11 00 10 33 00 00 00";
 
-// Plain State_Read response: return_code=0xFC (access denied).
-// APDU: 01 D6 + 00 11 + 00 10 + 33 + FC = 8 bytes → TP1 len = 0x67
+// Plain State_Read response: return_code=0xFC (access denied), echoed ServiceID=0x00.
+// APDU: 01 D6 + 00 11 + 00 10 + 33 + FC + 00 = 9 bytes → TP1 len = 0x68
 const PLAIN_STATE_READ_RESP_FC: &str =
-    "BC #BDUT_ADDR #EDI 67 01 D6 00 11 00 10 33 FC";
+    "BC #BDUT_ADDR #EDI 68 01 D6 00 11 00 10 33 FC 00";
 
 // ============================================================================
 // PropertyExtDescription_Read / Response templates for PID 0x33

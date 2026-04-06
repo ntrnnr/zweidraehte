@@ -136,50 +136,56 @@ pub fn create_section_3_8_17_suite() -> TestSuite {
 
 fn test_3_8_17_1() -> TestCase {
     // ---- Security IO Load State Control (PID 5) ----
-    // Write PID 5 = 0x01 (Loaded) — 10-byte load procedure record.
-    const LOAD_LOADED: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 01 00 00 00 00 00 00 00 00 00";
-    const LOAD_LOADED_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
-    // Write PID 5 = 0x02 (Loading).
-    const LOAD_LOADING: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
-    const LOAD_LOADING_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
+    // Write PID 5 = 0x01 (StartLoading) — 10-byte load procedure record.
+    const LOAD_START_LOADING: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 01 00 00 00 00 00 00 00 00 00";
+    const LOAD_START_LOADING_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
+    // Write PID 5 = 0x02 (LoadCompleted).
+    const LOAD_COMPLETED: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
+    const LOAD_COMPLETED_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
 
-    // ---- GO Flags Write/Read (PID 0x3D, count=3, start=1) ----
+    // Restore group key entry 1 (TSAP 2 → GK1) — previous suites
+    // (e.g. 3.8.10) may overwrite this entry with test data.
+    const RESTORE_GRP_KEY: &str =
+        "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 02 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F";
+    const RESTORE_GRP_KEY_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 35 01 00 01 00";
+
+    // ---- GO Flags Write/Read (PID 0x3D) ----
+    //
+    // GO flags are indexed by 0-based CO number. Our security GOs:
+    //   go_index 10 = CO 11 = GO_SEC_2 (5/5/5)
+    //   go_index 11 = CO 12 = GO_SEC_0 (1/1/1 → 2/2/2)
+    //   go_index 12 = CO 13 = GO_SEC_1 (3/3/3 → 4/4/4)
+    //
+    // PropertyExtValue uses 1-based start indices, so start=11 covers
+    // go_indices 10-12.  Data order: GO_SEC_2, GO_SEC_0, GO_SEC_1.
+    //
     // Write flags = 00 00 00 (all unsecured).
-    const WRITE_FLAGS_PLAIN: &str = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 01 00 00 00";
-    // Write flags = 01 03 00 (GO0=auth-only, GO1=auth+conf, GO2=plain).
-    const WRITE_FLAGS_MIXED: &str = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 01 01 03 00";
-    // Write flags = FD FF FC (all max).
-    const WRITE_FLAGS_MAX: &str = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 01 FD FF FC";
-    // Write success: count=3, return_code=0x00.
-    const WRITE_FLAGS_OK: &str = "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 03 00 01 00";
-    // Read flags: count=3, start=1.
-    const READ_FLAGS: &str = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3D 03 00 01";
-    // Read response: flags = 01 03 00.
-    const READ_FLAGS_MIXED_OK: &str = "3C 60 #BDUT_ADDR #EDI 0C 01 CD 00 11 00 10 3D 03 00 01 01 03 00";
+    const WRITE_FLAGS_PLAIN: &str = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 0B 00 00 00";
+    // Write flags: GO_SEC_2=plain(00), GO_SEC_0=auth(01), GO_SEC_1=A+C(03).
+    const WRITE_FLAGS_MIXED: &str = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 0B 00 01 03";
+    // Write flags with reserved bits set: GO_SEC_2=FC, GO_SEC_0=FD, GO_SEC_1=FF.
+    const WRITE_FLAGS_MAX: &str = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 0B FC FD FF";
+    // Write success: count=3, start=11, return_code=0x00.
+    const WRITE_FLAGS_OK: &str = "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 03 00 0B 00";
+    // Read flags: count=3, start=11.
+    const READ_FLAGS: &str = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3D 03 00 0B";
+    // Read response: flags = 00 01 03 (GO_SEC_2=plain, GO_SEC_0=auth, GO_SEC_1=A+C).
+    const READ_FLAGS_MIXED_OK: &str = "3C 60 #BDUT_ADDR #EDI 0C 01 CD 00 11 00 10 3D 03 00 0B 00 01 03";
 
-    // ---- Plain group telegrams ----
-    // GroupValue_Write(0) to GA 5/5/5 (0x2D05) from EDI.
-    const PLAIN_GW_555: &str = "BC #EDI 2D 05 E1 00 00";
-    // GroupValue_Response(0x40) to GA 5/5/5 from BDUT_ADDR.
-    const PLAIN_GR_555: &str = "BC #BDUT_ADDR 2D 05 E1 00 40";
-    // GroupValue_Write(0) to GA 1/1/1 (0x0901) from EDI.
-    const PLAIN_GW_111: &str = "BC #EDI 09 01 E1 00 00";
-    // GroupValue_Response(0x40) to GA 2/2/2 (0x1202) from BDUT_ADDR.
-    const PLAIN_GR_222: &str = "BC #BDUT_ADDR 12 02 E1 00 40";
-    // GroupValue_Write(0) to GA 3/3/3 (0x1B03) from EDI.
-    const PLAIN_GW_333: &str = "BC #EDI 1B 03 E1 00 00";
-    // GroupValue_Response(0x40) to GA 4/4/4 (0x2404) from BDUT_ADDR.
-    const PLAIN_GR_444: &str = "BC #BDUT_ADDR 24 04 E1 00 40";
-
-    // ---- Secured group telegrams (same data, different security) ----
-    // Auth-only GroupValue_Write(0) to 1/1/1 with GK1.
-    const SEC_GW_111: &str = "BC #EDI 09 01 E1 00 00";
-    // Auth+conf GroupValue_Response(0x40) to 2/2/2 with GK2.
-    const SEC_GR_222: &str = "BC #BDUT_ADDR 12 02 E1 00 40";
-    // Auth+conf GroupValue_Write(0) to 3/3/3 with GK3.
-    const SEC_GW_333: &str = "BC #EDI 1B 03 E1 00 00";
-    // Auth+conf GroupValue_Response(0x40) to 4/4/4 with GK4.
-    const SEC_GR_444: &str = "BC #BDUT_ADDR 24 04 E1 00 40";
+    // ---- Plain group request/response pairs ----
+    // GroupValue_Read to GA 5/5/5 (0x2D05) from EDI.
+    const GV_READ_555: &str = "BC #EDI 2D 05 E1 00 00";
+    // Expected plain GroupValue_Response on GA 5/5/5 from BDUT.
+    const GV_RESP_555: &str = "BC #BDUT_ADDR 2D 05 E1 00 40";
+    // GroupValue_Read to GA 1/1/1 (0x0901) from EDI.
+    const GV_READ_111: &str = "BC #EDI 09 01 E1 00 00";
+    // Expected plain GroupValue_Response on GA 2/2/2 from BDUT.
+    const GV_RESP_222: &str = "BC #BDUT_ADDR 12 02 E1 00 40";
+    // GroupValue_Read to GA 3/3/3 (0x1B03) from EDI.
+    const GV_READ_333: &str = "BC #EDI 1B 03 E1 00 00";
+    // Expected plain GroupValue_Response on GA 4/4/4 from BDUT.
+    const GV_RESP_444: &str = "BC #BDUT_ADDR 24 04 E1 00 40";
 
     TestCase::new("3.8.17.1 Secure PropertyValueWrite and Read of GO Security Flags").with_steps(vec![
         // ================================================================
@@ -190,21 +196,27 @@ fn test_3_8_17_1() -> TestCase {
         expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
         // ---- Load Security IO ----
         comment("Security IO: Loading → Loaded"),
-        inject_secure_ac(LOAD_LOADED, "TK1"),
-        expect_secure_ac(LOAD_LOADED_OK, "TK1", TIMEOUT),
-        inject_secure_ac(LOAD_LOADING, "TK1"),
-        expect_secure_ac(LOAD_LOADING_OK, "TK1", TIMEOUT),
+        inject_secure_ac(LOAD_START_LOADING, "TK1"),
+        expect_secure_ac(LOAD_START_LOADING_OK, "TK1", TIMEOUT),
+        // Restore group key entry 1 (TSAP 2 → GK1) in case 3.8.10 overwrote it.
+        comment("Restore group key entry 1 (TSAP 2 → GK1)"),
+        inject_secure_ac(RESTORE_GRP_KEY, "TK1"),
+        expect_secure_ac(RESTORE_GRP_KEY_OK, "TK1", TIMEOUT),
+        inject_secure_ac(LOAD_COMPLETED, "TK1"),
+        expect_secure_ac(LOAD_COMPLETED_OK, "TK1", TIMEOUT),
         // ---- Phase 1: GO flags = 00 00 00 (all plain) ----
         comment("Write GO flags = 00 00 00 (all unsecured)"),
         inject_secure_ac(WRITE_FLAGS_PLAIN, "TK1"),
         expect_secure_ac(WRITE_FLAGS_OK, "TK1", TIMEOUT),
-        comment("Inject plain group traffic (all accepted when flags=00)"),
-        inject(PLAIN_GW_555),
-        inject(PLAIN_GR_555),
-        inject(PLAIN_GW_111),
-        inject(PLAIN_GR_222),
-        inject(PLAIN_GW_333),
-        inject(PLAIN_GR_444),
+        // ---- Phase 1: GO flags = 00 00 00 (all plain) ----
+        // All GOs accept plain traffic → DUT responds to each GroupValue_Read.
+        comment("Plain group reads (all accepted when flags=00)"),
+        inject(GV_READ_555),
+        expect(GV_RESP_555, TIMEOUT),
+        inject(GV_READ_111),
+        expect(GV_RESP_222, TIMEOUT),
+        inject(GV_READ_333),
+        expect(GV_RESP_444, TIMEOUT),
         // ---- Phase 2: GO flags = 01 03 00 (mixed) ----
         comment("Write GO flags = 01 03 00 (GO0=auth, GO1=auth+conf, GO2=plain)"),
         inject_secure_ac(WRITE_FLAGS_MIXED, "TK1"),
@@ -212,26 +224,26 @@ fn test_3_8_17_1() -> TestCase {
         comment("Read back GO flags → 01 03 00"),
         inject_secure_ac(READ_FLAGS, "TK1"),
         expect_secure_ac(READ_FLAGS_MIXED_OK, "TK1", TIMEOUT),
-        comment("Inject plain group traffic on 5/5/5 (GO2=plain, accepted)"),
-        inject(PLAIN_GW_555),
-        inject(PLAIN_GR_555),
-        comment("Inject secured group traffic on 1/1/1→2/2/2 (GO0=auth, GK1/GK2)"),
-        inject_group_ao(SEC_GW_111, "GK1"),
-        inject_group_ao(SEC_GR_222, "GK2"),
-        comment("Inject secured group traffic on 3/3/3→4/4/4 (GO1=auth+conf, GK3/GK4)"),
-        inject_group_ac(SEC_GW_333, "GK3"),
-        inject_group_ac(SEC_GR_444, "GK4"),
+        comment("Plain GroupValue_Read on 5/5/5 (GO_SEC_2=plain, accepted)"),
+        inject(GV_READ_555),
+        expect(GV_RESP_555, TIMEOUT),
+        comment("Auth-only GroupValue_Read on 1/1/1 → response on 2/2/2 (GO_SEC_0=auth)"),
+        inject_group_ao(GV_READ_111, "GK1"),
+        expect_group_ao(GV_RESP_222, "GK2", TIMEOUT),
+        comment("A+C GroupValue_Read on 3/3/3 → response on 4/4/4 (GO_SEC_1=A+C)"),
+        inject_group_ac(GV_READ_333, "GK3"),
+        expect_group_ac(GV_RESP_444, "GK4", TIMEOUT),
         // ---- Phase 3: GO flags = FD FF FC (max flags) ----
         comment("Write GO flags = FD FF FC (max)"),
         inject_secure_ac(WRITE_FLAGS_MAX, "TK1"),
         expect_secure_ac(WRITE_FLAGS_OK, "TK1", TIMEOUT),
-        comment("Inject plain 5/5/5 + secured group traffic (same as phase 2)"),
-        inject(PLAIN_GW_555),
-        inject(PLAIN_GR_555),
-        inject_group_ao(SEC_GW_111, "GK1"),
-        inject_group_ao(SEC_GR_222, "GK2"),
-        inject_group_ac(SEC_GW_333, "GK3"),
-        inject_group_ac(SEC_GR_444, "GK4"),
+        comment("Same group reads as phase 2 (max flags still match)"),
+        inject(GV_READ_555),
+        expect(GV_RESP_555, TIMEOUT),
+        inject_group_ao(GV_READ_111, "GK1"),
+        expect_group_ao(GV_RESP_222, "GK2", TIMEOUT),
+        inject_group_ac(GV_READ_333, "GK3"),
+        expect_group_ac(GV_RESP_444, "GK4", TIMEOUT),
         // ================================================================
         // Security Mode OFF — repeat all phases
         // ================================================================
@@ -242,13 +254,13 @@ fn test_3_8_17_1() -> TestCase {
         comment("Write GO flags = 00 00 00"),
         inject_secure_ac(WRITE_FLAGS_PLAIN, "TK1"),
         expect_secure_ac(WRITE_FLAGS_OK, "TK1", TIMEOUT),
-        comment("Inject plain group traffic"),
-        inject(PLAIN_GW_555),
-        inject(PLAIN_GR_555),
-        inject(PLAIN_GW_111),
-        inject(PLAIN_GR_222),
-        inject(PLAIN_GW_333),
-        inject(PLAIN_GR_444),
+        comment("Plain group reads (all accepted when flags=00)"),
+        inject(GV_READ_555),
+        expect(GV_RESP_555, TIMEOUT),
+        inject(GV_READ_111),
+        expect(GV_RESP_222, TIMEOUT),
+        inject(GV_READ_333),
+        expect(GV_RESP_444, TIMEOUT),
         // ---- Phase 2 (SM OFF): GO flags = 01 03 00 ----
         comment("Write GO flags = 01 03 00"),
         inject_secure_ac(WRITE_FLAGS_MIXED, "TK1"),
@@ -256,24 +268,24 @@ fn test_3_8_17_1() -> TestCase {
         comment("Read back GO flags → 01 03 00"),
         inject_secure_ac(READ_FLAGS, "TK1"),
         expect_secure_ac(READ_FLAGS_MIXED_OK, "TK1", TIMEOUT),
-        comment("Inject plain 5/5/5 + secured group traffic"),
-        inject(PLAIN_GW_555),
-        inject(PLAIN_GR_555),
-        inject_group_ao(SEC_GW_111, "GK1"),
-        inject_group_ao(SEC_GR_222, "GK2"),
-        inject_group_ac(SEC_GW_333, "GK3"),
-        inject_group_ac(SEC_GR_444, "GK4"),
+        comment("Plain 5/5/5 + secured group reads"),
+        inject(GV_READ_555),
+        expect(GV_RESP_555, TIMEOUT),
+        inject_group_ao(GV_READ_111, "GK1"),
+        expect_group_ao(GV_RESP_222, "GK2", TIMEOUT),
+        inject_group_ac(GV_READ_333, "GK3"),
+        expect_group_ac(GV_RESP_444, "GK4", TIMEOUT),
         // ---- Phase 3 (SM OFF): GO flags = FD FF FC ----
         comment("Write GO flags = FD FF FC"),
         inject_secure_ac(WRITE_FLAGS_MAX, "TK1"),
         expect_secure_ac(WRITE_FLAGS_OK, "TK1", TIMEOUT),
-        comment("Inject plain 5/5/5 + secured group traffic"),
-        inject(PLAIN_GW_555),
-        inject(PLAIN_GR_555),
-        inject_group_ao(SEC_GW_111, "GK1"),
-        inject_group_ao(SEC_GR_222, "GK2"),
-        inject_group_ac(SEC_GW_333, "GK3"),
-        inject_group_ac(SEC_GR_444, "GK4"),
+        comment("Plain 5/5/5 + secured group reads"),
+        inject(GV_READ_555),
+        expect(GV_RESP_555, TIMEOUT),
+        inject_group_ao(GV_READ_111, "GK1"),
+        expect_group_ao(GV_RESP_222, "GK2", TIMEOUT),
+        inject_group_ac(GV_READ_333, "GK3"),
+        expect_group_ac(GV_RESP_444, "GK4", TIMEOUT),
     ])
 }
 

@@ -113,6 +113,14 @@ const WRITE_GO_FLAGS: &str =
 const WRITE_GO_FLAGS_OK: &str =
     "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 04 00 0B 00";
 
+// Restore group key entry at index 1 (TSAP 2 → GK1) — previous suites
+// (e.g. 3.8.10) may overwrite this entry with test data.
+// APDU: 01 CE + 00 11 + 00 10 + 35 + 01 + 00 01 + 18 data bytes = 28 bytes → len = 0x1B
+const RESTORE_GRP_KEY_ENTRY_1: &str =
+    "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 02 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F";
+const RESTORE_GRP_KEY_ENTRY_1_OK: &str =
+    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 35 01 00 01 00";
+
 /// Default response timeout in milliseconds.
 const TIMEOUT: u32 = 3000;
 
@@ -174,6 +182,12 @@ fn test_3_2_setup() -> TestCase {
         comment("Security IO: transition to Loading so we can write GO flags"),
         inject_secure_ac(LOAD_START_LOADING, "TK1"),
         expect_secure_ac(LOAD_START_LOADING_OK, "TK1", TIMEOUT),
+
+        // Restore group key entry 1 (TSAP 2 → GK1) in case a previous suite
+        // (e.g. 3.8.10) overwrote it with test data.
+        comment("Restore group key entry 1 (TSAP 2 → GK1)"),
+        inject_secure_ac(RESTORE_GRP_KEY_ENTRY_1, "TK1"),
+        expect_secure_ac(RESTORE_GRP_KEY_ENTRY_1_OK, "TK1", TIMEOUT),
 
         comment("Write GO security flags: GO_SEC_2=plain, GO_SEC_0=A, GO_SEC_1=A+C, GO_SEC_3=C"),
         inject_secure_ac(WRITE_GO_FLAGS, "TK1"),
