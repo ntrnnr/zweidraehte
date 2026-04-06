@@ -274,48 +274,65 @@ pub struct SecurityState<const GRP: usize, const P2P: usize, const GO: usize> {
 // Security Failures Log
 // ============================================================================
 
-/// Security failure type indices (per spec 03/03/07 section 5.4).
+/// Security failure type indices per KNX spec.
 ///
-/// Each type has its own 1-byte counter in the failures log.
+/// The failures log maintains 4 × 16-bit counters. Types 0–2 each map
+/// to their own counter; types 3 and 4 both increment counter 3 (the
+/// "access & role" counter). The type value is also stored in the per-entry
+/// ring buffer so that individual failures can be distinguished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SecurityFailureType {
     /// Invalid SCF field (unsupported algorithm, reserved bits set).
     ScfError = 0,
-    /// Sequence number check failed (replay or out-of-order).
-    SeqNrError = 1,
     /// MAC verification failed (wrong key or tampered message).
-    CryptoError = 2,
-    /// Access denied by access policy after successful verification.
-    AccessError = 3,
+    CryptoError = 1,
+    /// Sequence number check failed (replay or out-of-order).
+    SeqNrError = 2,
     /// Sender not found in Security Individual Address Table.
-    RoleError = 4,
-    /// Other / unspecified failure.
-    Other5 = 5,
-    Other6 = 6,
-    Other7 = 7,
+    RoleError = 3,
+    /// Access denied by access policy after successful verification.
+    AccessError = 4,
 }
 
 /// A single failure log entry recording a security event.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+///
+/// Each entry stores the source address of the offending device, the first
+/// 9 bytes of the offending frame (for diagnostic purposes), and the
+/// failure type code (see [`SecurityFailureType`]).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SecurityFailureEntry {
-    /// Failure type.
-    pub failure_type: u8,
     /// Source individual address of the offending message.
     pub source_addr: u16,
+    /// First 9 bytes of the offending frame (zero-padded if shorter).
+    pub frame_fragment: [u8; 9],
+    /// Failure type code (discriminant of [`SecurityFailureType`]).
+    pub failure_type: u8,
 }
 
-/// Security failures log with 8 type counters and a ring buffer of
-/// recent failure entries.
+impl Default for SecurityFailureEntry {
+    fn default() -> Self {
+        Self { source_addr: 0, frame_fragment: [0; 9], failure_type: 0 }
+    }
+}
+
+/// Security failures log with 4 × 16-bit counters and a ring buffer
+/// of recent failure entries.
 ///
 /// Accessed via Function Property on PID 55:
-/// - **StateRead(id=0, info=0)**: Returns 8 failure type counters.
-/// - **StateRead(id=1, info=N)**: Returns the Nth most recent failure entry.
+/// - **StateRead(id=0, info=0)**: Returns 4 × 2-byte BE counters (8 bytes).
+/// - **StateRead(id=1, info=N)**: Returns the Nth most recent 12-byte entry.
 /// - **Command(id=0, info=0)**: Clears all counters and entries.
+///
+/// Counter layout (4 counters, each 16-bit big-endian):
+/// - \[0\] SCF errors (type 0)
+/// - \[1\] Crypto/MAC errors (type 1)
+/// - \[2\] Sequence number errors (type 2)
+/// - \[3\] Access + Role errors (types 3 and 4)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityFailuresLog {
-    /// Per-type failure counters (8 types, 1 byte each, saturating at 255).
-    counters: [u8; 8],
+    /// 4 × 16-bit failure counters (saturating at 0xFFFF).
+    counters: [u16; 4],
     /// Ring buffer of recent failure entries.
     entries: [SecurityFailureEntry; 8],
     /// Write index into the ring buffer.
@@ -326,21 +343,52 @@ pub struct SecurityFailuresLog {
 
 impl Default for SecurityFailuresLog {
     fn default() -> Self {
-        Self { counters: [0; 8], entries: [SecurityFailureEntry::default(); 8], write_idx: 0, count: 0 }
+        Self { counters: [0; 4], entries: [SecurityFailureEntry::default(); 8], write_idx: 0, count: 0 }
+    }
+}
+
+impl SecurityFailureType {
+    /// Map a failure type to its counter index (0–3).
+    ///
+    /// Types 0–2 map 1:1 to their respective counters. Types 3 (Role)
+    /// and 4 (Access) both map to counter 3.
+    fn counter_index(self) -> Option<usize> {
+        match self as u8 {
+            0..=2 => Some(self as usize),
+            3 | 4 => Some(3),
+            _ => None,
+        }
     }
 }
 
 impl SecurityFailuresLog {
     /// Record a security failure.
-    pub fn log_failure(&mut self, failure_type: SecurityFailureType, source_addr: u16) {
-        // Increment the counter for this failure type (saturating).
-        let idx = failure_type as usize;
-        if idx < 8 {
+    ///
+    /// `frame_fragment` should be the first 9 bytes of the offending
+    /// secure frame (zero-padded if shorter). These are stored in the
+    /// entry for diagnostic purposes.
+    pub fn log_failure(
+        &mut self,
+        failure_type: SecurityFailureType,
+        source_addr: u16,
+        frame_fragment: &[u8],
+    ) {
+        // Increment the 16-bit counter for this failure type (saturating).
+        if let Some(idx) = failure_type.counter_index() {
             self.counters[idx] = self.counters[idx].saturating_add(1);
         }
 
+        // Build the 9-byte fragment (zero-padded if input is shorter).
+        let mut frag = [0u8; 9];
+        let copy_len = frame_fragment.len().min(9);
+        frag[..copy_len].copy_from_slice(&frame_fragment[..copy_len]);
+
         // Add to ring buffer.
-        let entry = SecurityFailureEntry { failure_type: failure_type as u8, source_addr };
+        let entry = SecurityFailureEntry {
+            source_addr,
+            frame_fragment: frag,
+            failure_type: failure_type as u8,
+        };
         self.entries[self.write_idx as usize] = entry;
         self.write_idx = (self.write_idx + 1) % 8;
         if self.count < 8 {
@@ -348,9 +396,18 @@ impl SecurityFailuresLog {
         }
     }
 
-    /// Get the 8-byte failure counters.
-    pub fn counters(&self) -> &[u8; 8] {
+    /// Get the 4 × 16-bit failure counters.
+    pub fn counters(&self) -> &[u16; 4] {
         &self.counters
+    }
+
+    /// Serialize counters as 8 bytes (4 × big-endian u16).
+    pub fn counters_as_bytes(&self) -> [u8; 8] {
+        let mut buf = [0u8; 8];
+        for (i, &c) in self.counters.iter().enumerate() {
+            buf[i * 2..i * 2 + 2].copy_from_slice(&c.to_be_bytes());
+        }
+        buf
     }
 
     /// Get a failure entry by reverse index (0 = most recent).
@@ -365,7 +422,7 @@ impl SecurityFailuresLog {
 
     /// Clear all counters and entries.
     pub fn clear(&mut self) {
-        self.counters = [0; 8];
+        self.counters = [0; 4];
         self.count = 0;
         self.write_idx = 0;
     }
@@ -532,9 +589,12 @@ pub trait HasSecurityState {
     fn go_security_flags_for(&self, go_index: u16) -> Option<u8>;
 
     /// Record a security failure in the failures log.
-    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16);
+    ///
+    /// `frame_fragment` should be the first bytes of the offending frame
+    /// (up to 9 bytes are stored per entry for diagnostic purposes).
+    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]);
 
-    /// Get the 8-byte failure counters.
+    /// Get the 4 × 16-bit failure counters serialized as 8 big-endian bytes.
     fn failure_counters(&self) -> [u8; 8];
 
     /// Get a failure entry by reverse index (0 = most recent).
@@ -566,12 +626,12 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState for S
         self.go_security_flags_for(go_index)
     }
 
-    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16) {
-        self.failures_log.borrow_mut().log_failure(failure_type, source_addr);
+    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {
+        self.failures_log.borrow_mut().log_failure(failure_type, source_addr, frame_fragment);
     }
 
     fn failure_counters(&self) -> [u8; 8] {
-        *self.failures_log.borrow().counters()
+        self.failures_log.borrow().counters_as_bytes()
     }
 
     fn failure_entry(&self, index: u8) -> Option<SecurityFailureEntry> {
@@ -697,12 +757,12 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: u
         self.security.go_security_flags_for(go_index)
     }
 
-    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16) {
-        self.security.failures_log.borrow_mut().log_failure(failure_type, source_addr);
+    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {
+        self.security.failures_log.borrow_mut().log_failure(failure_type, source_addr, frame_fragment);
     }
 
     fn failure_counters(&self) -> [u8; 8] {
-        *self.security.failures_log.borrow().counters()
+        self.security.failures_log.borrow().counters_as_bytes()
     }
 
     fn failure_entry(&self, index: u8) -> Option<SecurityFailureEntry> {

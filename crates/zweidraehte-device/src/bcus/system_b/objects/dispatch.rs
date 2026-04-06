@@ -11,8 +11,8 @@ use crate::{
     dpt::{DeviceControl, ProgrammingMode, RoutingCount},
     objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
-        HasDeviceObject, InterfaceObject, InterfaceObjectAugment, PropertyAccess, PropertyDescriptionResponse,
-        PropertyError, PropertyServiceHandler, WriteResponse, pid,
+        HasDeviceObject, InterfaceObject, InterfaceObjectAugment, PropertyAccess, PropertyBuf,
+        PropertyDescriptionResponse, PropertyError, PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -188,6 +188,9 @@ where
             if self.has_secure_extension() {
                 let security_on = self.state.security_mode_enabled();
                 if !desc.can_read_secure(&req.ctx, security_on) {
+                    if req.ctx.source_addr != 0 {
+                        self.augment.log_access_denied(req.ctx.source_addr);
+                    }
                     return Err(PropertyError::AccessDenied);
                 }
             } else if !desc.can_read(req.ctx) {
@@ -239,6 +242,9 @@ where
             if self.has_secure_extension() {
                 let security_on = self.state.security_mode_enabled();
                 if !desc.can_write_secure(&req.ctx, security_on) {
+                    if req.ctx.source_addr != 0 {
+                        self.augment.log_access_denied(req.ctx.source_addr);
+                    }
                     return Err(PropertyError::AccessDenied);
                 }
             } else if !desc.can_write(req.ctx) {
@@ -305,11 +311,22 @@ where
 
     fn function_property_command(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         // Function property command is write-like — enforce access policy.
+        // We use can_function_write_secure (not can_write_secure) because
+        // PDT_FUNCTION properties may be marked ReadOnly in the descriptor
+        // while still being accessible via FunctionPropertyCommand.
         if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
             if self.has_secure_extension() {
                 let security_on = self.state.security_mode_enabled();
-                if !desc.can_write_secure(&req.ctx, security_on) {
-                    return FunctionPropertyResult::access_denied();
+                if !desc.can_function_write_secure(&req.ctx, security_on) {
+                    if req.ctx.source_addr != 0 {
+                        self.augment.log_access_denied(req.ctx.source_addr);
+                    }
+                    // Echo back the service_id (first byte of service_data) in
+                    // the error response per spec.
+                    // Echo back the service_info byte (second byte of service_data)
+                    // in the access-denied response per conformance spec.
+                    let service_info = req.service_data.get(1).copied().unwrap_or(0);
+                    return FunctionPropertyResult { return_code: 0xFC, data: PropertyBuf::new(&[service_info]) };
                 }
             } else if !desc.can_write(req.ctx) {
                 return FunctionPropertyResult::access_denied();
@@ -362,11 +379,20 @@ where
 
     fn function_property_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         // Function property state read is read-like — enforce access policy.
+        // We use can_function_read_secure (not can_read_secure) because
+        // PDT_FUNCTION properties may be marked ReadOnly in the descriptor
+        // while still needing policy-based access control for state reads.
         if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
             if self.has_secure_extension() {
                 let security_on = self.state.security_mode_enabled();
-                if !desc.can_read_secure(&req.ctx, security_on) {
-                    return FunctionPropertyResult::access_denied();
+                if !desc.can_function_read_secure(&req.ctx, security_on) {
+                    if req.ctx.source_addr != 0 {
+                        self.augment.log_access_denied(req.ctx.source_addr);
+                    }
+                    // Echo back the service_info byte (second byte of service_data)
+                    // in the access-denied response per conformance spec.
+                    let service_info = req.service_data.get(1).copied().unwrap_or(0);
+                    return FunctionPropertyResult { return_code: 0xFC, data: PropertyBuf::new(&[service_info]) };
                 }
             } else if !desc.can_read(req.ctx) {
                 return FunctionPropertyResult::access_denied();

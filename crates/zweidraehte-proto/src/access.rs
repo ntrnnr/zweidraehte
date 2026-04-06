@@ -96,6 +96,9 @@ pub struct AccessContext {
     pub security: SecurityMode,
     /// Client classification (Unlisted / Roles / Tool).
     pub role: ClientRole,
+    /// Source individual address of the sender. Non-zero when the message
+    /// was received via KNX Data Secure — used for security failure logging.
+    pub source_addr: u16,
 }
 
 impl AccessContext {
@@ -107,12 +110,13 @@ impl AccessContext {
             access_level,
             security: SecurityMode::Plain,
             role: ClientRole::Unlisted,
+            source_addr: 0,
         }
     }
 
     /// Create a full access context with all fields.
     pub const fn with_security(access_level: u8, security: SecurityMode, role: ClientRole) -> Self {
-        Self { access_level, security, role }
+        Self { access_level, security, role, source_addr: 0 }
     }
 
     /// Check whether this context has at least the given access level.
@@ -128,6 +132,7 @@ impl AccessContext {
         access_level: 3,
         security: SecurityMode::Plain,
         role: ClientRole::Unlisted,
+        source_addr: 0,
     };
 
     /// Maximum-access context (level 0, full system access).
@@ -135,6 +140,7 @@ impl AccessContext {
         access_level: 0,
         security: SecurityMode::Plain,
         role: ClientRole::Unlisted,
+        source_addr: 0,
     };
 }
 

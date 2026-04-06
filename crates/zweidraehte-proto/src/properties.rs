@@ -229,6 +229,23 @@ impl PropertyDescriptor {
             && ctx.access_level <= self.write_level
             && self.policy.can_write(ctx, device_security_on)
     }
+
+    /// Check if a Function Property command (write-like) is allowed.
+    ///
+    /// Unlike [`can_write_secure`], this does NOT check [`PropertyAccess`]
+    /// because PDT_FUNCTION properties are always accessed via Function
+    /// Property services, not PropertyValueWrite — so they may be marked
+    /// ReadOnly in the descriptor while still being writable via command.
+    pub const fn can_function_write_secure(&self, ctx: &AccessContext, device_security_on: bool) -> bool {
+        self.policy.can_write(ctx, device_security_on)
+    }
+
+    /// Check if a Function Property state read is allowed.
+    ///
+    /// Like [`can_function_write_secure`], skips the PropertyAccess check.
+    pub const fn can_function_read_secure(&self, ctx: &AccessContext, device_security_on: bool) -> bool {
+        self.policy.can_read(ctx, device_security_on)
+    }
 }
 
 /// Response data for A_PropertyDescription_Read service

@@ -103,5 +103,6 @@ pub fn create_security_context() -> SecurityTestContext {
     keys.insert("GK4".into(), GK4);
     keys.insert("GK5".into(), GK5);
     keys.insert("FDSK".into(), FDSK);
+    keys.insert("ZERO_KEY".into(), [0u8; 16]);
     SecurityTestContext::new(keys)
 }

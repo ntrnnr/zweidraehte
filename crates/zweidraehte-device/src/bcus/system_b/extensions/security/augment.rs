@@ -212,6 +212,11 @@ impl<'a, S: StackState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P:
         if index == 0 { Some(InterfaceObjectType::Security) } else { None }
     }
 
+    fn log_access_denied(&self, source_addr: u16) {
+        use super::SecurityFailureType;
+        self.state.failures_log().borrow_mut().log_failure(SecurityFailureType::AccessError, source_addr, &[]);
+    }
+
     fn property_description_read(
         &self,
         _state: &S,
@@ -458,9 +463,7 @@ impl<'a, S: StackState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P:
                     }
                     // Write the new tool counter; preserve the regular counter.
                     let mut storage = self.seq_storage.borrow_mut();
-                    let regular = storage.load_sending_seqs()
-                        .map(|(r, _)| r)
-                        .unwrap_or([0, 0, 0, 0, 0, 1]);
+                    let regular = storage.load_sending_seqs().map(|(r, _)| r).unwrap_or([0, 0, 0, 0, 0, 1]);
                     let _ = storage.save_sending_seqs(&regular, &tool);
                     Ok(WriteResponse::Echo)
                 }
@@ -505,21 +508,33 @@ impl<'a, S: StackState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P:
             _ => return None,
         }
 
-        // PID_SECURITY_FAILURES_LOG handler: Command format: [id, info]
-        if req.service_data.len() < 2 {
-            return Some(FunctionPropertyResult::not_supported());
+        // PID_SECURITY_FAILURES_LOG handler: Command format: [id, info, ...]
+        //
+        // Only id=0, info=0 is defined (clear the log). Other combinations
+        // return appropriate error codes per the conformance tests.
+        if req.service_data.is_empty() {
+            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[]) });
         }
-
         let id = req.service_data[0];
+        if req.service_data.len() < 2 {
+            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[id]) });
+        }
         let info = req.service_data[1];
 
-        // id=0, info=0: Clear the failure log.
-        if id == 0 && info == 0 {
-            self.state.failures_log().borrow_mut().clear();
-            return Some(FunctionPropertyResult::success_with_data(&[id]));
+        match id {
+            0 if info == 0 => {
+                self.state.failures_log().borrow_mut().clear();
+                Some(FunctionPropertyResult::success_with_data(&[id]))
+            }
+            0 => {
+                // id=0 but info != 0 → invalid service info.
+                Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[id]) })
+            }
+            _ => {
+                // Unknown service ID.
+                Some(FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[id]) })
+            }
         }
-
-        Some(FunctionPropertyResult::not_supported())
     }
 
     fn function_property_state_read(
@@ -541,37 +556,71 @@ impl<'a, S: StackState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P:
             return None;
         }
 
+        // Short frame handling: need at least id and info bytes.
+        if req.service_data.is_empty() {
+            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[]) });
+        }
+        // FunctionPropertyExtStateRead service data layout:
+        //   service_data[0] = service_id (0 for standard state reads)
+        //   service_data[1] = service_info (0=counters, 1=entries)
+        //   service_data[2..] = data (entry index for service_info=1)
+        let service_id = req.service_data[0];
         if req.service_data.len() < 2 {
-            return Some(FunctionPropertyResult::not_supported());
+            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) });
+        }
+        let service_info = req.service_data[1];
+
+        // Only service_id=0 is defined.
+        if service_id != 0 {
+            return Some(FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_id]) });
         }
 
-        let id = req.service_data[0];
-        let info = req.service_data[1];
+        match service_info {
+            // service_info=0: Return 4 × 2-byte BE counters (8 bytes).
+            0 => {
+                // Validate that the data byte is 0 (the only valid value for
+                // the counter read sub-function).
+                let data_byte = req.service_data.get(2).copied().unwrap_or(0);
+                if data_byte != 0 {
+                    return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) });
+                }
 
-        match id {
-            // id=0, info=0: Return 8-byte failure counters.
-            0 if info == 0 => {
                 let log = self.state.failures_log().borrow();
-                let counters = log.counters();
-                let mut data = [0u8; 10]; // id(1) + info(1) + counters(8)
-                data[0] = id;
-                data[1] = info;
-                data[2..10].copy_from_slice(counters);
+                let counter_bytes = log.counters_as_bytes();
+                // Response: service_id(1) + service_info(1) + counters(8)
+                let mut data = [0u8; 10];
+                data[0] = service_id;
+                data[1] = service_info;
+                data[2..10].copy_from_slice(&counter_bytes);
                 Some(FunctionPropertyResult::success_with_data(&data))
             }
-            // id=1, info=N: Return Nth most recent failure entry.
+            // service_info=1: Return Nth most recent 12-byte failure entry.
             1 => {
+                // Need the entry index from data byte.
+                if req.service_data.len() < 3 {
+                    return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_info]) });
+                }
+                let entry_index = req.service_data[2];
+
                 let log = self.state.failures_log().borrow();
-                if let Some(entry) = log.get_by_index(info) {
+                if let Some(entry) = log.get_by_index(entry_index) {
                     let src_bytes = entry.source_addr.to_be_bytes();
-                    let data = [id, info, entry.failure_type, src_bytes[0], src_bytes[1]];
+                    // Response data: service_info(1) + entry_index(1) +
+                    //                src_addr(2) + fragment(9) + failure_type(1) = 14 bytes
+                    let mut data = [0u8; 14];
+                    data[0] = service_info;
+                    data[1] = entry_index;
+                    data[2..4].copy_from_slice(&src_bytes);
+                    data[4..13].copy_from_slice(&entry.frame_fragment);
+                    data[13] = entry.failure_type;
                     Some(FunctionPropertyResult::success_with_data(&data))
                 } else {
-                    // No entry at this index — DataVoid.
-                    Some(FunctionPropertyResult::success_with_data(&[id]))
+                    // Out of bounds → DataVoid.
+                    Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_info]) })
                 }
             }
-            _ => Some(FunctionPropertyResult::not_supported()),
+            // Unknown service_info → SERVICE_NOT_SUPPORTED.
+            _ => Some(FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_info]) }),
         }
     }
 }
@@ -1039,6 +1088,7 @@ mod tests {
         let write_req = FullPropertyWriteRequest {
             object_idx: 6,
             pid: pid::GROUP_KEY_TABLE,
+            count: 1,
             start_idx: 1,
             data: &entry,
             ctx: crate::AccessContext::MAX_ACCESS,
@@ -1068,22 +1118,26 @@ mod tests {
         use super::super::{SecurityFailureType, SecurityFailuresLog};
 
         let mut log = SecurityFailuresLog::default();
+        let frag = [0xAA; 9];
 
         // Log some failures.
-        log.log_failure(SecurityFailureType::CryptoError, 0x1001);
-        log.log_failure(SecurityFailureType::CryptoError, 0x1002);
-        log.log_failure(SecurityFailureType::ScfError, 0x2001);
+        log.log_failure(SecurityFailureType::CryptoError, 0x1001, &frag);
+        log.log_failure(SecurityFailureType::CryptoError, 0x1002, &frag);
+        log.log_failure(SecurityFailureType::ScfError, 0x2001, &frag);
 
-        // Check counters.
+        // Check counters (4 × u16).
+        // CryptoError (type 1) → counter[1] = 2
+        // ScfError (type 0) → counter[0] = 1
         let counters = log.counters();
-        assert_eq!(counters[SecurityFailureType::CryptoError as usize], 2);
-        assert_eq!(counters[SecurityFailureType::ScfError as usize], 1);
-        assert_eq!(counters[SecurityFailureType::SeqNrError as usize], 0);
+        assert_eq!(counters[1], 2, "CryptoError counter");
+        assert_eq!(counters[0], 1, "ScfError counter");
+        assert_eq!(counters[2], 0, "SeqNrError counter");
 
         // Check entries (most recent first).
         let e0 = log.get_by_index(0).expect("entry 0");
         assert_eq!(e0.failure_type, SecurityFailureType::ScfError as u8);
         assert_eq!(e0.source_addr, 0x2001);
+        assert_eq!(e0.frame_fragment, frag);
 
         let e1 = log.get_by_index(1).expect("entry 1");
         assert_eq!(e1.failure_type, SecurityFailureType::CryptoError as u8);
@@ -1091,8 +1145,29 @@ mod tests {
 
         // Clear.
         log.clear();
-        assert_eq!(log.counters()[SecurityFailureType::CryptoError as usize], 0);
+        assert_eq!(log.counters()[0], 0);
         assert!(log.get_by_index(0).is_none());
+    }
+
+    #[test]
+    fn failures_log_counter_aggregation() {
+        use super::super::{SecurityFailureType, SecurityFailuresLog};
+
+        let mut log = SecurityFailuresLog::default();
+
+        // RoleError (type 3) and AccessError (type 4) both map to counter[3].
+        log.log_failure(SecurityFailureType::RoleError, 0x1001, &[]);
+        log.log_failure(SecurityFailureType::AccessError, 0x1002, &[]);
+        log.log_failure(SecurityFailureType::AccessError, 0x1003, &[]);
+
+        let counters = log.counters();
+        assert_eq!(counters[3], 3, "Role+Access counter should aggregate");
+
+        // Entry types remain distinct.
+        let e0 = log.get_by_index(0).expect("most recent");
+        assert_eq!(e0.failure_type, SecurityFailureType::AccessError as u8);
+        let e2 = log.get_by_index(2).expect("oldest");
+        assert_eq!(e2.failure_type, SecurityFailureType::RoleError as u8);
     }
 
     #[test]
@@ -1103,7 +1178,7 @@ mod tests {
 
         // Fill beyond capacity (8 entries).
         for i in 0..10u16 {
-            log.log_failure(SecurityFailureType::CryptoError, 0x1000 + i);
+            log.log_failure(SecurityFailureType::CryptoError, 0x1000 + i, &[]);
         }
 
         // Most recent should be 0x1009 (i=9).
@@ -1117,7 +1192,19 @@ mod tests {
         // Index 8 should be out of range.
         assert!(log.get_by_index(8).is_none());
 
-        // Counter should be 10 (saturating).
-        assert_eq!(log.counters()[SecurityFailureType::CryptoError as usize], 10);
+        // Counter should be 10 (saturating u16).
+        assert_eq!(log.counters()[1], 10);
+    }
+
+    #[test]
+    fn failures_log_fragment_padding() {
+        use super::super::{SecurityFailureType, SecurityFailuresLog};
+
+        let mut log = SecurityFailuresLog::default();
+
+        // Short fragment gets zero-padded.
+        log.log_failure(SecurityFailureType::ScfError, 0x1001, &[0x01, 0x02, 0x03]);
+        let e = log.get_by_index(0).expect("entry");
+        assert_eq!(e.frame_fragment, [0x01, 0x02, 0x03, 0, 0, 0, 0, 0, 0]);
     }
 }

@@ -711,6 +711,13 @@ pub trait InterfaceObjectAugment<S: StackState> {
         None
     }
 
+    /// Called by the dispatch layer when a property access is denied due
+    /// to security policy. Implementations with a security extension should
+    /// log this as a security failure (AccessError).
+    ///
+    /// `source_addr` is the sender's individual address (from `AccessContext`).
+    fn log_access_denied(&self, _source_addr: u16) {}
+
     /// Number of additional interface objects this augment provides.
     ///
     /// The container adds these to its base object count, mapping extra
@@ -783,6 +790,10 @@ impl<S: StackState, A: InterfaceObjectAugment<S>> InterfaceObjectAugment<S> for 
         req: &FunctionPropertyRequest<'_>,
     ) -> Option<FunctionPropertyResult> {
         (**self).function_property_state_read(state, object_type, req)
+    }
+
+    fn log_access_denied(&self, source_addr: u16) {
+        (**self).log_access_denied(source_addr);
     }
 
     fn additional_object_count(&self) -> u16 {
@@ -874,6 +885,12 @@ where
         } else {
             self.1.additional_object_type_at(index - head_count)
         }
+    }
+
+    fn log_access_denied(&self, source_addr: u16) {
+        // Forward to both augments — the security one will log, the rest are no-ops.
+        self.0.log_access_denied(source_addr);
+        self.1.log_access_denied(source_addr);
     }
 }
 

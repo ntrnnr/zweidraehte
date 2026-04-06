@@ -2,7 +2,7 @@
 //!
 //! These helpers provide a concise DSL for defining test steps in EITT-style tests.
 
-use crate::{InvalidSecurityParam, SecureParams, TestStep};
+use crate::{InvalidSecurityParam, SecureParams, SeqSource, TestStep};
 
 /// Helper to create an inject step from a template string
 pub fn inject(template: &str) -> TestStep {
@@ -175,6 +175,21 @@ pub fn expect_group_ao(template: &str, key: &str, timeout_ms: u32) -> TestStep {
         sec_params: SecureParams::group_auth_only(key),
         timeout_ms,
     }
+}
+
+/// Inject a secure A+C telegram using the all-zeros key. The DUT won't
+/// be able to decrypt this (wrong key) and should silently drop it,
+/// logging a CryptoError.
+pub fn inject_secure_ac_wrongkey(template: &str) -> TestStep {
+    inject_secure_ac(template, "ZERO_KEY")
+}
+
+/// Inject a secure A+C telegram with sequence number explicitly set to 0.
+/// The DUT should reject this (seq=0 is invalid) and log a SeqNrError.
+pub fn inject_secure_ac_seq0(template: &str, key: &str) -> TestStep {
+    let mut params = SecureParams::tool_auth_conf(key);
+    params.seq_source = SeqSource::Fixed(0);
+    TestStep::InjectSecure { template: template.to_string(), sec_params: params, delay_before_ms: 0 }
 }
 
 /// Inject a secure telegram with an intentionally invalid field.

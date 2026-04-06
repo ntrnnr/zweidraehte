@@ -299,6 +299,8 @@ pub enum SeqSource {
     Tool,
     /// Use the DUT's expected sequence number.
     Table,
+    /// Use a specific fixed sequence number (does not auto-increment).
+    Fixed(u64),
 }
 
 /// Which security field to corrupt for negative tests.

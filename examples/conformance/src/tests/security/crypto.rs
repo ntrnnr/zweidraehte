@@ -26,6 +26,7 @@ pub fn wrap_secure(
     let seq_nr = match params.seq_source {
         SeqSource::Tool => ctx.next_tool_seq(),
         SeqSource::Table => ctx.current_table_seq(),
+        SeqSource::Fixed(val) => super::context::seq_to_bytes(val),
     };
 
     // Build SCF byte.
@@ -177,6 +178,7 @@ fn wrap_secure_wrong_at(
     let seq_nr = match params.seq_source {
         SeqSource::Tool => ctx.next_tool_seq(),
         SeqSource::Table => ctx.current_table_seq(),
+        SeqSource::Fixed(val) => super::context::seq_to_bytes(val),
     };
 
     let scf = SecurityControlField {

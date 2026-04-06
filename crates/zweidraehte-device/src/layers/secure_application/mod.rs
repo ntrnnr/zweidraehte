@@ -192,7 +192,7 @@ where
                     let src = u16::from_be_bytes(msg.get_source_addr().0);
                     let security_state = self.state.extension_state();
                     warn!("S-AL: plain group frame rejected — GO requires security");
-                    security_state.log_security_failure(SecurityFailureType::CryptoError, src);
+                    security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
                     return None;
                 }
             }
@@ -233,7 +233,7 @@ where
             Ok(scf) => scf,
             Err(_) => {
                 warn!("S-AL: invalid SCF 0x{:02X}", scf_byte);
-                security_state.log_security_failure(SecurityFailureType::ScfError, src);
+                security_state.log_security_failure(SecurityFailureType::ScfError, src, &[]);
                 return None;
             }
         };
@@ -244,10 +244,17 @@ where
             return None;
         }
 
-        // TODO: validate seq_nr against last-valid receiving sequence number
-        // Extract all needed fields from the immutable reference before dropping
-        // it, so we can get a mutable reference later for decryption.
-        let _seq_nr = secure_ref.seq_nr();
+        // Sequence number validation: reject seq_nr == 0 unconditionally.
+        // A zero sequence number is always invalid per spec.
+        //
+        // TODO: full SIAT-based sequence validation (check against last-valid
+        // receiving sequence number per sender) is not yet implemented.
+        let seq_nr = secure_ref.seq_nr();
+        if seq_nr == [0u8; 6] {
+            warn!("S-AL: sequence number is zero — rejected");
+            security_state.log_security_failure(SecurityFailureType::SeqNrError, src, &[]);
+            return None;
+        }
         let received_mac = secure_ref.mac();
         let addr_type = secure_ref.addr_type();
         let mut ctx = secure_ref.ccm_context(src);
@@ -285,7 +292,7 @@ where
         // group-addressed.
         if scf.tool_access && addr_type != 0 {
             warn!("S-AL: tool access on group communication rejected");
-            security_state.log_security_failure(SecurityFailureType::CryptoError, src);
+            security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
             return None;
         }
 
@@ -307,7 +314,7 @@ where
                 Some(k) => k,
                 None => {
                     warn!("S-AL: no group key for TSAP {}", tsap);
-                    security_state.log_security_failure(SecurityFailureType::CryptoError, src);
+                    security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
                     return None;
                 }
             }
@@ -322,12 +329,12 @@ where
         if scf.confidentiality {
             if ccm::verify_and_decrypt(&key, &ctx, scf_byte, secure_mut.payload_mut(), &received_mac).is_err() {
                 warn!("S-AL: MAC verification failed (A+C)");
-                security_state.log_security_failure(SecurityFailureType::CryptoError, src);
+                security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
                 return None;
             }
         } else if ccm::verify_mac_auth_only(&key, &ctx, scf_byte, secure_mut.payload(), &received_mac).is_err() {
             warn!("S-AL: MAC verification failed (auth-only)");
-            security_state.log_security_failure(SecurityFailureType::CryptoError, src);
+            security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
             return None;
         }
 
@@ -348,7 +355,7 @@ where
             let tsap = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
             if !self.check_go_security_flags(tsap, received_bits) {
                 warn!("S-AL: GO security flag mismatch for TSAP {} (received={:#04X})", tsap, received_bits);
-                security_state.log_security_failure(SecurityFailureType::CryptoError, src);
+                security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
                 return None;
             }
         }
@@ -359,7 +366,8 @@ where
         // Populate AccessContext.
         let security_mode = if scf.confidentiality { SecurityMode::AuthConf } else { SecurityMode::AuthOnly };
         let role = if scf.tool_access { ClientRole::Tool } else { ClientRole::Unlisted };
-        let access_ctx = AccessContext::with_security(0, security_mode, role);
+        let mut access_ctx = AccessContext::with_security(0, security_mode, role);
+        access_ctx.source_addr = src;
         let _ = buf;
         msg.set_access_source(AccessSource::Explicit(access_ctx));
 
