@@ -296,11 +296,8 @@ where
         let buf = msg.buf_mut();
         let secure_ref = SecureApduRef::parse(buf).expect("already validated length");
 
-        // Sequence number validation: reject seq_nr == 0 unconditionally.
-        // A zero sequence number is always invalid per spec.
-        //
-        // TODO: full SIAT-based sequence validation (check against last-valid
-        // receiving sequence number per sender) is not yet implemented.
+        // Early reject: SeqNr == 0 is always invalid per spec.
+        // Full per-sender validation happens after MAC verification below.
         let seq_nr = secure_ref.seq_nr();
         if seq_nr == [0u8; 6] {
             warn!("S-AL: sequence number is zero — rejected");
@@ -392,6 +389,44 @@ where
 
         let new_len = secure_mut.unwrap_to_plaintext();
         buf.set_len(new_len);
+
+        // ================================================================
+        // Sequence Number Validation (per spec 03/03/07 §5.3.1)
+        // ================================================================
+        //
+        // After successful MAC verification, compare the received SeqNr
+        // against the stored "Last Valid SeqNr" for this sender.
+        // Note: SeqNr == 0 was already rejected as an early optimization
+        // before MAC verification.
+        {
+            let seq_nr_val = seq_to_u64(&seq_nr);
+            let mut storage = self.seq_storage.borrow_mut();
+            let stored = if scf.tool_access {
+                storage.load_tool_receiving_seq().ok().flatten()
+            } else {
+                // For group communication, the "sender" is identified by
+                // their individual address (src), not the group address.
+                storage.load_receiving_seq(src).ok().flatten()
+            };
+            let stored_val = stored.map(|s| seq_to_u64(&s)).unwrap_or(0);
+
+            if seq_nr_val > stored_val {
+                // Accept: update stored to the received value.
+                if scf.tool_access {
+                    let _ = storage.save_tool_receiving_seq(&seq_nr);
+                } else {
+                    let _ = storage.save_receiving_seq(src, &seq_nr);
+                }
+            } else if seq_nr_val == stored_val {
+                // Retransmission: ignore silently (no failure log per spec).
+                return SecureResult::Dropped;
+            } else {
+                // Replay: ignore, log SeqNr failure.
+                // The S-AL shall not block further messages from this sender.
+                security_state.log_security_failure(SecurityFailureType::SeqNrError, src, &[]);
+                return SecureResult::Dropped;
+            }
+        }
 
         // ================================================================
         // GO Security Flag Enforcement (group-addressed frames only)
@@ -530,18 +565,24 @@ where
         //
         // The "stored" value is the last-valid receiving sequence number
         // for this communication partner, read from wear-resistant storage.
-        // Tool access uses a sentinel peer IA (0xFFFF).
-        let peer_ia = if scf.tool_access { 0xFFFF } else { src };
         let mut storage = self.seq_storage.borrow_mut();
-        let stored_seq = storage.load_receiving_seq(peer_ia).ok().flatten().unwrap_or([0u8; 6]);
-        let stored_val = seq_to_u64(&stored_seq);
+        let stored_seq = if scf.tool_access {
+            storage.load_tool_receiving_seq().ok().flatten()
+        } else {
+            storage.load_receiving_seq(src).ok().flatten()
+        };
+        let stored_val = stored_seq.map(|s| seq_to_u64(&s)).unwrap_or(0);
         let received_val = seq_to_u64(&seq_nr_local_received);
 
         // If (received - 1) > stored, update stored to (received - 1).
         let new_stored = if received_val > 0 && (received_val - 1) > stored_val {
             let updated = received_val - 1;
             let updated_bytes = u64_to_seq(updated);
-            let _ = storage.save_receiving_seq(peer_ia, &updated_bytes);
+            if scf.tool_access {
+                let _ = storage.save_tool_receiving_seq(&updated_bytes);
+            } else {
+                let _ = storage.save_receiving_seq(src, &updated_bytes);
+            }
             updated
         } else {
             stored_val

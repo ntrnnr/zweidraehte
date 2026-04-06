@@ -555,7 +555,34 @@ impl ShmSeqStorage {
     fn write_magic(&mut self) {
         unsafe { core::ptr::copy_nonoverlapping(SEQ_MAGIC.as_ptr(), self.ptr, 4) };
     }
+
+    fn peer_count(&self) -> usize {
+        let mut count = [0u8; 2];
+        unsafe { core::ptr::copy_nonoverlapping(self.ptr.add(SHM_PEER_COUNT_OFFSET), count.as_mut_ptr(), 2) };
+        u16::from_be_bytes(count) as usize
+    }
+
+    fn set_peer_count(&mut self, count: usize) {
+        let bytes = (count as u16).to_be_bytes();
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.ptr.add(SHM_PEER_COUNT_OFFSET), 2) };
+    }
 }
+
+// Shared memory layout for sequence number storage:
+//
+// Offset 0:   magic(4)            "SEQ\0"
+// Offset 4:   regular_sending(6)  Regular sending SeqNr
+// Offset 10:  tool_sending(6)     Tool access sending SeqNr
+// Offset 16:  tool_receiving(6)   Tool access receiving SeqNr (last valid)
+// Offset 22:  peer_count(2)       Number of peer entries
+// Offset 24:  peer_entries[N]     N entries of: peer_ia(2) + last_valid_seq(6) = 8 bytes each
+//
+// Max 16 peers → total = 4+6+6+6+2+(16*8) = 152 bytes.
+const SHM_TOOL_RECV_OFFSET: usize = 16;
+const SHM_PEER_COUNT_OFFSET: usize = 22;
+const SHM_PEER_ENTRIES_OFFSET: usize = 24;
+const SHM_PEER_ENTRY_SIZE: usize = 8;
+const SHM_MAX_PEERS: usize = 16;
 
 impl SequenceNumberStorage for ShmSeqStorage {
     type Error = core::convert::Infallible;
@@ -582,12 +609,66 @@ impl SequenceNumberStorage for ShmSeqStorage {
         Ok(())
     }
 
-    fn load_receiving_seq(&self, _peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error> {
-        // TODO: implement peer sequence tracking when needed.
+    fn load_receiving_seq(&self, peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error> {
+        if !self.has_magic() {
+            return Ok(None);
+        }
+        let count = self.peer_count();
+        let ia_bytes = peer_ia.to_be_bytes();
+        for i in 0..count {
+            let offset = SHM_PEER_ENTRIES_OFFSET + i * SHM_PEER_ENTRY_SIZE;
+            let mut entry = [0u8; 8];
+            unsafe { core::ptr::copy_nonoverlapping(self.ptr.add(offset), entry.as_mut_ptr(), 8) };
+            if entry[0] == ia_bytes[0] && entry[1] == ia_bytes[1] {
+                let mut seq = [0u8; 6];
+                seq.copy_from_slice(&entry[2..8]);
+                return Ok(Some(seq));
+            }
+        }
         Ok(None)
     }
 
-    fn save_receiving_seq(&mut self, _peer_ia: u16, _seq: &[u8; 6]) -> Result<(), Self::Error> {
+    fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error> {
+        self.write_magic();
+        let count = self.peer_count();
+        let ia_bytes = peer_ia.to_be_bytes();
+
+        // Try to update existing entry.
+        for i in 0..count {
+            let offset = SHM_PEER_ENTRIES_OFFSET + i * SHM_PEER_ENTRY_SIZE;
+            let mut ia = [0u8; 2];
+            unsafe { core::ptr::copy_nonoverlapping(self.ptr.add(offset), ia.as_mut_ptr(), 2) };
+            if ia == ia_bytes {
+                unsafe { core::ptr::copy_nonoverlapping(seq.as_ptr(), self.ptr.add(offset + 2), 6) };
+                return Ok(());
+            }
+        }
+
+        // Append new entry if space available.
+        if count < SHM_MAX_PEERS {
+            let offset = SHM_PEER_ENTRIES_OFFSET + count * SHM_PEER_ENTRY_SIZE;
+            unsafe {
+                core::ptr::copy_nonoverlapping(ia_bytes.as_ptr(), self.ptr.add(offset), 2);
+                core::ptr::copy_nonoverlapping(seq.as_ptr(), self.ptr.add(offset + 2), 6);
+            }
+            self.set_peer_count(count + 1);
+        }
+        Ok(())
+    }
+
+    fn load_tool_receiving_seq(&self) -> Result<Option<[u8; 6]>, Self::Error> {
+        if !self.has_magic() {
+            return Ok(None);
+        }
+        let mut seq = [0u8; 6];
+        unsafe { core::ptr::copy_nonoverlapping(self.ptr.add(SHM_TOOL_RECV_OFFSET), seq.as_mut_ptr(), 6) };
+        // All-zero means unset (initial state).
+        if seq == [0u8; 6] { Ok(None) } else { Ok(Some(seq)) }
+    }
+
+    fn save_tool_receiving_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error> {
+        self.write_magic();
+        unsafe { core::ptr::copy_nonoverlapping(seq.as_ptr(), self.ptr.add(SHM_TOOL_RECV_OFFSET), 6) };
         Ok(())
     }
 }
@@ -647,6 +728,12 @@ impl SecureConformanceState {
         let identity = StaticIdentity::with_fdsk(SECURE_SERIAL_NUMBER, SECURE_FDSK);
         let inner = SecureInnerState::from_persisted(&identity, snapshot.inner);
         inner.extension_state().set_seq_storage(seq_storage);
+
+        // Seed per-peer receiving sequence numbers from SIAT entries into
+        // the wear-resistant storage. This ensures that seqnrs written by
+        // ETS during configuration are available for runtime validation.
+        let ext = inner.extension_state();
+        ext.security.seed_receiving_seqs(&mut *ext.seq_storage.borrow_mut());
 
         Self {
             inner,

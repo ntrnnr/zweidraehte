@@ -349,13 +349,14 @@ impl SharedMemory {
     }
 
     /// Raw pointer to the sequence number region at the end of the shared
-    /// memory. Layout: `[magic: 4B "SEQ\0"] [regular: 6B] [tool: 6B]`.
+    /// memory. See `ShmSeqStorage` for the layout (sending seqs, tool
+    /// receiving seq, and per-peer receiving seq table).
     ///
     /// The caller must ensure the pointer is only used while the
     /// `SharedMemory` is alive.
     pub fn seq_region_ptr(&self) -> *mut u8 {
-        // Reserve last 16 bytes of the shared memory.
-        unsafe { self.ptr.add(self.size - 16) }
+        // Reserve last 256 bytes of the shared memory for sequence storage.
+        unsafe { self.ptr.add(self.size - 256) }
     }
 
     /// Clear the `FD_CLOEXEC` flag so the fd is inherited by the child.

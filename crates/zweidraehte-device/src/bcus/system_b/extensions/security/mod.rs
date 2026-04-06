@@ -547,6 +547,26 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
         false
     }
 
+    /// Seed the receiving sequence number storage from SIAT entries.
+    ///
+    /// Called when the security load state transitions to Loaded.
+    /// Copies each SIAT entry's Last Valid SeqNr into the wear-resistant
+    /// `SequenceNumberStorage` so the S-AL can validate incoming frames.
+    pub fn seed_receiving_seqs<S: crate::storage::SequenceNumberStorage>(&self, storage: &mut S) {
+        let table = self.siat.borrow();
+        let count = table.count() as usize;
+        for i in 0..count {
+            let entry = &table.data[i];
+            let ia = u16::from_be_bytes([entry[0], entry[1]]);
+            let mut seq = [0u8; 6];
+            seq.copy_from_slice(&entry[2..8]);
+            // Only seed non-zero seqnrs — zero means "unknown" per spec §6.3.8.5.
+            if seq != [0u8; 6] {
+                let _ = storage.save_receiving_seq(ia, &seq);
+            }
+        }
+    }
+
     /// Get a reference to the security failures log.
     pub fn failures_log(&self) -> &RefCell<SecurityFailuresLog> {
         &self.failures_log

@@ -10,7 +10,7 @@
 //! The DUT runs with Security Mode OFF — all tests operate via tool key
 //! commissioning through the FDSK.
 
-use crate::{InvalidSecurityParam, SecureParams, TestCase, TestSuite};
+use crate::{InvalidSecurityParam, SecureParams, SeqSource, TestCase, TestSuite};
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
 
@@ -203,11 +203,13 @@ fn test_3_1_9() -> TestCase {
             comment("First: valid request to establish sequence number"),
             inject_secure_ao(READ_PID1, "TK1"),
             expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
-            comment("Second: replay with same seq → reject (no response)"),
-            // TODO: Need a way to inject with a specific (old) sequence number.
-            // For now, this test is a placeholder.
-            // inject_secure_with_seq(READ_PID1, "TK1", old_seq),
-            // expect_none(TIMEOUT),
+            comment("Second: replay with old seq (Fixed=1) → reject"),
+            inject_secure(READ_PID1, {
+                let mut p = SecureParams::tool_auth_only("TK1");
+                p.seq_source = SeqSource::Fixed(1);
+                p
+            }),
+            expect_none(TIMEOUT),
         ],
     )
 }
@@ -380,8 +382,13 @@ fn test_3_1_22() -> TestCase {
             comment("First: valid A+C request"),
             inject_secure_ac(READ_PID57, "TK1"),
             expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
-            comment("Replay with old seq → reject"),
-            // TODO: Need seq override infrastructure.
+            comment("Replay with old seq (Fixed=1) → reject"),
+            inject_secure(READ_PID57, {
+                let mut p = SecureParams::tool_auth_conf("TK1");
+                p.seq_source = SeqSource::Fixed(1);
+                p
+            }),
+            expect_none(TIMEOUT),
         ],
     )
 }

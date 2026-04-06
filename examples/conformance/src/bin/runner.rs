@@ -865,9 +865,16 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let mut total_steps = 0;
     let mut total_tests = 0;
 
+    // Persistent security context — survives across consecutive security
+    // suites so the tool's sending sequence number stays monotonic.
+    let mut persistent_sec_ctx: Option<SecurityTestContext> = None;
+
     for suite in &suites {
         // Switch DUT binary if the suite requires a different variant.
         if suite.use_secure_dut != current_dut_is_secure {
+            // DUT type switch: clear the persistent context since the
+            // shared memory (and thus the DUT's stored seqnrs) is reset.
+            persistent_sec_ctx = None;
             println!("🔄 Switching to {} DUT...", if suite.use_secure_dut { "secure" } else { "non-secure" });
 
             // Kill the current child and respawn with the correct binary.
@@ -901,9 +908,19 @@ async fn main(_spawner: embassy_executor::Spawner) {
         }
         println!();
 
-        // Create a SecurityTestContext for secure suites.
+        // Take the persistent SecurityTestContext for this suite iteration,
+        // or create a new one. The context persists across consecutive
+        // security suites so that the tool's sending sequence number stays
+        // monotonic — resetting to seq=1 between suites would cause the
+        // DUT to reject frames as sequence number replays.
         let mut sec_ctx = if suite.use_secure_dut {
-            Some(zweidraehte_conformance::tests::security::variables::create_security_context())
+            let mut ctx = persistent_sec_ctx.take()
+                .unwrap_or_else(|| zweidraehte_conformance::tests::security::variables::create_security_context());
+            // Reset the DUT's expected sending seqnr — the DUT may have
+            // restarted, but the runner's tool seqnr continues from where
+            // it left off.
+            ctx.table_seq_nr = 1;
+            Some(ctx)
         } else {
             None
         };
@@ -1008,6 +1025,12 @@ async fn main(_spawner: embassy_executor::Spawner) {
                 total_steps += 1;
             }
             println!("✅ Teardown completed\n");
+        }
+
+        // Return the security context to persistent storage so the next
+        // suite can continue with the same tool sequence number.
+        if sec_ctx.is_some() {
+            persistent_sec_ctx = sec_ctx;
         }
     }
     println!("====================================================================");

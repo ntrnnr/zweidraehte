@@ -761,6 +761,12 @@ mod tests {
         fn save_receiving_seq(&mut self, _peer_ia: u16, _seq: &[u8; 6]) -> Result<(), ()> {
             Ok(())
         }
+        fn load_tool_receiving_seq(&self) -> Result<Option<[u8; 6]>, ()> {
+            Ok(None)
+        }
+        fn save_tool_receiving_seq(&mut self, _seq: &[u8; 6]) -> Result<(), ()> {
+            Ok(())
+        }
     }
 
     fn make_state() -> SecurityState<64, 8, 32> {

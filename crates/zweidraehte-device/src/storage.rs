@@ -289,13 +289,22 @@ pub trait SequenceNumberStorage {
     /// Called after every outgoing secure message.
     fn save_sending_seqs(&mut self, regular: &[u8; 6], tool: &[u8; 6]) -> Result<(), Self::Error>;
 
-    /// Load last-valid receiving sequence number for a peer.
+    /// Load last-valid receiving sequence number for a peer (P2P, non-tool).
     /// Returns `None` if no sequence is stored for this peer.
     fn load_receiving_seq(&self, peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error>;
 
-    /// Save last-valid receiving sequence number for a peer.
+    /// Save last-valid receiving sequence number for a peer (P2P, non-tool).
     /// Called after successful MAC verification of an incoming message.
     fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error>;
+
+    /// Load the last-valid receiving sequence number for tool access.
+    ///
+    /// Per spec §5.3.1 Note 27, the tool access receiving SeqNr is stored
+    /// separately from the SIAT — there is no standardized resource for it.
+    fn load_tool_receiving_seq(&self) -> Result<Option<[u8; 6]>, Self::Error>;
+
+    /// Save the last-valid receiving sequence number for tool access.
+    fn save_tool_receiving_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error>;
 }
 
 /// Trait for stack definitions that provide sequence number storage.
