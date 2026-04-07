@@ -44,6 +44,34 @@ pub const GK5: [u8; 16] =
 pub const FDSK: [u8; 16] = TK1;
 
 // ============================================================================
+// P2P Key Definitions (Section 3.6 — Roles)
+// ============================================================================
+
+/// P2P Key 1 — for peer IA 1.1.1 (0x1101), Role 0 (A, R+W).
+pub const P2PK1: [u8; 16] = [0x22; 16];
+
+/// P2P Key 2 — for peer IA 1.1.2 (0x1102), Role 1 (A+C, R+W).
+pub const P2PK2: [u8; 16] = [0x33; 16];
+
+/// P2P Key 3 — for peer IA 1.1.3 (0x1103), Role 2 (A, R only).
+pub const P2PK3: [u8; 16] = [0x44; 16];
+
+/// P2P Key 4 — for peer IA 1.1.4 (0x1104), Role 3 (A+C, R only).
+pub const P2PK4: [u8; 16] = [0x55; 16];
+
+/// P2P Key 5 — for peer IA 1.1.5 (0x1105), Role 4 (A, W only).
+pub const P2PK5: [u8; 16] = [0x66; 16];
+
+/// P2P Key 6 — for peer IA 1.1.6 (0x1106), Role 5 (A+C, W only).
+pub const P2PK6: [u8; 16] = [0x77; 16];
+
+/// P2P Key 7 — for peer IA 1.1.7 (0x1107), no role.
+pub const P2PK7: [u8; 16] = [0x88; 16];
+
+/// P2P Key 8 — for peer IA 1.1.8 (0x1108), Roles 3+4.
+pub const P2PK8: [u8; 16] = [0x99; 16];
+
+// ============================================================================
 // Test Variables
 // ============================================================================
 
@@ -60,6 +88,10 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
     vars.insert("ALT_SRC_ADDR".into(), TestVariable::Bytes(vec![0xAF, 0xFD]));
     vars.insert("SER_NUM".into(), TestVariable::Bytes(vec![0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE]));
 
+    // Alternate BDUT address: 2.2.2 = 0x1202 (used by Section 3.6 where
+    // the normal BDUT address conflicts with P2P peer IAs).
+    vars.insert("ALT_BDUT_ADDR".into(), TestVariable::Bytes(vec![0x12, 0x02]));
+
     // Security Interface Object index.
     vars.insert("SEC_INTF_OBJ_INDEX".into(), TestVariable::Bytes(vec![0x06]));
 
@@ -75,6 +107,12 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
 
     // User-defined Interface Object: for our DUT, this is the Security IO.
     vars.insert("USER_OBJ_TYPE1".into(), TestVariable::Bytes(vec![0x00, 0x11]));
+
+    // Certification Object (IOT 0xC351) — used for Section 3.6 role tests.
+    vars.insert("CERT_OBJ_TYPE".into(), TestVariable::Bytes(vec![0xC3, 0x51]));
+
+    // Property used for role-based access testing (PID 51 = 0x33).
+    vars.insert("ROLES_PROPERTY".into(), TestVariable::Bytes(vec![0x33]));
 
     // Accessible properties on USER_OBJ_TYPE1 (Security IO):
     // PROP1: PDT_GENERIC_20 ReadWrite (PID_P2P_KEY_TABLE = 0x34)
@@ -104,5 +142,13 @@ pub fn create_security_context() -> SecurityTestContext {
     keys.insert("GK5".into(), GK5);
     keys.insert("FDSK".into(), FDSK);
     keys.insert("ZERO_KEY".into(), [0u8; 16]);
+    keys.insert("P2PK1".into(), P2PK1);
+    keys.insert("P2PK2".into(), P2PK2);
+    keys.insert("P2PK3".into(), P2PK3);
+    keys.insert("P2PK4".into(), P2PK4);
+    keys.insert("P2PK5".into(), P2PK5);
+    keys.insert("P2PK6".into(), P2PK6);
+    keys.insert("P2PK7".into(), P2PK7);
+    keys.insert("P2PK8".into(), P2PK8);
     SecurityTestContext::new(keys)
 }

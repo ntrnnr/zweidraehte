@@ -6,8 +6,8 @@
 use zweidraehte_device::crypto::ccm::{self, CcmContext};
 use zweidraehte_device::crypto::scf::{SecureServiceType, SecurityControlField};
 
-use crate::{InvalidSecurityParam, SecType, SecureParams, SeqSource};
 use super::context::SecurityTestContext;
+use crate::{InvalidSecurityParam, SecType, SecureParams, SeqSource};
 
 /// Wrap a plaintext telegram in a Secure APDU.
 ///
@@ -15,18 +15,16 @@ use super::context::SecurityTestContext;
 /// TPCI/APCI + data) and wraps them in a Secure Service frame.
 ///
 /// Returns the complete secure frame ready for injection.
-pub fn wrap_secure(
-    plaintext_frame: &[u8],
-    params: &SecureParams,
-    ctx: &mut SecurityTestContext,
-) -> Vec<u8> {
+pub fn wrap_secure(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut SecurityTestContext) -> Vec<u8> {
     assert!(plaintext_frame.len() >= 7, "frame too short for wrapping");
 
     let key = ctx.key(&params.key_name);
-    let seq_nr = match params.seq_source {
+    let seq_nr = match &params.seq_source {
         SeqSource::Tool => ctx.next_tool_seq(),
         SeqSource::Table => ctx.current_table_seq(),
-        SeqSource::Fixed(val) => super::context::seq_to_bytes(val),
+        SeqSource::Fixed(val) => super::context::seq_to_bytes(*val),
+        SeqSource::Peer(name) => ctx.next_peer_seq(name),
+        SeqSource::PeerTable(name) => ctx.current_peer_table_seq(name),
     };
 
     // Build SCF byte.
@@ -52,13 +50,7 @@ pub fn wrap_secure(
     let tpci_high = plain_apdu[0] & 0xFC;
     let secure_tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
 
-    let ccm_ctx = CcmContext {
-        seq_nr,
-        src,
-        dst,
-        addr_type,
-        tpci_apci: secure_tpci_apci,
-    };
+    let ccm_ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci: secure_tpci_apci };
 
     // The payload P for CCM is the plain TPCI/APCI + data (the entire
     // plaintext APDU that gets protected).
@@ -147,8 +139,7 @@ pub fn wrap_secure_invalid(
                 let payload_end = frame.len() - mac_len;
                 let avail = payload_end - payload_start;
                 let copy_len = plain_bytes.len().min(avail);
-                frame[payload_start..payload_start + copy_len]
-                    .copy_from_slice(&plain_bytes[..copy_len]);
+                frame[payload_start..payload_start + copy_len].copy_from_slice(&plain_bytes[..copy_len]);
             }
         }
         InvalidSecurityParam::WrongAddressType => unreachable!("handled above"),
@@ -165,20 +156,18 @@ pub fn wrap_secure_invalid(
 }
 
 /// Wrap with wrong address type in the CCM context (AT=group instead of individual).
-fn wrap_secure_wrong_at(
-    plaintext_frame: &[u8],
-    params: &SecureParams,
-    ctx: &mut SecurityTestContext,
-) -> Vec<u8> {
+fn wrap_secure_wrong_at(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut SecurityTestContext) -> Vec<u8> {
     use zweidraehte_device::crypto::scf::{SecureServiceType, SecurityControlField};
 
     assert!(plaintext_frame.len() >= 7, "frame too short for wrapping");
 
     let key = ctx.key(&params.key_name);
-    let seq_nr = match params.seq_source {
+    let seq_nr = match &params.seq_source {
         SeqSource::Tool => ctx.next_tool_seq(),
         SeqSource::Table => ctx.current_table_seq(),
-        SeqSource::Fixed(val) => super::context::seq_to_bytes(val),
+        SeqSource::Fixed(val) => super::context::seq_to_bytes(*val),
+        SeqSource::Peer(name) => ctx.next_peer_seq(name),
+        SeqSource::PeerTable(name) => ctx.current_peer_table_seq(name),
     };
 
     let scf = SecurityControlField {
@@ -221,11 +210,7 @@ fn wrap_secure_wrong_at(
 ///
 /// Decrypts the frame and returns the plaintext APDU bytes (TPCI/APCI + data),
 /// or `None` if decryption/verification fails.
-pub fn unwrap_secure(
-    secure_frame: &[u8],
-    params: &SecureParams,
-    ctx: &mut SecurityTestContext,
-) -> Option<Vec<u8>> {
+pub fn unwrap_secure(secure_frame: &[u8], params: &SecureParams, ctx: &mut SecurityTestContext) -> Option<Vec<u8>> {
     // Minimum: CTRL(1) + SRC(2) + DST(2) + AT(1) + TPCI/APCI(2) + SCF(1) + SeqNr(6) + MAC(4) = 19
     if secure_frame.len() < 19 {
         return None;
@@ -253,13 +238,7 @@ pub fn unwrap_secure(
     let mut received_mac = [0u8; 4];
     received_mac.copy_from_slice(&secure_frame[mac_start..]);
 
-    let ccm_ctx = CcmContext {
-        seq_nr,
-        src,
-        dst,
-        addr_type,
-        tpci_apci,
-    };
+    let ccm_ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci };
 
     let scf = SecurityControlField::parse(scf_byte).ok()?;
 
@@ -301,13 +280,7 @@ pub fn wrap_sync_req(
 
     let tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
 
-    let ccm_ctx = CcmContext {
-        seq_nr: *seq_nr_local,
-        src,
-        dst,
-        addr_type: npdu & 0x80,
-        tpci_apci,
-    };
+    let ccm_ctx = CcmContext { seq_nr: *seq_nr_local, src, dst, addr_type: npdu & 0x80, tpci_apci };
 
     let mut challenge_enc = *challenge;
     let mac = encrypt_and_mac_sync_req(key, &ccm_ctx, scf_byte, serial_number, &mut challenge_enc);
@@ -353,10 +326,8 @@ pub fn wrap_sync_req_invalid(
         _ => npdu,
     };
 
-    let mut frame = wrap_sync_req(
-        ctrl, src, dst, effective_npdu, tpci_high,
-        key, scf_byte, seq_nr_local, serial_number, challenge,
-    );
+    let mut frame =
+        wrap_sync_req(ctrl, src, dst, effective_npdu, tpci_high, key, scf_byte, seq_nr_local, serial_number, challenge);
 
     // For WrongAddressType, the frame header should use the original npdu,
     // but the CCM was computed with flipped AT. Restore original npdu.
@@ -366,7 +337,9 @@ pub fn wrap_sync_req_invalid(
 
     match invalid {
         InvalidSecurityParam::InvalidScf(scf) => {
-            if frame.len() > 8 { frame[8] = *scf; }
+            if frame.len() > 8 {
+                frame[8] = *scf;
+            }
         }
         InvalidSecurityParam::InvalidMac(mac_bytes) => {
             let len = frame.len();
@@ -404,11 +377,7 @@ pub struct SyncResDecrypted {
 ///
 /// Takes the original challenge (from the request we sent) to recover
 /// the random value. Returns the decrypted fields or None on failure.
-pub fn unwrap_sync_res(
-    secure_frame: &[u8],
-    key: &[u8; 16],
-    challenge: &[u8; 6],
-) -> Option<SyncResDecrypted> {
+pub fn unwrap_sync_res(secure_frame: &[u8], key: &[u8; 16], challenge: &[u8; 6]) -> Option<SyncResDecrypted> {
     if secure_frame.len() < 31 {
         return None;
     }
@@ -437,9 +406,17 @@ pub fn unwrap_sync_res(
 
     // Verify and decrypt using the recovered random as nonce.
     ccm::verify_and_decrypt_sync_res(
-        key, &random, src, dst, addr_type, tpci_apci, scf_byte,
-        &mut payload, &received_mac,
-    ).ok()?;
+        key,
+        &random,
+        src,
+        dst,
+        addr_type,
+        tpci_apci,
+        scf_byte,
+        &mut payload,
+        &received_mac,
+    )
+    .ok()?;
 
     let mut seq_nr_remote = [0u8; 6];
     let mut seq_nr_local = [0u8; 6];

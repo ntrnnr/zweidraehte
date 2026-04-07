@@ -346,7 +346,17 @@ where
             return SecureResult::Dropped;
         }
 
-        // Look up key based on access type.
+        // Non-tool P2P communication requires the sender to be in the SIAT.
+        if !scf.tool_access && addr_type == 0 {
+            if !security_state.is_in_siat(src) {
+                warn!("S-AL: sender {:#06X} not in SIAT", src);
+                security_state.log_security_failure(SecurityFailureType::RoleError, src, &[]);
+                return SecureResult::Dropped;
+            }
+        }
+
+        // Look up key (and roles for P2P) based on access type.
+        let mut p2p_roles: u16 = 0;
         let key = if scf.tool_access {
             // Tool access: use configured tool key, or FDSK as fallback
             // when the device is in factory state (tool key all zeros).
@@ -369,8 +379,18 @@ where
                 }
             }
         } else {
-            warn!("S-AL: P2P secure APDU without tool access not yet supported");
-            return SecureResult::Dropped;
+            // P2P non-tool: look up key and roles from P2P key table.
+            match security_state.p2p_key_for_ia(src) {
+                Some((k, roles)) => {
+                    p2p_roles = roles;
+                    k
+                }
+                None => {
+                    warn!("S-AL: no P2P key for IA {:#06X}", src);
+                    security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
+                    return SecureResult::Dropped;
+                }
+            }
         };
 
         // Decrypt / verify, then collapse to plaintext.
@@ -453,7 +473,14 @@ where
 
         // Populate AccessContext.
         let security_mode = if scf.confidentiality { SecurityMode::AuthConf } else { SecurityMode::AuthOnly };
-        let role = if scf.tool_access { ClientRole::Tool } else { ClientRole::Unlisted };
+        let role = if scf.tool_access {
+            ClientRole::Tool
+        } else if addr_type == 0 && p2p_roles != 0 {
+            // P2P non-tool with assigned roles from the P2P key table.
+            ClientRole::Roles(p2p_roles)
+        } else {
+            ClientRole::Unlisted
+        };
         let mut access_ctx = AccessContext::with_security(0, security_mode, role);
         access_ctx.source_addr = src;
         let _ = buf;
@@ -526,9 +553,9 @@ where
             let tk = security_state.tool_key();
             if tk != [0u8; 16] { tk } else { self.state.fdsk().copied().unwrap_or([0u8; 16]) }
         } else {
-            // Non-tool: look up P2P key for sender's IA.
+            // Non-tool: look up P2P key for sender's IA (roles not needed for sync).
             match security_state.p2p_key_for_ia(src) {
-                Some(k) => k,
+                Some((k, _roles)) => k,
                 None => {
                     warn!("S-AL: sync req — no P2P key for IA {:#06X}", src);
                     return SecureResult::Dropped;

@@ -21,6 +21,19 @@ pub struct SecurityTestContext {
     /// DUT's expected next sequence number (used when SeqSource::Table).
     /// Updated when we receive a secure frame from the DUT.
     pub table_seq_nr: u64,
+
+    /// Per-key sending sequence numbers for P2P peers.
+    ///
+    /// When the test runner impersonates a P2P peer (not the tool), it
+    /// uses a separate sending counter per key name. Keyed by the key
+    /// name (e.g., "P2PK1").
+    peer_send_seq: BTreeMap<String, u64>,
+
+    /// Per-key expected DUT sequence numbers for P2P peers.
+    ///
+    /// The DUT uses a separate counter for each P2P peer. Keyed by key
+    /// name (e.g., "P2PK1").
+    peer_table_seq: BTreeMap<String, u64>,
 }
 
 impl SecurityTestContext {
@@ -30,14 +43,14 @@ impl SecurityTestContext {
             keys,
             tool_seq_nr: 1, // Must be non-zero per spec.
             table_seq_nr: 1,
+            peer_send_seq: BTreeMap::new(),
+            peer_table_seq: BTreeMap::new(),
         }
     }
 
     /// Look up a key by name. Panics if not found.
     pub fn key(&self, name: &str) -> [u8; 16] {
-        *self.keys
-            .get(name)
-            .unwrap_or_else(|| panic!("Unknown security key: {}", name))
+        *self.keys.get(name).unwrap_or_else(|| panic!("Unknown security key: {}", name))
     }
 
     /// Get the next tool sequence number as 6 bytes and increment.
@@ -57,6 +70,40 @@ impl SecurityTestContext {
         if received >= self.table_seq_nr {
             self.table_seq_nr = received + 1;
         }
+    }
+
+    /// Get the next P2P peer sending sequence number for a given key name
+    /// and increment.
+    pub fn next_peer_seq(&mut self, key_name: &str) -> [u8; 6] {
+        let val = self.peer_send_seq.entry(key_name.into()).or_insert(1);
+        let seq = seq_to_bytes(*val);
+        *val += 1;
+        seq
+    }
+
+    /// Get the current DUT sequence number for a P2P peer (no increment).
+    pub fn current_peer_table_seq(&self, key_name: &str) -> [u8; 6] {
+        let val = self.peer_table_seq.get(key_name).copied().unwrap_or(1);
+        seq_to_bytes(val)
+    }
+
+    /// Update the DUT's sequence number for a P2P peer after receiving a
+    /// sync response or data frame from the DUT.
+    pub fn update_peer_table_seq(&mut self, key_name: &str, received: u64) {
+        let entry = self.peer_table_seq.entry(key_name.into()).or_insert(1);
+        if received >= *entry {
+            *entry = received + 1;
+        }
+    }
+
+    /// Set the P2P peer sending sequence number for a given key name.
+    pub fn set_peer_seq(&mut self, key_name: &str, val: u64) {
+        self.peer_send_seq.insert(key_name.into(), val);
+    }
+
+    /// Set the DUT's expected sequence number for a P2P peer.
+    pub fn set_peer_table_seq(&mut self, key_name: &str, val: u64) {
+        self.peer_table_seq.insert(key_name.into(), val);
     }
 }
 

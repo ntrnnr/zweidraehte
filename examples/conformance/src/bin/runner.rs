@@ -450,7 +450,6 @@ async fn execute_step(
         // ================================================================
         // S-A_Sync steps
         // ================================================================
-
         TestStep::InjectSyncReq { sync_params, delay_before_ms } => {
             let Some(ctx) = sec_ctx else {
                 println!("  [{}] ❌ InjectSyncReq requires security context", index);
@@ -458,7 +457,8 @@ async fn execute_step(
             };
 
             let key = ctx.key(&sync_params.key_name);
-            let seq_nr_local = zweidraehte_conformance::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
+            let seq_nr_local =
+                zweidraehte_conformance::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
 
             // Resolve src/dst templates.
             let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
@@ -510,7 +510,8 @@ async fn execute_step(
             };
 
             let key = ctx.key(&sync_params.key_name);
-            let seq_nr_local = zweidraehte_conformance::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
+            let seq_nr_local =
+                zweidraehte_conformance::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
 
             let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
                 .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
@@ -565,10 +566,7 @@ async fn execute_step(
 
             println!("  [{}] 🔄⬆️  ExpectSyncRes (timeout={}ms)", index, effective_ms);
 
-            let captured = embassy_futures::select::select(
-                harness.receive_captured(),
-                Timer::after(timeout),
-            ).await;
+            let captured = embassy_futures::select::select(harness.receive_captured(), Timer::after(timeout)).await;
 
             match captured {
                 embassy_futures::select::Either::First(Some(msg)) => {
@@ -577,8 +575,12 @@ async fn execute_step(
 
                     match crypto::unwrap_sync_res(&internal, &key, &sync_expect.challenge) {
                         Some(decoded) => {
-                            let seq_remote = zweidraehte_conformance::tests::security::context::seq_from_bytes(&decoded.seq_nr_remote);
-                            let seq_local = zweidraehte_conformance::tests::security::context::seq_from_bytes(&decoded.seq_nr_local);
+                            let seq_remote = zweidraehte_conformance::tests::security::context::seq_from_bytes(
+                                &decoded.seq_nr_remote,
+                            );
+                            let seq_local = zweidraehte_conformance::tests::security::context::seq_from_bytes(
+                                &decoded.seq_nr_local,
+                            );
 
                             println!("        SeqNr_remote={}, SeqNr_local={}", seq_remote, seq_local);
 
@@ -720,6 +722,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         // Data Security conformance tests
         zweidraehte_conformance::tests::security::section_3_1::create_section_3_1_suite(),
         zweidraehte_conformance::tests::security::section_3_3::create_section_3_3_suite(),
+        zweidraehte_conformance::tests::security::section_3_6::create_section_3_6_suite(),
         zweidraehte_conformance::tests::security::section_3_7::create_section_3_7_suite(),
         zweidraehte_conformance::tests::security::section_4_1::create_section_4_1_suite(),
         zweidraehte_conformance::tests::security::section_4_2::create_section_4_2_suite(),
@@ -915,7 +918,8 @@ async fn main(_spawner: embassy_executor::Spawner) {
         // monotonic — resetting to seq=1 between suites would cause the
         // DUT to reject frames as sequence number replays.
         let mut sec_ctx = if suite.use_secure_dut {
-            let mut ctx = persistent_sec_ctx.take()
+            let mut ctx = persistent_sec_ctx
+                .take()
                 .unwrap_or_else(|| zweidraehte_conformance::tests::security::variables::create_security_context());
             // Reset the DUT's expected sending seqnr — the DUT may have
             // restarted, but the runner's tool seqnr continues from where

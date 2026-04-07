@@ -220,7 +220,6 @@ pub enum TestStep {
     // ================================================================
     // S-A_Sync steps
     // ================================================================
-
     /// Inject an S-A_Sync_Req frame. The frame is built from scratch
     /// (not wrapping a plaintext template like InjectSecure).
     InjectSyncReq {
@@ -238,11 +237,7 @@ pub enum TestStep {
     },
 
     /// Inject an S-A_Sync_Req with intentionally invalid fields.
-    InjectSyncReqInvalid {
-        sync_params: SyncReqParams,
-        invalid: InvalidSecurityParam,
-        delay_before_ms: u32,
-    },
+    InjectSyncReqInvalid { sync_params: SyncReqParams, invalid: InvalidSecurityParam, delay_before_ms: u32 },
 }
 
 // ============================================================================
@@ -308,6 +303,28 @@ impl SecureParams {
             system_broadcast: false,
         }
     }
+
+    /// Create params for P2P non-tool A+C with per-peer sequence tracking.
+    pub fn p2p_auth_conf(key: &str) -> Self {
+        Self {
+            sec_type: SecType::AuthConf,
+            key_name: key.to_string(),
+            tool_access: false,
+            seq_source: SeqSource::Peer(key.to_string()),
+            system_broadcast: false,
+        }
+    }
+
+    /// Create params for P2P non-tool auth-only with per-peer sequence tracking.
+    pub fn p2p_auth_only(key: &str) -> Self {
+        Self {
+            sec_type: SecType::AuthOnly,
+            key_name: key.to_string(),
+            tool_access: false,
+            seq_source: SeqSource::Peer(key.to_string()),
+            system_broadcast: false,
+        }
+    }
 }
 
 /// Security algorithm mode.
@@ -320,7 +337,7 @@ pub enum SecType {
 }
 
 /// Source for sequence number in a secure test step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeqSource {
     /// Use the EITT's (test tool's) sending sequence number.
     Tool,
@@ -328,6 +345,10 @@ pub enum SeqSource {
     Table,
     /// Use a specific fixed sequence number (does not auto-increment).
     Fixed(u64),
+    /// Use a per-peer sending sequence number, keyed by the P2P key name.
+    Peer(String),
+    /// Use the DUT's expected sequence number for a P2P peer.
+    PeerTable(String),
 }
 
 /// Which security field to corrupt for negative tests.

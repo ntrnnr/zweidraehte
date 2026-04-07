@@ -177,6 +177,34 @@ pub fn expect_group_ao(template: &str, key: &str, timeout_ms: u32) -> TestStep {
     }
 }
 
+/// Inject a P2P non-tool secure telegram with authentication + confidentiality.
+pub fn inject_p2p_ac(template: &str, key: &str) -> TestStep {
+    TestStep::InjectSecure {
+        template: template.to_string(),
+        sec_params: SecureParams::p2p_auth_conf(key),
+        delay_before_ms: 0,
+    }
+}
+
+/// Inject a P2P non-tool secure telegram with authentication only.
+pub fn inject_p2p_ao(template: &str, key: &str) -> TestStep {
+    TestStep::InjectSecure {
+        template: template.to_string(),
+        sec_params: SecureParams::p2p_auth_only(key),
+        delay_before_ms: 0,
+    }
+}
+
+/// Expect a P2P non-tool secure response with authentication + confidentiality.
+pub fn expect_p2p_ac(template: &str, key: &str, timeout_ms: u32) -> TestStep {
+    TestStep::ExpectSecure { template: template.to_string(), sec_params: SecureParams::p2p_auth_conf(key), timeout_ms }
+}
+
+/// Expect a P2P non-tool secure response with authentication only.
+pub fn expect_p2p_ao(template: &str, key: &str, timeout_ms: u32) -> TestStep {
+    TestStep::ExpectSecure { template: template.to_string(), sec_params: SecureParams::p2p_auth_only(key), timeout_ms }
+}
+
 /// Inject a secure A+C telegram using the all-zeros key. The DUT won't
 /// be able to decrypt this (wrong key) and should silently drop it,
 /// logging a CryptoError.
@@ -202,13 +230,7 @@ pub fn inject_secure_invalid(template: &str, params: SecureParams, invalid: Inva
 // ============================================================================
 
 /// Inject a P2P sync request with tool key (connectionless).
-pub fn inject_sync_req_tool(
-    src: &str,
-    dst: &str,
-    key: &str,
-    seq_nr_local: u64,
-    challenge: [u8; 6],
-) -> TestStep {
+pub fn inject_sync_req_tool(src: &str, dst: &str, key: &str, seq_nr_local: u64, challenge: [u8; 6]) -> TestStep {
     TestStep::InjectSyncReq {
         sync_params: SyncReqParams {
             key_name: key.to_string(),

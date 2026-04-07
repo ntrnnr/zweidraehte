@@ -37,8 +37,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::StackState;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode};
-use crate::storage::SequenceNumberStorage;
 use crate::objects::tables::LoadState;
+use crate::storage::SequenceNumberStorage;
 
 // ============================================================================
 // SecurityTable — const-generic fixed-capacity table
@@ -367,12 +367,7 @@ impl SecurityFailuresLog {
     /// `frame_fragment` should be the first 9 bytes of the offending
     /// secure frame (zero-padded if shorter). These are stored in the
     /// entry for diagnostic purposes.
-    pub fn log_failure(
-        &mut self,
-        failure_type: SecurityFailureType,
-        source_addr: u16,
-        frame_fragment: &[u8],
-    ) {
+    pub fn log_failure(&mut self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {
         // Increment the 16-bit counter for this failure type (saturating).
         if let Some(idx) = failure_type.counter_index() {
             self.counters[idx] = self.counters[idx].saturating_add(1);
@@ -384,11 +379,7 @@ impl SecurityFailuresLog {
         frag[..copy_len].copy_from_slice(&frame_fragment[..copy_len]);
 
         // Add to ring buffer.
-        let entry = SecurityFailureEntry {
-            source_addr,
-            frame_fragment: frag,
-            failure_type: failure_type as u8,
-        };
+        let entry = SecurityFailureEntry { source_addr, frame_fragment: frag, failure_type: failure_type as u8 };
         self.entries[self.write_idx as usize] = entry;
         self.write_idx = (self.write_idx + 1) % 8;
         if self.count < 8 {
@@ -514,9 +505,9 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
     /// Look up a P2P key by peer individual address.
     ///
     /// Linearly scans the P2P key table. Each entry is 20 bytes:
-    /// IA_Index(2) + Key(16) + Roles(2). Returns the 16-byte key if
-    /// a matching IA is found.
-    pub fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<[u8; 16]> {
+    /// IA_Index(2) + Key(16) + Roles(2). Returns the 16-byte key and
+    /// the role bitmask (R0-R15) if a matching IA is found.
+    pub fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<([u8; 16], u16)> {
         let table = self.p2p_keys.borrow();
         let count = table.count() as usize;
         let peer_bytes = peer_ia.to_be_bytes();
@@ -525,7 +516,8 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
             if entry[0] == peer_bytes[0] && entry[1] == peer_bytes[1] {
                 let mut key = [0u8; 16];
                 key.copy_from_slice(&entry[2..18]);
-                return Some(key);
+                let roles = u16::from_be_bytes([entry[18], entry[19]]);
+                return Some((key, roles));
             }
         }
         None
@@ -644,8 +636,11 @@ pub trait HasSecurityState {
     /// Look up GO security flags by 0-based group object index.
     fn go_security_flags_for(&self, go_index: u16) -> Option<u8>;
 
-    /// Look up a P2P key by peer individual address.
-    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<[u8; 16]>;
+    /// Look up a P2P key and role bitmask by peer individual address.
+    ///
+    /// Returns `(key, roles)` where `roles` is a bitmask of R0-R15 from
+    /// bytes 18-19 of the P2P key table entry.
+    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<([u8; 16], u16)>;
 
     /// Check whether a peer IA exists in the Security Individual Address Table.
     fn is_in_siat(&self, peer_ia: u16) -> bool;
@@ -688,7 +683,7 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState for S
         self.go_security_flags_for(go_index)
     }
 
-    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<[u8; 16]> {
+    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<([u8; 16], u16)> {
         self.p2p_key_for_ia(peer_ia)
     }
 
@@ -794,8 +789,8 @@ pub struct SecureExtensionState<Inner: ExtensionState, SEQ, const GRP: usize, co
 /// `SecureExtensionState` delegates `HasSecurityState` to its inner
 /// `SecurityState`, so that `SystemBDeviceState` with a secure extension
 /// can satisfy `HasSecurityState` through `HasExtensionState`.
-impl<Inner: ExtensionState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize> HasSeqStorage
-    for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
+impl<Inner: ExtensionState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize>
+    HasSeqStorage for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
 {
     type SeqStorage = SEQ;
 
@@ -827,7 +822,7 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: u
         self.security.go_security_flags_for(go_index)
     }
 
-    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<[u8; 16]> {
+    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<([u8; 16], u16)> {
         self.security.p2p_key_for_ia(peer_ia)
     }
 
@@ -976,8 +971,14 @@ pub type SecureTp1DeviceState<
 
 #[cfg(feature = "knxip")]
 /// KNX/IP extension state with Data Secure support.
-pub type SecureIpExtensionState<SEQ, const N: usize, const CAPS: u16, const GRP: usize, const P2P: usize, const GO: usize> =
-    SecureExtensionState<super::ip::IpExtensionState<N, CAPS>, SEQ, GRP, P2P, GO>;
+pub type SecureIpExtensionState<
+    SEQ,
+    const N: usize,
+    const CAPS: u16,
+    const GRP: usize,
+    const P2P: usize,
+    const GO: usize,
+> = SecureExtensionState<super::ip::IpExtensionState<N, CAPS>, SEQ, GRP, P2P, GO>;
 
 #[cfg(feature = "knxip")]
 /// KNX/IP device state with Data Secure support.

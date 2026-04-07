@@ -8,19 +8,24 @@
 //! [`ConformanceState`]: super::stack::ConformanceState
 //! [`IpcConformanceTestStack`]: super::stack::IpcConformanceTestStack
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     AccessContext, HasConnectionAuth,
+    access::{AccessPolicy, ClientRole, SecurityMode},
     address::IndividualAddress,
     bcus::system_b::{
-        HasExtensionState, HasPersistedState, PersistedState, SecureExtensionConfig, SecureTp1DeviceState,
-        SecureTp1ExtensionState, Tp1ExtensionConfig,
+        DefaultSystemBInterfaceObjects, HasExtensionState, HasPersistedState, PersistedState, SecureExtensionConfig,
+        SecureTp1DeviceState, SecureTp1ExtensionState, Tp1ExtensionConfig, create_system_b_objects_with_extra,
     },
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
+    dpt::{InterfaceObjectType, PDT_UnsignedChar, PropertyDataDefinition},
     memory::MemoryMap,
-    objects::interface::HasRoutingCount,
+    objects::interface::{
+        FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount, InterfaceObjectAugment, PropertyAccess,
+        PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, PropertyRead, WriteResponse,
+    },
     objects::tables::{
         Application, HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
         HasLoadStateMachine, HasPeiApplication, LoadEvent,
@@ -461,8 +466,256 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
 }
 
 // ============================================================================
+// Certification Object Augment (Section 3.6 — KNX Secure Access Roles)
+// ============================================================================
+
+/// Object type for the KNX Certification Object (manufacturer-specific).
+///
+/// Active only during KNX certification testing. Provides PID 51 (0x33) as
+/// a single UINT8 property with role-based access policies.
+const CERTIFICATION_OBJECT_TYPE: InterfaceObjectType = InterfaceObjectType::Other(0xC351);
+
+/// Property ID used for role-based access testing.
+const ROLES_PID: u8 = 51; // 0x33
+
+/// Augment that adds a Certification Object (IOT 0xC351) for Section 3.6
+/// role-based access control conformance tests.
+///
+/// The object has a single read/write UINT8 property (PID 51) whose access
+/// is governed by per-role permissions:
+///
+/// | Role | Required Security | Read | Write |
+/// |------|-------------------|------|-------|
+/// | 0    | A                 | yes  | yes   |
+/// | 1    | A+C               | yes  | yes   |
+/// | 2    | A                 | yes  | no    |
+/// | 3    | A+C               | yes  | no    |
+/// | 4    | A                 | no   | yes   |
+/// | 5    | A+C               | no   | yes   |
+/// | none | —                 | no   | no    |
+/// | Tool | A or A+C          | yes  | yes   |
+pub struct CertificationObjectAugment {
+    /// The stored value for PID 51 (single byte).
+    value: Cell<u8>,
+}
+
+impl CertificationObjectAugment {
+    pub fn new() -> Self {
+        Self { value: Cell::new(0) }
+    }
+
+    /// Check whether the given access context permits reading PID 51.
+    fn can_read(ctx: &AccessContext) -> bool {
+        match ctx.role {
+            ClientRole::Tool => true,
+            ClientRole::Roles(mask) => {
+                // Roles 0,1 (R+W), Roles 2,3 (R only) — all can read.
+                // Roles 4,5 (W only) — cannot read.
+                // Additionally, the security level must match the role's
+                // requirement: even roles (0,2,4) require A, odd (1,3,5)
+                // require A+C.
+                Self::has_matching_read_role(mask, ctx.security)
+            }
+            ClientRole::Unlisted => false,
+        }
+    }
+
+    /// Check whether the given access context permits writing PID 51.
+    fn can_write(ctx: &AccessContext) -> bool {
+        match ctx.role {
+            ClientRole::Tool => true,
+            ClientRole::Roles(mask) => {
+                // Roles 0,1 (R+W), Roles 4,5 (W only) — can write.
+                // Roles 2,3 (R only) — cannot write.
+                Self::has_matching_write_role(mask, ctx.security)
+            }
+            ClientRole::Unlisted => false,
+        }
+    }
+
+    /// Check whether the received security level satisfies a role's required
+    /// security level. A+C satisfies both A+C and A requirements (superset).
+    fn security_satisfies(received: SecurityMode, required: SecurityMode) -> bool {
+        match (received, required) {
+            (SecurityMode::AuthConf, SecurityMode::AuthConf) => true,
+            (SecurityMode::AuthConf, SecurityMode::AuthOnly) => true,
+            (SecurityMode::AuthOnly, SecurityMode::AuthOnly) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if any role in the bitmask grants read access at the given
+    /// security level. A role grants read if:
+    /// 1. The role bit is set in the mask
+    /// 2. The role is in the read-capable set (0,1,2,3)
+    /// 3. The security level satisfies the role's requirement
+    fn has_matching_read_role(mask: u16, security: SecurityMode) -> bool {
+        // Read-capable roles: 0 (A), 1 (A+C), 2 (A), 3 (A+C)
+        for role in 0..4u16 {
+            if mask & (1 << role) == 0 {
+                continue;
+            }
+            let required = if role % 2 == 0 { SecurityMode::AuthOnly } else { SecurityMode::AuthConf };
+            if Self::security_satisfies(security, required) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if any role in the bitmask grants write access at the given
+    /// security level. A role grants write if:
+    /// 1. The role bit is set in the mask
+    /// 2. The role is in the write-capable set (0,1,4,5)
+    /// 3. The security level satisfies the role's requirement
+    fn has_matching_write_role(mask: u16, security: SecurityMode) -> bool {
+        // Write-capable roles: 0 (A), 1 (A+C), 4 (A), 5 (A+C)
+        for role in [0u16, 1, 4, 5] {
+            if mask & (1 << role) == 0 {
+                continue;
+            }
+            let required = if role % 2 == 0 { SecurityMode::AuthOnly } else { SecurityMode::AuthConf };
+            if Self::security_satisfies(security, required) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Access policy for the Certification Object's PID 51.
+///
+/// `sec_off = 0x3FF`: all access types when security mode is off.
+/// `sec_on = 0x0FF`: RoleX/A R+W, RoleX/A+C R+W, Tool/A+C R+W, Tool/A R+W,
+/// Unlisted denied. The per-role R vs W granularity is enforced by the
+/// augment's custom `can_read`/`can_write` checks.
+const CERT_PID51_POLICY: AccessPolicy = AccessPolicy::new(0x3FF, 0x0FF);
+
+/// Return a property descriptor for the Certification Object's properties.
+fn certification_descriptor(pid: u8) -> Option<PropertyDescriptor> {
+    match pid {
+        1 => Some(PropertyDescriptor::from_type::<PDT_UnsignedChar>(1, PropertyAccess::ReadOnly, 3, 0)),
+        ROLES_PID => Some(PropertyDescriptor::with_policy(
+            ROLES_PID,
+            PDT_UnsignedChar::ID,
+            1,
+            PropertyAccess::ReadWrite,
+            3,
+            3,
+            CERT_PID51_POLICY,
+        )),
+        _ => None,
+    }
+}
+
+impl<S: StackState> InterfaceObjectAugment<S> for CertificationObjectAugment {
+    fn additional_object_count(&self) -> u16 {
+        1
+    }
+
+    fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
+        if index == 0 { Some(CERTIFICATION_OBJECT_TYPE) } else { None }
+    }
+
+    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
+        if object_type != CERTIFICATION_OBJECT_TYPE {
+            return None;
+        }
+        certification_descriptor(prop_id)
+    }
+
+    fn property_description_read(
+        &self,
+        _state: &S,
+        object_type: InterfaceObjectType,
+        object_idx: u16,
+        lookup: PropertyLookup,
+    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+        if object_type != CERTIFICATION_OBJECT_TYPE {
+            return None;
+        }
+
+        let (pid, prop_index) = match lookup {
+            PropertyLookup::ByPid(pid) => match pid {
+                1 => (1u8, 0u16),
+                ROLES_PID => (ROLES_PID, 1),
+                _ => return Some(Err(PropertyError::InvalidPropertyId)),
+            },
+            PropertyLookup::ByIndex(idx) => match idx {
+                0 => (1u8, 0u16),
+                1 => (ROLES_PID, 1),
+                _ => return Some(Err(PropertyError::InvalidPropertyId)),
+            },
+        };
+
+        let desc = certification_descriptor(pid)?;
+        Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, prop_index, &desc)))
+    }
+
+    fn property_value_read(
+        &self,
+        _state: &S,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyReadRequest,
+        buf: &mut [u8],
+    ) -> Option<Result<usize, PropertyError>> {
+        if object_type != CERTIFICATION_OBJECT_TYPE {
+            return None;
+        }
+
+        match req.pid {
+            1 => {
+                // PID_OBJECT_TYPE — return 0xC351 as 2 bytes.
+                let bytes = 0xC351u16.to_be_bytes();
+                Some(bytes.read_property(req.start_idx, req.count, buf))
+            }
+            ROLES_PID => {
+                if !Self::can_read(&req.ctx) {
+                    return Some(Err(PropertyError::AccessDenied));
+                }
+                let val = [self.value.get()];
+                Some(val.read_property(req.start_idx, req.count, buf))
+            }
+            _ => Some(Err(PropertyError::InvalidPropertyId)),
+        }
+    }
+
+    fn property_value_write(
+        &self,
+        _state: &S,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyWriteRequest<'_>,
+    ) -> Option<Result<WriteResponse, PropertyError>> {
+        if object_type != CERTIFICATION_OBJECT_TYPE {
+            return None;
+        }
+
+        match req.pid {
+            1 => Some(Err(PropertyError::WriteNotAllowed)),
+            ROLES_PID => {
+                if !Self::can_write(&req.ctx) {
+                    return Some(Err(PropertyError::AccessDenied));
+                }
+                if req.data.len() != 1 {
+                    return Some(Err(PropertyError::TypeMismatch));
+                }
+                self.value.set(req.data[0]);
+                Some(Ok(WriteResponse::Echo))
+            }
+            _ => Some(Err(PropertyError::InvalidPropertyId)),
+        }
+    }
+}
+
+// ============================================================================
 // Stack Definition
 // ============================================================================
+
+/// Type alias for the security augment produced by the extension.
+type SecAugment<'a> = <
+    <IpcSecureConformanceTestStack as StackDefinition>::ES as
+    zweidraehte_device::bcus::system_b::Extension<()>
+>::Augment<'a, SecureConformanceState>;
 
 /// Secure conformance test stack definition.
 ///
@@ -487,16 +740,18 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type State = SecureConformanceState;
     type Mem = ConformanceMemoryMap;
 
-    type InterfaceObjects<'a> = zweidraehte_device::bcus::system_b::SystemBInterfaceObjectsFor<'a, Self>;
+    type InterfaceObjects<'a> =
+        DefaultSystemBInterfaceObjects<'a, SecureConformanceState, (SecAugment<'a>, CertificationObjectAugment)>;
 
     fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        zweidraehte_device::bcus::system_b::create_system_b_objects_from_extension::<Self>(
+        create_system_b_objects_with_extra::<Self, _>(
             state,
             platform,
             &CONFORMANCE_MEMORY_LAYOUT,
+            CertificationObjectAugment::new(),
         )
     }
 
