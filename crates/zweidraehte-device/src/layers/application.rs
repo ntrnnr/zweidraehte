@@ -1330,8 +1330,20 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 return;
             };
 
+            // Access policy 3FF/0CC at data level: when security mode is on
+            // and the request lacks sufficient access (e.g. plain or auth-only),
+            // return FF FF (masked) instead of the real device descriptor.
+            use crate::access::AccessPolicy;
+            let access_ctx = self.resolve_access(ind);
+            let security_on = self.state.security_mode_enabled();
+            let mask_version = if AccessPolicy::READ_OPEN_WRITE_TOOL.can_read(&access_ctx, security_on) {
+                D::DEVICE.mask_version_bytes()
+            } else {
+                [0xFF, 0xFF]
+            };
+
             let msg = ind.respond_with(msg_buf).with_application(ApciCode::DeviceDescriptorResponse).with_data(|buf| {
-                DeviceDescriptorResponse::write_type0(buf, &D::DEVICE.mask_version_bytes());
+                DeviceDescriptorResponse::write_type0(buf, &mask_version);
             });
 
             debug!("AL sending DeviceDescriptorResponse: mask_version={}", D::DEVICE.mask_version);
@@ -1447,6 +1459,16 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
+        // Access policy 3FF/00C: everyone can write when security mode is off;
+        // when security mode is on, only Tool A+C can write.
+        use crate::access::AccessPolicy;
+        let access_ctx = self.resolve_access(ind);
+        let security_on = self.state.security_mode_enabled();
+        if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&access_ctx, security_on) {
+            debug!("AL IndividualAddressWrite denied by access policy");
+            return;
+        }
+
         let Some(addr_bytes) = IndividualAddressWrite::address_bytes(ind.buf()) else {
             error!("IndividualAddressWrite message too short: {}", ind.len());
             return;
@@ -1549,6 +1571,16 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         if received_serial != self.state.serial_number() {
             trace!("AL IndividualAddressSerialNumberWrite ignored (serial mismatch)");
+            return;
+        }
+
+        // Access policy 3FF/00C: everyone can write when security mode is off;
+        // when security mode is on, only Tool A+C can write.
+        use crate::access::AccessPolicy;
+        let access_ctx = self.resolve_access(ind);
+        let security_on = self.state.security_mode_enabled();
+        if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&access_ctx, security_on) {
+            debug!("AL IndividualAddressSerialNumberWrite denied by access policy");
             return;
         }
 

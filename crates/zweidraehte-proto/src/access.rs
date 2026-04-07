@@ -266,6 +266,10 @@ impl AccessPolicy {
     /// Used for P2P key table, group key table.
     pub const TOOL_ONLY: Self = Self::new(0x00C, 0x00C);
 
+    /// `3FF / 00C` — Everyone can read+write when sec off; only Tool (A+C or A)
+    /// when sec on. Used for IndividualAddressWrite, IndAddrSerNoWrite.
+    pub const OPEN_OFF_TOOL_ON: Self = Self::new(0x3FF, 0x00C);
+
     /// `3FF / 000` — Everyone can read+write when sec off; no access when sec on.
     /// Used for master reset (erase code 03h) — only local or plain access.
     pub const READ_ONLY_NO_REMOTE_WRITE: Self = Self::new(0x3FF, 0x000);

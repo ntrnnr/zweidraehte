@@ -5,8 +5,9 @@
 pub mod context;
 pub mod crypto;
 pub mod section_3_1;
-pub mod section_3_3;
 pub mod section_3_2;
+pub mod section_3_3;
+pub mod section_3_7;
 pub mod section_3_8_1;
 pub mod section_3_8_10;
 pub mod section_3_8_11;

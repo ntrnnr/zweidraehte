@@ -337,9 +337,10 @@ where
         }
 
         // Per AN158 §2.2.1.5.3.2: tool key access on group communication
-        // is forbidden. Reject frames with tool_access=true that are
-        // group-addressed.
-        if scf.tool_access && addr_type != 0 {
+        // is forbidden. However, tool key IS allowed on broadcast and system
+        // broadcast (spec §5.5.8 Table 10). Only reject tool access when the
+        // service type is T_GroupData_Ind (actual group communication).
+        if scf.tool_access && matches!(st, ServiceType::T_GroupData_Ind) {
             warn!("S-AL: tool access on group communication rejected");
             security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
             return SecureResult::Dropped;

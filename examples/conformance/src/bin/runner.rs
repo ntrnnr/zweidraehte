@@ -720,6 +720,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         // Data Security conformance tests
         zweidraehte_conformance::tests::security::section_3_1::create_section_3_1_suite(),
         zweidraehte_conformance::tests::security::section_3_3::create_section_3_3_suite(),
+        zweidraehte_conformance::tests::security::section_3_7::create_section_3_7_suite(),
         zweidraehte_conformance::tests::security::section_4_1::create_section_4_1_suite(),
         zweidraehte_conformance::tests::security::section_4_2::create_section_4_2_suite(),
         zweidraehte_conformance::tests::security::section_4_3::create_section_4_3_suite(),
