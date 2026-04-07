@@ -88,6 +88,9 @@ async fn handle_commands(
                 log::info!("CMD: TriggerWrite(ASAP {})", asap);
                 let _ = stack.write_object_by_asap(asap).await;
             }
+            IpcCommand::TriggerSync { .. } => {
+                log::warn!("CMD: TriggerSync ignored (non-secure DUT)");
+            }
         }
     }
 }

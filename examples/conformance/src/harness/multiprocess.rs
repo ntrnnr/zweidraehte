@@ -17,9 +17,8 @@ use std::process::{Child, Command};
 use async_io::Async;
 
 use super::ipc::{
-    self, SharedMemory,
-    TAG_CAPTURED, TAG_INJECT, TAG_LOG, TAG_READY, TAG_SET_PROGRAMMING_MODE,
-    TAG_TRIGGER_READ, TAG_TRIGGER_WRITE,
+    self, SharedMemory, TAG_CAPTURED, TAG_INJECT, TAG_LOG, TAG_READY, TAG_SET_PROGRAMMING_MODE, TAG_TRIGGER_READ,
+    TAG_TRIGGER_SYNC, TAG_TRIGGER_WRITE,
 };
 use super::mock::CapturedLinkLayerMessage;
 use super::stack::{ConformanceMemoryMap, ConformanceState, TestParameters, conformance_config};
@@ -34,10 +33,7 @@ use zweidraehte_device::objects::tables::{Application, HasLoadStateMachine, Load
 
 enum ChildState {
     /// Child process is running.
-    Running {
-        child: Child,
-        socket: Async<UnixStream>,
-    },
+    Running { child: Child, socket: Async<UnixStream> },
     /// Child has exited (restart, crash, or not yet started).
     Dead,
 }
@@ -118,9 +114,8 @@ impl MultiProcessHarness {
         let sock_fd_str = child_fd.to_string();
 
         // Find the DUT binary next to the runner binary.
-        let dut_path = std::env::current_exe()
-            .map(|p| p.with_file_name(binary_name))
-            .unwrap_or_else(|_| binary_name.into());
+        let dut_path =
+            std::env::current_exe().map(|p| p.with_file_name(binary_name)).unwrap_or_else(|_| binary_name.into());
 
         let child = Command::new(&dut_path)
             .arg("--shm-fd")
@@ -128,9 +123,7 @@ impl MultiProcessHarness {
             .arg("--socket-fd")
             .arg(&sock_fd_str)
             .spawn()
-            .map_err(|e| {
-                io::Error::new(e.kind(), format!("failed to spawn {}: {}", dut_path.display(), e))
-            })?;
+            .map_err(|e| io::Error::new(e.kind(), format!("failed to spawn {}: {}", dut_path.display(), e)))?;
 
         // Close the child's end of the socket in the parent.
         drop(child_stream);
@@ -207,9 +200,9 @@ impl MultiProcessHarness {
 
         let default_state = ConformanceState::default();
         let snapshot = default_state.to_persisted_snapshot();
-        self.shm.write_state(&snapshot).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e))
-        })
+        self.shm
+            .write_state(&snapshot)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e)))
     }
 
     /// Re-initialize shared memory with the default secure conformance state.
@@ -218,9 +211,9 @@ impl MultiProcessHarness {
 
         let default_state = SecureConformanceState::default();
         let snapshot = default_state.to_persisted_snapshot();
-        self.shm.write_state(&snapshot).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e))
-        })
+        self.shm
+            .write_state(&snapshot)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e)))
     }
 
     fn socket(&self) -> io::Result<&Async<UnixStream>> {
@@ -345,6 +338,12 @@ impl MultiProcessHarness {
         self.send_command(TAG_TRIGGER_WRITE, &asap.to_le_bytes()).await
     }
 
+    /// Trigger an S-A_Sync_Req from the DUT to the specified peer.
+    pub async fn trigger_sync(&mut self, peer_ia: u16, tool_access: bool) -> io::Result<()> {
+        let ia_bytes = peer_ia.to_be_bytes();
+        self.send_command(TAG_TRIGGER_SYNC, &[ia_bytes[0], ia_bytes[1], tool_access as u8]).await
+    }
+
     /// Wait for the child to exit (restart) and respawn it.
     ///
     /// Reads frames until EOF (forwarding log and captured frames), then
@@ -387,10 +386,7 @@ impl MultiProcessHarness {
         match drain_result {
             embassy_futures::select::Either::First(result) => result?,
             embassy_futures::select::Either::Second(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "child did not exit within timeout",
-                ));
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "child did not exit within timeout"));
             }
         }
 
@@ -493,21 +489,14 @@ fn handle_log_frame(payload: &[u8]) {
         (String::from("dut"), String::from_utf8_lossy(rest).into_owned())
     };
 
-    logger::add_entry(LogEntry {
-        level,
-        target,
-        message,
-        timestamp_ms: elapsed_ms(),
-    });
+    logger::add_entry(LogEntry { level, target, message, timestamp_ms: elapsed_ms() });
 }
 
 fn clear_cloexec(fd: std::os::unix::io::RawFd) -> io::Result<()> {
     use nix::fcntl;
-    let flags = fcntl::fcntl(fd, fcntl::FcntlArg::F_GETFD)
-        .map_err(io::Error::other)?;
+    let flags = fcntl::fcntl(fd, fcntl::FcntlArg::F_GETFD).map_err(io::Error::other)?;
     let mut fd_flags = nix::fcntl::FdFlag::from_bits_truncate(flags);
     fd_flags.remove(nix::fcntl::FdFlag::FD_CLOEXEC);
-    fcntl::fcntl(fd, fcntl::FcntlArg::F_SETFD(fd_flags))
-        .map_err(io::Error::other)?;
+    fcntl::fcntl(fd, fcntl::FcntlArg::F_SETFD(fd_flags)).map_err(io::Error::other)?;
     Ok(())
 }

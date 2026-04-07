@@ -56,6 +56,8 @@ pub enum ApplicationLayerService {
     GroupValueWriteRequest(u16),
     /// Request to send a `A_GroupValue_Read.req` for the given ASAP
     GroupValueReadRequest(u16),
+    /// Request to initiate an S-A_Sync_Req to a peer.
+    SyncRequest { peer_ia: u16, tool_access: bool },
 }
 
 /// Service responses from the application layer back to the application
@@ -67,6 +69,10 @@ pub enum ApplicationLayerServiceResponse {
     GroupValueReadResponse,
     /// Request rejected because the application is not running
     ApplicationNotRunning,
+    /// S-A_Sync_Req was successfully sent.
+    SyncInitiated,
+    /// S-A_Sync_Req failed (no key, no buffer, non-secure stack).
+    SyncFailed,
 }
 
 // ============================================================================
@@ -189,6 +195,11 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             AccessSource::Connection(slot) => self.state.connection_access(slot),
             AccessSource::Explicit(ctx) => ctx,
         }
+    }
+
+    /// Access the buffer manager for allocating response buffers.
+    pub(crate) fn buffer_manager(&self) -> &'a DynBufferManager<'static> {
+        self.buffer_manager
     }
 }
 
@@ -448,6 +459,12 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     ApplicationLayerServiceResponse::ApplicationNotRunning
                 };
                 request.try_reply(response).ok();
+            }
+            ApplicationLayerService::SyncRequest { .. } => {
+                // Sync requests are intercepted by the Secure Application
+                // Layer wrapper. If we reach here on a non-secure stack,
+                // reply with failure.
+                request.try_reply(ApplicationLayerServiceResponse::SyncFailed).ok();
             }
         }
     }
@@ -2177,12 +2194,21 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             builder::IndicationExt,
         };
 
+        // Access policy 3FF/0CC: everyone can write when security mode is off;
+        // when security mode is on, only Tool A+C can write. Denied requests
+        // are silently dropped (no response).
+        use crate::access::AccessPolicy;
+        let current_ctx = self.resolve_access(ind);
+        let security_on = self.state.security_mode_enabled();
+        if !AccessPolicy::READ_OPEN_WRITE_TOOL.can_write(&current_ctx, security_on) {
+            debug!("AL Key_Write denied by access policy");
+            return;
+        }
+
         let Some(req) = KeyWrite::parse(ind.buf()) else {
             error!("Key_Write message too short: {}", ind.len());
             return;
         };
-
-        let current_ctx = self.resolve_access(ind);
         debug!(
             "AL Key_Write: level={}, key={:?}, current_ctx={:?}",
             req.level,
@@ -2257,6 +2283,20 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
+        // Security-mode access policy: AP 3FF/00C for all restart types.
+        // When security mode is off, all callers can restart (0x3FF = all bits set).
+        // When security mode is on, only Tool A+C is allowed (0x00C).
+        use crate::access::AccessPolicy;
+        let security_on = self.state.security_mode_enabled();
+        if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&restart_ctx, security_on) {
+            warn!("AL Restart: access denied by security policy ({:?}, sec_on={})", restart_ctx, security_on);
+            if needs_response {
+                self.send_restart_response(ind, RestartError::AccessDenied, 0, outbox);
+            }
+            return;
+        }
+
+        // Legacy access level check (non-secure fallback).
         let required_level = match erase_code {
             EraseCode::Basic | EraseCode::Confirmed => 3,
             _ => 0,

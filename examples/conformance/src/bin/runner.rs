@@ -280,9 +280,19 @@ async fn execute_step(
             true
         }
 
+        TestStep::TriggerSync { peer_ia, tool_access } => {
+            println!("  [{}] TriggerSync(peer={:#06X}, tool={})", index, peer_ia, tool_access);
+            if let Err(e) = harness.trigger_sync(*peer_ia, *tool_access).await {
+                println!("        Failed: {}", e);
+                return false;
+            }
+            Timer::after(processing_delay(time_divisor)).await;
+            true
+        }
+
         TestStep::Drain { settle_ms } => {
             let effective_ms = scale_ms(*settle_ms, time_divisor, 10);
-            println!("  [{}] 🧹 Drain (settle {}ms)", index, effective_ms);
+            println!("  [{}] Drain (settle {}ms)", index, effective_ms);
             Timer::after(Duration::from_millis(effective_ms)).await;
             let drained = harness.drain_captured();
             println!("        Drained {} messages", drained);
@@ -624,6 +634,78 @@ async fn execute_step(
                 }
             }
         }
+
+        TestStep::ExpectSyncReqThenRespond { params, timeout_ms } => {
+            let Some(ctx) = sec_ctx else {
+                println!("  [{}] ExpectSyncReqThenRespond requires security context", index);
+                return false;
+            };
+
+            let effective_ms = scale_ms(*timeout_ms, time_divisor, 100);
+            let timeout = Duration::from_millis(effective_ms);
+
+            println!("  [{}] ExpectSyncReqThenRespond (timeout={}ms)", index, effective_ms);
+
+            let captured = embassy_futures::select::select(harness.receive_captured(), Timer::after(timeout)).await;
+
+            match captured {
+                embassy_futures::select::Either::First(Some(msg)) => {
+                    let internal = tp1_to_internal(&msg.data);
+                    let key = ctx.key(&params.key_name);
+
+                    // Parse and decrypt the DUT's sync request.
+                    let Some(decoded_req) = crypto::unwrap_sync_req(&internal, &key) else {
+                        println!("        Failed to decrypt DUT sync request");
+                        return false;
+                    };
+
+                    let seq_local_val =
+                        zweidraehte_conformance::tests::security::context::seq_from_bytes(&decoded_req.seq_nr_local);
+                    println!(
+                        "        DUT SyncReq: SeqNr_local={}, challenge={:02x?}",
+                        seq_local_val, decoded_req.challenge
+                    );
+
+                    // Build and inject a sync response.
+                    let seq_nr_remote =
+                        zweidraehte_conformance::tests::security::context::seq_to_bytes(params.seq_nr_remote);
+                    let seq_nr_local =
+                        zweidraehte_conformance::tests::security::context::seq_to_bytes(params.seq_nr_local);
+
+                    // Resolve source address for the response.
+                    let response_src =
+                        Telegram::parse(&format!("00 00 {} 00 00 00 00", params.src_template), variables)
+                            .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
+                            .unwrap_or(0);
+
+                    let response =
+                        crypto::wrap_sync_res(&decoded_req, &key, &seq_nr_remote, &seq_nr_local, response_src);
+
+                    let tp1 = internal_to_tp1(&response);
+                    println!(
+                        "        Injecting SyncRes: {} bytes, seqRemote={}, seqLocal={}",
+                        tp1.len(),
+                        params.seq_nr_remote,
+                        params.seq_nr_local
+                    );
+
+                    if let Err(e) = harness.inject(&tp1).await {
+                        println!("        Inject SyncRes failed: {}", e);
+                        return false;
+                    }
+
+                    true
+                }
+                embassy_futures::select::Either::First(None) => {
+                    println!("        DUT disconnected while waiting for sync request");
+                    false
+                }
+                embassy_futures::select::Either::Second(_) => {
+                    println!("        Timeout waiting for DUT sync request");
+                    false
+                }
+            }
+        }
     }
 }
 
@@ -722,6 +804,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         // Data Security conformance tests
         zweidraehte_conformance::tests::security::section_3_1::create_section_3_1_suite(),
         zweidraehte_conformance::tests::security::section_3_3::create_section_3_3_suite(),
+        zweidraehte_conformance::tests::security::section_3_4::create_section_3_4_suite(),
         zweidraehte_conformance::tests::security::section_3_6::create_section_3_6_suite(),
         zweidraehte_conformance::tests::security::section_3_7::create_section_3_7_suite(),
         zweidraehte_conformance::tests::security::section_4_1::create_section_4_1_suite(),

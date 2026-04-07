@@ -68,6 +68,7 @@ pub const TAG_SET_PROGRAMMING_MODE: u8 = 0x03;
 pub const TAG_TRIGGER_READ: u8 = 0x04;
 pub const TAG_TRIGGER_WRITE: u8 = 0x05;
 pub const TAG_SHUTDOWN: u8 = 0x07;
+pub const TAG_TRIGGER_SYNC: u8 = 0x09;
 
 // Tag values — child-to-parent
 pub const TAG_CAPTURED: u8 = 0x02;
@@ -398,6 +399,8 @@ pub enum IpcCommand {
     TriggerRead(u16),
     /// Trigger a GroupValue_Write for the given ASAP.
     TriggerWrite(u16),
+    /// Trigger an S-A_Sync_Req to a peer.
+    TriggerSync { peer_ia: u16, tool_access: bool },
 }
 
 // ============================================================================
@@ -472,6 +475,15 @@ impl<'a> IpcLinkLayer<'a> {
                                 let asap = u16::from_le_bytes([frame.payload[0], frame.payload[1]]);
                                 log::debug!("IPC LL: TriggerWrite(ASAP {})", asap);
                                 self.command_tx.send(IpcCommand::TriggerWrite(asap)).await;
+                            }
+                        }
+                        TAG_TRIGGER_SYNC => {
+                            // Payload: [peer_ia_hi, peer_ia_lo, tool_access]
+                            if frame.payload.len() >= 3 {
+                                let peer_ia = u16::from_be_bytes([frame.payload[0], frame.payload[1]]);
+                                let tool_access = frame.payload[2] != 0;
+                                log::debug!("IPC LL: TriggerSync(peer={:#06X}, tool={})", peer_ia, tool_access);
+                                self.command_tx.send(IpcCommand::TriggerSync { peer_ia, tool_access }).await;
                             }
                         }
                         TAG_SHUTDOWN => {

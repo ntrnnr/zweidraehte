@@ -481,3 +481,53 @@ pub fn build_sync_response(
     // Return MAC offset. Caller writes 4 bytes of MAC here.
     sync::FRAME_LEN - MAC_LEN
 }
+
+/// Build an S-A_Sync_Req frame in `buf`.
+///
+/// Writes header + Secure APCI + SCF + SeqNr_local + KNX_Serial +
+/// plaintext Challenge. The caller must then encrypt the challenge
+/// region (bytes 21..27) and write the MAC (bytes 27..31) using
+/// [`ccm::encrypt_and_mac_sync_req`].
+///
+/// `buf` must be at least 31 bytes.
+///
+/// Returns the byte offset where the MAC should be written (27).
+pub fn build_sync_request(
+    buf: &mut [u8],
+    ctrl_byte: u8,
+    src: u16,
+    dst: u16,
+    npdu_byte: u8,
+    tpci_high: u8,
+    scf_byte: u8,
+    seq_nr_local: &[u8; 6],
+    knx_serial_number: &[u8; 6],
+    challenge: &[u8; 6],
+) -> usize {
+    assert!(buf.len() >= sync::FRAME_LEN, "buffer too small for sync request");
+
+    // Header: CTRL(1) + SRC(2) + DST(2) + NPDU(1)
+    buf[0] = ctrl_byte;
+    buf[offsets::MSG_SOURCE_ADDR..offsets::MSG_SOURCE_ADDR + 2].copy_from_slice(&src.to_be_bytes());
+    buf[offsets::MSG_DEST_ADDR..offsets::MSG_DEST_ADDR + 2].copy_from_slice(&dst.to_be_bytes());
+    buf[offsets::MSG_ADDR_TYPE] = npdu_byte;
+
+    // TPCI/APCI: preserve TPCI high bits, set Secure APCI (0x03F1).
+    buf[offsets::MSG_TPCI] = (tpci_high & 0xFC) | 0x03;
+    buf[offsets::MSG_TPCI + 1] = 0xF1;
+
+    // SCF
+    buf[SCF] = scf_byte;
+
+    // SeqNr_local (6 bytes — sender's current sending sequence number)
+    buf[SEQ_NR..SEQ_NR + 6].copy_from_slice(seq_nr_local);
+
+    // KNX Serial Number (6 bytes — all-zero for P2P, device serial for broadcast)
+    buf[sync::SERIAL_NUMBER..sync::SERIAL_NUMBER + 6].copy_from_slice(knx_serial_number);
+
+    // Plaintext challenge (6 bytes — will be encrypted in-place by caller)
+    buf[sync::CHALLENGE..sync::CHALLENGE + 6].copy_from_slice(challenge);
+
+    // Return MAC offset. Caller writes 4 bytes of MAC here.
+    sync::FRAME_LEN - MAC_LEN
+}

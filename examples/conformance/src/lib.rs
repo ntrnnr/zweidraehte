@@ -238,6 +238,22 @@ pub enum TestStep {
 
     /// Inject an S-A_Sync_Req with intentionally invalid fields.
     InjectSyncReqInvalid { sync_params: SyncReqParams, invalid: InvalidSecurityParam, delay_before_ms: u32 },
+
+    /// Trigger the DUT to initiate an S-A_Sync_Req to the specified peer.
+    ///
+    /// The DUT builds and sends the sync request frame. The test runner
+    /// should capture it with a subsequent Expect step.
+    TriggerSync { peer_ia: u16, tool_access: bool },
+
+    /// Capture the DUT's outgoing S-A_Sync_Req, verify it, then inject
+    /// a valid S-A_Sync_Res back to the DUT.
+    ///
+    /// This compound step handles the full sync response flow:
+    /// 1. Capture the DUT's outgoing sync request
+    /// 2. Decrypt the challenge using the specified key
+    /// 3. Build a sync response with the given sequence numbers
+    /// 4. Inject the response
+    ExpectSyncReqThenRespond { params: SyncResponseParams, timeout_ms: u32 },
 }
 
 // ============================================================================
@@ -419,6 +435,25 @@ pub struct SyncResExpect {
     pub challenge: [u8; 6],
     /// Expected source address of the response (typically #BDUT_ADDR).
     pub expected_src_template: String,
+}
+
+/// Parameters for the `ExpectSyncReqThenRespond` compound step.
+#[derive(Debug, Clone)]
+pub struct SyncResponseParams {
+    /// Key name for decrypting the request and encrypting the response.
+    pub key_name: String,
+    /// Tool access flag (T in SCF).
+    pub tool_access: bool,
+    /// SeqNr_remote to include in the sync response (the EITT's
+    /// "next sending sequence number" that the DUT should store).
+    pub seq_nr_remote: u64,
+    /// SeqNr_local to include in the sync response (what we think
+    /// the DUT's next sending sequence number should be).
+    pub seq_nr_local: u64,
+    /// Whether the sync is broadcast (SBC flag).
+    pub system_broadcast: bool,
+    /// Source address template for the response (typically "#EDI").
+    pub src_template: String,
 }
 
 impl TestStep {

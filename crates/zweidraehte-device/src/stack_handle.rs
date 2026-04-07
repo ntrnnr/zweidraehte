@@ -8,24 +8,20 @@ use embassy_sync::pubsub::PubSubBehavior;
 use embassy_time::{Duration, TimeoutError, with_timeout};
 
 use crate::{
+    ReadObjectError, StackState, UpdateObjectError,
     actor::{ActorRequest, Request},
     address::IndividualAddress,
     definition::StackDefinition,
     inner::Inner,
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse},
-    messages::{
-        buffers::Buffer,
-        knx::KnxMessageBuffer,
-    },
+    messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, LifecycleEvent},
         tables::{
-            HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
-            HasRunStateMachine,
+            HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine,
         },
     },
     restart,
-    ReadObjectError, StackState, UpdateObjectError,
 };
 
 use embassy_sync::channel::DynamicReceiver;
@@ -72,7 +68,8 @@ use embassy_sync::channel::DynamicReceiver;
 pub struct Stack<'d, D: StackDefinition> {
     pub(crate) inner: &'d Inner<D>,
     pub(crate) interface_objects: &'d D::InterfaceObjects<'static>,
-    pub(crate) app_request_sender: DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+    pub(crate) app_request_sender:
+        DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     pub(crate) restart_receiver: DynamicReceiver<'static, restart::RestartRequest>,
 }
 
@@ -378,6 +375,21 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// A reference to the interface objects container
     pub fn interface_objects(&self) -> &D::InterfaceObjects<'static> {
         self.interface_objects
+    }
+
+    /// Initiate an S-A_Sync_Req to a peer.
+    ///
+    /// Sends a sync request to the specified individual address to
+    /// synchronize sequence numbers. Returns `true` if the request was
+    /// successfully sent, `false` if key lookup or buffer allocation failed.
+    pub async fn initiate_sync(&self, peer_ia: u16, tool_access: bool) -> bool {
+        let resp =
+            ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::SyncRequest {
+                peer_ia,
+                tool_access,
+            })
+            .await;
+        matches!(resp, ApplicationLayerServiceResponse::SyncInitiated)
     }
 
     /// Subscribe to communication object events.

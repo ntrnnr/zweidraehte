@@ -902,8 +902,9 @@ fn handle_memory_ext_write<D: StackDefinition>(
     let result = ctx.memory_map.write(ctx.state, addr16, data, ctx.access_ctx);
 
     let rc = match result {
-        Ok(_) => 0x00,  // E_SUCCESS
-        Err(_) => 0xFD, // E_ADDRESS_VOID
+        Ok(_) => 0x00,                                         // E_SUCCESS
+        Err(crate::memory::MemoryError::AccessDenied) => 0xFC, // E_ILLEGAL_COMMAND
+        Err(_) => 0xFD,                                        // E_ADDRESS_VOID
     };
 
     send_memory_ext_write_response(ind, ctx, outbox, rc, addr_hi, addr_mid, addr_lo);
@@ -973,12 +974,16 @@ fn handle_memory_ext_read<D: StackDefinition>(
                 });
             outbox.push(msg.into_inner());
         }
-        Err(_) => {
+        Err(e) => {
+            let rc = match e {
+                crate::memory::MemoryError::AccessDenied => 0xFC, // E_ILLEGAL_COMMAND
+                _ => 0xFD,                                        // E_ADDRESS_VOID
+            };
             let resp_len = offsets::MSG_APCI + 6;
             let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
             let msg =
                 ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
-                    buf[base + 2] = 0xFD;
+                    buf[base + 2] = rc;
                     buf[base + 3] = addr_hi;
                     buf[base + 4] = addr_mid;
                     buf[base + 5] = addr_lo;

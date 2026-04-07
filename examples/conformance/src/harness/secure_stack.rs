@@ -16,8 +16,9 @@ use zweidraehte_device::{
     access::{AccessPolicy, ClientRole, SecurityMode},
     address::IndividualAddress,
     bcus::system_b::{
-        DefaultSystemBInterfaceObjects, HasExtensionState, HasPersistedState, PersistedState, SecureExtensionConfig,
-        SecureTp1DeviceState, SecureTp1ExtensionState, Tp1ExtensionConfig, create_system_b_objects_with_extra,
+        DefaultSystemBInterfaceObjects, HasExtensionState, HasPersistedState, HasSecurityMode, PersistedState,
+        SecureExtensionConfig, SecureTp1DeviceState, SecureTp1ExtensionState, Tp1ExtensionConfig,
+        create_system_b_objects_with_extra,
     },
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     dpt::{InterfaceObjectType, PDT_UnsignedChar, PropertyDataDefinition},
@@ -347,6 +348,30 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
             return Ok(data.len());
         }
 
+        // ================================================================
+        // Security-aware sub-regions within Level 2 memory.
+        // These must be checked BEFORE the general Level 2 region so
+        // their access policies take precedence.
+        // ================================================================
+
+        let security_on = tables.extension_state().security_mode_enabled();
+
+        // 0x03D0-0x03DF: Access Policy 000/000 — always denied.
+        if address >= 0x03D0 && end_address <= 0x03E0 {
+            return Err(MemoryError::AccessDenied);
+        }
+
+        // 0x03E0-0x03EF: Access Policy 3FF/00C — everyone when SM off,
+        // only Tool A+C when SM on.
+        if address >= 0x03E0 && end_address <= 0x03F0 {
+            if !AccessPolicy::OPEN_OFF_TOOL_ON.can_read(&ctx, security_on) {
+                return Err(MemoryError::AccessDenied);
+            }
+            let offset = (address - ConformanceMemoryMap::LEVEL2_MEMORY_BASE) as usize;
+            data.copy_from_slice(&tables.level2_memory.borrow()[offset..offset + data.len()]);
+            return Ok(data.len());
+        }
+
         // Level 2 memory
         if address >= ConformanceMemoryMap::LEVEL2_MEMORY_BASE
             && end_address <= ConformanceMemoryMap::LEVEL2_MEMORY_BASE + LEVEL2_MEMORY_SIZE as u16
@@ -425,6 +450,28 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
         {
             let offset = (address - ConformanceMemoryMap::LINEAR_MEMORY_BASE) as usize;
             tables.linear_memory.borrow_mut()[offset..offset + data.len()].copy_from_slice(data);
+            return Ok(data.len());
+        }
+
+        // ================================================================
+        // Security-aware sub-regions within Level 2 memory.
+        // ================================================================
+
+        let security_on = tables.extension_state().security_mode_enabled();
+
+        // 0x03D0-0x03DF: Access Policy 000/000 — always denied.
+        if address >= 0x03D0 && end_address <= 0x03E0 {
+            return Err(MemoryError::AccessDenied);
+        }
+
+        // 0x03E0-0x03EF: Access Policy 3FF/00C — everyone when SM off,
+        // only Tool A+C when SM on.
+        if address >= 0x03E0 && end_address <= 0x03F0 {
+            if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx, security_on) {
+                return Err(MemoryError::AccessDenied);
+            }
+            let offset = (address - ConformanceMemoryMap::LEVEL2_MEMORY_BASE) as usize;
+            tables.level2_memory.borrow_mut()[offset..offset + data.len()].copy_from_slice(data);
             return Ok(data.len());
         }
 

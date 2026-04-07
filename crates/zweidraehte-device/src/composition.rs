@@ -9,6 +9,7 @@
 
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
+use crate::bcus::system_b::{HasExtensionState, HasSeqStorage};
 #[cfg(feature = "knxip")]
 use crate::layers::transport::cemi::{CemiEvent, CemiTransportLayer};
 use crate::{
@@ -28,7 +29,6 @@ use crate::{
     router::{self, LayerStack},
     storage::HasSequenceStorage,
 };
-use crate::bcus::system_b::{HasExtensionState, HasSeqStorage};
 
 use core::cell::RefCell;
 use embassy_sync::pubsub::PubSubChannel;
@@ -507,7 +507,8 @@ pub type StandardSecureDeviceLayers<'a, D> = SecureDeviceLayers<'a, D, Transport
 impl<'a, D: StackDefinition + HasSequenceStorage> SecureDeviceLayers<'a, D, TransportLayer<'a, D>>
 where
     D::State: crate::bcus::system_b::HasExtensionState,
-    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::bcus::system_b::HasSeqStorage<SeqStorage = D::SeqStorage>,
+    <D::State as crate::bcus::system_b::HasExtensionState>::ES:
+        crate::bcus::system_b::HasSeqStorage<SeqStorage = D::SeqStorage>,
 {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
     pub fn standard(ctx: &'a LayerContext<'a, D>) -> Self {
@@ -603,7 +604,7 @@ where
     fn handle_service_input(&mut self, input: ServiceInput, outbox: &mut router::Outbox) {
         match input {
             ServiceInput::AppRequest(req) => {
-                self.layers.2.inner_mut().handle_app_request(&req, outbox);
+                self.layers.2.handle_app_request(&req, outbox);
             }
             #[cfg(feature = "knxip")]
             ServiceInput::CemiEvent(evt) => {
@@ -631,7 +632,8 @@ impl<D: StackDefinition + HasSequenceStorage> LayerStackBuilder<D> for SecureDev
 where
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
     D::State: HasExtensionState,
-    <D::State as HasExtensionState>::ES: crate::bcus::system_b::HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
+    <D::State as HasExtensionState>::ES:
+        crate::bcus::system_b::HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
 {
     type Stack<'a>
         = StandardSecureDeviceLayers<'a, D>

@@ -425,3 +425,134 @@ pub fn unwrap_sync_res(secure_frame: &[u8], key: &[u8; 16], challenge: &[u8; 6])
 
     Some(SyncResDecrypted { random, seq_nr_remote, seq_nr_local, scf_byte })
 }
+
+/// Parsed S-A_Sync_Req from the DUT.
+pub struct SyncReqDecrypted {
+    /// Decrypted challenge (6 bytes).
+    pub challenge: [u8; 6],
+    /// SeqNr_local from the request (6 bytes).
+    pub seq_nr_local: [u8; 6],
+    /// SCF byte from the request.
+    pub scf_byte: u8,
+    /// Source address (DUT's IA).
+    pub src: u16,
+    /// Destination address.
+    pub dst: u16,
+    /// NPDU/addr_type byte.
+    pub addr_type: u8,
+    /// TPCI/APCI field.
+    pub tpci_apci: u16,
+    /// KNX Serial Number field (6 bytes).
+    pub serial_number: [u8; 6],
+}
+
+/// Parse and verify an S-A_Sync_Req captured from the DUT.
+///
+/// Returns the decrypted challenge and frame metadata, or None on failure.
+pub fn unwrap_sync_req(secure_frame: &[u8], key: &[u8; 16]) -> Option<SyncReqDecrypted> {
+    if secure_frame.len() < 31 {
+        return None;
+    }
+
+    let src = u16::from_be_bytes([secure_frame[1], secure_frame[2]]);
+    let dst = u16::from_be_bytes([secure_frame[3], secure_frame[4]]);
+    let addr_type = secure_frame[5] & 0x80;
+    let tpci_apci = u16::from_be_bytes([secure_frame[6], secure_frame[7]]);
+    let scf_byte = secure_frame[8];
+
+    // SeqNr_local at offset 9..15.
+    let mut seq_nr_local = [0u8; 6];
+    seq_nr_local.copy_from_slice(&secure_frame[9..15]);
+
+    // KNX Serial Number at offset 15..21.
+    let mut serial_number = [0u8; 6];
+    serial_number.copy_from_slice(&secure_frame[15..21]);
+
+    // Encrypted challenge at offset 21..27, MAC at 27..31.
+    let mut challenge = [0u8; 6];
+    challenge.copy_from_slice(&secure_frame[21..27]);
+    let mut received_mac = [0u8; 4];
+    received_mac.copy_from_slice(&secure_frame[27..31]);
+
+    let ccm_ctx = CcmContext { seq_nr: seq_nr_local, src, dst, addr_type, tpci_apci };
+
+    ccm::verify_and_decrypt_sync_req(key, &ccm_ctx, scf_byte, &serial_number, &mut challenge, &received_mac).ok()?;
+
+    Some(SyncReqDecrypted { challenge, seq_nr_local, scf_byte, src, dst, addr_type, tpci_apci, serial_number })
+}
+
+/// Build a sync response frame to inject in reply to a DUT-initiated sync request.
+///
+/// Uses the decrypted challenge from `unwrap_sync_req` to construct a
+/// correctly encrypted sync response.
+pub fn wrap_sync_res(
+    req: &SyncReqDecrypted,
+    key: &[u8; 16],
+    seq_nr_remote: &[u8; 6],
+    seq_nr_local: &[u8; 6],
+    response_src: u16,
+) -> Vec<u8> {
+    // Build response SCF: same T and SBC flags, but SyncResponse service.
+    let req_scf = SecurityControlField::parse(req.scf_byte).expect("valid SCF from parsed request");
+    let response_scf = SecurityControlField {
+        service: SecureServiceType::SyncResponse,
+        system_broadcast: req_scf.system_broadcast,
+        confidentiality: true,
+        tool_access: req_scf.tool_access,
+    };
+    let response_scf_byte = response_scf.encode();
+
+    // Generate a pseudo-random value for the response. For test purposes
+    // we use system time as entropy — cryptographic strength is not needed.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let random: [u8; 6] =
+        [(now >> 40) as u8, (now >> 32) as u8, (now >> 24) as u8, (now >> 16) as u8, (now >> 8) as u8, now as u8];
+
+    // challenge_xor_random = challenge XOR random.
+    let mut challenge_xor_random = [0u8; 6];
+    for i in 0..6 {
+        challenge_xor_random[i] = req.challenge[i] ^ random[i];
+    }
+
+    // Swap src/dst: response goes from EITT back to DUT.
+    let dst_for_response = req.src;
+
+    // Encrypt payload and compute MAC.
+    let mut payload = [0u8; 12];
+    payload[0..6].copy_from_slice(seq_nr_remote);
+    payload[6..12].copy_from_slice(seq_nr_local);
+
+    let tpci_apci = u16::from_be_bytes([0x03, 0xF1]);
+
+    let mac = ccm::encrypt_and_mac_sync_res(
+        key,
+        &random,
+        response_src,
+        dst_for_response,
+        req.addr_type,
+        tpci_apci,
+        response_scf_byte,
+        &mut payload,
+    );
+
+    // Assemble frame: CTRL(1) + SRC(2) + DST(2) + NPDU(1) + TPCI/APCI(2)
+    // + SCF(1) + ChallengeXorRandom(6) + SeqNrRemote_enc(6) + SeqNrLocal_enc(6) + MAC(4)
+    // = 31 bytes total.
+    let ctrl = if req_scf.system_broadcast { 0xBC } else { 0xB0 };
+    let npdu = if req_scf.system_broadcast { 0xE1 } else { 0x60 };
+
+    let mut frame = Vec::with_capacity(31);
+    frame.push(ctrl);
+    frame.extend_from_slice(&response_src.to_be_bytes());
+    frame.extend_from_slice(&dst_for_response.to_be_bytes());
+    frame.push(npdu);
+    frame.push(0x03);
+    frame.push(0xF1);
+    frame.push(response_scf_byte);
+    frame.extend_from_slice(&challenge_xor_random);
+    frame.extend_from_slice(&payload[0..6]); // encrypted SeqNr_remote
+    frame.extend_from_slice(&payload[6..12]); // encrypted SeqNr_local
+    frame.extend_from_slice(&mac);
+
+    frame
+}

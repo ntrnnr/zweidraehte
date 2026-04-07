@@ -122,6 +122,11 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
     // PROP4: PDT_GENERIC_01 ReadWrite (PID_SECURITY_REPORT = 0x39)
     vars.insert("ACCESSIBLE_PROP4".into(), TestVariable::Bytes(vec![0x39]));
 
+    // Memory addresses for security-aware sub-region tests (3.7.2.8).
+    // 3-byte MemoryExtended addresses within Level 2 memory (0x0300-0x03FF).
+    vars.insert("MEM_AP_000_000".into(), TestVariable::Bytes(vec![0x00, 0x03, 0xD0]));
+    vars.insert("MEM_AP_3FF_00C".into(), TestVariable::Bytes(vec![0x00, 0x03, 0xE0]));
+
     // Property indices within the Device Object for description-by-index tests.
     // These are 0-based indices into our DUT's Device Object property table.
     vars.insert("INDX_PID_SERIAL_NO".into(), TestVariable::Bytes(vec![0x08]));
