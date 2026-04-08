@@ -14,7 +14,7 @@ use crate::{
     StackState,
     address::GroupAddress,
     definition::StackDefinition,
-    layers::al_extension::{AlExtensionContext, AlServiceExtension},
+    layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     messages::{
         apdu::device::{
             DomainAddressSerialNumberRead, DomainAddressSerialNumberResponse, DomainAddressSerialNumberWrite,

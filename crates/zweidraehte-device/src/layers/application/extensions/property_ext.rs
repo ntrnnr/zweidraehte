@@ -15,7 +15,7 @@
 
 use crate::{
     definition::StackDefinition,
-    layers::al_extension::{AlExtensionContext, AlServiceExtension},
+    layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     memory::MemoryMap,
     messages::{
         apdu::property_ext::{

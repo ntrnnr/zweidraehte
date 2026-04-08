@@ -16,6 +16,8 @@
 //! - Restart commands
 //! - Individual address read/write
 
+pub mod extensions;
+
 use core::cell::RefCell;
 
 use embassy_sync::{
@@ -341,7 +343,7 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
                         self.handle_restart(&msg, outbox);
                     }
                     _ => {
-                        use crate::layers::al_extension::{AlExtensionContext, AlServiceExtension as _};
+                        use crate::layers::application::extensions::{AlExtensionContext, AlServiceExtension as _};
                         let ctx = AlExtensionContext {
                             buffer_manager: self.buffer_manager,
                             state: self.state,
