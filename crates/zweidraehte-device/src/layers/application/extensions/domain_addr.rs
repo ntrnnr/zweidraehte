@@ -186,6 +186,15 @@ fn handle_domain_address_serial_number_write<D>(
         return;
     }
 
+    // Access policy 3FF/00C: everyone can write when security mode is off;
+    // when security mode is on, only Tool A+C can write.
+    use crate::access::AccessPolicy;
+    let security_on = ctx.state.security_mode_enabled();
+    if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.access_ctx, security_on) {
+        debug!("AL DomainAddressSerialNumberWrite denied by access policy");
+        return;
+    }
+
     let doa_len = <D::State as HasDomainAddress>::DOMAIN_ADDRESS_LENGTH;
     let doa = DomainAddressSerialNumberWrite::domain_address(buf);
     if doa.len() >= doa_len {
