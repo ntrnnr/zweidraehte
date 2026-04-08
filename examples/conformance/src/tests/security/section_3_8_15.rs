@@ -11,9 +11,6 @@
 //! The property is PDT_GENERIC_06 (6 bytes, 48-bit sequence counter).
 //!
 //! Skipped test cases:
-//! - 3.8.15.1 — writes a new sequence number and verifies immediate usage
-//!   in subsequent secure exchanges. Needs SyncReq support.
-//! - 3.8.15.6 — overflow check (sequence number at max 0xFFFFFFFFFFFF).
 //! - 3.8.15.7 — master reset tests (complex reset/persistence scenarios).
 
 use crate::{TestCase, TestSuite};
@@ -22,6 +19,9 @@ use crate::tests::helpers::*;
 
 /// Default response timeout in milliseconds.
 const TIMEOUT: u32 = 3000;
+
+/// Standard challenge value used in sync seeding.
+const CHALLENGE_1: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
 
 // ============================================================================
 // Security Mode Toggle Templates
@@ -119,17 +119,48 @@ const PLAIN_DESC_READ_ZERO: &str =
 // Suite Constructor
 // ============================================================================
 
+// Secure A+C write to reset sequence number to a sane value after overflow
+// test (3.8.15.6). Without this, the DUT won't send any secure frames for
+// subsequent suites.
+const RESET_SEQ: &str =
+    "3C 60 #EDI #BDUT_ADDR 0F 01 CE 00 11 00 10 3B 01 00 01 00 00 00 00 10 00";
+const RESET_SEQ_OK: &str =
+    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3B 01 00 01 00";
+
 pub fn create_section_3_8_15_suite() -> TestSuite {
     let variables = create_security_variables();
 
     TestSuite::new("3.8.15 PID_SEQUENCE_NUMBER_SENDING (Security IO, access 00C/00C)", variables)
         .secure()
+        .with_preparation(vec![
+            // Sync tool key sequence numbers to align the harness with
+            // whatever the DUT's current sending seq is.
+            comment("Sync tool key sequence numbers"),
+            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE_1),
+            expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+            wait(55000), // Sync rate limit.
+        ])
         .with_cases(vec![
+            test_3_8_15_1(),
             test_3_8_15_2(),
             test_3_8_15_3(),
             test_3_8_15_4(),
             test_3_8_15_5(),
             test_3_8_15_8(),
+            // 3.8.15.6 runs last: it drives the DUT's seq to overflow,
+            // after which the DUT refuses to send any secure frames.
+            test_3_8_15_6(),
+        ])
+        .with_teardown(vec![
+            // After the overflow test, the DUT's sending seq is at max and
+            // it won't send. We need a sync to re-align, then write a sane
+            // value so subsequent suites work.
+            comment("Re-sync after overflow test"),
+            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE_1),
+            expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+            comment("Reset PID_SEQUENCE_NUMBER_SENDING to 0x1000"),
+            inject_secure_ac(RESET_SEQ, "TK1"),
+            expect_secure_ac(RESET_SEQ_OK, "TK1", TIMEOUT),
         ])
 }
 
@@ -336,5 +367,99 @@ fn test_3_8_15_8() -> TestCase {
         comment("Disable Security Mode"),
         inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.8.15.1 Secure PropertyValueWrite and stimulate immediate usage of SeqNb
+// ============================================================================
+//
+// Writes PID_SEQUENCE_NUMBER_SENDING = 0x1F00 and verifies the DUT
+// immediately uses the new value: the write response itself is sent with
+// seq=0x1F00, and a subsequent read returns 0x1F01 (written value + 1,
+// because the write response consumed one seq increment).
+//
+// Repeated in both security-mode-on and security-mode-off phases.
+
+fn test_3_8_15_1() -> TestCase {
+    // Write PID 0x3B = 0x000000001F00.
+    const WRITE_SEQ_1F00: &str =
+        "3C 60 #EDI #BDUT_ADDR 0F 01 CE 00 11 00 10 3B 01 00 01 00 00 00 00 1F 00";
+    const WRITE_SEQ_1F00_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3B 01 00 01 00";
+
+    // Read PID 0x3B, expect 0x000000001F01 (written + 1).
+    const READ_SEQ: &str =
+        "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3B 01 00 01";
+    const READ_SEQ_1F01: &str =
+        "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 1F 01";
+
+    TestCase::new("3.8.15.1 Secure PropertyValueWrite and stimulate immediate usage of SeqNb").with_steps(vec![
+        // ==== Security Mode ON ====
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Write PID_SEQUENCE_NUMBER_SENDING = 0x1F00"),
+        inject_secure_ac(WRITE_SEQ_1F00, "TK1"),
+        expect_secure_ac(WRITE_SEQ_1F00_OK, "TK1", TIMEOUT),
+
+        comment("Read back → expect 0x1F01 (written + 1, consumed by write response)"),
+        inject_secure_ac(READ_SEQ, "TK1"),
+        expect_secure_ac(READ_SEQ_1F01, "TK1", TIMEOUT),
+
+        // ==== Security Mode OFF ====
+        comment("Disable Security Mode"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Write PID_SEQUENCE_NUMBER_SENDING = 0x1F00 again"),
+        inject_secure_ac(WRITE_SEQ_1F00, "TK1"),
+        expect_secure_ac(WRITE_SEQ_1F00_OK, "TK1", TIMEOUT),
+
+        comment("Read back → expect 0x1F01 again"),
+        inject_secure_ac(READ_SEQ, "TK1"),
+        expect_secure_ac(READ_SEQ_1F01, "TK1", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.8.15.6 Overflow check
+// ============================================================================
+//
+// Write PID_SEQUENCE_NUMBER_SENDING to 0xFFFFFFFFFFFE (max - 1). The write
+// response uses seq=0xFFFFFFFFFFFE, bumping the counter to 0xFFFFFFFFFFFF.
+// A first read succeeds (returning 0xFFFFFFFFFFFF, seq=0xFFFFFFFFFFFF).
+// A second read gets NO response — the DUT has reached sequence number
+// overflow and stops sending secure frames.
+
+fn test_3_8_15_6() -> TestCase {
+    // Write max-1. After the write response (which uses seq=max-1),
+    // the counter becomes 0xFFFFFFFFFFFF (max). Our DUT stops at max
+    // per the spec's "optionally maximum value minus 1" allowance.
+    const WRITE_SEQ_MAX_MINUS_1: &str =
+        "3C 60 #EDI #BDUT_ADDR 0F 01 CE 00 11 00 10 3B 01 00 01 FF FF FF FF FF FE";
+    const WRITE_SEQ_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3B 01 00 01 00";
+
+    const READ_SEQ: &str =
+        "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3B 01 00 01";
+
+    TestCase::new("3.8.15.6 Overflow check").with_steps(vec![
+        // The XML runs this with security mode off.
+        comment("Disable Security Mode"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("Write PID_SEQUENCE_NUMBER_SENDING = 0xFFFFFFFFFFFE (max - 1)"),
+        inject_secure_ac(WRITE_SEQ_MAX_MINUS_1, "TK1"),
+        expect_secure_ac(WRITE_SEQ_OK, "TK1", TIMEOUT),
+
+        // The write response used seq=0xFFFFFFFFFFFE, so the counter is
+        // now at 0xFFFFFFFFFFFF. The DUT refuses to send any more secure
+        // frames because the next send would overflow the 48-bit counter.
+        comment("Read → no response (seq at max, DUT stops sending)"),
+        inject_secure_ac(READ_SEQ, "TK1"),
+        expect_none(TIMEOUT),
     ])
 }

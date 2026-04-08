@@ -166,14 +166,23 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<
 
     /// Get the next sending sequence number for the given access type
     /// and increment it. Persists the updated value to storage.
-    fn next_seq_nr(&self, tool_access: bool) -> [u8; 6] {
+    ///
+    /// Returns `None` if the sequence counter has reached the 48-bit
+    /// maximum (0xFFFFFFFFFFFF). Per the spec, the device must stop
+    /// sending secure frames once overflow is reached.
+    fn next_seq_nr(&self, tool_access: bool) -> Option<[u8; 6]> {
         let mut storage = self.seq_storage.borrow_mut();
         let (regular, tool) = storage.load_sending_seqs().unwrap_or(([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]));
         let seq = if tool_access { tool } else { regular };
 
-        // Increment: treat as 48-bit big-endian counter.
+        // Check for 48-bit overflow before using this sequence number.
         let val = u64::from_be_bytes([0, 0, seq[0], seq[1], seq[2], seq[3], seq[4], seq[5]]);
-        let next_bytes = (val.wrapping_add(1)).to_be_bytes();
+        if val >= 0xFFFF_FFFF_FFFF {
+            return None;
+        }
+
+        // Increment: treat as 48-bit big-endian counter.
+        let next_bytes = (val + 1).to_be_bytes();
         let mut next_seq = [0u8; 6];
         next_seq.copy_from_slice(&next_bytes[2..8]);
 
@@ -184,7 +193,7 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<
             let _ = storage.save_sending_seqs(&next_seq, &tool);
         }
 
-        seq
+        Some(seq)
     }
 }
 
@@ -1022,10 +1031,10 @@ where
     ///
     /// Takes a plaintext message from the inner AL's outbox and wraps it
     /// in a Secure APDU if the outgoing security context is active.
-    fn try_encrypt_outgoing(&self, mut msg: KnxMessageBuffer<Buffer<'static>>) -> KnxMessageBuffer<Buffer<'static>> {
+    fn try_encrypt_outgoing(&self, mut msg: KnxMessageBuffer<Buffer<'static>>) -> Option<KnxMessageBuffer<Buffer<'static>>> {
         let ctx = self.outgoing_ctx.get();
         if !ctx.active {
-            return msg;
+            return Some(msg);
         }
 
         // Only encrypt downward indications (to TL), not confirmations coming back up.
@@ -1039,7 +1048,7 @@ where
                 | ServiceType::T_SystemBroadcast_Req
         );
         if !is_downward {
-            return msg;
+            return Some(msg);
         }
 
         // ============================================================
@@ -1095,14 +1104,19 @@ where
 
         if needed_len > buf.capacity() + offsets::MSG_TPCI {
             warn!("S-AL: buffer too small for secure frame ({} > {})", needed_len, buf.capacity() + offsets::MSG_TPCI);
-            return msg; // Fall back to plaintext.
+            return Some(msg); // Fall back to plaintext.
         }
 
         // Expand buffer so wrap_plaintext has room to shift the payload.
         buf.set_len(needed_len);
 
         let tool_access = (ctx.scf_byte & 0x80) != 0; // bit 7 = Tool Access flag
-        let seq_nr = self.next_seq_nr(tool_access);
+        let Some(seq_nr) = self.next_seq_nr(tool_access) else {
+            // Sequence number overflow — the device must not send any more
+            // secure frames. Drop the outgoing message entirely.
+            warn!("S-AL: sequence number overflow, dropping outgoing secure frame");
+            return None;
+        };
         let layout = secure::wrap_plaintext(buf, plain_content_len, ctx.scf_byte, &seq_nr)
             .expect("buffer capacity already verified");
 
@@ -1149,7 +1163,7 @@ where
 
         buf[layout.mac_start..layout.mac_start + secure::MAC_LEN].copy_from_slice(&mac);
 
-        msg
+        Some(msg)
     }
 }
 
@@ -1169,8 +1183,9 @@ where
 
                 // Drain local outbox, encrypting responses if needed.
                 while let Some(out_msg) = local_outbox.take_next() {
-                    let out_msg = self.try_encrypt_outgoing(out_msg);
-                    outbox.push(out_msg);
+                    if let Some(out_msg) = self.try_encrypt_outgoing(out_msg) {
+                        outbox.push(out_msg);
+                    }
                 }
 
                 // Clear outgoing context after processing.
