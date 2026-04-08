@@ -98,6 +98,7 @@ impl StackDefinition for PicoTp1LightSwitch {
         create_system_b_objects_with_extra::<Self, _>(state, platform, &Self::memory_layout(), EasterEggAugment)
     }
 
+    type AlExtension = zweidraehte_device::layers::application::extensions::SystemBAlExtensions;
     type LayerBuilder = InsecureDeviceBuilder;
 }
 

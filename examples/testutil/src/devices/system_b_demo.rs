@@ -566,7 +566,10 @@ impl StackDefinition for DemoStack {
         create_system_b_objects_from_extension::<Self>(state, platform, &Self::memory_layout())
     }
 
-    type AlExtension = zweidraehte_device::layers::al_ext_domain_addr::DomainAddressExtension;
+    type AlExtension = (
+        zweidraehte_device::layers::application::extensions::SystemBAlExtensions,
+        zweidraehte_device::layers::application::extensions::DomainAddressExtension,
+    );
     type LayerBuilder = InsecureIpDeviceBuilder;
 }
 

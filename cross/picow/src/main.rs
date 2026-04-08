@@ -85,6 +85,10 @@ impl StackDefinition for PicoWLightSwitch {
         create_system_b_objects_with_extra::<Self, _>(state, platform, &Self::memory_layout(), EasterEggAugment)
     }
 
+    type AlExtension = (
+        zweidraehte_device::layers::application::extensions::SystemBAlExtensions,
+        zweidraehte_device::layers::application::extensions::DomainAddressExtension,
+    );
     type LayerBuilder = InsecureIpDeviceBuilder;
 }
 

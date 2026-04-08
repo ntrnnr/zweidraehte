@@ -1161,6 +1161,7 @@ impl StackDefinition for IpcConformanceTestStack {
         )
     }
 
+    type AlExtension = zweidraehte_device::layers::application::extensions::SystemBAlExtensions;
     type LayerBuilder = InsecureDeviceBuilder;
 }
 

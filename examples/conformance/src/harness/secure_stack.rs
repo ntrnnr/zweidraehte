@@ -832,7 +832,10 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         )
     }
 
-    type AlExtension = zweidraehte_device::layers::al_ext_property_ext::PropertyExtValueExtension;
+    type AlExtension = (
+        zweidraehte_device::layers::application::extensions::SystemBAlExtensions,
+        zweidraehte_device::layers::application::extensions::PropertyExtValueExtension,
+    );
     type LayerBuilder = SecureDeviceBuilder;
 }
 
