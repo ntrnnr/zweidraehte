@@ -613,6 +613,17 @@ async fn execute_step(
                             // The DUT reported its sending seqnr as seq_remote.
                             ctx.update_table_seq(seq_remote);
 
+                            // Update tool_seq_nr from the DUT's seq_local.
+                            // The DUT reported what it expects as our next
+                            // data sequence number. This is critical after
+                            // sync tests that send high seq_nr_local values
+                            // (e.g., 3.3.15) — the DUT raises its stored
+                            // receiving seq accordingly, and subsequent
+                            // data frames must use seq >= seq_local.
+                            if sync_expect.tool_access && seq_local > ctx.tool_seq_nr {
+                                ctx.tool_seq_nr = seq_local;
+                            }
+
                             if ok {
                                 println!("        ✅ Sync response matches");
                             }
