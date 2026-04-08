@@ -65,7 +65,13 @@ pub fn trigger_write(asap: u16) -> TestStep {
 
 /// Helper to trigger an S-A_Sync_Req from the DUT to the specified peer.
 pub fn trigger_sync(peer_ia: u16, tool_access: bool) -> TestStep {
-    TestStep::TriggerSync { peer_ia, tool_access }
+    TestStep::TriggerSync { peer_ia, tool_access, is_broadcast: false }
+}
+
+/// Like [`trigger_sync`] but the DUT sends a broadcast sync request
+/// (system broadcast flag set, dst = 0x0000).
+pub fn trigger_sync_broadcast(peer_ia: u16, tool_access: bool) -> TestStep {
+    TestStep::TriggerSync { peer_ia, tool_access, is_broadcast: true }
 }
 
 /// Helper to expect a DUT-initiated sync request and respond with a sync response.
@@ -84,6 +90,30 @@ pub fn expect_sync_req_then_respond(
             seq_nr_remote,
             seq_nr_local,
             system_broadcast: false,
+            src_template: src_template.to_string(),
+        },
+        timeout_ms,
+    }
+}
+
+/// Like [`expect_sync_req_then_respond`] but the response is sent with
+/// `system_broadcast = true` (SBC flag set in the response SCF, broadcast
+/// dst address 0x0000). Used by test 3.4.5 (mismatch) and 3.4.9 (match).
+pub fn expect_sync_req_then_respond_broadcast(
+    key: &str,
+    tool_access: bool,
+    seq_nr_remote: u64,
+    seq_nr_local: u64,
+    src_template: &str,
+    timeout_ms: u32,
+) -> TestStep {
+    TestStep::ExpectSyncReqThenRespond {
+        params: crate::SyncResponseParams {
+            key_name: key.to_string(),
+            tool_access,
+            seq_nr_remote,
+            seq_nr_local,
+            system_broadcast: true,
             src_template: src_template.to_string(),
         },
         timeout_ms,

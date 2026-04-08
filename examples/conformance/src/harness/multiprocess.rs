@@ -339,9 +339,9 @@ impl MultiProcessHarness {
     }
 
     /// Trigger an S-A_Sync_Req from the DUT to the specified peer.
-    pub async fn trigger_sync(&mut self, peer_ia: u16, tool_access: bool) -> io::Result<()> {
+    pub async fn trigger_sync(&mut self, peer_ia: u16, tool_access: bool, is_broadcast: bool) -> io::Result<()> {
         let ia_bytes = peer_ia.to_be_bytes();
-        self.send_command(TAG_TRIGGER_SYNC, &[ia_bytes[0], ia_bytes[1], tool_access as u8]).await
+        self.send_command(TAG_TRIGGER_SYNC, &[ia_bytes[0], ia_bytes[1], tool_access as u8, is_broadcast as u8]).await
     }
 
     /// Wait for the child to exit (restart) and respawn it.

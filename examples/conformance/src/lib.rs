@@ -243,7 +243,7 @@ pub enum TestStep {
     ///
     /// The DUT builds and sends the sync request frame. The test runner
     /// should capture it with a subsequent Expect step.
-    TriggerSync { peer_ia: u16, tool_access: bool },
+    TriggerSync { peer_ia: u16, tool_access: bool, is_broadcast: bool },
 
     /// Capture the DUT's outgoing S-A_Sync_Req, verify it, then inject
     /// a valid S-A_Sync_Res back to the DUT.

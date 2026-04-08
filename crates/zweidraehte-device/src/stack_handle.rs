@@ -382,11 +382,12 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// Sends a sync request to the specified individual address to
     /// synchronize sequence numbers. Returns `true` if the request was
     /// successfully sent, `false` if key lookup or buffer allocation failed.
-    pub async fn initiate_sync(&self, peer_ia: u16, tool_access: bool) -> bool {
+    pub async fn initiate_sync(&self, peer_ia: u16, tool_access: bool, is_broadcast: bool) -> bool {
         let resp =
             ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::SyncRequest {
                 peer_ia,
                 tool_access,
+                is_broadcast,
             })
             .await;
         matches!(resp, ApplicationLayerServiceResponse::SyncInitiated)

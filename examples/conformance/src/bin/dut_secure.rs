@@ -79,9 +79,9 @@ async fn handle_commands(
                 log::info!("CMD: TriggerWrite(ASAP {})", asap);
                 let _ = stack.write_object_by_asap(asap).await;
             }
-            IpcCommand::TriggerSync { peer_ia, tool_access } => {
-                log::info!("CMD: TriggerSync(peer={:#06X}, tool={})", peer_ia, tool_access);
-                let _ = stack.initiate_sync(peer_ia, tool_access).await;
+            IpcCommand::TriggerSync { peer_ia, tool_access, is_broadcast } => {
+                log::info!("CMD: TriggerSync(peer={:#06X}, tool={}, broadcast={})", peer_ia, tool_access, is_broadcast);
+                let _ = stack.initiate_sync(peer_ia, tool_access, is_broadcast).await;
             }
         }
     }

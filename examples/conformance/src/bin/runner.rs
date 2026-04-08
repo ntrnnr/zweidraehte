@@ -280,9 +280,9 @@ async fn execute_step(
             true
         }
 
-        TestStep::TriggerSync { peer_ia, tool_access } => {
-            println!("  [{}] TriggerSync(peer={:#06X}, tool={})", index, peer_ia, tool_access);
-            if let Err(e) = harness.trigger_sync(*peer_ia, *tool_access).await {
+        TestStep::TriggerSync { peer_ia, tool_access, is_broadcast } => {
+            println!("  [{}] TriggerSync(peer={:#06X}, tool={}, broadcast={})", index, peer_ia, tool_access, is_broadcast);
+            if let Err(e) = harness.trigger_sync(*peer_ia, *tool_access, *is_broadcast).await {
                 println!("        Failed: {}", e);
                 return false;
             }
@@ -689,8 +689,14 @@ async fn execute_step(
                             .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
                             .unwrap_or(0);
 
-                    let response =
-                        crypto::wrap_sync_res(&decoded_req, &key, &seq_nr_remote, &seq_nr_local, response_src);
+                    let response = crypto::wrap_sync_res(
+                        &decoded_req,
+                        &key,
+                        &seq_nr_remote,
+                        &seq_nr_local,
+                        response_src,
+                        Some(params.system_broadcast),
+                    );
 
                     let tp1 = internal_to_tp1(&response);
                     println!(

@@ -57,7 +57,7 @@ pub enum ApplicationLayerService {
     /// Request to send a `A_GroupValue_Read.req` for the given ASAP
     GroupValueReadRequest(u16),
     /// Request to initiate an S-A_Sync_Req to a peer.
-    SyncRequest { peer_ia: u16, tool_access: bool },
+    SyncRequest { peer_ia: u16, tool_access: bool, is_broadcast: bool },
 }
 
 /// Service responses from the application layer back to the application

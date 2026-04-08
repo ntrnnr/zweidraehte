@@ -400,7 +400,7 @@ pub enum IpcCommand {
     /// Trigger a GroupValue_Write for the given ASAP.
     TriggerWrite(u16),
     /// Trigger an S-A_Sync_Req to a peer.
-    TriggerSync { peer_ia: u16, tool_access: bool },
+    TriggerSync { peer_ia: u16, tool_access: bool, is_broadcast: bool },
 }
 
 // ============================================================================
@@ -478,12 +478,14 @@ impl<'a> IpcLinkLayer<'a> {
                             }
                         }
                         TAG_TRIGGER_SYNC => {
-                            // Payload: [peer_ia_hi, peer_ia_lo, tool_access]
+                            // Payload: [peer_ia_hi, peer_ia_lo, tool_access, is_broadcast?]
+                            // The 4th byte is optional for backward compatibility.
                             if frame.payload.len() >= 3 {
                                 let peer_ia = u16::from_be_bytes([frame.payload[0], frame.payload[1]]);
                                 let tool_access = frame.payload[2] != 0;
-                                log::debug!("IPC LL: TriggerSync(peer={:#06X}, tool={})", peer_ia, tool_access);
-                                self.command_tx.send(IpcCommand::TriggerSync { peer_ia, tool_access }).await;
+                                let is_broadcast = frame.payload.get(3).copied().unwrap_or(0) != 0;
+                                log::debug!("IPC LL: TriggerSync(peer={:#06X}, tool={}, broadcast={})", peer_ia, tool_access, is_broadcast);
+                                self.command_tx.send(IpcCommand::TriggerSync { peer_ia, tool_access, is_broadcast }).await;
                             }
                         }
                         TAG_SHUTDOWN => {

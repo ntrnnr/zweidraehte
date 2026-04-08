@@ -1004,8 +1004,8 @@ where
         use crate::layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse};
 
         match request.get() {
-            ApplicationLayerService::SyncRequest { peer_ia, tool_access } => {
-                if let Some(msg) = self.initiate_sync(*peer_ia, *tool_access, false) {
+            ApplicationLayerService::SyncRequest { peer_ia, tool_access, is_broadcast } => {
+                if let Some(msg) = self.initiate_sync(*peer_ia, *tool_access, *is_broadcast) {
                     outbox.push(msg);
                     request.try_reply(ApplicationLayerServiceResponse::SyncInitiated).ok();
                 } else {

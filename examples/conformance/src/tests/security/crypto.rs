@@ -491,12 +491,16 @@ pub fn wrap_sync_res(
     seq_nr_remote: &[u8; 6],
     seq_nr_local: &[u8; 6],
     response_src: u16,
+    override_system_broadcast: Option<bool>,
 ) -> Vec<u8> {
-    // Build response SCF: same T and SBC flags, but SyncResponse service.
+    // Build response SCF: same T flag, but SyncResponse service.
+    // The SBC flag can be overridden for tests that deliberately send
+    // a mismatched broadcast/P2P response (e.g., 3.4.5).
     let req_scf = SecurityControlField::parse(req.scf_byte).expect("valid SCF from parsed request");
+    let sbc = override_system_broadcast.unwrap_or(req_scf.system_broadcast);
     let response_scf = SecurityControlField {
         service: SecureServiceType::SyncResponse,
-        system_broadcast: req_scf.system_broadcast,
+        system_broadcast: sbc,
         confidentiality: true,
         tool_access: req_scf.tool_access,
     };
@@ -514,8 +518,12 @@ pub fn wrap_sync_res(
         challenge_xor_random[i] = req.challenge[i] ^ random[i];
     }
 
-    // Swap src/dst: response goes from EITT back to DUT.
-    let dst_for_response = req.src;
+    // For broadcast responses, dst is 0x0000 (broadcast address).
+    // For P2P responses, dst is the DUT's IA (req.src).
+    let dst_for_response = if sbc { 0x0000 } else { req.src };
+
+    // The addr_type byte in the CCM context depends on broadcast mode.
+    let addr_type = if sbc { 0xE1 } else { req.addr_type };
 
     // Encrypt payload and compute MAC.
     let mut payload = [0u8; 12];
@@ -529,7 +537,7 @@ pub fn wrap_sync_res(
         &random,
         response_src,
         dst_for_response,
-        req.addr_type,
+        addr_type,
         tpci_apci,
         response_scf_byte,
         &mut payload,
@@ -538,8 +546,8 @@ pub fn wrap_sync_res(
     // Assemble frame: CTRL(1) + SRC(2) + DST(2) + NPDU(1) + TPCI/APCI(2)
     // + SCF(1) + ChallengeXorRandom(6) + SeqNrRemote_enc(6) + SeqNrLocal_enc(6) + MAC(4)
     // = 31 bytes total.
-    let ctrl = if req_scf.system_broadcast { 0xBC } else { 0xB0 };
-    let npdu = if req_scf.system_broadcast { 0xE1 } else { 0x60 };
+    let ctrl = if sbc { 0xBC } else { 0xB0 };
+    let npdu = if sbc { 0xE1 } else { 0x60 };
 
     let mut frame = Vec::with_capacity(31);
     frame.push(ctrl);

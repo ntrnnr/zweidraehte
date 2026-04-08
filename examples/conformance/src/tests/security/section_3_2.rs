@@ -17,10 +17,8 @@
 //!
 //! Skipped test cases:
 //! - 3.2.1 — Introduction only (no telegrams).
-//! - 3.2.13 — Cross-IA sequence number replay; requires SIAT per-IA
-//!   sequence management that is not yet fully testable.
 
-use crate::{InvalidSecurityParam, SecureParams, TestCase, TestSuite};
+use crate::{InvalidSecurityParam, SecureParams, SeqSource, TestCase, TestSuite};
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
 
@@ -125,6 +123,29 @@ const RESTORE_GRP_KEY_ENTRY_1_OK: &str =
 const TIMEOUT: u32 = 3000;
 
 // ============================================================================
+// SIAT Templates for Test 3.2.13 (Cross-IA Sequence Number Replay)
+// ============================================================================
+
+// Write SIAT entry 2: IA=#EDI (0xAFFE), last_valid_seq=1.
+// PID 0x36 (PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE), count=1, start=2.
+const SIAT_EDI_SEQ1: &str =
+    "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 02 #EDI 00 00 00 00 00 01";
+const SIAT_EDI_SEQ1_OK: &str =
+    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 02 00";
+
+// Write SIAT entry 1: IA=#ALT_SRC_ADDR (0xAFFD), last_valid_seq=3.
+const SIAT_ALT_SEQ3: &str =
+    "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 #ALT_SRC_ADDR 00 00 00 00 00 03";
+const SIAT_ALT_SEQ3_OK: &str =
+    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
+
+// Clear SIAT: write count=0, start=0.
+const CLEAR_SIAT: &str =
+    "3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 36 01 00 00 00 00";
+const CLEAR_SIAT_OK: &str =
+    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 00 00";
+
+// ============================================================================
 // Suite Constructor
 // ============================================================================
 
@@ -163,7 +184,7 @@ pub fn create_section_3_2_suite() -> TestSuite {
             test_3_2_9(),
             test_3_2_11(),
             test_3_2_12(),
-            // Skipped: 3.2.13 — cross-IA seq replay, needs SIAT per-IA management
+            test_3_2_13(),
             test_3_2_14(),
             test_3_2_15(),
             test_3_2_16(),
@@ -472,5 +493,38 @@ fn test_3_2_19() -> TestCase {
         comment("A+C to 6/6/6 but GO requires C-only (0x02) → reject"),
         inject_group_ac(GV_READ_666, "GK5"),
         expect_none(TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.2.13 correct S-A_Data - with a correct sequence number but from a
+//        different IA (cross-IA sequence replay)
+// ============================================================================
+//
+// The DUT must maintain per-sender sequence counters for group messages.
+// If IA1 (#EDI, 0xAFFE) has last_valid_seq=1 and IA2 (#ALT_SRC_ADDR,
+// 0xAFFD) has last_valid_seq=3, then sending a frame FROM IA2 with seq=2
+// (which is IA1's expected next) must be rejected — seq=2 is not valid
+// for IA2 (needs >3).
+
+fn test_3_2_13() -> TestCase {
+    TestCase::new("3.2.13 cross-IA sequence number replay → reject").with_steps(vec![
+        comment("Write SIAT entry 2: IA=#EDI (0xAFFE), last_valid_seq=1"),
+        inject_secure_ac(SIAT_EDI_SEQ1, "TK1"),
+        expect_secure_ac(SIAT_EDI_SEQ1_OK, "TK1", TIMEOUT),
+        comment("Write SIAT entry 1: IA=#ALT_SRC_ADDR (0xAFFD), last_valid_seq=3"),
+        inject_secure_ac(SIAT_ALT_SEQ3, "TK1"),
+        expect_secure_ac(SIAT_ALT_SEQ3_OK, "TK1", TIMEOUT),
+        comment("GroupValue_Read from ALT_SRC_ADDR to 3/3/3 with GK3, seq=2"),
+        comment("seq=2 is EDI's expected next (1+1), NOT ALT_SRC_ADDR's (needs >3)"),
+        inject_secure(GV_READ_333_ALT, {
+            let mut p = SecureParams::group_auth_conf("GK3");
+            p.seq_source = SeqSource::Fixed(2);
+            p
+        }),
+        expect_none(TIMEOUT),
+        comment("Cleanup: clear SIAT entries"),
+        inject_secure_ac(CLEAR_SIAT, "TK1"),
+        expect_secure_ac(CLEAR_SIAT_OK, "TK1", TIMEOUT),
     ])
 }
