@@ -10,6 +10,7 @@
 
 use core::cell::{Cell, RefCell};
 
+use zweidraehte_device::bcus::system_b::{OperationModeAugment, OperationModeState};
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     AccessContext, HasConnectionAuth,
@@ -90,6 +91,7 @@ pub struct SecureConformanceState {
     pub level1_memory: RefCell<[u8; LEVEL1_MEMORY_SIZE]>,
     pub user_memory: RefCell<[u8; USER_MEMORY_SIZE]>,
     dm_slot: DmNotificationSlot,
+    pub operation_mode: OperationModeState,
 }
 
 impl SecureConformanceState {
@@ -118,6 +120,7 @@ impl SecureConformanceState {
             level1_memory: RefCell::new([0xFF; LEVEL1_MEMORY_SIZE]),
             user_memory: RefCell::new([0xFF; USER_MEMORY_SIZE]),
             dm_slot: DmNotificationSlot::new(),
+            operation_mode: OperationModeState::new(30),
         }
     }
 
@@ -787,8 +790,11 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type State = SecureConformanceState;
     type Mem = ConformanceMemoryMap;
 
-    type InterfaceObjects<'a> =
-        DefaultSystemBInterfaceObjects<'a, SecureConformanceState, (SecAugment<'a>, CertificationObjectAugment)>;
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
+        'a,
+        SecureConformanceState,
+        (SecAugment<'a>, (CertificationObjectAugment, OperationModeAugment<'a>)),
+    >;
 
     fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
     where
@@ -798,7 +804,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
             state,
             platform,
             &CONFORMANCE_MEMORY_LAYOUT,
-            CertificationObjectAugment::new(),
+            (CertificationObjectAugment::new(), OperationModeAugment::new(&state.operation_mode)),
         )
     }
 
@@ -1044,6 +1050,7 @@ impl SecureConformanceState {
             level1_memory: RefCell::new(snapshot.level1_memory),
             user_memory: RefCell::new(snapshot.user_memory),
             dm_slot: DmNotificationSlot::new(),
+            operation_mode: zweidraehte_device::bcus::system_b::OperationModeState::new(30),
         }
     }
 

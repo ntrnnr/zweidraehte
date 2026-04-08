@@ -14,6 +14,11 @@ mod ip;
 #[cfg(feature = "knxip")]
 pub use ip::*;
 
+pub mod operation_mode;
+pub use operation_mode::{
+    DiagnosticsContext, HasDiagnosticsContext, OperationModeAugment, OperationModeState,
+};
+
 pub mod security;
 pub use security::{
     HasSecurityState, HasSeqStorage, SecureExtensionConfig, SecureExtensionState, SecureTp1DeviceState,
