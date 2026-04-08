@@ -76,13 +76,14 @@ pub const fn parse_hex_key<const N: usize>(s: &str) -> [u8; N] {
         // Parse two hex digits.
         let hi = const_hex_digit(bytes[i]);
         let lo = const_hex_digit(bytes[i + 1]);
-        assert!(ri < N, "hex string has more bytes than expected");
+        // Use core::assert! to avoid defmt's non-const override.
+        core::assert!(ri < N, "hex string has more bytes than expected");
         result[ri] = (hi << 4) | lo;
         ri += 1;
         i += 2;
     }
 
-    assert!(ri == N, "hex string has fewer bytes than expected");
+    core::assert!(ri == N, "hex string has fewer bytes than expected");
     result
 }
 
@@ -91,7 +92,7 @@ const fn const_hex_digit(b: u8) -> u8 {
         b'0'..=b'9' => b - b'0',
         b'a'..=b'f' => b - b'a' + 10,
         b'A'..=b'F' => b - b'A' + 10,
-        _ => panic!("invalid hex digit"),
+        _ => core::panic!("invalid hex digit"),
     }
 }
 
