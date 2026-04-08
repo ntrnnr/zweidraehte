@@ -168,15 +168,51 @@ impl StackState for SecureConformanceState {
     fn serial_number(&self) -> &[u8; 6] {
         self.inner.serial_number()
     }
+    fn max_apdu_length(&self) -> u16 {
+        device_info::MAX_APDU_LENGTH
+    }
+    fn is_programming_mode(&self) -> bool {
+        self.inner.is_programming_mode()
+    }
+    fn set_programming_mode(&self, enabled: bool) {
+        self.inner.set_programming_mode(enabled);
+    }
+    fn security_mode_enabled(&self) -> bool {
+        self.inner.security_mode_enabled()
+    }
+    fn log_access_denied(&self, source_addr: u16) {
+        self.inner.log_access_denied(source_addr);
+    }
+}
+
+// ============================================================================
+// HasPersistence Forwarding
+// ============================================================================
+
+impl HasPersistence for SecureConformanceState {
+    fn mark_dirty(&self) {
+        self.inner.mark_dirty();
+    }
+}
+
+// ============================================================================
+// HasSecureIdentity Forwarding
+// ============================================================================
+
+impl HasSecureIdentity for SecureConformanceState {
     fn fdsk(&self) -> Option<&[u8; 16]> {
         self.inner.fdsk()
     }
     fn fill_random(&self, buf: &mut [u8]) {
         getrandom::fill(buf).expect("getrandom failed");
     }
-    fn max_apdu_length(&self) -> u16 {
-        device_info::MAX_APDU_LENGTH
-    }
+}
+
+// ============================================================================
+// HasAuthorization Forwarding
+// ============================================================================
+
+impl HasAuthorization for SecureConformanceState {
     fn max_access_levels(&self) -> u8 {
         self.inner.max_access_levels()
     }
@@ -188,18 +224,6 @@ impl StackState for SecureConformanceState {
     }
     fn key_write(&self, level: u8, key: &[u8; 4], ctx: AccessContext) -> u8 {
         self.inner.key_write(level, key, ctx)
-    }
-    fn is_programming_mode(&self) -> bool {
-        self.inner.is_programming_mode()
-    }
-    fn set_programming_mode(&self, enabled: bool) {
-        self.inner.set_programming_mode(enabled);
-    }
-    fn mark_dirty(&self) {
-        self.inner.mark_dirty();
-    }
-    fn security_mode_enabled(&self) -> bool {
-        self.inner.security_mode_enabled()
     }
 }
 

@@ -754,6 +754,12 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode for Se
     fn security_mode_enabled(&self) -> bool {
         self.security_mode_enabled.get()
     }
+
+    fn log_access_denied(&self, source_addr: u16) {
+        self.failures_log
+            .borrow_mut()
+            .log_failure(SecurityFailureType::AccessError, source_addr, &[]);
+    }
 }
 
 // ============================================================================
@@ -911,6 +917,10 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: u
 {
     fn security_mode_enabled(&self) -> bool {
         self.security.security_mode_enabled()
+    }
+
+    fn log_access_denied(&self, source_addr: u16) {
+        self.security.log_access_denied(source_addr);
     }
 }
 

@@ -1,11 +1,35 @@
-//! Persistence infrastructure for System B devices.
+//! Persistence infrastructure and extension composition for System B devices.
 //!
 //! This module provides System B-specific persistence types
 //! ([`PersistedState`], [`PersistedIpConfig`], [`ExtensionConfig`],
-//! [`ExtensionState`]).
+//! [`ExtensionState`]) and the [`Extension`] trait that unifies persistence
+//! with interface object augmentation.
 //!
 //! The generic storage traits ([`DeviceStorage`](crate::storage::DeviceStorage),
 //! [`NoStorage`](crate::storage::NoStorage)) live in [`crate::storage`].
+//!
+//! # Two Composition Paths
+//!
+//! ## Persisted extensions (`Extension<Platform>`)
+//!
+//! For state that must survive power cycles and also contributes interface
+//! object properties. Implement [`ExtensionState`] for persistence and
+//! [`Extension`] for augmentation. The augment is created automatically
+//! by [`create_system_b_objects_from_extension`](super::objects::create_system_b_objects_from_extension).
+//!
+//! Examples: TP1 retry count, KNX/IP config, Security Interface Object.
+//!
+//! ## Runtime-only augments
+//!
+//! For state that does NOT survive power cycles and therefore does not
+//! need [`ExtensionConfig`] / [`ExtensionState`] plumbing. Store the
+//! state as a field on your state type (either a custom wrapper or
+//! `SystemBDeviceState`), create the augment manually in
+//! [`StackDefinition::create_interface_objects`](crate::StackDefinition::create_interface_objects),
+//! and pass it via [`create_system_b_objects_with_extra`](super::objects::create_system_b_objects_with_extra).
+//! Access the state from layers via a `Has*` context trait.
+//!
+//! Examples: `OperationModeState` (diagnostic mode), `CertificationObjectAugment`.
 
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
@@ -104,6 +128,13 @@ pub trait HasSecurityMode {
     fn security_mode_enabled(&self) -> bool {
         false
     }
+
+    /// Log a security access denial. Called by the property dispatch layer
+    /// when a property access is denied due to security policy.
+    ///
+    /// Default: no-op. Extensions with security state override this to
+    /// record the failure in the security failures log.
+    fn log_access_denied(&self, _source_addr: u16) {}
 }
 
 impl HasSecurityMode for () {}

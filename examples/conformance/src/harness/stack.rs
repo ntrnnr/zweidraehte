@@ -758,22 +758,6 @@ impl StackState for ConformanceState {
         device_info::MAX_APDU_LENGTH
     }
 
-    fn max_access_levels(&self) -> u8 {
-        self.inner.max_access_levels()
-    }
-
-    fn default_access_level(&self) -> u8 {
-        self.inner.default_access_level()
-    }
-
-    fn authorize(&self, key: &[u8; 4]) -> u8 {
-        self.inner.authorize(key)
-    }
-
-    fn key_write(&self, level: u8, key: &[u8; 4], ctx: AccessContext) -> u8 {
-        self.inner.key_write(level, key, ctx)
-    }
-
     fn is_programming_mode(&self) -> bool {
         self.inner.is_programming_mode()
     }
@@ -781,9 +765,34 @@ impl StackState for ConformanceState {
     fn set_programming_mode(&self, enabled: bool) {
         self.inner.set_programming_mode(enabled);
     }
+}
 
+// ============================================================================
+// HasPersistence Forwarding
+// ============================================================================
+
+impl HasPersistence for ConformanceState {
     fn mark_dirty(&self) {
         self.inner.mark_dirty();
+    }
+}
+
+// ============================================================================
+// HasAuthorization Forwarding
+// ============================================================================
+
+impl HasAuthorization for ConformanceState {
+    fn max_access_levels(&self) -> u8 {
+        self.inner.max_access_levels()
+    }
+    fn default_access_level(&self) -> u8 {
+        self.inner.default_access_level()
+    }
+    fn authorize(&self, key: &[u8; 4]) -> u8 {
+        self.inner.authorize(key)
+    }
+    fn key_write(&self, level: u8, key: &[u8; 4], ctx: AccessContext) -> u8 {
+        self.inner.key_write(level, key, ctx)
     }
 }
 

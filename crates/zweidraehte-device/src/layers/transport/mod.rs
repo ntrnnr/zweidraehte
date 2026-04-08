@@ -39,7 +39,7 @@ pub use state_machine::{ActionBuffer, MAX_REPETITIONS, ProcessResult, TlAction, 
 use embassy_time::{Duration, Instant};
 
 use crate::{
-    AccessSource, HasConnectionAuth, StackDefinition, StackState,
+    AccessSource, HasAuthorization, HasConnectionAuth, StackDefinition,
     address::IndividualAddress,
     messages::{
         buffers::Buffer,

@@ -6,7 +6,7 @@
 //! based on the object index and PID.
 
 use crate::{
-    StackState,
+    HasPersistence, StackState,
     device_model::DeviceModelNotifier,
     dpt::{DeviceControl, ProgrammingMode, RoutingCount},
     objects::interface::{
@@ -27,7 +27,7 @@ use crate::objects::interface::HasRoutingCount;
 impl<'a, S, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<S>> PropertyServiceHandler
     for SystemBObjects<'a, S, ADT, AST, COT, APP, PEI, A>
 where
-    S: StackState + DeviceModelNotifier,
+    S: StackState + HasPersistence + DeviceModelNotifier,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
@@ -189,7 +189,7 @@ where
                 let security_on = self.state.security_mode_enabled();
                 if !desc.can_read_secure(&req.ctx, security_on) {
                     if req.ctx.source_addr != 0 {
-                        self.augment.log_access_denied(req.ctx.source_addr);
+                        self.state.log_access_denied(req.ctx.source_addr);
                     }
                     return Err(PropertyError::AccessDenied);
                 }
@@ -243,7 +243,7 @@ where
                 let security_on = self.state.security_mode_enabled();
                 if !desc.can_write_secure(&req.ctx, security_on) {
                     if req.ctx.source_addr != 0 {
-                        self.augment.log_access_denied(req.ctx.source_addr);
+                        self.state.log_access_denied(req.ctx.source_addr);
                     }
                     return Err(PropertyError::AccessDenied);
                 }
@@ -319,7 +319,7 @@ where
                 let security_on = self.state.security_mode_enabled();
                 if !desc.can_function_write_secure(&req.ctx, security_on) {
                     if req.ctx.source_addr != 0 {
-                        self.augment.log_access_denied(req.ctx.source_addr);
+                        self.state.log_access_denied(req.ctx.source_addr);
                     }
                     // Echo back the service_id (first byte of service_data) in
                     // the error response per spec.
@@ -387,7 +387,7 @@ where
                 let security_on = self.state.security_mode_enabled();
                 if !desc.can_function_read_secure(&req.ctx, security_on) {
                     if req.ctx.source_addr != 0 {
-                        self.augment.log_access_denied(req.ctx.source_addr);
+                        self.state.log_access_denied(req.ctx.source_addr);
                     }
                     // Echo back the service_info byte (second byte of service_data)
                     // in the access-denied response per conformance spec.

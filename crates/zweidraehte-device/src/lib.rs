@@ -30,7 +30,7 @@ pub use zweidraehte_proto::{
 };
 
 mod state;
-pub use state::{ReadObjectError, StackState, UpdateObjectError};
+pub use state::{HasAuthorization, HasPersistence, HasSecureIdentity, ReadObjectError, StackState, UpdateObjectError};
 
 pub mod actor;
 

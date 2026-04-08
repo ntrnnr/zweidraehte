@@ -9,7 +9,8 @@
 
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
-use crate::bcus::system_b::{HasExtensionState, HasSeqStorage};
+use crate::HasSecureIdentity;
+use crate::bcus::system_b::{HasExtensionState, HasSecurityState, HasSeqStorage};
 #[cfg(feature = "knxip")]
 use crate::layers::transport::cemi::{CemiEvent, CemiTransportLayer};
 use crate::{
@@ -506,9 +507,8 @@ pub type StandardSecureDeviceLayers<'a, D> = SecureDeviceLayers<'a, D, Transport
 
 impl<'a, D: StackDefinition + HasSequenceStorage> SecureDeviceLayers<'a, D, TransportLayer<'a, D>>
 where
-    D::State: crate::bcus::system_b::HasExtensionState,
-    <D::State as crate::bcus::system_b::HasExtensionState>::ES:
-        crate::bcus::system_b::HasSeqStorage<SeqStorage = D::SeqStorage>,
+    D::State: HasExtensionState,
+    <D::State as HasExtensionState>::ES: HasSeqStorage<SeqStorage = D::SeqStorage>,
 {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
     pub fn standard(ctx: &'a LayerContext<'a, D>) -> Self {
@@ -553,8 +553,8 @@ where
 impl<'a, D: StackDefinition + HasSequenceStorage, TL: router::Layer + HandlesCemiEvent> LayerStack
     for SecureDeviceLayers<'a, D, TL>
 where
-    D::State: crate::bcus::system_b::HasExtensionState,
-    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::bcus::system_b::HasSecurityState,
+    D::State: HasSecureIdentity + HasExtensionState,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     const DISPATCH_TABLE: router::DispatchTable = {
         type Inner<'a, D: StackDefinition + HasSequenceStorage, TL> =
@@ -631,9 +631,8 @@ pub struct SecureDeviceBuilder;
 impl<D: StackDefinition + HasSequenceStorage> LayerStackBuilder<D> for SecureDeviceBuilder
 where
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
-    D::State: HasExtensionState,
-    <D::State as HasExtensionState>::ES:
-        crate::bcus::system_b::HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
+    D::State: HasSecureIdentity + HasExtensionState,
+    <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
 {
     type Stack<'a>
         = StandardSecureDeviceLayers<'a, D>

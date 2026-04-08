@@ -82,25 +82,6 @@ pub trait StackState {
     /// 4 bytes device-specific identifier. Used for `A_IndividualAddressSerialNumber_Read/Write`.
     fn serial_number(&self) -> &[u8; 6];
 
-    /// Get the Factory Default Setup Key (FDSK) for KNX Data Secure.
-    ///
-    /// The FDSK is a 16-byte key programmed at the factory and printed on
-    /// the device label. It is used as the initial tool key for the first
-    /// ETS commissioning session. Returns `None` for devices without Data
-    /// Secure support.
-    fn fdsk(&self) -> Option<&[u8; 16]> {
-        None
-    }
-
-    /// Fill a buffer with random bytes for KNX Data Secure operations.
-    ///
-    /// Required for S-A_Sync responses (6-byte random per response).
-    /// Default panics — only secure stacks need to implement this.
-    fn fill_random(&self, buf: &mut [u8]) {
-        let _ = buf;
-        panic!("fill_random not implemented — required for secure stacks");
-    }
-
     /// Get the runtime maximum APDU length.
     ///
     /// This value is reported via PID 56 (MAX_APDU_LENGTH) in the Device Object.
@@ -163,20 +144,6 @@ pub trait StackState {
     // Persistence
     // =========================================================================
 
-    /// Mark the device state as dirty (needing persistence).
-    ///
-    /// Called by the stack whenever persistent state is modified through
-    /// property writes, memory writes, or other management operations.
-    /// Implementations that support persistence should set a dirty flag
-    /// so that state can be saved at the appropriate time (e.g., before
-    /// a restart or periodically).
-    ///
-    /// Default implementation does nothing (for state implementations
-    /// without persistence).
-    fn mark_dirty(&self) {
-        // Default: no-op for implementations without persistence
-    }
-
     // =========================================================================
     // KNX Data Secure
     // =========================================================================
@@ -193,10 +160,31 @@ pub trait StackState {
         false
     }
 
-    // =========================================================================
-    // Authorization (A_Authorize_Request / A_Key_Write)
-    // =========================================================================
+    /// Called by the property dispatch layer when a property access is
+    /// denied due to security policy. Secure devices should log this as
+    /// a security failure (AccessError).
+    ///
+    /// `source_addr` is the sender's individual address.
+    ///
+    /// Default: no-op (non-secure devices don't log security failures).
+    fn log_access_denied(&self, _source_addr: u16) {}
+}
 
+// ============================================================================
+// HasAuthorization — A_Authorize_Request / A_Key_Write
+// ============================================================================
+
+/// Authorization context for `A_Authorize_Request` and `A_Key_Write` services.
+///
+/// Provides key-based access level management. Devices that support
+/// authorization implement this trait on their state type; the transport
+/// layer uses [`default_access_level`](Self::default_access_level) when
+/// opening connections, and the application layer uses
+/// [`authorize`](Self::authorize) / [`key_write`](Self::key_write) to
+/// process the corresponding APCIs.
+///
+/// All methods have defaults that grant minimum access (no key table).
+pub trait HasAuthorization {
     /// Get the maximum number of access levels supported.
     ///
     /// Returns 4 for levels 0-3, or 16 for levels 0-15.
@@ -251,4 +239,55 @@ pub trait StackState {
     fn key_write(&self, _level: u8, _key: &[u8; 4], _ctx: AccessContext) -> u8 {
         0xFF // Not supported by default
     }
+}
+
+// ============================================================================
+// HasSecureIdentity — Factory key and random for KNX Data Secure
+// ============================================================================
+
+/// Secure identity for KNX Data Secure devices.
+///
+/// Provides the Factory Default Setup Key (FDSK) and cryptographic
+/// random generation. Only the Secure Application Layer needs this
+/// trait — non-secure stacks do not require it.
+///
+/// All methods have defaults that indicate no secure identity.
+pub trait HasSecureIdentity {
+    /// Get the Factory Default Setup Key (FDSK) for KNX Data Secure.
+    ///
+    /// The FDSK is a 16-byte key programmed at the factory and printed on
+    /// the device label. It is used as the initial tool key for the first
+    /// ETS commissioning session. Returns `None` for devices without Data
+    /// Secure support.
+    fn fdsk(&self) -> Option<&[u8; 16]> {
+        None
+    }
+
+    /// Fill a buffer with random bytes for KNX Data Secure operations.
+    ///
+    /// Required for S-A_Sync responses (6-byte random per response).
+    /// Default panics — only secure stacks need to implement this.
+    fn fill_random(&self, buf: &mut [u8]) {
+        let _ = buf;
+        panic!("fill_random not implemented — required for secure stacks");
+    }
+}
+
+// ============================================================================
+// HasPersistence — dirty tracking for state changes
+// ============================================================================
+
+/// Persistence notification for state changes.
+///
+/// Called by the stack whenever persistent state is modified through
+/// property writes, memory writes, or other management operations.
+/// Implementations that support persistence should set a dirty flag
+/// so that state can be saved at the appropriate time (e.g., before
+/// a restart or periodically).
+pub trait HasPersistence {
+    /// Mark the device state as dirty (needing persistence).
+    ///
+    /// Default implementation does nothing (for state implementations
+    /// without persistence).
+    fn mark_dirty(&self) {}
 }

@@ -124,6 +124,9 @@ impl StackState for MyState {
     }
 }
 
+impl HasAuthorization for MyState {}
+impl HasPersistence for MyState {}
+
 impl HasAddressTable for MyState {
     type ADT = AddrTab7<30>;
     fn adt(&self) -> &RefCell<Self::ADT> {

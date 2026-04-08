@@ -24,7 +24,7 @@ use embassy_sync::{
 };
 
 use crate::{
-    AccessContext, AccessSource, HasConnectionAuth, StackDefinition, StackState,
+    AccessContext, AccessSource, HasAuthorization, HasConnectionAuth, HasPersistence, StackDefinition, StackState,
     actor::Request,
     address::GroupAddress,
     messages::{

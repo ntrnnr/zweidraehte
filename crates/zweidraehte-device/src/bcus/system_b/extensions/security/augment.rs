@@ -212,11 +212,6 @@ impl<'a, S: StackState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P:
         if index == 0 { Some(InterfaceObjectType::Security) } else { None }
     }
 
-    fn log_access_denied(&self, source_addr: u16) {
-        use super::SecurityFailureType;
-        self.state.failures_log().borrow_mut().log_failure(SecurityFailureType::AccessError, source_addr, &[]);
-    }
-
     fn property_description_read(
         &self,
         _state: &S,

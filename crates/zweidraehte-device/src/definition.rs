@@ -10,7 +10,9 @@ use const_default::ConstDefault;
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 
 use crate::{
+    HasAuthorization, HasPersistence, LayerStackBuilder, StackState,
     access::HasConnectionAuth,
+    bcus::system_b::Extension,
     config,
     device_model::DeviceModelNotifier,
     ets,
@@ -169,7 +171,7 @@ pub trait StackDefinition: Copy {
     /// - `()` — no extension (mock/test devices)
     /// - [`Tp1ExtensionState`](crate::bcus::system_b::Tp1ExtensionState) — TP1 devices
     /// - [`IpExtensionState<N>`](crate::bcus::system_b::IpExtensionState) — KNX/IP devices
-    type ES: crate::bcus::system_b::Extension<Self::Platform>;
+    type ES: Extension<Self::Platform>;
 
     /// Unified device state containing both runtime state and tables.
     ///
@@ -188,7 +190,9 @@ pub trait StackDefinition: Copy {
     ///
     /// For System B devices, use [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)
     /// or [`IpSystemBDeviceState`](crate::bcus::system_b::IpSystemBDeviceState).
-    type State: crate::StackState
+    type State: StackState
+        + HasAuthorization
+        + HasPersistence
         + HasAddressTable
         + HasApplication
         + HasAssociationTable
@@ -249,5 +253,5 @@ pub trait StackDefinition: Copy {
     /// Use [`InsecureDeviceBuilder`](crate::InsecureDeviceBuilder) for standard
     /// `(NL, TL, AL)` stacks or [`InsecureIpDeviceBuilder`](crate::InsecureIpDeviceBuilder)
     /// for KNX/IP `(NL, CemiTL<TL>, AL)` stacks.
-    type LayerBuilder: crate::LayerStackBuilder<Self>;
+    type LayerBuilder: LayerStackBuilder<Self>;
 }

@@ -13,7 +13,7 @@
 use core::cell::{Cell, RefCell};
 
 use crate::{
-    StackState,
+    HasSecureIdentity, StackState,
     access::{AccessContext, AccessSource, ClientRole, SecurityMode},
     bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailureType},
     crypto::{
@@ -199,7 +199,7 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<
 
 impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<'a, D, SEQ>
 where
-    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     // ========================================================================
@@ -1031,7 +1031,10 @@ where
     ///
     /// Takes a plaintext message from the inner AL's outbox and wraps it
     /// in a Secure APDU if the outgoing security context is active.
-    fn try_encrypt_outgoing(&self, mut msg: KnxMessageBuffer<Buffer<'static>>) -> Option<KnxMessageBuffer<Buffer<'static>>> {
+    fn try_encrypt_outgoing(
+        &self,
+        mut msg: KnxMessageBuffer<Buffer<'static>>,
+    ) -> Option<KnxMessageBuffer<Buffer<'static>>> {
         let ctx = self.outgoing_ctx.get();
         if !ctx.active {
             return Some(msg);
@@ -1169,7 +1172,7 @@ where
 
 impl<D: StackDefinition, SEQ: SequenceNumberStorage> Layer for SecureApplicationLayer<'_, D, SEQ>
 where
-    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     const HANDLES: &'static [ServiceType] = ApplicationLayer::<D>::HANDLES;

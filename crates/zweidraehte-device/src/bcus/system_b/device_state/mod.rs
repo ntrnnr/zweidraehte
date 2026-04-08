@@ -540,10 +540,54 @@ impl<
         &self.serial_number
     }
 
+    fn is_programming_mode(&self) -> bool {
+        self.programming_mode.get()
+    }
+
+    fn set_programming_mode(&self, enabled: bool) {
+        self.programming_mode.set(enabled);
+    }
+
+    fn security_mode_enabled(&self) -> bool {
+        self.extension_state.security_mode_enabled()
+    }
+
+    fn log_access_denied(&self, source_addr: u16) {
+        self.extension_state.log_access_denied(source_addr);
+    }
+}
+
+// ============================================================================
+// HasPersistence Implementation
+// ============================================================================
+
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
+    crate::HasPersistence for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+{
+    fn mark_dirty(&self) {
+        SystemBDeviceState::mark_dirty(self);
+    }
+}
+
+// ============================================================================
+// HasSecureIdentity Implementation
+// ============================================================================
+
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
+    crate::HasSecureIdentity for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+{
     fn fdsk(&self) -> Option<&[u8; 16]> {
         self.fdsk.as_ref()
     }
+}
 
+// ============================================================================
+// HasAuthorization Implementation
+// ============================================================================
+
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
+    crate::HasAuthorization for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+{
     fn max_access_levels(&self) -> u8 {
         MAX_ACCESS_LEVELS as u8
     }
@@ -572,22 +616,6 @@ impl<
         self.auth_keys.borrow_mut()[level as usize] = *key;
         self.mark_dirty();
         level
-    }
-
-    fn is_programming_mode(&self) -> bool {
-        self.programming_mode.get()
-    }
-
-    fn set_programming_mode(&self, enabled: bool) {
-        self.programming_mode.set(enabled);
-    }
-
-    fn mark_dirty(&self) {
-        SystemBDeviceState::mark_dirty(self);
-    }
-
-    fn security_mode_enabled(&self) -> bool {
-        self.extension_state.security_mode_enabled()
     }
 }
 
