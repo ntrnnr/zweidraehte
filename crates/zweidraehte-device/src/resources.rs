@@ -5,6 +5,7 @@ use core::mem::MaybeUninit;
 use crate::{
     definition::StackDefinition,
     inner::Inner,
+    layer_context::LayerContext,
     layers::LinkLayerBuilderBase,
     messages::buffers::BufferManager,
 };
@@ -52,6 +53,7 @@ pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUF
     pub(crate) inner: MaybeUninit<Inner<D>>,
     pub(crate) buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
     pub(crate) buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
+    pub(crate) layer_context: MaybeUninit<LayerContext<D>>,
     pub(crate) link_layer_resources: MaybeUninit<<D::LLB as LinkLayerBuilderBase>::Resources>,
     pub(crate) interface_objects: MaybeUninit<D::InterfaceObjects<'static>>,
 }
@@ -68,6 +70,7 @@ impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResour
             inner: MaybeUninit::uninit(),
             buffers: MaybeUninit::uninit(),
             buffer_manager: MaybeUninit::uninit(),
+            layer_context: MaybeUninit::uninit(),
             link_layer_resources: MaybeUninit::uninit(),
             interface_objects: MaybeUninit::uninit(),
         }

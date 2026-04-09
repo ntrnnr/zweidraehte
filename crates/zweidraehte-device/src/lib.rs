@@ -72,6 +72,7 @@ pub mod bcus;
 pub mod config;
 pub mod context;
 pub mod device_model;
+pub mod layer_context;
 pub mod ets;
 pub mod layers;
 pub mod memory;
