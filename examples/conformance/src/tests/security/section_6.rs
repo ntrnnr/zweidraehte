@@ -461,13 +461,13 @@ fn test_6_2_5() -> TestCase {
 
 fn test_6_2_6() -> TestCase {
     TestCase::new("6.2.6 Write local GO config flags error").with_steps(vec![
-        // GO 8 has no C-flag (Communication not enabled).
-        comment("Write to GO 8 (no C-flag) → error A2"),
-        inject("BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 00 00 08 AA"),
+        // GO 15 (0x0F) has no C-flag (Communication not enabled).
+        comment("Write to GO 15 (no C-flag) → error A2"),
+        inject("BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 00 00 0F AA"),
         expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 A2 00", TIMEOUT),
-        // GO 10 (0x0A) has no W-flag (Write not enabled).
-        comment("Write to GO 10 (no W-flag) → error A2"),
-        inject("BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 00 00 0A AA"),
+        // GO 16 (0x10) has no W-flag (Write not enabled).
+        comment("Write to GO 16 (no W-flag) → error A2"),
+        inject("BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 00 00 10 AA"),
         expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 A2 00", TIMEOUT),
     ])
 }
@@ -657,13 +657,13 @@ fn test_6_2_13() -> TestCase {
 
 fn test_6_2_14() -> TestCase {
     TestCase::new("6.2.14 Transmit config flags mismatch").with_steps(vec![
-        // GO 8 has no C-flag.
-        comment("Transmit GO 8 (no C-flag) → error A2"),
-        inject("BC #EDI #BDUT_ADDR 6A 01 D4 00 09 00 10 42 00 02 00 08"),
+        // GO 15 (0x0F) has no C-flag.
+        comment("Transmit GO 15 (no C-flag) → error A2"),
+        inject("BC #EDI #BDUT_ADDR 6A 01 D4 00 09 00 10 42 00 02 00 0F"),
         expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 A2 02", TIMEOUT),
-        // GO 11 (0x0B) has no T-flag (Transmit not enabled).
-        comment("Transmit GO 11 (no T-flag) → error A2"),
-        inject("BC #EDI #BDUT_ADDR 6A 01 D4 00 09 00 10 42 00 02 00 0B"),
+        // GO 17 (0x11) has no T-flag (Transmit not enabled).
+        comment("Transmit GO 17 (no T-flag) → error A2"),
+        inject("BC #EDI #BDUT_ADDR 6A 01 D4 00 09 00 10 42 00 02 00 11"),
         expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 A2 02", TIMEOUT),
     ])
 }

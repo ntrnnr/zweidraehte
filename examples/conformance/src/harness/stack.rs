@@ -136,6 +136,24 @@ pub mod comm_objs {
         /// Receives on 6/6/6 (TSAP 18).
         #[ets(index = 14)]
         pub go_sec_3: ComObject<DPT_Switch>,
+
+        // ================================================================
+        // Diagnostic test objects (ASAP 15-17) — for Section 6.2
+        // ================================================================
+        /// GO_DIAG_NO_C: 1-byte object WITHOUT communication enable flag.
+        /// Used by 6.2.6 and 6.2.14 for config flags error tests.
+        #[ets(index = 15)]
+        pub go_diag_no_c: ComObject<DPT_Value_1_Ucount>,
+
+        /// GO_DIAG_NO_W: 1-byte object WITHOUT write enable flag.
+        /// Used by 6.2.6 for "W-flag not set" test.
+        #[ets(index = 16)]
+        pub go_diag_no_w: ComObject<DPT_Value_1_Ucount>,
+
+        /// GO_DIAG_NO_T: 1-byte object WITHOUT transmission enable flag.
+        /// Used by 6.2.14 for "T-flag not set" test.
+        #[ets(index = 17)]
+        pub go_diag_no_t: ComObject<DPT_Value_1_Ucount>,
     }
 }
 
@@ -224,6 +242,10 @@ impl ComObjects for ConformanceComObjects {
             go_sec_0: ComObject::new(DPT_Switch::from(false)),
             go_sec_1: ComObject::new(DPT_Switch::from(false)),
             go_sec_3: ComObject::new(DPT_Switch::from(false)),
+            // Diagnostic test objects
+            go_diag_no_c: ComObject::new(DPT_Value_1_Ucount::from(0)),
+            go_diag_no_w: ComObject::new(DPT_Value_1_Ucount::from(0)),
+            go_diag_no_t: ComObject::new(DPT_Value_1_Ucount::from(0)),
         }
     }
 
@@ -267,6 +289,9 @@ impl ComObjects for ConformanceComObjects {
             CoIndex::GoSec0 => ComObjectInfo { status: &self.go_sec_0.status, value: self.go_sec_0.value.as_ref() },
             CoIndex::GoSec1 => ComObjectInfo { status: &self.go_sec_1.status, value: self.go_sec_1.value.as_ref() },
             CoIndex::GoSec3 => ComObjectInfo { status: &self.go_sec_3.status, value: self.go_sec_3.value.as_ref() },
+            CoIndex::GoDiagNoC => ComObjectInfo { status: &self.go_diag_no_c.status, value: self.go_diag_no_c.value.as_ref() },
+            CoIndex::GoDiagNoW => ComObjectInfo { status: &self.go_diag_no_w.status, value: self.go_diag_no_w.value.as_ref() },
+            CoIndex::GoDiagNoT => ComObjectInfo { status: &self.go_diag_no_t.status, value: self.go_diag_no_t.value.as_ref() },
         }
     }
 
@@ -319,6 +344,15 @@ impl ComObjects for ConformanceComObjects {
             }
             CoIndex::GoSec3 => {
                 ComObjectInfoMut { status: &mut self.go_sec_3.status, value: self.go_sec_3.value.as_mut() }
+            }
+            CoIndex::GoDiagNoC => {
+                ComObjectInfoMut { status: &mut self.go_diag_no_c.status, value: self.go_diag_no_c.value.as_mut() }
+            }
+            CoIndex::GoDiagNoW => {
+                ComObjectInfoMut { status: &mut self.go_diag_no_w.status, value: self.go_diag_no_w.value.as_mut() }
+            }
+            CoIndex::GoDiagNoT => {
+                ComObjectInfoMut { status: &mut self.go_diag_no_t.status, value: self.go_diag_no_t.value.as_mut() }
             }
         }
     }
@@ -514,6 +548,16 @@ pub(crate) mod conformance_config {
             13 => (1, CE | TE | RE | WE | UE),
             // GO_SEC_3: 1-bit object, receives on 6/6/6 (C-only flag test)
             14 => (1, CE | TE | RE | WE | UE),
+
+            // ================================================================
+            // Diagnostic test objects (ASAP 15-17) — for Section 6.2
+            // ================================================================
+            // GO_DIAG_NO_C: 1-byte object, C flag NOT set (no communication)
+            15 => (7, TE | RE | WE | UE),
+            // GO_DIAG_NO_W: 1-byte object, W flag NOT set (no write)
+            16 => (7, CE | TE | RE | UE),
+            // GO_DIAG_NO_T: 1-byte object, T flag NOT set (no transmit)
+            17 => (7, CE | RE | WE | UE),
         },
 
         associations: {
@@ -535,10 +579,12 @@ pub(crate) mod conformance_config {
             7 => [9],    // TSAP 7  (2/0/5) → CO 9  (GO4, read on init)
             8 => [5],    // TSAP 8  (2/1/0) → CO 5  (GO0_BYTE3, 3-byte main object)
             9 => [6],    // TSAP 9  (2/1/1) → CO 6  (GO1_BYTE3, comm flags)
-            10 => [7],   // TSAP 10 (2/1/2) → CO 7  (GO2_BYTE3, config flags)
+            // GO2_BYTE3 (CO 7): SENDING TSAP is 14 (3/1/7), must come first.
+            // Also receives on 10 (2/1/2) and 13 (3/1/6).
+            14 => [7],   // TSAP 14 (3/1/7) → CO 7  (GO2_BYTE3, Section 6.2 GO diagnostics SEND)
+            10 => [7],   // TSAP 10 (2/1/2) → CO 7  (GO2_BYTE3, config flags receive)
+            13 => [7],   // TSAP 13 (3/1/6) → CO 7  (GO2_BYTE3, Section 6.2 GO diagnostics secure receive)
             11 => [8],   // TSAP 11 (2/1/3) → CO 8  (GO3_BYTE3, value)
-            13 => [7],   // TSAP 13 (3/1/6) → CO 7  (GO2_BYTE3, Section 6.2 GO diagnostics, secure)
-            14 => [7],   // TSAP 14 (3/1/7) → CO 7  (GO2_BYTE3, Section 6.2 GO diagnostics, plain)
             16 => [13],  // TSAP 16 (4/4/4) → CO 13 (GO_SEC_1, security test SEND)
             15 => [13],  // TSAP 15 (3/3/3) → CO 13 (GO_SEC_1, security test receive)
             17 => [11],  // TSAP 17 (5/5/5) → CO 11 (GO6, transport + security GO_SEC_2)
@@ -867,6 +913,14 @@ impl zweidraehte_device::objects::comm::HasCommObjects for ConformanceState {
 
     fn hook_context(&self) -> &<Self::CO as zweidraehte_device::objects::comm::ComObjects>::HookContext {
         self.inner.hook_context()
+    }
+}
+
+impl zweidraehte_device::bcus::system_b::HasDiagnosticsContext for ConformanceState {
+    type Diagnostics = zweidraehte_device::bcus::system_b::OperationModeState;
+
+    fn diagnostics(&self) -> &Self::Diagnostics {
+        self.inner.diagnostics()
     }
 }
 

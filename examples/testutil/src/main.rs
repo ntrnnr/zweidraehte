@@ -174,6 +174,13 @@ impl HasRoutingCount for MyState {
     }
 }
 
+impl zweidraehte_device::bcus::system_b::HasDiagnosticsContext for MyState {
+    type Diagnostics = ();
+    fn diagnostics(&self) -> &Self::Diagnostics {
+        &()
+    }
+}
+
 impl HasApplication for MyState {
     type APP = Application<()>;
     fn app(&self) -> &RefCell<Self::APP> {

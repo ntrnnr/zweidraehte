@@ -31,7 +31,10 @@ use crate::{
     },
 };
 
-use super::{ExtensionState, HasPersistedState, HasSecurityMode, PersistedState};
+use super::{
+    ExtensionState, HasPersistedState, HasSecurityMode, OperationModeState, PersistedState,
+    DiagnosticsContext, HasDiagnosticsContext,
+};
 use crate::storage::DeviceIdentity;
 
 // ============================================================================
@@ -173,6 +176,16 @@ pub struct SystemBDeviceState<
     pub co_hook_context: <CO as ComObjects>::HookContext,
 
     // ========================================================================
+    // Diagnostics
+    // ========================================================================
+    /// Operation mode state for diagnostic mode support.
+    ///
+    /// Controls normal vs. diagnostic mode switching, timeout management,
+    /// and the source address filter for incoming GO updates. Always present
+    /// on every device — inactive devices just never switch to diagnostic mode.
+    pub operation_mode: OperationModeState,
+
+    // ========================================================================
     // Extension State
     // ========================================================================
     /// Extension state: link-layer config and/or augment state.
@@ -251,6 +264,7 @@ impl<
             pei_program_version: RefCell::new([0; 5]),
             comm_objs: RefCell::new(comm_objs),
             co_hook_context: hook_context,
+            operation_mode: OperationModeState::new(30),
             access_store: crate::ConnectionAuthLevels::new(),
             extension_state: ES::from_config(ES::Config::default()),
             dirty: Cell::new(false),
@@ -461,6 +475,7 @@ impl<
             pei_program_version: RefCell::new(pei_program_version),
             comm_objs: RefCell::new(CO::new()),
             co_hook_context: Default::default(),
+            operation_mode: OperationModeState::new(30),
             access_store: crate::ConnectionAuthLevels::new(),
             extension_state: ES::from_config(extension_config),
             dirty: Cell::new(false),
@@ -584,6 +599,10 @@ impl<
 
     fn log_access_denied(&self, source_addr: u16) {
         self.extension_state.log_access_denied(source_addr);
+    }
+
+    fn has_group_key(&self, tsap: u16) -> bool {
+        self.extension_state.has_group_key(tsap)
     }
 }
 
@@ -790,6 +809,16 @@ impl<
 
     fn hook_context(&self) -> &<Self::CO as ComObjects>::HookContext {
         &self.co_hook_context
+    }
+}
+
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, CO: ComObjects, ES: ExtensionState>
+    HasDiagnosticsContext for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
+{
+    type Diagnostics = OperationModeState;
+
+    fn diagnostics(&self) -> &Self::Diagnostics {
+        &self.operation_mode
     }
 }
 

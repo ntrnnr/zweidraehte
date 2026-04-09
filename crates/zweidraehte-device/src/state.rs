@@ -168,6 +168,16 @@ pub trait StackState {
     ///
     /// Default: no-op (non-secure devices don't log security failures).
     fn log_access_denied(&self, _source_addr: u16) {}
+
+    /// Check whether a group key exists for the given TSAP index.
+    ///
+    /// Used by GO diagnostics to validate security flags on direct
+    /// GroupValue_Write/Read commands (ServiceIDs 0x01 and 0x03).
+    ///
+    /// Default: `false` (non-secure devices have no group keys).
+    fn has_group_key(&self, _tsap: u16) -> bool {
+        false
+    }
 }
 
 // ============================================================================

@@ -761,6 +761,10 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode for Se
             .borrow_mut()
             .log_failure(SecurityFailureType::AccessError, source_addr, &[]);
     }
+
+    fn has_group_key(&self, tsap: u16) -> bool {
+        self.group_key_for_index(tsap).is_some()
+    }
 }
 
 // ============================================================================
@@ -922,6 +926,10 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: u
 
     fn log_access_denied(&self, source_addr: u16) {
         self.security.log_access_denied(source_addr);
+    }
+
+    fn has_group_key(&self, tsap: u16) -> bool {
+        self.security.has_group_key(tsap)
     }
 }
 

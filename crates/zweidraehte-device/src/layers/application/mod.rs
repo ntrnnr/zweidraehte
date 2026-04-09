@@ -466,6 +466,23 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
+        // Check diagnostic source address filter: in diagnostic mode, if a
+        // filter is set, only accept group telegrams from the filtered source.
+        {
+            use crate::bcus::system_b::{DiagnosticsContext, HasDiagnosticsContext};
+            let diag = self.state.diagnostics();
+            if let Some(filter_ia) = diag.diagnostic_source_filter() {
+                let src = u16::from_be_bytes(ind.get_source_addr().0);
+                if src != filter_ia {
+                    debug!(
+                        "AL {:?} ignored: source 0x{:04X} doesn't match diagnostic filter 0x{:04X}",
+                        apci, src, filter_ia
+                    );
+                    return;
+                }
+            }
+        }
+
         trace!("AL incoming TSAP: {:?}", ind.get_connection_nr());
 
         for asap in self.state.ast().borrow().asaps_for_tsap(ind.get_connection_nr()) {

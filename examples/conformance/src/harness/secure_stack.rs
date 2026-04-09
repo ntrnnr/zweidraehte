@@ -92,7 +92,6 @@ pub struct SecureConformanceState {
     pub level1_memory: RefCell<[u8; LEVEL1_MEMORY_SIZE]>,
     pub user_memory: RefCell<[u8; USER_MEMORY_SIZE]>,
     dm_slot: DmNotificationSlot,
-    pub operation_mode: OperationModeState,
 }
 
 impl SecureConformanceState {
@@ -125,7 +124,6 @@ impl SecureConformanceState {
             level1_memory: RefCell::new([0xFF; LEVEL1_MEMORY_SIZE]),
             user_memory: RefCell::new([0xFF; USER_MEMORY_SIZE]),
             dm_slot: DmNotificationSlot::new(),
-            operation_mode: OperationModeState::new(30),
         }
     }
 
@@ -295,6 +293,14 @@ impl zweidraehte_device::objects::comm::HasCommObjects for SecureConformanceStat
         &self,
     ) -> &<Self::CO as zweidraehte_device::objects::comm::ComObjects>::HookContext {
         self.inner.hook_context()
+    }
+}
+
+impl zweidraehte_device::bcus::system_b::HasDiagnosticsContext for SecureConformanceState {
+    type Diagnostics = zweidraehte_device::bcus::system_b::OperationModeState;
+
+    fn diagnostics(&self) -> &Self::Diagnostics {
+        self.inner.diagnostics()
     }
 }
 
@@ -847,7 +853,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
             state,
             platform,
             &CONFORMANCE_MEMORY_LAYOUT,
-            (CertificationObjectAugment::new(), DiagnosticsAugment::new(&state.operation_mode)),
+            (CertificationObjectAugment::new(), DiagnosticsAugment::new(&state.inner.operation_mode)),
         )
     }
 
@@ -1096,7 +1102,6 @@ impl SecureConformanceState {
             level1_memory: RefCell::new(snapshot.level1_memory),
             user_memory: RefCell::new(snapshot.user_memory),
             dm_slot: DmNotificationSlot::new(),
-            operation_mode: zweidraehte_device::bcus::system_b::OperationModeState::new(30),
         }
     }
 

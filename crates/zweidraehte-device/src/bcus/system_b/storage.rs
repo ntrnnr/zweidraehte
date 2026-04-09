@@ -135,6 +135,14 @@ pub trait HasSecurityMode {
     /// Default: no-op. Extensions with security state override this to
     /// record the failure in the security failures log.
     fn log_access_denied(&self, _source_addr: u16) {}
+
+    /// Check whether a group key exists for the given TSAP index.
+    ///
+    /// Used by GO diagnostics to validate security flags on direct
+    /// GroupValue_Write/Read commands. Default: `false` (no keys).
+    fn has_group_key(&self, _tsap: u16) -> bool {
+        false
+    }
 }
 
 impl HasSecurityMode for () {}

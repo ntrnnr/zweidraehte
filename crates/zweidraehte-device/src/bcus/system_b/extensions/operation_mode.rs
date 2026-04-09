@@ -547,17 +547,24 @@ impl<'a> DiagnosticsAugment<'a> {
         // Validate that the GA exists in the device's address table.
         let ga = crate::address::GroupAddress([data[3], data[4]]);
         let adt = state.adt().borrow();
-        if adt.get_tsap(ga).is_none() {
+        let tsap = adt.get_tsap(ga);
+        drop(adt);
+
+        let Some(tsap) = tsap else {
+            return FunctionPropertyResult {
+                return_code: 0xF8,
+                data: PropertyBuf::new(&[0x01]),
+            };
+        };
+
+        // When security bits are non-zero, check that a group key is
+        // available for the GA's TSAP.
+        if sec_bits != 0 && !state.has_group_key(tsap) {
             return FunctionPropertyResult {
                 return_code: 0xF8,
                 data: PropertyBuf::new(&[0x01]),
             };
         }
-        drop(adt);
-
-        // TODO: When security bits are non-zero, check that a group key is
-        // available for this GA. For now, security-requested writes to GAs
-        // without a group key will incorrectly succeed.
 
         FunctionPropertyResult {
             return_code: 0x00,
@@ -672,16 +679,24 @@ impl<'a> DiagnosticsAugment<'a> {
         // Validate that the GA exists in the device's address table.
         let ga = crate::address::GroupAddress([data[3], data[4]]);
         let adt = state.adt().borrow();
-        if adt.get_tsap(ga).is_none() {
+        let tsap = adt.get_tsap(ga);
+        drop(adt);
+
+        let Some(tsap) = tsap else {
+            return FunctionPropertyResult {
+                return_code: 0xF8,
+                data: PropertyBuf::new(&[0x03]),
+            };
+        };
+
+        // When security bits are non-zero, check that a group key is
+        // available for the GA's TSAP.
+        if sec_bits != 0 && !state.has_group_key(tsap) {
             return FunctionPropertyResult {
                 return_code: 0xF8,
                 data: PropertyBuf::new(&[0x03]),
             };
         }
-        drop(adt);
-
-        // TODO: When security bits are non-zero, check that a group key is
-        // available for this GA.
 
         FunctionPropertyResult {
             return_code: 0x00,

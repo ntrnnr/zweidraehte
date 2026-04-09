@@ -12,7 +12,7 @@ use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 use crate::{
     HasAuthorization, HasPersistence, LayerStackBuilder, StackState,
     access::HasConnectionAuth,
-    bcus::system_b::Extension,
+    bcus::system_b::{Extension, HasDiagnosticsContext},
     config,
     device_model::DeviceModelNotifier,
     ets,
@@ -198,6 +198,7 @@ pub trait StackDefinition: Copy {
         + HasAssociationTable
         + HasCommunicationObjectTable
         + HasCommObjects<CO = Self::CO>
+        + HasDiagnosticsContext
         + HasConnectionAuth
         + HasRoutingCount
         + DeviceModelNotifier
