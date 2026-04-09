@@ -21,14 +21,14 @@
 //!     → DeviceModel::on_action()
 //! ```
 
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 
 use embassy_sync::pubsub::{PubSubBehavior, PubSubChannel};
 
 use crate::{
     definition::StackDefinition,
     objects::{
-        comm::{ComObjects, LifecycleEvent},
+        comm::{ComObjects, HasCommObjects, LifecycleEvent},
         interface::HasDeviceObject,
         tables::{HasApplication, HasLoadStateMachine, HasRunStateMachine, RunAction, RunEvent},
     },
@@ -157,7 +157,6 @@ pub trait DeviceModel {
 /// - Publishing [`LifecycleEvent`]s for user code
 pub struct SystemBDeviceModel<'a, D: StackDefinition> {
     state: &'a D::State,
-    comm_objs: &'a RefCell<D::CO>,
     lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
     interface_objects: &'a D::InterfaceObjects<'static>,
 }
@@ -165,11 +164,10 @@ pub struct SystemBDeviceModel<'a, D: StackDefinition> {
 impl<'a, D: StackDefinition> SystemBDeviceModel<'a, D> {
     pub fn new(
         state: &'a D::State,
-        comm_objs: &'a RefCell<D::CO>,
         lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
         interface_objects: &'a D::InterfaceObjects<'static>,
     ) -> Self {
-        Self { state, comm_objs, lifecycle_channel, interface_objects }
+        Self { state, lifecycle_channel, interface_objects }
     }
 }
 
@@ -202,7 +200,7 @@ impl<D: StackDefinition> DeviceModel for SystemBDeviceModel<'_, D> {
         match action {
             RunAction::Started => {
                 self.interface_objects.set_user_stopped(false);
-                self.comm_objs.borrow_mut().reset();
+                self.state.comm_objects().borrow_mut().reset();
                 self.lifecycle_channel.publish_immediate(LifecycleEvent::ApplicationStarted);
             }
             RunAction::Stopped => {

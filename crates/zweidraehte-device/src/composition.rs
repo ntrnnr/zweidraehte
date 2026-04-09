@@ -31,7 +31,6 @@ use crate::{
     storage::HasSequenceStorage,
 };
 
-use core::cell::RefCell;
 use embassy_sync::pubsub::PubSubChannel;
 
 use crate::messages::knx::KnxMessageBuffer;
@@ -51,10 +50,6 @@ pub struct LayerContext<'a, D: StackDefinition> {
     pub buffer_manager: &'a DynBufferManager<'static>,
     /// Unified device state (tables + runtime configuration).
     pub state: &'a D::State,
-    /// Communication objects (group objects).
-    pub comm_objs: &'a RefCell<D::CO>,
-    /// Hook context for communication object hooks.
-    pub hook_context: &'a <D::CO as ComObjects>::HookContext,
     /// Pub/sub channel for communication object events.
     pub event_channel:
         &'a PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
@@ -291,20 +286,14 @@ impl<'a, D: StackDefinition> InsecureDeviceLayers<'a, D, TransportLayer<'a, D>> 
         let application_layer = ApplicationLayer::new(
             ctx.buffer_manager,
             ctx.state,
-            ctx.comm_objs,
-            ctx.hook_context,
             ctx.event_channel,
             ctx.interface_objects,
             ctx.memory_map,
             ctx.restart_sender,
         );
 
-        let device_model = device_model::SystemBDeviceModel::new(
-            ctx.state,
-            ctx.comm_objs,
-            ctx.lifecycle_channel,
-            ctx.interface_objects,
-        );
+        let device_model =
+            device_model::SystemBDeviceModel::new(ctx.state, ctx.lifecycle_channel, ctx.interface_objects);
 
         Self {
             layers: (network_layer, transport_layer, application_layer),
@@ -342,20 +331,14 @@ impl<'a, D: StackDefinition> InsecureDeviceLayers<'a, D, CemiTransportLayer<'a, 
         let application_layer = ApplicationLayer::new(
             ctx.buffer_manager,
             ctx.state,
-            ctx.comm_objs,
-            ctx.hook_context,
             ctx.event_channel,
             ctx.interface_objects,
             ctx.memory_map,
             ctx.restart_sender,
         );
 
-        let device_model = device_model::SystemBDeviceModel::new(
-            ctx.state,
-            ctx.comm_objs,
-            ctx.lifecycle_channel,
-            ctx.interface_objects,
-        );
+        let device_model =
+            device_model::SystemBDeviceModel::new(ctx.state, ctx.lifecycle_channel, ctx.interface_objects);
 
         let cemi_event_receiver = channels.event.receiver().into();
 
@@ -518,8 +501,6 @@ where
         let application_layer = ApplicationLayer::new(
             ctx.buffer_manager,
             ctx.state,
-            ctx.comm_objs,
-            ctx.hook_context,
             ctx.event_channel,
             ctx.interface_objects,
             ctx.memory_map,
@@ -529,12 +510,8 @@ where
         let seq_storage = ctx.state.extension_state().seq_storage();
         let secure_al = SecureApplicationLayer::new(application_layer, ctx.state, seq_storage);
 
-        let device_model = device_model::SystemBDeviceModel::new(
-            ctx.state,
-            ctx.comm_objs,
-            ctx.lifecycle_channel,
-            ctx.interface_objects,
-        );
+        let device_model =
+            device_model::SystemBDeviceModel::new(ctx.state, ctx.lifecycle_channel, ctx.interface_objects);
 
         Self {
             layers: (network_layer, transport_layer, secure_al),

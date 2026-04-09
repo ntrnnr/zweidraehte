@@ -46,7 +46,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Device state combining System B tables with IP link-layer state.
-type PicoWState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, KnxIpDeviceUdp>;
+type PicoWState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, LightSwitchComObjects, KnxIpDeviceUdp>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
@@ -338,11 +338,11 @@ async fn main(spawner: Spawner) {
         }
         Ok(None) => {
             info!("No persisted state found, starting fresh");
-            PicoWState::new(storage.identity())
+            PicoWState::new(storage.identity(), LightSwitchComObjects::new(), ())
         }
         Err(e) => {
             warn!("Flash load failed: {}, starting fresh", e);
-            PicoWState::new(storage.identity())
+            PicoWState::new(storage.identity(), LightSwitchComObjects::new(), ())
         }
     };
 
@@ -381,8 +381,6 @@ async fn main(spawner: Spawner) {
 
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
-        LightSwitchComObjects::new(),
-        (), // hook context — no application hooks yet
         link_layer_builder,
         device_state,
         platform,

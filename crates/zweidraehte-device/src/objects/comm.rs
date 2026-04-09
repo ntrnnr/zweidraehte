@@ -1,3 +1,5 @@
+use core::cell::RefCell;
+
 use crate::dpt::DatapointType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +49,6 @@ pub enum ComObjectStatus {
     #[default]
     Uninitialized,
 }
-
 
 impl ComObjectStatus {
     /// Convert status to a BCU1-style flags byte.
@@ -336,7 +337,7 @@ pub const trait ComObjectIndex: Clone + Sized {
 pub trait ComObjects {
     type Index: ComObjectIndex;
     /// Context type for hooks. Use `()` if not needed.
-    type HookContext;
+    type HookContext: Default;
 
     fn new() -> Self;
     fn info<'a>(&'a self, idx: u16) -> ComObjectInfo<'a>;
@@ -398,9 +399,28 @@ pub trait ComObjects {
     /// Called when the application starts running, ensuring read-on-init
     /// correctly re-reads values from the bus after a reload.
     #[inline]
-    fn reset(&mut self) where Self: Sized {
+    fn reset(&mut self)
+    where
+        Self: Sized,
+    {
         *self = Self::new();
     }
+}
+
+/// Trait for device states that provide access to communication objects.
+///
+/// Mirrors `HasAddressTable` / `HasAssociationTable` — device states that
+/// hold comm objects implement this so that layers and augments can access
+/// group object values through the state reference.
+pub trait HasCommObjects {
+    /// The concrete communication objects type.
+    type CO: ComObjects;
+
+    /// Get a reference to the communication objects.
+    fn comm_objects(&self) -> &RefCell<Self::CO>;
+
+    /// Get a reference to the hook context for communication object hooks.
+    fn hook_context(&self) -> &<Self::CO as ComObjects>::HookContext;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

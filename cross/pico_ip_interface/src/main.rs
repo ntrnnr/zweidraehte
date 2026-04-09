@@ -75,7 +75,7 @@ const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 const MAX_TUNNEL_CONNECTIONS: usize = 4;
 
 type IpIfState =
-    IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, IpInterfaceParams, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
+    IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, IpInterfaceParams, IpInterfaceComObjects, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
 
 type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 
@@ -366,11 +366,11 @@ async fn main(spawner: Spawner) {
         }
         Ok(None) => {
             info!("No persisted state found, starting fresh");
-            IpIfState::new(storage.identity())
+            IpIfState::new(storage.identity(), IpInterfaceComObjects::new(), ())
         }
         Err(e) => {
             warn!("Flash load failed: {}, starting fresh", e);
-            IpIfState::new(storage.identity())
+            IpIfState::new(storage.identity(), IpInterfaceComObjects::new(), ())
         }
     };
 
@@ -403,8 +403,6 @@ async fn main(spawner: Spawner) {
 
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
-        IpInterfaceComObjects::new(),
-        (),
         link_layer_builder,
         device_state,
         platform,

@@ -170,7 +170,7 @@ async fn main(spawner: Spawner) {
         Ok(None) => {
             println!("No persisted state found, starting fresh");
             let identity = storage.identity();
-            let state = DemoState::new(identity);
+            let state = DemoState::new(identity, comm_objs::DemoComObjects::new(), ());
             state.set_individual_address(IndividualAddress::new(1, 2, 3));
             if let Err(e) = storage.save(&state) {
                 log::error!("Failed to save initial state: {}", e);
@@ -180,7 +180,7 @@ async fn main(spawner: Spawner) {
         Err(e) => {
             println!("Error loading persisted state: {}", e);
             let identity = storage.identity();
-            DemoState::new(identity)
+            DemoState::new(identity, comm_objs::DemoComObjects::new(), ())
         }
     };
 
@@ -208,8 +208,6 @@ async fn main(spawner: Spawner) {
     > = StaticCell::new();
     let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
-        comm_objs::DemoComObjects::new(),
-        (),
         link_layer_builder,
         device_state,
         MockIpPlatform::default(),

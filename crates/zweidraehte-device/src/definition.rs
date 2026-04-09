@@ -20,7 +20,7 @@ use crate::{
     layers,
     memory::MemoryMap,
     objects::{
-        comm::ComObjects,
+        comm::{ComObjects, HasCommObjects},
         interface::{HasDeviceObject, HasRoutingCount, PropertyServiceHandler},
         tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
     },
@@ -197,6 +197,7 @@ pub trait StackDefinition: Copy {
         + HasApplication
         + HasAssociationTable
         + HasCommunicationObjectTable
+        + HasCommObjects<CO = Self::CO>
         + HasConnectionAuth
         + HasRoutingCount
         + DeviceModelNotifier

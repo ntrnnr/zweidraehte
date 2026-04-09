@@ -18,12 +18,10 @@ use static_cell::StaticCell;
 
 use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilder, SharedMemory, TAG_LOG, TAG_READY};
 use zweidraehte_conformance::harness::stack::{
-    ConformanceHookContext, ConformanceMemoryMap, ConformancePersistedState, ConformanceState, IpcConformanceTestStack,
-    comm_objs::ConformanceComObjects, device_info,
+    ConformanceMemoryMap, ConformancePersistedState, ConformanceState, IpcConformanceTestStack, device_info,
 };
 
 use zweidraehte_device::messages::buffers::{BufferManager, DynBufferManager};
-use zweidraehte_device::objects::comm::ComObjects;
 use zweidraehte_device::objects::interface::HasDeviceObject;
 use zweidraehte_device::restart::EraseCode;
 use zweidraehte_device::{Runner, Stack, StackResources};
@@ -314,14 +312,9 @@ async fn main(spawner: Spawner) {
     // Create stack resources.
     let resources = STACK_RESOURCES.init(StackResources::new());
 
-    // Create hook context (initially with null COT pointer).
-    let hook_context = ConformanceHookContext::new();
-
     // Create the KNX stack.
     let (stack, runner) = zweidraehte_device::new(
         resources,
-        ConformanceComObjects::new(),
-        hook_context,
         link_layer_builder,
         state,
         (),

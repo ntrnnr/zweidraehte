@@ -657,7 +657,7 @@ pub(crate) mod table_sizes {
 ///
 /// The inner System B device state for conformance testing.
 type InnerState =
-    Tp1SystemBDeviceState<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, TestParameters>;
+    Tp1SystemBDeviceState<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, TestParameters, ConformanceComObjects>;
 
 /// Unified state for conformance tests.
 ///
@@ -700,7 +700,7 @@ impl ConformanceState {
         app_table: Application<TestParameters>,
     ) -> Self {
         let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
-        let inner = InnerState::new(&identity);
+        let inner = InnerState::new(&identity, ConformanceComObjects::new(), ConformanceHookContext::new());
 
         // Set the conformance test individual address (1.0.1).
         inner.set_individual_address(IndividualAddress::new(1, 0, 1));
@@ -843,6 +843,18 @@ impl HasCommunicationObjectTable for ConformanceState {
     type COT = <InnerState as HasCommunicationObjectTable>::COT;
     fn cot(&self) -> &RefCell<Self::COT> {
         self.inner.cot()
+    }
+}
+
+impl zweidraehte_device::objects::comm::HasCommObjects for ConformanceState {
+    type CO = ConformanceComObjects;
+
+    fn comm_objects(&self) -> &RefCell<Self::CO> {
+        self.inner.comm_objects()
+    }
+
+    fn hook_context(&self) -> &<Self::CO as zweidraehte_device::objects::comm::ComObjects>::HookContext {
+        self.inner.hook_context()
     }
 }
 

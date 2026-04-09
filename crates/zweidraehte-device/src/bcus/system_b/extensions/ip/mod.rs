@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use crate::bcus::system_b::{ExtensionConfig, ExtensionState, SystemBDeviceState};
+use crate::objects::comm::ComObjects;
 use crate::{IpConfig, IpPlatformConfig, IpStackState, address::IndividualAddress};
 
 // ============================================================================
@@ -401,9 +402,10 @@ pub type IpSystemBDeviceState<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P,
+    CO: ComObjects,
     const N: usize = 0,
     const CAPS: u16 = 0,
-> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpExtensionState<N, CAPS>>;
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, IpExtensionState<N, CAPS>>;
 
 /// [`IpExtensionState`] with `N` and `CAPS` derived from a
 /// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet).
@@ -456,8 +458,9 @@ pub type IpDeviceState<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P,
+    CO: ComObjects,
     F: crate::layers::linklayers::knxip::features::FeatureSet,
-> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, IpExtension<F>>;
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, IpExtension<F>>;
 
 // ============================================================================
 // IpStackState — persisted config accessors

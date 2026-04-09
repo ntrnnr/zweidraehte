@@ -67,6 +67,8 @@ pub struct MyState {
     pub cot: RefCell<CoTab7<30>>,
     /// Application program (load and run state machines)
     pub app: RefCell<Application<()>>,
+    /// Communication objects
+    comm_objs: RefCell<comm_objs::AppComObjects>,
     /// Per-connection access level store
     access_store: zweidraehte_device::ConnectionAuthLevels<1>,
     /// DeviceModel notification slot
@@ -81,6 +83,7 @@ impl MyState {
             ast: RefCell::new(ast),
             cot: RefCell::new(cot),
             app: RefCell::new(Application::new()),
+            comm_objs: RefCell::new(comm_objs::AppComObjects::new()),
             access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
             dm_slot: DmNotificationSlot::new(),
         }
@@ -95,6 +98,7 @@ impl Default for MyState {
             ast: RefCell::new(AssoTab6::<15>::new()),
             cot: RefCell::new(CoTab7::<30>::new()),
             app: RefCell::new(Application::new()),
+            comm_objs: RefCell::new(comm_objs::AppComObjects::new()),
             access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
             dm_slot: DmNotificationSlot::new(),
         }
@@ -174,6 +178,18 @@ impl HasApplication for MyState {
     type APP = Application<()>;
     fn app(&self) -> &RefCell<Self::APP> {
         &self.app
+    }
+}
+
+impl zweidraehte_device::objects::comm::HasCommObjects for MyState {
+    type CO = comm_objs::AppComObjects;
+
+    fn comm_objects(&self) -> &RefCell<Self::CO> {
+        &self.comm_objs
+    }
+
+    fn hook_context(&self) -> &<Self::CO as zweidraehte_device::objects::comm::ComObjects>::HookContext {
+        &()
     }
 }
 
@@ -284,8 +300,6 @@ async fn main(spawner: Spawner) {
 
     let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
-        comm_objs::AppComObjects::new(),
-        (), // hook_context
         link_layer_builder,
         state,
         (), // platform (non-IP device)

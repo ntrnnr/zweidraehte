@@ -36,9 +36,9 @@ use zweidraehte_device::{
 };
 
 use super::stack::{
-    CONFORMANCE_DD2, CONFORMANCE_MEMORY_LAYOUT, CONFORMANCE_USER_MANUFACTURER_INFO, ConformanceMemoryMap,
-    LEVEL1_MEMORY_SIZE, LEVEL2_MEMORY_SIZE, LINEAR_MEMORY_SIZE, TestParameters, USER_MEMORY_SIZE, conformance_config,
-    device_info, table_sizes,
+    CONFORMANCE_DD2, CONFORMANCE_MEMORY_LAYOUT, CONFORMANCE_USER_MANUFACTURER_INFO, ConformanceHookContext,
+    ConformanceMemoryMap, LEVEL1_MEMORY_SIZE, LEVEL2_MEMORY_SIZE, LINEAR_MEMORY_SIZE, TestParameters,
+    USER_MEMORY_SIZE, comm_objs::ConformanceComObjects, conformance_config, device_info, table_sizes,
 };
 
 // ============================================================================
@@ -71,6 +71,7 @@ type SecureInnerState = SecureTp1DeviceState<
     { table_sizes::AST },
     { table_sizes::COT },
     TestParameters,
+    ConformanceComObjects,
     ShmSeqStorage,
     { sec_table_sizes::P2P },
 >;
@@ -102,7 +103,11 @@ impl SecureConformanceState {
         app_table: Application<TestParameters>,
     ) -> Self {
         let identity = StaticIdentity::with_fdsk(SECURE_SERIAL_NUMBER, SECURE_FDSK);
-        let inner = SecureInnerState::new(&identity);
+        let inner = SecureInnerState::new(
+            &identity,
+            ConformanceComObjects::new(),
+            ConformanceHookContext::new(),
+        );
 
         // Set the secure conformance test individual address (1.1.1 = 0x1101).
         inner.set_individual_address(IndividualAddress::new(1, 1, 1));
@@ -276,6 +281,20 @@ impl HasCommunicationObjectTable for SecureConformanceState {
 
     fn cot(&self) -> &RefCell<Self::COT> {
         self.inner.cot()
+    }
+}
+
+impl zweidraehte_device::objects::comm::HasCommObjects for SecureConformanceState {
+    type CO = super::stack::comm_objs::ConformanceComObjects;
+
+    fn comm_objects(&self) -> &RefCell<Self::CO> {
+        self.inner.comm_objects()
+    }
+
+    fn hook_context(
+        &self,
+    ) -> &<Self::CO as zweidraehte_device::objects::comm::ComObjects>::HookContext {
+        self.inner.hook_context()
     }
 }
 

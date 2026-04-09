@@ -16,7 +16,7 @@ use crate::{
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse},
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
-        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, LifecycleEvent},
+        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects, LifecycleEvent},
         tables::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine,
         },
@@ -362,7 +362,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # }
     /// ```
     pub fn objects(&self) -> &RefCell<D::CO> {
-        &self.inner.comm_objs
+        self.inner.state.comm_objects()
     }
 
     /// Get access to the interface objects container.
@@ -542,7 +542,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// for example when the hook context needs references to stack-internal
     /// structures like the COT.
     pub fn hook_context(&self) -> &<D::CO as ComObjects>::HookContext {
-        &self.inner.hook_context
+        self.inner.state.hook_context()
     }
 
     /// Receive the next restart request from the application layer.

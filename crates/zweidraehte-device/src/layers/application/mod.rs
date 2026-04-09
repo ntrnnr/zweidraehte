@@ -18,8 +18,6 @@
 
 pub mod extensions;
 
-use core::cell::RefCell;
-
 use embassy_sync::{
     channel::DynamicSender,
     pubsub::{PubSubBehavior, PubSubChannel},
@@ -35,7 +33,7 @@ use crate::{
         knx::*,
     },
     objects::{
-        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects},
+        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects},
         interface::{FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, PropertyServiceHandler},
         tables::{
             AssociationTable, CommunicationObjectTable, HasApplication, HasAssociationTable,
@@ -91,8 +89,6 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     buffer_manager: &'a DynBufferManager<'static>,
     /// Unified device state (contains tables and runtime configuration)
     state: &'a D::State,
-    comm_objects: &'a RefCell<D::CO>,
-    hook_context: &'a <D::CO as ComObjects>::HookContext,
     event_channel:
         &'a PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
 
@@ -154,12 +150,9 @@ enum ReadOnInitState {
 
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Create a new Application Layer
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         buffer_manager: &'a DynBufferManager<'static>,
         state: &'a D::State,
-        comm_objects: &'a RefCell<D::CO>,
-        hook_context: &'a <D::CO as ComObjects>::HookContext,
         event_channel: &'a PubSubChannel<
             D::Mutex,
             (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent),
@@ -174,8 +167,6 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         Self {
             buffer_manager,
             state,
-            comm_objects,
-            hook_context,
             event_channel,
             interface_objects,
             memory_map,
@@ -339,7 +330,7 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
                 // them on app start), a ROI scan is needed.
                 if self.state.app().borrow().is_running()
                     && self.state.ast().borrow().is_loaded()
-                    && self.comm_objects.borrow().status(1) == ComObjectStatus::Uninitialized
+                    && self.state.comm_objects().borrow().status(1) == ComObjectStatus::Uninitialized
                 {
                     Some(embassy_time::Instant::now())
                 } else {
@@ -362,7 +353,7 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
         if self.read_on_init == ReadOnInitState::Idle
             && self.state.app().borrow().is_running()
             && self.state.ast().borrow().is_loaded()
-            && self.comm_objects.borrow().status(1) == ComObjectStatus::Uninitialized
+            && self.state.comm_objects().borrow().status(1) == ComObjectStatus::Uninitialized
         {
             info!("AL read-on-init: starting cycle (detected uninitialized objects)");
             self.read_on_init = ReadOnInitState::Scanning(1);
@@ -384,14 +375,14 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
             if conf.ctrl_field().c() == Confirm::NoError {
                 if pending.read {
-                    self.comm_objects.borrow_mut().set_status(pending.asap, ComObjectStatus::ReadRequest);
+                    self.state.comm_objects().borrow_mut().set_status(pending.asap, ComObjectStatus::ReadRequest);
                 } else {
-                    self.comm_objects.borrow_mut().set_status(pending.asap, ComObjectStatus::IdleOk);
+                    self.state.comm_objects().borrow_mut().set_status(pending.asap, ComObjectStatus::IdleOk);
                 }
             } else {
                 let new_status =
                     if pending.read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
-                self.comm_objects.borrow_mut().set_status(pending.asap, new_status);
+                self.state.comm_objects().borrow_mut().set_status(pending.asap, new_status);
             }
         } else {
             // Confirmation for a send_response call — just log
@@ -518,13 +509,13 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 ind.set_apci_code(ApciCode::Empty);
 
                 {
-                    let mut objs = self.comm_objects.borrow_mut();
+                    let mut objs = self.state.comm_objects().borrow_mut();
 
                     objs.value_mut(asap).copy_from_slice(&ind.buf()[msg_offset..msg_offset + object_size]);
                     objs.set_status(asap, ComObjectStatus::Updated);
 
                     // Call write hook
-                    objs.handle_write(asap, self.hook_context);
+                    objs.handle_write(asap, self.state.hook_context());
                 }
 
                 // Publish event to the event channel
@@ -544,7 +535,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     "AL ASAP {} updated via {:?}: {:?}",
                     asap,
                     apci,
-                    zweidraehte_util::fmt::Bytes(self.comm_objects.borrow().value(asap))
+                    zweidraehte_util::fmt::Bytes(self.state.comm_objects().borrow().value(asap))
                 );
             } else {
                 error!("Length of telegram not enough to contain object value");
@@ -617,7 +608,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             info!("AL sending GroupValueResponse for ASAP {} TSAP {} size {}", asap, response_tsap, object_size);
 
             // Call read hook
-            self.comm_objects.borrow_mut().prepare_read(asap, self.hook_context);
+            self.state.comm_objects().borrow_mut().prepare_read(asap, self.state.hook_context());
 
             // Allocate a new message for the response
             let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(object_size + msg_offset) else {
@@ -633,7 +624,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             )
             .with_application(ApciCode::GroupValueResponse)
             .with_data(|buf| {
-                buf[msg_offset..msg_offset + object_size].copy_from_slice(self.comm_objects.borrow().value(asap));
+                buf[msg_offset..msg_offset + object_size]
+                    .copy_from_slice(self.state.comm_objects().borrow().value(asap));
             });
 
             outbox.push(msg.into_inner());
@@ -641,7 +633,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             trace!(
                 "AL sent GroupValueResponse for ASAP {}: {:?}",
                 asap,
-                zweidraehte_util::fmt::Bytes(self.comm_objects.borrow().value(asap))
+                zweidraehte_util::fmt::Bytes(self.state.comm_objects().borrow().value(asap))
             );
 
             // Publish read event to the event channel
@@ -674,7 +666,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return true; // Not an "app not running" error
         };
 
-        let status = *self.comm_objects.borrow().info(asap).status;
+        let status = *self.state.comm_objects().borrow().info(asap).status;
 
         if !read && status != ComObjectStatus::WriteRequest {
             return true;
@@ -688,7 +680,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             // Communication disabled - set error status but preserve the request type
             // BCU1/BCU2 behavior: Read/Write request stays pending with error indication
             let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
-            self.comm_objects.borrow_mut().set_status(asap, new_status);
+            self.state.comm_objects().borrow_mut().set_status(asap, new_status);
 
             debug!("AL comm object {} not enabled for communication (flags=0x{:02x})", asap, cot_info.flags.to_byte());
             return true;
@@ -697,13 +689,13 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         if !cot_info.flags.transmission_enable() {
             // Transmission disabled - set error status but preserve the request type
             let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
-            self.comm_objects.borrow_mut().set_status(asap, new_status);
+            self.state.comm_objects().borrow_mut().set_status(asap, new_status);
 
             debug!("AL comm object {} transmission not enabled", asap);
             return true;
         }
 
-        self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::Busy);
+        self.state.comm_objects().borrow_mut().set_status(asap, ComObjectStatus::Busy);
 
         // We only send to the first TSAP per spec.
         // Extract TSAP before entering the block to avoid holding the RefCell
@@ -759,7 +751,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 )
                 .with_application(ApciCode::GroupValueWrite)
                 .with_data(|buf| {
-                    buf[msg_offset..msg_offset + object_size].copy_from_slice(self.comm_objects.borrow().value(asap));
+                    buf[msg_offset..msg_offset + object_size]
+                        .copy_from_slice(self.state.comm_objects().borrow().value(asap));
                 })
             };
 
@@ -773,7 +766,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         } else {
             // No sending TSAP found - error
             let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
-            self.comm_objects.borrow_mut().set_status(asap, new_status);
+            self.state.comm_objects().borrow_mut().set_status(asap, new_status);
 
             error!("AL no sending TSAP or transmission flag not set for ASAP {} - Flags: {:?}", asap, cot_info.flags);
         }
@@ -837,7 +830,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             }
 
             // 2. Object must still be uninitialized (value not yet valid)
-            if self.comm_objects.borrow().status(asap) != ComObjectStatus::Uninitialized {
+            if self.state.comm_objects().borrow().status(asap) != ComObjectStatus::Uninitialized {
                 debug!("AL read-on-init: ASAP {} skipped (value already valid)", asap);
                 continue;
             }
@@ -852,7 +845,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             // The CO status update (ReadRequest → IdleOk or error) happens
             // asynchronously when the TL confirmation arrives on conf_rx.
             info!("AL read-on-init: sending GroupValueRead for ASAP {}", asap);
-            self.comm_objects.borrow_mut().set_status(asap, ComObjectStatus::ReadRequest);
+            self.state.comm_objects().borrow_mut().set_status(asap, ComObjectStatus::ReadRequest);
             self.send_group_value_request(asap, true, outbox);
 
             // Save cursor for next call and return (one object per step)

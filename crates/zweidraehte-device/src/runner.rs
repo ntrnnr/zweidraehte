@@ -3,8 +3,6 @@
 //! The [`Runner`] drives the stack's async event loop. The [`new()`] factory
 //! creates both a [`Stack`] handle and a `Runner` from pre-allocated resources.
 
-use core::cell::RefCell;
-
 use embassy_sync::{
     blocking_mutex::raw::{NoopRawMutex, RawMutex},
     channel::{Channel, DynamicReceiver, DynamicSender},
@@ -18,7 +16,6 @@ use crate::{
     inner::{Inner, StackContext},
     layers::{LinkLayerBuilderBase, transport::TlStyle},
     messages::buffers::{Buffer, BufferManager},
-    objects::comm::ComObjects,
     resources::StackResources,
     restart,
     stack_handle::Stack,
@@ -100,8 +97,6 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         let layer_context = LayerContext {
             buffer_manager: &self.stack.inner.buffer_manager,
             state: &self.stack.inner.state,
-            comm_objs: &self.stack.inner.comm_objs,
-            hook_context: &self.stack.inner.hook_context,
             event_channel: &self.stack.inner.event_channel,
             lifecycle_channel: &self.stack.inner.lifecycle_channel,
             interface_objects: self.interface_objects,
@@ -260,8 +255,6 @@ fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
 /// etc. constants to create a properly configured memory map.
 pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
     resources: &'d mut StackResources<D, BUF_SZ, NUM_BUFS>,
-    comm_objs: D::CO,
-    hook_context: <D::CO as ComObjects>::HookContext,
     link_layer_builder: D::LLB,
     state: D::State,
     platform: D::Platform,
@@ -286,13 +279,11 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     let inner = Inner {
         buffer_manager: buffer_manager.dyn_buffer_manager(),
         app_service_channel: Channel::new(),
-        comm_objs: RefCell::new(comm_objs),
         event_channel: PubSubChannel::new(),
         lifecycle_channel: PubSubChannel::new(),
         restart_channel: Channel::new(),
         state,
         platform,
-        hook_context,
         memory_map,
     };
 

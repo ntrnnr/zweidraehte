@@ -55,7 +55,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Device state for TP1.
-type PicoTp1State = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams>;
+type PicoTp1State = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, LightSwitchComObjects>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
@@ -374,11 +374,11 @@ async fn main(spawner: Spawner) {
         }
         Ok(None) => {
             info!("No persisted state found, starting fresh");
-            PicoTp1State::new(storage.identity())
+            PicoTp1State::new(storage.identity(), LightSwitchComObjects::new(), ())
         }
         Err(e) => {
             warn!("Flash load failed: {}, starting fresh", e);
-            PicoTp1State::new(storage.identity())
+            PicoTp1State::new(storage.identity(), LightSwitchComObjects::new(), ())
         }
     };
 
@@ -408,8 +408,6 @@ async fn main(spawner: Spawner) {
 
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
-        LightSwitchComObjects::new(),
-        (), // hook context — not needed, app logic runs via the stack handle
         link_layer_builder,
         device_state,
         (), // no platform needed for TP1

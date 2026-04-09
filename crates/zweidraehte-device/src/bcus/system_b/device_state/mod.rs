@@ -18,6 +18,7 @@ use crate::{
     address::IndividualAddress,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::{
+        comm::{ComObjects, HasCommObjects},
         interface::{HasDomainAddress, HasMaxRetryCount, HasRoutingCount},
         tables::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine,
@@ -89,6 +90,7 @@ pub trait HasExtensionState {
 /// - `AST_SIZE`: Association table size in bytes (2 + MAX_ASSO * 4)
 /// - `COT_SIZE`: Group object table size in bytes (2 + MAX_CO * 2)
 /// - `P`: Application parameters type
+/// - `CO`: Communication objects type (group object values + status)
 /// - `ES`: Extension state — link-layer config and/or augment state (e.g.,
 ///   [`IpExtensionState`] for KNX/IP, [`Tp1ExtensionState`] for TP1, `()` for plain TP1)
 pub struct SystemBDeviceState<
@@ -96,6 +98,7 @@ pub struct SystemBDeviceState<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault,
+    CO: ComObjects,
     ES: ExtensionState = (),
     const MAX_CONN: usize = 1,
 > {
@@ -158,6 +161,18 @@ pub struct SystemBDeviceState<
     pub pei_program_version: RefCell<[u8; 5]>,
 
     // ========================================================================
+    // Communication Objects
+    // ========================================================================
+    /// Group object values and runtime status.
+    ///
+    /// Holds the actual data values for each communication object, their
+    /// transmission status, and the hook context for application callbacks.
+    pub comm_objs: RefCell<CO>,
+
+    /// Hook context for communication object callbacks (prepare_read, handle_write).
+    pub co_hook_context: <CO as ComObjects>::HookContext,
+
+    // ========================================================================
     // Extension State
     // ========================================================================
     /// Extension state: link-layer config and/or augment state.
@@ -201,9 +216,10 @@ impl<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault,
+    CO: ComObjects,
     ES: ExtensionState,
     const MAX_CONN: usize,
-> SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES, MAX_CONN>
+> SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES, MAX_CONN>
 {
     /// Create new device state with factory defaults.
     ///
@@ -216,7 +232,9 @@ impl<
     /// # Arguments
     ///
     /// - `identity`: Factory-programmed device identity (serial number, etc.)
-    pub fn new(identity: &impl DeviceIdentity) -> Self {
+    /// - `comm_objs`: Communication objects (group object values + status)
+    /// - `hook_context`: Hook context for comm object callbacks
+    pub fn new(identity: &impl DeviceIdentity, comm_objs: CO, hook_context: <CO as ComObjects>::HookContext) -> Self {
         Self {
             individual_address: Cell::new(IndividualAddress::new(15, 15, 255)),
             serial_number: *identity.serial_number(),
@@ -231,6 +249,8 @@ impl<
             pei: RefCell::new(PeiApplication::new()),
             program_version: RefCell::new([0; 5]),
             pei_program_version: RefCell::new([0; 5]),
+            comm_objs: RefCell::new(comm_objs),
+            co_hook_context: hook_context,
             access_store: crate::ConnectionAuthLevels::new(),
             extension_state: ES::from_config(ES::Config::default()),
             dirty: Cell::new(false),
@@ -384,9 +404,10 @@ impl<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault + Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    CO: ComObjects,
     ES: ExtensionState,
     const MAX_CONN: usize,
-> HasPersistedState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES, MAX_CONN>
+> HasPersistedState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES, MAX_CONN>
 {
     type Persisted = PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES::Config>;
 
@@ -408,7 +429,6 @@ impl<
     }
 
     fn from_persisted(identity: &impl DeviceIdentity, persisted: Self::Persisted) -> Self {
-        // Destructure to move extension_config out by value (no Clone needed).
         let PersistedState {
             individual_address,
             auth_keys,
@@ -421,9 +441,10 @@ impl<
             program_version,
             pei_program_version,
             extension_config,
-            version: _, // Consumed but unused — migration would check this.
+            version: _,
         } = persisted;
 
+        // Comm objects are runtime-only (not persisted) — create fresh defaults.
         Self {
             individual_address: Cell::new(individual_address),
             serial_number: *identity.serial_number(),
@@ -438,6 +459,8 @@ impl<
             pei: RefCell::new(pei_program),
             program_version: RefCell::new(program_version),
             pei_program_version: RefCell::new(pei_program_version),
+            comm_objs: RefCell::new(CO::new()),
+            co_hook_context: Default::default(),
             access_store: crate::ConnectionAuthLevels::new(),
             extension_state: ES::from_config(extension_config),
             dirty: Cell::new(false),
@@ -452,8 +475,14 @@ impl<
 
 use crate::restart::{EraseCode, RestartError, RestartHandler};
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
-    RestartHandler for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    CO: ComObjects,
+    ES: ExtensionState,
+> RestartHandler for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     fn supports_erase_code(&self, code: EraseCode) -> bool {
         // System B devices support all standard erase codes
@@ -524,8 +553,9 @@ impl<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault,
+    CO: ComObjects,
     ES: ExtensionState + HasSecurityMode,
-> StackState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+> StackState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     fn individual_address(&self) -> IndividualAddress {
         self.individual_address.get()
@@ -561,8 +591,14 @@ impl<
 // HasPersistence Implementation
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
-    crate::HasPersistence for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    CO: ComObjects,
+    ES: ExtensionState,
+> crate::HasPersistence for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     fn mark_dirty(&self) {
         SystemBDeviceState::mark_dirty(self);
@@ -573,8 +609,14 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 // HasSecureIdentity Implementation
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
-    crate::HasSecureIdentity for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    CO: ComObjects,
+    ES: ExtensionState,
+> crate::HasSecureIdentity for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     fn fdsk(&self) -> Option<&[u8; 16]> {
         self.fdsk.as_ref()
@@ -585,8 +627,14 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 // HasAuthorization Implementation
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
-    crate::HasAuthorization for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    CO: ComObjects,
+    ES: ExtensionState,
+> crate::HasAuthorization for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     fn max_access_levels(&self) -> u8 {
         MAX_ACCESS_LEVELS as u8
@@ -623,8 +671,14 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 // DeviceModelNotifier Implementation
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
-    DeviceModelNotifier for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    CO: ComObjects,
+    ES: ExtensionState,
+> DeviceModelNotifier for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     fn notify(&self, event: DeviceModelEvent) {
         self.dm_slot.notify(event);
@@ -639,8 +693,14 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 // Table Accessor Trait Implementations
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
-    HasAddressTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    CO: ComObjects,
+    ES: ExtensionState,
+> HasAddressTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     type ADT = Table<AddrTab7Impl<ADT_SIZE>>;
 
@@ -649,8 +709,14 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
-    HasAssociationTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    CO: ComObjects,
+    ES: ExtensionState,
+> HasAssociationTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     type AST = Table<AssoTab6Impl<AST_SIZE>>;
 
@@ -659,8 +725,14 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
-    HasCommunicationObjectTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    CO: ComObjects,
+    ES: ExtensionState,
+> HasCommunicationObjectTable for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     type COT = Table<CoTab7Impl<COT_SIZE>>;
 
@@ -669,8 +741,14 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
-    HasApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    CO: ComObjects,
+    ES: ExtensionState,
+> HasApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     type APP = Application<P>;
 
@@ -679,8 +757,14 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
-    HasPeiApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    CO: ComObjects,
+    ES: ExtensionState,
+> HasPeiApplication for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     type PEI = PeiApplication;
 
@@ -689,8 +773,34 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
     }
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, ES: ExtensionState>
-    HasRoutingCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    CO: ComObjects,
+    ES: ExtensionState,
+> HasCommObjects for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
+{
+    type CO = CO;
+
+    fn comm_objects(&self) -> &RefCell<Self::CO> {
+        &self.comm_objs
+    }
+
+    fn hook_context(&self) -> &<Self::CO as ComObjects>::HookContext {
+        &self.co_hook_context
+    }
+}
+
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault,
+    CO: ComObjects,
+    ES: ExtensionState,
+> HasRoutingCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     fn routing_count(&self) -> u8 {
         self.routing_count.get()
@@ -707,8 +817,9 @@ impl<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault,
+    CO: ComObjects,
     ES: ExtensionState + HasMaxRetryCount,
-> HasMaxRetryCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+> HasMaxRetryCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     fn max_retry_count(&self) -> u8 {
         self.extension_state.max_retry_count()
@@ -725,8 +836,9 @@ impl<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault,
+    CO: ComObjects,
     ES: ExtensionState + HasDomainAddress,
-> HasDomainAddress for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES>
+> HasDomainAddress for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES>
 {
     const DOMAIN_ADDRESS_LENGTH: usize = ES::DOMAIN_ADDRESS_LENGTH;
 
@@ -745,9 +857,10 @@ impl<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault,
+    CO: ComObjects,
     ES: ExtensionState,
     const MAX_CONN: usize,
-> crate::HasConnectionAuth for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES, MAX_CONN>
+> crate::HasConnectionAuth for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES, MAX_CONN>
 {
     fn connection_access(&self, slot: u8) -> crate::AccessContext {
         self.access_store.get(slot)
@@ -767,9 +880,10 @@ impl<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault,
+    CO: ComObjects,
     ES: ExtensionState,
     const MAX_CONN: usize,
-> HasExtensionState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, ES, MAX_CONN>
+> HasExtensionState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, ES, MAX_CONN>
 {
     type ES = ES;
 

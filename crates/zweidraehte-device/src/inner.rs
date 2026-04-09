@@ -4,8 +4,6 @@
 //! [`StackContext`] is the runtime context passed to link layers, providing
 //! access to buffer management, property services, and device information.
 
-use core::cell::RefCell;
-
 use embassy_sync::{channel::Channel, pubsub::PubSubChannel};
 
 use crate::{
@@ -16,7 +14,7 @@ use crate::{
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse},
     messages::buffers::DynBufferManager,
     objects::{
-        comm::{ComObjectEvent, ComObjects, LifecycleEvent},
+        comm::{ComObjectEvent, ComObjects, HasCommObjects, LifecycleEvent},
         tables::HasAddressTable,
     },
     restart,
@@ -58,7 +56,6 @@ pub(crate) struct Inner<D: StackDefinition> {
     // `InterruptExecutor` that can preempt the user's thread executor.
     pub(crate) app_service_channel:
         Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
-    pub(crate) comm_objs: RefCell<D::CO>,
     pub(crate) event_channel:
         PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
     /// Channel for application lifecycle events (started/stopped running)
@@ -76,8 +73,6 @@ pub(crate) struct Inner<D: StackDefinition> {
     /// For KNX/IP devices this provides current IP, MAC, capabilities, etc.
     /// For non-IP devices this is `()`.
     pub(crate) platform: D::Platform,
-    /// Hook context for communication object hooks
-    pub(crate) hook_context: <D::CO as ComObjects>::HookContext,
     /// Memory map for A_Memory_Read/Write services
     pub(crate) memory_map: D::Mem,
 }
@@ -86,7 +81,7 @@ impl<D: StackDefinition> Inner<D> {
     /// Execute a closure with mutable access to communication objects.
     /// Ensures the borrow is properly scoped and released.
     pub(crate) fn with_comm_objs<R>(&self, f: impl FnOnce(&mut D::CO) -> R) -> R {
-        let mut comm_objs = self.comm_objs.borrow_mut();
+        let mut comm_objs = self.state.comm_objects().borrow_mut();
         f(&mut comm_objs)
     }
 }

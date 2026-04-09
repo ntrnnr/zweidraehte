@@ -539,7 +539,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Unified state type.
-pub type DemoState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, KnxIpDeviceTcp>;
+pub type DemoState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, comm_objs::DemoComObjects, KnxIpDeviceTcp>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DemoStack;

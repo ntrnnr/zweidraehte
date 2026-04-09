@@ -3210,7 +3210,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Unified state type.
-pub type MdtState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MdtParams, KnxIpDeviceUdp>;
+pub type MdtState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MdtParams, comm_objs::MdtComObjects, KnxIpDeviceUdp>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MdtStack;

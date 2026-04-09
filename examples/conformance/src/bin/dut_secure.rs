@@ -20,10 +20,9 @@ use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilde
 use zweidraehte_conformance::harness::secure_stack::{
     IpcSecureConformanceTestStack, SecureConformancePersistedState, SecureConformanceState,
 };
-use zweidraehte_conformance::harness::stack::{ConformanceMemoryMap, comm_objs::ConformanceComObjects, device_info};
+use zweidraehte_conformance::harness::stack::{ConformanceMemoryMap, device_info};
 
 use zweidraehte_device::messages::buffers::{BufferManager, DynBufferManager};
-use zweidraehte_device::objects::comm::ComObjects;
 use zweidraehte_device::objects::interface::HasDeviceObject;
 use zweidraehte_device::restart::EraseCode;
 use zweidraehte_device::storage::HasSequenceStorage;
@@ -265,13 +264,8 @@ async fn main(spawner: Spawner) {
 
     let resources = STACK_RESOURCES.init(StackResources::new());
 
-    // Secure DUT uses the same hook context and comm objects as non-secure.
-    let hook_context = zweidraehte_conformance::harness::stack::ConformanceHookContext::new();
-
     let (stack, runner) = zweidraehte_device::new(
         resources,
-        ConformanceComObjects::new(),
-        hook_context,
         link_layer_builder,
         state,
         (),
