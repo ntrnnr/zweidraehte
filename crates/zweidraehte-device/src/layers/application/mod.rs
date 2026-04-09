@@ -307,6 +307,7 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
                             state: self.state,
                             interface_objects: self.interface_objects,
                             memory_map: self.memory_map,
+                            comm_objects: self.state.comm_objects(),
                             access_ctx,
                         };
                         if !self.extension.try_handle(apci, &msg, &ctx, outbox) {

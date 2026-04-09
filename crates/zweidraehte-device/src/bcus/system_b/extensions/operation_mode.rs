@@ -1,8 +1,10 @@
-//! Operation Mode extension for KNX diagnostic mode.
+//! Diagnostics extension for KNX diagnostic mode and GO diagnostics.
 //!
-//! Provides PID_OPERATION_MODE (PID 52) on the Application Program Object
-//! (IOT 0x0003). This enables a Management Client (MaC) to switch the
-//! device between Normal Mode and Diagnostic Mode.
+//! Provides two function properties:
+//! - PID_OPERATION_MODE (PID 52) on the Application Program Object
+//!   (IOT 0x0003) — switches the device between Normal and Diagnostic Mode.
+//! - PID_GO_DIAGNOSTICS (PID 66) on the Group Object Table Object
+//!   (IOT 0x0009) — diagnostic control of individual group objects.
 //!
 //! In Diagnostic Mode:
 //! - The application has no access to Group Object values or runtime flags
@@ -14,7 +16,7 @@
 //! - [`DiagnosticsContext`] — trait for querying diagnostic mode state
 //! - [`HasDiagnosticsContext`] — trait for device states that provide diagnostics
 //! - [`OperationModeState`] — concrete state implementation
-//! - [`OperationModeAugment`] — interface object augment for PID 52
+//! - [`DiagnosticsAugment`] — interface object augment for PID 52 and PID 66
 
 use core::cell::Cell;
 
@@ -23,11 +25,12 @@ use embassy_time::Instant;
 use crate::StackState;
 use crate::access::AccessPolicy;
 use crate::dpt::{InterfaceObjectType, PDT_Function, PropertyDataDefinition};
+use crate::objects::comm::{ComObjects, HasCommObjects};
 use crate::objects::interface::{
     FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess, PropertyBuf,
     PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, pid,
 };
-use crate::objects::tables::{HasApplication, HasRunStateMachine};
+use crate::objects::tables::{CommunicationObjectTable, HasApplication, HasCommunicationObjectTable, HasRunStateMachine};
 
 // ============================================================================
 // Traits
@@ -198,16 +201,17 @@ const OPERATION_MODE_DESCRIPTOR: PropertyDescriptor = PropertyDescriptor::with_p
     AccessPolicy::new(0x15F, 0x00C),
 );
 
-/// Interface object augment for PID_OPERATION_MODE on the Application
-/// Program Object.
+/// Interface object augment for diagnostics: PID_OPERATION_MODE (PID 52)
+/// on the Application Program Object and PID_GO_DIAGNOSTICS (PID 66) on
+/// the Group Object Table Object.
 ///
-/// This augment does NOT add additional objects — it extends the existing
-/// Application Program Object with the OPERATION_MODE function property.
-pub struct OperationModeAugment<'a> {
+/// This augment does NOT add additional objects — it extends existing
+/// objects with function properties for diagnostic mode and GO control.
+pub struct DiagnosticsAugment<'a> {
     state: &'a OperationModeState,
 }
 
-impl<'a> OperationModeAugment<'a> {
+impl<'a> DiagnosticsAugment<'a> {
     pub fn new(state: &'a OperationModeState) -> Self {
         Self { state }
     }
@@ -336,12 +340,511 @@ impl<'a> OperationModeAugment<'a> {
             data: PropertyBuf::new(&[service_id, current_mode, current_time_left]),
         }
     }
+
+    // ================================================================
+    // PID_GO_DIAGNOSTICS handlers
+    // ================================================================
+
+    /// Handle FunctionPropertyExtCommand for PID_GO_DIAGNOSTICS.
+    fn handle_go_diag_command<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+        &self,
+        state: &S,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        // Minimum: [reserved, service_id]
+        if req.service_data.len() < 2 {
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+        }
+
+        let reserved = req.service_data[0];
+        let service_id = req.service_data[1];
+
+        // Validate reserved octet (bits 5-7 of first byte encode the write
+        // service ID, bits 0-2 encode the read service ID; for a Command,
+        // the write service ID is in bits 5-7 and must be non-zero or zero
+        // depending on the service). Actually, looking at the XML more
+        // carefully: byte 0 is [reserved:3 | writeServiceID:5] for commands.
+        // Wait — the XML shows: `00 05 00 07 AA` where 00=reserved, 05=serviceID.
+        // So byte 0 = reserved (must be 0x00), byte 1 = service_id.
+        if reserved != 0x00 {
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+        }
+
+        match service_id {
+            0x00 => self.handle_go_diag_write_local(state, req),
+            0x01 => self.handle_go_diag_direct_write(state, req),
+            0x02 => self.handle_go_diag_transmit(state, req),
+            0x03 => self.handle_go_diag_direct_read(state, req),
+            0x04 => self.handle_go_diag_set_filter(req),
+            _ => {
+                // Invalid WriteServiceID → F2 (E_COMMAND_INVALID).
+                FunctionPropertyResult {
+                    return_code: 0xF2,
+                    data: PropertyBuf::new(&[service_id]),
+                }
+            }
+        }
+    }
+
+    /// Handle FunctionPropertyExtStateRead for PID_GO_DIAGNOSTICS.
+    fn handle_go_diag_state_read<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+        &self,
+        state: &S,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        if req.service_data.len() < 2 {
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+        }
+
+        let reserved = req.service_data[0];
+        let service_id = req.service_data[1];
+
+        if reserved != 0x00 {
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+        }
+
+        match service_id {
+            0x00 => self.handle_go_diag_read_config(state, req),
+            0x01 => self.handle_go_diag_read_value(state, req),
+            _ => {
+                // Invalid ReadServiceID → F2 (E_COMMAND_INVALID).
+                FunctionPropertyResult {
+                    return_code: 0xF2,
+                    data: PropertyBuf::new(&[service_id]),
+                }
+            }
+        }
+    }
+
+    // ================================================================
+    // WriteServiceID 0x00: Set Local GO Value
+    // ================================================================
+
+    /// Set a group object's value locally without bus transmission.
+    ///
+    /// Request: [reserved, 0x00, GO_idx_hi, GO_idx_lo, value...]
+    /// Success: rc=0x21, [service_id, GO_idx_hi, GO_idx_lo, status, value...]
+    fn handle_go_diag_write_local<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+        &self,
+        state: &S,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        let data = req.service_data;
+        // Need at least: reserved(1) + serviceID(1) + GO_idx(2) + value(1)
+        if data.len() < 5 {
+            return FunctionPropertyResult {
+                return_code: 0xA3, // Size mismatch — not enough data.
+                data: PropertyBuf::new(&[0x00]),
+            };
+        }
+
+        let go_idx = u16::from_be_bytes([data[2], data[3]]);
+        let value_data = &data[4..];
+
+        let cot = state.cot().borrow();
+
+        // Validate GO exists.
+        let Some(entry) = cot.get_object(go_idx) else {
+            return FunctionPropertyResult {
+                return_code: 0xA1, // E_GD_GO_VOID
+                data: PropertyBuf::new(&[0x00]),
+            };
+        };
+
+        // Check C (communication enable) and W (write enable) flags.
+        if !entry.flags.communication_enable() || !entry.flags.write_enable() {
+            return FunctionPropertyResult {
+                return_code: 0xA2, // E_GD_CONFIG_FLAGS
+                data: PropertyBuf::new(&[0x00]),
+            };
+        }
+
+        // Validate data size matches GO type.
+        let (expected_size, _short) = entry.object_type.size_in_bytes();
+        if value_data.len() != expected_size {
+            return FunctionPropertyResult {
+                return_code: 0xA3, // E_GD_GO_SIZE_MISMATCH
+                data: PropertyBuf::new(&[0x00]),
+            };
+        }
+
+        drop(cot); // Release borrow before accessing comm objects.
+
+        // Write the value to the comm object.
+        {
+            let mut co = state.comm_objects().borrow_mut();
+            let dest = co.value_mut(go_idx);
+            dest[..value_data.len()].copy_from_slice(value_data);
+        }
+
+        // Build success response: rc=0x21, [service_id, GO_idx_hi, GO_idx_lo, status, value...]
+        let co = state.comm_objects().borrow();
+        let status = co.status(go_idx).to_flags_byte();
+        let mut resp = [0u8; 64];
+        resp[0] = 0x00; // service_id echo
+        resp[1] = data[2]; // GO_idx_hi
+        resp[2] = data[3]; // GO_idx_lo
+        resp[3] = status;
+        let value = co.value(go_idx);
+        let resp_len = 4 + value.len();
+        resp[4..resp_len].copy_from_slice(value);
+
+        FunctionPropertyResult {
+            return_code: 0x21,
+            data: PropertyBuf::new(&resp[..resp_len]),
+        }
+    }
+
+    // ================================================================
+    // WriteServiceID 0x01: Direct GroupValue_Write
+    // ================================================================
+
+    /// Send a GroupValue_Write to a specific group address with given data.
+    ///
+    /// Request: [reserved, 0x01, flags, GA_hi, GA_lo, value...]
+    /// Success: rc=0x00, [service_id]
+    ///
+    /// The actual bus telegram is built by property_ext.rs after this
+    /// returns success.
+    fn handle_go_diag_direct_write<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+        &self,
+        _state: &S,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        let data = req.service_data;
+        // Need at least: reserved(1) + serviceID(1) + flags(1) + GA(2) + value(1)
+        if data.len() < 6 {
+            return FunctionPropertyResult {
+                return_code: 0xF2,
+                data: PropertyBuf::new(&[0x01]),
+            };
+        }
+
+        let flags = data[2];
+        // Validate flags: bits 2-6 must be zero.
+        if flags & 0x7C != 0 {
+            return FunctionPropertyResult {
+                return_code: 0xF8, // E_GD_SECURITY_KEY_MISSING (flag error)
+                data: PropertyBuf::new(&[0x01]),
+            };
+        }
+
+        // Security bits (0-1): 00=no security, 01=auth, 10=invalid, 11=auth+conf
+        let sec_bits = flags & 0x03;
+        if sec_bits == 0x02 {
+            // Confidentiality-only without auth is invalid.
+            return FunctionPropertyResult {
+                return_code: 0xF8,
+                data: PropertyBuf::new(&[0x01]),
+            };
+        }
+
+        // TODO: Check that the GA exists in the address table and that
+        // a security key is available when sec_bits != 0. For now, we
+        // return success and let property_ext.rs handle the bus telegram.
+
+        FunctionPropertyResult {
+            return_code: 0x00,
+            data: PropertyBuf::new(&[0x01]),
+        }
+    }
+
+    // ================================================================
+    // WriteServiceID 0x02: Transmit Current GO Value
+    // ================================================================
+
+    /// Transmit the current value of a group object as GroupValue_Write.
+    ///
+    /// Request: [reserved, 0x02, GO_idx_hi, GO_idx_lo]
+    /// Success: rc=0x21, [service_id, GO_idx_hi, GO_idx_lo, status, value...]
+    ///
+    /// The actual bus telegram is built by property_ext.rs after this
+    /// returns success.
+    fn handle_go_diag_transmit<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+        &self,
+        state: &S,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        let data = req.service_data;
+        // Need exactly: reserved(1) + serviceID(1) + GO_idx(2)
+        if data.len() != 4 {
+            if data.len() < 4 {
+                return FunctionPropertyResult {
+                    return_code: 0xA3,
+                    data: PropertyBuf::new(&[0x02]),
+                };
+            }
+            return FunctionPropertyResult {
+                return_code: 0xA3,
+                data: PropertyBuf::new(&[0x02]),
+            };
+        }
+
+        let go_idx = u16::from_be_bytes([data[2], data[3]]);
+        let cot = state.cot().borrow();
+
+        // Validate GO exists.
+        let Some(entry) = cot.get_object(go_idx) else {
+            return FunctionPropertyResult {
+                return_code: 0xA1,
+                data: PropertyBuf::new(&[0x02]),
+            };
+        };
+
+        // Check C (communication enable) and T (transmission enable) flags.
+        if !entry.flags.communication_enable() || !entry.flags.transmission_enable() {
+            return FunctionPropertyResult {
+                return_code: 0xA2,
+                data: PropertyBuf::new(&[0x02]),
+            };
+        }
+
+        drop(cot);
+
+        // Build success response with current value.
+        let co = state.comm_objects().borrow();
+        let status = co.status(go_idx).to_flags_byte();
+        let value = co.value(go_idx);
+        let mut resp = [0u8; 64];
+        resp[0] = 0x02; // service_id echo
+        resp[1] = data[2]; // GO_idx_hi
+        resp[2] = data[3]; // GO_idx_lo
+        resp[3] = status;
+        let resp_len = 4 + value.len();
+        resp[4..resp_len].copy_from_slice(value);
+
+        FunctionPropertyResult {
+            return_code: 0x21,
+            data: PropertyBuf::new(&resp[..resp_len]),
+        }
+    }
+
+    // ================================================================
+    // WriteServiceID 0x03: Direct GroupValue_Read
+    // ================================================================
+
+    /// Send a GroupValue_Read to a specific group address.
+    ///
+    /// Request: [reserved, 0x03, flags, GA_hi, GA_lo]
+    /// Success: rc=0x00, [service_id]
+    fn handle_go_diag_direct_read<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+        &self,
+        _state: &S,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        let data = req.service_data;
+        if data.len() != 5 {
+            return FunctionPropertyResult {
+                return_code: 0xF2,
+                data: PropertyBuf::new(&[0x03]),
+            };
+        }
+
+        let flags = data[2];
+        // Validate flags: bits 2-6 must be zero.
+        if flags & 0x7C != 0 {
+            return FunctionPropertyResult {
+                return_code: 0xF8,
+                data: PropertyBuf::new(&[0x03]),
+            };
+        }
+
+        let sec_bits = flags & 0x03;
+        if sec_bits == 0x02 {
+            return FunctionPropertyResult {
+                return_code: 0xF8,
+                data: PropertyBuf::new(&[0x03]),
+            };
+        }
+
+        // TODO: Validate GA exists, security key availability.
+
+        FunctionPropertyResult {
+            return_code: 0x00,
+            data: PropertyBuf::new(&[0x03]),
+        }
+    }
+
+    // ================================================================
+    // WriteServiceID 0x04: Set Source Address Filter
+    // ================================================================
+
+    /// Set the source address filter for GO updates in diagnostic mode.
+    ///
+    /// Request: [reserved, 0x04, IA_hi, IA_lo]
+    /// Success: rc=0x00, [service_id]
+    fn handle_go_diag_set_filter(
+        &self,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        let data = req.service_data;
+        if data.len() != 4 {
+            return FunctionPropertyResult {
+                return_code: 0xA3, // Invalid size.
+                data: PropertyBuf::new(&[0x04]),
+            };
+        }
+
+        // Must be in diagnostic mode.
+        if !self.state.is_diagnostic_mode() {
+            return FunctionPropertyResult {
+                return_code: 0xA0, // Not in diagnostic mode.
+                data: PropertyBuf::new(&[0x04]),
+            };
+        }
+
+        let ia = u16::from_be_bytes([data[2], data[3]]);
+        self.state.set_diagnostic_source_filter(Some(ia));
+
+        FunctionPropertyResult {
+            return_code: 0x00,
+            data: PropertyBuf::new(&[0x04]),
+        }
+    }
+
+    // ================================================================
+    // ReadServiceID 0x00: Get GO Config
+    // ================================================================
+
+    /// Read the configuration of a group object.
+    ///
+    /// Request: [reserved, 0x00, GO_idx_hi, GO_idx_lo]
+    /// Success: rc=0x20, [service_id, GO_idx_hi, GO_idx_lo, linked, sec_flags,
+    ///          config_flags, priority, size_hi, size_lo]
+    fn handle_go_diag_read_config<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+        &self,
+        state: &S,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        let data = req.service_data;
+        if data.len() != 4 {
+            if data.len() < 4 {
+                return FunctionPropertyResult {
+                    return_code: 0xA3,
+                    data: PropertyBuf::new(&[0x00]),
+                };
+            }
+            return FunctionPropertyResult {
+                return_code: 0xA3,
+                data: PropertyBuf::new(&[0x00]),
+            };
+        }
+
+        let go_idx = u16::from_be_bytes([data[2], data[3]]);
+        let cot = state.cot().borrow();
+
+        let Some(entry) = cot.get_object(go_idx) else {
+            return FunctionPropertyResult {
+                return_code: 0xA1,
+                data: PropertyBuf::new(&[0x00]),
+            };
+        };
+
+        let (size_bytes, _short) = entry.object_type.size_in_bytes();
+        let priority = u8::from(entry.flags.priority());
+        let config_flags = entry.flags.to_byte();
+
+        // TODO: linked flag from association table, security flags from
+        // security state. For now use placeholders.
+        let linked: u8 = 0x00;
+        let sec_flags: u8 = 0x00;
+
+        let mut resp = [0u8; 16];
+        resp[0] = 0x00; // service_id echo
+        resp[1] = data[2]; // GO_idx_hi
+        resp[2] = data[3]; // GO_idx_lo
+        resp[3] = linked;
+        resp[4] = sec_flags;
+        resp[5] = config_flags;
+        resp[6] = priority;
+        resp[7] = (size_bytes >> 8) as u8;
+        resp[8] = size_bytes as u8;
+
+        FunctionPropertyResult {
+            return_code: 0x20,
+            data: PropertyBuf::new(&resp[..9]),
+        }
+    }
+
+    // ================================================================
+    // ReadServiceID 0x01: Get Local GO Value
+    // ================================================================
+
+    /// Read the current value of a group object.
+    ///
+    /// Request: [reserved, 0x01, GO_idx_hi, GO_idx_lo]
+    /// Success: rc=0x21, [service_id, GO_idx_hi, GO_idx_lo, status, value...]
+    fn handle_go_diag_read_value<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+        &self,
+        state: &S,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult {
+        let data = req.service_data;
+        if data.len() != 4 {
+            if data.len() < 4 {
+                return FunctionPropertyResult {
+                    return_code: 0xA3,
+                    data: PropertyBuf::new(&[0x01]),
+                };
+            }
+            return FunctionPropertyResult {
+                return_code: 0xA3,
+                data: PropertyBuf::new(&[0x01]),
+            };
+        }
+
+        let go_idx = u16::from_be_bytes([data[2], data[3]]);
+        let cot = state.cot().borrow();
+
+        // Validate GO exists.
+        if cot.get_object(go_idx).is_none() {
+            return FunctionPropertyResult {
+                return_code: 0xA1,
+                data: PropertyBuf::new(&[0x01]),
+            };
+        }
+        drop(cot);
+
+        let co = state.comm_objects().borrow();
+        let status = co.status(go_idx).to_flags_byte();
+        let value = co.value(go_idx);
+
+        let mut resp = [0u8; 64];
+        resp[0] = 0x01; // service_id echo
+        resp[1] = data[2]; // GO_idx_hi
+        resp[2] = data[3]; // GO_idx_lo
+        resp[3] = status;
+        let resp_len = 4 + value.len();
+        resp[4..resp_len].copy_from_slice(value);
+
+        FunctionPropertyResult {
+            return_code: 0x21,
+            data: PropertyBuf::new(&resp[..resp_len]),
+        }
+    }
 }
 
-impl<'a, S: StackState + HasApplication> InterfaceObjectAugment<S> for OperationModeAugment<'a> {
+/// Property descriptor for PID_GO_DIAGNOSTICS.
+///
+/// Same access policy as PID_OPERATION_MODE: 15F/00C.
+const GO_DIAGNOSTICS_DESCRIPTOR: PropertyDescriptor = PropertyDescriptor::with_policy(
+    pid::GO_DIAGNOSTICS,
+    PDT_Function::ID,
+    1,
+    PropertyAccess::ReadWrite,
+    3,
+    3,
+    AccessPolicy::new(0x15F, 0x00C),
+);
+
+impl<'a, S: StackState + HasApplication + HasCommunicationObjectTable + HasCommObjects> InterfaceObjectAugment<S>
+    for DiagnosticsAugment<'a>
+{
     fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
         if object_type == InterfaceObjectType::ApplicationProgram && prop_id == pid::OPERATION_MODE {
             Some(OPERATION_MODE_DESCRIPTOR)
+        } else if object_type == InterfaceObjectType::GroupObjectTable && prop_id == pid::GO_DIAGNOSTICS {
+            Some(GO_DIAGNOSTICS_DESCRIPTOR)
         } else {
             None
         }
@@ -354,23 +857,36 @@ impl<'a, S: StackState + HasApplication> InterfaceObjectAugment<S> for Operation
         object_idx: u16,
         lookup: PropertyLookup,
     ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
-        if object_type != InterfaceObjectType::ApplicationProgram {
-            return None;
-        }
-
-        match lookup {
-            PropertyLookup::ByPid(p) if p == pid::OPERATION_MODE => {
-                // Property index within the object. The augment's property
-                // is appended after the base object's properties (index 7,
-                // since the base has 7 properties at indices 0-6).
-                // However, the dispatch adjusts the index before calling us,
-                // so we report index 0 relative to the augment.
-                Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &OPERATION_MODE_DESCRIPTOR)))
+        if object_type == InterfaceObjectType::ApplicationProgram {
+            match lookup {
+                PropertyLookup::ByPid(p) if p == pid::OPERATION_MODE => {
+                    Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &OPERATION_MODE_DESCRIPTOR)))
+                }
+                PropertyLookup::ByIndex(0) => {
+                    Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &OPERATION_MODE_DESCRIPTOR)))
+                }
+                _ => None,
             }
-            PropertyLookup::ByIndex(0) => {
-                Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &OPERATION_MODE_DESCRIPTOR)))
+        } else if object_type == InterfaceObjectType::GroupObjectTable {
+            match lookup {
+                PropertyLookup::ByPid(p) if p == pid::GO_DIAGNOSTICS => {
+                    Some(Ok(PropertyDescriptionResponse::from_descriptor(
+                        object_idx,
+                        0,
+                        &GO_DIAGNOSTICS_DESCRIPTOR,
+                    )))
+                }
+                PropertyLookup::ByIndex(0) => {
+                    Some(Ok(PropertyDescriptionResponse::from_descriptor(
+                        object_idx,
+                        0,
+                        &GO_DIAGNOSTICS_DESCRIPTOR,
+                    )))
+                }
+                _ => None,
             }
-            _ => None,
+        } else {
+            None
         }
     }
 
@@ -380,10 +896,13 @@ impl<'a, S: StackState + HasApplication> InterfaceObjectAugment<S> for Operation
         object_type: InterfaceObjectType,
         req: &FunctionPropertyRequest<'_>,
     ) -> Option<FunctionPropertyResult> {
-        if object_type != InterfaceObjectType::ApplicationProgram || req.prop_id != pid::OPERATION_MODE {
-            return None;
+        if object_type == InterfaceObjectType::ApplicationProgram && req.prop_id == pid::OPERATION_MODE {
+            Some(self.handle_command(state, req))
+        } else if object_type == InterfaceObjectType::GroupObjectTable && req.prop_id == pid::GO_DIAGNOSTICS {
+            Some(self.handle_go_diag_command(state, req))
+        } else {
+            None
         }
-        Some(self.handle_command(state, req))
     }
 
     fn function_property_state_read(
@@ -392,9 +911,12 @@ impl<'a, S: StackState + HasApplication> InterfaceObjectAugment<S> for Operation
         object_type: InterfaceObjectType,
         req: &FunctionPropertyRequest<'_>,
     ) -> Option<FunctionPropertyResult> {
-        if object_type != InterfaceObjectType::ApplicationProgram || req.prop_id != pid::OPERATION_MODE {
-            return None;
+        if object_type == InterfaceObjectType::ApplicationProgram && req.prop_id == pid::OPERATION_MODE {
+            Some(self.handle_state_read(state, req))
+        } else if object_type == InterfaceObjectType::GroupObjectTable && req.prop_id == pid::GO_DIAGNOSTICS {
+            Some(self.handle_go_diag_state_read(state, req))
+        } else {
+            None
         }
-        Some(self.handle_state_read(state, req))
     }
 }

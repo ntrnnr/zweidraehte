@@ -848,6 +848,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         zweidraehte_conformance::tests::security::section_4_6_4_7::create_section_4_6_4_7_suite(),
         zweidraehte_conformance::tests::security::section_5::create_section_5_suite(),
         zweidraehte_conformance::tests::security::section_6::create_section_6_suite(),
+        zweidraehte_conformance::tests::security::section_6::create_section_6_2_suite(),
         // Section 3.2 modifies GO security flags, so it runs last among
         // security suites to avoid state leakage to other tests.
         zweidraehte_conformance::tests::security::section_3_2::create_section_3_2_suite(),

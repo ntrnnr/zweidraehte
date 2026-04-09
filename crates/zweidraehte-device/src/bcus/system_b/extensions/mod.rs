@@ -16,7 +16,7 @@ pub use ip::*;
 
 pub mod operation_mode;
 pub use operation_mode::{
-    DiagnosticsContext, HasDiagnosticsContext, OperationModeAugment, OperationModeState,
+    DiagnosticsAugment, DiagnosticsContext, HasDiagnosticsContext, OperationModeState,
 };
 
 pub mod security;

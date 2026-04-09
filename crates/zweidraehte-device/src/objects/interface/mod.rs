@@ -341,6 +341,13 @@ pub mod pid {
     pub const OPERATION_MODE: u8 = 52;
 
     //==========================================================================
+    // Group Object Table Specific (Object Type 9)
+    //==========================================================================
+
+    /// GO Diagnostics (PID 66) - Diagnostic control of group objects
+    pub const GO_DIAGNOSTICS: u8 = 66;
+
+    //==========================================================================
     // Router Object Specific (Object Type 6)
     //==========================================================================
 

@@ -40,6 +40,11 @@ pub const GK4: [u8; 16] =
 pub const GK5: [u8; 16] =
     [0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F];
 
+/// Group Key 6 — for group address index of GA 3/1/6 (used by Section 6.2
+/// PID_GO_DIAGNOSTICS secure bus telegram tests).
+pub const GK6: [u8; 16] =
+    [0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F];
+
 /// FDSK — Factory Default Setup Key (same as TK1 for testing convenience).
 pub const FDSK: [u8; 16] = TK1;
 
@@ -132,6 +137,12 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
     vars.insert("INDX_PID_SERIAL_NO".into(), TestVariable::Bytes(vec![0x08]));
     vars.insert("INDX_PID_DEVICE_CTRL".into(), TestVariable::Bytes(vec![0x01]));
 
+    // Group addresses for Section 6.2 PID_GO_DIAGNOSTICS tests.
+    // GO_1 = 3/1/7 (no security key) — used for plain bus telegrams.
+    vars.insert("GO_1".into(), TestVariable::Bytes(vec![0x19, 0x07]));
+    // GO_2 = 3/1/6 (with security key GK6) — used for secure bus telegrams.
+    vars.insert("GO_2".into(), TestVariable::Bytes(vec![0x19, 0x06]));
+
     vars
 }
 
@@ -145,6 +156,7 @@ pub fn create_security_context() -> SecurityTestContext {
     keys.insert("GK3".into(), GK3);
     keys.insert("GK4".into(), GK4);
     keys.insert("GK5".into(), GK5);
+    keys.insert("GK6".into(), GK6);
     keys.insert("FDSK".into(), FDSK);
     keys.insert("ZERO_KEY".into(), [0u8; 16]);
     keys.insert("P2PK1".into(), P2PK1);

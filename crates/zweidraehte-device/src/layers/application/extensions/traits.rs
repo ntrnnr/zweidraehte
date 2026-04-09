@@ -22,10 +22,13 @@
 //! handler. This allows eventual migration of core services into
 //! extensions for devices that don't need them.
 
+use core::cell::RefCell;
+
 use crate::{
     access::AccessContext,
     definition::StackDefinition,
     messages::{buffers::{Buffer, DynBufferManager}, knx::{ApciCode, KnxMessageBuffer}},
+    objects::comm::ComObjects,
     router::Outbox,
 };
 
@@ -50,6 +53,9 @@ pub struct AlExtensionContext<'a, D: StackDefinition> {
 
     /// Memory map for memory services.
     pub memory_map: &'a D::Mem,
+
+    /// Communication objects for direct GO value access (e.g., GO diagnostics).
+    pub comm_objects: &'a RefCell<D::CO>,
 
     /// The resolved access context for the current message.
     pub access_ctx: AccessContext,

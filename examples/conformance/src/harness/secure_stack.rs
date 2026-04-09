@@ -10,7 +10,7 @@
 
 use core::cell::{Cell, RefCell};
 
-use zweidraehte_device::bcus::system_b::{OperationModeAugment, OperationModeState};
+use zweidraehte_device::bcus::system_b::{DiagnosticsAugment, OperationModeState};
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     AccessContext, HasConnectionAuth,
@@ -836,7 +836,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
         'a,
         SecureConformanceState,
-        (SecAugment<'a>, (CertificationObjectAugment, OperationModeAugment<'a>)),
+        (SecAugment<'a>, (CertificationObjectAugment, DiagnosticsAugment<'a>)),
     >;
 
     fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
@@ -847,7 +847,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
             state,
             platform,
             &CONFORMANCE_MEMORY_LAYOUT,
-            (CertificationObjectAugment::new(), OperationModeAugment::new(&state.operation_mode)),
+            (CertificationObjectAugment::new(), DiagnosticsAugment::new(&state.operation_mode)),
         )
     }
 
