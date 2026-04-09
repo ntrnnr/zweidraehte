@@ -30,7 +30,10 @@ use crate::objects::interface::{
     FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess, PropertyBuf,
     PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, pid,
 };
-use crate::objects::tables::{CommunicationObjectTable, HasApplication, HasCommunicationObjectTable, HasRunStateMachine};
+use crate::objects::tables::{
+    AddressTable, CommunicationObjectTable, HasAddressTable, HasApplication, HasCommunicationObjectTable,
+    HasRunStateMachine,
+};
 
 // ============================================================================
 // Traits
@@ -346,7 +349,7 @@ impl<'a> DiagnosticsAugment<'a> {
     // ================================================================
 
     /// Handle FunctionPropertyExtCommand for PID_GO_DIAGNOSTICS.
-    fn handle_go_diag_command<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+    fn handle_go_diag_command<S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable>(
         &self,
         state: &S,
         req: &FunctionPropertyRequest<'_>,
@@ -387,7 +390,7 @@ impl<'a> DiagnosticsAugment<'a> {
     }
 
     /// Handle FunctionPropertyExtStateRead for PID_GO_DIAGNOSTICS.
-    fn handle_go_diag_state_read<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+    fn handle_go_diag_state_read<S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable>(
         &self,
         state: &S,
         req: &FunctionPropertyRequest<'_>,
@@ -479,7 +482,9 @@ impl<'a> DiagnosticsAugment<'a> {
 
         // Build success response: rc=0x21, [service_id, GO_idx_hi, GO_idx_lo, status, value...]
         let co = state.comm_objects().borrow();
-        let status = co.status(go_idx).to_flags_byte();
+        // GO diagnostics status uses only the low nibble of the flags byte
+        // (stripping the idle indicator in bit 6).
+        let status = co.status(go_idx).to_flags_byte() & 0x0F;
         let mut resp = [0u8; 64];
         resp[0] = 0x00; // service_id echo
         resp[1] = data[2]; // GO_idx_hi
@@ -506,9 +511,9 @@ impl<'a> DiagnosticsAugment<'a> {
     ///
     /// The actual bus telegram is built by property_ext.rs after this
     /// returns success.
-    fn handle_go_diag_direct_write<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+    fn handle_go_diag_direct_write<S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable>(
         &self,
-        _state: &S,
+        state: &S,
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult {
         let data = req.service_data;
@@ -539,9 +544,20 @@ impl<'a> DiagnosticsAugment<'a> {
             };
         }
 
-        // TODO: Check that the GA exists in the address table and that
-        // a security key is available when sec_bits != 0. For now, we
-        // return success and let property_ext.rs handle the bus telegram.
+        // Validate that the GA exists in the device's address table.
+        let ga = crate::address::GroupAddress([data[3], data[4]]);
+        let adt = state.adt().borrow();
+        if adt.get_tsap(ga).is_none() {
+            return FunctionPropertyResult {
+                return_code: 0xF8,
+                data: PropertyBuf::new(&[0x01]),
+            };
+        }
+        drop(adt);
+
+        // TODO: When security bits are non-zero, check that a group key is
+        // available for this GA. For now, security-requested writes to GAs
+        // without a group key will incorrectly succeed.
 
         FunctionPropertyResult {
             return_code: 0x00,
@@ -568,15 +584,9 @@ impl<'a> DiagnosticsAugment<'a> {
         let data = req.service_data;
         // Need exactly: reserved(1) + serviceID(1) + GO_idx(2)
         if data.len() != 4 {
-            if data.len() < 4 {
-                return FunctionPropertyResult {
-                    return_code: 0xA3,
-                    data: PropertyBuf::new(&[0x02]),
-                };
-            }
             return FunctionPropertyResult {
-                return_code: 0xA3,
-                data: PropertyBuf::new(&[0x02]),
+                return_code: 0xFF,
+                data: PropertyBuf::new(&[]),
             };
         }
 
@@ -603,7 +613,8 @@ impl<'a> DiagnosticsAugment<'a> {
 
         // Build success response with current value.
         let co = state.comm_objects().borrow();
-        let status = co.status(go_idx).to_flags_byte();
+        // GO diagnostics status uses only the low nibble (strip idle indicator).
+        let status = co.status(go_idx).to_flags_byte() & 0x0F;
         let value = co.value(go_idx);
         let mut resp = [0u8; 64];
         resp[0] = 0x02; // service_id echo
@@ -627,9 +638,9 @@ impl<'a> DiagnosticsAugment<'a> {
     ///
     /// Request: [reserved, 0x03, flags, GA_hi, GA_lo]
     /// Success: rc=0x00, [service_id]
-    fn handle_go_diag_direct_read<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+    fn handle_go_diag_direct_read<S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable>(
         &self,
-        _state: &S,
+        state: &S,
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult {
         let data = req.service_data;
@@ -641,8 +652,9 @@ impl<'a> DiagnosticsAugment<'a> {
         }
 
         let flags = data[2];
-        // Validate flags: bits 2-6 must be zero.
-        if flags & 0x7C != 0 {
+        // Validate flags: bits 2-7 must be zero (bit 7 / full-octet flag
+        // is not valid for reads since there is no value data to format).
+        if flags & 0xFC != 0 {
             return FunctionPropertyResult {
                 return_code: 0xF8,
                 data: PropertyBuf::new(&[0x03]),
@@ -657,7 +669,19 @@ impl<'a> DiagnosticsAugment<'a> {
             };
         }
 
-        // TODO: Validate GA exists, security key availability.
+        // Validate that the GA exists in the device's address table.
+        let ga = crate::address::GroupAddress([data[3], data[4]]);
+        let adt = state.adt().borrow();
+        if adt.get_tsap(ga).is_none() {
+            return FunctionPropertyResult {
+                return_code: 0xF8,
+                data: PropertyBuf::new(&[0x03]),
+            };
+        }
+        drop(adt);
+
+        // TODO: When security bits are non-zero, check that a group key is
+        // available for this GA.
 
         FunctionPropertyResult {
             return_code: 0x00,
@@ -678,22 +702,24 @@ impl<'a> DiagnosticsAugment<'a> {
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult {
         let data = req.service_data;
-        if data.len() != 4 {
-            return FunctionPropertyResult {
-                return_code: 0xA3, // Invalid size.
-                data: PropertyBuf::new(&[0x04]),
-            };
-        }
 
         // Must be in diagnostic mode.
         if !self.state.is_diagnostic_mode() {
             return FunctionPropertyResult {
-                return_code: 0xA0, // Not in diagnostic mode.
+                return_code: 0xF3, // E_GD_NO_DIAGNOSTIC_MODE
                 data: PropertyBuf::new(&[0x04]),
             };
         }
 
-        let ia = u16::from_be_bytes([data[2], data[3]]);
+        // Need exactly: reserved(1) + serviceID(1) + GO_idx(2) + IA(2)
+        if data.len() != 6 {
+            return FunctionPropertyResult {
+                return_code: 0xFF,
+                data: PropertyBuf::new(&[]),
+            };
+        }
+
+        let ia = u16::from_be_bytes([data[4], data[5]]);
         self.state.set_diagnostic_source_filter(Some(ia));
 
         FunctionPropertyResult {
@@ -718,15 +744,9 @@ impl<'a> DiagnosticsAugment<'a> {
     ) -> FunctionPropertyResult {
         let data = req.service_data;
         if data.len() != 4 {
-            if data.len() < 4 {
-                return FunctionPropertyResult {
-                    return_code: 0xA3,
-                    data: PropertyBuf::new(&[0x00]),
-                };
-            }
             return FunctionPropertyResult {
-                return_code: 0xA3,
-                data: PropertyBuf::new(&[0x00]),
+                return_code: 0xFF,
+                data: PropertyBuf::new(&[]),
             };
         }
 
@@ -759,10 +779,13 @@ impl<'a> DiagnosticsAugment<'a> {
         resp[6] = priority;
         resp[7] = (size_bytes >> 8) as u8;
         resp[8] = size_bytes as u8;
+        // DPT ID (2 bytes) — not tracked in the CO table, so zero.
+        resp[9] = 0x00;
+        resp[10] = 0x00;
 
         FunctionPropertyResult {
             return_code: 0x20,
-            data: PropertyBuf::new(&resp[..9]),
+            data: PropertyBuf::new(&resp[..11]),
         }
     }
 
@@ -781,15 +804,9 @@ impl<'a> DiagnosticsAugment<'a> {
     ) -> FunctionPropertyResult {
         let data = req.service_data;
         if data.len() != 4 {
-            if data.len() < 4 {
-                return FunctionPropertyResult {
-                    return_code: 0xA3,
-                    data: PropertyBuf::new(&[0x01]),
-                };
-            }
             return FunctionPropertyResult {
-                return_code: 0xA3,
-                data: PropertyBuf::new(&[0x01]),
+                return_code: 0xFF,
+                data: PropertyBuf::new(&[]),
             };
         }
 
@@ -806,7 +823,8 @@ impl<'a> DiagnosticsAugment<'a> {
         drop(cot);
 
         let co = state.comm_objects().borrow();
-        let status = co.status(go_idx).to_flags_byte();
+        // GO diagnostics status uses only the low nibble (strip idle indicator).
+        let status = co.status(go_idx).to_flags_byte() & 0x0F;
         let value = co.value(go_idx);
 
         let mut resp = [0u8; 64];
@@ -837,8 +855,8 @@ const GO_DIAGNOSTICS_DESCRIPTOR: PropertyDescriptor = PropertyDescriptor::with_p
     AccessPolicy::new(0x15F, 0x00C),
 );
 
-impl<'a, S: StackState + HasApplication + HasCommunicationObjectTable + HasCommObjects> InterfaceObjectAugment<S>
-    for DiagnosticsAugment<'a>
+impl<'a, S: StackState + HasApplication + HasCommunicationObjectTable + HasCommObjects + HasAddressTable>
+    InterfaceObjectAugment<S> for DiagnosticsAugment<'a>
 {
     fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
         if object_type == InterfaceObjectType::ApplicationProgram && prop_id == pid::OPERATION_MODE {
