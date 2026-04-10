@@ -94,3 +94,22 @@ pub trait HasLayerContext {
     /// Get a reference to the shared layer context.
     fn layer_context(&self) -> &LayerContext<Self::Definition>;
 }
+
+// ============================================================================
+// HasOutbox — convenience trait for pushing to the shared outbox
+// ============================================================================
+
+/// Convenience trait for pushing messages to the shared outbox.
+///
+/// Blanket-implemented for all types that implement [`HasLayerContext`].
+/// Avoids the verbose `state.layer_context().outbox.borrow_mut().push(msg)`
+/// pattern throughout layer implementations.
+pub trait HasOutbox {
+    fn push_outbox(&self, msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>);
+}
+
+impl<T: HasLayerContext> HasOutbox for T {
+    fn push_outbox(&self, msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>) {
+        self.layer_context().outbox.borrow_mut().push(msg);
+    }
+}

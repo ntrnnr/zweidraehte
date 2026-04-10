@@ -1,10 +1,11 @@
 use heapless::Deque;
 
-use crate::{StackDefinition, StackState};
-use crate::messages::knx::*;
+use crate::layer_context::{HasLayerContext, HasOutbox};
 use crate::messages::buffers::Buffer;
+use crate::messages::knx::*;
 use crate::objects::interface::{HasDeviceObject, HasRoutingCount};
-use crate::router::{Layer, Outbox};
+use crate::router::Layer;
+use crate::{StackDefinition, StackState};
 
 /// Network layer for the KNX stack.
 ///
@@ -14,7 +15,7 @@ use crate::router::{Layer, Outbox};
 ///
 /// In the router architecture, NL is a synchronous [`Layer`] that the
 /// router dispatches messages to based on ServiceType. NL pushes
-/// transformed messages to the [`Outbox`] for further routing.
+/// transformed messages to the outbox for further routing.
 pub struct NetworkLayer<'a, D: StackDefinition> {
     state: &'a D::State,
     interface_objects: &'a D::InterfaceObjects<'static>,
@@ -28,10 +29,7 @@ pub struct NetworkLayer<'a, D: StackDefinition> {
 
 impl<'a, D: StackDefinition> NetworkLayer<'a, D> {
     /// Create a new Network Layer.
-    pub fn new(
-        state: &'a D::State,
-        interface_objects: &'a D::InterfaceObjects<'static>,
-    ) -> Self {
+    pub fn new(state: &'a D::State, interface_objects: &'a D::InterfaceObjects<'static>) -> Self {
         Self { state, interface_objects, pending_addr_types: Deque::new() }
     }
 }
@@ -49,11 +47,7 @@ impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
         ServiceType::N_SystemBroadcast_Req,
     ];
 
-    fn process(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         match msg.service_type() {
             // =================================================================
             // Indications from link layer (upward: L_Data_Ind → N_*_Ind)
@@ -78,16 +72,14 @@ impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
                     AddressType::Group => msg.set_service_type(ServiceType::N_GroupData_Ind),
                     AddressType::Broadcast => msg.set_service_type(ServiceType::N_Broadcast_Ind),
                     AddressType::Individual => msg.set_service_type(ServiceType::N_Data_Ind),
-                    AddressType::SystemBroadcast => {
-                        msg.set_service_type(ServiceType::N_SystemBroadcast_Ind)
-                    }
+                    AddressType::SystemBroadcast => msg.set_service_type(ServiceType::N_SystemBroadcast_Ind),
                     _ => unreachable!(),
                 }
 
                 msg.convert_hop_count_to_hop_count_type();
 
                 debug!("NL -> TL: {:?}", msg);
-                outbox.push(msg);
+                self.state.push_outbox(msg);
             }
 
             // =================================================================
@@ -143,7 +135,7 @@ impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
                 }
 
                 debug!("NL -> LL: {:?}", msg);
-                outbox.push(msg);
+                self.state.push_outbox(msg);
             }
 
             // =================================================================
@@ -156,18 +148,10 @@ impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
                 // the same order as the requests that produced them.
                 if let Some(addr_type) = self.pending_addr_types.pop_front() {
                     match addr_type {
-                        AddressType::Group => {
-                            msg.set_service_type(ServiceType::N_GroupData_Con)
-                        }
-                        AddressType::Broadcast => {
-                            msg.set_service_type(ServiceType::N_Broadcast_Con)
-                        }
-                        AddressType::Individual => {
-                            msg.set_service_type(ServiceType::N_Data_Con)
-                        }
-                        AddressType::SystemBroadcast => {
-                            msg.set_service_type(ServiceType::N_SystemBroadcast_Con)
-                        }
+                        AddressType::Group => msg.set_service_type(ServiceType::N_GroupData_Con),
+                        AddressType::Broadcast => msg.set_service_type(ServiceType::N_Broadcast_Con),
+                        AddressType::Individual => msg.set_service_type(ServiceType::N_Data_Con),
+                        AddressType::SystemBroadcast => msg.set_service_type(ServiceType::N_SystemBroadcast_Con),
                         _ => unreachable!(),
                     }
 
@@ -176,7 +160,7 @@ impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
                     warn!("NL received LL confirmation with no pending request");
                 }
 
-                outbox.push(msg);
+                self.state.push_outbox(msg);
             }
 
             // Unreachable: the dispatch table only routes HANDLES to us.

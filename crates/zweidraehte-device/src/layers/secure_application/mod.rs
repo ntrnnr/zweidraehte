@@ -21,6 +21,7 @@ use crate::{
         scf::{SecureServiceType, SecurityControlField},
     },
     definition::StackDefinition,
+    layer_context::{HasLayerContext, HasOutbox},
     layers::application::ApplicationLayer,
     messages::{
         apdu::secure::{self, SecureApduMut, SecureApduRef, SyncReqRef},
@@ -29,7 +30,7 @@ use crate::{
     },
     objects::tables::{AssociationTable, HasAssociationTable},
     prelude::HasAddressTable,
-    router::{Layer, Outbox},
+    router::Layer,
     storage::SequenceNumberStorage,
 };
 
@@ -1008,21 +1009,20 @@ where
             crate::layers::application::ApplicationLayerService,
             crate::layers::application::ApplicationLayerServiceResponse,
         >,
-        outbox: &mut Outbox,
     ) {
         use crate::layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse};
 
         match request.get() {
             ApplicationLayerService::SyncRequest { peer_ia, tool_access, is_broadcast } => {
                 if let Some(msg) = self.initiate_sync(*peer_ia, *tool_access, *is_broadcast) {
-                    outbox.push(msg);
+                    self.state.push_outbox(msg);
                     request.try_reply(ApplicationLayerServiceResponse::SyncInitiated).ok();
                 } else {
                     request.try_reply(ApplicationLayerServiceResponse::SyncFailed).ok();
                 }
             }
             _ => {
-                self.inner.handle_app_request(request, outbox);
+                self.inner.handle_app_request(request);
             }
         }
     }
@@ -1177,17 +1177,24 @@ where
 {
     const HANDLES: &'static [ServiceType] = ApplicationLayer::<D>::HANDLES;
 
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         match self.try_process_secure(msg) {
             SecureResult::Forward(msg) => {
-                // Use a local outbox to intercept outgoing messages.
-                let mut local_outbox = Outbox::new();
-                self.inner.process(msg, &mut local_outbox);
+                // The inner AL pushes directly to the shared outbox. We
+                // need to intercept those messages to encrypt them when the
+                // security context is active. Swap the shared outbox with
+                // a fresh one, let the inner AL push into it, then drain,
+                // encrypt, and push into the original outbox.
+                use crate::router::Outbox;
+                let outbox_cell = &self.state.layer_context().outbox;
+                let original = outbox_cell.replace(Outbox::new());
+                self.inner.process(msg);
+                let mut inner_outbox = outbox_cell.replace(original);
 
-                // Drain local outbox, encrypting responses if needed.
-                while let Some(out_msg) = local_outbox.take_next() {
+                // Drain the inner outbox, encrypting responses if needed.
+                while let Some(out_msg) = inner_outbox.take_next() {
                     if let Some(out_msg) = self.try_encrypt_outgoing(out_msg) {
-                        outbox.push(out_msg);
+                        outbox_cell.borrow_mut().push(out_msg);
                     }
                 }
 
@@ -1196,7 +1203,7 @@ where
             }
             SecureResult::SyncResponse(msg) => {
                 // Sync response is already fully encrypted — push directly.
-                outbox.push(msg);
+                self.state.push_outbox(msg);
             }
             SecureResult::Dropped => {
                 // Verification failed — silently drop.
@@ -1208,8 +1215,8 @@ where
         self.inner.next_deadline()
     }
 
-    fn poll(&mut self, outbox: &mut Outbox) {
-        self.inner.poll(outbox);
+    fn poll(&mut self) {
+        self.inner.poll();
     }
 
     fn init(&mut self) {

@@ -13,6 +13,7 @@
 use crate::{
     HasPersistence,
     definition::StackDefinition,
+    layer_context::{HasLayerContext, HasOutbox},
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     memory::MemoryMap,
     messages::{
@@ -22,7 +23,6 @@ use crate::{
         knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
     },
     objects::interface::HasDeviceObject,
-    router::Outbox,
 };
 
 use crate::logging::{debug, error, warn};
@@ -46,15 +46,14 @@ impl<D: StackDefinition> AlServiceExtension<D> for UserMemoryServiceExtension {
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
         ctx: &AlExtensionContext<'_, D>,
-        outbox: &mut Outbox,
     ) -> bool {
         match apci {
             ApciCode::UserMemoryRead => {
-                handle_user_memory_read::<D>(msg, ctx, outbox);
+                handle_user_memory_read::<D>(msg, ctx);
                 true
             }
             ApciCode::UserMemoryWrite => {
-                handle_user_memory_write::<D>(msg, ctx, outbox);
+                handle_user_memory_write::<D>(msg, ctx);
                 true
             }
             ApciCode::UserMemoryResponse => {
@@ -74,7 +73,6 @@ impl<D: StackDefinition> AlServiceExtension<D> for UserMemoryServiceExtension {
 fn handle_user_memory_read<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
 ) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL UserMemory_Read rejected: connection-oriented only");
@@ -108,14 +106,13 @@ fn handle_user_memory_read<D: StackDefinition>(
     });
 
     debug!("AL sending UserMemory_Response: address=0x{:05X}, count={}", acc.full_address(), response_count);
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_UserMemory_Write.ind`
 fn handle_user_memory_write<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
 ) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL UserMemory_Write rejected: connection-oriented only");
@@ -170,10 +167,6 @@ fn handle_user_memory_write<D: StackDefinition>(
         UserMemoryResponse::write(buf, acc.addr_ext, response_count, acc.address_low, response_data);
     });
 
-    debug!(
-        "AL sending UserMemory_Response (verify): address=0x{:05X}, count={}",
-        acc.full_address(),
-        response_count
-    );
-    outbox.push(msg.into_inner());
+    debug!("AL sending UserMemory_Response (verify): address=0x{:05X}, count={}", acc.full_address(), response_count);
+    ctx.state.push_outbox(msg.into_inner());
 }

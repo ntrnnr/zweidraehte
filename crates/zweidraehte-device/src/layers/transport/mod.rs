@@ -41,13 +41,14 @@ use embassy_time::{Duration, Instant};
 use crate::{
     AccessSource, HasAuthorization, HasConnectionAuth, StackDefinition,
     address::IndividualAddress,
+    layer_context::{HasLayerContext, HasOutbox},
     messages::{
         buffers::Buffer,
         builder::ConfirmationExt,
         knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
     },
     objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
-    router::{Layer, Outbox},
+    router::Layer,
 };
 
 // ============================================================================
@@ -105,7 +106,7 @@ enum PendingNlRequest {
 ///
 /// In the router architecture, TL is a synchronous [`Layer`] that the
 /// router dispatches messages to based on ServiceType. TL pushes
-/// transformed messages to the [`Outbox`] for further routing. Timer-driven
+/// transformed messages to the outbox for further routing. Timer-driven
 /// timeout handling is integrated via [`next_deadline`](Layer::next_deadline)
 /// and [`poll`](Layer::poll).
 ///
@@ -207,16 +208,16 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     ///
     /// Sends `T_Disconnect` to each remote device and issues
     /// `T_Disconnect.ind` to the application layer via the outbox.
-    pub fn force_close_incoming(&mut self, outbox: &mut Outbox) {
+    pub fn force_close_incoming(&mut self) {
         let disconnected = self.connections.force_close_all_incoming();
         for addr in &disconnected {
             info!("TL: force-closing incoming connection from {} (cEMI TL takeover)", addr);
         }
         for addr in disconnected {
             // Notify the remote device
-            self.send_disconnect(addr, outbox);
+            self.send_disconnect(addr);
             // Notify the application layer
-            self.send_disconnect_indication(addr, outbox);
+            self.send_disconnect_indication(addr);
         }
     }
 }
@@ -247,7 +248,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
         ServiceType::T_Data_Req,
     ];
 
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         match msg.service_type() {
             // =================================================================
             // Indications from Network Layer (upward)
@@ -256,7 +257,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
             | ServiceType::N_Broadcast_Ind
             | ServiceType::N_SystemBroadcast_Ind
             | ServiceType::N_Data_Ind => {
-                self.handle_indication(msg, outbox);
+                self.handle_indication(msg);
             }
 
             // =================================================================
@@ -266,7 +267,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
             | ServiceType::N_GroupData_Con
             | ServiceType::N_Broadcast_Con
             | ServiceType::N_SystemBroadcast_Con => {
-                self.handle_nl_confirmation(msg, outbox);
+                self.handle_nl_confirmation(msg);
             }
 
             // =================================================================
@@ -279,7 +280,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
             | ServiceType::T_Connect_Req
             | ServiceType::T_Disconnect_Req
             | ServiceType::T_Data_Req => {
-                self.handle_request(msg, outbox);
+                self.handle_request(msg);
             }
 
             // Unreachable: the dispatch table only routes HANDLES to us.
@@ -291,8 +292,8 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
         self.connections.next_timeout_deadline()
     }
 
-    fn poll(&mut self, outbox: &mut Outbox) {
-        self.check_timeouts(outbox);
+    fn poll(&mut self) {
+        self.check_timeouts();
     }
 }
 
@@ -304,7 +305,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
 {
     /// Handle an indication from the network layer.
-    fn handle_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         debug!("TL indication: {:?}", msg);
 
         match msg.service_type() {
@@ -326,7 +327,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                     msg.set_connection_nr(conn_nr);
                     msg.set_service_type(ServiceType::T_GroupData_Ind);
                     debug!("TL -> AL: {:?}", msg);
-                    outbox.push(msg);
+                    self.state.push_outbox(msg);
                 }
             }
 
@@ -334,7 +335,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                 if let Some(Tpci::DataBroadcast) = msg.get_tpci() {
                     msg.set_service_type(ServiceType::T_Broadcast_Ind);
                     debug!("TL -> AL: {:?}", msg);
-                    outbox.push(msg);
+                    self.state.push_outbox(msg);
                 }
             }
 
@@ -342,7 +343,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                 if let Some(Tpci::DataSystemBroadcast) = msg.get_tpci() {
                     msg.set_service_type(ServiceType::T_SystemBroadcast_Ind);
                     debug!("TL -> AL: {:?}", msg);
-                    outbox.push(msg);
+                    self.state.push_outbox(msg);
                 }
             }
 
@@ -350,7 +351,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
             // Connection-oriented services (point-to-point)
             // ─────────────────────────────────────────────────────────────────
             ServiceType::N_Data_Ind => {
-                self.handle_connection_indication(msg, outbox);
+                self.handle_connection_indication(msg);
             }
 
             _ => {
@@ -360,7 +361,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     }
 
     /// Handle connection-oriented indications (N_Data_Ind).
-    fn handle_connection_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_connection_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         use crate::messages::knx::offsets::MSG_TPCI;
 
         let tpci = match msg.get_tpci() {
@@ -415,7 +416,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                 // Unnumbered individual data — forward to application.
                 // Connectionless: AccessSource::Default is already set.
                 msg.set_service_type(ServiceType::T_DataUnack_Ind);
-                outbox.push(msg);
+                self.state.push_outbox(msg);
                 return;
             }
             _ => {
@@ -446,7 +447,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                 // reject it with T_Disconnect (KNX spec requirement).
                 if matches!(event, TlEvent::ReceivedConnect { .. }) {
                     debug!("TL rejecting connection from {} - already connected", source);
-                    self.send_disconnect(source, outbox);
+                    self.send_disconnect(source);
                     return;
                 }
                 // Per KNX conformance tests (2.5.1), we should NOT send a T_Disconnect
@@ -463,7 +464,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         let msg_for_data = if matches!(event, TlEvent::ReceivedData { .. }) { Some(msg) } else { None };
 
         // Execute actions
-        self.execute_actions(result, source, msg_for_data, outbox);
+        self.execute_actions(result, source, msg_for_data);
     }
 
     // ========================================================================
@@ -474,35 +475,35 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     ///
     /// Transforms T_*_Req into N_*_Req and pushes to the outbox for NL,
     /// tracking what kind of confirmation to expect.
-    fn handle_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         debug!("TL request: {:?}", msg);
 
         match msg.service_type() {
             // ─────────────────────────────────────────────────────────────────
             // Connectionless requests
             // ─────────────────────────────────────────────────────────────────
-            ServiceType::T_GroupData_Req => self.handle_group_data_request(msg, outbox),
-            ServiceType::T_Broadcast_Req => self.handle_broadcast_request(msg, outbox),
-            ServiceType::T_SystemBroadcast_Req => self.handle_system_broadcast_request(msg, outbox),
+            ServiceType::T_GroupData_Req => self.handle_group_data_request(msg),
+            ServiceType::T_Broadcast_Req => self.handle_broadcast_request(msg),
+            ServiceType::T_SystemBroadcast_Req => self.handle_system_broadcast_request(msg),
 
             // ─────────────────────────────────────────────────────────────────
             // Connectionless point-to-point (unacknowledged)
             // ─────────────────────────────────────────────────────────────────
-            ServiceType::T_DataUnack_Req => self.handle_data_unack_request(msg, outbox),
+            ServiceType::T_DataUnack_Req => self.handle_data_unack_request(msg),
 
             // ─────────────────────────────────────────────────────────────────
             // Connection-oriented requests
             // ─────────────────────────────────────────────────────────────────
-            ServiceType::T_Connect_Req => self.handle_connect_request(msg, outbox),
-            ServiceType::T_Disconnect_Req => self.handle_disconnect_request(msg, outbox),
-            ServiceType::T_Data_Req => self.handle_data_request(msg, outbox),
+            ServiceType::T_Connect_Req => self.handle_connect_request(msg),
+            ServiceType::T_Disconnect_Req => self.handle_disconnect_request(msg),
+            ServiceType::T_Data_Req => self.handle_data_request(msg),
 
             // ─────────────────────────────────────────────────────────────────
             // Unhandled — send error confirmation directly to AL
             // ─────────────────────────────────────────────────────────────────
             _ => {
                 warn!("TL unhandled request: {:?}", msg.service_type());
-                outbox.push(msg.error().build().into_inner());
+                self.state.push_outbox(msg.error().build().into_inner());
             }
         }
     }
@@ -511,7 +512,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     // Connectionless Request Handlers
     // ========================================================================
 
-    fn handle_group_data_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_group_data_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         trace!("T_GroupData_Req: {:?}", msg);
 
         let dst_addr = {
@@ -534,15 +535,15 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
             });
 
             debug!("TL -> NL: {:?}", msg);
-            outbox.push(msg);
+            self.state.push_outbox(msg);
         } else {
             // No valid address — send error confirmation directly to AL
             warn!("TL ADT not loaded or invalid conn_nr: {}", msg.get_connection_nr());
-            outbox.push(msg.error().build().into_inner());
+            self.state.push_outbox(msg.error().build().into_inner());
         }
     }
 
-    fn handle_broadcast_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_broadcast_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         msg.set_tpci(Tpci::DataBroadcast);
         msg.set_service_type(ServiceType::N_Broadcast_Req);
 
@@ -552,10 +553,10 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         });
 
         debug!("TL -> NL: {:?}", msg);
-        outbox.push(msg);
+        self.state.push_outbox(msg);
     }
 
-    fn handle_system_broadcast_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_system_broadcast_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         msg.set_tpci(Tpci::DataSystemBroadcast);
         msg.set_service_type(ServiceType::N_SystemBroadcast_Req);
 
@@ -565,10 +566,10 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         });
 
         debug!("TL -> NL: {:?}", msg);
-        outbox.push(msg);
+        self.state.push_outbox(msg);
     }
 
-    fn handle_data_unack_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_data_unack_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         msg.set_tpci(Tpci::DataIndividual);
         msg.set_service_type(ServiceType::N_Data_Req);
 
@@ -578,18 +579,18 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         });
 
         debug!("TL -> NL (unack): {:?}", msg);
-        outbox.push(msg);
+        self.state.push_outbox(msg);
     }
 
     // ========================================================================
     // Connection-Oriented Request Handlers
     // ========================================================================
 
-    fn handle_connect_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_connect_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
             _ => {
-                outbox.push(msg.error().build().into_inner());
+                self.state.push_outbox(msg.error().build().into_inner());
                 return;
             }
         };
@@ -598,24 +599,24 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         let conn = match self.connections.allocate_outgoing(dest) {
             Some(c) => c,
             None => {
-                outbox.push(msg.error().build().into_inner());
+                self.state.push_outbox(msg.error().build().into_inner());
                 return;
             }
         };
 
         // Process connect request through state machine
         let actions = process_event(conn, TlEvent::RequestConnect { dest }, self.style);
-        self.execute_actions(actions, dest, None, outbox);
+        self.execute_actions(actions, dest, None);
 
         // Send immediate confirmation to AL (connect is locally confirmed)
-        outbox.push(msg.confirm().build().into_inner());
+        self.state.push_outbox(msg.confirm().build().into_inner());
     }
 
-    fn handle_disconnect_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_disconnect_request(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
             _ => {
-                outbox.push(msg.error().build().into_inner());
+                self.state.push_outbox(msg.error().build().into_inner());
                 return;
             }
         };
@@ -623,18 +624,18 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         // Find the connection
         if let Some(conn) = self.connections.find_any(dest) {
             let actions = process_event(conn, TlEvent::RequestDisconnect { dest }, self.style);
-            self.execute_actions(actions, dest, None, outbox);
+            self.execute_actions(actions, dest, None);
         }
 
         // Send immediate confirmation to AL
-        outbox.push(msg.confirm().build().into_inner());
+        self.state.push_outbox(msg.confirm().build().into_inner());
     }
 
-    fn handle_data_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_data_request(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         let dest = match msg.get_dest_addr() {
             DestinationAddress::Individual(addr) => addr,
             _ => {
-                outbox.push(msg.error().build().into_inner());
+                self.state.push_outbox(msg.error().build().into_inner());
                 return;
             }
         };
@@ -643,7 +644,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         let conn = match self.connections.find_any(dest) {
             Some(c) => c,
             None => {
-                outbox.push(msg.error().build().into_inner());
+                self.state.push_outbox(msg.error().build().into_inner());
                 return;
             }
         };
@@ -662,14 +663,14 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                 conn.queued_outgoing = Some(msg);
             }
             // Execute remaining actions (state transition, timers)
-            self.execute_actions(actions, dest, None, outbox);
+            self.execute_actions(actions, dest, None);
 
             // Send immediate confirmation to AL (the actual send will happen later).
             // Use try_alloc — if no buffer available, the confirmation is skipped.
             // The data will still be sent when the pending ACK arrives.
             if let Some(confirm_buf) = self.buffer_manager.try_alloc_with_size(7) {
                 let confirmation = KnxMessageBuffer::new(confirm_buf, ServiceType::T_Data_Req);
-                outbox.push(confirmation.confirm().build().into_inner());
+                self.state.push_outbox(confirmation.confirm().build().into_inner());
             } else {
                 warn!("TL no buffer for queued data confirmation");
             }
@@ -701,7 +702,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         };
 
         // Execute other actions (start timer, etc.)
-        self.execute_actions(actions, dest, None, outbox);
+        self.execute_actions(actions, dest, None);
 
         if let Some(send_msg) = send_msg {
             // Track that we need to forward this confirmation to AL
@@ -709,7 +710,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
             // Send the copy to NL
             trace!("Transport layer sending data to Network layer: {:?}", send_msg);
-            outbox.push(send_msg);
+            self.state.push_outbox(send_msg);
         } else {
             warn!("TL no buffer for data send copy to {} — will retry on timeout", dest);
         }
@@ -720,7 +721,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     // ========================================================================
 
     /// Check for and handle all timeouts (ACK and connection).
-    fn check_timeouts(&mut self, outbox: &mut Outbox) {
+    fn check_timeouts(&mut self) {
         let now = Instant::now();
 
         // Process incoming connections
@@ -744,7 +745,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                         TimeoutType::Connection => TlEvent::ConnectionTimeout,
                     };
                     let actions = process_event(conn, event, self.style);
-                    self.execute_actions(actions, addr, None, outbox);
+                    self.execute_actions(actions, addr, None);
                 }
                 None => break,
             }
@@ -770,7 +771,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                         TimeoutType::Connection => TlEvent::ConnectionTimeout,
                     };
                     let actions = process_event(conn, event, self.style);
-                    self.execute_actions(actions, addr, None, outbox);
+                    self.execute_actions(actions, addr, None);
                 }
                 None => break,
             }
@@ -797,29 +798,28 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         result: ProcessResult,
         remote_addr: IndividualAddress,
         mut msg_for_data: Option<KnxMessageBuffer<Buffer<'static>>>,
-        outbox: &mut Outbox,
     ) {
         for action in result.actions.iter() {
             match action {
                 TlAction::SendConnect { dest } => {
-                    self.send_connect(dest, outbox);
+                    self.send_connect(dest);
                 }
                 TlAction::SendDisconnect { dest } => {
-                    self.send_disconnect(dest, outbox);
+                    self.send_disconnect(dest);
                 }
                 TlAction::SendAck { dest, seq_no } => {
-                    self.send_ack(dest, seq_no, outbox);
+                    self.send_ack(dest, seq_no);
                 }
                 TlAction::SendNack { dest, seq_no } => {
-                    self.send_nack(dest, seq_no, outbox);
+                    self.send_nack(dest, seq_no);
                 }
                 TlAction::IndicateConnected { source } => {
                     info!("TL connection established with {}", source);
-                    self.send_connect_indication(source, outbox);
+                    self.send_connect_indication(source);
                 }
                 TlAction::IndicateDisconnected { source } => {
                     info!("TL connection closed with {}", source);
-                    self.send_disconnect_indication(source, outbox);
+                    self.send_disconnect_indication(source);
                 }
                 TlAction::IndicateData { source: _ } => {
                     if let Some(mut msg) = msg_for_data.take() {
@@ -832,7 +832,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                             msg.set_access_source(AccessSource::Connection(conn.slot_index));
                             msg.set_outgoing_tl_seq(conn.seq_no_send);
                         }
-                        outbox.push(msg);
+                        self.state.push_outbox(msg);
                     }
                 }
                 TlAction::QueueEvent { source: _ } => {
@@ -869,7 +869,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                             queued_msg.set_access_source(AccessSource::Connection(slot));
                             queued_msg.set_outgoing_tl_seq(conn.seq_no_send);
                             debug!("TL delivering queued data from {}", remote_addr);
-                            outbox.push(queued_msg);
+                            self.state.push_outbox(queued_msg);
                         }
                     }
                 }
@@ -920,7 +920,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                                     KnxMessageBuffer::new(retransmit_buffer, pending_msg.service_type());
                                 debug!("TL retransmitting: {:?}", retransmit_msg);
                                 let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
-                                outbox.push(retransmit_msg);
+                                self.state.push_outbox(retransmit_msg);
                             }
                             None => {
                                 warn!("TL skipping retransmit to {} (no free buffers)", dest);
@@ -983,7 +983,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                     Some(send_buffer) => {
                         let send_msg = KnxMessageBuffer::new(send_buffer, pending.service_type());
                         let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
-                        outbox.push(send_msg);
+                        self.state.push_outbox(send_msg);
                     }
                     None => {
                         warn!("TL no buffer for queued outgoing send to {} — will retry on timeout", remote_addr);
@@ -1001,7 +1001,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     ///
     /// Matches against the pending NL request FIFO to determine whether to
     /// forward the confirmation to AL or just drop it (fire-and-forget).
-    fn handle_nl_confirmation(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_nl_confirmation(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         debug!("TL NL confirmation: {:?}", msg);
 
         match self.pending_nl.pop_front() {
@@ -1010,11 +1010,11 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                 if connection_nr != 0 {
                     msg.set_connection_nr(connection_nr);
                 }
-                outbox.push(msg);
+                self.state.push_outbox(msg);
             }
             Some(PendingNlRequest::ConnectedData) => {
                 msg.set_service_type(ServiceType::T_Data_Con);
-                outbox.push(msg);
+                self.state.push_outbox(msg);
             }
             Some(PendingNlRequest::FireAndForget) => {
                 // Confirmation for a fire-and-forget request — just drop it
@@ -1034,7 +1034,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     ///
     /// Uses `try_alloc` — if no buffer is available, the connect is skipped.
     /// The connection timeout will eventually clean up the failed connection.
-    fn send_connect(&mut self, dest: IndividualAddress, outbox: &mut Outbox) {
+    fn send_connect(&mut self, dest: IndividualAddress) {
         use crate::messages::builder::MessageBuilder;
 
         // Control PDUs need only the basic header (7 bytes up to and including TPCI)
@@ -1056,13 +1056,13 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         debug!("TL sending T_Connect to {}", dest);
         let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
-        outbox.push(msg.into_inner());
+        self.state.push_outbox(msg.into_inner());
     }
 
     /// Send a T_Disconnect PDU to close a connection (fire-and-forget).
     ///
     /// Uses `try_alloc` — if no buffer is available, the disconnect is skipped.
-    fn send_disconnect(&mut self, dest: IndividualAddress, outbox: &mut Outbox) {
+    fn send_disconnect(&mut self, dest: IndividualAddress) {
         use crate::messages::builder::MessageBuilder;
 
         const CONTROL_PDU_LEN: usize = 7;
@@ -1083,14 +1083,14 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         debug!("TL sending T_Disconnect to {}", dest);
         let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
-        outbox.push(msg.into_inner());
+        self.state.push_outbox(msg.into_inner());
     }
 
     /// Synthesize a `T_Disconnect.ind` for the application layer.
     ///
     /// Used when force-closing incoming connections (e.g. when activating
     /// cEMI Transport Layer mode). This goes upward to AL, not to the wire.
-    pub(crate) fn send_disconnect_indication(&mut self, source: IndividualAddress, outbox: &mut Outbox) {
+    pub(crate) fn send_disconnect_indication(&mut self, source: IndividualAddress) {
         use crate::messages::builder::MessageBuilder;
 
         const CONTROL_PDU_LEN: usize = 7;
@@ -1110,14 +1110,14 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         .build();
 
         msg.set_service_type(ServiceType::T_Disconnect_Ind);
-        outbox.push(msg.into_inner());
+        self.state.push_outbox(msg.into_inner());
     }
 
     /// Synthesize a `T_Connect.ind` for the application layer.
     ///
     /// Used when activating cEMI Transport Layer mode to signal a
     /// synthetic connection to AL from the cEMI path.
-    pub(crate) fn send_connect_indication(&mut self, source: IndividualAddress, outbox: &mut Outbox) {
+    pub(crate) fn send_connect_indication(&mut self, source: IndividualAddress) {
         use crate::messages::builder::MessageBuilder;
 
         const CONTROL_PDU_LEN: usize = 7;
@@ -1137,14 +1137,14 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         .build();
 
         msg.set_service_type(ServiceType::T_Connect_Ind);
-        outbox.push(msg.into_inner());
+        self.state.push_outbox(msg.into_inner());
     }
 
     /// Send a T_ACK PDU to acknowledge received data (fire-and-forget).
     ///
     /// Uses `try_alloc` — if no buffer is available, the ACK is skipped.
     /// The remote will retransmit on timeout.
-    fn send_ack(&mut self, dest: IndividualAddress, seq_no: u8, outbox: &mut Outbox) {
+    fn send_ack(&mut self, dest: IndividualAddress, seq_no: u8) {
         use crate::messages::builder::MessageBuilder;
 
         const CONTROL_PDU_LEN: usize = 7;
@@ -1165,13 +1165,13 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         debug!("TL sending T_ACK({}) to {}", seq_no, dest);
         let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
-        outbox.push(msg.into_inner());
+        self.state.push_outbox(msg.into_inner());
     }
 
     /// Send a T_NACK PDU to signal an error in received data (fire-and-forget).
     ///
     /// Uses `try_alloc` — if no buffer is available, the NACK is skipped.
-    fn send_nack(&mut self, dest: IndividualAddress, seq_no: u8, outbox: &mut Outbox) {
+    fn send_nack(&mut self, dest: IndividualAddress, seq_no: u8) {
         use crate::messages::builder::MessageBuilder;
 
         const CONTROL_PDU_LEN: usize = 7;
@@ -1192,6 +1192,6 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         debug!("TL sending T_NACK({}) to {}", seq_no, dest);
         let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
-        outbox.push(msg.into_inner());
+        self.state.push_outbox(msg.into_inner());
     }
 }

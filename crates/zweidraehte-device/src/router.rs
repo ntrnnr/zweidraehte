@@ -35,11 +35,9 @@ pub trait Layer {
     /// at compile time.
     const HANDLES: &'static [ServiceType];
 
-    /// Process a message. Push any output messages to the outbox.
-    ///
-    /// The outbox messages carry their own ServiceType, which the router
-    /// uses to dispatch them to the next layer in the chain.
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox);
+    /// Process a message. Push any output messages to the shared outbox
+    /// via `state.layer_context().outbox`.
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>);
 
     /// Earliest deadline at which this layer wants a [`poll`](Self::poll)
     /// call. Returns `None` if no timer is needed.
@@ -53,8 +51,9 @@ pub trait Layer {
 
     /// Called when [`next_deadline`](Self::next_deadline) has elapsed.
     ///
-    /// Push any timer-triggered messages to the outbox.
-    fn poll(&mut self, _outbox: &mut Outbox) {}
+    /// Push any timer-triggered messages to the shared outbox
+    /// via `state.layer_context().outbox`.
+    fn poll(&mut self) {}
 
     /// One-time initialization called after layer construction but before
     /// the router loop starts.
@@ -194,7 +193,7 @@ pub trait LayerStack {
     const DISPATCH_TABLE: DispatchTable;
 
     /// Dispatch a message to the layer at the given index.
-    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox);
+    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>);
 
     /// Earliest deadline across all layers.
     fn next_deadline(&self) -> Option<Instant>;
@@ -204,7 +203,7 @@ pub trait LayerStack {
     /// Called by the router when the earliest deadline has elapsed. Since the
     /// router only reaches the timer arm when `Timer::at(earliest_deadline)`
     /// fires, all layers with deadlines at or before now are eligible.
-    fn poll(&mut self, outbox: &mut Outbox);
+    fn poll(&mut self);
 
     /// Initialize all layers. Called once before the router loop starts.
     fn init(&mut self);
@@ -230,8 +229,8 @@ pub trait LayerStack {
     /// Process a service input event.
     ///
     /// Called immediately after `recv_service_input` resolves with the
-    /// event it returned. Push any resulting messages to the outbox.
-    fn handle_service_input(&mut self, input: Self::ServiceInput, outbox: &mut Outbox);
+    /// event it returned.
+    fn handle_service_input(&mut self, input: Self::ServiceInput);
 
     /// Drain and handle [`StackEvent`]s emitted by layers during this
     /// dispatch cycle.
@@ -241,7 +240,7 @@ pub trait LayerStack {
     /// [`DeviceModel`](crate::device_model::DeviceModel).
     ///
     /// Default: no-op (plain tuple layer stacks have no event handler).
-    fn drain_events(&mut self, _outbox: &mut Outbox) {}
+    fn drain_events(&mut self) {}
 }
 
 // ============================================================================
@@ -275,10 +274,9 @@ macro_rules! impl_layer_stack {
                 &mut self,
                 layer_idx: u8,
                 msg: KnxMessageBuffer<Buffer<'static>>,
-                outbox: &mut Outbox,
             ) {
                 match layer_idx {
-                    $($idx => self.$idx.process(msg, outbox),)+
+                    $($idx => self.$idx.process(msg),)+
                     _ => unreachable!(),
                 }
             }
@@ -296,24 +294,10 @@ macro_rules! impl_layer_stack {
                 earliest
             }
 
-            fn poll(&mut self, outbox: &mut Outbox) {
-                // Poll every layer that has a pending deadline.
-                //
-                // We don't compare against a captured `now` because layers
-                // that want immediate polling return `Instant::now()` from
-                // `next_deadline()`. If we compared that against a `now`
-                // captured earlier, the fresh `Instant::now()` would always
-                // be slightly *after* the stale one, and the `d <= now` check
-                // would never pass.
-                //
-                // Instead, simply poll every layer that has *any* deadline.
-                // Layers with future deadlines (e.g. TL timeouts) won't
-                // reach this point because the router's `Timer::at(deadline)`
-                // hasn't fired yet — the select only reaches the timer arm
-                // when the earliest deadline has actually elapsed.
+            fn poll(&mut self) {
                 $(
                     if self.$idx.next_deadline().is_some() {
-                        self.$idx.poll(outbox);
+                        self.$idx.poll();
                     }
                 )+
             }
@@ -322,7 +306,7 @@ macro_rules! impl_layer_stack {
                 $(self.$idx.init();)+
             }
 
-            fn handle_service_input(&mut self, input: Self::ServiceInput, _outbox: &mut Outbox) {
+            fn handle_service_input(&mut self, input: Self::ServiceInput) {
                 match input {}
             }
         }
@@ -350,21 +334,13 @@ mod tests {
     struct NlHandler;
     impl Layer for NlHandler {
         const HANDLES: &'static [ServiceType] = &[ServiceType::L_Data_Ind];
-
-        fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-            msg.set_service_type(ServiceType::N_Data_Ind);
-            outbox.push(msg);
-        }
+        fn process(&mut self, _msg: KnxMessageBuffer<Buffer<'static>>) {}
     }
 
     struct TlHandler;
     impl Layer for TlHandler {
         const HANDLES: &'static [ServiceType] = &[ServiceType::N_Data_Ind];
-
-        fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-            msg.set_service_type(ServiceType::T_Data_Ind);
-            outbox.push(msg);
-        }
+        fn process(&mut self, _msg: KnxMessageBuffer<Buffer<'static>>) {}
     }
 
     struct AlHandler {
@@ -372,9 +348,7 @@ mod tests {
     }
     impl Layer for AlHandler {
         const HANDLES: &'static [ServiceType] = &[ServiceType::T_Data_Ind];
-
-        fn process(&mut self, _msg: KnxMessageBuffer<Buffer<'static>>, _outbox: &mut Outbox) {
-            // Terminal — consume the message, don't push anything.
+        fn process(&mut self, _msg: KnxMessageBuffer<Buffer<'static>>) {
             self.received += 1;
         }
     }

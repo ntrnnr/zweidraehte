@@ -14,6 +14,7 @@ use crate::{
     StackState,
     address::{GroupAddress, IndividualAddress},
     definition::StackDefinition,
+    layer_context::{HasLayerContext, HasOutbox},
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     messages::{
         apdu::device::{
@@ -24,7 +25,6 @@ use crate::{
         builder::MessageBuilder,
         knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
     },
-    router::Outbox,
 };
 
 use crate::logging::{debug, error, trace, warn};
@@ -44,11 +44,10 @@ impl<D: StackDefinition> AlServiceExtension<D> for IndividualAddressSerialNumber
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
         ctx: &AlExtensionContext<'_, D>,
-        outbox: &mut Outbox,
     ) -> bool {
         match apci {
             ApciCode::IndividualAddressSerialNumberRead => {
-                handle_read::<D>(msg, ctx, outbox);
+                handle_read::<D>(msg, ctx);
                 true
             }
             ApciCode::IndividualAddressSerialNumberWrite => {
@@ -64,11 +63,7 @@ impl<D: StackDefinition> AlServiceExtension<D> for IndividualAddressSerialNumber
     }
 }
 
-fn handle_read<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
-) {
+fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
     if ind.service_type() != ServiceType::T_Broadcast_Ind {
         warn!("AL IndividualAddressSerialNumberRead with unexpected service type: {:?}", ind.service_type());
         return;
@@ -103,7 +98,7 @@ fn handle_read<D: StackDefinition>(
     let serial: &[u8; 6] = ctx.state.serial_number();
     IndividualAddressSerialNumberResponse::write_serial(msg.buf_mut(), serial);
 
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {

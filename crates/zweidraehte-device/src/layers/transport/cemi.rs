@@ -33,11 +33,12 @@ use embassy_sync::channel::DynamicSender;
 use crate::{
     AccessSource, StackDefinition,
     address::IndividualAddress,
+    layer_context::{HasLayerContext, HasOutbox},
     messages::{
         buffers::Buffer,
         knx::{KnxMessageBuffer, ServiceType},
     },
-    router::{Layer, Outbox},
+    router::Layer,
 };
 
 use super::TransportLayer;
@@ -104,11 +105,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
         inner: TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>,
         response_sender: DynamicSender<'a, Buffer<'static>>,
     ) -> Self {
-        Self {
-            inner,
-            active: false,
-            response_sender,
-        }
+        Self { inner, active: false, response_sender }
     }
 
     /// Mutable access to the inner transport layer.
@@ -133,13 +130,13 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     ///    `T_Disconnect` to remote devices and `T_Disconnect.ind` to AL).
     /// 2. Lock incoming connections so the bus TL rejects new `T_Connect`.
     /// 3. Synthesize `T_Connect.ind` to AL for the cEMI path.
-    fn activate(&mut self, outbox: &mut Outbox) {
+    fn activate(&mut self) {
         if self.active {
             return;
         }
 
         info!("cEMI TL: activating");
-        self.inner.force_close_incoming(outbox);
+        self.inner.force_close_incoming();
         self.inner.lock_incoming();
         self.active = true;
 
@@ -148,32 +145,32 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         // for the cEMI client, and AL doesn't use the source address for
         // anything beyond building response destination (which we
         // intercept anyway).
-        self.inner.send_connect_indication(CEMI_PSEUDO_ADDR, outbox);
+        self.inner.send_connect_indication(CEMI_PSEUDO_ADDR);
     }
 
     /// Deactivate cEMI Transport Layer mode.
     ///
     /// 1. Synthesize `T_Disconnect.ind` to AL for the cEMI path.
     /// 2. Unlock incoming connections so bus TL accepts `T_Connect` again.
-    fn deactivate(&mut self, outbox: &mut Outbox) {
+    fn deactivate(&mut self) {
         if !self.active {
             return;
         }
 
         info!("cEMI TL: deactivating");
         self.active = false;
-        self.inner.send_disconnect_indication(CEMI_PSEUDO_ADDR, outbox);
+        self.inner.send_disconnect_indication(CEMI_PSEUDO_ADDR);
         self.inner.unlock_incoming();
     }
 
     /// Handle a cEMI event from the DevMgmt handler.
     ///
     /// Called by the `LayerStack` implementation's `handle_service_input`.
-    pub fn handle_cemi_event(&mut self, event: CemiEvent, outbox: &mut Outbox) {
+    pub fn handle_cemi_event(&mut self, event: CemiEvent) {
         match event {
-            CemiEvent::Activate => self.activate(outbox),
-            CemiEvent::Deactivate => self.deactivate(outbox),
-            CemiEvent::Frame(buf) => self.inject_cemi_frame(buf, outbox),
+            CemiEvent::Activate => self.activate(),
+            CemiEvent::Deactivate => self.deactivate(),
+            CemiEvent::Frame(buf) => self.inject_cemi_frame(buf),
         }
     }
 
@@ -198,7 +195,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     /// Byte 5:     NPDU (hop count, address type)
     /// Byte 6+:    TPCI/APCI + data
     /// ```
-    fn inject_cemi_frame(&mut self, buf: Buffer<'static>, outbox: &mut Outbox) {
+    fn inject_cemi_frame(&mut self, buf: Buffer<'static>) {
         if !self.active {
             warn!("cEMI TL: frame received while inactive, dropping");
             return;
@@ -264,7 +261,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_Data_Ind);
         msg.set_access_source(AccessSource::Explicit(crate::AccessContext::MAX_ACCESS));
 
-        outbox.push(msg);
+        self.inner.state.push_outbox(msg);
     }
 }
 
@@ -281,25 +278,19 @@ const CEMI_PSEUDO_ADDR: IndividualAddress = IndividualAddress::new(0, 0, 0);
 // Layer impl — delegates to inner TransportLayer with interception
 // ============================================================================
 
-impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
-    Layer for CemiTransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
+impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> Layer
+    for CemiTransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
 {
     // Register for exactly the same ServiceTypes as the inner TransportLayer.
     const HANDLES: &'static [ServiceType] = TransportLayer::<'_, D, MAX_INCOMING, MAX_OUTGOING>::HANDLES;
 
-    fn process(
-        &mut self,
-        msg: KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-    ) {
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         // When cEMI TL is active, intercept connection-oriented requests
         // from AL and route them to the cEMI response channel instead of
         // the bus. Everything else always delegates to the inner TL.
         if self.active {
             match msg.service_type() {
-                ServiceType::T_Data_Req
-                | ServiceType::T_Connect_Req
-                | ServiceType::T_Disconnect_Req => {
+                ServiceType::T_Data_Req | ServiceType::T_Connect_Req | ServiceType::T_Disconnect_Req => {
                     self.intercept_al_request(msg);
                     return;
                 }
@@ -307,15 +298,15 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
             }
         }
 
-        self.inner.process(msg, outbox);
+        self.inner.process(msg);
     }
 
     fn next_deadline(&self) -> Option<embassy_time::Instant> {
         self.inner.next_deadline()
     }
 
-    fn poll(&mut self, outbox: &mut Outbox) {
-        self.inner.poll(outbox);
+    fn poll(&mut self) {
+        self.inner.poll();
     }
 
     fn init(&mut self) {
@@ -352,13 +343,9 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
             }
             ServiceType::T_Connect_Req | ServiceType::T_Disconnect_Req => {
                 // Silently absorb — cEMI TL lifecycle is not driven by AL.
-                trace!(
-                    "cEMI TL: absorbing {:?} from AL (lifecycle managed by DevMgmt)",
-                    msg.service_type()
-                );
+                trace!("cEMI TL: absorbing {:?} from AL (lifecycle managed by DevMgmt)", msg.service_type());
             }
             _ => unreachable!(),
         }
     }
 }
-

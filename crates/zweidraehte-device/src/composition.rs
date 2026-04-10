@@ -360,16 +360,16 @@ impl<'a, D: StackDefinition, TL: router::Layer + HandlesCemiEvent> LayerStack fo
         <Inner<'_, D, TL> as LayerStack>::DISPATCH_TABLE
     };
 
-    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut router::Outbox) {
-        self.layers.dispatch(layer_idx, msg, outbox);
+    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>) {
+        self.layers.dispatch(layer_idx, msg);
     }
 
     fn next_deadline(&self) -> Option<embassy_time::Instant> {
         self.layers.next_deadline()
     }
 
-    fn poll(&mut self, outbox: &mut router::Outbox) {
-        self.layers.poll(outbox);
+    fn poll(&mut self) {
+        self.layers.poll();
     }
 
     fn init(&mut self) {
@@ -400,19 +400,19 @@ impl<'a, D: StackDefinition, TL: router::Layer + HandlesCemiEvent> LayerStack fo
         }
     }
 
-    fn handle_service_input(&mut self, input: ServiceInput, outbox: &mut router::Outbox) {
+    fn handle_service_input(&mut self, input: ServiceInput) {
         match input {
             ServiceInput::AppRequest(req) => {
-                self.layers.2.handle_app_request(&req, outbox);
+                self.layers.2.handle_app_request(&req);
             }
             #[cfg(feature = "knxip")]
             ServiceInput::CemiEvent(evt) => {
-                self.layers.1.handle_cemi_event(evt, outbox);
+                self.layers.1.handle_cemi_event(evt);
             }
         }
     }
 
-    fn drain_events(&mut self, _outbox: &mut router::Outbox) {
+    fn drain_events(&mut self) {
         self.device_model.drain_dm_events();
     }
 }
@@ -430,7 +430,7 @@ impl<'a, D: StackDefinition, TL: router::Layer + HandlesCemiEvent> LayerStack fo
 /// each transport layer to opt in.
 #[cfg(feature = "knxip")]
 pub(crate) trait HandlesCemiEvent {
-    fn handle_cemi_event(&mut self, event: CemiEvent, outbox: &mut router::Outbox);
+    fn handle_cemi_event(&mut self, event: CemiEvent);
 }
 
 #[cfg(not(feature = "knxip"))]
@@ -441,14 +441,14 @@ impl<T> HandlesCemiEvent for T {}
 
 #[cfg(feature = "knxip")]
 impl<D: StackDefinition, const MI: usize, const MO: usize> HandlesCemiEvent for CemiTransportLayer<'_, D, MI, MO> {
-    fn handle_cemi_event(&mut self, event: CemiEvent, outbox: &mut router::Outbox) {
-        self.handle_cemi_event(event, outbox);
+    fn handle_cemi_event(&mut self, event: CemiEvent) {
+        self.handle_cemi_event(event);
     }
 }
 
 #[cfg(feature = "knxip")]
 impl<D: StackDefinition, const MI: usize, const MO: usize> HandlesCemiEvent for TransportLayer<'_, D, MI, MO> {
-    fn handle_cemi_event(&mut self, _event: CemiEvent, _outbox: &mut router::Outbox) {
+    fn handle_cemi_event(&mut self, _event: CemiEvent) {
         // StandardDeviceLayers uses TransportLayer which never receives
         // cEMI events (the cemi_rx is None), so this is unreachable.
         unreachable!("TransportLayer does not handle cEMI events");
@@ -542,16 +542,16 @@ where
         <Inner<'_, D, TL> as LayerStack>::DISPATCH_TABLE
     };
 
-    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut router::Outbox) {
-        self.layers.dispatch(layer_idx, msg, outbox);
+    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>) {
+        self.layers.dispatch(layer_idx, msg);
     }
 
     fn next_deadline(&self) -> Option<embassy_time::Instant> {
         self.layers.next_deadline()
     }
 
-    fn poll(&mut self, outbox: &mut router::Outbox) {
-        self.layers.poll(outbox);
+    fn poll(&mut self) {
+        self.layers.poll();
     }
 
     fn init(&mut self) {
@@ -581,19 +581,19 @@ where
         }
     }
 
-    fn handle_service_input(&mut self, input: ServiceInput, outbox: &mut router::Outbox) {
+    fn handle_service_input(&mut self, input: ServiceInput) {
         match input {
             ServiceInput::AppRequest(req) => {
-                self.layers.2.handle_app_request(&req, outbox);
+                self.layers.2.handle_app_request(&req);
             }
             #[cfg(feature = "knxip")]
             ServiceInput::CemiEvent(evt) => {
-                self.layers.1.handle_cemi_event(evt, outbox);
+                self.layers.1.handle_cemi_event(evt);
             }
         }
     }
 
-    fn drain_events(&mut self, _outbox: &mut router::Outbox) {
+    fn drain_events(&mut self) {
         self.device_model.drain_dm_events();
     }
 }

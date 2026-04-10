@@ -27,6 +27,7 @@ use crate::{
     AccessContext, AccessSource, HasAuthorization, HasConnectionAuth, StackDefinition, StackState,
     actor::Request,
     address::GroupAddress,
+    layer_context::{HasLayerContext, HasOutbox},
     messages::{
         buffers::{Buffer, DynBufferManager},
         builder::MessageBuilder,
@@ -41,7 +42,7 @@ use crate::{
         },
     },
     restart::{EraseCode, RestartError, RestartRequest},
-    router::{Layer, Outbox},
+    router::Layer,
 };
 
 // ============================================================================
@@ -222,7 +223,7 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
         ServiceType::T_DataUnack_Con,
     ];
 
-    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         match msg.service_type() {
             // =================================================================
             // Confirmations from TL — complete pending group sends
@@ -258,29 +259,29 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
                 match apci {
                     // --- Group Communication ---
                     a @ (ApciCode::GroupValueWrite | ApciCode::GroupValueResponse) => {
-                        self.handle_group_value_write_or_response(&mut msg, a, outbox);
+                        self.handle_group_value_write_or_response(&mut msg, a);
                     }
                     ApciCode::GroupValueRead => {
-                        self.handle_group_value_read(&msg, outbox);
+                        self.handle_group_value_read(&msg);
                     }
 
                     // --- Property Services ---
                     ApciCode::PropertyDescriptionRead => {
-                        self.handle_property_description_read(&msg, outbox);
+                        self.handle_property_description_read(&msg);
                     }
                     ApciCode::PropertyValueRead => {
-                        self.handle_property_value_read(&msg, outbox);
+                        self.handle_property_value_read(&msg);
                     }
                     ApciCode::PropertyValueWrite => {
-                        self.handle_property_value_write(&msg, outbox);
+                        self.handle_property_value_write(&msg);
                     }
 
                     // --- Function Property Services ---
                     ApciCode::FunctionPropertyCommand => {
-                        self.handle_function_property_command(&msg, outbox);
+                        self.handle_function_property_command(&msg);
                     }
                     ApciCode::FunctionPropertyStateRead => {
-                        self.handle_function_property_state_read(&msg, outbox);
+                        self.handle_function_property_state_read(&msg);
                     }
                     // FunctionPropertyStateResponse is a response APCI — ignore if received.
                     ApciCode::FunctionPropertyStateResponse => {
@@ -289,16 +290,16 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
 
                     // --- Device Management ---
                     ApciCode::DeviceDescriptorRead => {
-                        self.handle_device_descriptor_read(&msg, outbox);
+                        self.handle_device_descriptor_read(&msg);
                     }
                     ApciCode::IndividualAddressRead => {
-                        self.handle_individual_address_read(&msg, outbox);
+                        self.handle_individual_address_read(&msg);
                     }
                     ApciCode::IndividualAddressWrite => {
-                        self.handle_individual_address_write(&msg, outbox);
+                        self.handle_individual_address_write(&msg);
                     }
                     ApciCode::Restart => {
-                        self.handle_restart(&msg, outbox);
+                        self.handle_restart(&msg);
                     }
                     _ => {
                         use crate::layers::application::extensions::{AlExtensionContext, AlServiceExtension as _};
@@ -310,7 +311,7 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
                             comm_objects: self.state.comm_objects(),
                             access_ctx,
                         };
-                        if !self.extension.try_handle(apci, &msg, &ctx, outbox) {
+                        if !self.extension.try_handle(apci, &msg, &ctx) {
                             warn!("Unhandled APCI code: {:?}", msg.get_apci_code());
                         }
                     }
@@ -342,7 +343,7 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
         }
     }
 
-    fn poll(&mut self, outbox: &mut Outbox) {
+    fn poll(&mut self) {
         // Reset Done → Idle when the app stops, so the next startup triggers
         // a fresh ROI scan.
         if self.read_on_init == ReadOnInitState::Done && !self.state.app().borrow().is_running() {
@@ -360,7 +361,7 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
             self.read_on_init = ReadOnInitState::Scanning(1);
         }
 
-        self.read_on_init_step(outbox);
+        self.read_on_init_step();
     }
 }
 
@@ -395,16 +396,12 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     ///
     /// Called by the router when an app request arrives (not via the dispatch
     /// table, since these aren't KnxMessageBuffer messages).
-    pub fn handle_app_request(
-        &mut self,
-        request: &Request<ApplicationLayerService, ApplicationLayerServiceResponse>,
-        outbox: &mut Outbox,
-    ) {
+    pub fn handle_app_request(&mut self, request: &Request<ApplicationLayerService, ApplicationLayerServiceResponse>) {
         match request.get() {
             r @ ApplicationLayerService::GroupValueWriteRequest(asap) => {
                 debug!("AL GroupValueWrite.req: {:?}", r);
 
-                let response = if self.send_group_value_request(*asap, false, outbox) {
+                let response = if self.send_group_value_request(*asap, false) {
                     ApplicationLayerServiceResponse::GroupValueWriteResponse
                 } else {
                     ApplicationLayerServiceResponse::ApplicationNotRunning
@@ -414,7 +411,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             r @ ApplicationLayerService::GroupValueReadRequest(asap) => {
                 debug!("AL GroupValueRead.req: {:?}", r);
 
-                let response = if self.send_group_value_request(*asap, true, outbox) {
+                let response = if self.send_group_value_request(*asap, true) {
                     ApplicationLayerServiceResponse::GroupValueReadResponse
                 } else {
                     ApplicationLayerServiceResponse::ApplicationNotRunning
@@ -440,12 +437,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     ///
     /// Updates local communication objects with values received from the bus.
     /// Only valid for `T_GroupData_Ind` service type.
-    fn handle_group_value_write_or_response(
-        &mut self,
-        ind: &mut KnxMessageBuffer<Buffer<'static>>,
-        apci: ApciCode,
-        _outbox: &mut Outbox,
-    ) {
+    fn handle_group_value_write_or_response(&mut self, ind: &mut KnxMessageBuffer<Buffer<'static>>, apci: ApciCode) {
         // Validate service type
         if ind.service_type() != ServiceType::T_GroupData_Ind {
             warn!("AL {:?} with unexpected service type: {:?}", apci, ind.service_type());
@@ -565,7 +557,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     ///
     /// Responds with the current value of the communication object.
     /// Only valid for `T_GroupData_Ind` service type.
-    fn handle_group_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_group_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
         // Validate service type
         if ind.service_type() != ServiceType::T_GroupData_Ind {
             warn!("AL GroupValueRead with unexpected service type: {:?}", ind.service_type());
@@ -646,7 +638,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     .copy_from_slice(self.state.comm_objects().borrow().value(asap));
             });
 
-            outbox.push(msg.into_inner());
+            self.state.push_outbox(msg.into_inner());
 
             trace!(
                 "AL sent GroupValueResponse for ASAP {}: {:?}",
@@ -666,7 +658,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Called when the local application wants to send a group value to the bus.
     /// Returns `true` if the request was processed, `false` if rejected because
     /// the application is not running.
-    fn send_group_value_request(&mut self, asap: u16, read: bool, outbox: &mut Outbox) -> bool {
+    fn send_group_value_request(&mut self, asap: u16, read: bool) -> bool {
         // Check if application is running before sending group data
         if !self.state.app().borrow().is_running() {
             debug!("AL GroupValue request ignored: application not running");
@@ -780,7 +772,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
             // Send fire-and-forget to TL — confirmation handled in handle_tl_confirmation
             debug!("AL -> TL: GroupValue {} ASAP {} TSAP {}", if read { "Read" } else { "Write" }, asap, tsap);
-            outbox.push(msg.into_inner());
+            self.state.push_outbox(msg.into_inner());
         } else {
             // No sending TSAP found - error
             let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
@@ -812,7 +804,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// or not linked) are left untouched — they keep their current status.
     /// In particular, non-ROI objects stay `Uninitialized` until they
     /// actually receive a value via a write or response from the bus.
-    fn read_on_init_step(&mut self, outbox: &mut Outbox) {
+    fn read_on_init_step(&mut self) {
         let ReadOnInitState::Scanning(start) = self.read_on_init else {
             return;
         };
@@ -864,7 +856,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             // asynchronously when the TL confirmation arrives on conf_rx.
             info!("AL read-on-init: sending GroupValueRead for ASAP {}", asap);
             self.state.comm_objects().borrow_mut().set_status(asap, ComObjectStatus::ReadRequest);
-            self.send_group_value_request(asap, true, outbox);
+            self.send_group_value_request(asap, true);
 
             // Save cursor for next call and return (one object per step)
             self.read_on_init = ReadOnInitState::Scanning(cursor);
@@ -903,7 +895,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[4]: Property Index
     /// - APDU[5-6]: Type + MaxElements
     /// - APDU[7]: Read/Write Access Levels
-    fn handle_property_description_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_property_description_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
         use crate::messages::{
             apdu::property::{PropertyDescriptionRead, PropertyDescriptionResponse},
             builder::IndicationExt,
@@ -969,7 +961,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 );
 
                 debug!("AL sending PropertyDescriptionResponse: {:?}", desc);
-                outbox.push(msg.into_inner());
+                self.state.push_outbox(msg.into_inner());
             }
             Err(e) => {
                 warn!("AL PropertyDescriptionRead failed: {:?}", e);
@@ -986,7 +978,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     },
                 );
 
-                outbox.push(msg.into_inner());
+                self.state.push_outbox(msg.into_inner());
             }
         }
     }
@@ -1011,7 +1003,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[3]: Property ID
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits]
     /// - APDU[6..]: Data
-    fn handle_property_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_property_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
         use crate::messages::{
             apdu::property::{PropertyValueHeader, PropertyValueResponse},
             builder::IndicationExt,
@@ -1069,7 +1061,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     });
 
                 debug!("AL sending PropertyValueResponse: {} bytes", data_len);
-                outbox.push(msg.into_inner());
+                self.state.push_outbox(msg.into_inner());
             }
             Err(e) => {
                 warn!("AL PropertyValueRead failed: {:?}", e);
@@ -1085,7 +1077,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                         PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
                     });
 
-                outbox.push(msg.into_inner());
+                self.state.push_outbox(msg.into_inner());
             }
         }
     }
@@ -1111,7 +1103,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[3]: Property ID
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits] (count=0 on error)
     /// - APDU[6..]: Written data (echo back on success)
-    fn handle_property_value_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_property_value_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
         use crate::messages::{
             apdu::property::{PropertyValueHeader, PropertyValueResponse},
             builder::IndicationExt,
@@ -1173,7 +1165,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     });
 
                 debug!("AL sending PropertyValueResponse (write success): {} bytes", response_data.len());
-                outbox.push(msg.into_inner());
+                self.state.push_outbox(msg.into_inner());
             }
             Err(e) => {
                 warn!("AL PropertyValueWrite failed: {:?}", e);
@@ -1189,7 +1181,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                         PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
                     });
 
-                outbox.push(msg.into_inner());
+                self.state.push_outbox(msg.into_inner());
             }
         }
     }
@@ -1201,25 +1193,20 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Handle `A_FunctionPropertyCommand.ind`
-    fn handle_function_property_command(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-        self.handle_function_property(ind, outbox, true);
+    fn handle_function_property_command(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
+        self.handle_function_property(ind, true);
     }
 
     /// Handle `A_FunctionPropertyState_Read.ind`
-    fn handle_function_property_state_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
-        self.handle_function_property(ind, outbox, false);
+    fn handle_function_property_state_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
+        self.handle_function_property(ind, false);
     }
 
     /// Shared implementation for function property command and state read.
     ///
     /// Both services share the same wire format and response format, differing
     /// only in which trait method is called on the interface objects.
-    fn handle_function_property(
-        &mut self,
-        ind: &KnxMessageBuffer<Buffer<'static>>,
-        outbox: &mut Outbox,
-        is_command: bool,
-    ) {
+    fn handle_function_property(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, is_command: bool) {
         use crate::messages::{
             apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse as FpResponseWriter},
             builder::IndicationExt,
@@ -1279,7 +1266,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             result.return_code,
             response_data.len()
         );
-        outbox.push(msg.into_inner());
+        self.state.push_outbox(msg.into_inner());
     }
 }
 
@@ -1303,7 +1290,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Response format:
     /// - APDU[0-1]: APCI (DeviceDescriptorResponse with descriptor type in low 6 bits)
     /// - APDU[2-3]: Mask version (only if descriptor type is 0)
-    fn handle_device_descriptor_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_device_descriptor_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
         use crate::messages::{
             apdu::device::{DeviceDescriptorRead, DeviceDescriptorResponse},
             builder::IndicationExt,
@@ -1344,7 +1331,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             });
 
             debug!("AL sending DeviceDescriptorResponse: mask_version={}", D::DEVICE.mask_version);
-            outbox.push(msg.into_inner());
+            self.state.push_outbox(msg.into_inner());
         } else if req.descriptor_type == 2 {
             if let Some(dd2) = D::DEVICE_DESCRIPTOR_TYPE2 {
                 let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(DeviceDescriptorResponse::TYPE2_MSG_LEN)
@@ -1360,17 +1347,17 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     });
 
                 debug!("AL sending DeviceDescriptorResponse (DD2): {:?}", zweidraehte_util::fmt::Bytes(dd2));
-                outbox.push(msg.into_inner());
+                self.state.push_outbox(msg.into_inner());
             } else {
-                self.send_dd_error(ind, outbox);
+                self.send_dd_error(ind);
             }
         } else {
-            self.send_dd_error(ind, outbox);
+            self.send_dd_error(ind);
         }
     }
 
     /// Send a DeviceDescriptorResponse error (descriptor_type = 0x3F).
-    fn send_dd_error(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn send_dd_error(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
         use crate::messages::{apdu::device::DeviceDescriptorResponse, builder::IndicationExt};
 
         let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(DeviceDescriptorResponse::ERROR_MSG_LEN) else {
@@ -1383,7 +1370,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         });
 
         debug!("AL sending DeviceDescriptorResponse (error): descriptor_type=0x3F");
-        outbox.push(msg.into_inner());
+        self.state.push_outbox(msg.into_inner());
     }
 
     /// Handle `A_IndividualAddress_Read.ind`
@@ -1399,7 +1386,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     ///
     /// Note: The individual address is taken from the source address field of the
     /// response frame, not from the APDU payload.
-    fn handle_individual_address_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_individual_address_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
         use crate::messages::{apdu::device, builder::MessageBuilder};
 
         if ind.service_type() != ServiceType::T_Broadcast_Ind {
@@ -1430,7 +1417,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         .build();
 
         debug!("AL sending IndividualAddressResponse");
-        outbox.push(msg.into_inner());
+        self.state.push_outbox(msg.into_inner());
     }
 
     /// Handle `A_IndividualAddress_Write.ind`
@@ -1443,7 +1430,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[2-3]: New individual address (2 bytes, big-endian)
     ///
     /// Per KNX spec, this service only takes effect when the device is in programming mode.
-    fn handle_individual_address_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, _outbox: &mut Outbox) {
+    fn handle_individual_address_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
         use crate::{address::IndividualAddress, messages::apdu::device::IndividualAddressWrite};
 
         if ind.service_type() != ServiceType::T_Broadcast_Ind {
@@ -1486,7 +1473,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - Master reset: APDU[0-1] = APCI (0x0381), APDU[2] = erase_code, APDU[3] = channel
     ///
     /// Response (for master reset): APDU[0-1] = APCI (0x03A1), APDU[2] = error, APDU[3-4] = process_time
-    fn handle_restart(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, outbox: &mut Outbox) {
+    fn handle_restart(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
         use crate::messages::apdu::restart::RestartParsed;
 
         let Some(parsed) = RestartParsed::parse(ind.buf()) else {
@@ -1509,7 +1496,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         if matches!(erase_code, EraseCode::Other(_)) {
             warn!("AL Restart: unsupported erase code {:?}", erase_code);
             if needs_response {
-                self.send_restart_response(ind, RestartError::UnsupportedEraseCode, 0, outbox);
+                self.send_restart_response(ind, RestartError::UnsupportedEraseCode, 0);
             }
             return;
         }
@@ -1517,7 +1504,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         if channel != 0 {
             warn!("AL Restart: invalid channel number {}", channel);
             if needs_response {
-                self.send_restart_response(ind, RestartError::InvalidChannel, 0, outbox);
+                self.send_restart_response(ind, RestartError::InvalidChannel, 0);
             }
             return;
         }
@@ -1530,7 +1517,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&restart_ctx, security_on) {
             warn!("AL Restart: access denied by security policy ({:?}, sec_on={})", restart_ctx, security_on);
             if needs_response {
-                self.send_restart_response(ind, RestartError::AccessDenied, 0, outbox);
+                self.send_restart_response(ind, RestartError::AccessDenied, 0);
             }
             return;
         }
@@ -1544,7 +1531,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         if !restart_ctx.has_level(required_level) {
             warn!("AL Restart: access denied ({:?}, required={})", restart_ctx, required_level);
             if needs_response {
-                self.send_restart_response(ind, RestartError::AccessDenied, 0, outbox);
+                self.send_restart_response(ind, RestartError::AccessDenied, 0);
             }
             return;
         }
@@ -1554,7 +1541,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         self.restart_sender.try_send(request).ok();
 
         if needs_response {
-            self.send_restart_response(ind, RestartError::NoError, 0, outbox);
+            self.send_restart_response(ind, RestartError::NoError, 0);
         }
     }
 
@@ -1564,7 +1551,6 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         ind: &KnxMessageBuffer<Buffer<'static>>,
         error: RestartError,
         process_time_100ms: u16,
-        outbox: &mut Outbox,
     ) {
         use crate::messages::{apdu::restart::RestartResponse, builder::IndicationExt};
 
@@ -1578,7 +1564,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         });
 
         debug!("AL sending Restart_Response: error={}, process_time={}ms", error, process_time_100ms as u32 * 100);
-        outbox.push(msg.into_inner());
+        self.state.push_outbox(msg.into_inner());
     }
 }
 

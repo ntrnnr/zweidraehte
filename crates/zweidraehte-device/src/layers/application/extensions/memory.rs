@@ -13,6 +13,7 @@
 use crate::{
     HasPersistence,
     definition::StackDefinition,
+    layer_context::{HasLayerContext, HasOutbox},
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     memory::MemoryMap,
     messages::{
@@ -22,7 +23,6 @@ use crate::{
         knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
     },
     objects::interface::HasDeviceObject,
-    router::Outbox,
 };
 
 use crate::logging::{debug, error, warn};
@@ -47,19 +47,18 @@ impl<D: StackDefinition> AlServiceExtension<D> for MemoryServiceExtension {
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
         ctx: &AlExtensionContext<'_, D>,
-        outbox: &mut Outbox,
     ) -> bool {
         match apci {
             ApciCode::MemoryRead => {
-                handle_memory_read::<D>(msg, ctx, outbox);
+                handle_memory_read::<D>(msg, ctx);
                 true
             }
             ApciCode::MemoryWrite => {
-                handle_memory_write::<D>(msg, ctx, outbox);
+                handle_memory_write::<D>(msg, ctx);
                 true
             }
             ApciCode::MemoryBitWrite => {
-                handle_memorybit_write::<D>(msg, ctx, outbox);
+                handle_memorybit_write::<D>(msg, ctx);
                 true
             }
             // Response APCI — we are the responder, ignore if received.
@@ -79,11 +78,7 @@ impl<D: StackDefinition> AlServiceExtension<D> for MemoryServiceExtension {
 /// Handle `A_Memory_Read.ind`
 ///
 /// Reads up to 63 bytes from device memory at the specified 16-bit address.
-fn handle_memory_read<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
-) {
+fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL Memory_Read rejected: connection-oriented only");
         return;
@@ -114,18 +109,14 @@ fn handle_memory_read<D: StackDefinition>(
     });
 
     debug!("AL sending Memory_Response: address=0x{:04X}, count={}", acc.address, response_count);
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_Memory_Write.ind`
 ///
 /// Writes to device memory at the specified 16-bit address. If the Verify
 /// flag is set in DEVICE_CONTROL (PID 14), a Memory_Response is sent back.
-fn handle_memory_write<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
-) {
+fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL Memory_Write rejected: connection-oriented only");
         return;
@@ -181,7 +172,7 @@ fn handle_memory_write<D: StackDefinition>(
     });
 
     debug!("AL sending Memory_Response (verify): address=0x{:04X}, count={}", acc.address, response_count);
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_MemoryBit_Write.ind`
@@ -193,7 +184,6 @@ fn handle_memory_write<D: StackDefinition>(
 fn handle_memorybit_write<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
 ) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL MemoryBit_Write rejected: connection-oriented only");
@@ -215,7 +205,7 @@ fn handle_memorybit_write<D: StackDefinition>(
     // sending an error response so the remote side isn't left waiting.
     if !(1..=5).contains(&header_count) {
         warn!("MemoryBit_Write illegal count: {}", header_count);
-        send_memorybit_response::<D>(ind, ctx, header_address, 0, &[], outbox);
+        send_memorybit_response::<D>(ind, ctx, header_address, 0, &[]);
         return;
     }
     let expected_len = MemoryBitWrite::expected_msg_len(header_count as usize);
@@ -226,7 +216,7 @@ fn handle_memorybit_write<D: StackDefinition>(
             ind.len(),
             header_count
         );
-        send_memorybit_response::<D>(ind, ctx, header_address, 0, &[], outbox);
+        send_memorybit_response::<D>(ind, ctx, header_address, 0, &[]);
         return;
     }
 
@@ -251,24 +241,17 @@ fn handle_memorybit_write<D: StackDefinition>(
             match ctx.memory_map.write(ctx.state, mbw.address, &new_data[..mbw.count as usize], ctx.access_ctx) {
                 Ok(_) => {
                     debug!("AL MemoryBit_Write: wrote {} bytes to 0x{:04X}", mbw.count, mbw.address);
-                    send_memorybit_response::<D>(
-                        ind,
-                        ctx,
-                        mbw.address,
-                        mbw.count,
-                        &new_data[..mbw.count as usize],
-                        outbox,
-                    );
+                    send_memorybit_response::<D>(ind, ctx, mbw.address, mbw.count, &new_data[..mbw.count as usize]);
                 }
                 Err(e) => {
                     warn!("AL MemoryBit_Write write failed: address=0x{:04X}, error={:?}", mbw.address, e);
-                    send_memorybit_response::<D>(ind, ctx, mbw.address, 0, &[], outbox);
+                    send_memorybit_response::<D>(ind, ctx, mbw.address, 0, &[]);
                 }
             }
         }
         Err(e) => {
             warn!("AL MemoryBit_Write read failed: address=0x{:04X}, error={:?}", mbw.address, e);
-            send_memorybit_response::<D>(ind, ctx, mbw.address, 0, &[], outbox);
+            send_memorybit_response::<D>(ind, ctx, mbw.address, 0, &[]);
         }
     }
 }
@@ -283,7 +266,6 @@ fn send_memorybit_response<D: StackDefinition>(
     address: u16,
     count: u8,
     data: &[u8],
-    outbox: &mut Outbox,
 ) {
     if !ctx.interface_objects.verify_mode() {
         return;
@@ -299,5 +281,5 @@ fn send_memorybit_response<D: StackDefinition>(
     });
 
     debug!("AL sending A_Memory_Response (for MemoryBit_Write): address=0x{:04X}, count={}", address, count);
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }

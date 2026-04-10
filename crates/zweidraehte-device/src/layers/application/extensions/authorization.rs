@@ -13,6 +13,7 @@
 use crate::{
     AccessContext, AccessSource, HasAuthorization, HasConnectionAuth, StackState,
     definition::StackDefinition,
+    layer_context::{HasLayerContext, HasOutbox},
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     messages::{
         apdu::auth::{AuthorizeRequest, AuthorizeResponse, KeyResponse, KeyWrite},
@@ -20,7 +21,6 @@ use crate::{
         builder::IndicationExt,
         knx::{ApciCode, KnxMessageBuffer, ServiceType},
     },
-    router::Outbox,
 };
 
 use crate::logging::{debug, error, warn};
@@ -44,15 +44,14 @@ impl<D: StackDefinition> AlServiceExtension<D> for AuthorizationExtension {
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
         ctx: &AlExtensionContext<'_, D>,
-        outbox: &mut Outbox,
     ) -> bool {
         match apci {
             ApciCode::AuthorizeRequest => {
-                handle_authorize_request::<D>(msg, ctx, outbox);
+                handle_authorize_request::<D>(msg, ctx);
                 true
             }
             ApciCode::KeyWrite => {
-                handle_key_write::<D>(msg, ctx, outbox);
+                handle_key_write::<D>(msg, ctx);
                 true
             }
             ApciCode::AuthorizeResponse | ApciCode::KeyResponse => {
@@ -72,7 +71,6 @@ impl<D: StackDefinition> AlServiceExtension<D> for AuthorizationExtension {
 fn handle_authorize_request<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
 ) {
     let Some(req) = AuthorizeRequest::parse(ind.buf()) else {
         error!("Authorize_Request message too short: {}", ind.len());
@@ -105,15 +103,11 @@ fn handle_authorize_request<D: StackDefinition>(
     });
 
     debug!("AL sending Authorize_Response: level={}", access_level);
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_Key_Write.ind`
-fn handle_key_write<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
-) {
+fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
     // Access policy 3FF/0CC: everyone can write when security mode is off;
     // when security mode is on, only Tool A+C can write.
     use crate::access::AccessPolicy;
@@ -152,5 +146,5 @@ fn handle_key_write<D: StackDefinition>(
     });
 
     debug!("AL sending Key_Response: level={}", result_level);
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }

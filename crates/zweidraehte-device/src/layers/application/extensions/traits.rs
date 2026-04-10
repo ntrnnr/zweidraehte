@@ -27,9 +27,11 @@ use core::cell::RefCell;
 use crate::{
     access::AccessContext,
     definition::StackDefinition,
-    messages::{buffers::{Buffer, DynBufferManager}, knx::{ApciCode, KnxMessageBuffer}},
+    messages::{
+        buffers::{Buffer, DynBufferManager},
+        knx::{ApciCode, KnxMessageBuffer},
+    },
     objects::comm::ComObjects,
-    router::Outbox,
 };
 
 // ============================================================================
@@ -91,7 +93,6 @@ pub trait AlServiceExtension<D: StackDefinition> {
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
         ctx: &AlExtensionContext<'_, D>,
-        outbox: &mut Outbox,
     ) -> bool;
 }
 
@@ -107,7 +108,6 @@ impl<D: StackDefinition> AlServiceExtension<D> for () {
         _apci: ApciCode,
         _msg: &KnxMessageBuffer<Buffer<'static>>,
         _ctx: &AlExtensionContext<'_, D>,
-        _outbox: &mut Outbox,
     ) -> bool {
         false
     }
@@ -126,8 +126,7 @@ where
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
         ctx: &AlExtensionContext<'_, D>,
-        outbox: &mut Outbox,
     ) -> bool {
-        self.0.try_handle(apci, msg, ctx, outbox) || self.1.try_handle(apci, msg, ctx, outbox)
+        self.0.try_handle(apci, msg, ctx) || self.1.try_handle(apci, msg, ctx)
     }
 }

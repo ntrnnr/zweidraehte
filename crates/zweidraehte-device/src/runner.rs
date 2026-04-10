@@ -53,7 +53,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 
         use crate::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
         use crate::messages::knx::ServiceType;
-        use crate::router::{LayerStack, Outbox};
+        use crate::router::LayerStack;
         use embassy_futures::select::{Either, select, select3};
         use embassy_time::Timer;
 
@@ -144,9 +144,9 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // `handle_service_input`.
 
         let router_task = async {
-            loop {
-                let mut outbox = Outbox::new();
+            let outbox = &lctx.outbox;
 
+            loop {
                 let layer_deadline = layers.next_deadline();
                 if layer_deadline.is_some() {
                     debug!("Router: layer_deadline is Some, will poll on timer");
@@ -160,8 +160,6 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                     select(layers.recv_service_input(), async {
                         match layer_deadline {
                             Some(deadline) => Timer::at(deadline).await,
-                            // No deadline -> sleep forever (select will pick
-                            // another branch).
                             None => core::future::pending().await,
                         }
                     }),
@@ -170,42 +168,44 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                 {
                     // LL indication -> push to outbox for dispatch
                     embassy_futures::select::Either3::First(ind) => {
-                        outbox.push(ind.into_inner());
+                        outbox.borrow_mut().push(ind.into_inner());
                     }
                     // LL confirmation -> push to outbox for dispatch
                     embassy_futures::select::Either3::Second(conf) => {
-                        outbox.push(conf.into_inner());
+                        outbox.borrow_mut().push(conf.into_inner());
                     }
-                    embassy_futures::select::Either3::Third(third) => {
-                        match third {
-                            // Service input resolved -> let layers process it
-                            Either::First(input) => {
-                                layers.handle_service_input(input, &mut outbox);
-                            }
-                            // Timer expired -> poll layers with expired deadlines
-                            Either::Second(_) => {
-                                debug!("Router: timer expired, polling layers");
-                                layers.poll(&mut outbox);
-                            }
+                    embassy_futures::select::Either3::Third(third) => match third {
+                        Either::First(input) => {
+                            layers.handle_service_input(input);
                         }
-                    }
+                        Either::Second(_) => {
+                            debug!("Router: timer expired, polling layers");
+                            layers.poll();
+                        }
+                    },
                 }
 
                 // Drain the outbox: dispatch each message through the table
                 // until all messages are consumed or sent to the LL.
+                //
+                // Each take_next() is a short-lived RefCell borrow, released
+                // before dispatch() — which may push new messages.
                 //
                 // After each LL send we yield so the LL task can transmit
                 // the frame before the router produces the next one. This
                 // preserves wire ordering (e.g., ACK before data response)
                 // which matters for conformance tests that check message
                 // order.
-                while let Some(msg) = outbox.take_next() {
+                loop {
+                    let msg = outbox.borrow_mut().take_next();
+                    let Some(msg) = msg else { break };
+
                     let st = msg.service_type();
                     if st == ServiceType::L_Data_Req {
                         ll_req.send(RequestMessage::request(msg)).await;
                         embassy_futures::yield_now().await;
                     } else if let Some(layer_idx) = Layers::<'_, D>::DISPATCH_TABLE.get(st) {
-                        layers.dispatch(layer_idx, msg, &mut outbox);
+                        layers.dispatch(layer_idx, msg);
                     } else {
                         warn!("Router: no layer for {:?}, dropping", st);
                     }
@@ -213,7 +213,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 
                 // Handle side-effect events emitted during this dispatch cycle
                 // (e.g., run state machine transitions).
-                layers.drain_events(&mut outbox);
+                layers.drain_events();
             }
         };
 

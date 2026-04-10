@@ -22,7 +22,6 @@
 //!
 //! [`SystemBAlExtensions`] composes the standard set for System B devices.
 
-pub mod traits;
 pub mod adc;
 pub mod address_serial;
 pub mod authorization;
@@ -30,9 +29,9 @@ pub mod domain_addr;
 pub mod manufacturer;
 pub mod memory;
 pub mod property_ext;
+pub mod traits;
 pub mod user_memory;
 
-pub use traits::{AlExtensionContext, AlServiceExtension};
 pub use adc::AdcExtension;
 pub use address_serial::IndividualAddressSerialNumberExtension;
 pub use authorization::AuthorizationExtension;
@@ -40,6 +39,7 @@ pub use domain_addr::DomainAddressExtension;
 pub use manufacturer::UserManufacturerInfoExtension;
 pub use memory::MemoryServiceExtension;
 pub use property_ext::PropertyExtValueExtension;
+pub use traits::{AlExtensionContext, AlServiceExtension};
 pub use user_memory::UserMemoryServiceExtension;
 
 /// Standard AL extensions for System B devices.
@@ -56,9 +56,11 @@ pub use user_memory::UserMemoryServiceExtension;
 /// ```
 pub type SystemBAlExtensions = (
     MemoryServiceExtension,
-    (UserMemoryServiceExtension,
-    (AuthorizationExtension,
-    (IndividualAddressSerialNumberExtension,
-    (AdcExtension,
-    UserManufacturerInfoExtension)))),
+    (
+        UserMemoryServiceExtension,
+        (
+            AuthorizationExtension,
+            (IndividualAddressSerialNumberExtension, (AdcExtension, UserManufacturerInfoExtension)),
+        ),
+    ),
 );

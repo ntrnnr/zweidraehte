@@ -12,13 +12,13 @@
 
 use crate::{
     definition::StackDefinition,
+    layer_context::{HasLayerContext, HasOutbox},
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     messages::{
         buffers::Buffer,
         builder::IndicationExt,
         knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
     },
-    router::Outbox,
 };
 
 use crate::logging::{debug, warn};
@@ -36,11 +36,10 @@ impl<D: StackDefinition> AlServiceExtension<D> for UserManufacturerInfoExtension
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
         ctx: &AlExtensionContext<'_, D>,
-        outbox: &mut Outbox,
     ) -> bool {
         match apci {
             ApciCode::UserManufacturerInfoRead => {
-                handle_read::<D>(msg, ctx, outbox);
+                handle_read::<D>(msg, ctx);
                 true
             }
             ApciCode::UserManufacturerInfoResponse => {
@@ -52,11 +51,7 @@ impl<D: StackDefinition> AlServiceExtension<D> for UserManufacturerInfoExtension
     }
 }
 
-fn handle_read<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
-) {
+fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
     let Some(info) = D::USER_MANUFACTURER_INFO else {
         debug!("AL UserManufacturerInfo_Read: not supported (no USER_MANUFACTURER_INFO configured)");
         return;
@@ -79,5 +74,5 @@ fn handle_read<D: StackDefinition>(
     });
 
     debug!("AL sending UserManufacturerInfo_Response: {:?}", zweidraehte_util::fmt::Bytes(info));
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }

@@ -15,6 +15,7 @@
 
 use crate::{
     definition::StackDefinition,
+    layer_context::{HasLayerContext, HasOutbox},
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     memory::MemoryMap,
     messages::{
@@ -36,7 +37,6 @@ use crate::{
             HasCommunicationObjectTable,
         },
     },
-    router::Outbox,
 };
 
 use crate::logging::{debug, error, warn};
@@ -64,15 +64,14 @@ where
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
         ctx: &AlExtensionContext<'_, D>,
-        outbox: &mut Outbox,
     ) -> bool {
         match apci {
             ApciCode::PropertyExtValueRead => {
-                handle_ext_value_read::<D>(msg, ctx, outbox);
+                handle_ext_value_read::<D>(msg, ctx);
                 true
             }
             ApciCode::PropertyExtValueWriteCon => {
-                handle_ext_value_write_con::<D>(msg, ctx, outbox);
+                handle_ext_value_write_con::<D>(msg, ctx);
                 true
             }
             ApciCode::PropertyExtValueWriteUnCon => {
@@ -81,24 +80,24 @@ where
             }
             // Extended function property services.
             ApciCode::FunctionPropertyExtCommand => {
-                handle_function_property_ext_command::<D>(msg, ctx, outbox);
+                handle_function_property_ext_command::<D>(msg, ctx);
                 true
             }
             ApciCode::FunctionPropertyExtStateRead => {
-                handle_function_property_ext_state_read::<D>(msg, ctx, outbox);
+                handle_function_property_ext_state_read::<D>(msg, ctx);
                 true
             }
             ApciCode::PropertyExtDescriptionRead => {
-                handle_ext_description_read::<D>(msg, ctx, outbox);
+                handle_ext_description_read::<D>(msg, ctx);
                 true
             }
             // Memory Extended services (24-bit addressing).
             ApciCode::MemoryExtendedWrite => {
-                handle_memory_ext_write::<D>(msg, ctx, outbox);
+                handle_memory_ext_write::<D>(msg, ctx);
                 true
             }
             ApciCode::MemoryExtendedRead => {
-                handle_memory_ext_read::<D>(msg, ctx, outbox);
+                handle_memory_ext_read::<D>(msg, ctx);
                 true
             }
             // Response APCIs — we are the responder, ignore if received.
@@ -125,11 +124,7 @@ where
 ///
 /// Resolves `(IOT, instance)` → flat object index, reads the property,
 /// and responds with `A_PropertyExtValue_Response`.
-fn handle_ext_value_read<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
-) {
+fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL PropertyExtValueRead unexpected service type: {:?}", ind.service_type());
         return;
@@ -147,7 +142,7 @@ fn handle_ext_value_read<D: StackDefinition>(
 
     // Resolve (IOT, instance) → flat object index.
     let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
-        send_ext_read_error(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID);
+        send_ext_read_error(ind, ctx, &hdr, return_code::E_ADDRESS_VOID);
         return;
     };
 
@@ -155,7 +150,7 @@ fn handle_ext_value_read<D: StackDefinition>(
     if let Ok(desc) = ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
         if is_function_pdt(desc.pdt) {
             debug!("AL PropertyExtValueRead: PDT_CONTROL/FUNCTION → type conflict");
-            send_ext_read_error(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT);
+            send_ext_read_error(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT);
             return;
         }
         // Check start_index + count doesn't exceed max_elements (for non-count-query reads).
@@ -163,7 +158,7 @@ fn handle_ext_value_read<D: StackDefinition>(
             let end = hdr.start_idx as u32 + hdr.count as u32 - 1;
             if end > desc.max_elements as u32 {
                 debug!("AL PropertyExtValueRead: range exceeds max_elements");
-                send_ext_read_error(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID);
+                send_ext_read_error(ind, ctx, &hdr, return_code::E_ADDRESS_VOID);
                 return;
             }
         }
@@ -171,7 +166,7 @@ fn handle_ext_value_read<D: StackDefinition>(
 
     // Per spec Figure 55: nr_of_elem must be > 0.
     if hdr.count == 0 {
-        send_ext_read_error(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID);
+        send_ext_read_error(ind, ctx, &hdr, return_code::E_ADDRESS_VOID);
         return;
     }
 
@@ -211,11 +206,11 @@ fn handle_ext_value_read<D: StackDefinition>(
             });
 
             debug!("AL sending PropertyExtValueResponse: {} bytes", data_len);
-            outbox.push(msg.into_inner());
+            ctx.state.push_outbox(msg.into_inner());
         }
         Err(e) => {
             warn!("AL PropertyExtValueRead failed: {:?}", e);
-            send_ext_read_error(ind, ctx, outbox, &hdr, e.to_ext_return_code());
+            send_ext_read_error(ind, ctx, &hdr, e.to_ext_return_code());
         }
     }
 }
@@ -227,7 +222,6 @@ fn handle_ext_value_read<D: StackDefinition>(
 fn handle_ext_value_write_con<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
 ) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL PropertyExtValueWriteCon unexpected service type: {:?}", ind.service_type());
@@ -252,7 +246,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
 
     // Resolve (IOT, instance) → flat object index.
     let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
-        send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID);
+        send_ext_write_con_error(ind, ctx, &hdr, return_code::E_ADDRESS_VOID);
         return;
     };
 
@@ -265,7 +259,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
         // transitions. Allow it through; reject other function PDTs.
         if is_function_pdt(desc.pdt) && hdr.prop_id != crate::objects::interface::pid::LOAD_STATE_CONTROL {
             debug!("AL PropertyExtValueWriteCon: PDT_CONTROL/FUNCTION → type conflict");
-            send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT);
+            send_ext_write_con_error(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT);
             return;
         }
 
@@ -280,7 +274,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
                     hdr.count,
                     elem_size
                 );
-                send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT);
+                send_ext_write_con_error(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT);
                 return;
             }
         }
@@ -290,7 +284,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
             let end = hdr.start_idx as u32 + hdr.count as u32 - 1;
             if end > desc.max_elements as u32 {
                 debug!("AL PropertyExtValueWriteCon: range {}..{} > max {}", hdr.start_idx, end, desc.max_elements);
-                send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID);
+                send_ext_write_con_error(ind, ctx, &hdr, return_code::E_ADDRESS_VOID);
                 return;
             }
         }
@@ -298,14 +292,14 @@ fn handle_ext_value_write_con<D: StackDefinition>(
 
     // Per spec Figure 55: nr_of_elem must be > 0.
     if hdr.count == 0 {
-        send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID);
+        send_ext_write_con_error(ind, ctx, &hdr, return_code::E_ADDRESS_VOID);
         return;
     }
 
     // Element-count write (start_index=0): data must be exactly 2 bytes.
     if hdr.start_idx == 0 && data.len() != 2 {
         debug!("AL PropertyExtValueWriteCon: element-count write with {} data bytes (expected 2)", data.len());
-        send_ext_write_con_error(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT);
+        send_ext_write_con_error(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT);
         return;
     }
 
@@ -339,7 +333,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
                     );
                 });
             debug!("AL sending PropertyExtValueWriteConRes: success");
-            outbox.push(msg.into_inner());
+            ctx.state.push_outbox(msg.into_inner());
         }
         Err(e) => {
             warn!("AL PropertyExtValueWriteCon failed: {:?}", e);
@@ -354,7 +348,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
                         e.to_ext_return_code(),
                     );
                 });
-            outbox.push(msg.into_inner());
+            ctx.state.push_outbox(msg.into_inner());
         }
     }
 }
@@ -450,7 +444,6 @@ fn handle_ext_value_write_uncon<D: StackDefinition>(
 fn send_ext_read_error<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
     hdr: &PropertyExtValueHeader,
     return_code: u8,
 ) {
@@ -470,14 +463,13 @@ fn send_ext_read_error<D: StackDefinition>(
         );
     });
 
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 /// Send an error `A_PropertyExtValue_WriteConRes` with the given return code.
 fn send_ext_write_con_error<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
     hdr: &PropertyExtValueHeader,
     return_code: u8,
 ) {
@@ -497,7 +489,7 @@ fn send_ext_write_con_error<D: StackDefinition>(
         );
     });
 
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 /// Check whether a PDT code represents a function/control property type
@@ -542,7 +534,6 @@ fn pdt_element_size(pdt: u8) -> usize {
 fn handle_function_property_ext_command<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
 ) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL FunctionPropertyExtCommand unexpected service type: {:?}", ind.service_type());
@@ -564,7 +555,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
     );
 
     let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
-        send_function_ext_response(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID, &[]);
+        send_function_ext_response(ind, ctx, &hdr, return_code::E_ADDRESS_VOID, &[]);
         return;
     };
 
@@ -574,12 +565,12 @@ fn handle_function_property_ext_command<D: StackDefinition>(
     match ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
         Ok(desc) if !is_function_pdt(desc.pdt) => {
             debug!("AL FunctionPropertyExtCommand: PDT 0x{:02X} is not function/control → empty response", desc.pdt);
-            send_function_ext_response(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT, &[]);
+            send_function_ext_response(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT, &[]);
             return;
         }
         Err(_) => {
             // PID doesn't exist on this object.
-            send_function_ext_response(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID, &[]);
+            send_function_ext_response(ind, ctx, &hdr, return_code::E_ADDRESS_VOID, &[]);
             return;
         }
         Ok(_) => {} // PDT_FUNCTION or PDT_CONTROL — proceed.
@@ -606,7 +597,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
     });
 
     debug!("AL sending FunctionPropertyExtState_Response: rc=0x{:02X}", result.return_code);
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 
     // ========================================================================
     // PID_GO_DIAGNOSTICS bus side-effects
@@ -615,7 +606,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
     // value), and 0x03 (direct GroupValue_Read) require a bus telegram after
     // the function property response. The augment validated and returned
     // success; we handle the actual bus transmission here because we have
-    // access to the outbox.
+    // access to the layer context.
     // ========================================================================
     if hdr.object_type == 0x0009 /* GroupObjectTable */
         && hdr.prop_id == pid::GO_DIAGNOSTICS
@@ -629,9 +620,9 @@ fn handle_function_property_ext_command<D: StackDefinition>(
         };
         if successful {
             match service_id {
-                0x01 => handle_go_diag_direct_write_bus::<D>(data, ctx, outbox),
-                0x02 => handle_go_diag_transmit_bus::<D>(data, ctx, outbox),
-                0x03 => handle_go_diag_direct_read_bus::<D>(data, ctx, outbox),
+                0x01 => handle_go_diag_direct_write_bus::<D>(data, ctx),
+                0x02 => handle_go_diag_transmit_bus::<D>(data, ctx),
+                0x03 => handle_go_diag_direct_read_bus::<D>(data, ctx),
                 _ => {}
             }
         }
@@ -645,11 +636,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
 /// Build and send a GroupValue_Write telegram for ServiceID 0x01 (direct write).
 ///
 /// Request data: [reserved, 0x01, flags, GA_hi, GA_lo, value...]
-fn handle_go_diag_direct_write_bus<D: StackDefinition>(
-    data: &[u8],
-    ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
-) {
+fn handle_go_diag_direct_write_bus<D: StackDefinition>(data: &[u8], ctx: &AlExtensionContext<'_, D>) {
     if data.len() < 6 {
         return;
     }
@@ -702,17 +689,13 @@ fn handle_go_diag_direct_write_bus<D: StackDefinition>(
     });
 
     debug!("GO diag: sending GroupValue_Write to TSAP {} (GA 0x{:04X})", tsap, ga);
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 /// Build and send a GroupValue_Write for ServiceID 0x02 (transmit current GO value).
 ///
 /// Request data: [reserved, 0x02, GO_idx_hi, GO_idx_lo]
-fn handle_go_diag_transmit_bus<D: StackDefinition>(
-    data: &[u8],
-    ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
-) {
+fn handle_go_diag_transmit_bus<D: StackDefinition>(data: &[u8], ctx: &AlExtensionContext<'_, D>) {
     if data.len() < 4 {
         return;
     }
@@ -764,17 +747,13 @@ fn handle_go_diag_transmit_bus<D: StackDefinition>(
     });
 
     debug!("GO diag: sending GroupValue_Write (transmit) ASAP {} TSAP {}", asap, tsap);
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 /// Build and send a GroupValue_Read for ServiceID 0x03 (direct read).
 ///
 /// Request data: [reserved, 0x03, flags, GA_hi, GA_lo]
-fn handle_go_diag_direct_read_bus<D: StackDefinition>(
-    data: &[u8],
-    ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
-) {
+fn handle_go_diag_direct_read_bus<D: StackDefinition>(data: &[u8], ctx: &AlExtensionContext<'_, D>) {
     if data.len() < 5 {
         return;
     }
@@ -803,7 +782,7 @@ fn handle_go_diag_direct_read_bus<D: StackDefinition>(
     .build();
 
     debug!("GO diag: sending GroupValue_Read to TSAP {} (GA 0x{:04X})", tsap, ga);
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_FunctionPropertyExtState_Read.ind`.
@@ -812,7 +791,6 @@ fn handle_go_diag_direct_read_bus<D: StackDefinition>(
 fn handle_function_property_ext_state_read<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
 ) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL FunctionPropertyExtStateRead unexpected service type: {:?}", ind.service_type());
@@ -834,7 +812,7 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
     );
 
     let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
-        send_function_ext_response(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID, &[]);
+        send_function_ext_response(ind, ctx, &hdr, return_code::E_ADDRESS_VOID, &[]);
         return;
     };
 
@@ -842,11 +820,11 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
     match ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
         Ok(desc) if !is_function_pdt(desc.pdt) => {
             debug!("AL FunctionPropertyExtStateRead: PDT 0x{:02X} is not function/control → empty response", desc.pdt);
-            send_function_ext_response(ind, ctx, outbox, &hdr, return_code::E_DATA_TYPE_CONFLICT, &[]);
+            send_function_ext_response(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT, &[]);
             return;
         }
         Err(_) => {
-            send_function_ext_response(ind, ctx, outbox, &hdr, return_code::E_ADDRESS_VOID, &[]);
+            send_function_ext_response(ind, ctx, &hdr, return_code::E_ADDRESS_VOID, &[]);
             return;
         }
         Ok(_) => {}
@@ -873,7 +851,7 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
     });
 
     debug!("AL sending FunctionPropertyExtState_Response: rc=0x{:02X}", result.return_code);
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 // ============================================================================
@@ -884,7 +862,6 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
 fn send_function_ext_response<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
     hdr: &FunctionPropertyExtHeader,
     rc: u8,
     data: &[u8],
@@ -897,7 +874,7 @@ fn send_function_ext_response<D: StackDefinition>(
     let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
         FunctionPropertyExtResponse::write(buf, hdr.object_type, hdr.object_instance, hdr.prop_id, rc, data);
     });
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 /// Send an empty `FunctionPropertyExtState_Response` (no return_code, no data).
@@ -907,7 +884,6 @@ fn send_function_ext_response<D: StackDefinition>(
 fn send_function_ext_empty_response<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
     hdr: &FunctionPropertyExtHeader,
 ) {
     let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(FunctionPropertyExtResponse::EMPTY_MSG_LEN) else {
@@ -917,7 +893,7 @@ fn send_function_ext_empty_response<D: StackDefinition>(
     let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
         FunctionPropertyExtResponse::write_empty(buf, hdr.object_type, hdr.object_instance, hdr.prop_id);
     });
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 // ============================================================================
@@ -941,7 +917,6 @@ fn send_function_ext_empty_response<D: StackDefinition>(
 fn handle_ext_description_read<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
 ) {
     use crate::messages::knx::offsets;
 
@@ -1045,7 +1020,7 @@ fn handle_ext_description_read<D: StackDefinition>(
         }
     });
 
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 // ============================================================================
@@ -1059,7 +1034,6 @@ fn handle_ext_description_read<D: StackDefinition>(
 fn handle_memory_ext_write<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
 ) {
     use crate::messages::knx::offsets;
 
@@ -1087,7 +1061,7 @@ fn handle_memory_ext_write<D: StackDefinition>(
 
     // Validate count > 0.
     if count == 0 {
-        send_memory_ext_write_response(ind, ctx, outbox, 0xFD, addr_hi, addr_mid, addr_lo);
+        send_memory_ext_write_response(ind, ctx, 0xFD, addr_hi, addr_mid, addr_lo);
         return;
     }
 
@@ -1095,7 +1069,7 @@ fn handle_memory_ext_write<D: StackDefinition>(
     let actual_data_len = buf.len() - data_start;
     if actual_data_len != count {
         let rc = 0xFEu8; // E_DATA_TYPE_CONFLICT (size mismatch)
-        send_memory_ext_write_response(ind, ctx, outbox, rc, addr_hi, addr_mid, addr_lo);
+        send_memory_ext_write_response(ind, ctx, rc, addr_hi, addr_mid, addr_lo);
         return;
     }
 
@@ -1111,7 +1085,7 @@ fn handle_memory_ext_write<D: StackDefinition>(
         Err(_) => 0xFD,                                        // E_ADDRESS_VOID
     };
 
-    send_memory_ext_write_response(ind, ctx, outbox, rc, addr_hi, addr_mid, addr_lo);
+    send_memory_ext_write_response(ind, ctx, rc, addr_hi, addr_mid, addr_lo);
 }
 
 /// Handle `A_MemoryExtended_Read.ind`.
@@ -1121,7 +1095,6 @@ fn handle_memory_ext_write<D: StackDefinition>(
 fn handle_memory_ext_read<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
 ) {
     use crate::messages::knx::offsets;
 
@@ -1154,7 +1127,7 @@ fn handle_memory_ext_read<D: StackDefinition>(
             buf[base + 4] = addr_mid;
             buf[base + 5] = addr_lo;
         });
-        outbox.push(msg.into_inner());
+        ctx.state.push_outbox(msg.into_inner());
         return;
     }
 
@@ -1176,7 +1149,7 @@ fn handle_memory_ext_read<D: StackDefinition>(
                     buf[base + 5] = addr_lo;
                     buf[base + 6..base + 6 + n].copy_from_slice(&data_buf[..n]);
                 });
-            outbox.push(msg.into_inner());
+            ctx.state.push_outbox(msg.into_inner());
         }
         Err(e) => {
             let rc = match e {
@@ -1192,7 +1165,7 @@ fn handle_memory_ext_read<D: StackDefinition>(
                     buf[base + 4] = addr_mid;
                     buf[base + 5] = addr_lo;
                 });
-            outbox.push(msg.into_inner());
+            ctx.state.push_outbox(msg.into_inner());
         }
     }
 }
@@ -1200,7 +1173,6 @@ fn handle_memory_ext_read<D: StackDefinition>(
 fn send_memory_ext_write_response<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
     return_code: u8,
     addr_hi: u8,
     addr_mid: u8,
@@ -1216,5 +1188,5 @@ fn send_memory_ext_write_response<D: StackDefinition>(
         buf[base + 4] = addr_mid;
         buf[base + 5] = addr_lo;
     });
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }

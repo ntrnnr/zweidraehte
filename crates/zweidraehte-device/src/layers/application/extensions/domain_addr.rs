@@ -14,6 +14,7 @@ use crate::{
     StackState,
     address::GroupAddress,
     definition::StackDefinition,
+    layer_context::{HasLayerContext, HasOutbox},
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     messages::{
         apdu::device::{
@@ -24,7 +25,6 @@ use crate::{
         knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
     },
     objects::interface::HasDomainAddress,
-    router::Outbox,
 };
 
 use crate::logging::{debug, error, trace, warn};
@@ -57,11 +57,10 @@ where
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
         ctx: &AlExtensionContext<'_, D>,
-        outbox: &mut Outbox,
     ) -> bool {
         match apci {
             ApciCode::DomainAddressSerialNumberRead => {
-                handle_domain_address_serial_number_read::<D>(msg, ctx, outbox);
+                handle_domain_address_serial_number_read::<D>(msg, ctx);
                 true
             }
             ApciCode::DomainAddressSerialNumberWrite => {
@@ -97,11 +96,8 @@ where
 ///
 /// Wire format (incoming): APCI(2) + serial(6)
 /// Wire format (response): APCI(2) + serial(6) + domain_address(N)
-fn handle_domain_address_serial_number_read<D>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
-) where
+fn handle_domain_address_serial_number_read<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>)
+where
     D: StackDefinition,
     D::State: HasDomainAddress,
 {
@@ -149,7 +145,7 @@ fn handle_domain_address_serial_number_read<D>(
         DomainAddressSerialNumberResponse::write_domain_address(msg.buf_mut(), &doa_buf[..doa_len]);
     }
 
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_DomainAddressSerialNumber_Write.ind`.

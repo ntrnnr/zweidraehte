@@ -11,6 +11,7 @@
 
 use crate::{
     definition::StackDefinition,
+    layer_context::{HasLayerContext, HasOutbox},
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     messages::{
         apdu::device::{AdcRead, AdcResponse},
@@ -18,7 +19,6 @@ use crate::{
         builder::IndicationExt,
         knx::{ApciCode, KnxMessageBuffer, ServiceType},
     },
-    router::Outbox,
 };
 
 use crate::logging::{debug, error, warn};
@@ -35,11 +35,10 @@ impl<D: StackDefinition> AlServiceExtension<D> for AdcExtension {
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
         ctx: &AlExtensionContext<'_, D>,
-        outbox: &mut Outbox,
     ) -> bool {
         match apci {
             ApciCode::AdcRead => {
-                handle_adc_read::<D>(msg, ctx, outbox);
+                handle_adc_read::<D>(msg, ctx);
                 true
             }
             ApciCode::AdcResponse => {
@@ -51,11 +50,7 @@ impl<D: StackDefinition> AlServiceExtension<D> for AdcExtension {
     }
 }
 
-fn handle_adc_read<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
-    outbox: &mut Outbox,
-) {
+fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
     let Some(req) = AdcRead::parse(ind.buf()) else {
         error!("ADC_Read message too short: {}", ind.len());
         return;
@@ -81,5 +76,5 @@ fn handle_adc_read<D: StackDefinition>(
     });
 
     debug!("AL sending ADC_Response: channel={}, count={}, sum={}", req.channel, response_count, sum);
-    outbox.push(msg.into_inner());
+    ctx.state.push_outbox(msg.into_inner());
 }
