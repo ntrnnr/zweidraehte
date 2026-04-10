@@ -41,6 +41,7 @@ use embassy_time::{Duration, Instant};
 use crate::{
     AccessSource, HasAuthorization, HasConnectionAuth, StackDefinition,
     address::IndividualAddress,
+    composition::LayerBuildContext,
     layer_context::{HasLayerContext, HasOutbox},
     messages::{
         buffers::Buffer,
@@ -141,16 +142,16 @@ pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1,
 impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>
 {
-    /// Create a new Transport Layer.
+    /// Create a new Transport Layer from a [`LayerBuildContext`].
     ///
     /// With the `conformance` feature enabled, reads `KNX_TIME_DIVISOR` from
     /// the environment to scale protocol timeouts for fast IPC-based testing.
     /// If absent or unparseable, spec-compliant timeouts are used.
-    pub fn new(
-        buffer_manager: &'a crate::messages::buffers::DynBufferManager<'static>,
-        state: &'a D::State,
-        style: TlStyle,
-    ) -> Self {
+    pub fn new(ctx: &'a LayerBuildContext<'a, D>) -> Self {
+        let buffer_manager = &ctx.state.layer_context().buffer_manager;
+        let state = ctx.state;
+        let style = D::TL_STYLE;
+
         #[cfg(feature = "conformance")]
         let (ack_timeout, conn_timeout) = {
             extern crate std;

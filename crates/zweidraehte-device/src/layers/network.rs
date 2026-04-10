@@ -1,5 +1,6 @@
 use heapless::Deque;
 
+use crate::composition::LayerBuildContext;
 use crate::layer_context::{HasLayerContext, HasOutbox};
 use crate::messages::buffers::Buffer;
 use crate::messages::knx::*;
@@ -28,9 +29,9 @@ pub struct NetworkLayer<'a, D: StackDefinition> {
 }
 
 impl<'a, D: StackDefinition> NetworkLayer<'a, D> {
-    /// Create a new Network Layer.
-    pub fn new(state: &'a D::State, interface_objects: &'a D::InterfaceObjects<'static>) -> Self {
-        Self { state, interface_objects, pending_addr_types: Deque::new() }
+    /// Create a new Network Layer from a [`LayerBuildContext`].
+    pub fn new(ctx: &'a LayerBuildContext<'a, D>) -> Self {
+        Self { state: ctx.state, interface_objects: ctx.interface_objects, pending_addr_types: Deque::new() }
     }
 }
 

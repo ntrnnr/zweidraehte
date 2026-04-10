@@ -4,17 +4,31 @@
 //! [`StackContext`] is the runtime context passed to link layers, providing
 //! access to buffer management, property services, and device information.
 
+#[cfg(feature = "knxip")]
+use crate::bcus::system_b::HasExtensionState;
 use crate::{
     StackState,
-    context::BufferManagerContext,
+    context::{BufferManagerContext, PropertyServiceContext},
     definition::StackDefinition,
     layer_context::HasLayerContext,
     messages::buffers::DynBufferManager,
-    objects::{
-        comm::{ComObjects, HasCommObjects},
-        tables::HasAddressTable,
-    },
+    objects::{comm::HasCommObjects, tables::HasAddressTable},
+    prelude::PropertyServiceHandler,
 };
+
+// ============================================================================
+// APDU length clamping helper
+// ============================================================================
+
+/// Clamp and set the runtime APDU length, warning if the value exceeds the
+/// compile-time buffer allocation.
+fn set_clamped_apdu_length<D: StackDefinition>(state: &D::State, length: u16) {
+    let clamped = length.min(D::MAX_APDU_LENGTH);
+    if clamped < length {
+        warn!("set_max_apdu_length({}) clamped to StackDefinition::MAX_APDU_LENGTH ({})", length, D::MAX_APDU_LENGTH);
+    }
+    state.set_max_apdu_length(clamped);
+}
 
 // ============================================================================
 // IpCapableStack — bound bundle for IP context traits
@@ -26,7 +40,7 @@ use crate::{
 /// [`StackContext`] trait impls that need IP extension state and platform.
 #[cfg(feature = "knxip")]
 pub trait IpCapableStack:
-    StackDefinition<State: crate::bcus::system_b::HasExtensionState<ES: crate::IpStackState>, Platform: crate::IpPlatform>
+    StackDefinition<State: HasExtensionState<ES: crate::IpStackState>, Platform: crate::IpPlatform>
 {
 }
 
@@ -34,8 +48,8 @@ pub trait IpCapableStack:
 impl<D> IpCapableStack for D
 where
     D: StackDefinition,
-    D::State: crate::bcus::system_b::HasExtensionState,
-    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::IpStackState,
+    D::State: HasExtensionState,
+    <D::State as HasExtensionState>::ES: crate::IpStackState,
     D::Platform: crate::IpPlatform,
 {
 }
@@ -69,44 +83,16 @@ impl<D: StackDefinition> Inner<D> {
     }
 }
 
-// Implement context traits for Inner
-impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
-    fn buffer_manager(&self) -> &DynBufferManager<'static> {
-        &self.state.layer_context().buffer_manager
-    }
-
-    fn max_apdu_length(&self) -> u16 {
-        self.state.max_apdu_length()
-    }
-
-    fn set_max_apdu_length(&self, length: u16) {
-        let clamped = length.min(D::MAX_APDU_LENGTH);
-        if clamped < length {
-            warn!(
-                "set_max_apdu_length({}) clamped to StackDefinition::MAX_APDU_LENGTH ({})",
-                length,
-                D::MAX_APDU_LENGTH
-            );
-        }
-        self.state.set_max_apdu_length(clamped);
-    }
-}
-
 // ============================================================================
 // StackContext
 // ============================================================================
 
-/// Combined context passed to [`LinkLayerBuilder::build_and_run()`](crate::layers::LinkLayerBuilder::build_and_run).
-///
-/// Wraps references to the stack's internal state (for buffer management)
-/// and interface objects (for property service access). Created in
-/// [`Runner::run()`](crate::Runner::run) where both are available.
 /// Runtime context passed to link layers during [`Runner::run()`](crate::Runner::run).
 ///
-/// This is an opaque wrapper combining buffer management and property service
-/// access. Link layers receive a `&StackContext` through
-/// [`LinkLayerBuilder::build_and_run`](crate::layers::LinkLayerBuilder::build_and_run)
-/// and access its capabilities via the [`BufferManagerContext`] and
+/// Combines buffer management and property service access into a single
+/// reference that link layers receive through
+/// [`LinkLayerBuilder::build_and_run`](crate::layers::LinkLayerBuilder::build_and_run).
+/// Link layers access capabilities via the [`BufferManagerContext`] and
 /// [`PropertyServiceContext`](crate::context::PropertyServiceContext) trait impls.
 pub struct StackContext<'a, D: StackDefinition> {
     pub(crate) inner: &'a Inner<D>,
@@ -123,20 +109,12 @@ impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
     }
 
     fn set_max_apdu_length(&self, length: u16) {
-        let clamped = length.min(D::MAX_APDU_LENGTH);
-        if clamped < length {
-            warn!(
-                "set_max_apdu_length({}) clamped to StackDefinition::MAX_APDU_LENGTH ({})",
-                length,
-                D::MAX_APDU_LENGTH
-            );
-        }
-        self.inner.state.set_max_apdu_length(clamped);
+        set_clamped_apdu_length::<D>(&self.inner.state, length);
     }
 }
 
-impl<D: StackDefinition> crate::context::PropertyServiceContext for StackContext<'_, D> {
-    fn property_handler(&self) -> &dyn crate::objects::interface::PropertyServiceHandler {
+impl<D: StackDefinition> PropertyServiceContext for StackContext<'_, D> {
+    fn property_handler(&self) -> &dyn PropertyServiceHandler {
         self.interface_objects
     }
 }
@@ -147,7 +125,9 @@ impl<D: IpCapableStack> crate::context::DeviceInfoContext for StackContext<'_, D
         use crate::IpPlatform;
         use crate::IpStackState;
         use crate::bcus::system_b::HasExtensionState;
-        use crate::messages::knxip::substructs::{DeviceInformation, DeviceStatus, KNXMedium};
+        use crate::messages::knxip::substructs::{
+            DeviceInformation, DeviceStatus, ExtendedDeviceInformation, KNXMedium,
+        };
         use zweidraehte_platform::address::EthernetAddress;
 
         let state = &self.inner.state;

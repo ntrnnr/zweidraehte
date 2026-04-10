@@ -44,8 +44,8 @@ pub use ip::{DEFAULT_MULTICAST_ADDR, IpConfig, IpPlatform, IpPlatformConfig, IpP
 
 mod composition;
 pub use composition::{
-    InsecureDeviceBuilder, InsecureDeviceLayers, LayerBuildContext, LayerStackBuilder, SecureDeviceBuilder,
-    SecureDeviceLayers, StandardDeviceLayers, StandardSecureDeviceLayers,
+    DeviceLayerStack, InsecureDeviceBuilder, InsecureDeviceLayers, LayerBuildContext, LayerStackBuilder,
+    SecureDeviceBuilder, StandardDeviceLayers, StandardSecureDeviceLayers,
 };
 #[cfg(feature = "knxip")]
 pub use composition::{InsecureIpDeviceBuilder, IpDeviceLayers};

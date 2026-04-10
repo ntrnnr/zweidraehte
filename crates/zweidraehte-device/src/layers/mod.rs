@@ -162,10 +162,6 @@ pub trait LinkLayerBuilder<CTX>: LinkLayerBuilderBase {
 pub mod application;
 pub mod linklayers;
 
-// Backward-compatible re-exports for the old flat module paths.
-pub use application::extensions::traits as al_extension;
-pub use application::extensions::domain_addr as al_ext_domain_addr;
-pub use application::extensions::property_ext as al_ext_property_ext;
 pub mod network;
 pub mod secure_application;
 pub mod transport;

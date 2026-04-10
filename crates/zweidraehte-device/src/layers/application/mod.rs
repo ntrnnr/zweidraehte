@@ -27,6 +27,7 @@ use crate::{
     AccessContext, AccessSource, HasAuthorization, HasConnectionAuth, StackDefinition, StackState,
     actor::Request,
     address::GroupAddress,
+    composition::LayerBuildContext,
     layer_context::{HasLayerContext, HasOutbox},
     messages::{
         buffers::{Buffer, DynBufferManager},
@@ -150,28 +151,16 @@ enum ReadOnInitState {
 // ============================================================================
 
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
-    /// Create a new Application Layer
-    pub fn new(
-        buffer_manager: &'a DynBufferManager<'static>,
-        state: &'a D::State,
-        event_channel: &'a PubSubChannel<
-            D::Mutex,
-            (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent),
-            4,
-            2,
-            1,
-        >,
-        interface_objects: &'a D::InterfaceObjects<'static>,
-        memory_map: &'a D::Mem,
-        restart_sender: DynamicSender<'a, RestartRequest>,
-    ) -> Self {
+    /// Create a new Application Layer from a [`LayerBuildContext`].
+    pub fn new(ctx: &'a LayerBuildContext<'a, D>) -> Self {
+        let lctx = ctx.state.layer_context();
         Self {
-            buffer_manager,
-            state,
-            event_channel,
-            interface_objects,
-            memory_map,
-            restart_sender,
+            buffer_manager: &lctx.buffer_manager,
+            state: ctx.state,
+            event_channel: &lctx.event_channel,
+            interface_objects: ctx.interface_objects,
+            memory_map: ctx.memory_map,
+            restart_sender: ctx.restart_sender,
             read_on_init: ReadOnInitState::Idle,
             pending_group_send: None,
             extension: Default::default(),
