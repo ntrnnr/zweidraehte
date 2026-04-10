@@ -25,12 +25,12 @@ All runtime device state lives in a single struct:
 
 ```rust
 pub struct SystemBDeviceState<
-    const ADT_SIZE: usize,   // Address table byte size
-    const AST_SIZE: usize,   // Association table byte size
-    const COT_SIZE: usize,   // Comm object table byte size
-    P: ConstDefault,          // Application parameters type
-    ES: ExtensionState = (), // Extension state (IP config, augment state)
-    const MAX_CONN: usize = 1, // Max concurrent transport connections
+    const ADT_SIZE: usize,      // Address table byte size
+    const AST_SIZE: usize,      // Association table byte size
+    const COT_SIZE: usize,      // Comm object table byte size
+    D: StackDefinition,         // Stack definition (provides P, CO, Mutex)
+    ES: ExtensionState = (),    // Extension state (IP config, augment state)
+    const MAX_CONN: usize = 1,  // Max concurrent transport connections
 > {
     // Runtime (volatile)
     individual_address: Cell<IndividualAddress>,
@@ -41,7 +41,10 @@ pub struct SystemBDeviceState<
     adt: RefCell<Table<AddrTab7Impl<ADT_SIZE>>>,
     ast: RefCell<Table<AssoTab6Impl<AST_SIZE>>>,
     cot: RefCell<Table<CoTab7Impl<COT_SIZE>>>,
-    app: RefCell<Application<P>>,
+    app: RefCell<Application<D::P>>,
+
+    // Communication objects (runtime-only, not persisted)
+    comm_objs: RefCell<D::CO>,
 
     // Extension state (persisted)
     extension_state: ES,
@@ -51,6 +54,10 @@ pub struct SystemBDeviceState<
     // ...
 }
 ```
+
+The `D: StackDefinition` parameter provides `D::P` (parameters) and
+`D::CO` (communication objects) as associated types, eliminating the
+need for separate `P` and `CO` generic parameters.
 
 The const generics for table sizes are derived from the `DeviceDescriptor`:
 
@@ -82,16 +89,16 @@ and device capabilities (PID 68) are derived from `F` at compile time:
 
 ```rust
 // Routing device (KnxIpDeviceUdp → no tunneling, routing + remote config)
-type MyState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams, KnxIpDeviceUdp>;
+type MyState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyStack, KnxIpDeviceUdp>;
 
 // Tunneling interface (KnxIpInterfaceUdp<4> → 4 tunneling slots)
-type MyState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams, KnxIpInterfaceUdp<4>>;
+type MyState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyStack, KnxIpInterfaceUdp<4>>;
 ```
 
 **TP1 devices:**
 
 ```rust
-type MyState = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams>;
+type MyState = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyStack>;
 ```
 
 Under the hood, `IpDeviceState` uses `IpExtension<F>` as the extension
@@ -104,8 +111,8 @@ pub type IpExtension<F: FeatureSet> = IpExtensionState<
     { F::KNXNETIP_DEVICE_CAPABILITIES },               // CAPS (PID 68)
 >;
 
-pub type IpDeviceState<..., P, F: FeatureSet> =
-    SystemBDeviceState<..., P, IpExtension<F>>;
+pub type IpDeviceState<..., D: StackDefinition, F: FeatureSet> =
+    SystemBDeviceState<..., D, IpExtension<F>>;
 ```
 
 The low-level aliases `IpExtensionState<N, CAPS>` and

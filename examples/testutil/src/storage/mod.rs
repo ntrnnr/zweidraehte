@@ -7,11 +7,11 @@
 //!
 //! ```rust,ignore
 //! use testutil::storage::JsonStorage;
-//! use zweidraehte_device::storage::DeviceStorage;
 //!
 //! let identity = FileIdentity::load_or_provision("identity.json", serial).unwrap();
 //! let mut storage = JsonStorage::<DemoState, _>::new("device_state.json", identity);
-//! let state = storage.load().unwrap(); // returns Option<DemoState>
+//! let persisted = storage.load_persisted().unwrap(); // returns Option<DemoPersistedState>
+//! let config = DemoStateConfig::new(storage.identity(), persisted);
 //! ```
 
 mod file_identity;
@@ -24,7 +24,6 @@ use std::path::PathBuf;
 use serde::{Serialize, de::DeserializeOwned};
 use zweidraehte_device::bcus::system_b::HasPersistedState;
 use zweidraehte_device::storage::DeviceIdentity;
-use zweidraehte_device::storage::DeviceStorage;
 
 /// JSON file-based storage for device state.
 ///
@@ -35,16 +34,17 @@ use zweidraehte_device::storage::DeviceStorage;
 /// [`DemoState`](crate::devices::system_b_demo::DemoState)). The storage
 /// internally converts to/from the serializable [`S::Persisted`] form.
 ///
-/// `I` is the device identity type, stored in the backend so that
-/// [`load`](Self::load) can reconstruct the runtime state from the
-/// persisted form without requiring the caller to pass identity.
+/// `I` is the device identity type, stored in the backend so that callers
+/// can access it when building the `StateConfig`.
 ///
 /// # Usage
 ///
 /// ```rust,ignore
 /// let identity = FileIdentity::load_or_provision("identity.json", serial).unwrap();
 /// let mut storage = JsonStorage::<DemoState, _>::new("device_state.json", identity);
-/// let state = storage.load().unwrap(); // returns Option<DemoState>
+/// let persisted = storage.load_persisted().unwrap(); // returns Option<Persisted>
+/// let config = DemoStateConfig::new(storage.identity(), persisted);
+/// // Pass config to zweidraehte_device::new() — the runner calls create_state()
 /// storage.save(&state).unwrap();       // converts to persisted form internally
 /// ```
 pub struct JsonStorage<S, I> {
@@ -66,6 +66,11 @@ impl<S, I> JsonStorage<S, I> {
     /// Get the path to the storage file.
     pub fn path(&self) -> &PathBuf {
         &self.path
+    }
+
+    /// Get the device identity used for restoring state.
+    pub fn identity(&self) -> &I {
+        &self.identity
     }
 }
 
@@ -108,54 +113,47 @@ impl std::error::Error for JsonStorageError {
     }
 }
 
-impl<S, I> DeviceStorage for JsonStorage<S, I>
+impl<S, I> JsonStorage<S, I>
 where
     S: HasPersistedState,
     S::Persisted: Serialize + DeserializeOwned,
     I: DeviceIdentity,
 {
-    type State = S;
-    type Identity = I;
-    type Error = JsonStorageError;
-
-    fn identity(&self) -> &I {
-        &self.identity
-    }
-
-    fn load(&mut self) -> Result<Option<S>, Self::Error> {
-        // Check if the file exists
+    /// Load the persisted snapshot from storage without constructing runtime state.
+    ///
+    /// Returns `Ok(None)` if no saved state exists (first boot / factory reset).
+    /// The caller is responsible for passing the persisted data into the stack's
+    /// `StateConfig` so that `create_state` can reconstruct runtime state with
+    /// access to the `LayerContext`.
+    pub fn load_persisted(&mut self) -> Result<Option<S::Persisted>, JsonStorageError> {
         if !self.path.exists() {
             log::info!("No saved state at {:?}, using factory defaults", self.path);
             return Ok(None);
         }
 
-        // Read the file contents
         let mut file = File::open(&self.path)?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
 
-        // Deserialize the persisted form, then convert to runtime state.
         let persisted: S::Persisted = serde_json::from_str(&contents)?;
-        let state = S::from_persisted(&self.identity, persisted);
-
-        log::info!("Loaded device state from {:?}", self.path);
-        Ok(Some(state))
+        log::info!("Loaded persisted state from {:?}", self.path);
+        Ok(Some(persisted))
     }
 
-    fn save(&mut self, state: &S) -> Result<(), Self::Error> {
-        // Convert runtime state to serializable form.
+    /// Save the current runtime state to storage.
+    ///
+    /// Converts to the persisted form via [`HasPersistedState::to_persisted`],
+    /// then writes atomically (tmp file + rename).
+    pub fn save(&mut self, state: &S) -> Result<(), JsonStorageError> {
         let persisted = state.to_persisted();
 
-        // Serialize to JSON with pretty printing for readability
         let json = serde_json::to_string_pretty(&persisted)?;
 
-        // Write to a temporary file first for atomic replacement
         let tmp_path = self.path.with_extension("json.tmp");
         let mut file = File::create(&tmp_path)?;
         file.write_all(json.as_bytes())?;
         file.sync_all()?;
 
-        // Atomically replace the old file
         fs::rename(&tmp_path, &self.path)?;
 
         self.dirty = false;
@@ -163,19 +161,13 @@ where
         Ok(())
     }
 
-    fn mark_dirty(&mut self) {
+    /// Mark the storage as having unsaved changes.
+    pub fn mark_dirty(&mut self) {
         self.dirty = true;
     }
 
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        // Note: This just clears the dirty flag. The actual save must be done
-        // by calling save() with the current state. The stack should call save()
-        // when it detects changes, not flush().
-        self.dirty = false;
-        Ok(())
-    }
-
-    fn is_dirty(&self) -> bool {
+    /// Returns whether there are unsaved changes.
+    pub fn is_dirty(&self) -> bool {
         self.dirty
     }
 }

@@ -10,12 +10,9 @@
 
 use core::cell::RefCell;
 
-use embassy_sync::{
-    blocking_mutex::raw::RawMutex,
-    channel::Channel,
-    pubsub::PubSubChannel,
-};
+use embassy_sync::{blocking_mutex::raw::RawMutex, channel::Channel, pubsub::PubSubChannel};
 
+use crate::messages::buffers::DynBufferManager;
 use crate::{
     actor::Request,
     definition::StackDefinition,
@@ -24,7 +21,6 @@ use crate::{
     restart,
     router::Outbox,
 };
-use crate::messages::buffers::DynBufferManager;
 
 // ============================================================================
 // LayerContext
@@ -62,8 +58,7 @@ pub struct LayerContext<D: StackDefinition> {
     pub restart_channel: Channel<D::Mutex, restart::RestartRequest, 1>,
 
     /// App service channel: user code sends GroupValue requests, AL receives.
-    pub app_service_channel:
-        Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
+    pub app_service_channel: Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
 }
 
 impl<D: StackDefinition> LayerContext<D> {

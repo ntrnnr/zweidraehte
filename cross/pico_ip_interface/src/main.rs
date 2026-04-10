@@ -40,7 +40,6 @@ use zweidraehte_device::{
         knxip::{KnxNetIpBuilder, features::KnxIpInterfaceUdp},
     },
     prelude::*,
-    storage::DeviceStorage,
 };
 
 use rp_common::button::DebouncedButton;
@@ -75,7 +74,7 @@ const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 const MAX_TUNNEL_CONNECTIONS: usize = 4;
 
 type IpIfState =
-    IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, IpInterfaceParams, IpInterfaceComObjects, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
+    IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, PicoIpInterface, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
 
 type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 
@@ -89,6 +88,13 @@ type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 
 #[derive(Debug, Clone, Copy)]
 struct PicoIpInterface;
+
+/// State config: identity + optional persisted snapshot.
+pub struct IpIfStateConfig {
+    pub serial: [u8; 6],
+    pub fdsk: Option<[u8; 16]>,
+    pub persisted: Option<<IpIfState as HasPersistedState>::Persisted>,
+}
 
 impl SystemBStackDefinition for PicoIpInterface {}
 
@@ -111,7 +117,21 @@ impl StackDefinition for PicoIpInterface {
     type Platform = EmbassyNetworkInfo;
     type ES = IpExtension<KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
     type State = IpIfState;
+    type StateConfig = IpIfStateConfig;
     type Mem = SystemBMemoryMap;
+
+    fn create_state(config: Self::StateConfig, layer_ctx: &'static zweidraehte_device::layer_context::LayerContext<Self>) -> Self::State {
+        use zweidraehte_device::storage::StaticIdentity;
+        let identity = match config.fdsk {
+            Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
+            None => StaticIdentity::new(config.serial),
+        };
+        match config.persisted {
+            Some(persisted) => IpIfState::from_persisted(&identity, persisted, layer_ctx),
+            None => IpIfState::new(&identity, IpInterfaceComObjects::new(), (), layer_ctx),
+        }
+    }
+
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
 
     fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
@@ -359,19 +379,25 @@ async fn main(spawner: Spawner) {
 
     let mut storage = RpFlashStorage::<IpIfState, _>::new(flash, identity_data);
 
-    let device_state = match storage.load() {
-        Ok(Some(state)) => {
+    let persisted = match storage.load_persisted() {
+        Ok(Some(p)) => {
             info!("Loaded persisted state from flash");
-            state
+            Some(p)
         }
         Ok(None) => {
             info!("No persisted state found, starting fresh");
-            IpIfState::new(storage.identity(), IpInterfaceComObjects::new(), ())
+            None
         }
         Err(e) => {
             warn!("Flash load failed: {}, starting fresh", e);
-            IpIfState::new(storage.identity(), IpInterfaceComObjects::new(), ())
+            None
         }
+    };
+
+    let state_config = IpIfStateConfig {
+        serial: *storage.identity().serial_number(),
+        fdsk: storage.identity().fdsk().copied(),
+        persisted,
     };
 
     static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
@@ -404,7 +430,7 @@ async fn main(spawner: Spawner) {
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
         link_layer_builder,
-        device_state,
+        state_config,
         platform,
         PicoIpInterface::memory_map(),
     );

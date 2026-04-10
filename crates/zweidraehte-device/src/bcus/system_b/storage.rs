@@ -71,9 +71,6 @@ pub trait HasPersistedState: Sized {
 
     /// Export current runtime state to a serializable snapshot.
     fn to_persisted(&self) -> Self::Persisted;
-
-    /// Restore runtime state from a persisted snapshot and device identity.
-    fn from_persisted(identity: &impl DeviceIdentity, persisted: Self::Persisted) -> Self;
 }
 
 // ============================================================================

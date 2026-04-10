@@ -17,6 +17,7 @@ use crate::{
     device_model::DeviceModelNotifier,
     ets,
     inner::StackContext,
+    layer_context::{HasLayerContext, LayerContext},
     layers,
     memory::MemoryMap,
     objects::{
@@ -26,7 +27,7 @@ use crate::{
     },
 };
 
-pub trait StackDefinition: Copy {
+pub trait StackDefinition: Copy + 'static {
     /// Device descriptor containing all device identification and configuration.
     ///
     /// This is the **single source of truth** for device identity including:
@@ -191,6 +192,7 @@ pub trait StackDefinition: Copy {
     /// For System B devices, use [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)
     /// or [`IpSystemBDeviceState`](crate::bcus::system_b::IpSystemBDeviceState).
     type State: StackState
+        + HasLayerContext<Definition = Self>
         + HasAuthorization
         + HasPersistence
         + HasAddressTable
@@ -203,6 +205,25 @@ pub trait StackDefinition: Copy {
         + HasRoutingCount
         + DeviceModelNotifier
         + 'static;
+
+    /// Configuration needed to construct the device state.
+    ///
+    /// The runner calls [`create_state`](Self::create_state) with this config
+    /// and a `&'static LayerContext<Self>` to produce `Self::State`. This lets
+    /// the runner create the `LayerContext` first, so the state has access to
+    /// runtime infrastructure from birth.
+    ///
+    /// For `SystemBDeviceState`-based stacks, this is typically an enum of
+    /// fresh identity vs. persisted snapshot.
+    type StateConfig;
+
+    /// Create device state from configuration.
+    ///
+    /// Called by the runner after allocating buffers and creating the
+    /// `LayerContext`. The state receives `&'static LayerContext<Self>`
+    /// so it can access the outbox, buffer manager, and channels from
+    /// any component without parameter threading.
+    fn create_state(config: Self::StateConfig, layer_ctx: &'static LayerContext<Self>) -> Self::State;
 
     /// Memory map for A_Memory_Read/Write services.
     ///

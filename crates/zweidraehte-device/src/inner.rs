@@ -4,20 +4,16 @@
 //! [`StackContext`] is the runtime context passed to link layers, providing
 //! access to buffer management, property services, and device information.
 
-use embassy_sync::{channel::Channel, pubsub::PubSubChannel};
-
 use crate::{
     StackState,
-    actor::Request,
     context::BufferManagerContext,
     definition::StackDefinition,
-    layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse},
+    layer_context::HasLayerContext,
     messages::buffers::DynBufferManager,
     objects::{
-        comm::{ComObjectEvent, ComObjects, HasCommObjects, LifecycleEvent},
+        comm::{ComObjects, HasCommObjects},
         tables::HasAddressTable,
     },
-    restart,
 };
 
 // ============================================================================
@@ -48,32 +44,19 @@ where
 // Inner
 // ============================================================================
 
+/// Core stack interior: state + platform + memory map.
+///
+/// Channels and buffer management live on [`LayerContext`](crate::layer_context::LayerContext),
+/// accessible via `state.layer_context()`.
 pub(crate) struct Inner<D: StackDefinition> {
-    pub(crate) buffer_manager: DynBufferManager<'static>,
-    // These channels are shared between the stack runner task and user code
-    // (e.g. `Stack::update_object`, `restart_task`). They use `D::Mutex` so
-    // users can pick `CriticalSectionRawMutex` when the stack runs on an
-    // `InterruptExecutor` that can preempt the user's thread executor.
-    pub(crate) app_service_channel:
-        Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
-    pub(crate) event_channel:
-        PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
-    /// Channel for application lifecycle events (started/stopped running)
-    pub(crate) lifecycle_channel: PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
-    /// Channel for A_Restart requests from application layer to user code.
-    ///
-    /// In the synchronous router model, AL sends the bus response immediately
-    /// and fires off the request to user code. User code receives it and
-    /// performs the actual restart/reset — no response channel needed.
-    pub(crate) restart_channel: Channel<D::Mutex, restart::RestartRequest, 1>,
-    /// Unified device state containing runtime state, tables, and configuration
+    /// Unified device state containing runtime state, tables, and configuration.
     pub(crate) state: D::State,
     /// Platform abstraction for querying/applying network configuration.
     ///
     /// For KNX/IP devices this provides current IP, MAC, capabilities, etc.
     /// For non-IP devices this is `()`.
     pub(crate) platform: D::Platform,
-    /// Memory map for A_Memory_Read/Write services
+    /// Memory map for A_Memory_Read/Write services.
     pub(crate) memory_map: D::Mem,
 }
 
@@ -89,7 +72,7 @@ impl<D: StackDefinition> Inner<D> {
 // Implement context traits for Inner
 impl<D: StackDefinition> BufferManagerContext for &Inner<D> {
     fn buffer_manager(&self) -> &DynBufferManager<'static> {
-        &self.buffer_manager
+        &self.state.layer_context().buffer_manager
     }
 
     fn max_apdu_length(&self) -> u16 {
@@ -132,7 +115,7 @@ pub struct StackContext<'a, D: StackDefinition> {
 
 impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
     fn buffer_manager(&self) -> &DynBufferManager<'static> {
-        &self.inner.buffer_manager
+        &self.inner.state.layer_context().buffer_manager
     }
 
     fn max_apdu_length(&self) -> u16 {

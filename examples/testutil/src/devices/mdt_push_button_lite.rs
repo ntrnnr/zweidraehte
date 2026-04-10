@@ -14,8 +14,8 @@ use core::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::{
-    IpDeviceState, IpExtension, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
-    create_system_b_objects_from_extension,
+    HasPersistedState, IpDeviceState, IpExtension, SystemBInterfaceObjectsFor, SystemBMemoryMap,
+    SystemBStackDefinition, create_system_b_objects_from_extension,
 };
 use zweidraehte_device::dpt::*;
 use zweidraehte_device::ets::ets_range_enum;
@@ -3210,7 +3210,28 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Unified state type.
-pub type MdtState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MdtParams, comm_objs::MdtComObjects, KnxIpDeviceUdp>;
+pub type MdtState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MdtStack, KnxIpDeviceUdp>;
+
+/// Persisted snapshot type for the MDT device.
+pub type MdtPersistedState = <MdtState as HasPersistedState>::Persisted;
+
+/// Configuration for constructing `MdtState` inside the runner.
+pub struct MdtStateConfig {
+    pub serial: [u8; 6],
+    pub fdsk: Option<[u8; 16]>,
+    pub persisted: Option<MdtPersistedState>,
+}
+
+impl MdtStateConfig {
+    /// Build config from a device identity and optional persisted snapshot.
+    pub fn new(identity: &impl DeviceIdentity, persisted: Option<MdtPersistedState>) -> Self {
+        Self {
+            serial: *identity.serial_number(),
+            fdsk: identity.fdsk().copied(),
+            persisted,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct MdtStack;
@@ -3227,7 +3248,21 @@ impl StackDefinition for MdtStack {
     type Platform = MockIpPlatform;
     type ES = IpExtension<KnxIpDeviceUdp>;
     type State = MdtState;
+    type StateConfig = MdtStateConfig;
     type Mem = SystemBMemoryMap;
+
+    fn create_state(config: Self::StateConfig, layer_ctx: &'static zweidraehte_device::layer_context::LayerContext<Self>) -> Self::State {
+        use zweidraehte_device::storage::StaticIdentity;
+        let identity = match config.fdsk {
+            Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
+            None => StaticIdentity::new(config.serial),
+        };
+        match config.persisted {
+            Some(persisted) => MdtState::from_persisted(&identity, persisted, layer_ctx),
+            None => MdtState::new(&identity, comm_objs::MdtComObjects::new(), (), layer_ctx),
+        }
+    }
+
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
 
     fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>

@@ -21,6 +21,7 @@ use embedded_hal::digital::InputPin;
 use embedded_hal_async::digital::Wait;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use static_cell::StaticCell;
+use zweidraehte_device::layer_context::LayerContext;
 use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
@@ -34,7 +35,6 @@ use zweidraehte_device::{
     bcus::system_b::*,
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
-    storage::DeviceStorage,
 };
 
 use rp_common::button::DebouncedButton;
@@ -56,7 +56,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Device state combining System B tables with IP link-layer state.
-type PicoEthState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, LightSwitchComObjects, KnxIpDeviceUdp>;
+type PicoEthState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, PicoEthLightSwitch, KnxIpDeviceUdp>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
@@ -68,6 +68,13 @@ type Storage = RpFlashStorage<PicoEthState, FlashIdentityData>;
 
 #[derive(Debug, Clone, Copy)]
 struct PicoEthLightSwitch;
+
+/// State config: identity + optional persisted snapshot.
+pub struct PicoEthStateConfig {
+    pub serial: [u8; 6],
+    pub fdsk: Option<[u8; 16]>,
+    pub persisted: Option<<PicoEthState as HasPersistedState>::Persisted>,
+}
 
 impl SystemBStackDefinition for PicoEthLightSwitch {}
 
@@ -81,7 +88,23 @@ impl StackDefinition for PicoEthLightSwitch {
     type Platform = EmbassyNetworkInfo;
     type ES = IpExtension<KnxIpDeviceUdp>;
     type State = PicoEthState;
+    type StateConfig = PicoEthStateConfig;
     type Mem = SystemBMemoryMap;
+
+    fn create_state(config: Self::StateConfig, layer_ctx: &'static LayerContext<Self>) -> Self::State {
+        use zweidraehte_device::storage::StaticIdentity;
+
+        let identity = match config.fdsk {
+            Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
+            None => StaticIdentity::new(config.serial),
+        };
+
+        match config.persisted {
+            Some(persisted) => PicoEthState::from_persisted(&identity, persisted, layer_ctx),
+            None => PicoEthState::new(&identity, LightSwitchComObjects::new(), (), layer_ctx),
+        }
+    }
+
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
         'a,
         PicoEthState,
@@ -471,20 +494,11 @@ async fn main(spawner: Spawner) {
 
     let platform = EmbassyNetworkInfo::new(stack, mac_addr, initial_ip_method);
 
-    // Now construct the full runtime state (calls from_config() internally).
-    let device_state = match storage.load() {
-        Ok(Some(state)) => {
-            info!("Loaded persisted state from flash");
-            state
-        }
-        Ok(None) => {
-            info!("No persisted state found, starting fresh");
-            PicoEthState::new(storage.identity(), LightSwitchComObjects::new(), ())
-        }
-        Err(e) => {
-            warn!("Flash load failed: {}, starting fresh", e);
-            PicoEthState::new(storage.identity(), LightSwitchComObjects::new(), ())
-        }
+    // Build state config from the persisted snapshot loaded earlier (line 430).
+    let state_config = PicoEthStateConfig {
+        serial: *storage.identity().serial_number(),
+        fdsk: storage.identity().fdsk().copied(),
+        persisted,
     };
 
     // Wait for an IP address. For static this is immediate; for DHCP
@@ -539,7 +553,7 @@ async fn main(spawner: Spawner) {
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
         link_layer_builder,
-        device_state,
+        state_config,
         platform,
         PicoEthLightSwitch::memory_map(),
     );

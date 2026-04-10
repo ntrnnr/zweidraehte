@@ -21,11 +21,10 @@ use super::ipc::{
     TAG_TRIGGER_SYNC, TAG_TRIGGER_WRITE,
 };
 use super::mock::CapturedLinkLayerMessage;
-use super::stack::{ConformanceMemoryMap, ConformanceState, TestParameters, conformance_config};
+use super::stack::ConformancePersistedState;
 
 use crate::logger::{self, LogEntry};
 use zweidraehte_device::messages::knx::ServiceType;
-use zweidraehte_device::objects::tables::{Application, HasLoadStateMachine, LoadEvent};
 
 // ============================================================================
 // Child State
@@ -64,22 +63,8 @@ impl MultiProcessHarness {
     pub fn new() -> io::Result<Self> {
         let mut shm = SharedMemory::create()?;
 
-        // Build the default conformance test state and serialize it into
-        // shared memory using postcard. This creates the same state as
-        // ConformanceState::new() but in serialized form.
-        let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables(
-            ConformanceMemoryMap::ADT_BASE as u32,
-            ConformanceMemoryMap::AST_BASE as u32,
-            ConformanceMemoryMap::COT_BASE as u32,
-        );
-
-        let mut app_table = Application::<TestParameters>::new();
-        app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-
-        // Build the runtime state, then snapshot it for shared memory.
-        let state = ConformanceState::new(addr_tab, asso_tab, co_tab, app_table);
-        let snapshot = state.to_persisted_snapshot();
+        // Build the default persisted snapshot directly (no runtime state needed).
+        let snapshot = ConformancePersistedState::default_snapshot();
         shm.write_state(&snapshot)?;
 
         Ok(Self { shm, child: ChildState::Dead, dut_binary: "conformance-dut" })
@@ -196,10 +181,9 @@ impl MultiProcessHarness {
 
     /// Re-initialize shared memory with the default conformance state.
     pub fn reset_shared_memory(&mut self) -> io::Result<()> {
-        use super::stack::ConformanceState;
+        use super::stack::ConformancePersistedState;
 
-        let default_state = ConformanceState::default();
-        let snapshot = default_state.to_persisted_snapshot();
+        let snapshot = ConformancePersistedState::default_snapshot();
         self.shm
             .write_state(&snapshot)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e)))
@@ -207,10 +191,9 @@ impl MultiProcessHarness {
 
     /// Re-initialize shared memory with the default secure conformance state.
     pub fn reset_shared_memory_secure(&mut self) -> io::Result<()> {
-        use super::secure_stack::SecureConformanceState;
+        use super::secure_stack::SecureConformancePersistedState;
 
-        let default_state = SecureConformanceState::default();
-        let snapshot = default_state.to_persisted_snapshot();
+        let snapshot = SecureConformancePersistedState::default_snapshot();
         self.shm
             .write_state(&snapshot)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e)))

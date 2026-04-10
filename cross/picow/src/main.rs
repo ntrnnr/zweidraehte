@@ -29,7 +29,6 @@ use zweidraehte_device::{
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
-    storage::DeviceStorage,
 };
 
 use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, RpFlashStorage};
@@ -46,7 +45,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Device state combining System B tables with IP link-layer state.
-type PicoWState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, LightSwitchComObjects, KnxIpDeviceUdp>;
+type PicoWState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, PicoWLightSwitch, KnxIpDeviceUdp>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
@@ -58,6 +57,13 @@ type Storage = RpFlashStorage<PicoWState, rp_common::FlashIdentityData>;
 
 #[derive(Debug, Clone, Copy)]
 struct PicoWLightSwitch;
+
+/// State config: identity + optional persisted snapshot.
+pub struct PicoWStateConfig {
+    pub serial: [u8; 6],
+    pub fdsk: Option<[u8; 16]>,
+    pub persisted: Option<<PicoWState as HasPersistedState>::Persisted>,
+}
 
 impl SystemBStackDefinition for PicoWLightSwitch {}
 
@@ -71,7 +77,21 @@ impl StackDefinition for PicoWLightSwitch {
     type Platform = EmbassyNetworkInfo;
     type ES = IpExtension<KnxIpDeviceUdp>;
     type State = PicoWState;
+    type StateConfig = PicoWStateConfig;
     type Mem = SystemBMemoryMap;
+
+    fn create_state(config: Self::StateConfig, layer_ctx: &'static zweidraehte_device::layer_context::LayerContext<Self>) -> Self::State {
+        use zweidraehte_device::storage::StaticIdentity;
+        let identity = match config.fdsk {
+            Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
+            None => StaticIdentity::new(config.serial),
+        };
+        match config.persisted {
+            Some(persisted) => PicoWState::from_persisted(&identity, persisted, layer_ctx),
+            None => PicoWState::new(&identity, LightSwitchComObjects::new(), (), layer_ctx),
+        }
+    }
+
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
         'a,
         PicoWState,
@@ -331,19 +351,25 @@ async fn main(spawner: Spawner) {
     // above and is now passed to RpFlashStorage for config persistence.
     let mut storage = RpFlashStorage::<PicoWState, _>::new(flash, identity_data);
 
-    let device_state = match storage.load() {
-        Ok(Some(state)) => {
+    let persisted = match storage.load_persisted() {
+        Ok(Some(p)) => {
             info!("Loaded persisted state from flash");
-            state
+            Some(p)
         }
         Ok(None) => {
             info!("No persisted state found, starting fresh");
-            PicoWState::new(storage.identity(), LightSwitchComObjects::new(), ())
+            None
         }
         Err(e) => {
             warn!("Flash load failed: {}, starting fresh", e);
-            PicoWState::new(storage.identity(), LightSwitchComObjects::new(), ())
+            None
         }
+    };
+
+    let state_config = PicoWStateConfig {
+        serial: *storage.identity().serial_number(),
+        fdsk: storage.identity().fdsk().copied(),
+        persisted,
     };
 
     // Put storage in a static RefCell so both the restart handler and the
@@ -382,7 +408,7 @@ async fn main(spawner: Spawner) {
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
         link_layer_builder,
-        device_state,
+        state_config,
         platform,
         PicoWLightSwitch::memory_map(),
     );

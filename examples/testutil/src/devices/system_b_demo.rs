@@ -58,8 +58,8 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::bcus::system_b::{
-    IpDeviceState, IpExtension, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
-    create_system_b_objects_from_extension,
+    HasPersistedState, IpDeviceState, IpExtension, SystemBInterfaceObjectsFor, SystemBMemoryMap,
+    SystemBStackDefinition, create_system_b_objects_from_extension,
 };
 use zweidraehte_device::dpt::*;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceTcp};
@@ -539,7 +539,31 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Unified state type.
-pub type DemoState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoParams, comm_objs::DemoComObjects, KnxIpDeviceTcp>;
+pub type DemoState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoStack, KnxIpDeviceTcp>;
+
+/// Persisted snapshot type for the demo device.
+pub type DemoPersistedState = <DemoState as HasPersistedState>::Persisted;
+
+/// Configuration for constructing `DemoState` inside the runner.
+///
+/// Carries the device identity and an optional persisted snapshot.
+/// If `persisted` is `None`, the state is initialized with factory defaults.
+pub struct DemoStateConfig {
+    pub serial: [u8; 6],
+    pub fdsk: Option<[u8; 16]>,
+    pub persisted: Option<DemoPersistedState>,
+}
+
+impl DemoStateConfig {
+    /// Build config from a device identity and optional persisted snapshot.
+    pub fn new(identity: &impl DeviceIdentity, persisted: Option<DemoPersistedState>) -> Self {
+        Self {
+            serial: *identity.serial_number(),
+            fdsk: identity.fdsk().copied(),
+            persisted,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct DemoStack;
@@ -556,7 +580,21 @@ impl StackDefinition for DemoStack {
     type Platform = MockIpPlatform;
     type ES = IpExtension<KnxIpDeviceTcp>;
     type State = DemoState;
+    type StateConfig = DemoStateConfig;
     type Mem = SystemBMemoryMap;
+
+    fn create_state(config: Self::StateConfig, layer_ctx: &'static zweidraehte_device::layer_context::LayerContext<Self>) -> Self::State {
+        use zweidraehte_device::storage::StaticIdentity;
+        let identity = match config.fdsk {
+            Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
+            None => StaticIdentity::new(config.serial),
+        };
+        match config.persisted {
+            Some(persisted) => DemoState::from_persisted(&identity, persisted, layer_ctx),
+            None => DemoState::new(&identity, comm_objs::DemoComObjects::new(), (), layer_ctx),
+        }
+    }
+
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
 
     fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>

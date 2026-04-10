@@ -13,6 +13,7 @@ use crate::{
     address::IndividualAddress,
     definition::StackDefinition,
     inner::Inner,
+    layer_context::HasLayerContext,
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse},
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
@@ -135,7 +136,11 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
             return Err(UpdateObjectError::Busy);
         }
 
-        self.inner.event_channel.publish_immediate((asap.clone(), ComObjectEvent::LocallyUpdated));
+        self.inner
+            .state
+            .layer_context()
+            .event_channel
+            .publish_immediate((asap.clone(), ComObjectEvent::LocallyUpdated));
 
         ActorRequest::<D::Mutex, _, _>::request(
             &self.app_request_sender,
@@ -441,7 +446,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         &self,
     ) -> embassy_sync::pubsub::DynSubscriber<'_, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent)>
     {
-        self.inner.event_channel.dyn_subscriber().unwrap()
+        self.inner.state.layer_context().event_channel.dyn_subscriber().unwrap()
     }
 
     /// Subscribe to application lifecycle events.
@@ -472,7 +477,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # }
     /// ```
     pub fn lifecycle_events(&self) -> embassy_sync::pubsub::DynSubscriber<'_, LifecycleEvent> {
-        self.inner.lifecycle_channel.dyn_subscriber().unwrap()
+        self.inner.state.layer_context().lifecycle_channel.dyn_subscriber().unwrap()
     }
 
     /// Allocate a KNX message buffer from raw bytes.
@@ -502,7 +507,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # }
     /// ```
     pub async fn alloc_message(&self, msg: &[u8]) -> KnxMessageBuffer<Buffer<'static>> {
-        let buffer = self.inner.buffer_manager.alloc_from_slice(msg).await;
+        let buffer = self.inner.state.layer_context().buffer_manager.alloc_from_slice(msg).await;
         KnxMessageBuffer::new(buffer, crate::messages::knx::ServiceType::L_Data_Ind)
     }
 
@@ -595,7 +600,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// in production. When `allocated` approaches `total`, incoming allocations
     /// may block.
     pub fn buffer_pool_status(&self) -> (u8, u8) {
-        let bm = &self.inner.buffer_manager;
+        let bm = &self.inner.state.layer_context().buffer_manager;
         (bm.allocated_count(), bm.pool_size())
     }
 }

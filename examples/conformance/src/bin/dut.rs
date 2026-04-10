@@ -18,7 +18,7 @@ use static_cell::StaticCell;
 
 use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilder, SharedMemory, TAG_LOG, TAG_READY};
 use zweidraehte_conformance::harness::stack::{
-    ConformanceMemoryMap, ConformancePersistedState, ConformanceState, IpcConformanceTestStack, device_info,
+    ConformanceMemoryMap, ConformancePersistedState, ConformanceStateConfig, IpcConformanceTestStack, device_info,
 };
 
 use zweidraehte_device::messages::buffers::{BufferManager, DynBufferManager};
@@ -286,7 +286,7 @@ async fn main(spawner: Spawner) {
         .expect("read shared memory")
         .expect("shared memory uninitialized — parent should have written initial state");
 
-    let state = ConformanceState::from_persisted_snapshot(snapshot);
+    let state_config = ConformanceStateConfig::Persisted(snapshot);
 
     // Store shm in a static so the restart handler can access it.
     let shm = SHM.init(ShmCell(UnsafeCell::new(shm)));
@@ -316,7 +316,7 @@ async fn main(spawner: Spawner) {
     let (stack, runner) = zweidraehte_device::new(
         resources,
         link_layer_builder,
-        state,
+        state_config,
         (),
         ConformanceMemoryMap,
     );

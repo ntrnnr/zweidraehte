@@ -37,7 +37,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::StackState;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode};
-use crate::objects::comm::ComObjects;
 use crate::objects::tables::LoadState;
 use crate::storage::SequenceNumberStorage;
 
@@ -977,16 +976,14 @@ pub type SecureTp1DeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    P,
-    CO: ComObjects,
+    D: crate::StackDefinition,
     SEQ,
     const P2P: usize,
 > = crate::bcus::system_b::SystemBDeviceState<
     ADT_SIZE,
     AST_SIZE,
     COT_SIZE,
-    P,
-    CO,
+    D,
     SecureTp1ExtensionState<SEQ, ADT_SIZE, P2P, COT_SIZE>,
 >;
 
@@ -1012,8 +1009,7 @@ pub type SecureIpDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    P,
-    CO: ComObjects,
+    D: crate::StackDefinition,
     SEQ,
     const P2P: usize,
     const N: usize,
@@ -1022,7 +1018,6 @@ pub type SecureIpDeviceState<
     ADT_SIZE,
     AST_SIZE,
     COT_SIZE,
-    P,
-    CO,
+    D,
     SecureIpExtensionState<SEQ, N, CAPS, ADT_SIZE, P2P, COT_SIZE>,
 >;

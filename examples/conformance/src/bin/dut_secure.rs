@@ -18,7 +18,7 @@ use static_cell::StaticCell;
 
 use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilder, SharedMemory, TAG_LOG, TAG_READY};
 use zweidraehte_conformance::harness::secure_stack::{
-    IpcSecureConformanceTestStack, SecureConformancePersistedState, SecureConformanceState,
+    IpcSecureConformanceTestStack, SecureConformancePersistedState, SecureConformanceStateConfig,
 };
 use zweidraehte_conformance::harness::stack::{ConformanceMemoryMap, device_info};
 
@@ -243,10 +243,11 @@ async fn main(spawner: Spawner) {
         .expect("shared memory uninitialized — parent should have written initial state");
 
     // Create the sequence number storage from the shared memory region,
-    // then pass it to the state constructor so the extension state owns it.
+    // then pass it as part of the state config so the runner can construct
+    // the state with the layer context.
     zweidraehte_conformance::harness::secure_stack::set_seq_shm_ptr(shm.seq_region_ptr());
     let seq_storage = IpcSecureConformanceTestStack::create_seq_storage();
-    let state = SecureConformanceState::from_persisted_snapshot(snapshot, seq_storage);
+    let state_config = SecureConformanceStateConfig::Persisted { snapshot, seq_storage };
 
     let shm = SHM.init(ShmCell(UnsafeCell::new(shm)));
 
@@ -267,7 +268,7 @@ async fn main(spawner: Spawner) {
     let (stack, runner) = zweidraehte_device::new(
         resources,
         link_layer_builder,
-        state,
+        state_config,
         (),
         ConformanceMemoryMap,
     );

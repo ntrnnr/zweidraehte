@@ -6,14 +6,14 @@
 use embassy_sync::{
     blocking_mutex::raw::{NoopRawMutex, RawMutex},
     channel::{Channel, DynamicReceiver, DynamicSender},
-    pubsub::PubSubChannel,
 };
 
 use crate::{
     StackState,
-    composition::{LayerContext, LayerStackBuilder},
+    composition::{LayerBuildContext, LayerStackBuilder},
     definition::StackDefinition,
     inner::{Inner, StackContext},
+    layer_context::HasLayerContext,
     layers::{LinkLayerBuilderBase, transport::TlStyle},
     messages::buffers::{Buffer, BufferManager},
     resources::StackResources,
@@ -86,19 +86,17 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Layer construction (via LayerStackBuilder)
         // ================================================================
 
-        // SAFETY: We are creating a static reference to the channel held by the `Inner` struct.
-        // This is safe because `Inner` lives in `StackResources` which outlives this function.
+        let lctx = self.stack.inner.state.layer_context();
+
+        // SAFETY: LayerContext lives in StackResources which outlives this function.
         let app_service_receiver: DynamicReceiver<'static, _> = unsafe {
             core::mem::transmute::<DynamicReceiver<'_, _>, DynamicReceiver<'static, _>>(
-                self.stack.inner.app_service_channel.receiver().into(),
+                lctx.app_service_channel.receiver().into(),
             )
         };
 
-        let layer_context = LayerContext {
-            buffer_manager: &self.stack.inner.buffer_manager,
+        let layer_context = LayerBuildContext {
             state: &self.stack.inner.state,
-            event_channel: &self.stack.inner.event_channel,
-            lifecycle_channel: &self.stack.inner.lifecycle_channel,
             interface_objects: self.interface_objects,
             memory_map: &self.stack.inner.memory_map,
             restart_sender: self.restart_sender,
@@ -240,26 +238,54 @@ fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
 
 /// Create a new KNX stack.
 ///
-/// The `state` parameter contains the unified device state including:
-/// - Individual address, authentication keys, and other runtime configuration
-/// - ETS-loaded tables (ADT, AST, COT, APP)
+/// The runner creates the [`LayerContext`](crate::layer_context::LayerContext)
+/// (buffer manager, outbox, channels) first, then calls
+/// [`D::create_state()`](StackDefinition::create_state) so the device state
+/// has access to runtime infrastructure from birth — no two-phase init.
 ///
-/// Use the device state constructor or storage to create it:
-/// - `SystemBDeviceState::new(storage.identity())` for fresh state
-/// - `storage.load()` to restore from persistent storage
+/// # Arguments
 ///
-/// The `memory_map` parameter defines how memory addresses are mapped to tables
-/// for A_Memory_Read/Write services. It must be configured with the same table
-/// sizes as used for the device's tables (ADT, AST, COT sizes). Use
-/// `SystemBMemoryMap::for_device()` with your device's MAX_ADDRESSES, MAX_ASSOCIATIONS,
-/// etc. constants to create a properly configured memory map.
+/// * `resources` - Pre-allocated memory for the stack
+/// * `link_layer_builder` - Link layer builder (e.g., TPUART, KNX/IP, mock)
+/// * `state_config` - Configuration for state construction (identity, persisted snapshot, etc.)
+/// * `platform` - Platform abstraction (IP config for KNX/IP, `()` for TP1)
+/// * `memory_map` - Memory map for A_Memory_Read/Write services
 pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
     resources: &'d mut StackResources<D, BUF_SZ, NUM_BUFS>,
     link_layer_builder: D::LLB,
-    state: D::State,
+    state_config: D::StateConfig,
     platform: D::Platform,
     memory_map: D::Mem,
 ) -> (Stack<'d, D>, Runner<'d, D>) {
+    use crate::layer_context::LayerContext;
+
+    // ================================================================
+    // Step 1: Allocate buffers
+    // ================================================================
+
+    // SAFETY: We are creating a reference to the buffers that are stored in the `StackResources` struct,
+    //         which lives at least as long as `Inner`
+    let buffers = resources.buffers.write([[0; _]; _]);
+    let buffer_manager: &'static mut BufferManager<NUM_BUFS> =
+        unsafe { core::mem::transmute(resources.buffer_manager.write(BufferManager::new(buffers))) };
+
+    // ================================================================
+    // Step 2: Create LayerContext (before the state)
+    // ================================================================
+
+    let layer_context = LayerContext::new(buffer_manager.dyn_buffer_manager());
+    let layer_context = &*resources.layer_context.write(layer_context);
+
+    // SAFETY: layer_context lives in StackResources which outlives everything.
+    // The actual lifetime is 'd but we need 'static for the state field.
+    let layer_ctx_static: &'static LayerContext<D> = unsafe { core::mem::transmute(layer_context) };
+
+    // ================================================================
+    // Step 3: Create state via D::create_state()
+    // ================================================================
+
+    let state = D::create_state(state_config, layer_ctx_static);
+
     // Validate that runtime max_apdu_length doesn't exceed compile-time buffer allocation
     let runtime_max_apdu = state.max_apdu_length();
     assert!(
@@ -270,23 +296,11 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
         D::MAX_APDU_LENGTH
     );
 
-    // SAFETY: We are creating a reference to the buffers that are stored in the `StackResources` struct,
-    //         which lives at least as long as `Inner`
-    let buffers = resources.buffers.write([[0; _]; _]);
-    let buffer_manager: &'static mut BufferManager<NUM_BUFS> =
-        unsafe { core::mem::transmute(resources.buffer_manager.write(BufferManager::new(buffers))) };
+    // ================================================================
+    // Step 4: Create Inner and interface objects
+    // ================================================================
 
-    let inner = Inner {
-        buffer_manager: buffer_manager.dyn_buffer_manager(),
-        app_service_channel: Channel::new(),
-        event_channel: PubSubChannel::new(),
-        lifecycle_channel: PubSubChannel::new(),
-        restart_channel: Channel::new(),
-        state,
-        platform,
-        memory_map,
-    };
-
+    let inner = Inner { state, platform, memory_map };
     let inner = &*resources.inner.write(inner);
 
     // Build interface objects with reference to the state stored in Inner.
@@ -300,18 +314,15 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     };
     let interface_objects = &*resources.interface_objects.write(interface_objects);
 
-    // SAFETY: We are creating a static reference to the channel held by the `Inner` struct,
-    //         which is safe because it is guaranteed to live as long as the `Stack` or the `Runner`.
-    let app_request_sender: DynamicSender<'static, _> = unsafe {
-        core::mem::transmute::<DynamicSender<'_, _>, DynamicSender<'static, _>>(
-            inner.app_service_channel.sender().into(),
-        )
-    };
+    // Channels live on LayerContext (inside the state). Create sender/receiver
+    // pairs for the Stack handle and the Runner.
+    let lctx: &'static crate::layer_context::LayerContext<D> =
+        unsafe { core::mem::transmute(inner.state.layer_context()) };
 
-    // Create restart channel sender/receiver pair.
+    let app_request_sender: DynamicSender<'static, _> = lctx.app_service_channel.sender().into();
+
     // The sender goes to the Runner (passed to ApplicationLayer), receiver goes to Stack (for user code).
-    let (restart_sender, restart_receiver) =
-        create_request_response_pair::<D::Mutex, _, 1>(unsafe { core::mem::transmute(&inner.restart_channel) });
+    let (restart_sender, restart_receiver) = create_request_response_pair::<D::Mutex, _, 1>(&lctx.restart_channel);
 
     // Initialize link layer resources using the builder
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());

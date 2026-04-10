@@ -29,7 +29,7 @@ use devices::light_switch::{
 
 use zweidraehte_device::{
     bcus::system_b::*, config::MAX_APDU_LENGTH_EXTENDED, layers::linklayers::tpuart::TpUartLinkLayerBuilder,
-    prelude::*, storage::DeviceStorage,
+    prelude::*,
 };
 
 use rp_common::button::DebouncedButton;
@@ -55,7 +55,7 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 
 /// Device state for TP1.
-type PicoTp1State = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, LightSwitchParams, LightSwitchComObjects>;
+type PicoTp1State = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, PicoTp1LightSwitch>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
@@ -64,6 +64,13 @@ type Storage = RpFlashStorage<PicoTp1State, FlashIdentityData>;
 // ----------------------------------------------------------------------------
 // StackDefinition
 // ----------------------------------------------------------------------------
+
+/// State config: identity + optional persisted snapshot.
+pub struct PicoTp1StateConfig {
+    pub serial: [u8; 6],
+    pub fdsk: Option<[u8; 16]>,
+    pub persisted: Option<<PicoTp1State as HasPersistedState>::Persisted>,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct PicoTp1LightSwitch;
@@ -87,9 +94,22 @@ impl StackDefinition for PicoTp1LightSwitch {
     type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
     type ES = Tp1ExtensionState;
     type State = PicoTp1State;
+    type StateConfig = PicoTp1StateConfig;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> =
         DefaultSystemBInterfaceObjects<'a, PicoTp1State, (&'a Tp1ExtensionState, EasterEggAugment)>;
+
+    fn create_state(config: Self::StateConfig, layer_ctx: &'static zweidraehte_device::layer_context::LayerContext<Self>) -> Self::State {
+        use zweidraehte_device::storage::StaticIdentity;
+        let identity = match config.fdsk {
+            Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
+            None => StaticIdentity::new(config.serial),
+        };
+        match config.persisted {
+            Some(persisted) => PicoTp1State::from_persisted(&identity, persisted, layer_ctx),
+            None => PicoTp1State::new(&identity, LightSwitchComObjects::new(), (), layer_ctx),
+        }
+    }
 
     fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
     where
@@ -367,19 +387,25 @@ async fn main(spawner: Spawner) {
     // above and is now passed to RpFlashStorage for config persistence.
     let mut storage = RpFlashStorage::<PicoTp1State, _>::new(flash, identity_data);
 
-    let device_state = match storage.load() {
-        Ok(Some(state)) => {
+    let persisted = match storage.load_persisted() {
+        Ok(Some(p)) => {
             info!("Loaded persisted state from flash");
-            state
+            Some(p)
         }
         Ok(None) => {
             info!("No persisted state found, starting fresh");
-            PicoTp1State::new(storage.identity(), LightSwitchComObjects::new(), ())
+            None
         }
         Err(e) => {
             warn!("Flash load failed: {}, starting fresh", e);
-            PicoTp1State::new(storage.identity(), LightSwitchComObjects::new(), ())
+            None
         }
+    };
+
+    let state_config = PicoTp1StateConfig {
+        serial: *storage.identity().serial_number(),
+        fdsk: storage.identity().fdsk().copied(),
+        persisted,
     };
 
     // Put storage in a static RefCell so both the restart handler and the
@@ -409,7 +435,7 @@ async fn main(spawner: Spawner) {
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
         link_layer_builder,
-        device_state,
+        state_config,
         (), // no platform needed for TP1
         PicoTp1LightSwitch::memory_map(),
     );

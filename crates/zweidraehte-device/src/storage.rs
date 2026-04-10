@@ -132,20 +132,17 @@ pub trait DeviceStorage: Sized {
     /// Get the device identity used for restoring state.
     fn identity(&self) -> &Self::Identity;
 
-    /// Load persistent state from storage.
+    /// Load the persisted snapshot from storage.
     ///
     /// Returns:
-    /// - `Ok(Some(state))` - Successfully loaded and restored state
+    /// - `Ok(Some(persisted))` - Successfully loaded snapshot
     /// - `Ok(None)` - No saved state exists (factory reset / first boot)
     /// - `Err(e)` - Storage error
     ///
-    /// On first boot or after factory reset, this should return `Ok(None)`.
-    /// The device will then use factory defaults.
-    ///
-    /// Implementations deserialize the persisted form and call
-    /// [`HasPersistedState::from_persisted`] with [`identity()`](Self::identity)
-    /// to produce the runtime state.
-    fn load(&mut self) -> Result<Option<Self::State>, Self::Error>;
+    /// The caller passes the snapshot into `D::StateConfig` and lets
+    /// [`StackDefinition::create_state`](crate::StackDefinition::create_state)
+    /// reconstruct runtime state with access to the `LayerContext`.
+    fn load_persisted(&mut self) -> Result<Option<<Self::State as HasPersistedState>::Persisted>, Self::Error>;
 
     /// Save persistent state to storage.
     ///
@@ -233,7 +230,7 @@ impl<S: HasPersistedState> DeviceStorage for NoStorage<S> {
         &NoIdentity
     }
 
-    fn load(&mut self) -> Result<Option<S>, Self::Error> {
+    fn load_persisted(&mut self) -> Result<Option<S::Persisted>, Self::Error> {
         Ok(None) // No saved state
     }
 

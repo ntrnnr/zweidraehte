@@ -7,7 +7,7 @@
 // Core stack
 pub use crate::{
     AccessContext, HasAuthorization, HasPersistence, HasSecureIdentity, InsecureDeviceBuilder, InsecureDeviceLayers,
-    LayerContext, ReadObjectError, Runner, SecureDeviceBuilder, SecureDeviceLayers, Stack, StackDefinition,
+    LayerBuildContext, ReadObjectError, Runner, SecureDeviceBuilder, SecureDeviceLayers, Stack, StackDefinition,
     StackResources, StackState, StandardDeviceLayers, StandardSecureDeviceLayers, UpdateObjectError,
 };
 

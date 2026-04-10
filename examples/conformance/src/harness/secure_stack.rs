@@ -23,6 +23,7 @@ use zweidraehte_device::{
     },
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     dpt::{InterfaceObjectType, PDT_UnsignedChar, PropertyDataDefinition},
+    layer_context::{HasLayerContext, LayerContext},
     memory::MemoryMap,
     objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount, InterfaceObjectAugment, PropertyAccess,
@@ -70,8 +71,7 @@ type SecureInnerState = SecureTp1DeviceState<
     { table_sizes::ADT },
     { table_sizes::AST },
     { table_sizes::COT },
-    TestParameters,
-    ConformanceComObjects,
+    IpcSecureConformanceTestStack,
     ShmSeqStorage,
     { sec_table_sizes::P2P },
 >;
@@ -100,12 +100,14 @@ impl SecureConformanceState {
         asso_tab: conformance_config::AssoTab,
         co_tab: conformance_config::CoTab,
         app_table: Application<TestParameters>,
+        layer_ctx: &'static LayerContext<IpcSecureConformanceTestStack>,
     ) -> Self {
         let identity = StaticIdentity::with_fdsk(SECURE_SERIAL_NUMBER, SECURE_FDSK);
         let inner = SecureInnerState::new(
             &identity,
             ConformanceComObjects::new(),
             ConformanceHookContext::new(),
+            layer_ctx,
         );
 
         // Set the secure conformance test individual address (1.1.1 = 0x1101).
@@ -132,8 +134,13 @@ impl SecureConformanceState {
     }
 }
 
-impl Default for SecureConformanceState {
-    fn default() -> Self {
+impl SecureConformanceState {
+    /// Create a fully-populated secure conformance state with default tables
+    /// and security configuration.
+    ///
+    /// This is the secure equivalent of what `Default` would provide, but
+    /// requires a `layer_ctx` reference.
+    pub fn new_default(layer_ctx: &'static LayerContext<IpcSecureConformanceTestStack>) -> Self {
         // Build populated tables (same as the non-secure DUT) so that group
         // addressing, association lookup, and comm object access all work.
         let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables(
@@ -145,7 +152,7 @@ impl Default for SecureConformanceState {
         app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
-        let state = Self::new(addr_tab, asso_tab, co_tab, app_table);
+        let state = Self::new(addr_tab, asso_tab, co_tab, app_table, layer_ctx);
 
         // Apply security config from the macro (group keys, tool key, etc.).
         let sec_config = conformance_config::ConformanceTestConfig::create_security_config();
@@ -185,6 +192,18 @@ impl StackState for SecureConformanceState {
     }
     fn log_access_denied(&self, source_addr: u16) {
         self.inner.log_access_denied(source_addr);
+    }
+}
+
+// ============================================================================
+// HasLayerContext Forwarding
+// ============================================================================
+
+impl HasLayerContext for SecureConformanceState {
+    type Definition = IpcSecureConformanceTestStack;
+
+    fn layer_context(&self) -> &LayerContext<Self::Definition> {
+        self.inner.layer_context()
     }
 }
 
@@ -816,6 +835,25 @@ type SecAugment<'a> = <
     zweidraehte_device::bcus::system_b::Extension<()>
 >::Augment<'a, SecureConformanceState>;
 
+/// Configuration for constructing a [`SecureConformanceState`].
+///
+/// Passed to [`IpcSecureConformanceTestStack::create_state`] which combines it
+/// with the runner-provided `LayerContext` to produce the full state.
+pub enum SecureConformanceStateConfig {
+    /// Build fresh state from pre-built tables and application.
+    Fresh {
+        addr_tab: conformance_config::AddrTab,
+        asso_tab: conformance_config::AssoTab,
+        co_tab: conformance_config::CoTab,
+        app_table: Application<TestParameters>,
+    },
+    /// Restore from a previously-persisted snapshot.
+    Persisted {
+        snapshot: SecureConformancePersistedState,
+        seq_storage: ShmSeqStorage,
+    },
+}
+
 /// Secure conformance test stack definition.
 ///
 /// Drop-in replacement for [`IpcConformanceTestStack`] that enables
@@ -837,6 +875,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type ES =
         SecureTp1ExtensionState<ShmSeqStorage, { table_sizes::ADT }, { sec_table_sizes::P2P }, { table_sizes::COT }>;
     type State = SecureConformanceState;
+    type StateConfig = SecureConformanceStateConfig;
     type Mem = ConformanceMemoryMap;
 
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
@@ -855,6 +894,17 @@ impl StackDefinition for IpcSecureConformanceTestStack {
             &CONFORMANCE_MEMORY_LAYOUT,
             (CertificationObjectAugment::new(), DiagnosticsAugment::new(&state.inner.operation_mode)),
         )
+    }
+
+    fn create_state(config: Self::StateConfig, layer_ctx: &'static LayerContext<Self>) -> Self::State {
+        match config {
+            SecureConformanceStateConfig::Fresh { addr_tab, asso_tab, co_tab, app_table } => {
+                SecureConformanceState::new(addr_tab, asso_tab, co_tab, app_table, layer_ctx)
+            }
+            SecureConformanceStateConfig::Persisted { snapshot, seq_storage } => {
+                SecureConformanceState::from_persisted_snapshot(snapshot, seq_storage, layer_ctx)
+            }
+        }
     }
 
     type AlExtension = (
@@ -1083,10 +1133,52 @@ pub struct SecureConformancePersistedState {
     pub user_memory: [u8; USER_MEMORY_SIZE],
 }
 
+impl SecureConformancePersistedState {
+    /// Build the default persisted snapshot without constructing runtime state.
+    ///
+    /// This produces the same serialized form as the old `Default` impl did,
+    /// but assembles the `PersistedState` directly — avoiding the need for a
+    /// `LayerContext` that runtime state now requires.
+    pub fn default_snapshot() -> Self {
+        let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables(
+            ConformanceMemoryMap::ADT_BASE as u32,
+            ConformanceMemoryMap::AST_BASE as u32,
+            ConformanceMemoryMap::COT_BASE as u32,
+        );
+        let mut app_table = Application::<TestParameters>::new();
+        app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+
+        let sec_config = conformance_config::ConformanceTestConfig::create_security_config();
+
+        let mut inner = SecureInnerPersistedState::factory_default();
+        inner.individual_address = IndividualAddress::new(1, 1, 1);
+        inner.address_table = addr_tab;
+        inner.association_table = asso_tab;
+        inner.group_object_table = co_tab;
+        inner.application = app_table;
+        inner.extension_config.security.grp_keys = sec_config.grp_keys;
+        inner.extension_config.security.go_flags = sec_config.go_flags;
+        inner.extension_config.security.tool_key = sec_config.tool_key;
+
+        Self {
+            inner,
+            linear_memory: [0x0F; LINEAR_MEMORY_SIZE],
+            level2_memory: [0xAA; LEVEL2_MEMORY_SIZE],
+            level1_memory: [0xFF; LEVEL1_MEMORY_SIZE],
+            user_memory: [0xFF; USER_MEMORY_SIZE],
+        }
+    }
+}
+
 impl SecureConformanceState {
-    pub fn from_persisted_snapshot(snapshot: SecureConformancePersistedState, seq_storage: ShmSeqStorage) -> Self {
+    pub fn from_persisted_snapshot(
+        snapshot: SecureConformancePersistedState,
+        seq_storage: ShmSeqStorage,
+        layer_ctx: &'static LayerContext<IpcSecureConformanceTestStack>,
+    ) -> Self {
         let identity = StaticIdentity::with_fdsk(SECURE_SERIAL_NUMBER, SECURE_FDSK);
-        let inner = SecureInnerState::from_persisted(&identity, snapshot.inner);
+        let inner = SecureInnerState::from_persisted(&identity, snapshot.inner, layer_ctx);
         inner.extension_state().set_seq_storage(seq_storage);
 
         // Seed per-peer receiving sequence numbers from SIAT entries into

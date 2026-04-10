@@ -16,6 +16,7 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     dpt::DPT_Switch,
+    layer_context::{HasLayerContext, LayerContext},
     messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::tables::{
         AddrTab7, AddressTable, Application, AssoTab6, AssociationTable, CoTab7, CommunicationObjectTable,
@@ -61,6 +62,8 @@ pub struct MyKnxStackStoredData {
 pub struct MyState {
     // Runtime state
     individual_address: core::cell::Cell<IndividualAddress>,
+    // Layer context — shared runtime infrastructure
+    layer_ctx: &'static LayerContext<MyKnxStack>,
     // Tables
     pub adt: RefCell<AddrTab7<30>>,
     pub ast: RefCell<AssoTab6<15>>,
@@ -76,27 +79,18 @@ pub struct MyState {
 }
 
 impl MyState {
-    pub fn new(adt: AddrTab7<30>, ast: AssoTab6<15>, cot: CoTab7<30>) -> Self {
+    pub fn new(
+        adt: AddrTab7<30>,
+        ast: AssoTab6<15>,
+        cot: CoTab7<30>,
+        layer_ctx: &'static LayerContext<MyKnxStack>,
+    ) -> Self {
         Self {
             individual_address: core::cell::Cell::new(IndividualAddress::new(1, 0, 1)),
+            layer_ctx,
             adt: RefCell::new(adt),
             ast: RefCell::new(ast),
             cot: RefCell::new(cot),
-            app: RefCell::new(Application::new()),
-            comm_objs: RefCell::new(comm_objs::AppComObjects::new()),
-            access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
-            dm_slot: DmNotificationSlot::new(),
-        }
-    }
-}
-
-impl Default for MyState {
-    fn default() -> Self {
-        Self {
-            individual_address: core::cell::Cell::new(IndividualAddress::new(1, 0, 1)),
-            adt: RefCell::new(AddrTab7::<30>::new()),
-            ast: RefCell::new(AssoTab6::<15>::new()),
-            cot: RefCell::new(CoTab7::<30>::new()),
             app: RefCell::new(Application::new()),
             comm_objs: RefCell::new(comm_objs::AppComObjects::new()),
             access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
@@ -111,6 +105,14 @@ impl DeviceModelNotifier for MyState {
     }
     fn take_event(&self) -> Option<DeviceModelEvent> {
         self.dm_slot.take_event()
+    }
+}
+
+impl HasLayerContext for MyState {
+    type Definition = MyKnxStack;
+
+    fn layer_context(&self) -> &LayerContext<Self::Definition> {
+        self.layer_ctx
     }
 }
 
@@ -223,7 +225,12 @@ impl StackDefinition for MyKnxStack {
     type LLB = MockLinkLayerBuilder<8>;
     type ES = ();
     type State = MyState;
+    type StateConfig = MyKnxStackStoredData;
     type Mem = NoMemoryMap;
+
+    fn create_state(config: Self::StateConfig, layer_ctx: &'static LayerContext<Self>) -> Self::State {
+        MyState::new(config.addr_tab, config.asso_tab, config.co_tab, layer_ctx)
+    }
 
     // Empty interface objects - this stack doesn't have interface objects
     type InterfaceObjects<'a> = ();
@@ -302,13 +309,10 @@ async fn main(spawner: Spawner) {
     // The builder is consumed when creating the stack, the handle is kept for injection
     let (link_layer_builder, mock_ll_handle) = MockLinkLayerBuilder::new(injection_channel);
 
-    // Create the unified state (tables + runtime state)
-    let state = MyState::new(stored_data.addr_tab, stored_data.asso_tab, stored_data.co_tab);
-
     let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
         link_layer_builder,
-        state,
+        stored_data,
         (), // platform (non-IP device)
         NoMemoryMap,
     );

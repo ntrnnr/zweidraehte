@@ -22,8 +22,7 @@ use core::cell::Cell;
 use serde::{Deserialize, Serialize};
 
 use crate::StackState;
-use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode};
-use crate::objects::comm::ComObjects;
+use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode, SystemBDeviceState};
 use crate::dpt::{InterfaceObjectType, PDT_Generic01};
 use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, HasMaxRetryCount, InterfaceObjectAugment, PropertyAccess,
@@ -121,8 +120,12 @@ impl Extension<()> for Tp1ExtensionState {
 ///
 /// This is [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)
 /// specialized with [`Tp1ExtensionState`] for TP1 twisted-pair devices.
-pub type Tp1SystemBDeviceState<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P, CO: ComObjects> =
-    crate::bcus::system_b::SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, P, CO, Tp1ExtensionState>;
+pub type Tp1SystemBDeviceState<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    D: crate::StackDefinition,
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, Tp1ExtensionState>;
 
 // ============================================================================
 // HasMaxRetryCount — used by TPUART link layer via MaxRetryCountContext

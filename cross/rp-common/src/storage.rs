@@ -46,7 +46,6 @@ use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::HasPersistedState;
 use zweidraehte_device::storage::DeviceIdentity;
-use zweidraehte_device::storage::DeviceStorage;
 
 // ================================================================================
 // Constants
@@ -113,6 +112,11 @@ impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE> {
         let _ = Self::_VALIDATE;
         Self { flash, identity, dirty: false, _phantom: core::marker::PhantomData }
     }
+
+    /// Get the device identity used for restoring state.
+    pub fn identity(&self) -> &I {
+        &self.identity
+    }
 }
 
 impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE>
@@ -125,8 +129,8 @@ where
     ///
     /// This is useful for inspecting persisted configuration (e.g., the
     /// IP assignment method) before the platform layer is fully
-    /// initialized. Call [`DeviceStorage::load()`] for the normal boot
-    /// path that also constructs the runtime state.
+    /// initialized. For the normal boot path, call this method and pass
+    /// the result into the stack's `StateConfig` for state construction.
     pub fn load_persisted(&mut self) -> Result<Option<S::Persisted>, FlashError> {
         let mut region = [0u8; STORAGE_SIZE];
         self.flash.blocking_read(Self::STORAGE_OFFSET, &mut region).map_err(|_| FlashError::ReadFailed)?;
@@ -151,32 +155,17 @@ where
     }
 }
 
-impl<S, I, const STORAGE_SIZE: usize> DeviceStorage for RpFlashStorage<S, I, STORAGE_SIZE>
+impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE>
 where
     S: HasPersistedState,
     S::Persisted: Serialize + for<'de> Deserialize<'de>,
     I: DeviceIdentity,
 {
-    type State = S;
-    type Identity = I;
-    type Error = FlashError;
-
-    fn identity(&self) -> &I {
-        &self.identity
-    }
-
-    fn load(&mut self) -> Result<Option<S>, Self::Error> {
-        match self.load_persisted()? {
-            Some(persisted) => {
-                let state = S::from_persisted(&self.identity, persisted);
-                Ok(Some(state))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn save(&mut self, state: &S) -> Result<(), Self::Error> {
-        // Convert runtime state to serializable form.
+    /// Save the current runtime state to flash.
+    ///
+    /// Converts to the persisted form via [`HasPersistedState::to_persisted`],
+    /// serializes with postcard, then erases and writes the flash sector.
+    pub fn save(&mut self, state: &S) -> Result<(), FlashError> {
         let persisted = state.to_persisted();
 
         // Serialize into a stack buffer. Reserve header bytes at the front.
@@ -200,17 +189,13 @@ where
         Ok(())
     }
 
-    fn mark_dirty(&mut self) {
+    /// Mark the storage as having unsaved changes.
+    pub fn mark_dirty(&mut self) {
         self.dirty = true;
     }
 
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        // Flush is a no-op because we don't buffer — save() writes
-        // immediately. The dirty flag is only used for external tracking.
-        Ok(())
-    }
-
-    fn is_dirty(&self) -> bool {
+    /// Returns whether there are unsaved changes.
+    pub fn is_dirty(&self) -> bool {
         self.dirty
     }
 }

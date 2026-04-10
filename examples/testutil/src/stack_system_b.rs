@@ -159,30 +159,25 @@ async fn main(spawner: Spawner) {
     println!("  Manufacturer ID: {:04X}", DEVICE_DESCRIPTOR.manufacturer_id);
     println!();
 
-    // Create storage and try to load persisted state.
-    // Storage lives here in the binary — the state struct only tracks dirtiness.
+    // Load persisted state snapshot from storage. The actual runtime state is
+    // constructed later by the runner via `create_state`, which has access to
+    // the `LayerContext`.
     let mut storage = JsonStorage::<DemoState, _>::new(STATE_FILE_PATH, identity);
-    let device_state: DemoState = match storage.load() {
-        Ok(Some(state)) => {
+    let persisted = match storage.load_persisted() {
+        Ok(Some(persisted)) => {
             println!("Loaded persisted state from {}", STATE_FILE_PATH);
-            state
+            Some(persisted)
         }
         Ok(None) => {
             println!("No persisted state found, starting fresh");
-            let identity = storage.identity();
-            let state = DemoState::new(identity, comm_objs::DemoComObjects::new(), ());
-            state.set_individual_address(IndividualAddress::new(1, 2, 3));
-            if let Err(e) = storage.save(&state) {
-                log::error!("Failed to save initial state: {}", e);
-            }
-            state
+            None
         }
         Err(e) => {
             println!("Error loading persisted state: {}", e);
-            let identity = storage.identity();
-            DemoState::new(identity, comm_objs::DemoComObjects::new(), ())
+            None
         }
     };
+    let state_config = DemoStateConfig::new(storage.identity(), persisted);
 
     // Create KNX/IP link layer
     let control_endpoint = SocketAddrV4::new("192.168.1.200".parse().unwrap(), 3671);
@@ -209,7 +204,7 @@ async fn main(spawner: Spawner) {
     let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
         link_layer_builder,
-        device_state,
+        state_config,
         MockIpPlatform::default(),
         DemoStack::memory_map(),
     );

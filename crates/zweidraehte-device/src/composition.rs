@@ -18,43 +18,37 @@ use crate::{
     definition::StackDefinition,
     device_model::{self, DeviceModel as _},
     inner::StackContext,
+    layer_context::HasLayerContext,
     layers::{
         self, LinkLayerBuilder,
         application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
         network::NetworkLayer,
         transport::TransportLayer,
     },
-    messages::buffers::{Buffer, DynBufferManager},
-    objects::comm::{ComObjectEvent, ComObjects, LifecycleEvent},
+    messages::buffers::Buffer,
+    objects::comm::ComObjects,
     restart,
     router::{self, LayerStack},
     storage::HasSequenceStorage,
 };
 
-use embassy_sync::pubsub::PubSubChannel;
-
 use crate::messages::knx::KnxMessageBuffer;
 
 // ============================================================================
-// LayerContext
+// LayerBuildContext
 // ============================================================================
 
 /// Context passed to [`LayerStackBuilder::build`] for constructing the
 /// layer stack.
 ///
-/// Bundles all shared stack resources that protocol layers may need.
-/// Custom layer stacks can pick the fields they care about and ignore
-/// the rest.
-pub struct LayerContext<'a, D: StackDefinition> {
-    /// Buffer allocator for building outgoing messages.
-    pub buffer_manager: &'a DynBufferManager<'static>,
+/// Channels and buffer management are accessible through
+/// `state.layer_context()`. This struct provides the remaining
+/// resources that can't be reached through the state.
+pub struct LayerBuildContext<'a, D: StackDefinition> {
     /// Unified device state (tables + runtime configuration).
+    /// Also provides access to [`LayerContext`](crate::layer_context::LayerContext)
+    /// via [`HasLayerContext`](crate::layer_context::HasLayerContext).
     pub state: &'a D::State,
-    /// Pub/sub channel for communication object events.
-    pub event_channel:
-        &'a PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
-    /// Pub/sub channel for application lifecycle events.
-    pub lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
     /// Interface objects container for property service handling.
     pub interface_objects: &'a D::InterfaceObjects<'static>,
     /// Memory map for A_Memory_Read/Write services.
@@ -76,7 +70,7 @@ pub struct LayerContext<'a, D: StackDefinition> {
 /// endpoint wiring. Each builder knows:
 ///
 /// - What shared channels are needed between layers and the link layer
-/// - How to build the layer stack from a [`LayerContext`]
+/// - How to build the layer stack from a [`LayerBuildContext`]
 /// - How to extract link-layer endpoints and start the link layer
 ///
 /// Two built-in builders are provided:
@@ -96,8 +90,8 @@ pub trait LayerStackBuilder<D: StackDefinition>: Sized {
     /// `()` when no extra channels are needed (standard TP1 devices).
     type Channels: Default + 'static;
 
-    /// Build the layer stack from a [`LayerContext`] and the shared channels.
-    fn build<'a>(ctx: &'a LayerContext<'a, D>, channels: &'a Self::Channels) -> Self::Stack<'a>
+    /// Build the layer stack from a [`LayerBuildContext`] and the shared channels.
+    fn build<'a>(ctx: &'a LayerBuildContext<'a, D>, channels: &'a Self::Channels) -> Self::Stack<'a>
     where
         D: 'a;
 
@@ -132,7 +126,7 @@ where
         D: 'a;
     type Channels = ();
 
-    fn build<'a>(ctx: &'a LayerContext<'a, D>, _channels: &'a ()) -> StandardDeviceLayers<'a, D>
+    fn build<'a>(ctx: &'a LayerBuildContext<'a, D>, _channels: &'a ()) -> StandardDeviceLayers<'a, D>
     where
         D: 'a,
     {
@@ -176,7 +170,7 @@ where
     type Channels = crate::context::CemiTransportLayerChannelPair;
 
     fn build<'a>(
-        ctx: &'a LayerContext<'a, D>,
+        ctx: &'a LayerBuildContext<'a, D>,
         channels: &'a crate::context::CemiTransportLayerChannelPair,
     ) -> IpDeviceLayers<'a, D>
     where
@@ -275,25 +269,28 @@ pub type IpDeviceLayers<'a, D> = InsecureDeviceLayers<'a, D, CemiTransportLayer<
 
 impl<'a, D: StackDefinition> InsecureDeviceLayers<'a, D, TransportLayer<'a, D>> {
     /// Construct the standard `(NL, TL, AL)` layer stack.
-    pub fn standard(ctx: &'a LayerContext<'a, D>) -> Self {
+    pub fn standard(ctx: &'a LayerBuildContext<'a, D>) -> Self {
         let network_layer = NetworkLayer::new(ctx.state, ctx.interface_objects);
 
         // TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
         // generics here once `generic_const_exprs` no longer overflows for trait
         // consts forwarded through where-clauses.
-        let transport_layer = TransportLayer::new(ctx.buffer_manager, ctx.state, D::TL_STYLE);
+        let transport_layer = TransportLayer::new(&ctx.state.layer_context().buffer_manager, ctx.state, D::TL_STYLE);
 
         let application_layer = ApplicationLayer::new(
-            ctx.buffer_manager,
+            &ctx.state.layer_context().buffer_manager,
             ctx.state,
-            ctx.event_channel,
+            &ctx.state.layer_context().event_channel,
             ctx.interface_objects,
             ctx.memory_map,
             ctx.restart_sender,
         );
 
-        let device_model =
-            device_model::SystemBDeviceModel::new(ctx.state, ctx.lifecycle_channel, ctx.interface_objects);
+        let device_model = device_model::SystemBDeviceModel::new(
+            ctx.state,
+            &ctx.state.layer_context().lifecycle_channel,
+            ctx.interface_objects,
+        );
 
         Self {
             layers: (network_layer, transport_layer, application_layer),
@@ -318,27 +315,30 @@ impl<'a, D: StackDefinition> InsecureDeviceLayers<'a, D, CemiTransportLayer<'a, 
     /// inner TL's incoming connections and intercept connection-oriented AL
     /// requests, routing them to the cEMI response channel.
     pub fn with_cemi(
-        ctx: &'a LayerContext<'a, D>,
+        ctx: &'a LayerBuildContext<'a, D>,
         channels: &'a crate::context::CemiTransportLayerChannelPair,
     ) -> Self {
         let network_layer = NetworkLayer::new(ctx.state, ctx.interface_objects);
 
-        let transport_layer = TransportLayer::new(ctx.buffer_manager, ctx.state, D::TL_STYLE);
+        let transport_layer = TransportLayer::new(&ctx.state.layer_context().buffer_manager, ctx.state, D::TL_STYLE);
 
         let cemi_response_sender = channels.response.sender().into();
         let cemi_transport_layer = CemiTransportLayer::new(transport_layer, cemi_response_sender);
 
         let application_layer = ApplicationLayer::new(
-            ctx.buffer_manager,
+            &ctx.state.layer_context().buffer_manager,
             ctx.state,
-            ctx.event_channel,
+            &ctx.state.layer_context().event_channel,
             ctx.interface_objects,
             ctx.memory_map,
             ctx.restart_sender,
         );
 
-        let device_model =
-            device_model::SystemBDeviceModel::new(ctx.state, ctx.lifecycle_channel, ctx.interface_objects);
+        let device_model = device_model::SystemBDeviceModel::new(
+            ctx.state,
+            &ctx.state.layer_context().lifecycle_channel,
+            ctx.interface_objects,
+        );
 
         let cemi_event_receiver = channels.event.receiver().into();
 
@@ -494,14 +494,14 @@ where
     <D::State as HasExtensionState>::ES: HasSeqStorage<SeqStorage = D::SeqStorage>,
 {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
-    pub fn standard(ctx: &'a LayerContext<'a, D>) -> Self {
+    pub fn standard(ctx: &'a LayerBuildContext<'a, D>) -> Self {
         let network_layer = NetworkLayer::new(ctx.state, ctx.interface_objects);
-        let transport_layer = TransportLayer::new(ctx.buffer_manager, ctx.state, D::TL_STYLE);
+        let transport_layer = TransportLayer::new(&ctx.state.layer_context().buffer_manager, ctx.state, D::TL_STYLE);
 
         let application_layer = ApplicationLayer::new(
-            ctx.buffer_manager,
+            &ctx.state.layer_context().buffer_manager,
             ctx.state,
-            ctx.event_channel,
+            &ctx.state.layer_context().event_channel,
             ctx.interface_objects,
             ctx.memory_map,
             ctx.restart_sender,
@@ -510,8 +510,11 @@ where
         let seq_storage = ctx.state.extension_state().seq_storage();
         let secure_al = SecureApplicationLayer::new(application_layer, ctx.state, seq_storage);
 
-        let device_model =
-            device_model::SystemBDeviceModel::new(ctx.state, ctx.lifecycle_channel, ctx.interface_objects);
+        let device_model = device_model::SystemBDeviceModel::new(
+            ctx.state,
+            &ctx.state.layer_context().lifecycle_channel,
+            ctx.interface_objects,
+        );
 
         Self {
             layers: (network_layer, transport_layer, secure_al),
@@ -617,7 +620,7 @@ where
         D: 'a;
     type Channels = ();
 
-    fn build<'a>(ctx: &'a LayerContext<'a, D>, _channels: &'a ()) -> StandardSecureDeviceLayers<'a, D>
+    fn build<'a>(ctx: &'a LayerBuildContext<'a, D>, _channels: &'a ()) -> StandardSecureDeviceLayers<'a, D>
     where
         D: 'a,
     {
