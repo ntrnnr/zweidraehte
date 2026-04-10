@@ -25,14 +25,17 @@ use embassy_time::Instant;
 use crate::StackState;
 use crate::access::AccessPolicy;
 use crate::dpt::{InterfaceObjectType, PDT_Function, PropertyDataDefinition};
+use crate::layer_context::{HasLayerContext, HasOutbox};
+use crate::messages::builder::MessageBuilder;
+use crate::messages::knx::{ApciCode, DestinationAddress, Priority, ServiceType, offsets};
 use crate::objects::comm::{ComObjects, HasCommObjects};
 use crate::objects::interface::{
     FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess, PropertyBuf,
     PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, pid,
 };
 use crate::objects::tables::{
-    AddressTable, CommunicationObjectTable, HasAddressTable, HasApplication, HasCommunicationObjectTable,
-    HasRunStateMachine,
+    AddressTable, AssociationTable, CommunicationObjectTable, HasAddressTable, HasApplication, HasAssociationTable,
+    HasCommunicationObjectTable, HasRunStateMachine,
 };
 
 // ============================================================================
@@ -67,6 +70,7 @@ pub trait DiagnosticsContext {
 
     /// Set the source address filter for diagnostic mode.
     fn set_diagnostic_source_filter(&self, _ia: Option<u16>) {}
+
 }
 
 impl DiagnosticsContext for () {}
@@ -106,7 +110,12 @@ impl OperationModeState {
     /// `timeout_secs` is the number of seconds diagnostic mode stays active
     /// before auto-returning to normal. The spec requires at least 30s.
     pub fn new(timeout_secs: u8) -> Self {
-        Self { mode: Cell::new(0x00), deadline: Cell::new(None), source_filter: Cell::new(None), timeout_secs }
+        Self {
+            mode: Cell::new(0x00),
+            deadline: Cell::new(None),
+            source_filter: Cell::new(None),
+            timeout_secs,
+        }
     }
 
     /// Set the operation mode. Returns `true` if the mode was changed.
@@ -349,7 +358,14 @@ impl<'a> DiagnosticsAugment<'a> {
     // ================================================================
 
     /// Handle FunctionPropertyExtCommand for PID_GO_DIAGNOSTICS.
-    fn handle_go_diag_command<S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable>(
+    fn handle_go_diag_command<
+        S: StackState
+            + HasCommunicationObjectTable
+            + HasCommObjects
+            + HasAddressTable
+            + HasAssociationTable
+            + HasLayerContext,
+    >(
         &self,
         state: &S,
         req: &FunctionPropertyRequest<'_>,
@@ -381,10 +397,7 @@ impl<'a> DiagnosticsAugment<'a> {
             0x04 => self.handle_go_diag_set_filter(req),
             _ => {
                 // Invalid WriteServiceID → F2 (E_COMMAND_INVALID).
-                FunctionPropertyResult {
-                    return_code: 0xF2,
-                    data: PropertyBuf::new(&[service_id]),
-                }
+                FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_id]) }
             }
         }
     }
@@ -411,10 +424,7 @@ impl<'a> DiagnosticsAugment<'a> {
             0x01 => self.handle_go_diag_read_value(state, req),
             _ => {
                 // Invalid ReadServiceID → F2 (E_COMMAND_INVALID).
-                FunctionPropertyResult {
-                    return_code: 0xF2,
-                    data: PropertyBuf::new(&[service_id]),
-                }
+                FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_id]) }
             }
         }
     }
@@ -494,10 +504,7 @@ impl<'a> DiagnosticsAugment<'a> {
         let resp_len = 4 + value.len();
         resp[4..resp_len].copy_from_slice(value);
 
-        FunctionPropertyResult {
-            return_code: 0x21,
-            data: PropertyBuf::new(&resp[..resp_len]),
-        }
+        FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(&resp[..resp_len]) }
     }
 
     // ================================================================
@@ -509,9 +516,11 @@ impl<'a> DiagnosticsAugment<'a> {
     /// Request: [reserved, 0x01, flags, GA_hi, GA_lo, value...]
     /// Success: rc=0x00, [service_id]
     ///
-    /// The actual bus telegram is built by property_ext.rs after this
-    /// returns success.
-    fn handle_go_diag_direct_write<S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable>(
+    /// On success, builds and pushes a GroupValue_Write telegram to the
+    /// outbox before returning the response.
+    fn handle_go_diag_direct_write<
+        S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable + HasLayerContext,
+    >(
         &self,
         state: &S,
         req: &FunctionPropertyRequest<'_>,
@@ -519,57 +528,78 @@ impl<'a> DiagnosticsAugment<'a> {
         let data = req.service_data;
         // Need at least: reserved(1) + serviceID(1) + flags(1) + GA(2) + value(1)
         if data.len() < 6 {
-            return FunctionPropertyResult {
-                return_code: 0xF2,
-                data: PropertyBuf::new(&[0x01]),
-            };
+            return FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[0x01]) };
         }
 
         let flags = data[2];
         // Validate flags: bits 2-6 must be zero.
         if flags & 0x7C != 0 {
-            return FunctionPropertyResult {
-                return_code: 0xF8, // E_GD_SECURITY_KEY_MISSING (flag error)
-                data: PropertyBuf::new(&[0x01]),
-            };
+            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
         }
 
         // Security bits (0-1): 00=no security, 01=auth, 10=invalid, 11=auth+conf
         let sec_bits = flags & 0x03;
         if sec_bits == 0x02 {
-            // Confidentiality-only without auth is invalid.
-            return FunctionPropertyResult {
-                return_code: 0xF8,
-                data: PropertyBuf::new(&[0x01]),
-            };
+            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
         }
 
         // Validate that the GA exists in the device's address table.
         let ga = crate::address::GroupAddress([data[3], data[4]]);
-        let adt = state.adt().borrow();
-        let tsap = adt.get_tsap(ga);
-        drop(adt);
+        let tsap = state.adt().borrow().get_tsap(ga);
 
         let Some(tsap) = tsap else {
-            return FunctionPropertyResult {
-                return_code: 0xF8,
-                data: PropertyBuf::new(&[0x01]),
-            };
+            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
         };
 
         // When security bits are non-zero, check that a group key is
         // available for the GA's TSAP.
         if sec_bits != 0 && !state.has_group_key(tsap) {
-            return FunctionPropertyResult {
-                return_code: 0xF8,
-                data: PropertyBuf::new(&[0x01]),
-            };
+            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
         }
 
-        FunctionPropertyResult {
-            return_code: 0x00,
-            data: PropertyBuf::new(&[0x01]),
-        }
+        // ================================================================
+        // Build and send GroupValue_Write telegram
+        // ================================================================
+
+        let value = &data[5..];
+        // Bit 7 of flags: 1 = next full octet, 0 = 6 trailing bits after APCI.
+        let full_octet = flags & 0x80 != 0;
+
+        let (msg_offset, msg_len) = if !full_octet && value.len() == 1 && value[0] < 64 {
+            (offsets::MSG_APCI + 1, offsets::MSG_APCI + 1 + 1)
+        } else {
+            (offsets::MSG_APDU, offsets::MSG_APDU + value.len())
+        };
+
+        let lctx = state.layer_context();
+        let Some(msg_buf) = lctx.buffer_manager.try_alloc_with_size(msg_len) else {
+            warn!("GO diag: no buffer for GroupValue_Write");
+            return FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) };
+        };
+
+        let msg = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::T_GroupData_Req,
+            Priority::Low,
+            DestinationAddress::ConnectionNr(tsap),
+        )
+        .with_application(ApciCode::GroupValueWrite)
+        .with_data(|buf| {
+            if !full_octet && value.len() == 1 && value[0] < 64 {
+                buf[offsets::MSG_APCI + 1] |= value[0];
+            } else {
+                buf[msg_offset..msg_offset + value.len()].copy_from_slice(value);
+            }
+        });
+
+        debug!(
+            "GO diag: stashing GroupValue_Write to TSAP {} (GA 0x{:04X})",
+            tsap,
+            u16::from_be_bytes([data[3], data[4]])
+        );
+        state.push_deferred_outbox(msg.into_inner());
+
+        FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) }
     }
 
     // ================================================================
@@ -581,9 +611,11 @@ impl<'a> DiagnosticsAugment<'a> {
     /// Request: [reserved, 0x02, GO_idx_hi, GO_idx_lo]
     /// Success: rc=0x21, [service_id, GO_idx_hi, GO_idx_lo, status, value...]
     ///
-    /// The actual bus telegram is built by property_ext.rs after this
-    /// returns success.
-    fn handle_go_diag_transmit<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
+    /// On success, builds and pushes a GroupValue_Write telegram with the
+    /// GO's current value and configured priority.
+    fn handle_go_diag_transmit<
+        S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAssociationTable + HasLayerContext,
+    >(
         &self,
         state: &S,
         req: &FunctionPropertyRequest<'_>,
@@ -591,36 +623,37 @@ impl<'a> DiagnosticsAugment<'a> {
         let data = req.service_data;
         // Need exactly: reserved(1) + serviceID(1) + GO_idx(2)
         if data.len() != 4 {
-            return FunctionPropertyResult {
-                return_code: 0xFF,
-                data: PropertyBuf::new(&[]),
-            };
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
         }
 
         let go_idx = u16::from_be_bytes([data[2], data[3]]);
+        let asap = go_idx;
+
         let cot = state.cot().borrow();
 
         // Validate GO exists.
         let Some(entry) = cot.get_object(go_idx) else {
-            return FunctionPropertyResult {
-                return_code: 0xA1,
-                data: PropertyBuf::new(&[0x02]),
-            };
+            return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x02]) };
         };
 
         // Check C (communication enable) and T (transmission enable) flags.
         if !entry.flags.communication_enable() || !entry.flags.transmission_enable() {
-            return FunctionPropertyResult {
-                return_code: 0xA2,
-                data: PropertyBuf::new(&[0x02]),
-            };
+            return FunctionPropertyResult { return_code: 0xA2, data: PropertyBuf::new(&[0x02]) };
         }
 
+        let (object_size, short_format) = entry.object_type.size_in_bytes();
+        let priority = entry.flags.priority();
         drop(cot);
+
+        // Look up the sending TSAP for this ASAP.
+        let tsap = state.ast().borrow().get_sending_tsap(asap);
+        let Some(tsap) = tsap else {
+            debug!("GO diag: no sending TSAP for ASAP {}", asap);
+            return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x02]) };
+        };
 
         // Build success response with current value.
         let co = state.comm_objects().borrow();
-        // GO diagnostics status uses only the low nibble (strip idle indicator).
         let status = co.status(go_idx).to_flags_byte() & 0x0F;
         let value = co.value(go_idx);
         let mut resp = [0u8; 64];
@@ -631,10 +664,41 @@ impl<'a> DiagnosticsAugment<'a> {
         let resp_len = 4 + value.len();
         resp[4..resp_len].copy_from_slice(value);
 
-        FunctionPropertyResult {
-            return_code: 0x21,
-            data: PropertyBuf::new(&resp[..resp_len]),
+        // ================================================================
+        // Build and send GroupValue_Write telegram
+        // ================================================================
+
+        let (msg_offset, msg_len) = if short_format {
+            (offsets::MSG_APCI + 1, offsets::MSG_APCI + 1 + object_size)
+        } else {
+            (offsets::MSG_APDU, offsets::MSG_APDU + object_size)
+        };
+
+        let lctx = state.layer_context();
+        if let Some(msg_buf) = lctx.buffer_manager.try_alloc_with_size(msg_len) {
+            let msg = MessageBuilder::new_request(
+                msg_buf,
+                ServiceType::T_GroupData_Req,
+                priority,
+                DestinationAddress::ConnectionNr(tsap),
+            )
+            .with_application(ApciCode::GroupValueWrite)
+            .with_data(|buf| {
+                if short_format {
+                    buf[offsets::MSG_APCI + 1] |= value[0] & 0x3F;
+                } else {
+                    buf[msg_offset..msg_offset + object_size].copy_from_slice(value);
+                }
+            });
+
+            debug!("GO diag: stashing GroupValue_Write (transmit) ASAP {} TSAP {}", asap, tsap);
+            drop(co);
+            state.push_deferred_outbox(msg.into_inner());
+        } else {
+            warn!("GO diag: no buffer for GroupValue_Write (transmit)");
         }
+
+        FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(&resp[..resp_len]) }
     }
 
     // ================================================================
@@ -645,63 +709,74 @@ impl<'a> DiagnosticsAugment<'a> {
     ///
     /// Request: [reserved, 0x03, flags, GA_hi, GA_lo]
     /// Success: rc=0x00, [service_id]
-    fn handle_go_diag_direct_read<S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable>(
+    ///
+    /// On success, builds and pushes a GroupValue_Read telegram to the
+    /// outbox before returning the response.
+    fn handle_go_diag_direct_read<
+        S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable + HasLayerContext,
+    >(
         &self,
         state: &S,
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult {
         let data = req.service_data;
         if data.len() != 5 {
-            return FunctionPropertyResult {
-                return_code: 0xF2,
-                data: PropertyBuf::new(&[0x03]),
-            };
+            return FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[0x03]) };
         }
 
         let flags = data[2];
         // Validate flags: bits 2-7 must be zero (bit 7 / full-octet flag
         // is not valid for reads since there is no value data to format).
         if flags & 0xFC != 0 {
-            return FunctionPropertyResult {
-                return_code: 0xF8,
-                data: PropertyBuf::new(&[0x03]),
-            };
+            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) };
         }
 
         let sec_bits = flags & 0x03;
         if sec_bits == 0x02 {
-            return FunctionPropertyResult {
-                return_code: 0xF8,
-                data: PropertyBuf::new(&[0x03]),
-            };
+            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) };
         }
 
         // Validate that the GA exists in the device's address table.
         let ga = crate::address::GroupAddress([data[3], data[4]]);
-        let adt = state.adt().borrow();
-        let tsap = adt.get_tsap(ga);
-        drop(adt);
+        let tsap = state.adt().borrow().get_tsap(ga);
 
         let Some(tsap) = tsap else {
-            return FunctionPropertyResult {
-                return_code: 0xF8,
-                data: PropertyBuf::new(&[0x03]),
-            };
+            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) };
         };
 
         // When security bits are non-zero, check that a group key is
         // available for the GA's TSAP.
         if sec_bits != 0 && !state.has_group_key(tsap) {
-            return FunctionPropertyResult {
-                return_code: 0xF8,
-                data: PropertyBuf::new(&[0x03]),
-            };
+            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) };
         }
 
-        FunctionPropertyResult {
-            return_code: 0x00,
-            data: PropertyBuf::new(&[0x03]),
+        // ================================================================
+        // Build and send GroupValue_Read telegram
+        // ================================================================
+
+        let msg_len = offsets::MSG_APCI + 1 + 1;
+        let lctx = state.layer_context();
+        if let Some(msg_buf) = lctx.buffer_manager.try_alloc_with_size(msg_len) {
+            let msg = MessageBuilder::new_request(
+                msg_buf,
+                ServiceType::T_GroupData_Req,
+                Priority::Low,
+                DestinationAddress::ConnectionNr(tsap),
+            )
+            .with_application(ApciCode::GroupValueRead)
+            .build();
+
+            debug!(
+                "GO diag: stashing GroupValue_Read to TSAP {} (GA 0x{:04X})",
+                tsap,
+                u16::from_be_bytes([data[3], data[4]])
+            );
+            state.push_deferred_outbox(msg.into_inner());
+        } else {
+            warn!("GO diag: no buffer for GroupValue_Read");
         }
+
+        FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x03]) }
     }
 
     // ================================================================
@@ -712,10 +787,7 @@ impl<'a> DiagnosticsAugment<'a> {
     ///
     /// Request: [reserved, 0x04, IA_hi, IA_lo]
     /// Success: rc=0x00, [service_id]
-    fn handle_go_diag_set_filter(
-        &self,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn handle_go_diag_set_filter(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         let data = req.service_data;
 
         // Must be in diagnostic mode.
@@ -728,19 +800,13 @@ impl<'a> DiagnosticsAugment<'a> {
 
         // Need exactly: reserved(1) + serviceID(1) + GO_idx(2) + IA(2)
         if data.len() != 6 {
-            return FunctionPropertyResult {
-                return_code: 0xFF,
-                data: PropertyBuf::new(&[]),
-            };
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
         }
 
         let ia = u16::from_be_bytes([data[4], data[5]]);
         self.state.set_diagnostic_source_filter(Some(ia));
 
-        FunctionPropertyResult {
-            return_code: 0x00,
-            data: PropertyBuf::new(&[0x04]),
-        }
+        FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x04]) }
     }
 
     // ================================================================
@@ -759,20 +825,14 @@ impl<'a> DiagnosticsAugment<'a> {
     ) -> FunctionPropertyResult {
         let data = req.service_data;
         if data.len() != 4 {
-            return FunctionPropertyResult {
-                return_code: 0xFF,
-                data: PropertyBuf::new(&[]),
-            };
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
         }
 
         let go_idx = u16::from_be_bytes([data[2], data[3]]);
         let cot = state.cot().borrow();
 
         let Some(entry) = cot.get_object(go_idx) else {
-            return FunctionPropertyResult {
-                return_code: 0xA1,
-                data: PropertyBuf::new(&[0x00]),
-            };
+            return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x00]) };
         };
 
         let (size_bytes, _short) = entry.object_type.size_in_bytes();
@@ -798,10 +858,7 @@ impl<'a> DiagnosticsAugment<'a> {
         resp[9] = 0x00;
         resp[10] = 0x00;
 
-        FunctionPropertyResult {
-            return_code: 0x20,
-            data: PropertyBuf::new(&resp[..11]),
-        }
+        FunctionPropertyResult { return_code: 0x20, data: PropertyBuf::new(&resp[..11]) }
     }
 
     // ================================================================
@@ -819,10 +876,7 @@ impl<'a> DiagnosticsAugment<'a> {
     ) -> FunctionPropertyResult {
         let data = req.service_data;
         if data.len() != 4 {
-            return FunctionPropertyResult {
-                return_code: 0xFF,
-                data: PropertyBuf::new(&[]),
-            };
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
         }
 
         let go_idx = u16::from_be_bytes([data[2], data[3]]);
@@ -830,10 +884,7 @@ impl<'a> DiagnosticsAugment<'a> {
 
         // Validate GO exists.
         if cot.get_object(go_idx).is_none() {
-            return FunctionPropertyResult {
-                return_code: 0xA1,
-                data: PropertyBuf::new(&[0x01]),
-            };
+            return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x01]) };
         }
         drop(cot);
 
@@ -850,10 +901,7 @@ impl<'a> DiagnosticsAugment<'a> {
         let resp_len = 4 + value.len();
         resp[4..resp_len].copy_from_slice(value);
 
-        FunctionPropertyResult {
-            return_code: 0x21,
-            data: PropertyBuf::new(&resp[..resp_len]),
-        }
+        FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(&resp[..resp_len]) }
     }
 }
 
@@ -870,8 +918,16 @@ const GO_DIAGNOSTICS_DESCRIPTOR: PropertyDescriptor = PropertyDescriptor::with_p
     AccessPolicy::new(0x15F, 0x00C),
 );
 
-impl<'a, S: StackState + HasApplication + HasCommunicationObjectTable + HasCommObjects + HasAddressTable>
-    InterfaceObjectAugment<S> for DiagnosticsAugment<'a>
+impl<
+    'a,
+    S: StackState
+        + HasApplication
+        + HasCommunicationObjectTable
+        + HasCommObjects
+        + HasAddressTable
+        + HasAssociationTable
+        + HasLayerContext,
+> InterfaceObjectAugment<S> for DiagnosticsAugment<'a>
 {
     fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
         if object_type == InterfaceObjectType::ApplicationProgram && prop_id == pid::OPERATION_MODE {
@@ -903,18 +959,10 @@ impl<'a, S: StackState + HasApplication + HasCommunicationObjectTable + HasCommO
         } else if object_type == InterfaceObjectType::GroupObjectTable {
             match lookup {
                 PropertyLookup::ByPid(p) if p == pid::GO_DIAGNOSTICS => {
-                    Some(Ok(PropertyDescriptionResponse::from_descriptor(
-                        object_idx,
-                        0,
-                        &GO_DIAGNOSTICS_DESCRIPTOR,
-                    )))
+                    Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &GO_DIAGNOSTICS_DESCRIPTOR)))
                 }
                 PropertyLookup::ByIndex(0) => {
-                    Some(Ok(PropertyDescriptionResponse::from_descriptor(
-                        object_idx,
-                        0,
-                        &GO_DIAGNOSTICS_DESCRIPTOR,
-                    )))
+                    Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &GO_DIAGNOSTICS_DESCRIPTOR)))
                 }
                 _ => None,
             }

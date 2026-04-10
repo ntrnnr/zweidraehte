@@ -105,11 +105,29 @@ pub trait HasLayerContext {
 /// Avoids the verbose `state.layer_context().outbox.borrow_mut().push(msg)`
 /// pattern throughout layer implementations.
 pub trait HasOutbox {
+    /// Push a message to the outbox for immediate dispatch.
     fn push_outbox(&self, msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>);
+
+    /// Push a deferred message — dispatched at the end of the current cycle.
+    ///
+    /// Use this for bus telegrams that must follow a management response
+    /// (e.g., GO diagnostics GroupValue_Write after the function property
+    /// response).
+    fn push_deferred_outbox(
+        &self,
+        msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>,
+    );
 }
 
 impl<T: HasLayerContext> HasOutbox for T {
     fn push_outbox(&self, msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>) {
         self.layer_context().outbox.borrow_mut().push(msg);
+    }
+
+    fn push_deferred_outbox(
+        &self,
+        msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>,
+    ) {
+        self.layer_context().outbox.borrow_mut().push_deferred(msg);
     }
 }

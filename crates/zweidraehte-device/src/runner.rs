@@ -211,6 +211,25 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                     }
                 }
 
+                // Flush deferred messages (e.g., GO diagnostics bus telegrams
+                // that must follow the management response) and drain them
+                // through the dispatch table.
+                outbox.borrow_mut().flush_deferred();
+                loop {
+                    let msg = outbox.borrow_mut().take_next();
+                    let Some(msg) = msg else { break };
+
+                    let st = msg.service_type();
+                    if st == ServiceType::L_Data_Req {
+                        ll_req.send(RequestMessage::request(msg)).await;
+                        embassy_futures::yield_now().await;
+                    } else if let Some(layer_idx) = Layers::<'_, D>::DISPATCH_TABLE.get(st) {
+                        layers.dispatch(layer_idx, msg);
+                    } else {
+                        warn!("Router: no layer for {:?}, dropping", st);
+                    }
+                }
+
                 // Handle side-effect events emitted during this dispatch cycle
                 // (e.g., run state machine transitions).
                 layers.drain_events();

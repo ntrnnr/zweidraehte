@@ -1198,6 +1198,16 @@ where
                     }
                 }
 
+                // Flush deferred messages (e.g., GO diagnostics bus telegrams)
+                // from the intercepted outbox into the real outbox's deferred
+                // queue, encrypting if needed.
+                inner_outbox.flush_deferred();
+                while let Some(out_msg) = inner_outbox.take_next() {
+                    if let Some(out_msg) = self.try_encrypt_outgoing(out_msg) {
+                        outbox_cell.borrow_mut().push_deferred(out_msg);
+                    }
+                }
+
                 // Clear outgoing context after processing.
                 self.outgoing_ctx.set(OutgoingSecurityCtx::default());
             }
