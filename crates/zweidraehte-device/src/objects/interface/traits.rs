@@ -346,92 +346,36 @@ pub trait StatePropertyValue {
     fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError>;
 }
 
-// PDT_UnsignedChar: u8 <-> 1 byte
-impl StatePropertyValue for PDT_UnsignedChar {
-    type Value = u8;
-    type Bytes = [u8; 1];
+/// Implement `StatePropertyValue` for integer-backed PDT types that use
+/// big-endian byte order. Handles both single-byte (`u8`) and multi-byte
+/// (`u16`, `u32`) native types.
+macro_rules! impl_state_property_int {
+    ($pdt:ty, $native:ty, $size:literal) => {
+        impl StatePropertyValue for $pdt {
+            type Value = $native;
+            type Bytes = [u8; $size];
 
-    fn to_bytes(value: &Self::Value) -> Self::Bytes {
-        [*value]
-    }
+            fn to_bytes(value: &Self::Value) -> Self::Bytes {
+                <$native>::to_be_bytes(*value)
+            }
 
-    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
-        if data.is_empty() {
-            return Err(PropertyError::BufferTooSmall);
+            fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
+                let bytes: [u8; $size] =
+                    data.get(..$size).and_then(|s| s.try_into().ok()).ok_or(PropertyError::BufferTooSmall)?;
+                Ok(<$native>::from_be_bytes(bytes))
+            }
         }
-        Ok(data[0])
-    }
+    };
 }
 
-// PDT_UnsignedInt: u16 <-> 2 bytes (big-endian)
-impl StatePropertyValue for PDT_UnsignedInt {
-    type Value = u16;
-    type Bytes = [u8; 2];
+impl_state_property_int!(PDT_UnsignedChar, u8, 1);
+impl_state_property_int!(PDT_UnsignedInt, u16, 2);
+impl_state_property_int!(PDT_UnsignedLong, u32, 4);
+impl_state_property_int!(PDT_Bitset8, u8, 1);
+impl_state_property_int!(PDT_Bitset16, u16, 2);
 
-    fn to_bytes(value: &Self::Value) -> Self::Bytes {
-        value.to_be_bytes()
-    }
-
-    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
-        if data.len() < 2 {
-            return Err(PropertyError::BufferTooSmall);
-        }
-        Ok(u16::from_be_bytes([data[0], data[1]]))
-    }
-}
-
-// PDT_UnsignedLong: u32 <-> 4 bytes (big-endian)
-impl StatePropertyValue for PDT_UnsignedLong {
-    type Value = u32;
-    type Bytes = [u8; 4];
-
-    fn to_bytes(value: &Self::Value) -> Self::Bytes {
-        value.to_be_bytes()
-    }
-
-    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
-        if data.len() < 4 {
-            return Err(PropertyError::BufferTooSmall);
-        }
-        Ok(u32::from_be_bytes([data[0], data[1], data[2], data[3]]))
-    }
-}
-
-// PDT_Bitset8: u8 <-> 1 byte
-impl StatePropertyValue for PDT_Bitset8 {
-    type Value = u8;
-    type Bytes = [u8; 1];
-
-    fn to_bytes(value: &Self::Value) -> Self::Bytes {
-        [*value]
-    }
-
-    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
-        if data.is_empty() {
-            return Err(PropertyError::BufferTooSmall);
-        }
-        Ok(data[0])
-    }
-}
-
-// PDT_Bitset16: u16 <-> 2 bytes (big-endian)
-impl StatePropertyValue for PDT_Bitset16 {
-    type Value = u16;
-    type Bytes = [u8; 2];
-
-    fn to_bytes(value: &Self::Value) -> Self::Bytes {
-        value.to_be_bytes()
-    }
-
-    fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
-        if data.len() < 2 {
-            return Err(PropertyError::BufferTooSmall);
-        }
-        Ok(u16::from_be_bytes([data[0], data[1]]))
-    }
-}
-
-// PDT_Generic06: [u8; 6] <-> 6 bytes (e.g., MAC address)
+// PDT_Generic06: [u8; 6] <-> 6 raw bytes (e.g., MAC address, serial number).
+// Not integer-backed, so handled separately from the macro above.
 impl StatePropertyValue for PDT_Generic06 {
     type Value = [u8; 6];
     type Bytes = [u8; 6];
@@ -441,12 +385,7 @@ impl StatePropertyValue for PDT_Generic06 {
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self::Value, PropertyError> {
-        if data.len() < 6 {
-            return Err(PropertyError::BufferTooSmall);
-        }
-        let mut arr = [0u8; 6];
-        arr.copy_from_slice(&data[..6]);
-        Ok(arr)
+        data.get(..6).and_then(|s| s.try_into().ok()).ok_or(PropertyError::BufferTooSmall)
     }
 }
 
@@ -738,6 +677,10 @@ impl<S: StackState> InterfaceObjectAugment<S> for () {}
 /// parameter to `create_system_b_objects`. The augment then accesses its own
 /// state directly via `&self` instead of going through `Has*` traits on `S`.
 impl<S: StackState, A: InterfaceObjectAugment<S>> InterfaceObjectAugment<S> for &A {
+    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
+        (**self).get_property_descriptor(object_type, prop_id)
+    }
+
     fn property_description_read(
         &self,
         state: &S,

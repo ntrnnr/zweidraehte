@@ -87,6 +87,20 @@ fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'
 }
 
 impl<'d, D: StackDefinition> Stack<'d, D> {
+    /// Try to claim an object for transmission by setting its status.
+    ///
+    /// Returns `true` if the object was claimed (status was not `Busy`),
+    /// `false` if it was already busy transmitting.
+    fn try_claim_object(&self, asap: u16, status: ComObjectStatus) -> bool {
+        self.inner.with_comm_objs(|co| {
+            if co.status(asap) == ComObjectStatus::Busy {
+                return false;
+            }
+            co.set_status(asap, status);
+            true
+        })
+    }
+
     /// Update a communication object with a new value and send it to the KNX bus.
     ///
     /// This method updates the local communication object value and sends a GroupValueWrite
@@ -122,7 +136,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         asap: <<D as StackDefinition>::CO as ComObjects>::Index,
         value: T,
     ) -> Result<(), UpdateObjectError> {
-        // Reject only if the object is actively being transmitted (Busy).
+        // Claim the object and set its value atomically within one borrow.
         let accepted = self.inner.with_comm_objs(|co| {
             if co.status(asap.index()) == ComObjectStatus::Busy {
                 return false;
@@ -131,7 +145,6 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
             co.info_mut(asap.index()).value.copy_from_slice(value.as_ref());
             true
         });
-
         if !accepted {
             return Err(UpdateObjectError::Busy);
         }
@@ -185,18 +198,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// * `Ok(())` - The write request was accepted
     /// * `Err(UpdateObjectError::Busy)` - The object is already transmitting
     pub async fn write_object_by_asap(&self, asap: u16) -> Result<(), UpdateObjectError> {
-        let accepted = self.inner.with_comm_objs(|co| {
-            // Reject only if the object is actively being transmitted (Busy).
-            // Other states (including WriteRequest set via flag manipulation)
-            // are fine — the AL serializes requests through a size-1 channel.
-            if co.status(asap) == ComObjectStatus::Busy {
-                return false;
-            }
-            co.set_status(asap, ComObjectStatus::WriteRequest);
-            true
-        });
-
-        if !accepted {
+        if !self.try_claim_object(asap, ComObjectStatus::WriteRequest) {
             return Err(UpdateObjectError::Busy);
         }
 
@@ -232,16 +234,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// * `Ok(())` - The read request was accepted
     /// * `Err(ReadObjectError::Busy)` - The object is already transmitting
     pub async fn read_object_by_asap(&self, asap: u16) -> Result<(), ReadObjectError> {
-        let accepted = self.inner.with_comm_objs(|co| {
-            // Reject only if the object is actively being transmitted (Busy).
-            if co.status(asap) == ComObjectStatus::Busy {
-                return false;
-            }
-            co.set_status(asap, ComObjectStatus::ReadRequest);
-            true
-        });
-
-        if !accepted {
+        if !self.try_claim_object(asap, ComObjectStatus::ReadRequest) {
             return Err(ReadObjectError::Busy);
         }
 
@@ -286,16 +279,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         asap: <<D as StackDefinition>::CO as ComObjects>::Index,
         timeout: Option<Duration>,
     ) -> Result<(), ReadObjectError> {
-        // Reject only if the object is actively being transmitted (Busy).
-        let accepted = self.inner.with_comm_objs(|co| {
-            if co.status(asap.index()) == ComObjectStatus::Busy {
-                return false;
-            }
-            co.set_status(asap.index(), ComObjectStatus::ReadRequest);
-            true
-        });
-
-        if !accepted {
+        if !self.try_claim_object(asap.index(), ComObjectStatus::ReadRequest) {
             return Err(ReadObjectError::Busy);
         }
 
@@ -605,53 +589,33 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     }
 }
 
-// Table accessor methods - only available when State implements the appropriate traits
+// Table accessor methods
 impl<'d, D: StackDefinition> Stack<'d, D> {
     /// Get access to the address table.
     ///
-    /// Returns a reference to the `RefCell` containing the address table.
     /// The address table maps TSAPs (Transport Service Access Points) to group addresses.
-    ///
-    /// # Returns
-    /// A reference to the `RefCell` containing the address table
     pub fn address_table(&self) -> &RefCell<<D::State as HasAddressTable>::ADT> {
         self.inner.state.adt()
     }
-}
 
-impl<'d, D: StackDefinition> Stack<'d, D> {
     /// Get access to the association table.
     ///
-    /// Returns a reference to the `RefCell` containing the association table.
     /// The association table maps TSAPs to ASAPs (Application Service Access Points).
-    ///
-    /// # Returns
-    /// A reference to the `RefCell` containing the association table
     pub fn association_table(&self) -> &RefCell<<D::State as HasAssociationTable>::AST> {
         self.inner.state.ast()
     }
-}
 
-impl<'d, D: StackDefinition> Stack<'d, D> {
     /// Get access to the communication object table.
     ///
-    /// Returns a reference to the `RefCell` containing the communication object table.
-    /// The communication object table contains type and flag information for each
-    /// communication object (separate from the values stored in `objects()`).
-    ///
-    /// # Returns
-    /// A reference to the `RefCell` containing the communication object table
+    /// Contains type and flag information for each communication object
+    /// (separate from the values stored in [`objects()`](Self::objects)).
     pub fn communication_object_table(&self) -> &RefCell<<D::State as HasCommunicationObjectTable>::COT> {
         self.inner.state.cot()
     }
-}
 
-impl<'d, D: StackDefinition> Stack<'d, D> {
     /// Check if the application is currently running.
     ///
     /// The application is running when the run state machine is in the RUNNING state.
-    /// This requires the application program to be loaded (either from ETS programming
-    /// or from persisted state).
     pub fn is_running(&self) -> bool {
         self.inner.state.app().borrow().is_running()
     }

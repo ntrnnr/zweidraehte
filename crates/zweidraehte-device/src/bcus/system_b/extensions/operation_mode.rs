@@ -70,7 +70,6 @@ pub trait DiagnosticsContext {
 
     /// Set the source address filter for diagnostic mode.
     fn set_diagnostic_source_filter(&self, _ia: Option<u16>) {}
-
 }
 
 impl DiagnosticsContext for () {}
@@ -110,12 +109,7 @@ impl OperationModeState {
     /// `timeout_secs` is the number of seconds diagnostic mode stays active
     /// before auto-returning to normal. The spec requires at least 30s.
     pub fn new(timeout_secs: u8) -> Self {
-        Self {
-            mode: Cell::new(0x00),
-            deadline: Cell::new(None),
-            source_filter: Cell::new(None),
-            timeout_secs,
-        }
+        Self { mode: Cell::new(0x00), deadline: Cell::new(None), source_filter: Cell::new(None), timeout_secs }
     }
 
     /// Set the operation mode. Returns `true` if the mode was changed.
@@ -215,6 +209,24 @@ const OPERATION_MODE_DESCRIPTOR: PropertyDescriptor = PropertyDescriptor::with_p
 
 /// Interface object augment for diagnostics: PID_OPERATION_MODE (PID 52)
 /// on the Application Program Object and PID_GO_DIAGNOSTICS (PID 66) on
+// ============================================================================
+// GO Diagnostics Response Helpers
+// ============================================================================
+
+/// Build a GO diagnostics success response with the standard envelope.
+///
+/// Format: `[service_id, go_idx_hi, go_idx_lo, status, ...value]`
+/// with return code 0x21 (success with data).
+fn go_diag_success(service_id: u8, go_idx: u16, status: u8, value: &[u8]) -> FunctionPropertyResult {
+    let mut resp = [0u8; 64];
+    resp[0] = service_id;
+    resp[1..3].copy_from_slice(&go_idx.to_be_bytes());
+    resp[3] = status;
+    let data_len = value.len().min(60);
+    resp[4..4 + data_len].copy_from_slice(&value[..data_len]);
+    FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(&resp[..4 + data_len]) }
+}
+
 /// the Group Object Table Object.
 ///
 /// This augment does NOT add additional objects — it extends existing
@@ -490,21 +502,12 @@ impl<'a> DiagnosticsAugment<'a> {
             dest[..value_data.len()].copy_from_slice(value_data);
         }
 
-        // Build success response: rc=0x21, [service_id, GO_idx_hi, GO_idx_lo, status, value...]
+        // Build success response with current value and status.
         let co = state.comm_objects().borrow();
         // GO diagnostics status uses only the low nibble of the flags byte
         // (stripping the idle indicator in bit 6).
         let status = co.status(go_idx).to_flags_byte() & 0x0F;
-        let mut resp = [0u8; 64];
-        resp[0] = 0x00; // service_id echo
-        resp[1] = data[2]; // GO_idx_hi
-        resp[2] = data[3]; // GO_idx_lo
-        resp[3] = status;
-        let value = co.value(go_idx);
-        let resp_len = 4 + value.len();
-        resp[4..resp_len].copy_from_slice(value);
-
-        FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(&resp[..resp_len]) }
+        go_diag_success(0x00, go_idx, status, co.value(go_idx))
     }
 
     // ================================================================
@@ -652,17 +655,12 @@ impl<'a> DiagnosticsAugment<'a> {
             return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x02]) };
         };
 
-        // Build success response with current value.
+        // Build success response with current value (before building the telegram,
+        // since we need the borrow for the value data).
         let co = state.comm_objects().borrow();
         let status = co.status(go_idx).to_flags_byte() & 0x0F;
         let value = co.value(go_idx);
-        let mut resp = [0u8; 64];
-        resp[0] = 0x02; // service_id echo
-        resp[1] = data[2]; // GO_idx_hi
-        resp[2] = data[3]; // GO_idx_lo
-        resp[3] = status;
-        let resp_len = 4 + value.len();
-        resp[4..resp_len].copy_from_slice(value);
+        let resp = go_diag_success(0x02, go_idx, status, value);
 
         // ================================================================
         // Build and send GroupValue_Write telegram
@@ -698,7 +696,7 @@ impl<'a> DiagnosticsAugment<'a> {
             warn!("GO diag: no buffer for GroupValue_Write (transmit)");
         }
 
-        FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(&resp[..resp_len]) }
+        resp
     }
 
     // ================================================================
@@ -891,17 +889,7 @@ impl<'a> DiagnosticsAugment<'a> {
         let co = state.comm_objects().borrow();
         // GO diagnostics status uses only the low nibble (strip idle indicator).
         let status = co.status(go_idx).to_flags_byte() & 0x0F;
-        let value = co.value(go_idx);
-
-        let mut resp = [0u8; 64];
-        resp[0] = 0x01; // service_id echo
-        resp[1] = data[2]; // GO_idx_hi
-        resp[2] = data[3]; // GO_idx_lo
-        resp[3] = status;
-        let resp_len = 4 + value.len();
-        resp[4..resp_len].copy_from_slice(value);
-
-        FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(&resp[..resp_len]) }
+        go_diag_success(0x01, go_idx, status, co.value(go_idx))
     }
 }
 
