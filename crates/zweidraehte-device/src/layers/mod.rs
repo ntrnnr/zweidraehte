@@ -110,13 +110,13 @@ pub trait LinkLayerCapabilities {
 /// | Link layer | Context bounds | LLEndpoints |
 /// |------------|---------------|-------------|
 /// | Mock | *(none — `impl<CTX> LinkLayerBuilder<CTX>`)* | `()` |
-/// | USB | [`BufferManagerContext`](crate::context::BufferManagerContext) | `()` |
-/// | TPUART | [`BufferManagerContext`](crate::context::BufferManagerContext) | `()` |
+/// | USB | [`LinkLayerBufferContext`](crate::context::LinkLayerBufferContext) | `()` |
+/// | TPUART | [`LinkLayerBufferContext`](crate::context::LinkLayerBufferContext) | `()` |
 /// | KNX/IP | [`KnxNetIpContext`](crate::layers::linklayers::knxip::KnxNetIpContext) | [`CemiTransportLayerEndpoints`](crate::context::CemiTransportLayerEndpoints) |
 ///
 /// At stack level the concrete context is [`StackContext`](crate::StackContext),
-/// which implements both `BufferManagerContext` and `PropertyServiceContext`,
-/// so it satisfies all implementations.
+/// which implements `BufferManagerContext`, `ApduLengthContext`, and
+/// `PropertyServiceContext`, so it satisfies all implementations.
 ///
 /// # Channel architecture
 ///

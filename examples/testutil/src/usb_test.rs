@@ -114,7 +114,9 @@ impl BufferManagerContext for SimpleContext {
     fn buffer_manager(&self) -> &zweidraehte_device::messages::buffers::DynBufferManager<'static> {
         self.buffer_manager
     }
+}
 
+impl zweidraehte_device::context::ApduLengthContext for SimpleContext {
     fn max_apdu_length(&self) -> u16 {
         zweidraehte_device::config::MAX_APDU_LENGTH_EXTENDED
     }

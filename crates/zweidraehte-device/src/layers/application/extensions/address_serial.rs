@@ -14,7 +14,7 @@ use crate::{
     StackState,
     address::{GroupAddress, IndividualAddress},
     definition::StackDefinition,
-    layer_context::{HasLayerContext, HasOutbox},
+    layer_context::HasOutbox,
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     messages::{
         apdu::device::{
@@ -98,7 +98,7 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
     let serial: &[u8; 6] = ctx.state.serial_number();
     IndividualAddressSerialNumberResponse::write_serial(msg.buf_mut(), serial);
 
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {

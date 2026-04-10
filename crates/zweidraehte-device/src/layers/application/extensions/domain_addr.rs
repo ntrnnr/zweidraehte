@@ -14,7 +14,7 @@ use crate::{
     StackState,
     address::GroupAddress,
     definition::StackDefinition,
-    layer_context::{HasLayerContext, HasOutbox},
+    layer_context::HasOutbox,
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     messages::{
         apdu::device::{
@@ -145,7 +145,7 @@ where
         DomainAddressSerialNumberResponse::write_domain_address(msg.buf_mut(), &doa_buf[..doa_len]);
     }
 
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_DomainAddressSerialNumber_Write.ind`.

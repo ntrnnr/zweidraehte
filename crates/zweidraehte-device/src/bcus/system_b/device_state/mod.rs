@@ -17,7 +17,6 @@ use crate::{
     AccessContext, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS, StackDefinition, StackState,
     address::IndividualAddress,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
-    layer_context::{HasLayerContext, LayerContext},
     objects::{
         comm::{ComObjects, HasCommObjects},
         interface::{HasDomainAddress, HasMaxRetryCount, HasRoutingCount},
@@ -134,15 +133,6 @@ pub struct SystemBDeviceState<
     programming_mode: Cell<bool>,
 
     // ========================================================================
-    // Layer Context
-    // ========================================================================
-    /// Shared runtime infrastructure (outbox, buffer manager, channels).
-    ///
-    /// Stored as `&'static` via the same lifetime transmute used for
-    /// `&'static D::State` in the runner — both live in [`StackResources`].
-    layer_ctx: &'static LayerContext<D>,
-
-    // ========================================================================
     // ETS-Loaded Tables
     // ========================================================================
     /// Address table (TSAP → Group Address mapping).
@@ -255,12 +245,10 @@ impl<
     /// - `identity`: Factory-programmed device identity (serial number, etc.)
     /// - `comm_objs`: Communication objects (group object values + status)
     /// - `hook_context`: Hook context for comm object callbacks
-    /// - `layer_ctx`: Shared runtime infrastructure (created by the runner before the state)
     pub fn new(
         identity: &impl DeviceIdentity,
         comm_objs: D::CO,
         hook_context: <D::CO as ComObjects>::HookContext,
-        layer_ctx: &'static LayerContext<D>,
     ) -> Self {
         Self {
             individual_address: Cell::new(IndividualAddress::new(15, 15, 255)),
@@ -269,7 +257,6 @@ impl<
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
             routing_count: Cell::new(6),
             programming_mode: Cell::new(false),
-            layer_ctx,
             adt: RefCell::new(Table::new()),
             ast: RefCell::new(Table::new()),
             cot: RefCell::new(Table::new()),
@@ -458,7 +445,7 @@ impl<
 }
 
 // ============================================================================
-// from_persisted — inherent method (not trait, because it needs layer_ctx)
+// from_persisted — inherent method (not trait, because it needs serde bounds)
 // ============================================================================
 
 impl<
@@ -476,7 +463,6 @@ impl<
     pub fn from_persisted(
         identity: &impl DeviceIdentity,
         persisted: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>,
-        layer_ctx: &'static LayerContext<D>,
     ) -> Self {
         let PersistedState {
             individual_address,
@@ -500,7 +486,6 @@ impl<
             auth_keys: RefCell::new(auth_keys),
             routing_count: Cell::new(routing_count),
             programming_mode: Cell::new(false),
-            layer_ctx,
             adt: RefCell::new(address_table),
             ast: RefCell::new(association_table),
             cot: RefCell::new(group_object_table),
@@ -787,16 +772,6 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 
     fn diagnostics(&self) -> &Self::Diagnostics {
         &self.operation_mode
-    }
-}
-
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: StackDefinition, ES: ExtensionState>
-    HasLayerContext for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
-{
-    type Definition = D;
-
-    fn layer_context(&self) -> &LayerContext<D> {
-        self.layer_ctx
     }
 }
 

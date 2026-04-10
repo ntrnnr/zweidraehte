@@ -91,7 +91,7 @@ impl StackDefinition for PicoEthLightSwitch {
     type StateConfig = PicoEthStateConfig;
     type Mem = SystemBMemoryMap;
 
-    fn create_state(config: Self::StateConfig, layer_ctx: &'static LayerContext<Self>) -> Self::State {
+    fn create_state(config: Self::StateConfig) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
 
         let identity = match config.fdsk {
@@ -100,8 +100,8 @@ impl StackDefinition for PicoEthLightSwitch {
         };
 
         match config.persisted {
-            Some(persisted) => PicoEthState::from_persisted(&identity, persisted, layer_ctx),
-            None => PicoEthState::new(&identity, LightSwitchComObjects::new(), (), layer_ctx),
+            Some(persisted) => PicoEthState::from_persisted(&identity, persisted),
+            None => PicoEthState::new(&identity, LightSwitchComObjects::new(), ()),
         }
     }
 
@@ -111,7 +111,7 @@ impl StackDefinition for PicoEthLightSwitch {
         (IpAugmentFor<'a, EmbassyNetworkInfo, KnxIpDeviceUdp>, EasterEggAugment),
     >;
 
-    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, _layer_ctx: &'a LayerContext<Self>) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {

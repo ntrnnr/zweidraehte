@@ -11,7 +11,7 @@
 
 use crate::{
     definition::StackDefinition,
-    layer_context::{HasLayerContext, HasOutbox},
+    layer_context::HasOutbox,
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     messages::{
         apdu::device::{AdcRead, AdcResponse},
@@ -76,5 +76,5 @@ fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, 
     });
 
     debug!("AL sending ADC_Response: channel={}, count={}, sum={}", req.channel, response_count, sum);
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }

@@ -13,7 +13,7 @@
 use crate::{
     HasPersistence,
     definition::StackDefinition,
-    layer_context::{HasLayerContext, HasOutbox},
+    layer_context::HasOutbox,
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     memory::MemoryMap,
     messages::{
@@ -106,7 +106,7 @@ fn handle_user_memory_read<D: StackDefinition>(
     });
 
     debug!("AL sending UserMemory_Response: address=0x{:05X}, count={}", acc.full_address(), response_count);
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_UserMemory_Write.ind`
@@ -168,5 +168,5 @@ fn handle_user_memory_write<D: StackDefinition>(
     });
 
     debug!("AL sending UserMemory_Response (verify): address=0x{:05X}, count={}", acc.full_address(), response_count);
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }

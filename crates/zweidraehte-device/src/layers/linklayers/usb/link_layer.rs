@@ -23,7 +23,7 @@ use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant, Timer};
 
 use crate::address::IndividualAddress;
-use crate::context::BufferManagerContext;
+use crate::context::LinkLayerBufferContext;
 use crate::encoding::cemi::CemiMessageCode; // Still needed for RX path
 use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase};
 use crate::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
@@ -255,7 +255,7 @@ impl UsbLinkLayerBuilder {
     }
 }
 
-impl<CTX: BufferManagerContext> LinkLayerBuilder<CTX> for UsbLinkLayerBuilder {
+impl<CTX: LinkLayerBufferContext> LinkLayerBuilder<CTX> for UsbLinkLayerBuilder {
     async fn build_and_run<'a>(
         self,
         resources: &'a mut Self::Resources,

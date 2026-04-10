@@ -33,7 +33,7 @@ use embassy_sync::channel::DynamicSender;
 use crate::{
     AccessSource, StackDefinition,
     address::IndividualAddress,
-    layer_context::{HasLayerContext, HasOutbox},
+    layer_context::HasOutbox,
     messages::{
         buffers::Buffer,
         knx::{KnxMessageBuffer, ServiceType},
@@ -88,6 +88,7 @@ pub enum CemiEvent {
 pub struct CemiTransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1, const MAX_OUTGOING: usize = 0> {
     /// The wrapped normal transport layer.
     inner: TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>,
+    lctx: &'a crate::layer_context::LayerContext<D>,
 
     /// Whether cEMI TL mode is active (DevMgmt connection established).
     active: bool,
@@ -104,8 +105,9 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     pub fn new(
         inner: TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>,
         response_sender: DynamicSender<'a, Buffer<'static>>,
+        lctx: &'a crate::layer_context::LayerContext<D>,
     ) -> Self {
-        Self { inner, active: false, response_sender }
+        Self { inner, lctx, active: false, response_sender }
     }
 
     /// Mutable access to the inner transport layer.
@@ -261,7 +263,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_Data_Ind);
         msg.set_access_source(AccessSource::Explicit(crate::AccessContext::MAX_ACCESS));
 
-        self.inner.state.push_outbox(msg);
+        self.lctx.push_outbox(msg);
     }
 }
 

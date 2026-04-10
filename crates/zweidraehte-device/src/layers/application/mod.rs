@@ -18,17 +18,13 @@
 
 pub mod extensions;
 
-use embassy_sync::{
-    channel::DynamicSender,
-    pubsub::{PubSubBehavior, PubSubChannel},
-};
-
+use crate::context::{EventPublisherContext, RestartPublisherContext};
 use crate::{
     AccessContext, AccessSource, HasAuthorization, HasConnectionAuth, StackDefinition, StackState,
     actor::Request,
     address::GroupAddress,
     composition::LayerBuildContext,
-    layer_context::{HasLayerContext, HasOutbox},
+    layer_context::HasOutbox,
     messages::{
         buffers::{Buffer, DynBufferManager},
         builder::MessageBuilder,
@@ -87,12 +83,10 @@ pub enum ApplicationLayerServiceResponse {
 /// Receives indications from the transport layer and requests from the
 /// local application.
 pub struct ApplicationLayer<'a, D: StackDefinition> {
-    // --- Shared stack resources ---
-    buffer_manager: &'a DynBufferManager<'static>,
     /// Unified device state (contains tables and runtime configuration)
     state: &'a D::State,
-    event_channel:
-        &'a PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
+
+    lctx: &'a crate::layer_context::LayerContext<D>,
 
     // --- Interface objects ---
     /// Interface objects container with typed access to device properties.
@@ -103,10 +97,6 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     // --- Memory access ---
     /// Memory map for A_Memory_Read/Write services
     memory_map: &'a D::Mem,
-
-    // --- Communication channels ---
-    /// Channel for sending restart requests to user code
-    restart_sender: DynamicSender<'a, RestartRequest>,
 
     /// Read-on-init cursor. When `Scanning(idx)`, the AL will process one
     /// ROI object per main-loop iteration, starting from ASAP `idx`. Set to
@@ -153,14 +143,11 @@ enum ReadOnInitState {
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Create a new Application Layer from a [`LayerBuildContext`].
     pub fn new(ctx: &'a LayerBuildContext<'a, D>) -> Self {
-        let lctx = ctx.state.layer_context();
         Self {
-            buffer_manager: &lctx.buffer_manager,
             state: ctx.state,
-            event_channel: &lctx.event_channel,
+            lctx: ctx.layer_context,
             interface_objects: ctx.interface_objects,
             memory_map: ctx.memory_map,
-            restart_sender: ctx.restart_sender,
             read_on_init: ReadOnInitState::Idle,
             pending_group_send: None,
             extension: Default::default(),
@@ -182,7 +169,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
     /// Access the buffer manager for allocating response buffers.
     pub(crate) fn buffer_manager(&self) -> &'a DynBufferManager<'static> {
-        self.buffer_manager
+        &self.lctx.buffer_manager
     }
 }
 
@@ -293,8 +280,9 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
                     _ => {
                         use crate::layers::application::extensions::{AlExtensionContext, AlServiceExtension as _};
                         let ctx = AlExtensionContext {
-                            buffer_manager: self.buffer_manager,
+                            buffer_manager: self.buffer_manager(),
                             state: self.state,
+                            lctx: self.lctx,
                             interface_objects: self.interface_objects,
                             memory_map: self.memory_map,
                             comm_objects: self.state.comm_objects(),
@@ -521,10 +509,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 if let Some(index) = <<D as StackDefinition>::CO as ComObjects>::Index::from_index(asap) {
                     match apci {
                         ApciCode::GroupValueWrite => {
-                            self.event_channel.publish_immediate((index, ComObjectEvent::Updated));
+                            self.lctx.publish_event(index, ComObjectEvent::Updated);
                         }
                         ApciCode::GroupValueResponse => {
-                            self.event_channel.publish_immediate((index, ComObjectEvent::ReadResponse));
+                            self.lctx.publish_event(index, ComObjectEvent::ReadResponse);
                         }
                         _ => unreachable!(),
                     }
@@ -610,7 +598,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             self.state.comm_objects().borrow_mut().prepare_read(asap, self.state.hook_context());
 
             // Allocate a new message for the response
-            let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(object_size + msg_offset) else {
+            let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(object_size + msg_offset) else {
                 warn!("AL no buffer for response");
                 return;
             };
@@ -627,7 +615,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     .copy_from_slice(self.state.comm_objects().borrow().value(asap));
             });
 
-            self.state.push_outbox(msg.into_inner());
+            self.lctx.push_outbox(msg.into_inner());
 
             trace!(
                 "AL sent GroupValueResponse for ASAP {}: {:?}",
@@ -637,7 +625,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
             // Publish read event to the event channel
             if let Some(index) = <<D as StackDefinition>::CO as ComObjects>::Index::from_index(asap) {
-                self.event_channel.publish_immediate((index, ComObjectEvent::Read));
+                self.lctx.publish_event(index, ComObjectEvent::Read);
             }
         }
     }
@@ -727,7 +715,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             );
 
             // Allocate a new message with the required size
-            let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(object_size + msg_offset) else {
+            let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(object_size + msg_offset) else {
                 warn!("AL no buffer for response");
                 return true;
             };
@@ -761,7 +749,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
             // Send fire-and-forget to TL — confirmation handled in handle_tl_confirmation
             debug!("AL -> TL: GroupValue {} ASAP {} TSAP {}", if read { "Read" } else { "Write" }, asap, tsap);
-            self.state.push_outbox(msg.into_inner());
+            self.lctx.push_outbox(msg.into_inner());
         } else {
             // No sending TSAP found - error
             let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
@@ -935,7 +923,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         match response {
             Ok(desc) => {
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(PropertyDescriptionResponse::MSG_LEN)
+                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyDescriptionResponse::MSG_LEN)
                 else {
                     warn!("AL no buffer for response");
                     return;
@@ -950,12 +938,12 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 );
 
                 debug!("AL sending PropertyDescriptionResponse: {:?}", desc);
-                self.state.push_outbox(msg.into_inner());
+                self.lctx.push_outbox(msg.into_inner());
             }
             Err(e) => {
                 warn!("AL PropertyDescriptionRead failed: {:?}", e);
 
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(PropertyDescriptionResponse::MSG_LEN)
+                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyDescriptionResponse::MSG_LEN)
                 else {
                     warn!("AL no buffer for response");
                     return;
@@ -967,7 +955,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     },
                 );
 
-                self.state.push_outbox(msg.into_inner());
+                self.lctx.push_outbox(msg.into_inner());
             }
         }
     }
@@ -1029,7 +1017,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         match result {
             Ok(data_len) => {
                 let response_len = PropertyValueResponse::msg_len(data_len);
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(response_len) else {
                     warn!("AL no buffer for response");
                     return;
                 };
@@ -1050,12 +1038,12 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     });
 
                 debug!("AL sending PropertyValueResponse: {} bytes", data_len);
-                self.state.push_outbox(msg.into_inner());
+                self.lctx.push_outbox(msg.into_inner());
             }
             Err(e) => {
                 warn!("AL PropertyValueRead failed: {:?}", e);
 
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
+                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
                 else {
                     warn!("AL no buffer for response");
                     return;
@@ -1066,7 +1054,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                         PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
                     });
 
-                self.state.push_outbox(msg.into_inner());
+                self.lctx.push_outbox(msg.into_inner());
             }
         }
     }
@@ -1136,7 +1124,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 // WriteResponse::Data contains transformed data (e.g., LOAD_STATE_CONTROL)
                 let response_data: &[u8] = write_response.as_slice().unwrap_or(data);
                 let response_len = PropertyValueResponse::msg_len(response_data.len());
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(response_len) else {
                     warn!("AL no buffer for response");
                     return;
                 };
@@ -1154,12 +1142,12 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     });
 
                 debug!("AL sending PropertyValueResponse (write success): {} bytes", response_data.len());
-                self.state.push_outbox(msg.into_inner());
+                self.lctx.push_outbox(msg.into_inner());
             }
             Err(e) => {
                 warn!("AL PropertyValueWrite failed: {:?}", e);
 
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
+                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
                 else {
                     warn!("AL no buffer for response");
                     return;
@@ -1170,7 +1158,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                         PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
                     });
 
-                self.state.push_outbox(msg.into_inner());
+                self.lctx.push_outbox(msg.into_inner());
             }
         }
     }
@@ -1240,7 +1228,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let response_data = result.data.as_slice();
         let response_len = FpResponseWriter::msg_len(response_data.len());
 
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(response_len) else {
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(response_len) else {
             warn!("AL no buffer for FunctionProperty response");
             return;
         };
@@ -1255,7 +1243,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             result.return_code,
             response_data.len()
         );
-        self.state.push_outbox(msg.into_inner());
+        self.lctx.push_outbox(msg.into_inner());
     }
 }
 
@@ -1298,7 +1286,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         }
 
         if req.descriptor_type == 0 {
-            let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(DeviceDescriptorResponse::TYPE0_MSG_LEN) else {
+            let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(DeviceDescriptorResponse::TYPE0_MSG_LEN)
+            else {
                 warn!("AL no buffer for response");
                 return;
             };
@@ -1320,10 +1309,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             });
 
             debug!("AL sending DeviceDescriptorResponse: mask_version={}", D::DEVICE.mask_version);
-            self.state.push_outbox(msg.into_inner());
+            self.lctx.push_outbox(msg.into_inner());
         } else if req.descriptor_type == 2 {
             if let Some(dd2) = D::DEVICE_DESCRIPTOR_TYPE2 {
-                let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(DeviceDescriptorResponse::TYPE2_MSG_LEN)
+                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(DeviceDescriptorResponse::TYPE2_MSG_LEN)
                 else {
                     warn!("AL no buffer for response");
                     return;
@@ -1336,7 +1325,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     });
 
                 debug!("AL sending DeviceDescriptorResponse (DD2): {:?}", zweidraehte_util::fmt::Bytes(dd2));
-                self.state.push_outbox(msg.into_inner());
+                self.lctx.push_outbox(msg.into_inner());
             } else {
                 self.send_dd_error(ind);
             }
@@ -1349,7 +1338,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     fn send_dd_error(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
         use crate::messages::{apdu::device::DeviceDescriptorResponse, builder::IndicationExt};
 
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(DeviceDescriptorResponse::ERROR_MSG_LEN) else {
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(DeviceDescriptorResponse::ERROR_MSG_LEN) else {
             warn!("AL no buffer for response");
             return;
         };
@@ -1359,7 +1348,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         });
 
         debug!("AL sending DeviceDescriptorResponse (error): descriptor_type=0x3F");
-        self.state.push_outbox(msg.into_inner());
+        self.lctx.push_outbox(msg.into_inner());
     }
 
     /// Handle `A_IndividualAddress_Read.ind`
@@ -1390,7 +1379,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(device::APCI_ONLY_MSG_LEN) else {
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(device::APCI_ONLY_MSG_LEN) else {
             warn!("AL no buffer for response");
             return;
         };
@@ -1406,7 +1395,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         .build();
 
         debug!("AL sending IndividualAddressResponse");
-        self.state.push_outbox(msg.into_inner());
+        self.lctx.push_outbox(msg.into_inner());
     }
 
     /// Handle `A_IndividualAddress_Write.ind`
@@ -1527,7 +1516,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         let request = RestartRequest { erase_code, channel, access_ctx: restart_ctx, needs_response };
         debug!("AL Restart: sending request to user code");
-        self.restart_sender.try_send(request).ok();
+        self.lctx.try_send_restart_request(request);
 
         if needs_response {
             self.send_restart_response(ind, RestartError::NoError, 0);
@@ -1543,7 +1532,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     ) {
         use crate::messages::{apdu::restart::RestartResponse, builder::IndicationExt};
 
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(RestartResponse::MSG_LEN) else {
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(RestartResponse::MSG_LEN) else {
             warn!("AL no buffer for response");
             return;
         };
@@ -1553,7 +1542,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         });
 
         debug!("AL sending Restart_Response: error={}, process_time={}ms", error, process_time_100ms as u32 * 100);
-        self.state.push_outbox(msg.into_inner());
+        self.lctx.push_outbox(msg.into_inner());
     }
 }
 

@@ -17,7 +17,7 @@ use crate::{
     device_model::DeviceModelNotifier,
     ets,
     inner::StackContext,
-    layer_context::{HasLayerContext, LayerContext},
+    layer_context::LayerContext,
     layers::{self, application::extensions::AlServiceExtension},
     memory::MemoryMap,
     objects::{
@@ -192,7 +192,6 @@ pub trait StackDefinition: Copy + 'static {
     /// For System B devices, use [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)
     /// or [`IpSystemBDeviceState`](crate::bcus::system_b::IpSystemBDeviceState).
     type State: StackState
-        + HasLayerContext<Definition = Self>
         + HasAuthorization
         + HasPersistence
         + HasAddressTable
@@ -209,9 +208,7 @@ pub trait StackDefinition: Copy + 'static {
     /// Configuration needed to construct the device state.
     ///
     /// The runner calls [`create_state`](Self::create_state) with this config
-    /// and a `&'static LayerContext<Self>` to produce `Self::State`. This lets
-    /// the runner create the `LayerContext` first, so the state has access to
-    /// runtime infrastructure from birth.
+    /// to produce `Self::State`.
     ///
     /// For `SystemBDeviceState`-based stacks, this is typically an enum of
     /// fresh identity vs. persisted snapshot.
@@ -219,11 +216,8 @@ pub trait StackDefinition: Copy + 'static {
 
     /// Create device state from configuration.
     ///
-    /// Called by the runner after allocating buffers and creating the
-    /// `LayerContext`. The state receives `&'static LayerContext<Self>`
-    /// so it can access the outbox, buffer manager, and channels from
-    /// any component without parameter threading.
-    fn create_state(config: Self::StateConfig, layer_ctx: &'static LayerContext<Self>) -> Self::State;
+    /// Called by the runner during stack initialization.
+    fn create_state(config: Self::StateConfig) -> Self::State;
 
     /// Memory map for A_Memory_Read/Write services.
     ///
@@ -253,10 +247,17 @@ pub trait StackDefinition: Copy + 'static {
     /// # Arguments
     /// * `state` - Reference to the unified device state (contains both runtime state and tables)
     /// * `platform` - Reference to the platform abstraction (for IP property dispatch)
+    /// * `layer_ctx` - Shared runtime infrastructure (outbox, buffer manager, channels).
+    ///   Augments that need to build and send telegrams (e.g., GO diagnostics) can
+    ///   capture references from this context.
     ///
     /// # Returns
     /// The container holding all interface objects for this device.
-    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
+        layer_ctx: &'a LayerContext<Self>,
+    ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a;
 

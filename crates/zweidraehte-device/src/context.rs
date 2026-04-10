@@ -11,11 +11,19 @@ use crate::messages::buffers::DynBufferManager;
 use crate::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
 use crate::objects::interface::PropertyServiceHandler;
 
-/// Provides access to the buffer manager for allocating and freeing message buffers
+/// Provides access to the buffer manager for allocating and freeing message buffers.
 pub trait BufferManagerContext {
-    /// Get a reference to the buffer manager
+    /// Get a reference to the buffer manager.
     fn buffer_manager(&self) -> &DynBufferManager<'static>;
+}
 
+/// Provides access to the runtime APDU length limit.
+///
+/// Only implemented by contexts that bridge to the device state (e.g.,
+/// [`StackContext`](crate::inner::StackContext)), since the limit is stored
+/// on [`StackState`](crate::StackState). Link layers use this to detect
+/// hardware capabilities and update the stack accordingly.
+pub trait ApduLengthContext {
     /// Get the maximum APDU length this device can handle.
     ///
     /// This is the runtime limit based on `StackState::max_apdu_length()`,
@@ -25,7 +33,7 @@ pub trait BufferManagerContext {
 
     /// Set the maximum APDU length this device can handle.
     ///
-    /// This is called by link layers after detecting hardware capabilities.
+    /// Called by link layers after detecting hardware capabilities.
     /// For example, a USB link layer may read the interface's MAX_APDU_LENGTH
     /// property and update the stack state accordingly.
     ///
@@ -33,6 +41,12 @@ pub trait BufferManagerContext {
     /// will be clamped to that limit.
     fn set_max_apdu_length(&self, length: u16);
 }
+
+/// Combined context for link layers that need both buffer allocation and APDU
+/// length management. Used as a trait object (`&dyn LinkLayerBufferContext`)
+/// by link layers like TPUART and USB.
+pub trait LinkLayerBufferContext: BufferManagerContext + ApduLengthContext {}
+impl<T: BufferManagerContext + ApduLengthContext> LinkLayerBufferContext for T {}
 
 /// Provides access to the device's property service handler.
 ///
@@ -205,4 +219,22 @@ pub trait AddressTableContext {
 
     /// Get a reference to the address table's RefCell.
     fn address_table(&self) -> &core::cell::RefCell<Self::ADT>;
+}
+
+/// Provides access to publish communication object events to user code.
+pub trait EventPublisherContext<Index> {
+    /// Publish a communication object event.
+    fn publish_event(&self, index: Index, event: crate::objects::comm::ComObjectEvent);
+}
+
+/// Provides access to send restart requests to user code.
+pub trait RestartPublisherContext {
+    /// Try sending a restart request. Returns true if sent successfully.
+    fn try_send_restart_request(&self, request: crate::restart::RestartRequest) -> bool;
+}
+
+/// Provides access to the inter-layer message outbox.
+pub trait OutboxContext {
+    /// Get a reference to the shared outbox.
+    fn outbox(&self) -> &core::cell::RefCell<crate::router::Outbox>;
 }

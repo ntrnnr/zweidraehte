@@ -18,7 +18,6 @@ use crate::{
     definition::StackDefinition,
     device_model::{self, DeviceModel as _},
     inner::StackContext,
-    layer_context::HasLayerContext,
     layers::{
         self, LinkLayerBuilder,
         application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
@@ -45,9 +44,9 @@ use crate::messages::knx::KnxMessageBuffer;
 /// resources that can't be reached through the state.
 pub struct LayerBuildContext<'a, D: StackDefinition> {
     /// Unified device state (tables + runtime configuration).
-    /// Also provides access to [`LayerContext`](crate::layer_context::LayerContext)
-    /// via [`HasLayerContext`](crate::layer_context::HasLayerContext).
     pub state: &'a D::State,
+    /// Shared runtime infrastructure.
+    pub layer_context: &'a crate::layer_context::LayerContext<D>,
     /// Interface objects container for property service handling.
     pub interface_objects: &'a D::InterfaceObjects<'static>,
     /// Memory map for A_Memory_Read/Write services.
@@ -371,7 +370,7 @@ impl<'a, D: StackDefinition> DeviceLayerStack<'a, D, TransportLayer<'a, D>, Appl
 
         let device_model = device_model::SystemBDeviceModel::new(
             ctx.state,
-            &ctx.state.layer_context().lifecycle_channel,
+            &ctx.layer_context.lifecycle_channel,
             ctx.interface_objects,
         );
 
@@ -398,13 +397,13 @@ impl<'a, D: StackDefinition> DeviceLayerStack<'a, D, CemiTransportLayer<'a, D>, 
         let transport_layer = TransportLayer::new(ctx);
 
         let cemi_response_sender = channels.response.sender().into();
-        let cemi_transport_layer = CemiTransportLayer::new(transport_layer, cemi_response_sender);
+        let cemi_transport_layer = CemiTransportLayer::new(transport_layer, cemi_response_sender, ctx.layer_context);
 
         let application_layer = ApplicationLayer::new(ctx);
 
         let device_model = device_model::SystemBDeviceModel::new(
             ctx.state,
-            &ctx.state.layer_context().lifecycle_channel,
+            &ctx.layer_context.lifecycle_channel,
             ctx.interface_objects,
         );
 
@@ -431,11 +430,11 @@ where
         let application_layer = ApplicationLayer::new(ctx);
 
         let seq_storage = ctx.state.extension_state().seq_storage();
-        let secure_al = SecureApplicationLayer::new(application_layer, ctx.state, seq_storage);
+        let secure_al = SecureApplicationLayer::new(application_layer, ctx.state, seq_storage, ctx.layer_context);
 
         let device_model = device_model::SystemBDeviceModel::new(
             ctx.state,
-            &ctx.state.layer_context().lifecycle_channel,
+            &ctx.layer_context.lifecycle_channel,
             ctx.interface_objects,
         );
 

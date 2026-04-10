@@ -27,7 +27,7 @@
 //! - NCN5120/E981: 248 bytes (256 byte buffer - 8 bytes overhead)
 //!
 //! During initialization, the link layer automatically calls
-//! [`BufferManagerContext::set_max_apdu_length()`](crate::context::BufferManagerContext::set_max_apdu_length)
+//! [`ApduLengthContext::set_max_apdu_length()`](crate::context::ApduLengthContext::set_max_apdu_length)
 //! on its context so that PID 56 (MAX_APDU_LENGTH) reports the correct
 //! hardware capability. Incoming frames exceeding the chip's limit are dropped.
 //!
@@ -313,7 +313,7 @@ impl<W: Send + 'static, R: Send + 'static, A: AddressChecker + Send + 'static> s
 
 impl<CTX, W, R, A> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<W, R, A>
 where
-    CTX: crate::context::BufferManagerContext + crate::context::MaxRetryCountContext,
+    CTX: crate::context::LinkLayerBufferContext + crate::context::MaxRetryCountContext,
     W: embedded_io_async::Write + Send + 'static,
     R: embedded_io_async::Read + Send + 'static,
     A: AddressChecker + Send + 'static,
@@ -367,7 +367,7 @@ impl<W: Send + 'static, R: Send + 'static> super::super::LinkLayerCapabilities
 
 impl<CTX, W, R> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<W, R, AutoAddressChecker>
 where
-    CTX: crate::context::BufferManagerContext
+    CTX: crate::context::LinkLayerBufferContext
         + crate::context::KnxIndividualAddressContext
         + crate::context::AddressTableContext
         + crate::context::MaxRetryCountContext,
@@ -412,7 +412,7 @@ where
     uart_rx: R,
 
     // Stack context — provides buffer allocation and max APDU length management.
-    context: &'a dyn crate::context::BufferManagerContext,
+    context: &'a dyn crate::context::LinkLayerBufferContext,
 
     // Upper layer channels — indications and confirmations flow UP to NL
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
@@ -470,7 +470,7 @@ where
     pub fn new(
         uart_tx: W,
         uart_rx: R,
-        context: &'a dyn crate::context::BufferManagerContext,
+        context: &'a dyn crate::context::LinkLayerBufferContext,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     ) -> Self {
@@ -492,7 +492,7 @@ where
     pub fn with_address_checker(
         uart_tx: W,
         uart_rx: R,
-        context: &'a dyn crate::context::BufferManagerContext,
+        context: &'a dyn crate::context::LinkLayerBufferContext,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         address_checker: A,
@@ -1142,7 +1142,7 @@ where
     /// Initialize the TPUART transceiver (chip detection, reset sequence).
     ///
     /// After chip detection, the hardware's max APDU length is propagated
-    /// to the stack state via [`BufferManagerContext::set_max_apdu_length()`](crate::context::BufferManagerContext::set_max_apdu_length).
+    /// to the stack state via [`ApduLengthContext::set_max_apdu_length()`](crate::context::ApduLengthContext::set_max_apdu_length).
     async fn initialize(&mut self) {
         // Start initial timer to trigger reset sequence
         self.timeout_deadline = Some(Instant::now() + TIMEOUT_RESET);

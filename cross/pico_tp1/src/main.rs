@@ -99,19 +99,19 @@ impl StackDefinition for PicoTp1LightSwitch {
     type InterfaceObjects<'a> =
         DefaultSystemBInterfaceObjects<'a, PicoTp1State, (&'a Tp1ExtensionState, EasterEggAugment)>;
 
-    fn create_state(config: Self::StateConfig, layer_ctx: &'static zweidraehte_device::layer_context::LayerContext<Self>) -> Self::State {
+    fn create_state(config: Self::StateConfig) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
         let identity = match config.fdsk {
             Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
             None => StaticIdentity::new(config.serial),
         };
         match config.persisted {
-            Some(persisted) => PicoTp1State::from_persisted(&identity, persisted, layer_ctx),
-            None => PicoTp1State::new(&identity, LightSwitchComObjects::new(), (), layer_ctx),
+            Some(persisted) => PicoTp1State::from_persisted(&identity, persisted),
+            None => PicoTp1State::new(&identity, LightSwitchComObjects::new(), ()),
         }
     }
 
-    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, _layer_ctx: &'a zweidraehte_device::layer_context::LayerContext<Self>) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {

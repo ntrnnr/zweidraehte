@@ -13,7 +13,6 @@ use crate::{
     composition::{LayerBuildContext, LayerStackBuilder},
     definition::StackDefinition,
     inner::{Inner, StackContext},
-    layer_context::HasLayerContext,
     layers::{LinkLayerBuilderBase, transport::TlStyle},
     messages::buffers::{Buffer, BufferManager},
     resources::StackResources,
@@ -86,7 +85,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Layer construction (via LayerStackBuilder)
         // ================================================================
 
-        let lctx = self.stack.inner.state.layer_context();
+        let lctx = self.stack.inner.layer_context;
 
         // SAFETY: LayerContext lives in StackResources which outlives this function.
         let app_service_receiver: DynamicReceiver<'static, _> = unsafe {
@@ -97,6 +96,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 
         let layer_context = LayerBuildContext {
             state: &self.stack.inner.state,
+            layer_context: self.stack.inner.layer_context,
             interface_objects: self.interface_objects,
             memory_map: &self.stack.inner.memory_map,
             restart_sender: self.restart_sender,
@@ -303,7 +303,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     // Step 3: Create state via D::create_state()
     // ================================================================
 
-    let state = D::create_state(state_config, layer_ctx_static);
+    let state = D::create_state(state_config);
 
     // Validate that runtime max_apdu_length doesn't exceed compile-time buffer allocation
     let runtime_max_apdu = state.max_apdu_length();
@@ -319,7 +319,7 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     // Step 4: Create Inner and interface objects
     // ================================================================
 
-    let inner = Inner { state, platform, memory_map };
+    let inner = Inner { state, platform, memory_map, layer_context: layer_ctx_static };
     let inner = &*resources.inner.write(inner);
 
     // Build interface objects with reference to the state stored in Inner.
@@ -329,14 +329,15 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     let interface_objects = {
         let state_ref: &'static D::State = unsafe { core::mem::transmute(&inner.state) };
         let platform_ref: &'static D::Platform = unsafe { core::mem::transmute(&inner.platform) };
-        D::create_interface_objects(state_ref, platform_ref)
+        let lctx_ref: &'static crate::layer_context::LayerContext<D> =
+            unsafe { core::mem::transmute(inner.layer_context) };
+        D::create_interface_objects(state_ref, platform_ref, lctx_ref)
     };
     let interface_objects = &*resources.interface_objects.write(interface_objects);
 
-    // Channels live on LayerContext (inside the state). Create sender/receiver
+    // Channels live on LayerContext. Create sender/receiver
     // pairs for the Stack handle and the Runner.
-    let lctx: &'static crate::layer_context::LayerContext<D> =
-        unsafe { core::mem::transmute(inner.state.layer_context()) };
+    let lctx: &'static crate::layer_context::LayerContext<D> = unsafe { core::mem::transmute(inner.layer_context) };
 
     let app_request_sender: DynamicSender<'static, _> = lctx.app_service_channel.sender().into();
 

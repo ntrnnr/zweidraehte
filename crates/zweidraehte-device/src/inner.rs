@@ -10,7 +10,7 @@ use crate::{
     StackState,
     context::{BufferManagerContext, PropertyServiceContext},
     definition::StackDefinition,
-    layer_context::HasLayerContext,
+    layer_context::LayerContext,
     messages::buffers::DynBufferManager,
     objects::{comm::HasCommObjects, tables::HasAddressTable},
     prelude::PropertyServiceHandler,
@@ -59,9 +59,6 @@ where
 // ============================================================================
 
 /// Core stack interior: state + platform + memory map.
-///
-/// Channels and buffer management live on [`LayerContext`](crate::layer_context::LayerContext),
-/// accessible via `state.layer_context()`.
 pub(crate) struct Inner<D: StackDefinition> {
     /// Unified device state containing runtime state, tables, and configuration.
     pub(crate) state: D::State,
@@ -72,6 +69,8 @@ pub(crate) struct Inner<D: StackDefinition> {
     pub(crate) platform: D::Platform,
     /// Memory map for A_Memory_Read/Write services.
     pub(crate) memory_map: D::Mem,
+    /// Shared runtime infrastructure.
+    pub(crate) layer_context: &'static LayerContext<D>,
 }
 
 impl<D: StackDefinition> Inner<D> {
@@ -101,9 +100,11 @@ pub struct StackContext<'a, D: StackDefinition> {
 
 impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
     fn buffer_manager(&self) -> &DynBufferManager<'static> {
-        &self.inner.state.layer_context().buffer_manager
+        &self.inner.layer_context.buffer_manager
     }
+}
 
+impl<D: StackDefinition> crate::context::ApduLengthContext for StackContext<'_, D> {
     fn max_apdu_length(&self) -> u16 {
         self.inner.state.max_apdu_length()
     }

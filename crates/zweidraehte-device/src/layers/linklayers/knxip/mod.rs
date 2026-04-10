@@ -7,7 +7,7 @@ use embassy_sync::{
 
 use crate::{
     context::{
-        BufferManagerContext, DeviceInfoContext,
+        ApduLengthContext, BufferManagerContext, DeviceInfoContext,
         IpAdditionalIndividualAddressContext, IpDiagnosticsContext,
         KnxIndividualAddressContext, PropertyServiceContext,
     },
@@ -38,6 +38,7 @@ pub use types::{PacketOrigin, PendingResponse, ResponseTarget, ServerContext, Se
 /// of 6+ individual `&dyn` references.
 pub(crate) trait KnxNetIpContext:
     BufferManagerContext
+    + ApduLengthContext
     + PropertyServiceContext
     + DeviceInfoContext
     + IpDiagnosticsContext
@@ -48,6 +49,7 @@ pub(crate) trait KnxNetIpContext:
 
 impl<T> KnxNetIpContext for T where
     T: BufferManagerContext
+        + ApduLengthContext
         + PropertyServiceContext
         + DeviceInfoContext
         + IpDiagnosticsContext

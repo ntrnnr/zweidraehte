@@ -25,7 +25,6 @@ use embassy_time::Instant;
 use crate::StackState;
 use crate::access::AccessPolicy;
 use crate::dpt::{InterfaceObjectType, PDT_Function, PropertyDataDefinition};
-use crate::layer_context::{HasLayerContext, HasOutbox};
 use crate::messages::builder::MessageBuilder;
 use crate::messages::knx::{ApciCode, DestinationAddress, Priority, ServiceType, offsets};
 use crate::objects::comm::{ComObjects, HasCommObjects};
@@ -233,11 +232,17 @@ fn go_diag_success(service_id: u8, go_idx: u16, status: u8, value: &[u8]) -> Fun
 /// objects with function properties for diagnostic mode and GO control.
 pub struct DiagnosticsAugment<'a> {
     state: &'a OperationModeState,
+    buffer_manager: &'a crate::messages::buffers::DynBufferManager<'static>,
+    outbox: &'a core::cell::RefCell<crate::router::Outbox>,
 }
 
 impl<'a> DiagnosticsAugment<'a> {
-    pub fn new(state: &'a OperationModeState) -> Self {
-        Self { state }
+    pub fn new(
+        state: &'a OperationModeState,
+        buffer_manager: &'a crate::messages::buffers::DynBufferManager<'static>,
+        outbox: &'a core::cell::RefCell<crate::router::Outbox>,
+    ) -> Self {
+        Self { state, buffer_manager, outbox }
     }
 
     // ================================================================
@@ -375,8 +380,7 @@ impl<'a> DiagnosticsAugment<'a> {
             + HasCommunicationObjectTable
             + HasCommObjects
             + HasAddressTable
-            + HasAssociationTable
-            + HasLayerContext,
+            + HasAssociationTable,
     >(
         &self,
         state: &S,
@@ -522,7 +526,10 @@ impl<'a> DiagnosticsAugment<'a> {
     /// On success, builds and pushes a GroupValue_Write telegram to the
     /// outbox before returning the response.
     fn handle_go_diag_direct_write<
-        S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable + HasLayerContext,
+        S: StackState
+            + HasCommunicationObjectTable
+            + HasCommObjects
+            + HasAddressTable,
     >(
         &self,
         state: &S,
@@ -574,8 +581,7 @@ impl<'a> DiagnosticsAugment<'a> {
             (offsets::MSG_APDU, offsets::MSG_APDU + value.len())
         };
 
-        let lctx = state.layer_context();
-        let Some(msg_buf) = lctx.buffer_manager.try_alloc_with_size(msg_len) else {
+        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(msg_len) else {
             warn!("GO diag: no buffer for GroupValue_Write");
             return FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) };
         };
@@ -600,7 +606,7 @@ impl<'a> DiagnosticsAugment<'a> {
             tsap,
             u16::from_be_bytes([data[3], data[4]])
         );
-        state.push_deferred_outbox(msg.into_inner());
+        self.outbox.borrow_mut().push_deferred(msg.into_inner());
 
         FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) }
     }
@@ -617,7 +623,10 @@ impl<'a> DiagnosticsAugment<'a> {
     /// On success, builds and pushes a GroupValue_Write telegram with the
     /// GO's current value and configured priority.
     fn handle_go_diag_transmit<
-        S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAssociationTable + HasLayerContext,
+        S: StackState
+            + HasCommunicationObjectTable
+            + HasCommObjects
+            + HasAssociationTable,
     >(
         &self,
         state: &S,
@@ -672,8 +681,7 @@ impl<'a> DiagnosticsAugment<'a> {
             (offsets::MSG_APDU, offsets::MSG_APDU + object_size)
         };
 
-        let lctx = state.layer_context();
-        if let Some(msg_buf) = lctx.buffer_manager.try_alloc_with_size(msg_len) {
+        if let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(msg_len) {
             let msg = MessageBuilder::new_request(
                 msg_buf,
                 ServiceType::T_GroupData_Req,
@@ -691,7 +699,7 @@ impl<'a> DiagnosticsAugment<'a> {
 
             debug!("GO diag: stashing GroupValue_Write (transmit) ASAP {} TSAP {}", asap, tsap);
             drop(co);
-            state.push_deferred_outbox(msg.into_inner());
+            self.outbox.borrow_mut().push_deferred(msg.into_inner());
         } else {
             warn!("GO diag: no buffer for GroupValue_Write (transmit)");
         }
@@ -711,7 +719,10 @@ impl<'a> DiagnosticsAugment<'a> {
     /// On success, builds and pushes a GroupValue_Read telegram to the
     /// outbox before returning the response.
     fn handle_go_diag_direct_read<
-        S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable + HasLayerContext,
+        S: StackState
+            + HasCommunicationObjectTable
+            + HasCommObjects
+            + HasAddressTable,
     >(
         &self,
         state: &S,
@@ -753,8 +764,7 @@ impl<'a> DiagnosticsAugment<'a> {
         // ================================================================
 
         let msg_len = offsets::MSG_APCI + 1 + 1;
-        let lctx = state.layer_context();
-        if let Some(msg_buf) = lctx.buffer_manager.try_alloc_with_size(msg_len) {
+        if let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(msg_len) {
             let msg = MessageBuilder::new_request(
                 msg_buf,
                 ServiceType::T_GroupData_Req,
@@ -769,7 +779,7 @@ impl<'a> DiagnosticsAugment<'a> {
                 tsap,
                 u16::from_be_bytes([data[3], data[4]])
             );
-            state.push_deferred_outbox(msg.into_inner());
+            self.outbox.borrow_mut().push_deferred(msg.into_inner());
         } else {
             warn!("GO diag: no buffer for GroupValue_Read");
         }
@@ -913,8 +923,7 @@ impl<
         + HasCommunicationObjectTable
         + HasCommObjects
         + HasAddressTable
-        + HasAssociationTable
-        + HasLayerContext,
+        + HasAssociationTable,
 > InterfaceObjectAugment<S> for DiagnosticsAugment<'a>
 {
     fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {

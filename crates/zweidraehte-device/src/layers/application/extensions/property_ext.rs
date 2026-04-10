@@ -15,7 +15,7 @@
 
 use crate::{
     definition::StackDefinition,
-    layer_context::{HasLayerContext, HasOutbox},
+    layer_context::HasOutbox,
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     memory::MemoryMap,
     messages::{
@@ -206,7 +206,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
             });
 
             debug!("AL sending PropertyExtValueResponse: {} bytes", data_len);
-            ctx.state.push_outbox(msg.into_inner());
+            ctx.lctx.push_outbox(msg.into_inner());
         }
         Err(e) => {
             warn!("AL PropertyExtValueRead failed: {:?}", e);
@@ -333,7 +333,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
                     );
                 });
             debug!("AL sending PropertyExtValueWriteConRes: success");
-            ctx.state.push_outbox(msg.into_inner());
+            ctx.lctx.push_outbox(msg.into_inner());
         }
         Err(e) => {
             warn!("AL PropertyExtValueWriteCon failed: {:?}", e);
@@ -348,7 +348,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
                         e.to_ext_return_code(),
                     );
                 });
-            ctx.state.push_outbox(msg.into_inner());
+            ctx.lctx.push_outbox(msg.into_inner());
         }
     }
 }
@@ -463,7 +463,7 @@ fn send_ext_read_error<D: StackDefinition>(
         );
     });
 
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 /// Send an error `A_PropertyExtValue_WriteConRes` with the given return code.
@@ -489,7 +489,7 @@ fn send_ext_write_con_error<D: StackDefinition>(
         );
     });
 
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 /// Check whether a PDT code represents a function/control property type
@@ -597,7 +597,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
     });
 
     debug!("AL sending FunctionPropertyExtState_Response: rc=0x{:02X}", result.return_code);
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_FunctionPropertyExtState_Read.ind`.
@@ -666,7 +666,7 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
     });
 
     debug!("AL sending FunctionPropertyExtState_Response: rc=0x{:02X}", result.return_code);
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 // ============================================================================
@@ -689,7 +689,7 @@ fn send_function_ext_response<D: StackDefinition>(
     let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
         FunctionPropertyExtResponse::write(buf, hdr.object_type, hdr.object_instance, hdr.prop_id, rc, data);
     });
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 /// Send an empty `FunctionPropertyExtState_Response` (no return_code, no data).
@@ -708,7 +708,7 @@ fn send_function_ext_empty_response<D: StackDefinition>(
     let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
         FunctionPropertyExtResponse::write_empty(buf, hdr.object_type, hdr.object_instance, hdr.prop_id);
     });
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 // ============================================================================
@@ -835,7 +835,7 @@ fn handle_ext_description_read<D: StackDefinition>(
         }
     });
 
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 // ============================================================================
@@ -942,7 +942,7 @@ fn handle_memory_ext_read<D: StackDefinition>(
             buf[base + 4] = addr_mid;
             buf[base + 5] = addr_lo;
         });
-        ctx.state.push_outbox(msg.into_inner());
+        ctx.lctx.push_outbox(msg.into_inner());
         return;
     }
 
@@ -964,7 +964,7 @@ fn handle_memory_ext_read<D: StackDefinition>(
                     buf[base + 5] = addr_lo;
                     buf[base + 6..base + 6 + n].copy_from_slice(&data_buf[..n]);
                 });
-            ctx.state.push_outbox(msg.into_inner());
+            ctx.lctx.push_outbox(msg.into_inner());
         }
         Err(e) => {
             let rc = match e {
@@ -980,7 +980,7 @@ fn handle_memory_ext_read<D: StackDefinition>(
                     buf[base + 4] = addr_mid;
                     buf[base + 5] = addr_lo;
                 });
-            ctx.state.push_outbox(msg.into_inner());
+            ctx.lctx.push_outbox(msg.into_inner());
         }
     }
 }
@@ -1003,5 +1003,5 @@ fn send_memory_ext_write_response<D: StackDefinition>(
         buf[base + 4] = addr_mid;
         buf[base + 5] = addr_lo;
     });
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }

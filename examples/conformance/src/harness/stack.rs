@@ -24,7 +24,7 @@ use zweidraehte_device::{
     AccessContext,
     bcus::system_b::{MemoryLayout, Tp1SystemBDeviceState},
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
-    layer_context::{HasLayerContext, LayerContext},
+    layer_context::LayerContext,
     objects::tables::Application,
     storage::StaticIdentity,
 };
@@ -726,8 +726,7 @@ type InnerState =
 
 /// Configuration for constructing a [`ConformanceState`].
 ///
-/// Passed to [`IpcConformanceTestStack::create_state`] which combines it with
-/// the runner-provided `LayerContext` to produce the full state.
+/// Passed to [`IpcConformanceTestStack::create_state`] to produce the full state.
 pub enum ConformanceStateConfig {
     /// Build fresh state from pre-built tables and application.
     Fresh {
@@ -779,10 +778,9 @@ impl ConformanceState {
         asso_tab: conformance_config::AssoTab,
         co_tab: conformance_config::CoTab,
         app_table: Application<TestParameters>,
-        layer_ctx: &'static LayerContext<IpcConformanceTestStack>,
     ) -> Self {
         let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
-        let inner = InnerState::new(&identity, ConformanceComObjects::new(), ConformanceHookContext::new(), layer_ctx);
+        let inner = InnerState::new(&identity, ConformanceComObjects::new(), ConformanceHookContext::new());
 
         // Set the conformance test individual address (1.0.1).
         inner.set_individual_address(IndividualAddress::new(1, 0, 1));
@@ -806,18 +804,6 @@ impl ConformanceState {
     /// Access the inner device state directly.
     pub fn inner(&self) -> &InnerState {
         &self.inner
-    }
-}
-
-// ============================================================================
-// Trait Forwarding — HasLayerContext
-// ============================================================================
-
-impl HasLayerContext for ConformanceState {
-    type Definition = IpcConformanceTestStack;
-
-    fn layer_context(&self) -> &LayerContext<Self::Definition> {
-        self.inner.layer_context()
     }
 }
 
@@ -1253,20 +1239,24 @@ impl StackDefinition for IpcConformanceTestStack {
     type StateConfig = ConformanceStateConfig;
     type Mem = ConformanceMemoryMap;
 
-    fn create_state(config: Self::StateConfig, layer_ctx: &'static LayerContext<Self>) -> Self::State {
+    fn create_state(config: Self::StateConfig) -> Self::State {
         match config {
             ConformanceStateConfig::Fresh { addr_tab, asso_tab, co_tab, app_table } => {
-                ConformanceState::new(addr_tab, asso_tab, co_tab, app_table, layer_ctx)
+                ConformanceState::new(addr_tab, asso_tab, co_tab, app_table)
             }
             ConformanceStateConfig::Persisted(snapshot) => {
-                ConformanceState::from_persisted_snapshot(snapshot, layer_ctx)
+                ConformanceState::from_persisted_snapshot(snapshot)
             }
         }
     }
 
     type InterfaceObjects<'a> = zweidraehte_device::bcus::system_b::SystemBInterfaceObjectsFor<'a, Self>;
 
-    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
+        _layer_ctx: &'a LayerContext<Self>,
+    ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
@@ -1333,8 +1323,7 @@ pub struct ConformancePersistedState {
 impl ConformancePersistedState {
     /// Build a default persisted snapshot without needing runtime state.
     ///
-    /// Used by the multiprocess harness to initialize shared memory
-    /// without a `LayerContext`.
+    /// Used by the multiprocess harness to initialize shared memory.
     pub fn default_snapshot() -> Self {
         use conformance_config::ConformanceTestConfig;
 
@@ -1372,10 +1361,9 @@ impl ConformanceState {
     /// then restores the test memory regions.
     pub fn from_persisted_snapshot(
         snapshot: ConformancePersistedState,
-        layer_ctx: &'static LayerContext<IpcConformanceTestStack>,
     ) -> Self {
         let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
-        let inner = InnerState::from_persisted(&identity, snapshot.inner, layer_ctx);
+        let inner = InnerState::from_persisted(&identity, snapshot.inner);
 
         Self {
             inner,

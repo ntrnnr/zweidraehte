@@ -23,7 +23,7 @@ use zweidraehte_device::{
     },
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     dpt::{InterfaceObjectType, PDT_UnsignedChar, PropertyDataDefinition},
-    layer_context::{HasLayerContext, LayerContext},
+    layer_context::LayerContext,
     memory::MemoryMap,
     objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount, InterfaceObjectAugment, PropertyAccess,
@@ -38,8 +38,8 @@ use zweidraehte_device::{
 
 use super::stack::{
     CONFORMANCE_DD2, CONFORMANCE_MEMORY_LAYOUT, CONFORMANCE_USER_MANUFACTURER_INFO, ConformanceHookContext,
-    ConformanceMemoryMap, LEVEL1_MEMORY_SIZE, LEVEL2_MEMORY_SIZE, LINEAR_MEMORY_SIZE, TestParameters,
-    USER_MEMORY_SIZE, comm_objs::ConformanceComObjects, conformance_config, device_info, table_sizes,
+    ConformanceMemoryMap, LEVEL1_MEMORY_SIZE, LEVEL2_MEMORY_SIZE, LINEAR_MEMORY_SIZE, TestParameters, USER_MEMORY_SIZE,
+    comm_objs::ConformanceComObjects, conformance_config, device_info, table_sizes,
 };
 
 // ============================================================================
@@ -100,15 +100,10 @@ impl SecureConformanceState {
         asso_tab: conformance_config::AssoTab,
         co_tab: conformance_config::CoTab,
         app_table: Application<TestParameters>,
-        layer_ctx: &'static LayerContext<IpcSecureConformanceTestStack>,
     ) -> Self {
         let identity = StaticIdentity::with_fdsk(SECURE_SERIAL_NUMBER, SECURE_FDSK);
-        let inner = SecureInnerState::new(
-            &identity,
-            ConformanceComObjects::new(),
-            ConformanceHookContext::new(),
-            layer_ctx,
-        );
+        let inner =
+            SecureInnerState::new(&identity, ConformanceComObjects::new(), ConformanceHookContext::new());
 
         // Set the secure conformance test individual address (1.1.1 = 0x1101).
         inner.set_individual_address(IndividualAddress::new(1, 1, 1));
@@ -138,9 +133,8 @@ impl SecureConformanceState {
     /// Create a fully-populated secure conformance state with default tables
     /// and security configuration.
     ///
-    /// This is the secure equivalent of what `Default` would provide, but
-    /// requires a `layer_ctx` reference.
-    pub fn new_default(layer_ctx: &'static LayerContext<IpcSecureConformanceTestStack>) -> Self {
+    /// This is the secure equivalent of what `Default` would provide.
+    pub fn new_default() -> Self {
         // Build populated tables (same as the non-secure DUT) so that group
         // addressing, association lookup, and comm object access all work.
         let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables(
@@ -152,7 +146,7 @@ impl SecureConformanceState {
         app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
-        let state = Self::new(addr_tab, asso_tab, co_tab, app_table, layer_ctx);
+        let state = Self::new(addr_tab, asso_tab, co_tab, app_table);
 
         // Apply security config from the macro (group keys, tool key, etc.).
         let sec_config = conformance_config::ConformanceTestConfig::create_security_config();
@@ -196,16 +190,8 @@ impl StackState for SecureConformanceState {
 }
 
 // ============================================================================
-// HasLayerContext Forwarding
+// Trait Forwarding
 // ============================================================================
-
-impl HasLayerContext for SecureConformanceState {
-    type Definition = IpcSecureConformanceTestStack;
-
-    fn layer_context(&self) -> &LayerContext<Self::Definition> {
-        self.inner.layer_context()
-    }
-}
 
 // ============================================================================
 // HasPersistence Forwarding
@@ -308,9 +294,7 @@ impl zweidraehte_device::objects::comm::HasCommObjects for SecureConformanceStat
         self.inner.comm_objects()
     }
 
-    fn hook_context(
-        &self,
-    ) -> &<Self::CO as zweidraehte_device::objects::comm::ComObjects>::HookContext {
+    fn hook_context(&self) -> &<Self::CO as zweidraehte_device::objects::comm::ComObjects>::HookContext {
         self.inner.hook_context()
     }
 }
@@ -837,8 +821,7 @@ type SecAugment<'a> = <
 
 /// Configuration for constructing a [`SecureConformanceState`].
 ///
-/// Passed to [`IpcSecureConformanceTestStack::create_state`] which combines it
-/// with the runner-provided `LayerContext` to produce the full state.
+/// Passed to [`IpcSecureConformanceTestStack::create_state`] to produce the full state.
 pub enum SecureConformanceStateConfig {
     /// Build fresh state from pre-built tables and application.
     Fresh {
@@ -848,10 +831,7 @@ pub enum SecureConformanceStateConfig {
         app_table: Application<TestParameters>,
     },
     /// Restore from a previously-persisted snapshot.
-    Persisted {
-        snapshot: SecureConformancePersistedState,
-        seq_storage: ShmSeqStorage,
-    },
+    Persisted { snapshot: SecureConformancePersistedState, seq_storage: ShmSeqStorage },
 }
 
 /// Secure conformance test stack definition.
@@ -884,7 +864,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         (SecAugment<'a>, (CertificationObjectAugment, DiagnosticsAugment<'a>)),
     >;
 
-    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, layer_ctx: &'a LayerContext<Self>) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
@@ -892,17 +872,17 @@ impl StackDefinition for IpcSecureConformanceTestStack {
             state,
             platform,
             &CONFORMANCE_MEMORY_LAYOUT,
-            (CertificationObjectAugment::new(), DiagnosticsAugment::new(&state.inner.operation_mode)),
+            (CertificationObjectAugment::new(), DiagnosticsAugment::new(&state.inner.operation_mode, &layer_ctx.buffer_manager, &layer_ctx.outbox)),
         )
     }
 
-    fn create_state(config: Self::StateConfig, layer_ctx: &'static LayerContext<Self>) -> Self::State {
+    fn create_state(config: Self::StateConfig) -> Self::State {
         match config {
             SecureConformanceStateConfig::Fresh { addr_tab, asso_tab, co_tab, app_table } => {
-                SecureConformanceState::new(addr_tab, asso_tab, co_tab, app_table, layer_ctx)
+                SecureConformanceState::new(addr_tab, asso_tab, co_tab, app_table)
             }
             SecureConformanceStateConfig::Persisted { snapshot, seq_storage } => {
-                SecureConformanceState::from_persisted_snapshot(snapshot, seq_storage, layer_ctx)
+                SecureConformanceState::from_persisted_snapshot(snapshot, seq_storage)
             }
         }
     }
@@ -1137,8 +1117,7 @@ impl SecureConformancePersistedState {
     /// Build the default persisted snapshot without constructing runtime state.
     ///
     /// This produces the same serialized form as the old `Default` impl did,
-    /// but assembles the `PersistedState` directly — avoiding the need for a
-    /// `LayerContext` that runtime state now requires.
+    /// but assembles the `PersistedState` directly.
     pub fn default_snapshot() -> Self {
         let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables(
             ConformanceMemoryMap::ADT_BASE as u32,
@@ -1175,10 +1154,9 @@ impl SecureConformanceState {
     pub fn from_persisted_snapshot(
         snapshot: SecureConformancePersistedState,
         seq_storage: ShmSeqStorage,
-        layer_ctx: &'static LayerContext<IpcSecureConformanceTestStack>,
     ) -> Self {
         let identity = StaticIdentity::with_fdsk(SECURE_SERIAL_NUMBER, SECURE_FDSK);
-        let inner = SecureInnerState::from_persisted(&identity, snapshot.inner, layer_ctx);
+        let inner = SecureInnerState::from_persisted(&identity, snapshot.inner);
         inner.extension_state().set_seq_storage(seq_storage);
 
         // Seed per-peer receiving sequence numbers from SIAT entries into

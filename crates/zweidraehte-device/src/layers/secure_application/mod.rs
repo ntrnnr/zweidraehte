@@ -21,7 +21,7 @@ use crate::{
         scf::{SecureServiceType, SecurityControlField},
     },
     definition::StackDefinition,
-    layer_context::{HasLayerContext, HasOutbox},
+    layer_context::HasOutbox,
     layers::application::ApplicationLayer,
     messages::{
         apdu::secure::{self, SecureApduMut, SecureApduRef, SyncReqRef},
@@ -137,6 +137,7 @@ struct PendingSyncState {
 pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberStorage> {
     inner: ApplicationLayer<'a, D>,
     state: &'a D::State,
+    lctx: &'a crate::layer_context::LayerContext<D>,
     /// Security context for encrypting the outgoing response.
     outgoing_ctx: Cell<OutgoingSecurityCtx>,
     /// Borrowed reference to the sequence number storage that lives on
@@ -150,12 +151,18 @@ pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberSto
 }
 
 impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<'a, D, SEQ> {
-    pub fn new(inner: ApplicationLayer<'a, D>, state: &'a D::State, seq_storage: &'a RefCell<SEQ>) -> Self {
+    pub fn new(
+        inner: ApplicationLayer<'a, D>,
+        state: &'a D::State,
+        seq_storage: &'a RefCell<SEQ>,
+        lctx: &'a crate::layer_context::LayerContext<D>,
+    ) -> Self {
         Self {
             inner,
             state,
-            outgoing_ctx: Cell::new(OutgoingSecurityCtx::default()),
+            lctx,
             seq_storage,
+            outgoing_ctx: Cell::new(OutgoingSecurityCtx::default()),
             last_sync_response: Cell::new(None),
             pending_sync: Cell::new(None),
         }
@@ -1015,7 +1022,7 @@ where
         match request.get() {
             ApplicationLayerService::SyncRequest { peer_ia, tool_access, is_broadcast } => {
                 if let Some(msg) = self.initiate_sync(*peer_ia, *tool_access, *is_broadcast) {
-                    self.state.push_outbox(msg);
+                    self.lctx.push_outbox(msg);
                     request.try_reply(ApplicationLayerServiceResponse::SyncInitiated).ok();
                 } else {
                     request.try_reply(ApplicationLayerServiceResponse::SyncFailed).ok();
@@ -1186,7 +1193,7 @@ where
                 // a fresh one, let the inner AL push into it, then drain,
                 // encrypt, and push into the original outbox.
                 use crate::router::Outbox;
-                let outbox_cell = &self.state.layer_context().outbox;
+                let outbox_cell = &self.lctx.outbox;
                 let original = outbox_cell.replace(Outbox::new());
                 self.inner.process(msg);
                 let mut inner_outbox = outbox_cell.replace(original);
@@ -1213,7 +1220,7 @@ where
             }
             SecureResult::SyncResponse(msg) => {
                 // Sync response is already fully encrypted — push directly.
-                self.state.push_outbox(msg);
+                self.lctx.push_outbox(msg);
             }
             SecureResult::Dropped => {
                 // Verification failed — silently drop.

@@ -1,7 +1,7 @@
 use heapless::Deque;
 
 use crate::composition::LayerBuildContext;
-use crate::layer_context::{HasLayerContext, HasOutbox};
+use crate::layer_context::HasOutbox;
 use crate::messages::buffers::Buffer;
 use crate::messages::knx::*;
 use crate::objects::interface::{HasDeviceObject, HasRoutingCount};
@@ -19,6 +19,7 @@ use crate::{StackDefinition, StackState};
 /// transformed messages to the outbox for further routing.
 pub struct NetworkLayer<'a, D: StackDefinition> {
     state: &'a D::State,
+    lctx: &'a crate::layer_context::LayerContext<D>,
     interface_objects: &'a D::InterfaceObjects<'static>,
 
     /// FIFO of address types from outgoing requests, needed to transform each
@@ -31,7 +32,12 @@ pub struct NetworkLayer<'a, D: StackDefinition> {
 impl<'a, D: StackDefinition> NetworkLayer<'a, D> {
     /// Create a new Network Layer from a [`LayerBuildContext`].
     pub fn new(ctx: &'a LayerBuildContext<'a, D>) -> Self {
-        Self { state: ctx.state, interface_objects: ctx.interface_objects, pending_addr_types: Deque::new() }
+        Self {
+            state: ctx.state,
+            lctx: ctx.layer_context,
+            interface_objects: ctx.interface_objects,
+            pending_addr_types: Deque::new(),
+        }
     }
 }
 
@@ -80,7 +86,7 @@ impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
                 msg.convert_hop_count_to_hop_count_type();
 
                 debug!("NL -> TL: {:?}", msg);
-                self.state.push_outbox(msg);
+                self.lctx.push_outbox(msg);
             }
 
             // =================================================================
@@ -136,7 +142,7 @@ impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
                 }
 
                 debug!("NL -> LL: {:?}", msg);
-                self.state.push_outbox(msg);
+                self.lctx.push_outbox(msg);
             }
 
             // =================================================================
@@ -161,7 +167,7 @@ impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
                     warn!("NL received LL confirmation with no pending request");
                 }
 
-                self.state.push_outbox(msg);
+                self.lctx.push_outbox(msg);
             }
 
             // Unreachable: the dispatch table only routes HANDLES to us.

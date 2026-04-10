@@ -12,7 +12,7 @@
 
 use crate::{
     definition::StackDefinition,
-    layer_context::{HasLayerContext, HasOutbox},
+    layer_context::HasOutbox,
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     messages::{
         buffers::Buffer,
@@ -74,5 +74,5 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
     });
 
     debug!("AL sending UserManufacturerInfo_Response: {:?}", zweidraehte_util::fmt::Bytes(info));
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }

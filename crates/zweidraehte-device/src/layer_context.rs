@@ -2,22 +2,19 @@
 //!
 //! [`LayerContext`] holds the outbox, buffer manager, and inter-component
 //! channels that layers and augments need during message processing. It
-//! lives in [`StackResources`](crate::StackResources) and is referenced
-//! by both the device state (via [`HasLayerContext`]) and individual layers.
-//!
-//! This replaces the ad-hoc parameter threading of `&mut Outbox` and
-//! `&DynBufferManager` through layer function signatures.
+//! lives in [`StackResources`](crate::StackResources) and is passed
+//! directly to layers at construction time.
 
 use core::cell::RefCell;
 
-use embassy_sync::{blocking_mutex::raw::RawMutex, channel::Channel, pubsub::PubSubChannel};
+use embassy_sync::{channel::Channel, pubsub::{PubSubChannel, PubSubBehavior}};
 
 use crate::messages::buffers::DynBufferManager;
 use crate::{
     actor::Request,
     definition::StackDefinition,
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse},
-    objects::comm::{ComObjectEvent, ComObjectIndex, ComObjects, LifecycleEvent},
+    objects::comm::{ComObjectEvent, ComObjects, LifecycleEvent},
     restart,
     router::Outbox,
 };
@@ -28,44 +25,19 @@ use crate::{
 
 /// Shared runtime infrastructure for the KNX protocol stack.
 ///
-/// All layers and augments access this through a shared `&LayerContext`
-/// reference. The device state provides access via the [`HasLayerContext`]
-/// trait, so any component with `&State` can reach these resources.
-///
-/// # Contents
-///
-/// - **Buffer manager** — allocates message buffers for outgoing telegrams
-/// - **Outbox** — inter-layer message queue (layers push outgoing messages)
-/// - **Event channel** — publishes communication object events to user code
-/// - **Lifecycle channel** — publishes application start/stop events
-/// - **Restart channel** — sends restart requests from AL to user code
-/// - **App service channel** — receives GroupValue requests from user code
+/// Contains message queues, event channels, and buffer managers. This is completely
+/// decoupled from `StackState`. Layers that need to publish events, send messages,
+/// or allocate buffers will take a reference to this context.
 pub struct LayerContext<D: StackDefinition> {
-    /// Buffer allocator for building outgoing messages.
     pub buffer_manager: DynBufferManager<'static>,
-
-    /// Shared outbox — layers push outgoing messages here, the router drains.
     pub outbox: RefCell<Outbox>,
-
-    /// Comm object event channel: AL publishes, user code subscribes.
-    pub event_channel:
-        PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
-
-    /// Lifecycle event channel: device model publishes, user code subscribes.
+    pub event_channel: PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
     pub lifecycle_channel: PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
-
-    /// Restart request channel: AL sends, user code receives.
     pub restart_channel: Channel<D::Mutex, restart::RestartRequest, 1>,
-
-    /// App service channel: user code sends GroupValue requests, AL receives.
     pub app_service_channel: Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
 }
 
 impl<D: StackDefinition> LayerContext<D> {
-    /// Create a new LayerContext with the given buffer manager.
-    ///
-    /// The outbox starts empty. Channels are initialized with default
-    /// (empty) state.
     pub fn new(buffer_manager: DynBufferManager<'static>) -> Self {
         Self {
             buffer_manager,
@@ -79,55 +51,44 @@ impl<D: StackDefinition> LayerContext<D> {
 }
 
 // ============================================================================
-// HasLayerContext trait
+// Context Trait Implementations
 // ============================================================================
 
-/// Trait for device states that provide access to the layer context.
-///
-/// Implemented on `SystemBDeviceState` and forwarded by wrapper types.
-/// Any component with `&State` can access runtime infrastructure through
-/// this trait.
-pub trait HasLayerContext {
-    /// The stack definition type (needed for channel generics).
-    type Definition: StackDefinition;
-
-    /// Get a reference to the shared layer context.
-    fn layer_context(&self) -> &LayerContext<Self::Definition>;
-}
-
-// ============================================================================
-// HasOutbox — convenience trait for pushing to the shared outbox
-// ============================================================================
-
-/// Convenience trait for pushing messages to the shared outbox.
-///
-/// Blanket-implemented for all types that implement [`HasLayerContext`].
-/// Avoids the verbose `state.layer_context().outbox.borrow_mut().push(msg)`
-/// pattern throughout layer implementations.
 pub trait HasOutbox {
-    /// Push a message to the outbox for immediate dispatch.
     fn push_outbox(&self, msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>);
-
-    /// Push a deferred message — dispatched at the end of the current cycle.
-    ///
-    /// Use this for bus telegrams that must follow a management response
-    /// (e.g., GO diagnostics GroupValue_Write after the function property
-    /// response).
-    fn push_deferred_outbox(
-        &self,
-        msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>,
-    );
+    fn push_deferred_outbox(&self, msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>);
 }
 
-impl<T: HasLayerContext> HasOutbox for T {
+impl<D: StackDefinition> HasOutbox for LayerContext<D> {
     fn push_outbox(&self, msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>) {
-        self.layer_context().outbox.borrow_mut().push(msg);
+        self.outbox.borrow_mut().push(msg);
     }
 
-    fn push_deferred_outbox(
-        &self,
-        msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>,
-    ) {
-        self.layer_context().outbox.borrow_mut().push_deferred(msg);
+    fn push_deferred_outbox(&self, msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>) {
+        self.outbox.borrow_mut().push_deferred(msg);
+    }
+}
+
+impl<D: StackDefinition> crate::context::EventPublisherContext<<<D as StackDefinition>::CO as ComObjects>::Index> for LayerContext<D> {
+    fn publish_event(&self, index: <<D as StackDefinition>::CO as ComObjects>::Index, event: ComObjectEvent) {
+        self.event_channel.publish_immediate((index, event));
+    }
+}
+
+impl<D: StackDefinition> crate::context::RestartPublisherContext for LayerContext<D> {
+    fn try_send_restart_request(&self, request: restart::RestartRequest) -> bool {
+        self.restart_channel.try_send(request).is_ok()
+    }
+}
+
+impl<D: StackDefinition> crate::context::OutboxContext for LayerContext<D> {
+    fn outbox(&self) -> &core::cell::RefCell<crate::router::Outbox> {
+        &self.outbox
+    }
+}
+
+impl<D: StackDefinition> crate::context::BufferManagerContext for LayerContext<D> {
+    fn buffer_manager(&self) -> &DynBufferManager<'static> {
+        &self.buffer_manager
     }
 }

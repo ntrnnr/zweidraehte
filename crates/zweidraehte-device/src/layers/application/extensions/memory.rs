@@ -13,7 +13,7 @@
 use crate::{
     HasPersistence,
     definition::StackDefinition,
-    layer_context::{HasLayerContext, HasOutbox},
+    layer_context::HasOutbox,
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     memory::MemoryMap,
     messages::{
@@ -109,7 +109,7 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
     });
 
     debug!("AL sending Memory_Response: address=0x{:04X}, count={}", acc.address, response_count);
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_Memory_Write.ind`
@@ -172,7 +172,7 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
     });
 
     debug!("AL sending Memory_Response (verify): address=0x{:04X}, count={}", acc.address, response_count);
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_MemoryBit_Write.ind`
@@ -281,5 +281,5 @@ fn send_memorybit_response<D: StackDefinition>(
     });
 
     debug!("AL sending A_Memory_Response (for MemoryBit_Write): address=0x{:04X}, count={}", address, count);
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }

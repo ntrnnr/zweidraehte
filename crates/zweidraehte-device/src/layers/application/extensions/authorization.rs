@@ -13,7 +13,7 @@
 use crate::{
     AccessContext, AccessSource, HasAuthorization, HasConnectionAuth, StackState,
     definition::StackDefinition,
-    layer_context::{HasLayerContext, HasOutbox},
+    layer_context::HasOutbox,
     layers::application::extensions::{AlExtensionContext, AlServiceExtension},
     messages::{
         apdu::auth::{AuthorizeRequest, AuthorizeResponse, KeyResponse, KeyWrite},
@@ -103,7 +103,7 @@ fn handle_authorize_request<D: StackDefinition>(
     });
 
     debug!("AL sending Authorize_Response: level={}", access_level);
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_Key_Write.ind`
@@ -146,5 +146,5 @@ fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>,
     });
 
     debug!("AL sending Key_Response: level={}", result_level);
-    ctx.state.push_outbox(msg.into_inner());
+    ctx.lctx.push_outbox(msg.into_inner());
 }

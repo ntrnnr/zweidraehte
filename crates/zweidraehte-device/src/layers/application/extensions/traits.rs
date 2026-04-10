@@ -22,8 +22,6 @@
 //! handler. This allows eventual migration of core services into
 //! extensions for devices that don't need them.
 
-use core::cell::RefCell;
-
 use crate::{
     access::AccessContext,
     definition::StackDefinition,
@@ -31,7 +29,6 @@ use crate::{
         buffers::{Buffer, DynBufferManager},
         knx::{ApciCode, KnxMessageBuffer},
     },
-    objects::comm::ComObjects,
 };
 
 // ============================================================================
@@ -50,6 +47,8 @@ pub struct AlExtensionContext<'a, D: StackDefinition> {
     /// Unified device state (tables + runtime configuration).
     pub state: &'a D::State,
 
+    pub lctx: &'a crate::layer_context::LayerContext<D>,
+
     /// Interface objects container for property access.
     pub interface_objects: &'a D::InterfaceObjects<'static>,
 
@@ -57,9 +56,9 @@ pub struct AlExtensionContext<'a, D: StackDefinition> {
     pub memory_map: &'a D::Mem,
 
     /// Communication objects for direct GO value access (e.g., GO diagnostics).
-    pub comm_objects: &'a RefCell<D::CO>,
+    pub comm_objects: &'a core::cell::RefCell<D::CO>,
 
-    /// The resolved access context for the current message.
+    /// Access context associated with the incoming message.
     pub access_ctx: AccessContext,
 }
 
