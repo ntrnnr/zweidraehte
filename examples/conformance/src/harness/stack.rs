@@ -290,9 +290,15 @@ impl ComObjects for ConformanceComObjects {
             CoIndex::GoSec0 => ComObjectInfo { status: &self.go_sec_0.status, value: self.go_sec_0.value.as_ref() },
             CoIndex::GoSec1 => ComObjectInfo { status: &self.go_sec_1.status, value: self.go_sec_1.value.as_ref() },
             CoIndex::GoSec3 => ComObjectInfo { status: &self.go_sec_3.status, value: self.go_sec_3.value.as_ref() },
-            CoIndex::GoDiagNoC => ComObjectInfo { status: &self.go_diag_no_c.status, value: self.go_diag_no_c.value.as_ref() },
-            CoIndex::GoDiagNoW => ComObjectInfo { status: &self.go_diag_no_w.status, value: self.go_diag_no_w.value.as_ref() },
-            CoIndex::GoDiagNoT => ComObjectInfo { status: &self.go_diag_no_t.status, value: self.go_diag_no_t.value.as_ref() },
+            CoIndex::GoDiagNoC => {
+                ComObjectInfo { status: &self.go_diag_no_c.status, value: self.go_diag_no_c.value.as_ref() }
+            }
+            CoIndex::GoDiagNoW => {
+                ComObjectInfo { status: &self.go_diag_no_w.status, value: self.go_diag_no_w.value.as_ref() }
+            }
+            CoIndex::GoDiagNoT => {
+                ComObjectInfo { status: &self.go_diag_no_t.status, value: self.go_diag_no_t.value.as_ref() }
+            }
         }
     }
 
@@ -1342,7 +1348,7 @@ impl ConformancePersistedState {
         app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
         let mut inner = InnerPersistedState::factory_default();
-        inner.individual_address = IndividualAddress::new(1, 1, 1);
+        inner.individual_address = IndividualAddress::new(1, 0, 1);
         inner.address_table = addr_tab;
         inner.association_table = asso_tab;
         inner.group_object_table = co_tab;
