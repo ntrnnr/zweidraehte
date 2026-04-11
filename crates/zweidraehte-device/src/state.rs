@@ -2,10 +2,18 @@
 //!
 //! [`StackState`] is the fundamental runtime abstraction for any KNX device,
 //! providing individual address, serial number, authorization, and
+//! providing individual address, serial number, authorization, and
 //! programming mode. It has no dependency on KNX/IP.
 
-use crate::access::AccessContext;
+use crate::access::{AccessContext, HasConnectionAuth};
 use crate::address::IndividualAddress;
+use crate::bcus::system_b::HasDiagnosticsContext;
+use crate::device_model::DeviceModelNotifier;
+use crate::objects::{
+    comm::HasCommObjects,
+    interface::HasRoutingCount,
+    tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
+};
 
 /// Error type for read object operations with timeout
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,3 +309,41 @@ pub trait HasPersistence {
     /// without persistence).
     fn mark_dirty(&self) {}
 }
+
+// ============================================================================
+// State Bundles
+// ============================================================================
+
+/// Core bundle of traits required for any KNX device state.
+pub trait CoreDeviceState<CO>:
+    StackState
+    + HasAuthorization
+    + HasPersistence
+    + HasAddressTable
+    + HasApplication
+    + HasAssociationTable
+    + HasCommunicationObjectTable
+    + HasCommObjects<CO = CO>
+    + HasDiagnosticsContext
+    + HasConnectionAuth
+    + HasRoutingCount
+    + DeviceModelNotifier
+    + 'static
+{}
+
+impl<T, CO> CoreDeviceState<CO> for T
+where
+    T: StackState
+        + HasAuthorization
+        + HasPersistence
+        + HasAddressTable
+        + HasApplication
+        + HasAssociationTable
+        + HasCommunicationObjectTable
+        + HasCommObjects<CO = CO>
+        + HasDiagnosticsContext
+        + HasConnectionAuth
+        + HasRoutingCount
+        + DeviceModelNotifier
+        + 'static,
+{}

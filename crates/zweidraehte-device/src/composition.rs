@@ -128,7 +128,7 @@ where
     where
         D: 'a,
     {
-        DeviceLayerStack::standard(ctx)
+        StandardLayerStack::standard(ctx)
     }
 
     fn run_link_layer<'a>(
@@ -146,10 +146,10 @@ where
 
 /// Builder for KNX/IP `(NL, CemiTL<TL>, AL)` layer stacks.
 ///
-/// Produces [`IpDeviceLayers`] with a [`CemiTransportLayerChannelPair`](crate::context::CemiTransportLayerChannelPair)
+/// Produces [`IpDeviceLayers`] with a [`CemiTransportLayerChannelPair`](crate::layers::transport::cemi::CemiTransportLayerChannelPair)
 /// for Device Management connections. The link layer builder's
 /// [`LLEndpoints`](layers::LinkLayerBuilderBase::LLEndpoints) must be
-/// [`CemiTransportLayerEndpoints`](crate::context::CemiTransportLayerEndpoints).
+/// [`CemiTransportLayerEndpoints`](crate::layers::transport::cemi::CemiTransportLayerEndpoints).
 #[cfg(feature = "knxip")]
 pub struct InsecureIpDeviceBuilder;
 
@@ -158,27 +158,27 @@ impl<D: StackDefinition> LayerStackBuilder<D> for InsecureIpDeviceBuilder
 where
     D::LLB: for<'a> layers::LinkLayerBuilder<
             StackContext<'a, D>,
-            LLEndpoints<'a> = crate::context::CemiTransportLayerEndpoints<'a>,
+            LLEndpoints<'a> = crate::layers::transport::cemi::CemiTransportLayerEndpoints<'a>,
         >,
 {
     type Stack<'a>
         = IpDeviceLayers<'a, D>
     where
         D: 'a;
-    type Channels = crate::context::CemiTransportLayerChannelPair;
+    type Channels = crate::layers::transport::cemi::CemiTransportLayerChannelPair;
 
     fn build<'a>(
         ctx: &'a LayerBuildContext<'a, D>,
-        channels: &'a crate::context::CemiTransportLayerChannelPair,
+        channels: &'a crate::layers::transport::cemi::CemiTransportLayerChannelPair,
     ) -> IpDeviceLayers<'a, D>
     where
         D: 'a,
     {
-        DeviceLayerStack::with_cemi(ctx, channels)
+        IpLayerStack::with_cemi(ctx, channels)
     }
 
     fn run_link_layer<'a>(
-        channels: &'a crate::context::CemiTransportLayerChannelPair,
+        channels: &'a crate::layers::transport::cemi::CemiTransportLayerChannelPair,
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
         context: &'a StackContext<'a, D>,
@@ -191,44 +191,13 @@ where
 }
 
 // ============================================================================
-// Service inputs — events from outside the dispatch table
-// ============================================================================
-
-/// Service input events for the device layer stack.
-///
-/// These are events injected into the router loop from async channels,
-/// outside the normal [`ServiceType`](crate::messages::knx::ServiceType)
-/// dispatch table flow.
-pub enum ServiceInput {
-    /// Application service request from user code (group value write/read
-    /// via [`Stack::update_object`](crate::Stack::update_object)).
-    AppRequest(Request<ApplicationLayerService, ApplicationLayerServiceResponse>),
-
-    /// cEMI event from a KNX/IP Device Management connection.
-    #[cfg(feature = "knxip")]
-    CemiEvent(CemiEvent),
-}
-
-/// Holds all service input receivers.
-///
-/// Optional receivers (e.g. cEMI) use `Option` and fall back to
-/// `pending()` when absent, adding zero overhead for device
-/// configurations that don't use them.
-struct ServiceInputs<'a> {
-    app_rx: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
-
-    #[cfg(feature = "knxip")]
-    cemi_rx: Option<DynamicReceiver<'a, CemiEvent>>,
-}
-
-// ============================================================================
 // HasAppRequest — trait for AL types that handle application service requests
 // ============================================================================
 
 /// Application layer types that can handle service requests from user code.
 ///
 /// Both [`ApplicationLayer`] and [`SecureApplicationLayer`] implement this.
-/// Used as a bound on the `AL` parameter of [`DeviceLayerStack`] so that
+/// Used as a bound on the `AL` parameter of layer stacks so that
 /// `handle_service_input` can dispatch to the correct layer.
 pub trait HasAppRequest {
     fn handle_app_request(&mut self, request: &Request<ApplicationLayerService, ApplicationLayerServiceResponse>);
@@ -255,110 +224,36 @@ where
 }
 
 // ============================================================================
-// HandlesCemiEvent — trait for TL types that can process cEMI events
+// Standard Layer Stack — (NL, TL, AL)
 // ============================================================================
 
-/// Trait for transport layer types that can handle cEMI events.
-///
-/// When `knxip` is enabled, this trait requires a `handle_cemi_event` method
-/// that `CemiTransportLayer` and `TransportLayer` both implement.
-/// When `knxip` is disabled, the trait is empty and blanket-implemented for
-/// all types, so `TL: HandlesCemiEvent` is always satisfied without requiring
-/// each transport layer to opt in.
-#[cfg(feature = "knxip")]
-pub(crate) trait HandlesCemiEvent {
-    fn handle_cemi_event(&mut self, event: CemiEvent);
+/// Service input events for the standard device layer stack.
+pub enum StandardServiceInput {
+    /// Application service request from user code.
+    AppRequest(Request<ApplicationLayerService, ApplicationLayerServiceResponse>),
 }
 
-#[cfg(not(feature = "knxip"))]
-pub(crate) trait HandlesCemiEvent {}
-
-#[cfg(not(feature = "knxip"))]
-impl<T> HandlesCemiEvent for T {}
-
-#[cfg(feature = "knxip")]
-impl<D: StackDefinition, const MI: usize, const MO: usize> HandlesCemiEvent for CemiTransportLayer<'_, D, MI, MO> {
-    fn handle_cemi_event(&mut self, event: CemiEvent) {
-        self.handle_cemi_event(event);
-    }
-}
-
-#[cfg(feature = "knxip")]
-impl<D: StackDefinition, const MI: usize, const MO: usize> HandlesCemiEvent for TransportLayer<'_, D, MI, MO> {
-    fn handle_cemi_event(&mut self, _event: CemiEvent) {
-        // Standard device stacks use TransportLayer which never receives
-        // cEMI events (the cemi_rx is None), so this is unreachable.
-        unreachable!("TransportLayer does not handle cEMI events");
-    }
-}
-
-/// Receive from an optional cEMI event channel, or pend forever if absent.
-#[cfg(feature = "knxip")]
-async fn recv_cemi_or_pend(rx: &Option<DynamicReceiver<'_, CemiEvent>>) -> CemiEvent {
-    match rx {
-        Some(rx) => rx.receive().await,
-        None => core::future::pending().await,
-    }
-}
-
-// ============================================================================
-// DeviceLayerStack — unified (NL, TL, AL) composition
-// ============================================================================
-
-/// Composed layer stack: `(NetworkLayer, TL, AL)` with unified service inputs
-/// and device model lifecycle.
+/// Standard, composed layer stack: `(NetworkLayer, TransportLayer, AL)`.
 ///
-/// Generic over both the transport layer slot (`TL`) and the application
-/// layer slot (`AL`), replacing the former `InsecureDeviceLayers` and
-/// `SecureDeviceLayers` with a single type.
-///
-/// - `TL`: [`TransportLayer`] for standard devices,
-///   [`CemiTransportLayer`](crate::layers::transport::cemi::CemiTransportLayer)
-///   for KNX/IP devices.
-/// - `AL`: [`ApplicationLayer`] for standard devices,
-///   [`SecureApplicationLayer`] for Data Secure devices.
-///
-/// # Type Aliases
-///
-/// - [`StandardDeviceLayers`] — `DeviceLayerStack<D, TransportLayer, ApplicationLayer>`
-/// - [`StandardSecureDeviceLayers`] — `DeviceLayerStack<D, TransportLayer, SecureApplicationLayer>`
-/// - [`IpDeviceLayers`] — `DeviceLayerStack<D, CemiTransportLayer, ApplicationLayer>`
-///
-/// # Custom Layer Stacks
-///
-/// For layer stacks that don't fit the `(NL, TL, AL)` pattern, implement
-/// [`LayerStack`] directly on a different type and use a custom
-/// [`LayerStackBuilder`].
-pub struct DeviceLayerStack<'a, D: StackDefinition, TL: router::Layer, AL: router::Layer + HasAppRequest> {
-    layers: (NetworkLayer<'a, D>, TL, AL),
+/// Generic over the application layer slot (`AL`), supporting both
+/// [`ApplicationLayer`] and [`SecureApplicationLayer`].
+pub struct StandardLayerStack<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> {
+    layers: (NetworkLayer<'a, D>, TransportLayer<'a, D>, AL),
     device_model: device_model::SystemBDeviceModel<'a, D>,
-    service_inputs: ServiceInputs<'a>,
+    app_rx: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
 }
 
 /// Standard layer stack: `(NL, TL, AL)`.
-pub type StandardDeviceLayers<'a, D> = DeviceLayerStack<'a, D, TransportLayer<'a, D>, ApplicationLayer<'a, D>>;
+pub type StandardDeviceLayers<'a, D> = StandardLayerStack<'a, D, ApplicationLayer<'a, D>>;
 
 /// Standard secure layer stack: `(NL, TL, SecureAL<AL>)`.
-pub type StandardSecureDeviceLayers<'a, D> = DeviceLayerStack<
+pub type StandardSecureDeviceLayers<'a, D> = StandardLayerStack<
     'a,
     D,
-    TransportLayer<'a, D>,
     SecureApplicationLayer<'a, D, <D as HasSequenceStorage>::SeqStorage>,
 >;
 
-/// KNX/IP layer stack: `(NL, CemiTL<TL>, AL)`.
-#[cfg(feature = "knxip")]
-pub type IpDeviceLayers<'a, D> = DeviceLayerStack<'a, D, CemiTransportLayer<'a, D>, ApplicationLayer<'a, D>>;
-
-// Backward-compatible type aliases — these will be removed in a future cleanup.
-// Intentionally not documented.
-pub type InsecureDeviceLayers<'a, D, TL> = DeviceLayerStack<'a, D, TL, ApplicationLayer<'a, D>>;
-
-// ----------------------------------------------------------------------------
-// Constructors
-// ----------------------------------------------------------------------------
-
-impl<'a, D: StackDefinition> DeviceLayerStack<'a, D, TransportLayer<'a, D>, ApplicationLayer<'a, D>> {
+impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> {
     /// Construct the standard `(NL, TL, AL)` layer stack.
     pub fn standard(ctx: &'a LayerBuildContext<'a, D>) -> Self {
         // TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
@@ -377,48 +272,13 @@ impl<'a, D: StackDefinition> DeviceLayerStack<'a, D, TransportLayer<'a, D>, Appl
         Self {
             layers: (network_layer, transport_layer, application_layer),
             device_model,
-            service_inputs: ServiceInputs {
-                app_rx: ctx.app_service_receiver,
-                #[cfg(feature = "knxip")]
-                cemi_rx: None,
-            },
-        }
-    }
-}
-
-#[cfg(feature = "knxip")]
-impl<'a, D: StackDefinition> DeviceLayerStack<'a, D, CemiTransportLayer<'a, D>, ApplicationLayer<'a, D>> {
-    /// Construct the KNX/IP `(NL, CemiTL<TL>, AL)` layer stack.
-    pub fn with_cemi(
-        ctx: &'a LayerBuildContext<'a, D>,
-        channels: &'a crate::context::CemiTransportLayerChannelPair,
-    ) -> Self {
-        let network_layer = NetworkLayer::new(ctx);
-        let transport_layer = TransportLayer::new(ctx);
-
-        let cemi_response_sender = channels.response.sender().into();
-        let cemi_transport_layer = CemiTransportLayer::new(transport_layer, cemi_response_sender);
-
-        let application_layer = ApplicationLayer::new(ctx);
-
-        let device_model = device_model::SystemBDeviceModel::new(
-            ctx.state,
-            &ctx.layer_context.lifecycle_channel,
-            ctx.interface_objects,
-        );
-
-        let cemi_event_receiver = channels.event.receiver().into();
-
-        Self {
-            layers: (network_layer, cemi_transport_layer, application_layer),
-            device_model,
-            service_inputs: ServiceInputs { app_rx: ctx.app_service_receiver, cemi_rx: Some(cemi_event_receiver) },
+            app_rx: ctx.app_service_receiver,
         }
     }
 }
 
 impl<'a, D: StackDefinition + HasSequenceStorage>
-    DeviceLayerStack<'a, D, TransportLayer<'a, D>, SecureApplicationLayer<'a, D, D::SeqStorage>>
+    StandardLayerStack<'a, D, SecureApplicationLayer<'a, D, D::SeqStorage>>
 where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
@@ -441,25 +301,17 @@ where
         Self {
             layers: (network_layer, transport_layer, secure_al),
             device_model,
-            service_inputs: ServiceInputs {
-                app_rx: ctx.app_service_receiver,
-                #[cfg(feature = "knxip")]
-                cemi_rx: None,
-            },
+            app_rx: ctx.app_service_receiver,
         }
     }
 }
 
-// ----------------------------------------------------------------------------
-// LayerStack impl — single implementation for all DeviceLayerStack variants
-// ----------------------------------------------------------------------------
-
-impl<'a, D: StackDefinition, TL: router::Layer + HandlesCemiEvent, AL: router::Layer + HasAppRequest> LayerStack
-    for DeviceLayerStack<'a, D, TL, AL>
+impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack
+    for StandardLayerStack<'a, D, AL>
 {
     const DISPATCH_TABLE: router::DispatchTable = {
-        type Layers<'a, D, TL, AL> = (NetworkLayer<'a, D>, TL, AL);
-        <Layers<'_, D, TL, AL> as LayerStack>::DISPATCH_TABLE
+        type Layers<'a, D, AL> = (NetworkLayer<'a, D>, TransportLayer<'a, D>, AL);
+        <Layers<'_, D, AL> as LayerStack>::DISPATCH_TABLE
     };
 
     fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>) {
@@ -479,37 +331,18 @@ impl<'a, D: StackDefinition, TL: router::Layer + HandlesCemiEvent, AL: router::L
         self.layers.init();
     }
 
-    type ServiceInput = ServiceInput;
+    type ServiceInput = StandardServiceInput;
 
-    fn recv_service_input(&self) -> impl core::future::Future<Output = ServiceInput> + '_ {
+    fn recv_service_input(&self) -> impl core::future::Future<Output = Self::ServiceInput> + '_ {
         async {
-            #[cfg(feature = "knxip")]
-            {
-                use embassy_futures::select::{Either, select};
-
-                match select(self.service_inputs.app_rx.receive(), recv_cemi_or_pend(&self.service_inputs.cemi_rx))
-                    .await
-                {
-                    Either::First(req) => ServiceInput::AppRequest(req),
-                    Either::Second(evt) => ServiceInput::CemiEvent(evt),
-                }
-            }
-
-            #[cfg(not(feature = "knxip"))]
-            {
-                ServiceInput::AppRequest(self.service_inputs.app_rx.receive().await)
-            }
+            StandardServiceInput::AppRequest(self.app_rx.receive().await)
         }
     }
 
-    fn handle_service_input(&mut self, input: ServiceInput) {
+    fn handle_service_input(&mut self, input: Self::ServiceInput) {
         match input {
-            ServiceInput::AppRequest(req) => {
+            StandardServiceInput::AppRequest(req) => {
                 self.layers.2.handle_app_request(&req);
-            }
-            #[cfg(feature = "knxip")]
-            ServiceInput::CemiEvent(evt) => {
-                self.layers.1.handle_cemi_event(evt);
             }
         }
     }
@@ -545,7 +378,7 @@ where
     where
         D: 'a,
     {
-        DeviceLayerStack::standard_secure(ctx)
+        StandardLayerStack::standard_secure(ctx)
     }
 
     fn run_link_layer<'a>(
@@ -558,5 +391,112 @@ where
         req_rx: impl layers::Inbox<crate::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
         builder.build_and_run(resources, context, Default::default(), ind_tx, conf_tx, req_rx)
+    }
+}
+
+// ============================================================================
+// IP Layer Stack — (NL, CemiTL<TL>, AL)
+// ============================================================================
+
+#[cfg(feature = "knxip")]
+pub enum IpServiceInput {
+    AppRequest(Request<ApplicationLayerService, ApplicationLayerServiceResponse>),
+    CemiEvent(CemiEvent),
+}
+
+#[cfg(feature = "knxip")]
+pub struct IpLayerStack<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> {
+    layers: (NetworkLayer<'a, D>, CemiTransportLayer<'a, D>, AL),
+    device_model: device_model::SystemBDeviceModel<'a, D>,
+    app_rx: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
+    cemi_rx: DynamicReceiver<'a, CemiEvent>,
+}
+
+#[cfg(feature = "knxip")]
+pub type IpDeviceLayers<'a, D> = IpLayerStack<'a, D, ApplicationLayer<'a, D>>;
+
+#[cfg(feature = "knxip")]
+impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
+    pub fn with_cemi(
+        ctx: &'a LayerBuildContext<'a, D>,
+        channels: &'a crate::layers::transport::cemi::CemiTransportLayerChannelPair,
+    ) -> Self {
+        let network_layer = NetworkLayer::new(ctx);
+        let transport_layer = TransportLayer::new(ctx);
+
+        let cemi_response_sender = channels.response.sender().into();
+        let cemi_transport_layer = CemiTransportLayer::new(transport_layer, cemi_response_sender);
+
+        let application_layer = ApplicationLayer::new(ctx);
+
+        let device_model = device_model::SystemBDeviceModel::new(
+            ctx.state,
+            &ctx.layer_context.lifecycle_channel,
+            ctx.interface_objects,
+        );
+
+        let cemi_event_receiver = channels.event.receiver().into();
+
+        Self {
+            layers: (network_layer, cemi_transport_layer, application_layer),
+            device_model,
+            app_rx: ctx.app_service_receiver,
+            cemi_rx: cemi_event_receiver,
+        }
+    }
+}
+
+#[cfg(feature = "knxip")]
+impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack
+    for IpLayerStack<'a, D, AL>
+{
+    const DISPATCH_TABLE: router::DispatchTable = {
+        type Layers<'a, D, AL> = (NetworkLayer<'a, D>, CemiTransportLayer<'a, D>, AL);
+        <Layers<'_, D, AL> as LayerStack>::DISPATCH_TABLE
+    };
+
+    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>) {
+        self.layers.dispatch(layer_idx, msg);
+    }
+
+    fn next_deadline(&self) -> Option<embassy_time::Instant> {
+        self.layers.next_deadline()
+    }
+
+    fn poll(&mut self) {
+        self.layers.poll();
+    }
+
+    fn init(&mut self) {
+        self.device_model.init();
+        self.layers.init();
+    }
+
+    type ServiceInput = IpServiceInput;
+
+    fn recv_service_input(&self) -> impl core::future::Future<Output = Self::ServiceInput> + '_ {
+        async {
+            use embassy_futures::select::{Either, select};
+
+            match select(self.app_rx.receive(), self.cemi_rx.receive()).await {
+                Either::First(req) => IpServiceInput::AppRequest(req),
+                Either::Second(evt) => IpServiceInput::CemiEvent(evt),
+            }
+        }
+    }
+
+    fn handle_service_input(&mut self, input: Self::ServiceInput) {
+        match input {
+            IpServiceInput::AppRequest(req) => {
+                self.layers.2.handle_app_request(&req);
+            }
+            IpServiceInput::CemiEvent(evt) => {
+                self.layers.1.handle_cemi_event(evt);
+            }
+        }
+    }
+
+    fn drain_events(&mut self) {
+        self.device_model.drain_dm_events();
     }
 }

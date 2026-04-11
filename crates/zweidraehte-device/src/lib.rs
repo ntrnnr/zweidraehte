@@ -44,11 +44,11 @@ pub use ip::{DEFAULT_MULTICAST_ADDR, IpConfig, IpPlatform, IpPlatformConfig, IpP
 
 mod composition;
 pub use composition::{
-    DeviceLayerStack, InsecureDeviceBuilder, InsecureDeviceLayers, LayerBuildContext, LayerStackBuilder,
-    SecureDeviceBuilder, StandardDeviceLayers, StandardSecureDeviceLayers,
+    InsecureDeviceBuilder, LayerBuildContext, LayerStackBuilder, SecureDeviceBuilder,
+    StandardDeviceLayers, StandardLayerStack, StandardSecureDeviceLayers,
 };
 #[cfg(feature = "knxip")]
-pub use composition::{InsecureIpDeviceBuilder, IpDeviceLayers};
+pub use composition::{InsecureIpDeviceBuilder, IpDeviceLayers, IpLayerStack};
 
 pub(crate) mod inner;
 pub use inner::StackContext;

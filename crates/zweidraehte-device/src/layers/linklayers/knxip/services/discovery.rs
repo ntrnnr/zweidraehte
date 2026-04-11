@@ -33,7 +33,7 @@ impl DiscoveryServer {
     /// Create a new DiscoveryServer with the given configuration.
     ///
     /// Device information is not stored here — it is built on demand from
-    /// the [`ServerContext`]'s [`DeviceInfoContext`](crate::context::DeviceInfoContext)
+    /// the [`ServerContext`]'s [`DeviceInfoContext`](crate::layers::linklayers::knxip::context::DeviceInfoContext)
     /// whenever a search or description request arrives, ensuring it always
     /// reflects current device state (programming mode, individual address, etc.).
     ///

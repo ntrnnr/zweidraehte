@@ -121,7 +121,7 @@ impl<D: StackDefinition> PropertyServiceContext for StackContext<'_, D> {
 }
 
 #[cfg(feature = "knxip")]
-impl<D: IpCapableStack> crate::context::DeviceInfoContext for StackContext<'_, D> {
+impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::DeviceInfoContext for StackContext<'_, D> {
     fn device_information(&self) -> crate::messages::knxip::substructs::DeviceInformation {
         use crate::IpPlatform;
         use crate::IpStackState;
@@ -163,7 +163,7 @@ impl<D: IpCapableStack> crate::context::DeviceInfoContext for StackContext<'_, D
 }
 
 #[cfg(feature = "knxip")]
-impl<D: IpCapableStack> crate::context::IpDiagnosticsContext for StackContext<'_, D> {
+impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::IpDiagnosticsContext for StackContext<'_, D> {
     fn ip_config(&self) -> crate::messages::knxip::substructs::IpConfig {
         use crate::IpPlatform;
         use crate::IpStackState;
@@ -196,7 +196,7 @@ impl<D: IpCapableStack> crate::context::IpDiagnosticsContext for StackContext<'_
 }
 
 #[cfg(feature = "knxip")]
-impl<D: IpCapableStack> crate::context::IpAdditionalIndividualAddressContext for StackContext<'_, D> {
+impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext for StackContext<'_, D> {
     fn write_additional_individual_addresses(&self, buf: &mut [crate::address::IndividualAddress]) -> usize {
         use crate::IpStackState;
         use crate::bcus::system_b::HasExtensionState;

@@ -14,7 +14,7 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Instant};
 use crate::{
-    context::IpDiagnosticsContext,
+    layers::linklayers::knxip::context::IpDiagnosticsContext,
     messages::{
         buffers::Buffer,
         builder::{ConfirmationExt, IndicationMessage, RequestMessage},
@@ -128,7 +128,7 @@ where
                 let mut addr_buf = [crate::address::IndividualAddress::default();
                     <F::Tunneling as features::TunnelingFeature>::CAPACITY];
                 let addr_count =
-                    crate::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
+                    crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
                         self.context,
                         &mut addr_buf,
                     );
@@ -301,7 +301,7 @@ where
     ) {
         let mut addr_buf =
             [crate::address::IndividualAddress::default(); <F::Tunneling as features::TunnelingFeature>::CAPACITY];
-        let addr_count = crate::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
+        let addr_count = crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
             self.context,
             &mut addr_buf,
         );

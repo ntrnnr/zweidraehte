@@ -6,9 +6,9 @@
 
 // Core stack
 pub use crate::{
-    AccessContext, DeviceLayerStack, HasAuthorization, HasPersistence, HasSecureIdentity, InsecureDeviceBuilder,
+    AccessContext, HasAuthorization, HasPersistence, HasSecureIdentity, InsecureDeviceBuilder,
     LayerBuildContext, ReadObjectError, Runner, SecureDeviceBuilder, Stack, StackDefinition, StackResources,
-    StackState, StandardDeviceLayers, StandardSecureDeviceLayers, UpdateObjectError,
+    StackState, StandardDeviceLayers, StandardLayerStack, StandardSecureDeviceLayers, UpdateObjectError,
 };
 
 // KNX/IP-specific types
@@ -17,7 +17,7 @@ pub use crate::{InsecureIpDeviceBuilder, IpDeviceLayers, IpPlatform, IpPlatformC
 
 // Channel types for KNX/IP stacks (used by InsecureIpDeviceBuilder and standalone tests)
 #[cfg(feature = "knxip")]
-pub use crate::context::{
+pub use crate::layers::transport::cemi::{
     CemiTransportLayerChannelPair, CemiTransportLayerClientEndpoints, CemiTransportLayerEndpoints,
 };
 

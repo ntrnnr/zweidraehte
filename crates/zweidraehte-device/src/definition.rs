@@ -21,10 +21,10 @@ use crate::{
     layers::{self, application::extensions::AlServiceExtension},
     memory::MemoryMap,
     objects::{
-        comm::{ComObjects, HasCommObjects},
-        interface::{HasDeviceObject, HasRoutingCount, PropertyServiceHandler},
-        tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
+        comm::ComObjects,
+        interface::{HasDeviceObject, PropertyServiceHandler},
     },
+    state::CoreDeviceState,
 };
 
 pub trait StackDefinition: Copy + 'static {
@@ -191,19 +191,7 @@ pub trait StackDefinition: Copy + 'static {
     ///
     /// For System B devices, use [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)
     /// or [`IpSystemBDeviceState`](crate::bcus::system_b::IpSystemBDeviceState).
-    type State: StackState
-        + HasAuthorization
-        + HasPersistence
-        + HasAddressTable
-        + HasApplication
-        + HasAssociationTable
-        + HasCommunicationObjectTable
-        + HasCommObjects<CO = Self::CO>
-        + HasDiagnosticsContext
-        + HasConnectionAuth
-        + HasRoutingCount
-        + DeviceModelNotifier
-        + 'static;
+    type State: CoreDeviceState<Self::CO>;
 
     /// Configuration needed to construct the device state.
     ///

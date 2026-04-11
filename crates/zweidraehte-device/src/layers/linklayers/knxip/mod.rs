@@ -7,9 +7,11 @@ use embassy_sync::{
 
 use crate::{
     context::{
-        ApduLengthContext, BufferManagerContext, DeviceInfoContext,
-        IpAdditionalIndividualAddressContext, IpDiagnosticsContext,
+        ApduLengthContext, BufferManagerContext,
         KnxIndividualAddressContext, PropertyServiceContext,
+    },
+    layers::linklayers::knxip::context::{
+        DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext,
     },
     messages::{
         buffers::Buffer,
@@ -18,6 +20,7 @@ use crate::{
 };
 
 pub(crate) mod connections;    // Connection-oriented state machines
+pub mod context;               // IP-specific context traits
 pub mod features;              // Compile-time feature selection
 pub(crate) mod services;      // Connectionless service handlers
 

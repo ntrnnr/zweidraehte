@@ -349,3 +349,76 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         }
     }
 }
+
+// ============================================================================
+// cEMI channel types (Moved from context.rs)
+// ============================================================================
+
+/// Owned channel pair for cEMI Transport Layer communication.
+///
+/// Allocated by [`Runner::run()`](crate::Runner::run) as a stack-local when
+/// the [`LayerStack`](crate::router::LayerStack) requires it. Both the
+/// router task (layer side) and the LL task (link-layer side) borrow from
+/// this structure.
+pub struct CemiTransportLayerChannelPair {
+    /// DevMgmt handler → CemiTransportLayer (capacity 2: one Frame + one
+    /// Activate/Deactivate can be pending simultaneously).
+    pub event: embassy_sync::channel::Channel<
+        embassy_sync::blocking_mutex::raw::NoopRawMutex,
+        CemiEvent,
+        2,
+    >,
+    /// CemiTransportLayer → KNX/IP runtime (capacity 1: at most one
+    /// response pending).
+    pub response: embassy_sync::channel::Channel<
+        embassy_sync::blocking_mutex::raw::NoopRawMutex,
+        crate::messages::buffers::Buffer<'static>,
+        1,
+    >,
+}
+
+impl Default for CemiTransportLayerChannelPair {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CemiTransportLayerChannelPair {
+    /// Create a new channel pair.
+    pub fn new() -> Self {
+        Self { event: embassy_sync::channel::Channel::new(), response: embassy_sync::channel::Channel::new() }
+    }
+
+    /// Extract layer-side endpoints (for the router/layer stack).
+    pub fn layer_endpoints(&self) -> CemiTransportLayerClientEndpoints<'_> {
+        CemiTransportLayerClientEndpoints {
+            event_receiver: self.event.receiver().into(),
+            response_sender: self.response.sender().into(),
+        }
+    }
+
+    /// Extract link-layer-side endpoints (for the KNX/IP runtime).
+    pub fn ll_endpoints(&self) -> CemiTransportLayerEndpoints<'_> {
+        CemiTransportLayerEndpoints {
+            event_sender: self.event.sender().into(),
+            response_receiver: self.response.receiver().into(),
+        }
+    }
+}
+
+/// Layer-side endpoints borrowed from [`CemiTransportLayerChannelPair`].
+///
+/// Used by [`IpDeviceLayers`](crate::IpDeviceLayers) to
+/// receive cEMI events and send responses.
+pub struct CemiTransportLayerClientEndpoints<'a> {
+    pub event_receiver: embassy_sync::channel::DynamicReceiver<'a, CemiEvent>,
+    pub response_sender: embassy_sync::channel::DynamicSender<'a, crate::messages::buffers::Buffer<'static>>,
+}
+
+/// Link-layer-side endpoints borrowed from [`CemiTransportLayerChannelPair`].
+///
+/// Used by the KNX/IP runtime to send cEMI events and receive responses.
+pub struct CemiTransportLayerEndpoints<'a> {
+    pub event_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
+    pub response_receiver: embassy_sync::channel::DynamicReceiver<'a, crate::messages::buffers::Buffer<'static>>,
+}

@@ -269,35 +269,28 @@ fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
 /// * `state_config` - Configuration for state construction (identity, persisted snapshot, etc.)
 /// * `platform` - Platform abstraction (IP config for KNX/IP, `()` for TP1)
 /// * `memory_map` - Memory map for A_Memory_Read/Write services
-pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
-    resources: &'d mut StackResources<D, BUF_SZ, NUM_BUFS>,
+pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
+    resources: &'static mut StackResources<D, BUF_SZ, NUM_BUFS>,
     link_layer_builder: D::LLB,
     state_config: D::StateConfig,
     platform: D::Platform,
     memory_map: D::Mem,
-) -> (Stack<'d, D>, Runner<'d, D>) {
+) -> (Stack<'static, D>, Runner<'static, D>) {
     use crate::layer_context::LayerContext;
 
     // ================================================================
     // Step 1: Allocate buffers
     // ================================================================
 
-    // SAFETY: We are creating a reference to the buffers that are stored in the `StackResources` struct,
-    //         which lives at least as long as `Inner`
     let buffers = resources.buffers.write([[0; _]; _]);
-    let buffer_manager: &'static mut BufferManager<NUM_BUFS> =
-        unsafe { core::mem::transmute(resources.buffer_manager.write(BufferManager::new(buffers))) };
+    let buffer_manager: &'static mut BufferManager<NUM_BUFS> = resources.buffer_manager.write(unsafe { BufferManager::new(buffers) });
 
     // ================================================================
     // Step 2: Create LayerContext (before the state)
     // ================================================================
 
     let layer_context = LayerContext::new(buffer_manager.dyn_buffer_manager());
-    let layer_context = &*resources.layer_context.write(layer_context);
-
-    // SAFETY: layer_context lives in StackResources which outlives everything.
-    // The actual lifetime is 'd but we need 'static for the state field.
-    let layer_ctx_static: &'static LayerContext<D> = unsafe { core::mem::transmute(layer_context) };
+    let layer_ctx_static: &'static LayerContext<D> = resources.layer_context.write(layer_context);
 
     // ================================================================
     // Step 3: Create state via D::create_state()
@@ -320,24 +313,15 @@ pub fn new<'d, D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: u
     // ================================================================
 
     let inner = Inner { state, platform, memory_map, layer_context: layer_ctx_static };
-    let inner = &*resources.inner.write(inner);
+    let inner: &'static Inner<D> = resources.inner.write(inner);
 
     // Build interface objects with reference to the state stored in Inner.
-    // SAFETY: Inner is now stable in memory (written to StackResources), so we can safely
-    //         transmute the state reference to 'static lifetime. The actual lifetime is 'd
-    //         but the interface objects container needs 'static for its type parameter.
-    let interface_objects = {
-        let state_ref: &'static D::State = unsafe { core::mem::transmute(&inner.state) };
-        let platform_ref: &'static D::Platform = unsafe { core::mem::transmute(&inner.platform) };
-        let lctx_ref: &'static crate::layer_context::LayerContext<D> =
-            unsafe { core::mem::transmute(inner.layer_context) };
-        D::create_interface_objects(state_ref, platform_ref, lctx_ref)
-    };
-    let interface_objects = &*resources.interface_objects.write(interface_objects);
+    let interface_objects = D::create_interface_objects(&inner.state, &inner.platform, inner.layer_context);
+    let interface_objects: &'static D::InterfaceObjects<'static> = resources.interface_objects.write(interface_objects);
 
     // Channels live on LayerContext. Create sender/receiver
     // pairs for the Stack handle and the Runner.
-    let lctx: &'static crate::layer_context::LayerContext<D> = unsafe { core::mem::transmute(inner.layer_context) };
+    let lctx: &'static crate::layer_context::LayerContext<D> = inner.layer_context;
 
     let app_request_sender: DynamicSender<'static, _> = lctx.app_service_channel.sender().into();
 

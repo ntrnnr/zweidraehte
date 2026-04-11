@@ -274,7 +274,7 @@ where
         self,
         resources: &'res mut KnxNetIpResources,
         context: &'res dyn KnxNetIpContext,
-        cemi_ll: crate::context::CemiTransportLayerEndpoints<'res>,
+        cemi_ll: crate::layers::transport::cemi::CemiTransportLayerEndpoints<'res>,
         ind_tx: DynamicSender<'res, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'res, ConfirmationMessage<Buffer<'static>>>,
         subnet_link: Option<SubnetLink<'res>>,
@@ -477,7 +477,7 @@ impl<
 > LinkLayerBuilderBase for KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 {
     type Resources = KnxNetIpResources;
-    type LLEndpoints<'a> = crate::context::CemiTransportLayerEndpoints<'a>;
+    type LLEndpoints<'a> = crate::layers::transport::cemi::CemiTransportLayerEndpoints<'a>;
 
     fn create_resources(&self) -> Self::Resources {
         KnxNetIpResources::new()
@@ -511,7 +511,7 @@ where
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
-        ll_endpoints: crate::context::CemiTransportLayerEndpoints<'a>,
+        ll_endpoints: crate::layers::transport::cemi::CemiTransportLayerEndpoints<'a>,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,

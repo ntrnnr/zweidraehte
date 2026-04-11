@@ -11,7 +11,8 @@ use heapless::Vec;
 use core::cell::RefCell;
 
 use crate::address::IndividualAddress;
-use crate::context::{DeviceInfoContext, IpDiagnosticsContext, KnxIndividualAddressContext};
+use crate::context::KnxIndividualAddressContext;
+use crate::layers::linklayers::knxip::context::{DeviceInfoContext, IpDiagnosticsContext};
 use crate::messages::knx::DestinationAddress;
 use crate::messages::{
     buffers::{Buffer, DynBufferManager},

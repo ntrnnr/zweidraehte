@@ -309,7 +309,7 @@ where
                             let mut addr_buf2 = [crate::address::IndividualAddress::default();
                                 <F::Tunneling as features::TunnelingFeature>::CAPACITY];
                             let addr_count2 =
-                                crate::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
+                                crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
                                     self.context, &mut addr_buf2,
                                 );
                             let tunnel_slots = self.connection_manager.tunneling_slot_info();
