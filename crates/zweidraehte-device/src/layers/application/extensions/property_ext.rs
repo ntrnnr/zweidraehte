@@ -185,7 +185,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
     match result {
         Ok(data_len) => {
             let response_len = PropertyExtValueResponse::msg_len(data_len);
-            let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(response_len) else {
+            let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
                 warn!("AL no buffer for PropertyExtValueResponse");
                 return;
             };
@@ -313,7 +313,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
     };
     let result = ctx.interface_objects.property_value_write(&req);
 
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
         warn!("AL no buffer for PropertyExtValueWriteConRes");
         return;
     };
@@ -447,7 +447,7 @@ fn send_ext_read_error<D: StackDefinition>(
     hdr: &PropertyExtValueHeader,
     return_code: u8,
 ) {
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(PropertyExtValueResponse::ERROR_MSG_LEN) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(PropertyExtValueResponse::ERROR_MSG_LEN) else {
         warn!("AL no buffer for PropertyExtValueResponse error");
         return;
     };
@@ -473,7 +473,7 @@ fn send_ext_write_con_error<D: StackDefinition>(
     hdr: &PropertyExtValueHeader,
     return_code: u8,
 ) {
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
         warn!("AL no buffer for PropertyExtValueWriteConRes error");
         return;
     };
@@ -580,7 +580,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
     let result = ctx.interface_objects.function_property_command(&req);
 
     let response_len = FunctionPropertyExtResponse::msg_len(result.data.len());
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(response_len) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
         warn!("AL no buffer for FunctionPropertyExtState_Response");
         return;
     };
@@ -649,7 +649,7 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
     let result = ctx.interface_objects.function_property_state_read(&req);
 
     let response_len = FunctionPropertyExtResponse::msg_len(result.data.len());
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(response_len) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
         warn!("AL no buffer for FunctionPropertyExtState_Response");
         return;
     };
@@ -682,7 +682,7 @@ fn send_function_ext_response<D: StackDefinition>(
     data: &[u8],
 ) {
     let response_len = FunctionPropertyExtResponse::msg_len(data.len());
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(response_len) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
         warn!("AL no buffer for FunctionPropertyExtState_Response");
         return;
     };
@@ -701,7 +701,7 @@ fn send_function_ext_empty_response<D: StackDefinition>(
     ctx: &AlExtensionContext<'_, D>,
     hdr: &FunctionPropertyExtHeader,
 ) {
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(FunctionPropertyExtResponse::EMPTY_MSG_LEN) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(FunctionPropertyExtResponse::EMPTY_MSG_LEN) else {
         warn!("AL no buffer for FunctionPropertyExtState_Response");
         return;
     };
@@ -792,7 +792,7 @@ fn handle_ext_description_read<D: StackDefinition>(
         }
     });
 
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(RESP_LEN) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(RESP_LEN) else {
         warn!("AL no buffer for PropertyExtDescriptionResponse");
         return;
     };
@@ -935,7 +935,7 @@ fn handle_memory_ext_read<D: StackDefinition>(
     if count == 0 {
         // Error: count=0
         let resp_len = offsets::MSG_APCI + 6; // APCI + rc + addr
-        let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
+        let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else { return };
         let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
             buf[base + 2] = 0xFD;
             buf[base + 3] = addr_hi;
@@ -955,7 +955,7 @@ fn handle_memory_ext_read<D: StackDefinition>(
     match result {
         Ok(n) => {
             let resp_len = offsets::MSG_APCI + 6 + n;
-            let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
+            let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else { return };
             let msg =
                 ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
                     buf[base + 2] = 0x00; // E_SUCCESS
@@ -972,7 +972,7 @@ fn handle_memory_ext_read<D: StackDefinition>(
                 _ => 0xFD,                                        // E_ADDRESS_VOID
             };
             let resp_len = offsets::MSG_APCI + 6;
-            let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
+            let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else { return };
             let msg =
                 ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
                     buf[base + 2] = rc;
@@ -995,7 +995,7 @@ fn send_memory_ext_write_response<D: StackDefinition>(
 ) {
     use crate::messages::knx::offsets;
     let resp_len = offsets::MSG_APCI + 6; // APCI(2) + rc(1) + addr(3)
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else { return };
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else { return };
     let base = offsets::MSG_APCI;
     let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedWriteResponse).with_data(|buf| {
         buf[base + 2] = return_code;

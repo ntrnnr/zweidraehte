@@ -397,7 +397,7 @@ impl<'a, D: StackDefinition> DeviceLayerStack<'a, D, CemiTransportLayer<'a, D>, 
         let transport_layer = TransportLayer::new(ctx);
 
         let cemi_response_sender = channels.response.sender().into();
-        let cemi_transport_layer = CemiTransportLayer::new(transport_layer, cemi_response_sender, ctx.layer_context);
+        let cemi_transport_layer = CemiTransportLayer::new(transport_layer, cemi_response_sender);
 
         let application_layer = ApplicationLayer::new(ctx);
 
@@ -430,7 +430,7 @@ where
         let application_layer = ApplicationLayer::new(ctx);
 
         let seq_storage = ctx.state.extension_state().seq_storage();
-        let secure_al = SecureApplicationLayer::new(application_layer, ctx.state, seq_storage, ctx.layer_context);
+        let secure_al = SecureApplicationLayer::new(application_layer, seq_storage);
 
         let device_model = device_model::SystemBDeviceModel::new(
             ctx.state,

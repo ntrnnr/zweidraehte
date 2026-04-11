@@ -81,7 +81,7 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
 
     debug!("AL IndividualAddressSerialNumberRead: serial matches, sending response");
 
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(IndividualAddressSerialNumberResponse::MSG_LEN) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(IndividualAddressSerialNumberResponse::MSG_LEN) else {
         warn!("AL no buffer for response");
         return;
     };

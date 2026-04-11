@@ -99,7 +99,7 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
         Err(_) => 0,
     };
 
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(MemoryResponse::msg_len(response_count as usize)) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize)) else {
         warn!("AL no buffer for response");
         return;
     };
@@ -159,7 +159,7 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
         return;
     }
 
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(MemoryResponse::msg_len(response_count as usize)) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize)) else {
         warn!("AL no buffer for response");
         return;
     };
@@ -271,7 +271,7 @@ fn send_memorybit_response<D: StackDefinition>(
         return;
     }
 
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(MemoryResponse::msg_len(count as usize)) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(count as usize)) else {
         warn!("AL no buffer for response");
         return;
     };

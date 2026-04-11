@@ -95,7 +95,7 @@ fn handle_user_memory_read<D: StackDefinition>(
         Err(_) => 0,
     };
 
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
     else {
         warn!("AL no buffer for response");
         return;
@@ -156,7 +156,7 @@ fn handle_user_memory_write<D: StackDefinition>(
         return;
     }
 
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
     else {
         warn!("AL no buffer for response");
         return;

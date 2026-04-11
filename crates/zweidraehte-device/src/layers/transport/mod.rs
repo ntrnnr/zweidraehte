@@ -116,8 +116,6 @@ enum PendingNlRequest {
 /// - `MAX_INCOMING`: Maximum number of incoming connections (default: 1)
 /// - `MAX_OUTGOING`: Maximum number of outgoing connections (default: 0)
 pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1, const MAX_OUTGOING: usize = 0> {
-    /// Buffer manager for allocating messages
-    buffer_manager: &'a crate::messages::buffers::DynBufferManager<'static>,
     /// Unified device state (contains tables and runtime state)
     state: &'a D::State,
 
@@ -150,7 +148,6 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     /// the environment to scale protocol timeouts for fast IPC-based testing.
     /// If absent or unparseable, spec-compliant timeouts are used.
     pub fn new(ctx: &'a LayerBuildContext<'a, D>) -> Self {
-        let buffer_manager = &ctx.layer_context.buffer_manager;
         let state = ctx.state;
         let lctx = ctx.layer_context;
         let style = D::TL_STYLE;
@@ -175,7 +172,6 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             (Duration::from_millis(ACK_TIMEOUT_MS), Duration::from_millis(CONNECTION_TIMEOUT_MS));
 
         Self {
-            buffer_manager,
             state,
             lctx,
             connections: ConnectionTable::new(),
@@ -188,7 +184,12 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
     /// Access to the buffer manager (used by [`CemiTransportLayer`](cemi::CemiTransportLayer)).
     pub(crate) fn buffer_manager(&self) -> &'a crate::messages::buffers::DynBufferManager<'static> {
-        self.buffer_manager
+        &self.lctx.buffer_manager
+    }
+
+    /// Access to the layer context.
+    pub(crate) fn lctx(&self) -> &'a crate::layer_context::LayerContext<D> {
+        self.lctx
     }
 
     // =========================================================================
@@ -673,7 +674,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
             // Send immediate confirmation to AL (the actual send will happen later).
             // Use try_alloc — if no buffer available, the confirmation is skipped.
             // The data will still be sent when the pending ACK arrives.
-            if let Some(confirm_buf) = self.buffer_manager.try_alloc_with_size(7) {
+            if let Some(confirm_buf) = self.buffer_manager().try_alloc_with_size(7) {
                 let confirmation = KnxMessageBuffer::new(confirm_buf, ServiceType::T_Data_Req);
                 self.lctx.push_outbox(confirmation.confirm().build().into_inner());
             } else {
@@ -700,7 +701,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         let send_msg = {
             let pending = self.connections.find_any(dest).and_then(|c| c.pending_msg.as_ref());
             if let Some(pm) = pending {
-                self.buffer_manager.try_alloc_from_slice(pm.buf()).map(|buf| KnxMessageBuffer::new(buf, service_type))
+                self.lctx.buffer_manager.try_alloc_from_slice(pm.buf()).map(|buf| KnxMessageBuffer::new(buf, service_type))
             } else {
                 None
             }
@@ -853,7 +854,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                     if let Some(msg) = msg_for_data.take()
                         && let Some(conn) = self.connections.find_any_including_closed(remote_addr)
                     {
-                        match self.buffer_manager.try_alloc_from_slice(msg.buf()) {
+                        match self.lctx.buffer_manager.try_alloc_from_slice(msg.buf()) {
                             Some(queued_buffer) => {
                                 let queued_msg = KnxMessageBuffer::new(queued_buffer, msg.service_type());
                                 conn.queued_incoming = Some(queued_msg);
@@ -919,7 +920,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                     if let Some(conn) = self.connections.find_any_including_closed(dest)
                         && let Some(ref pending_msg) = conn.pending_msg
                     {
-                        match self.buffer_manager.try_alloc_from_slice(pending_msg.buf()) {
+                        match self.lctx.buffer_manager.try_alloc_from_slice(pending_msg.buf()) {
                             Some(retransmit_buffer) => {
                                 let retransmit_msg =
                                     KnxMessageBuffer::new(retransmit_buffer, pending_msg.service_type());
@@ -984,7 +985,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
             // Send a copy (original stored for retransmission).
             // Use try_alloc — if unavailable, the ACK timeout will retry.
             if let Some(ref pending) = conn.pending_msg {
-                match self.buffer_manager.try_alloc_from_slice(pending.buf()) {
+                match self.lctx.buffer_manager.try_alloc_from_slice(pending.buf()) {
                     Some(send_buffer) => {
                         let send_msg = KnxMessageBuffer::new(send_buffer, pending.service_type());
                         let _ = self.pending_nl.push_back(PendingNlRequest::FireAndForget);
@@ -1045,7 +1046,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         // Control PDUs need only the basic header (7 bytes up to and including TPCI)
         const CONTROL_PDU_LEN: usize = 7;
 
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(CONTROL_PDU_LEN) else {
             warn!("TL no buffer for T_Connect to {}", dest);
             return;
         };
@@ -1072,7 +1073,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(CONTROL_PDU_LEN) else {
             warn!("TL no buffer for T_Disconnect to {}", dest);
             return;
         };
@@ -1100,7 +1101,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(CONTROL_PDU_LEN) else {
             warn!("TL no buffer for T_Disconnect.ind from {}", source);
             return;
         };
@@ -1127,7 +1128,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(CONTROL_PDU_LEN) else {
             warn!("TL no buffer for T_Connect.ind from {}", source);
             return;
         };
@@ -1154,7 +1155,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(CONTROL_PDU_LEN) else {
             warn!("TL no buffer for T_ACK({}) to {}", seq_no, dest);
             return;
         };
@@ -1181,7 +1182,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(CONTROL_PDU_LEN) else {
             warn!("TL no buffer for T_NACK({}) to {}", seq_no, dest);
             return;
         };

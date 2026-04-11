@@ -121,7 +121,7 @@ where
     let doa_len = <D::State as HasDomainAddress>::DOMAIN_ADDRESS_LENGTH;
     let resp_len = DomainAddressSerialNumberResponse::MSG_LEN_NO_DOA + doa_len;
 
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(resp_len) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else {
         warn!("AL no buffer for DomainAddressSerialNumberResponse");
         return;
     };

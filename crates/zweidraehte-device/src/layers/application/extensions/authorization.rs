@@ -93,7 +93,7 @@ fn handle_authorize_request<D: StackDefinition>(
         ctx.state.set_connection_access(slot, AccessContext::new(access_level));
     }
 
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(AuthorizeResponse::MSG_LEN) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(AuthorizeResponse::MSG_LEN) else {
         warn!("AL no buffer for response");
         return;
     };
@@ -136,7 +136,7 @@ fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>,
         return;
     }
 
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(KeyResponse::MSG_LEN) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(KeyResponse::MSG_LEN) else {
         warn!("AL no buffer for response");
         return;
     };

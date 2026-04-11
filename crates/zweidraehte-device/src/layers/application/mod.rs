@@ -171,6 +171,16 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     pub(crate) fn buffer_manager(&self) -> &'a DynBufferManager<'static> {
         &self.lctx.buffer_manager
     }
+
+    /// Access the unified device state.
+    pub(crate) fn state(&self) -> &'a D::State {
+        self.state
+    }
+
+    /// Access the layer context.
+    pub(crate) fn lctx(&self) -> &'a crate::layer_context::LayerContext<D> {
+        self.lctx
+    }
 }
 
 // ============================================================================
@@ -280,7 +290,6 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
                     _ => {
                         use crate::layers::application::extensions::{AlExtensionContext, AlServiceExtension as _};
                         let ctx = AlExtensionContext {
-                            buffer_manager: self.buffer_manager(),
                             state: self.state,
                             lctx: self.lctx,
                             interface_objects: self.interface_objects,

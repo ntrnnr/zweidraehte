@@ -136,8 +136,6 @@ struct PendingSyncState {
 /// storage (e.g., dedicated flash sector with wear leveling).
 pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberStorage> {
     inner: ApplicationLayer<'a, D>,
-    state: &'a D::State,
-    lctx: &'a crate::layer_context::LayerContext<D>,
     /// Security context for encrypting the outgoing response.
     outgoing_ctx: Cell<OutgoingSecurityCtx>,
     /// Borrowed reference to the sequence number storage that lives on
@@ -153,14 +151,10 @@ pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberSto
 impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<'a, D, SEQ> {
     pub fn new(
         inner: ApplicationLayer<'a, D>,
-        state: &'a D::State,
         seq_storage: &'a RefCell<SEQ>,
-        lctx: &'a crate::layer_context::LayerContext<D>,
     ) -> Self {
         Self {
             inner,
-            state,
-            lctx,
             seq_storage,
             outgoing_ctx: Cell::new(OutgoingSecurityCtx::default()),
             last_sync_response: Cell::new(None),
@@ -226,8 +220,8 @@ where
     /// be rejected. The check is **exact match**: the received bits must equal
     /// the GO's required security flag bits (bits 0-1).
     fn check_go_security_flags(&self, tsap: u16, received_security_bits: u8) -> bool {
-        let security_state = self.state.extension_state();
-        let ast = self.state.ast().borrow();
+        let security_state = self.inner.state().extension_state();
+        let ast = self.inner.state().ast().borrow();
 
         for asap in ast.asaps_for_tsap(tsap) {
             // The GO flags table is indexed by 0-based position, written via
@@ -275,7 +269,7 @@ where
             if matches!(st, ServiceType::T_GroupData_Ind) {
                 if !self.check_plain_group_allowed(&msg) {
                     let src = u16::from_be_bytes(msg.get_source_addr().0);
-                    let security_state = self.state.extension_state();
+                    let security_state = self.inner.state().extension_state();
                     warn!("S-AL: plain group frame rejected — GO requires security");
                     security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
                     return SecureResult::Dropped;
@@ -299,7 +293,7 @@ where
             return SecureResult::Forward(msg);
         }
 
-        let security_state = self.state.extension_state();
+        let security_state = self.inner.state().extension_state();
         let src = u16::from_be_bytes(msg.get_source_addr().0);
         let outgoing_tl_seq = msg.outgoing_tl_seq();
         let buf = msg.buf_mut();
@@ -361,7 +355,7 @@ where
         if addr_type != 0 {
             use crate::objects::tables::AddressTable;
             let tsap = ctx.dst; // Currently holds the TSAP, not the GA.
-            let adt = self.state.adt().borrow();
+            let adt = self.inner.state().adt().borrow();
             if let Some(ga) = adt.get_address(tsap) {
                 ctx.dst = u16::from_be_bytes(ga.0);
             }
@@ -406,7 +400,7 @@ where
             // Tool access: use configured tool key, or FDSK as fallback
             // when the device is in factory state (tool key all zeros).
             let tk = security_state.tool_key();
-            if tk != [0u8; 16] { tk } else { self.state.fdsk().copied().unwrap_or([0u8; 16]) }
+            if tk != [0u8; 16] { tk } else { self.inner.state().fdsk().copied().unwrap_or([0u8; 16]) }
         } else if addr_type != 0 {
             // Group communication: look up group key by TSAP.
             //
@@ -550,7 +544,7 @@ where
         src: u16,
         incoming_service_type: ServiceType,
     ) -> SecureResult {
-        let security_state = self.state.extension_state();
+        let security_state = self.inner.state().extension_state();
 
         // Step 1: Rate limit — ignore if we responded less than 1 second ago.
         if let Some(last) = self.last_sync_response.get() {
@@ -577,7 +571,7 @@ where
         drop(sync_ref);
 
         // Step 3: KNX Serial Number check.
-        let device_serial = self.state.serial_number();
+        let device_serial = self.inner.state().serial_number();
         let is_broadcast = addr_type != 0
             || matches!(incoming_service_type, ServiceType::T_Broadcast_Ind | ServiceType::T_SystemBroadcast_Ind);
 
@@ -596,7 +590,7 @@ where
         // Step 4: Key lookup.
         let key = if scf.tool_access {
             let tk = security_state.tool_key();
-            if tk != [0u8; 16] { tk } else { self.state.fdsk().copied().unwrap_or([0u8; 16]) }
+            if tk != [0u8; 16] { tk } else { self.inner.state().fdsk().copied().unwrap_or([0u8; 16]) }
         } else {
             // Non-tool: look up P2P key for sender's IA (roles not needed for sync).
             match security_state.p2p_key_for_ia(src) {
@@ -675,7 +669,7 @@ where
 
         // Step 9: Generate random.
         let mut random = [0u8; 6];
-        self.state.fill_random(&mut random);
+        self.inner.state().fill_random(&mut random);
 
         // Step 10: Build response — reuse the incoming buffer.
         let mut challenge_xor_random = [0u8; 6];
@@ -693,7 +687,7 @@ where
         let response_scf_byte = response_scf.encode();
 
         // Swap src/dst for the response.
-        let device_addr = u16::from_be_bytes(self.state.individual_address().0);
+        let device_addr = u16::from_be_bytes(self.inner.state().individual_address().0);
         // For broadcast responses, the NL will rewrite dst to 0x0000 on the
         // wire — the CCM context must match what the receiver sees.
         let dst_for_response = if is_broadcast { 0x0000 } else { src };
@@ -820,7 +814,7 @@ where
         let mut received_mac = [0u8; 4];
         received_mac.copy_from_slice(&buf[secure::sync::FRAME_LEN - secure::MAC_LEN..secure::sync::FRAME_LEN]);
 
-        let device_addr = u16::from_be_bytes(self.state.individual_address().0);
+        let device_addr = u16::from_be_bytes(self.inner.state().individual_address().0);
         let addr_type = buf[offsets::MSG_ADDR_TYPE];
         let tpci_apci = u16::from_be_bytes([buf[offsets::MSG_TPCI], buf[offsets::MSG_TPCI + 1]]);
 
@@ -838,7 +832,7 @@ where
         .is_err()
         {
             warn!("S-AL: sync response MAC verification failed");
-            let security_state = self.state.extension_state();
+            let security_state = self.inner.state().extension_state();
             security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
             self.pending_sync.set(None);
             return SecureResult::Dropped;
@@ -910,12 +904,12 @@ where
     ) -> Option<KnxMessageBuffer<Buffer<'static>>> {
         use crate::logging::debug;
 
-        let security_state = self.state.extension_state();
+        let security_state = self.inner.state().extension_state();
 
         // Step 1: Key lookup.
         let key = if tool_access {
             let tk = security_state.tool_key();
-            if tk != [0u8; 16] { tk } else { self.state.fdsk().copied().unwrap_or([0u8; 16]) }
+            if tk != [0u8; 16] { tk } else { self.inner.state().fdsk().copied().unwrap_or([0u8; 16]) }
         } else {
             match security_state.p2p_key_for_ia(peer_ia) {
                 Some((k, _roles)) => k,
@@ -934,9 +928,9 @@ where
 
         // Step 3: Generate random challenge.
         let mut challenge = [0u8; 6];
-        self.state.fill_random(&mut challenge);
+        self.inner.state().fill_random(&mut challenge);
         let mut random = [0u8; 6];
-        self.state.fill_random(&mut random);
+        self.inner.state().fill_random(&mut random);
 
         // Step 4: Build SCF for sync request.
         let scf = SecurityControlField {
@@ -952,9 +946,9 @@ where
         let buf = self.inner.buffer_manager().try_alloc_with_size(secure::sync::FRAME_LEN)?;
         let mut msg = KnxMessageBuffer::new(buf, st);
 
-        let device_addr = u16::from_be_bytes(self.state.individual_address().0);
+        let device_addr = u16::from_be_bytes(self.inner.state().individual_address().0);
         let dst = if is_broadcast { 0x0000u16 } else { peer_ia };
-        let device_serial = self.state.serial_number();
+        let device_serial = self.inner.state().serial_number();
         // For P2P, serial number is all-zero. For broadcast, use device serial.
         let serial_for_frame = if is_broadcast { *device_serial } else { [0u8; 6] };
 
@@ -1022,7 +1016,7 @@ where
         match request.get() {
             ApplicationLayerService::SyncRequest { peer_ia, tool_access, is_broadcast } => {
                 if let Some(msg) = self.initiate_sync(*peer_ia, *tool_access, *is_broadcast) {
-                    self.lctx.push_outbox(msg);
+                    self.inner.lctx().push_outbox(msg);
                     request.try_reply(ApplicationLayerServiceResponse::SyncInitiated).ok();
                 } else {
                     request.try_reply(ApplicationLayerServiceResponse::SyncFailed).ok();
@@ -1088,7 +1082,7 @@ where
         let tool_access = (ctx.scf_byte & 0x80) != 0;
         let encryption_key = if matches!(st, ServiceType::T_GroupData_Req) && !tool_access {
             let out_tsap = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
-            let security_state = self.state.extension_state();
+            let security_state = self.inner.state().extension_state();
             security_state.group_key_for_index(out_tsap).unwrap_or(ctx.key)
         } else {
             ctx.key
@@ -1134,7 +1128,7 @@ where
         // Use the device's own address for src rather than reading from the
         // buffer — the network layer hasn't filled in MSG_SOURCE_ADDR yet at
         // this point in the outgoing path.
-        let src = u16::from_be_bytes(self.state.individual_address().0);
+        let src = u16::from_be_bytes(self.inner.state().individual_address().0);
         let secure_ref = SecureApduRef::parse(buf).expect("just built a valid secure frame");
         let mut ccm_ctx = secure_ref.ccm_context(src);
 
@@ -1145,7 +1139,7 @@ where
         if matches!(st, ServiceType::T_GroupData_Req) {
             use crate::objects::tables::AddressTable;
             let tsap = ccm_ctx.dst;
-            let adt = self.state.adt().borrow();
+            let adt = self.inner.state().adt().borrow();
             if let Some(ga) = adt.get_address(tsap) {
                 ccm_ctx.dst = u16::from_be_bytes(ga.0);
                 ccm_ctx.addr_type = 0x80; // Group addressed
@@ -1193,7 +1187,7 @@ where
                 // a fresh one, let the inner AL push into it, then drain,
                 // encrypt, and push into the original outbox.
                 use crate::router::Outbox;
-                let outbox_cell = &self.lctx.outbox;
+                let outbox_cell = &self.inner.lctx().outbox;
                 let original = outbox_cell.replace(Outbox::new());
                 self.inner.process(msg);
                 let mut inner_outbox = outbox_cell.replace(original);
@@ -1220,7 +1214,7 @@ where
             }
             SecureResult::SyncResponse(msg) => {
                 // Sync response is already fully encrypted — push directly.
-                self.lctx.push_outbox(msg);
+                self.inner.lctx().push_outbox(msg);
             }
             SecureResult::Dropped => {
                 // Verification failed — silently drop.

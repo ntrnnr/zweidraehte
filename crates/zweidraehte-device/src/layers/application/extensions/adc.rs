@@ -63,7 +63,7 @@ fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, 
         return;
     }
 
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(AdcResponse::MSG_LEN) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(AdcResponse::MSG_LEN) else {
         warn!("AL no buffer for response");
         return;
     };

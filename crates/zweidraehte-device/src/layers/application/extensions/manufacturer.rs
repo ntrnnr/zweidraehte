@@ -64,7 +64,7 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
 
     // Response: APCI(2) + Manufacturer ID(2) + Device Type(1) = 5 bytes
     const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
-    let Some(msg_buf) = ctx.buffer_manager.try_alloc_with_size(RESPONSE_LEN) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(RESPONSE_LEN) else {
         warn!("AL no buffer for response");
         return;
     };

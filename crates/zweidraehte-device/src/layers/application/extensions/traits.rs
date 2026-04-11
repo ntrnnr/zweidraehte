@@ -41,9 +41,6 @@ use crate::{
 /// enabling extensions to build responses, access device state, and
 /// query interface objects identically to built-in handlers.
 pub struct AlExtensionContext<'a, D: StackDefinition> {
-    /// Buffer allocator for building outgoing messages.
-    pub buffer_manager: &'a DynBufferManager<'static>,
-
     /// Unified device state (tables + runtime configuration).
     pub state: &'a D::State,
 
@@ -60,6 +57,13 @@ pub struct AlExtensionContext<'a, D: StackDefinition> {
 
     /// Access context associated with the incoming message.
     pub access_ctx: AccessContext,
+}
+
+impl<'a, D: StackDefinition> AlExtensionContext<'a, D> {
+    /// Access the buffer manager for allocating response buffers.
+    pub fn buffer_manager(&self) -> &'a DynBufferManager<'static> {
+        &self.lctx.buffer_manager
+    }
 }
 
 // ============================================================================
