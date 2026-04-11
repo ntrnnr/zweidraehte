@@ -10,7 +10,7 @@ use embassy_sync::{
 
 use crate::{
     StackState,
-    composition::{LayerBuildContext, LayerStackBuilder},
+    composition::LayerStackBuilder,
     definition::StackDefinition,
     inner::{Inner, StackContext},
     layers::{LinkLayerBuilderBase, transport::TlStyle},
@@ -30,7 +30,6 @@ use crate::{
 pub struct Runner<'d, D: StackDefinition> {
     pub(crate) stack: Stack<'d, D>,
     pub(crate) interface_objects: &'d D::InterfaceObjects<'static>,
-    pub(crate) restart_sender: DynamicSender<'static, restart::RestartRequest>,
     pub(crate) link_layer_builder: D::LLB,
     pub(crate) link_layer_resources: &'d mut <D::LLB as LinkLayerBuilderBase>::Resources,
 }
@@ -85,25 +84,9 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Layer construction (via LayerStackBuilder)
         // ================================================================
 
-        let lctx = self.stack.inner.layer_context;
+        let stack_context = StackContext { inner: self.stack.inner, interface_objects: self.interface_objects };
 
-        // SAFETY: LayerContext lives in StackResources which outlives this function.
-        let app_service_receiver: DynamicReceiver<'static, _> = unsafe {
-            core::mem::transmute::<DynamicReceiver<'_, _>, DynamicReceiver<'static, _>>(
-                lctx.app_service_channel.receiver().into(),
-            )
-        };
-
-        let layer_context = LayerBuildContext {
-            state: &self.stack.inner.state,
-            layer_context: self.stack.inner.layer_context,
-            interface_objects: self.interface_objects,
-            memory_map: &self.stack.inner.memory_map,
-            restart_sender: self.restart_sender,
-            app_service_receiver,
-        };
-
-        let mut layers = B::<D>::build(&layer_context, &layer_channels);
+        let mut layers = B::<D>::build(&stack_context, &layer_channels);
 
         // Initialize all layers (e.g., AL starts read-on-init cycle if
         // the application is already running).
@@ -113,7 +96,6 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Link layer task
         // ================================================================
 
-        let stack_context = StackContext { inner: self.stack.inner, interface_objects: self.interface_objects };
         let ll_task = B::<D>::run_link_layer(
             &layer_channels,
             self.link_layer_builder,
@@ -144,6 +126,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // `handle_service_input`.
 
         let router_task = async {
+            let lctx = self.stack.inner.layer_context;
             let outbox = &lctx.outbox;
 
             loop {
@@ -325,14 +308,17 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
 
     let app_request_sender: DynamicSender<'static, _> = lctx.app_service_channel.sender().into();
 
-    // The sender goes to the Runner (passed to ApplicationLayer), receiver goes to Stack (for user code).
     let (restart_sender, restart_receiver) = create_request_response_pair::<D::Mutex, _, 1>(&lctx.restart_channel);
+
+    // Drop the sender immediately since we don't need it. The channel is purely static
+    // and correctly managed by `LayerContext` and `try_send_restart_request`.
+    drop(restart_sender);
 
     // Initialize link layer resources using the builder
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());
 
     let stack = Stack { inner, interface_objects, app_request_sender, restart_receiver };
-    let runner = Runner { stack, interface_objects, restart_sender, link_layer_builder, link_layer_resources };
+    let runner = Runner { stack, interface_objects, link_layer_builder, link_layer_resources };
 
     (stack, runner)
 }

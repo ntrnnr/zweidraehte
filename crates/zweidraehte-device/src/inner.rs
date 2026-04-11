@@ -98,6 +98,28 @@ pub struct StackContext<'a, D: StackDefinition> {
     pub(crate) interface_objects: &'a D::InterfaceObjects<'static>,
 }
 
+impl<'a, D: StackDefinition> StackContext<'a, D> {
+    /// Access the unified device state.
+    pub const fn state(&self) -> &'a D::State {
+        &self.inner.state
+    }
+
+    /// Access the shared runtime infrastructure.
+    pub const fn layer_context(&self) -> &'a LayerContext<D> {
+        self.inner.layer_context
+    }
+
+    /// Access the interface objects container.
+    pub const fn interface_objects(&self) -> &'a D::InterfaceObjects<'static> {
+        self.interface_objects
+    }
+
+    /// Access the memory map for A_Memory_Read/Write services.
+    pub const fn memory_map(&self) -> &'a D::Mem {
+        &self.inner.memory_map
+    }
+}
+
 impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
     fn buffer_manager(&self) -> &DynBufferManager<'static> {
         &self.inner.layer_context.buffer_manager

@@ -23,7 +23,7 @@ use crate::{
     AccessContext, AccessSource, HasAuthorization, HasConnectionAuth, StackDefinition, StackState,
     actor::Request,
     address::GroupAddress,
-    composition::LayerBuildContext,
+    inner::StackContext,
     layer_context::HasOutbox,
     messages::{
         buffers::{Buffer, DynBufferManager},
@@ -141,13 +141,13 @@ enum ReadOnInitState {
 // ============================================================================
 
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
-    /// Create a new Application Layer from a [`LayerBuildContext`].
-    pub fn new(ctx: &'a LayerBuildContext<'a, D>) -> Self {
+    /// Create a new Application Layer from a [`StackContext`].
+    pub fn new(ctx: &'a StackContext<'a, D>) -> Self {
         Self {
-            state: ctx.state,
-            lctx: ctx.layer_context,
-            interface_objects: ctx.interface_objects,
-            memory_map: ctx.memory_map,
+            state: ctx.state(),
+            lctx: ctx.layer_context(),
+            interface_objects: ctx.interface_objects(),
+            memory_map: ctx.memory_map(),
             read_on_init: ReadOnInitState::Idle,
             pending_group_send: None,
             extension: Default::default(),

@@ -32,31 +32,6 @@ use crate::{
 
 use crate::messages::knx::KnxMessageBuffer;
 
-// ============================================================================
-// LayerBuildContext
-// ============================================================================
-
-/// Context passed to [`LayerStackBuilder::build`] for constructing the
-/// layer stack.
-///
-/// Channels and buffer management are accessible through
-/// `state.layer_context()`. This struct provides the remaining
-/// resources that can't be reached through the state.
-pub struct LayerBuildContext<'a, D: StackDefinition> {
-    /// Unified device state (tables + runtime configuration).
-    pub state: &'a D::State,
-    /// Shared runtime infrastructure.
-    pub layer_context: &'a crate::layer_context::LayerContext<D>,
-    /// Interface objects container for property service handling.
-    pub interface_objects: &'a D::InterfaceObjects<'static>,
-    /// Memory map for A_Memory_Read/Write services.
-    pub memory_map: &'a D::Mem,
-    /// Sender for restart requests from AL to user code.
-    pub restart_sender: DynamicSender<'a, restart::RestartRequest>,
-    /// Receiver for application service requests from user code
-    /// (GroupValueWrite/Read via [`Stack::update_object`](crate::Stack::update_object)).
-    pub app_service_receiver: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
-}
 
 // ============================================================================
 // Layer stack builders
@@ -68,7 +43,7 @@ pub struct LayerBuildContext<'a, D: StackDefinition> {
 /// endpoint wiring. Each builder knows:
 ///
 /// - What shared channels are needed between layers and the link layer
-/// - How to build the layer stack from a [`LayerBuildContext`]
+/// - How to build the layer stack from a [`StackContext`]
 /// - How to extract link-layer endpoints and start the link layer
 ///
 /// Two built-in builders are provided:
@@ -88,8 +63,8 @@ pub trait LayerStackBuilder<D: StackDefinition>: Sized {
     /// `()` when no extra channels are needed (standard TP1 devices).
     type Channels: Default + 'static;
 
-    /// Build the layer stack from a [`LayerBuildContext`] and the shared channels.
-    fn build<'a>(ctx: &'a LayerBuildContext<'a, D>, channels: &'a Self::Channels) -> Self::Stack<'a>
+    /// Build the layer stack from a [`StackContext`] and the shared channels.
+    fn build<'a>(ctx: &'a StackContext<'a, D>, channels: &'a Self::Channels) -> Self::Stack<'a>
     where
         D: 'a;
 
@@ -124,7 +99,7 @@ where
         D: 'a;
     type Channels = ();
 
-    fn build<'a>(ctx: &'a LayerBuildContext<'a, D>, _channels: &'a ()) -> StandardDeviceLayers<'a, D>
+    fn build<'a>(ctx: &'a StackContext<'a, D>, _channels: &'a ()) -> StandardDeviceLayers<'a, D>
     where
         D: 'a,
     {
@@ -168,7 +143,7 @@ where
     type Channels = crate::layers::transport::cemi::CemiTransportLayerChannelPair;
 
     fn build<'a>(
-        ctx: &'a LayerBuildContext<'a, D>,
+        ctx: &'a StackContext<'a, D>,
         channels: &'a crate::layers::transport::cemi::CemiTransportLayerChannelPair,
     ) -> IpDeviceLayers<'a, D>
     where
@@ -255,7 +230,7 @@ pub type StandardSecureDeviceLayers<'a, D> = StandardLayerStack<
 
 impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> {
     /// Construct the standard `(NL, TL, AL)` layer stack.
-    pub fn standard(ctx: &'a LayerBuildContext<'a, D>) -> Self {
+    pub fn standard(ctx: &'a StackContext<'a, D>) -> Self {
         // TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
         // generics here once `generic_const_exprs` no longer overflows for trait
         // consts forwarded through where-clauses.
@@ -264,15 +239,15 @@ impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> 
         let application_layer = ApplicationLayer::new(ctx);
 
         let device_model = device_model::SystemBDeviceModel::new(
-            ctx.state,
-            &ctx.layer_context.lifecycle_channel,
-            ctx.interface_objects,
+            ctx.state(),
+            &ctx.layer_context().lifecycle_channel,
+            ctx.interface_objects(),
         );
 
         Self {
             layers: (network_layer, transport_layer, application_layer),
             device_model,
-            app_rx: ctx.app_service_receiver,
+            app_rx: ctx.layer_context().app_service_channel.receiver().into(),
         }
     }
 }
@@ -284,24 +259,24 @@ where
     <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
 {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
-    pub fn standard_secure(ctx: &'a LayerBuildContext<'a, D>) -> Self {
+    pub fn standard_secure(ctx: &'a StackContext<'a, D>) -> Self {
         let network_layer = NetworkLayer::new(ctx);
         let transport_layer = TransportLayer::new(ctx);
         let application_layer = ApplicationLayer::new(ctx);
 
-        let seq_storage = ctx.state.extension_state().seq_storage();
+        let seq_storage = ctx.state().extension_state().seq_storage();
         let secure_al = SecureApplicationLayer::new(application_layer, seq_storage);
 
         let device_model = device_model::SystemBDeviceModel::new(
-            ctx.state,
-            &ctx.layer_context.lifecycle_channel,
-            ctx.interface_objects,
+            ctx.state(),
+            &ctx.layer_context().lifecycle_channel,
+            ctx.interface_objects(),
         );
 
         Self {
             layers: (network_layer, transport_layer, secure_al),
             device_model,
-            app_rx: ctx.app_service_receiver,
+            app_rx: ctx.layer_context().app_service_channel.receiver().into(),
         }
     }
 }
@@ -374,7 +349,7 @@ where
         D: 'a;
     type Channels = ();
 
-    fn build<'a>(ctx: &'a LayerBuildContext<'a, D>, _channels: &'a ()) -> StandardSecureDeviceLayers<'a, D>
+    fn build<'a>(ctx: &'a StackContext<'a, D>, _channels: &'a ()) -> StandardSecureDeviceLayers<'a, D>
     where
         D: 'a,
     {
@@ -418,7 +393,7 @@ pub type IpDeviceLayers<'a, D> = IpLayerStack<'a, D, ApplicationLayer<'a, D>>;
 #[cfg(feature = "knxip")]
 impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
     pub fn with_cemi(
-        ctx: &'a LayerBuildContext<'a, D>,
+        ctx: &'a StackContext<'a, D>,
         channels: &'a crate::layers::transport::cemi::CemiTransportLayerChannelPair,
     ) -> Self {
         let network_layer = NetworkLayer::new(ctx);
@@ -430,9 +405,9 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
         let application_layer = ApplicationLayer::new(ctx);
 
         let device_model = device_model::SystemBDeviceModel::new(
-            ctx.state,
-            &ctx.layer_context.lifecycle_channel,
-            ctx.interface_objects,
+            ctx.state(),
+            &ctx.layer_context().lifecycle_channel,
+            ctx.interface_objects(),
         );
 
         let cemi_event_receiver = channels.event.receiver().into();
@@ -440,7 +415,7 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
         Self {
             layers: (network_layer, cemi_transport_layer, application_layer),
             device_model,
-            app_rx: ctx.app_service_receiver,
+            app_rx: ctx.layer_context().app_service_channel.receiver().into(),
             cemi_rx: cemi_event_receiver,
         }
     }

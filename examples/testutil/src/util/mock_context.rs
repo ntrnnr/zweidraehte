@@ -3,9 +3,10 @@
 use core::cell::{Cell, RefCell};
 
 use zweidraehte_device::context::{
-    AddressTableContext, BufferManagerContext, DeviceInfoContext,
-    IpAdditionalIndividualAddressContext, IpDiagnosticsContext, KnxIndividualAddressContext,
-    PropertyServiceContext,
+    AddressTableContext, BufferManagerContext, KnxIndividualAddressContext, PropertyServiceContext,
+};
+use zweidraehte_device::layers::linklayers::knxip::context::{
+    DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext,
 };
 use zweidraehte_device::messages::buffers::DynBufferManager;
 use zweidraehte_device::messages::knxip::substructs::DeviceInformation;
