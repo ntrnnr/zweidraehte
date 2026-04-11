@@ -1461,6 +1461,11 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     ///
     /// Response (for master reset): APDU[0-1] = APCI (0x03A1), APDU[2] = error, APDU[3-4] = process_time
     fn handle_restart(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
+        if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
+            warn!("AL Restart with unexpected service type: {:?}", ind.service_type());
+            return;
+        }
+
         use crate::messages::apdu::restart::RestartParsed;
 
         let Some(parsed) = RestartParsed::parse(ind.buf()) else {
