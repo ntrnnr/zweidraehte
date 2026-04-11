@@ -399,7 +399,7 @@ impl<
         self.programming_mode.set(false);
         *self.pei.borrow_mut() = PeiApplication::new();
         *self.pei_program_version.borrow_mut() = [0; 5];
-        self.extension_state.factory_reset();
+        self.extension_state.on_erase(crate::restart::EraseCode::FactoryReset);
         self.mark_dirty();
     }
 
@@ -552,9 +552,12 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
             }
             // Standard erase code per 03/05/02 §3.7.1.2 Table 4 — resets
             // Group Address Table and Group Object Association Table.
+            // Also notifies extensions (security clears PID 57/58 per
+            // spec 03/05/01 sections 6.3.11-6.3.12).
             EraseCode::ResetLinks => {
                 self.reset_address_table();
                 self.reset_association_table();
+                self.extension_state.on_erase(code);
                 Ok(0)
             }
             EraseCode::FactoryResetKeepIA => {

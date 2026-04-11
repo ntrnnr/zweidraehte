@@ -341,18 +341,21 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAP
         self.build_ip_config()
     }
 
-    fn factory_reset(&self) {
-        let defaults: PersistedIpConfig<N> = PersistedIpConfig::default();
-        self.friendly_name.set(defaults.friendly_name);
-        self.friendly_name_len.set(defaults.friendly_name_len as usize);
-        self.configured_ip.set(Ipv4Addr::from(defaults.configured_ip));
-        self.configured_subnet.set(Ipv4Addr::from(defaults.configured_subnet));
-        self.configured_gateway.set(Ipv4Addr::from(defaults.configured_gateway));
-        self.ip_assignment_method.set(defaults.ip_assignment_method);
-        self.routing_multicast.set(Ipv4Addr::from(defaults.routing_multicast));
-        self.ttl.set(defaults.ttl);
-        self.project_installation_id.set(defaults.project_installation_id);
-        self.additional_individual_addresses.borrow_mut().clear();
+    fn on_erase(&self, code: crate::restart::EraseCode) {
+        use crate::restart::EraseCode;
+        if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
+            let defaults: PersistedIpConfig<N> = PersistedIpConfig::default();
+            self.friendly_name.set(defaults.friendly_name);
+            self.friendly_name_len.set(defaults.friendly_name_len as usize);
+            self.configured_ip.set(Ipv4Addr::from(defaults.configured_ip));
+            self.configured_subnet.set(Ipv4Addr::from(defaults.configured_subnet));
+            self.configured_gateway.set(Ipv4Addr::from(defaults.configured_gateway));
+            self.ip_assignment_method.set(defaults.ip_assignment_method);
+            self.routing_multicast.set(Ipv4Addr::from(defaults.routing_multicast));
+            self.ttl.set(defaults.ttl);
+            self.project_installation_id.set(defaults.project_installation_id);
+            self.additional_individual_addresses.borrow_mut().clear();
+        }
     }
 }
 

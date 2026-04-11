@@ -87,8 +87,11 @@ impl ExtensionState for Tp1ExtensionState {
         Tp1ExtensionConfig { max_retry_count: self.max_retry_count.get() }
     }
 
-    fn factory_reset(&self) {
-        self.max_retry_count.set(default_max_retry_count());
+    fn on_erase(&self, code: crate::restart::EraseCode) {
+        use crate::restart::EraseCode;
+        if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
+            self.max_retry_count.set(default_max_retry_count());
+        }
     }
 }
 

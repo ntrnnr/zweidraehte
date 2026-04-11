@@ -107,8 +107,11 @@ pub trait ExtensionState: Sized {
     /// Export current runtime state to serializable config.
     fn to_config(&self) -> Self::Config;
 
-    /// Reset to factory defaults.
-    fn factory_reset(&self);
+    /// Handle an erase code from a master reset.
+    ///
+    /// Extensions decide per-code what to clear. Called from
+    /// `SystemBDeviceState` during `factory_reset()` and `execute_reset()`.
+    fn on_erase(&self, code: crate::restart::EraseCode);
 }
 
 /// Whether the device's Security Mode is currently enabled.
@@ -151,7 +154,7 @@ impl ExtensionState for () {
 
     fn to_config(&self) {}
 
-    fn factory_reset(&self) {
+    fn on_erase(&self, _code: crate::restart::EraseCode) {
         // No extension state to reset.
     }
 }

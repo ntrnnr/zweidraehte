@@ -88,11 +88,15 @@ impl<D: StackDefinition> Inner<D> {
 
 /// Runtime context passed to link layers during [`Runner::run()`](crate::Runner::run).
 ///
-/// Combines buffer management and property service access into a single
-/// reference that link layers receive through
+/// Bundles references to [`Inner`] (state, platform, memory map) and
+/// [`InterfaceObjects`](crate::definition::StackDefinition::InterfaceObjects)
+/// into a single value that link layers receive through
 /// [`LinkLayerBuilder::build_and_run`](crate::layers::LinkLayerBuilder::build_and_run).
-/// Link layers access capabilities via the [`BufferManagerContext`] and
-/// [`PropertyServiceContext`](crate::context::PropertyServiceContext) trait impls.
+///
+/// This struct exists because interface objects borrow from the same state
+/// that [`Inner`] owns, which would create a self-referential struct if both
+/// lived in the same container. Instead, [`Runner`](crate::Runner) owns them
+/// separately and assembles this context at call sites.
 pub struct StackContext<'a, D: StackDefinition> {
     pub(crate) inner: &'a Inner<D>,
     pub(crate) interface_objects: &'a D::InterfaceObjects<'static>,
