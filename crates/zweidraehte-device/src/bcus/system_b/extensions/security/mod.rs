@@ -589,6 +589,27 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
     pub fn set_security_report_enabled(&self, enabled: bool) {
         self.security_report_enabled.set(enabled);
     }
+
+    /// Clear PID_SECURITY_REPORT (57) and PID_SECURITY_REPORT_CONTROL (58).
+    ///
+    /// Per spec 03/05/01 sections 6.3.11-6.3.12, erase codes 02h, 06h, and
+    /// 07h clear the report and set the control to "Disabled".
+    pub fn clear_security_report(&self) {
+        self.security_report.set(0);
+        self.security_report_enabled.set(false);
+    }
+
+    /// Full factory reset of all security state.
+    pub fn factory_reset(&self) {
+        self.security_mode_enabled.set(false);
+        self.tool_key.set([0u8; 16]);
+        self.load_state.set(LoadState::Unloaded);
+        self.grp_keys.borrow_mut().clear();
+        self.siat.borrow_mut().clear();
+        self.go_flags.borrow_mut().clear();
+        self.failures_log.borrow_mut().clear();
+        self.clear_security_report();
+    }
 }
 
 // ============================================================================
@@ -693,6 +714,9 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState for S
 
     fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {
         self.failures_log.borrow_mut().log_failure(failure_type, source_addr, frame_fragment);
+        // Per spec 03/05/01 section 6.3.11.4: set b0 (Security Failure) on
+        // any security failure. Only the MaC can clear it via secure write.
+        self.security_report.set(self.security_report.get() | 0x01);
     }
 
     fn failure_counters(&self) -> [u8; 8] {
@@ -739,14 +763,17 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for Sec
         }
     }
 
-    fn factory_reset(&self) {
-        self.security_mode_enabled.set(false);
-        self.tool_key.set([0u8; 16]);
-        self.load_state.set(LoadState::Unloaded);
-        self.grp_keys.borrow_mut().clear();
-        self.siat.borrow_mut().clear();
-        self.go_flags.borrow_mut().clear();
-        self.failures_log.borrow_mut().clear();
+    fn on_erase(&self, code: crate::restart::EraseCode) {
+        use crate::restart::EraseCode;
+        match code {
+            EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA => {
+                self.factory_reset();
+            }
+            EraseCode::ResetLinks => {
+                self.clear_security_report();
+            }
+            _ => {}
+        }
     }
 }
 
@@ -842,6 +869,7 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: u
 
     fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {
         self.security.failures_log.borrow_mut().log_failure(failure_type, source_addr, frame_fragment);
+        self.security.set_security_report(self.security.security_report() | 0x01);
     }
 
     fn failure_counters(&self) -> [u8; 8] {
@@ -910,9 +938,18 @@ impl<Inner: ExtensionState, SEQ: Default, const GRP: usize, const P2P: usize, co
         SecureExtensionConfig { inner: self.inner.to_config(), security: self.security.to_config() }
     }
 
-    fn factory_reset(&self) {
-        self.inner.factory_reset();
-        self.security.factory_reset();
+    fn on_erase(&self, code: crate::restart::EraseCode) {
+        use crate::restart::EraseCode;
+        match code {
+            EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA => {
+                self.inner.on_erase(code);
+                self.security.factory_reset();
+            }
+            EraseCode::ResetLinks => {
+                self.security.clear_security_report();
+            }
+            _ => {}
+        }
     }
 }
 

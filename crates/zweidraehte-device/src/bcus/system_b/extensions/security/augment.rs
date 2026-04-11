@@ -338,15 +338,16 @@ impl<'a, S: StackState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P:
                 }
             }
             // ---- Security Report (PID 57) — PDT_BITSET8 (1 byte) ----
-            // Returns the current security status as a bitfield.
-            // TODO: Implement actual security report bits per spec.
+            // DPT_Security_Report (21.1002): b0 = Security Failure, b1-b7 reserved.
+            // b0 is set on any security failure and only cleared by MaC via
+            // secure write (spec 03/05/01 section 6.3.11).
             pid::SECURITY_REPORT => {
                 if req.start_idx == 0 {
                     // Element count query.
                     buf[0..2].copy_from_slice(&1u16.to_be_bytes());
                     Ok(2)
                 } else {
-                    buf[0] = 0x00; // All bits clear = no issues reported.
+                    buf[0] = self.state.security_report();
                     Ok(1)
                 }
             }
