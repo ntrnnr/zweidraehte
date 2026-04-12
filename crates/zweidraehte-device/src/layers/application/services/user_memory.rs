@@ -7,14 +7,14 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! type AlExtension = (MemoryServiceExtension, UserMemoryServiceExtension);
+//! type Services = (MemoryService, UserMemoryService);
 //! ```
 
 use crate::{
     HasPersistence,
     definition::StackDefinition,
     layer_context::HasOutbox,
-    layers::application::extensions::{AlExtensionContext, AlServiceExtension},
+    layers::application::services::{AlServiceContext, AlService},
     memory::MemoryMap,
     messages::{
         apdu::memory::{UserMemoryAccess, UserMemoryResponse},
@@ -38,14 +38,14 @@ use crate::logging::{debug, error, warn};
 /// - `A_UserMemory_Write` — write with optional verify response
 /// - `A_UserMemory_Response` — ignored (we send these)
 #[derive(Default)]
-pub struct UserMemoryServiceExtension;
+pub struct UserMemoryService;
 
-impl<D: StackDefinition> AlServiceExtension<D> for UserMemoryServiceExtension {
+impl<D: StackDefinition> AlService<D> for UserMemoryService {
     fn try_handle(
-        &mut self,
+        &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlExtensionContext<'_, D>,
+        ctx: &AlServiceContext<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::UserMemoryRead => {
@@ -72,7 +72,7 @@ impl<D: StackDefinition> AlServiceExtension<D> for UserMemoryServiceExtension {
 /// Handle `A_UserMemory_Read.ind`
 fn handle_user_memory_read<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
+    ctx: &AlServiceContext<'_, D>,
 ) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL UserMemory_Read rejected: connection-oriented only");
@@ -112,7 +112,7 @@ fn handle_user_memory_read<D: StackDefinition>(
 /// Handle `A_UserMemory_Write.ind`
 fn handle_user_memory_write<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
+    ctx: &AlServiceContext<'_, D>,
 ) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL UserMemory_Write rejected: connection-oriented only");

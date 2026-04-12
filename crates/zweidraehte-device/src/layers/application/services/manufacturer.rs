@@ -7,13 +7,13 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! type AlExtension = UserManufacturerInfoExtension;
+//! type Services = UserManufacturerInfoService;
 //! ```
 
 use crate::{
     definition::StackDefinition,
     layer_context::HasOutbox,
-    layers::application::extensions::{AlExtensionContext, AlServiceExtension},
+    layers::application::services::{AlServiceContext, AlService},
     messages::{
         buffers::Buffer,
         builder::IndicationExt,
@@ -28,14 +28,14 @@ use crate::logging::{debug, warn};
 /// Returns the 3-byte `USER_MANUFACTURER_INFO` from the `StackDefinition`.
 /// If not configured (`None`), the request is silently ignored.
 #[derive(Default)]
-pub struct UserManufacturerInfoExtension;
+pub struct UserManufacturerInfoService;
 
-impl<D: StackDefinition> AlServiceExtension<D> for UserManufacturerInfoExtension {
+impl<D: StackDefinition> AlService<D> for UserManufacturerInfoService {
     fn try_handle(
-        &mut self,
+        &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlExtensionContext<'_, D>,
+        ctx: &AlServiceContext<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::UserManufacturerInfoRead => {
@@ -51,7 +51,7 @@ impl<D: StackDefinition> AlServiceExtension<D> for UserManufacturerInfoExtension
     }
 }
 
-fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
+fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     let Some(info) = D::USER_MANUFACTURER_INFO else {
         debug!("AL UserManufacturerInfo_Read: not supported (no USER_MANUFACTURER_INFO configured)");
         return;

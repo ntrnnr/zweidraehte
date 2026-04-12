@@ -7,14 +7,14 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! type AlExtension = MemoryServiceExtension;
+//! type Services = MemoryService;
 //! ```
 
 use crate::{
     HasPersistence,
     definition::StackDefinition,
     layer_context::HasOutbox,
-    layers::application::extensions::{AlExtensionContext, AlServiceExtension},
+    layers::application::services::{AlServiceContext, AlService},
     memory::MemoryMap,
     messages::{
         apdu::memory::{MemoryAccess, MemoryBitWrite, MemoryResponse},
@@ -39,14 +39,14 @@ use crate::logging::{debug, error, warn};
 /// - `A_MemoryBit_Write` — atomic AND/XOR bit manipulation (1-5 bytes)
 /// - `A_Memory_Response` — ignored (we send these, not receive)
 #[derive(Default)]
-pub struct MemoryServiceExtension;
+pub struct MemoryService;
 
-impl<D: StackDefinition> AlServiceExtension<D> for MemoryServiceExtension {
+impl<D: StackDefinition> AlService<D> for MemoryService {
     fn try_handle(
-        &mut self,
+        &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlExtensionContext<'_, D>,
+        ctx: &AlServiceContext<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::MemoryRead => {
@@ -78,7 +78,7 @@ impl<D: StackDefinition> AlServiceExtension<D> for MemoryServiceExtension {
 /// Handle `A_Memory_Read.ind`
 ///
 /// Reads up to 63 bytes from device memory at the specified 16-bit address.
-fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
+fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL Memory_Read rejected: connection-oriented only");
         return;
@@ -116,7 +116,7 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
 ///
 /// Writes to device memory at the specified 16-bit address. If the Verify
 /// flag is set in DEVICE_CONTROL (PID 14), a Memory_Response is sent back.
-fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
+fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL Memory_Write rejected: connection-oriented only");
         return;
@@ -183,7 +183,7 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
 /// Legal length: count must be 1-5 bytes.
 fn handle_memorybit_write<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
+    ctx: &AlServiceContext<'_, D>,
 ) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL MemoryBit_Write rejected: connection-oriented only");
@@ -262,7 +262,7 @@ fn handle_memorybit_write<D: StackDefinition>(
 /// Only sends a response if Verify flag is enabled in DEVICE_CONTROL.
 fn send_memorybit_response<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
+    ctx: &AlServiceContext<'_, D>,
     address: u16,
     count: u8,
     data: &[u8],

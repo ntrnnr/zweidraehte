@@ -7,14 +7,14 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! type AlExtension = (MemoryServiceExtension, AuthorizationExtension);
+//! type Services = (MemoryService, AuthorizationService);
 //! ```
 
 use crate::{
     AccessContext, AccessSource, HasAuthorization, HasConnectionAuth, StackState,
     definition::StackDefinition,
     layer_context::HasOutbox,
-    layers::application::extensions::{AlExtensionContext, AlServiceExtension},
+    layers::application::services::{AlServiceContext, AlService},
     messages::{
         apdu::auth::{AuthorizeRequest, AuthorizeResponse, KeyResponse, KeyWrite},
         buffers::Buffer,
@@ -36,14 +36,14 @@ use crate::logging::{debug, error, warn};
 /// - `A_Key_Write` — write new key for an access level
 /// - `A_Authorize_Response`, `A_Key_Response` — ignored (we send these)
 #[derive(Default)]
-pub struct AuthorizationExtension;
+pub struct AuthorizationService;
 
-impl<D: StackDefinition> AlServiceExtension<D> for AuthorizationExtension {
+impl<D: StackDefinition> AlService<D> for AuthorizationService {
     fn try_handle(
-        &mut self,
+        &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlExtensionContext<'_, D>,
+        ctx: &AlServiceContext<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::AuthorizeRequest => {
@@ -70,7 +70,7 @@ impl<D: StackDefinition> AlServiceExtension<D> for AuthorizationExtension {
 /// Handle `A_Authorize_Request.ind`
 fn handle_authorize_request<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
+    ctx: &AlServiceContext<'_, D>,
 ) {
     let Some(req) = AuthorizeRequest::parse(ind.buf()) else {
         error!("Authorize_Request message too short: {}", ind.len());
@@ -107,7 +107,7 @@ fn handle_authorize_request<D: StackDefinition>(
 }
 
 /// Handle `A_Key_Write.ind`
-fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
+fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     // Access policy 3FF/0CC: everyone can write when security mode is off;
     // when security mode is on, only Tool A+C can write.
     use crate::access::AccessPolicy;

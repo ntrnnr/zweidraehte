@@ -18,7 +18,7 @@ use crate::{
     ets,
     inner::StackContext,
     layer_context::LayerContext,
-    layers::{self, application::extensions::AlServiceExtension},
+    layers::{self, application::services::AlService},
     memory::MemoryMap,
     objects::{
         comm::ComObjects,
@@ -249,15 +249,15 @@ pub trait StackDefinition: Copy + 'static {
     where
         Self::State: 'a;
 
-    /// Application layer service extension.
+    /// Application layer services.
     ///
     /// Allows devices to handle APCI codes that are not part of the core
     /// AL dispatch. The default `()` handles nothing (zero overhead).
-    /// Extensions compose via tuples: `type AlExtension = (A, B);`.
+    /// Services compose via tuples: `type Services = (A, B);`.
     ///
-    /// Use [`DomainAddressExtension`](crate::layers::application::extensions::domain_addr::DomainAddressExtension)
+    /// Use [`DomainAddressService`](crate::layers::application::services::domain_addr::DomainAddressService)
     /// for KNX/IP devices that need `A_DomainAddressSerialNumber_*` services.
-    type AlExtension: AlServiceExtension<Self> + Default = ();
+    type Services: AlService<Self> + Default = ();
 
     /// Layer stack builder that handles channel creation, layer construction,
     /// and link-layer endpoint wiring.

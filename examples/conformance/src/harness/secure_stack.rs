@@ -887,9 +887,9 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         }
     }
 
-    type AlExtension = (
-        zweidraehte_device::layers::application::extensions::SystemBAlExtensions,
-        zweidraehte_device::layers::application::extensions::PropertyExtValueExtension,
+    type Services = (
+        zweidraehte_device::layers::application::services::SystemBAlServices,
+        zweidraehte_device::layers::application::services::PropertyExtValueService,
     );
     type LayerBuilder = SecureDeviceBuilder;
 }

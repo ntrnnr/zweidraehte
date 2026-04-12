@@ -6,13 +6,13 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! type AlExtension = (MemoryServiceExtension, AdcExtension);
+//! type Services = (MemoryService, AdcService);
 //! ```
 
 use crate::{
     definition::StackDefinition,
     layer_context::HasOutbox,
-    layers::application::extensions::{AlExtensionContext, AlServiceExtension},
+    layers::application::services::{AlServiceContext, AlService},
     messages::{
         apdu::device::{AdcRead, AdcResponse},
         buffers::Buffer,
@@ -27,14 +27,14 @@ use crate::logging::{debug, error, warn};
 ///
 /// Returns dummy sum (0x0000) for channels 0-5, count 0 for others.
 #[derive(Default)]
-pub struct AdcExtension;
+pub struct AdcService;
 
-impl<D: StackDefinition> AlServiceExtension<D> for AdcExtension {
+impl<D: StackDefinition> AlService<D> for AdcService {
     fn try_handle(
-        &mut self,
+        &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlExtensionContext<'_, D>,
+        ctx: &AlServiceContext<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::AdcRead => {
@@ -50,7 +50,7 @@ impl<D: StackDefinition> AlServiceExtension<D> for AdcExtension {
     }
 }
 
-fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
+fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     let Some(req) = AdcRead::parse(ind.buf()) else {
         error!("ADC_Read message too short: {}", ind.len());
         return;

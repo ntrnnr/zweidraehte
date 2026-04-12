@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! type AlExtension = IndividualAddressSerialNumberExtension;
+//! type Services = IndividualAddressSerialNumberService;
 //! ```
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
     address::{GroupAddress, IndividualAddress},
     definition::StackDefinition,
     layer_context::HasOutbox,
-    layers::application::extensions::{AlExtensionContext, AlServiceExtension},
+    layers::application::services::{AlServiceContext, AlService},
     messages::{
         apdu::device::{
             IndividualAddressSerialNumberRead, IndividualAddressSerialNumberResponse,
@@ -36,14 +36,14 @@ use crate::logging::{debug, error, trace, warn};
 /// - `A_IndividualAddressSerialNumber_Write` — set address if serial matches
 /// - `A_IndividualAddressSerialNumber_Response` — ignored (we send these)
 #[derive(Default)]
-pub struct IndividualAddressSerialNumberExtension;
+pub struct IndividualAddressSerialNumberService;
 
-impl<D: StackDefinition> AlServiceExtension<D> for IndividualAddressSerialNumberExtension {
+impl<D: StackDefinition> AlService<D> for IndividualAddressSerialNumberService {
     fn try_handle(
-        &mut self,
+        &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlExtensionContext<'_, D>,
+        ctx: &AlServiceContext<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::IndividualAddressSerialNumberRead => {
@@ -63,7 +63,7 @@ impl<D: StackDefinition> AlServiceExtension<D> for IndividualAddressSerialNumber
     }
 }
 
-fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
+fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     if ind.service_type() != ServiceType::T_Broadcast_Ind {
         warn!("AL IndividualAddressSerialNumberRead with unexpected service type: {:?}", ind.service_type());
         return;
@@ -101,7 +101,7 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
     ctx.lctx.push_outbox(msg.into_inner());
 }
 
-fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>) {
+fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     if ind.service_type() != ServiceType::T_Broadcast_Ind {
         warn!("AL IndividualAddressSerialNumberWrite with unexpected service type: {:?}", ind.service_type());
         return;

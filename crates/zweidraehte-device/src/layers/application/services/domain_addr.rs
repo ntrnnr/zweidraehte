@@ -6,7 +6,7 @@
 //!
 //! # Usage
 //!
-//! Set `type AlExtension = DomainAddressExtension;` in your
+//! Set `type Services = DomainAddressService;` in your
 //! [`StackDefinition`] impl. The device's `State` type must implement
 //! [`HasDomainAddress`].
 
@@ -15,7 +15,7 @@ use crate::{
     address::GroupAddress,
     definition::StackDefinition,
     layer_context::HasOutbox,
-    layers::application::extensions::{AlExtensionContext, AlServiceExtension},
+    layers::application::services::{AlServiceContext, AlService},
     messages::{
         apdu::device::{
             DomainAddressSerialNumberRead, DomainAddressSerialNumberResponse, DomainAddressSerialNumberWrite,
@@ -45,18 +45,18 @@ use crate::logging::{debug, error, trace, warn};
 ///
 /// Requires `D::State: HasDomainAddress`.
 #[derive(Default)]
-pub struct DomainAddressExtension;
+pub struct DomainAddressService;
 
-impl<D> AlServiceExtension<D> for DomainAddressExtension
+impl<D> AlService<D> for DomainAddressService
 where
     D: StackDefinition,
     D::State: HasDomainAddress,
 {
     fn try_handle(
-        &mut self,
+        &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlExtensionContext<'_, D>,
+        ctx: &AlServiceContext<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::DomainAddressSerialNumberRead => {
@@ -96,7 +96,7 @@ where
 ///
 /// Wire format (incoming): APCI(2) + serial(6)
 /// Wire format (response): APCI(2) + serial(6) + domain_address(N)
-fn handle_domain_address_serial_number_read<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlExtensionContext<'_, D>)
+fn handle_domain_address_serial_number_read<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>)
 where
     D: StackDefinition,
     D::State: HasDomainAddress,
@@ -160,7 +160,7 @@ where
 /// (see KNX IP Communication Medium spec, section 4.3.5.3.4).
 fn handle_domain_address_serial_number_write<D>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlExtensionContext<'_, D>,
+    ctx: &AlServiceContext<'_, D>,
 ) where
     D: StackDefinition,
     D::State: HasDomainAddress,
