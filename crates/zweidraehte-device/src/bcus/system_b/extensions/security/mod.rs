@@ -35,10 +35,10 @@ use core::cell::{Cell, RefCell};
 
 use serde::{Deserialize, Serialize};
 
-use crate::StackState;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode};
 use crate::objects::tables::LoadState;
 use crate::storage::SequenceNumberStorage;
+use crate::{StackDefinition, StackState};
 
 // ============================================================================
 // SecurityTable — const-generic fixed-capacity table
@@ -783,9 +783,7 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode for Se
     }
 
     fn log_access_denied(&self, source_addr: u16) {
-        self.failures_log
-            .borrow_mut()
-            .log_failure(SecurityFailureType::AccessError, source_addr, &[]);
+        self.failures_log.borrow_mut().log_failure(SecurityFailureType::AccessError, source_addr, &[]);
     }
 
     fn has_group_key(&self, tsap: u16) -> bool {
@@ -979,17 +977,17 @@ where
     Inner: Extension<Platform>,
     SEQ: SequenceNumberStorage + Default,
 {
-    type Augment<'a, S: StackState>
-        = (Inner::Augment<'a, S>, SecurityAugment<'a, SEQ, GRP, P2P, GO>)
+    type Augment<'a, D: StackDefinition>
+        = (Inner::Augment<'a, D>, SecurityAugment<'a, SEQ, GRP, P2P, GO>)
     where
         Self: 'a,
         Platform: 'a;
 
-    fn create_augment<'a, S: StackState>(&'a self, platform: &'a Platform) -> Self::Augment<'a, S>
+    fn create_augment<'a, D: StackDefinition>(&'a self, platform: &'a Platform) -> Self::Augment<'a, D>
     where
         Platform: 'a,
     {
-        let inner_augment = self.inner.create_augment(platform);
+        let inner_augment = self.inner.create_augment::<D>(platform);
         let security_augment = SecurityAugment::new(&self.security, &self.seq_storage);
         (inner_augment, security_augment)
     }
@@ -1013,7 +1011,7 @@ pub type SecureTp1DeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    D: crate::StackDefinition,
+    D: StackDefinition,
     SEQ,
     const P2P: usize,
 > = crate::bcus::system_b::SystemBDeviceState<
@@ -1046,7 +1044,7 @@ pub type SecureIpDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    D: crate::StackDefinition,
+    D: StackDefinition,
     SEQ,
     const P2P: usize,
     const N: usize,

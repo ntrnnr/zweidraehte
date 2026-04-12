@@ -134,11 +134,11 @@ impl StackDefinition for PicoIpInterface {
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
 
-    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, _layer_ctx: &'a zweidraehte_device::layer_context::LayerContext<Self>) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, layer_ctx: &'a zweidraehte_device::layer_context::LayerContext<Self>) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_system_b_objects_from_extension::<Self>(state, platform, &Self::memory_layout())
+        create_system_b_objects_from_extension::<Self>(state, layer_ctx, platform, &Self::memory_layout())
     }
 
     type Services = (

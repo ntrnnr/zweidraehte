@@ -1255,13 +1255,14 @@ impl StackDefinition for IpcConformanceTestStack {
     fn create_interface_objects<'a>(
         state: &'a Self::State,
         platform: &'a Self::Platform,
-        _layer_ctx: &'a LayerContext<Self>,
+        layer_ctx: &'a LayerContext<Self>,
     ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
         zweidraehte_device::bcus::system_b::create_system_b_objects_from_extension::<Self>(
             state,
+            layer_ctx,
             platform,
             &CONFORMANCE_MEMORY_LAYOUT,
         )

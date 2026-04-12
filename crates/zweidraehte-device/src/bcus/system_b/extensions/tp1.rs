@@ -21,12 +21,12 @@ use core::cell::Cell;
 
 use serde::{Deserialize, Serialize};
 
-use crate::StackState;
+use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode, SystemBDeviceState};
 use crate::dpt::{InterfaceObjectType, PDT_Generic01};
 use crate::objects::interface::{
-    FullPropertyReadRequest, FullPropertyWriteRequest, HasMaxRetryCount, InterfaceObjectAugment, PropertyAccess,
-    PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, WriteResponse, pid,
+    AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, HasMaxRetryCount, InterfaceObjectAugment,
+    PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, WriteResponse, pid,
 };
 
 // ============================================================================
@@ -102,12 +102,12 @@ impl HasSecurityMode for Tp1ExtensionState {}
 // ============================================================================
 
 impl Extension<()> for Tp1ExtensionState {
-    type Augment<'a, S: crate::StackState>
+    type Augment<'a, D: crate::StackDefinition>
         = &'a Tp1ExtensionState
     where
         Self: 'a;
 
-    fn create_augment<'a, S: crate::StackState>(&'a self, _platform: &'a ()) -> Self::Augment<'a, S>
+    fn create_augment<'a, D: crate::StackDefinition>(&'a self, _platform: &'a ()) -> Self::Augment<'a, D>
     where
         (): 'a,
     {
@@ -148,10 +148,10 @@ impl HasMaxRetryCount for Tp1ExtensionState {
 // InterfaceObjectAugment — adds PID 52 to the Device Object
 // ============================================================================
 
-impl<S: StackState> InterfaceObjectAugment<S> for Tp1ExtensionState {
+impl<D: StackDefinition> InterfaceObjectAugment<D> for Tp1ExtensionState {
     fn property_description_read(
         &self,
-        _state: &S,
+        _ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         object_idx: u16,
         lookup: PropertyLookup,
@@ -175,7 +175,7 @@ impl<S: StackState> InterfaceObjectAugment<S> for Tp1ExtensionState {
 
     fn property_value_read(
         &self,
-        _state: &S,
+        _ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         req: &FullPropertyReadRequest,
         buf: &mut [u8],
@@ -209,7 +209,7 @@ impl<S: StackState> InterfaceObjectAugment<S> for Tp1ExtensionState {
 
     fn property_value_write(
         &self,
-        _state: &S,
+        _ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {

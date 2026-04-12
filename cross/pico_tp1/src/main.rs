@@ -97,7 +97,7 @@ impl StackDefinition for PicoTp1LightSwitch {
     type StateConfig = PicoTp1StateConfig;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> =
-        DefaultSystemBInterfaceObjects<'a, PicoTp1State, (&'a Tp1ExtensionState, EasterEggAugment)>;
+        DefaultSystemBInterfaceObjects<'a, Self, (&'a Tp1ExtensionState, EasterEggAugment)>;
 
     fn create_state(config: Self::StateConfig) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
@@ -111,11 +111,11 @@ impl StackDefinition for PicoTp1LightSwitch {
         }
     }
 
-    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, _layer_ctx: &'a zweidraehte_device::layer_context::LayerContext<Self>) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, layer_ctx: &'a zweidraehte_device::layer_context::LayerContext<Self>) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_system_b_objects_with_extra::<Self, _>(state, platform, &Self::memory_layout(), EasterEggAugment)
+        create_system_b_objects_with_extra::<Self, _>(state, layer_ctx, platform, &Self::memory_layout(), EasterEggAugment)
     }
 
     type Services = zweidraehte_device::layers::application::services::SystemBAlServices;

@@ -43,6 +43,7 @@ use crate::{
 };
 
 use crate::StackDefinition;
+use crate::layer_context::LayerContext;
 use crate::objects::interface::HasRoutingCount;
 use crate::objects::tables::{
     HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication,
@@ -85,23 +86,25 @@ static BASE_IO_TYPES: [InterfaceObjectType; 6] = [
 ///
 /// # Type Parameters
 ///
-/// - `S`: Stack state type implementing [`StackState`]
+/// - `D`:   Stack definition (drives state + augment context typing)
 /// - `ADT`: Address table type
 /// - `AST`: Association table type
 /// - `COT`: Communication object table type
 /// - `APP`: Application type (implementing both HasLoadStateMachine and HasRunStateMachine)
 /// - `PEI`: PEI application type (implementing both HasLoadStateMachine and HasRunStateMachine)
-pub struct SystemBObjects<'a, S, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<S> = ()>
+/// - `A`:   Optional augment chain implementing [`InterfaceObjectAugment<D>`]
+pub struct SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<D> = ()>
 where
-    S: StackState,
+    D: StackDefinition,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
     APP: HasLoadStateMachine + HasRunStateMachine,
     PEI: HasLoadStateMachine + HasRunStateMachine,
 {
-    state: &'a S,
-    device: RefCell<DeviceObject<'a, S>>,
+    state: &'a D::State,
+    lctx: &'a LayerContext<D>,
+    device: RefCell<DeviceObject<'a, D::State>>,
     address_table: RefCell<AddressTableObject<'a, ADT>>,
     association_table: RefCell<AssociationTableObject<'a, AST>>,
     group_object_table: RefCell<GroupObjectTableObject<'a, COT>>,
@@ -110,9 +113,10 @@ where
     augment: A,
 }
 
-impl<'a, S, ADT, AST, COT, APP, PEI> SystemBObjects<'a, S, ADT, AST, COT, APP, PEI>
+impl<'a, D, ADT, AST, COT, APP, PEI> SystemBObjects<'a, D, ADT, AST, COT, APP, PEI>
 where
-    S: StackState + DeviceModelNotifier,
+    D: StackDefinition,
+    D::State: StackState + DeviceModelNotifier,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
@@ -121,7 +125,8 @@ where
 {
     /// Create a new interface objects container with no augmentation.
     pub fn new(
-        state: &'a S,
+        state: &'a D::State,
+        lctx: &'a LayerContext<D>,
         device: &crate::ets::DeviceDescriptor,
         layout: &super::memory_map::MemoryLayout,
         adt: &'a RefCell<ADT>,
@@ -136,6 +141,7 @@ where
     ) -> Self {
         Self::with_augment(
             state,
+            lctx,
             device,
             layout,
             adt,
@@ -152,9 +158,10 @@ where
     }
 }
 
-impl<'a, S, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<S>> SystemBObjects<'a, S, ADT, AST, COT, APP, PEI, A>
+impl<'a, D, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<D>> SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A>
 where
-    S: StackState + DeviceModelNotifier,
+    D: StackDefinition,
+    D::State: StackState + DeviceModelNotifier,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
@@ -170,7 +177,8 @@ where
     /// before they reach the standard object implementations, and can also
     /// provide additional interface objects beyond the base 6.
     pub fn with_augment(
-        state: &'a S,
+        state: &'a D::State,
+        lctx: &'a LayerContext<D>,
         device: &crate::ets::DeviceDescriptor,
         layout: &super::memory_map::MemoryLayout,
         adt: &'a RefCell<ADT>,
@@ -188,6 +196,7 @@ where
         device.routing_count = RoutingCount::from(routing_count);
         Self {
             state,
+            lctx,
             device: RefCell::new(device),
             address_table: RefCell::new(AddressTableObject::new(adt, layout.adt_address() as u32)),
             association_table: RefCell::new(AssociationTableObject::new(ast, layout.ast_address() as u32)),
@@ -209,7 +218,7 @@ where
     }
 
     /// Get a reference to the device object.
-    pub fn device(&self) -> &RefCell<DeviceObject<'a, S>> {
+    pub fn device(&self) -> &RefCell<DeviceObject<'a, D::State>> {
         &self.device
     }
 
@@ -366,14 +375,14 @@ where
 ///
 /// This is the TP1 counterpart to [`DefaultKnxIpInterfaceObjects`]. It provides
 /// 6 interface objects (no IP Parameter Object).
-pub type DefaultSystemBInterfaceObjects<'a, S, A = ()> = SystemBObjects<
+pub type DefaultSystemBInterfaceObjects<'a, D, A = ()> = SystemBObjects<
     'a,
-    S,
-    <S as HasAddressTable>::ADT,
-    <S as HasAssociationTable>::AST,
-    <S as HasCommunicationObjectTable>::COT,
-    <S as HasApplication>::APP,
-    <S as HasPeiApplication>::PEI,
+    D,
+    <<D as StackDefinition>::State as HasAddressTable>::ADT,
+    <<D as StackDefinition>::State as HasAssociationTable>::AST,
+    <<D as StackDefinition>::State as HasCommunicationObjectTable>::COT,
+    <<D as StackDefinition>::State as HasApplication>::APP,
+    <<D as StackDefinition>::State as HasPeiApplication>::PEI,
     A,
 >;
 
@@ -391,14 +400,15 @@ pub type DefaultSystemBInterfaceObjects<'a, S, A = ()> = SystemBObjects<
 /// The IO list (PID_IO_LIST) will contain the 6 base System B object types
 /// plus any additional objects declared by the augment via
 /// [`InterfaceObjectAugment::additional_object_count`].
-pub fn create_system_b_objects<'a, D, S, A>(
-    state: &'a S,
+pub fn create_system_b_objects<'a, D, A>(
+    state: &'a D::State,
+    lctx: &'a LayerContext<D>,
     layout: &super::memory_map::MemoryLayout,
     augment: A,
-) -> SystemBObjects<'a, S, S::ADT, S::AST, S::COT, S::APP, S::PEI, A>
+) -> DefaultSystemBInterfaceObjects<'a, D, A>
 where
     D: StackDefinition,
-    S: StackState
+    D::State: StackState
         + DeviceModelNotifier
         + HasAddressTable
         + HasAssociationTable
@@ -406,15 +416,16 @@ where
         + HasApplication
         + HasPeiApplication
         + HasRoutingCount,
-    S::ADT: HasLoadStateMachine,
-    S::AST: HasLoadStateMachine,
-    S::COT: HasLoadStateMachine,
-    S::APP: HasLoadStateMachine + HasRunStateMachine,
-    S::PEI: HasLoadStateMachine + HasRunStateMachine,
-    A: InterfaceObjectAugment<S>,
+    <D::State as HasAddressTable>::ADT: HasLoadStateMachine,
+    <D::State as HasAssociationTable>::AST: HasLoadStateMachine,
+    <D::State as HasCommunicationObjectTable>::COT: HasLoadStateMachine,
+    <D::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
+    <D::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
+    A: InterfaceObjectAugment<D>,
 {
     SystemBObjects::with_augment(
         state,
+        lctx,
         D::DEVICE,
         layout,
         state.adt(),
@@ -450,11 +461,8 @@ use super::storage::Extension;
 /// ```
 pub type SystemBInterfaceObjectsFor<'a, D> = DefaultSystemBInterfaceObjects<
     'a,
-    <D as StackDefinition>::State,
-    <<D as StackDefinition>::ES as Extension<<D as StackDefinition>::Platform>>::Augment<
-        'a,
-        <D as StackDefinition>::State,
-    >,
+    D,
+    <<D as StackDefinition>::ES as Extension<<D as StackDefinition>::Platform>>::Augment<'a, D>,
 >;
 
 /// Create System B interface objects using the
@@ -478,6 +486,7 @@ pub type SystemBInterfaceObjectsFor<'a, D> = DefaultSystemBInterfaceObjects<
 /// ```
 pub fn create_system_b_objects_from_extension<'a, D>(
     state: &'a D::State,
+    lctx: &'a LayerContext<D>,
     platform: &'a D::Platform,
     layout: &super::memory_map::MemoryLayout,
 ) -> SystemBInterfaceObjectsFor<'a, D>
@@ -498,10 +507,10 @@ where
     <D::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
     <D::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
     D::ES: Extension<D::Platform>,
-    <D::ES as Extension<D::Platform>>::Augment<'a, D::State>: InterfaceObjectAugment<D::State>,
+    <D::ES as Extension<D::Platform>>::Augment<'a, D>: InterfaceObjectAugment<D>,
 {
-    let augment = state.extension_state().create_augment(platform);
-    create_system_b_objects::<D, _, _>(state, layout, augment)
+    let augment = state.extension_state().create_augment::<D>(platform);
+    create_system_b_objects::<D, _>(state, lctx, layout, augment)
 }
 
 /// Create System B interface objects with an additional augment
@@ -523,10 +532,11 @@ where
 /// ```
 pub fn create_system_b_objects_with_extra<'a, D, A>(
     state: &'a D::State,
+    lctx: &'a LayerContext<D>,
     platform: &'a D::Platform,
     layout: &super::memory_map::MemoryLayout,
     extra: A,
-) -> DefaultSystemBInterfaceObjects<'a, D::State, (<D::ES as Extension<D::Platform>>::Augment<'a, D::State>, A)>
+) -> DefaultSystemBInterfaceObjects<'a, D, (<D::ES as Extension<D::Platform>>::Augment<'a, D>, A)>
 where
     D: StackDefinition,
     D::State: StackState
@@ -544,9 +554,9 @@ where
     <D::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
     <D::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
     D::ES: Extension<D::Platform>,
-    <D::ES as Extension<D::Platform>>::Augment<'a, D::State>: InterfaceObjectAugment<D::State>,
-    A: InterfaceObjectAugment<D::State>,
+    <D::ES as Extension<D::Platform>>::Augment<'a, D>: InterfaceObjectAugment<D>,
+    A: InterfaceObjectAugment<D>,
 {
-    let augment = state.extension_state().create_augment(platform);
-    create_system_b_objects::<D, _, _>(state, layout, (augment, extra))
+    let augment = state.extension_state().create_augment::<D>(platform);
+    create_system_b_objects::<D, _>(state, lctx, layout, (augment, extra))
 }

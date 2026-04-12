@@ -23,7 +23,10 @@ use core::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use crate::bcus::system_b::{ExtensionConfig, ExtensionState, SystemBDeviceState};
+use crate::StackDefinition;
+use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, SystemBDeviceState};
+use crate::layers::linklayers::knxip::features::{FeatureSet, TunnelingFeature};
+use crate::objects::interface::HasDomainAddress;
 use crate::{IpConfig, IpPlatformConfig, IpStackState, address::IndividualAddress};
 
 // ============================================================================
@@ -365,16 +368,14 @@ impl<const N: usize, const CAPS: u16> crate::bcus::system_b::HasSecurityMode for
 // Extension — unified persistence + augmentation
 // ============================================================================
 
-impl<P: crate::IpPlatform, const N: usize, const CAPS: u16> crate::bcus::system_b::Extension<P>
-    for IpExtensionState<N, CAPS>
-{
-    type Augment<'a, S: crate::StackState>
+impl<P: crate::IpPlatform, const N: usize, const CAPS: u16> Extension<P> for IpExtensionState<N, CAPS> {
+    type Augment<'a, D: StackDefinition>
         = IpAugment<'a, P, N, CAPS>
     where
         Self: 'a,
         P: 'a;
 
-    fn create_augment<'a, S: crate::StackState>(&'a self, platform: &'a P) -> Self::Augment<'a, S>
+    fn create_augment<'a, D: StackDefinition>(&'a self, platform: &'a P) -> Self::Augment<'a, D>
     where
         P: 'a,
     {
@@ -419,12 +420,9 @@ pub type IpSystemBDeviceState<
 /// type ES = IpExtension<KnxIpDeviceUdp>;            // N=0, CAPS derived
 /// type ES = IpExtension<KnxIpInterfaceUdp<4>>;      // N=4, CAPS derived
 /// ```
-pub type IpExtension<F: crate::layers::linklayers::knxip::features::FeatureSet> = IpExtensionState<
-    { <
-        <F as crate::layers::linklayers::knxip::features::FeatureSet>::Tunneling
-            as crate::layers::linklayers::knxip::features::TunnelingFeature
-    >::CAPACITY },
-    { <F as crate::layers::linklayers::knxip::features::FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES },
+pub type IpExtension<F: FeatureSet> = IpExtensionState<
+    { <<F as FeatureSet>::Tunneling as TunnelingFeature>::CAPACITY },
+    { <F as FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES },
 >;
 
 /// [`IpAugment`] with `N` and `CAPS` derived from a
@@ -438,14 +436,11 @@ pub type IpExtension<F: crate::layers::linklayers::knxip::features::FeatureSet> 
 ///     'a, MyState, (IpAugmentFor<'a, MyPlatform, KnxIpDeviceUdp>, EasterEggAugment),
 /// >;
 /// ```
-pub type IpAugmentFor<'a, P, F: crate::layers::linklayers::knxip::features::FeatureSet> = IpAugment<
+pub type IpAugmentFor<'a, P, F: FeatureSet> = IpAugment<
     'a,
     P,
-    { <
-        <F as crate::layers::linklayers::knxip::features::FeatureSet>::Tunneling
-            as crate::layers::linklayers::knxip::features::TunnelingFeature
-    >::CAPACITY },
-    { <F as crate::layers::linklayers::knxip::features::FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES },
+    { <<F as FeatureSet>::Tunneling as TunnelingFeature>::CAPACITY },
+    { <F as FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES },
 >;
 
 /// Like [`IpSystemBDeviceState`], but derives `N` and `CAPS` from a
@@ -458,8 +453,8 @@ pub type IpDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    D: crate::StackDefinition,
-    F: crate::layers::linklayers::knxip::features::FeatureSet,
+    D: StackDefinition,
+    F: FeatureSet,
 > = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, IpExtension<F>>;
 
 // ============================================================================
@@ -567,7 +562,7 @@ impl<const N: usize, const CAPS: u16> IpStackState for IpExtensionState<N, CAPS>
 // HasDomainAddress — IP domain address is the routing multicast address
 // ============================================================================
 
-impl<const N: usize, const CAPS: u16> crate::objects::interface::HasDomainAddress for IpExtensionState<N, CAPS> {
+impl<const N: usize, const CAPS: u16> HasDomainAddress for IpExtensionState<N, CAPS> {
     /// KNX/IP domain address is 4 bytes (IPv4 routing multicast address).
     ///
     /// Per the KNX IP Communication Medium spec (03_02_06, section

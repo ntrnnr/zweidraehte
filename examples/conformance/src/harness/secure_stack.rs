@@ -13,7 +13,7 @@ use core::cell::{Cell, RefCell};
 use zweidraehte_device::bcus::system_b::{DiagnosticsAugment, OperationModeState};
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    AccessContext, HasConnectionAuth,
+    AccessContext, HasConnectionAuth, StackDefinition,
     access::{AccessPolicy, ClientRole, SecurityMode},
     address::IndividualAddress,
     bcus::system_b::{
@@ -26,8 +26,9 @@ use zweidraehte_device::{
     layer_context::LayerContext,
     memory::MemoryMap,
     objects::interface::{
-        FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount, InterfaceObjectAugment, PropertyAccess,
-        PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, PropertyRead, WriteResponse,
+        AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount, InterfaceObjectAugment,
+        PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, PropertyRead,
+        WriteResponse,
     },
     objects::tables::{
         Application, HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
@@ -710,7 +711,7 @@ fn certification_descriptor(pid: u8) -> Option<PropertyDescriptor> {
     }
 }
 
-impl<S: StackState> InterfaceObjectAugment<S> for CertificationObjectAugment {
+impl<D: StackDefinition> InterfaceObjectAugment<D> for CertificationObjectAugment {
     fn additional_object_count(&self) -> u16 {
         1
     }
@@ -728,7 +729,7 @@ impl<S: StackState> InterfaceObjectAugment<S> for CertificationObjectAugment {
 
     fn property_description_read(
         &self,
-        _state: &S,
+        _ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         object_idx: u16,
         lookup: PropertyLookup,
@@ -756,7 +757,7 @@ impl<S: StackState> InterfaceObjectAugment<S> for CertificationObjectAugment {
 
     fn property_value_read(
         &self,
-        _state: &S,
+        _ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         req: &FullPropertyReadRequest,
         buf: &mut [u8],
@@ -784,7 +785,7 @@ impl<S: StackState> InterfaceObjectAugment<S> for CertificationObjectAugment {
 
     fn property_value_write(
         &self,
-        _state: &S,
+        _ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
@@ -817,7 +818,7 @@ impl<S: StackState> InterfaceObjectAugment<S> for CertificationObjectAugment {
 type SecAugment<'a> = <
     <IpcSecureConformanceTestStack as StackDefinition>::ES as
     zweidraehte_device::bcus::system_b::Extension<()>
->::Augment<'a, SecureConformanceState>;
+>::Augment<'a, IpcSecureConformanceTestStack>;
 
 /// Configuration for constructing a [`SecureConformanceState`].
 ///
@@ -860,7 +861,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
 
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
         'a,
-        SecureConformanceState,
+        Self,
         (SecAugment<'a>, (CertificationObjectAugment, DiagnosticsAugment<'a>)),
     >;
 
@@ -870,6 +871,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     {
         create_system_b_objects_with_extra::<Self, _>(
             state,
+            layer_ctx,
             platform,
             &CONFORMANCE_MEMORY_LAYOUT,
             (CertificationObjectAugment::new(), DiagnosticsAugment::new(&state.inner.operation_mode, &layer_ctx.buffer_manager, &layer_ctx.outbox)),

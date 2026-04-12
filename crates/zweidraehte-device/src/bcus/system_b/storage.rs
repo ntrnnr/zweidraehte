@@ -190,24 +190,24 @@ pub trait Extension<Platform = ()>: ExtensionState {
     /// For TP1: `&'a Tp1ExtensionState` (the extension IS the augment).
     /// For IP: `IpAugment<'a, P, N>` (wraps extension + platform).
     /// For `()`: `()` (no augmentation).
-    type Augment<'a, S: crate::StackState>: crate::objects::interface::InterfaceObjectAugment<S>
+    type Augment<'a, D: crate::StackDefinition>: crate::objects::interface::InterfaceObjectAugment<D>
     where
         Self: 'a,
         Platform: 'a;
 
     /// Create the augment from this extension state and the platform.
-    fn create_augment<'a, S: crate::StackState>(&'a self, platform: &'a Platform) -> Self::Augment<'a, S>
+    fn create_augment<'a, D: crate::StackDefinition>(&'a self, platform: &'a Platform) -> Self::Augment<'a, D>
     where
         Platform: 'a;
 }
 
 impl Extension<()> for () {
-    type Augment<'a, S: crate::StackState>
+    type Augment<'a, D: crate::StackDefinition>
         = ()
     where
         Self: 'a;
 
-    fn create_augment<'a, S: crate::StackState>(&'a self, _platform: &'a ()) -> Self::Augment<'a, S>
+    fn create_augment<'a, D: crate::StackDefinition>(&'a self, _platform: &'a ()) -> Self::Augment<'a, D>
     where
         (): 'a,
     {

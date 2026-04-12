@@ -28,9 +28,10 @@ use crate::dpt::{InterfaceObjectType, PDT_Function, PropertyDataDefinition};
 use crate::messages::builder::MessageBuilder;
 use crate::messages::knx::{ApciCode, DestinationAddress, Priority, ServiceType, offsets};
 use crate::objects::comm::{ComObjects, HasCommObjects};
+use crate::StackDefinition;
 use crate::objects::interface::{
-    FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess, PropertyBuf,
-    PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, pid,
+    AugmentContext, FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess,
+    PropertyBuf, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, pid,
 };
 use crate::objects::tables::{
     AddressTable, AssociationTable, CommunicationObjectTable, HasAddressTable, HasApplication, HasAssociationTable,
@@ -916,15 +917,15 @@ const GO_DIAGNOSTICS_DESCRIPTOR: PropertyDescriptor = PropertyDescriptor::with_p
     AccessPolicy::new(0x15F, 0x00C),
 );
 
-impl<
-    'a,
-    S: StackState
+impl<'a, D> InterfaceObjectAugment<D> for DiagnosticsAugment<'a>
+where
+    D: StackDefinition,
+    D::State: StackState
         + HasApplication
         + HasCommunicationObjectTable
         + HasCommObjects
         + HasAddressTable
         + HasAssociationTable,
-> InterfaceObjectAugment<S> for DiagnosticsAugment<'a>
 {
     fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
         if object_type == InterfaceObjectType::ApplicationProgram && prop_id == pid::OPERATION_MODE {
@@ -938,7 +939,7 @@ impl<
 
     fn property_description_read(
         &self,
-        _state: &S,
+        _ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         object_idx: u16,
         lookup: PropertyLookup,
@@ -970,14 +971,14 @@ impl<
 
     fn function_property_command(
         &self,
-        state: &S,
+        ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         req: &FunctionPropertyRequest<'_>,
     ) -> Option<FunctionPropertyResult> {
         if object_type == InterfaceObjectType::ApplicationProgram && req.prop_id == pid::OPERATION_MODE {
-            Some(self.handle_command(state, req))
+            Some(self.handle_command(ctx.state, req))
         } else if object_type == InterfaceObjectType::GroupObjectTable && req.prop_id == pid::GO_DIAGNOSTICS {
-            Some(self.handle_go_diag_command(state, req))
+            Some(self.handle_go_diag_command(ctx.state, req))
         } else {
             None
         }
@@ -985,14 +986,14 @@ impl<
 
     fn function_property_state_read(
         &self,
-        state: &S,
+        ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         req: &FunctionPropertyRequest<'_>,
     ) -> Option<FunctionPropertyResult> {
         if object_type == InterfaceObjectType::ApplicationProgram && req.prop_id == pid::OPERATION_MODE {
-            Some(self.handle_state_read(state, req))
+            Some(self.handle_state_read(ctx.state, req))
         } else if object_type == InterfaceObjectType::GroupObjectTable && req.prop_id == pid::GO_DIAGNOSTICS {
-            Some(self.handle_go_diag_state_read(state, req))
+            Some(self.handle_go_diag_state_read(ctx.state, req))
         } else {
             None
         }

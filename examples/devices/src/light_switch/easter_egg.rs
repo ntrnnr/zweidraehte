@@ -20,10 +20,10 @@
 //! }
 //! ```
 
-use zweidraehte_device::StackState;
+use zweidraehte_device::StackDefinition;
 use zweidraehte_device::dpt::{InterfaceObjectType, PDT_Function};
 use zweidraehte_device::objects::interface::{
-    FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess,
+    AugmentContext, FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess,
     PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup,
 };
 
@@ -37,10 +37,10 @@ const EASTER_EGG_PID: u8 = 255;
 #[derive(Debug, Clone, Copy)]
 pub struct EasterEggAugment;
 
-impl<S: StackState> InterfaceObjectAugment<S> for EasterEggAugment {
+impl<D: StackDefinition> InterfaceObjectAugment<D> for EasterEggAugment {
     fn property_description_read(
         &self,
-        _state: &S,
+        _ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         object_idx: u16,
         lookup: PropertyLookup,
@@ -64,7 +64,7 @@ impl<S: StackState> InterfaceObjectAugment<S> for EasterEggAugment {
 
     fn function_property_command(
         &self,
-        _state: &S,
+        _ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         req: &FunctionPropertyRequest<'_>,
     ) -> Option<FunctionPropertyResult> {

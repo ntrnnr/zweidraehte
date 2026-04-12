@@ -6,13 +6,13 @@
 //! based on the object index and PID.
 
 use crate::{
-    HasPersistence, StackState,
+    HasPersistence, StackDefinition, StackState,
     device_model::DeviceModelNotifier,
     dpt::{DeviceControl, ProgrammingMode, RoutingCount},
     objects::interface::{
-        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
-        HasDeviceObject, InterfaceObject, InterfaceObjectAugment, PropertyAccess, PropertyBuf,
-        PropertyDescriptionResponse, PropertyError, PropertyServiceHandler, WriteResponse, pid,
+        AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest,
+        FunctionPropertyResult, HasDeviceObject, InterfaceObject, InterfaceObjectAugment, PropertyAccess,
+        PropertyBuf, PropertyDescriptionResponse, PropertyError, PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -24,10 +24,11 @@ use crate::objects::interface::HasRoutingCount;
 // PropertyServiceHandler — property dispatch across base + augment objects
 // ============================================================================
 
-impl<'a, S, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<S>> PropertyServiceHandler
-    for SystemBObjects<'a, S, ADT, AST, COT, APP, PEI, A>
+impl<'a, D, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<D>> PropertyServiceHandler
+    for SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A>
 where
-    S: StackState + HasPersistence + DeviceModelNotifier,
+    D: StackDefinition,
+    D::State: StackState + HasPersistence + DeviceModelNotifier,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,
@@ -79,7 +80,7 @@ where
             // Augment first (can intercept/add PIDs on base objects,
             // and is the sole handler for augment-provided objects).
             if let Some(result) =
-                self.augment.property_description_read(self.state, obj_type, object_idx, PropertyLookup::ByPid(prop_id))
+                self.augment.property_description_read(&AugmentContext { state: self.state, lctx: self.lctx }, obj_type, object_idx, PropertyLookup::ByPid(prop_id))
             {
                 return result;
             }
@@ -98,7 +99,7 @@ where
         // There is no base object to scan first.
         if self.is_augment_object(object_idx) {
             if let Some(result) = self.augment.property_description_read(
-                self.state,
+                &AugmentContext { state: self.state, lctx: self.lctx },
                 obj_type,
                 object_idx,
                 PropertyLookup::ByIndex(prop_idx),
@@ -144,7 +145,7 @@ where
             // Offset for augment: skip both base properties and IO_LIST.
             let augment_idx = prop_idx.saturating_sub(base_count + 1);
             if let Some(result) = self.augment.property_description_read(
-                self.state,
+                &AugmentContext { state: self.state, lctx: self.lctx },
                 obj_type,
                 object_idx,
                 PropertyLookup::ByIndex(augment_idx),
@@ -163,7 +164,7 @@ where
         let base_count = self.base_property_count(object_idx);
         let augment_idx = prop_idx.saturating_sub(base_count);
         if let Some(result) = self.augment.property_description_read(
-            self.state,
+            &AugmentContext { state: self.state, lctx: self.lctx },
             obj_type,
             object_idx,
             PropertyLookup::ByIndex(augment_idx),
@@ -200,7 +201,7 @@ where
 
         // Augment first (can intercept specific PIDs on base objects,
         // and is the sole handler for augment-provided objects).
-        if let Some(result) = self.augment.property_value_read(self.state, obj_type, req, buf) {
+        if let Some(result) = self.augment.property_value_read(&AugmentContext { state: self.state, lctx: self.lctx }, obj_type, req, buf) {
             return result;
         }
 
@@ -266,7 +267,7 @@ where
 
         // Augment first (can intercept specific PIDs on base objects,
         // and is the sole handler for augment-provided objects).
-        if let Some(result) = self.augment.property_value_write(self.state, obj_type, req) {
+        if let Some(result) = self.augment.property_value_write(&AugmentContext { state: self.state, lctx: self.lctx }, obj_type, req) {
             if result.is_ok() {
                 self.state.mark_dirty();
             }
@@ -334,7 +335,7 @@ where
         }
 
         if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) = self.augment.function_property_command(self.state, obj_type, req) {
+            if let Some(result) = self.augment.function_property_command(&AugmentContext { state: self.state, lctx: self.lctx }, obj_type, req) {
                 return result;
             }
         }
@@ -400,7 +401,7 @@ where
         }
 
         if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) = self.augment.function_property_state_read(self.state, obj_type, req) {
+            if let Some(result) = self.augment.function_property_state_read(&AugmentContext { state: self.state, lctx: self.lctx }, obj_type, req) {
                 return result;
             }
         }
@@ -437,10 +438,11 @@ where
 // HasDeviceObject — typed access to Device Object properties
 // ============================================================================
 
-impl<'a, S, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<S>> HasDeviceObject
-    for SystemBObjects<'a, S, ADT, AST, COT, APP, PEI, A>
+impl<'a, D, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<D>> HasDeviceObject
+    for SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A>
 where
-    S: StackState + DeviceModelNotifier + HasRoutingCount,
+    D: StackDefinition,
+    D::State: StackState + DeviceModelNotifier + HasRoutingCount,
     ADT: HasLoadStateMachine,
     AST: HasLoadStateMachine,
     COT: HasLoadStateMachine,

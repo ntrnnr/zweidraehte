@@ -13,16 +13,16 @@ use core::net::Ipv4Addr;
 use zerocopy::FromBytes;
 
 use crate::{
-    IpPlatform, IpPlatformState, IpStackState, StackState,
+    IpPlatform, IpPlatformState, IpStackState, StackDefinition, StackState,
     address::IndividualAddress,
     dpt::{
         InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt,
         PropertyDataDefinition,
     },
     objects::interface::{
-        FullPropertyReadRequest, FullPropertyWriteRequest, InterfaceObjectAugment, Ipv4Property, PropertyAccess,
-        PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, StatePropertyValue,
-        WriteResponse, pid,
+        AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, InterfaceObjectAugment, Ipv4Property,
+        PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup,
+        StatePropertyValue, WriteResponse, pid,
     },
 };
 
@@ -626,7 +626,7 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
 // InterfaceObjectAugment — provides IP Parameter Object (Type 11)
 // ============================================================================
 
-impl<S: StackState, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObjectAugment<S>
+impl<D: StackDefinition, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObjectAugment<D>
     for IpAugment<'_, P, N, CAPS>
 {
     fn additional_object_count(&self) -> u16 {
@@ -642,7 +642,7 @@ impl<S: StackState, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObj
 
     fn property_description_read(
         &self,
-        _state: &S,
+        _ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         object_idx: u16,
         lookup: PropertyLookup,
@@ -664,7 +664,7 @@ impl<S: StackState, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObj
 
     fn property_value_read(
         &self,
-        state: &S,
+        ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         req: &FullPropertyReadRequest,
         buf: &mut [u8],
@@ -672,18 +672,18 @@ impl<S: StackState, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObj
         if object_type != InterfaceObjectType::IPParameter {
             return None;
         }
-        self.read_ip_property(state, req, buf)
+        self.read_ip_property(ctx.state, req, buf)
     }
 
     fn property_value_write(
         &self,
-        state: &S,
+        ctx: &AugmentContext<'_, D>,
         object_type: InterfaceObjectType,
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
         if object_type != InterfaceObjectType::IPParameter {
             return None;
         }
-        self.write_ip_property(state, req)
+        self.write_ip_property(ctx.state, req)
     }
 }
