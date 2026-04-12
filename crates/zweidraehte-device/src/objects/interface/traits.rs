@@ -12,6 +12,7 @@ use crate::dpt::{
     InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong,
 };
 use crate::layer_context::LayerContext;
+use crate::layers::application::group_data::GroupDataProvider;
 use crate::messages::buffers::DynBufferManager;
 use crate::router::Outbox;
 use crate::AccessContext;
@@ -590,8 +591,9 @@ pub enum PropertyLookup {
 /// Shared resources available to interface object augment methods.
 ///
 /// Replaces the bare `&S` state reference that augments previously received,
-/// giving them access to shared infrastructure (outbox, buffer manager) as
-/// well as — once Phase 3 lands — the capability-providing services tuple.
+/// giving them access to shared infrastructure (outbox, buffer manager) and
+/// high-level application-layer capabilities
+/// (e.g. [`GroupValueSender`](crate::layers::application::capabilities::GroupValueSender)).
 ///
 /// Augments pull what they need via the public fields or the convenience
 /// accessors below.
@@ -611,12 +613,26 @@ impl<'a, D: StackDefinition> AugmentContext<'a, D> {
 
     /// Access the shared outbox (for direct, low-level telegram emission).
     ///
-    /// Prefer the higher-level capability traits coming in later phases
-    /// (e.g. `GroupValueSender`) over direct outbox use, which requires
-    /// the augment to know wire-format details.
+    /// Prefer the higher-level capability accessors like
+    /// [`group_value_sender`](Self::group_value_sender) over direct outbox
+    /// use, which requires the augment to know wire-format details.
     #[inline]
     pub fn outbox(&self) -> &'a RefCell<Outbox> {
         &self.lctx.outbox
+    }
+
+    /// Capability handle for requesting outgoing group-value reads and
+    /// writes by ASAP.
+    ///
+    /// Returns a transient
+    /// [`GroupDataProvider`](crate::layers::application::group_data::GroupDataProvider)
+    /// backed by the current state and layer context. All persistent
+    /// bookkeeping (pending sends, read-on-init progress) lives on the
+    /// shared [`LayerContext`], so building a provider per call is cheap
+    /// and does not lose state between calls.
+    #[inline]
+    pub fn group_value_sender(&self) -> GroupDataProvider<'a, D> {
+        GroupDataProvider::new(self.state, self.lctx)
     }
 }
 

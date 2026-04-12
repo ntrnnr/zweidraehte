@@ -16,8 +16,9 @@
 //! - Restart commands
 //! - Individual address read/write
 
-pub mod services;
+pub mod capabilities;
 pub(crate) mod group_data;
+pub mod services;
 
 use crate::context::RestartPublisherContext;
 use crate::{
@@ -94,9 +95,10 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     /// Memory map for A_Memory_Read/Write services
     memory_map: &'a D::Mem,
 
-    /// Group data handler — owns read-on-init state, pending group sends,
-    /// and all incoming/outgoing group communication logic.
-    group_data: group_data::GroupDataHandler<'a, D>,
+    /// Borrowed handle for group-data handling. Mutable bookkeeping lives
+    /// on [`LayerContext`], so this is a thin two-field view built once at
+    /// construction and shared by all group-data methods.
+    group_data: group_data::GroupDataProvider<'a, D>,
 
     /// Optional service extension for profile-specific APCI handlers.
     services: D::Services,
@@ -114,7 +116,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             lctx: ctx.layer_context(),
             interface_objects: ctx.interface_objects(),
             memory_map: ctx.memory_map(),
-            group_data: group_data::GroupDataHandler::new(ctx.state(), ctx.layer_context()),
+            group_data: group_data::GroupDataProvider::new(ctx.state(), ctx.layer_context()),
             services: Default::default(),
         }
     }

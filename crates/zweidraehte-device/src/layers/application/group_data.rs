@@ -11,6 +11,7 @@ use crate::{
     StackDefinition,
     context::EventPublisherContext,
     layer_context::{HasOutbox, LayerContext},
+    layers::application::capabilities::GroupValueSender,
     messages::{
         buffers::{Buffer, DynBufferManager},
         builder::MessageBuilder,
@@ -30,8 +31,8 @@ use crate::{
 // ============================================================================
 
 /// Tracks a pending group value send for deferred CO status update.
-#[derive(Debug)]
-pub(crate) struct PendingGroupSend {
+#[derive(Debug, Clone, Copy)]
+pub struct PendingGroupSend {
     /// The ASAP (communication object index) being sent
     pub asap: u16,
     /// Whether this was a read request (vs write)
@@ -39,9 +40,9 @@ pub(crate) struct PendingGroupSend {
 }
 
 /// State machine for the read-on-init cycle.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub(crate) enum ReadOnInitState {
+pub enum ReadOnInitState {
     /// No ROI cycle active — ready to start on next app startup.
     Idle,
     /// Scanning objects, sending reads. The `u16` is the next ASAP to check.
@@ -52,27 +53,27 @@ pub(crate) enum ReadOnInitState {
 }
 
 // ============================================================================
-// GroupDataHandler
+// GroupDataProvider
 // ============================================================================
 
-/// Encapsulates all group data handling logic extracted from the application
-/// layer. Owned by the ApplicationLayer as a field, will become the basis
-/// for the standalone GroupDataService in Phase 4.
-pub(crate) struct GroupDataHandler<'a, D: StackDefinition> {
+/// Borrowed handle combining device state and runtime context for group data
+/// handling.
+///
+/// All mutable bookkeeping (`read_on_init`, `pending_group_send`) lives on
+/// [`LayerContext`] behind [`Cell`](core::cell::Cell), so a provider is a
+/// transient two-field view built on demand — callers can construct one per
+/// call without losing state between calls. The application layer builds one
+/// for its built-in handlers, and interface object augments can build one via
+/// [`AugmentContext::group_value_sender`](crate::objects::interface::AugmentContext::group_value_sender)
+/// to request group sends through the same logic.
+pub struct GroupDataProvider<'a, D: StackDefinition> {
     state: &'a D::State,
     lctx: &'a LayerContext<D>,
-    pub(crate) read_on_init: ReadOnInitState,
-    pub(crate) pending_group_send: Option<PendingGroupSend>,
 }
 
-impl<'a, D: StackDefinition> GroupDataHandler<'a, D> {
+impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
     pub fn new(state: &'a D::State, lctx: &'a LayerContext<D>) -> Self {
-        Self {
-            state,
-            lctx,
-            read_on_init: ReadOnInitState::Idle,
-            pending_group_send: None,
-        }
+        Self { state, lctx }
     }
 
     fn buffer_manager(&self) -> &'a DynBufferManager<'static> {
@@ -312,7 +313,7 @@ impl<'a, D: StackDefinition> GroupDataHandler<'a, D> {
     /// Called when the local application wants to send a group value to the bus.
     /// Returns `true` if the request was processed, `false` if rejected because
     /// the application is not running.
-    pub fn send_group_value_request(&mut self, asap: u16, read: bool) -> bool {
+    pub fn send_group_value_request(&self, asap: u16, read: bool) -> bool {
         // Check if application is running before sending group data
         if !self.state.app().borrow().is_running() {
             debug!("AL GroupValue request ignored: application not running");
@@ -422,7 +423,7 @@ impl<'a, D: StackDefinition> GroupDataHandler<'a, D> {
 
             // Store pending state so the TL confirmation (arriving later on
             // conf_rx) can update the CO status.
-            self.pending_group_send = Some(PendingGroupSend { asap, read });
+            self.lctx.pending_group_send.set(Some(PendingGroupSend { asap, read }));
 
             // Send fire-and-forget to TL — confirmation handled in handle_tl_confirmation
             debug!("AL -> TL: GroupValue {} ASAP {} TSAP {}", if read { "Read" } else { "Write" }, asap, tsap);
@@ -446,8 +447,8 @@ impl<'a, D: StackDefinition> GroupDataHandler<'a, D> {
     ///
     /// Returns `true` if a pending group send was found and processed,
     /// `false` if no group send was pending (confirmation is for something else).
-    pub fn handle_tl_confirmation(&mut self, conf: &KnxMessageBuffer<Buffer<'static>>) -> bool {
-        let Some(pending) = self.pending_group_send.take() else {
+    pub fn handle_tl_confirmation(&self, conf: &KnxMessageBuffer<Buffer<'static>>) -> bool {
+        let Some(pending) = self.lctx.pending_group_send.take() else {
             return false;
         };
 
@@ -474,7 +475,7 @@ impl<'a, D: StackDefinition> GroupDataHandler<'a, D> {
 
     /// Returns the next deadline for the read-on-init cycle, if active.
     pub fn next_deadline(&self) -> Option<embassy_time::Instant> {
-        match self.read_on_init {
+        match self.lctx.read_on_init.get() {
             ReadOnInitState::Scanning(cursor) => {
                 debug!("AL next_deadline: ROI active (cursor={}), next step in 100ms", cursor);
                 Some(embassy_time::Instant::now() + embassy_time::Duration::from_millis(100))
@@ -500,22 +501,22 @@ impl<'a, D: StackDefinition> GroupDataHandler<'a, D> {
     ///
     /// Manages transitions between ROI states and processes one ROI step
     /// per call when scanning.
-    pub fn poll(&mut self) {
+    pub fn poll(&self) {
         // Reset Done → Idle when the app stops, so the next startup triggers
         // a fresh ROI scan.
-        if self.read_on_init == ReadOnInitState::Done && !self.state.app().borrow().is_running() {
-            self.read_on_init = ReadOnInitState::Idle;
+        if self.lctx.read_on_init.get() == ReadOnInitState::Done && !self.state.app().borrow().is_running() {
+            self.lctx.read_on_init.set(ReadOnInitState::Idle);
         }
 
         // Start ROI scan if the conditions are met (app running, AST loaded,
         // comm objects still uninitialized from DeviceModel reset).
-        if self.read_on_init == ReadOnInitState::Idle
+        if self.lctx.read_on_init.get() == ReadOnInitState::Idle
             && self.state.app().borrow().is_running()
             && self.state.ast().borrow().is_loaded()
             && self.state.comm_objects().borrow().status(1) == ComObjectStatus::Uninitialized
         {
             info!("AL read-on-init: starting cycle (detected uninitialized objects)");
-            self.read_on_init = ReadOnInitState::Scanning(1);
+            self.lctx.read_on_init.set(ReadOnInitState::Scanning(1));
         }
 
         self.read_on_init_step();
@@ -537,8 +538,8 @@ impl<'a, D: StackDefinition> GroupDataHandler<'a, D> {
     /// or not linked) are left untouched — they keep their current status.
     /// In particular, non-ROI objects stay `Uninitialized` until they
     /// actually receive a value via a write or response from the bus.
-    fn read_on_init_step(&mut self) {
-        let ReadOnInitState::Scanning(start) = self.read_on_init else {
+    fn read_on_init_step(&self) {
+        let ReadOnInitState::Scanning(start) = self.lctx.read_on_init.get() else {
             return;
         };
 
@@ -546,12 +547,12 @@ impl<'a, D: StackDefinition> GroupDataHandler<'a, D> {
         // Idle (not Done) so a subsequent app restart triggers a fresh scan.
         if !self.state.app().borrow().is_running() {
             debug!("AL read-on-init: cancelled (app not running)");
-            self.read_on_init = ReadOnInitState::Idle;
+            self.lctx.read_on_init.set(ReadOnInitState::Idle);
             return;
         }
         if !self.state.ast().borrow().is_loaded() {
             debug!("AL read-on-init: cancelled (AST not loaded)");
-            self.read_on_init = ReadOnInitState::Idle;
+            self.lctx.read_on_init.set(ReadOnInitState::Idle);
             return;
         }
 
@@ -592,13 +593,29 @@ impl<'a, D: StackDefinition> GroupDataHandler<'a, D> {
             self.send_group_value_request(asap, true);
 
             // Save cursor for next call and return (one object per step)
-            self.read_on_init = ReadOnInitState::Scanning(cursor);
+            self.lctx.read_on_init.set(ReadOnInitState::Scanning(cursor));
             return;
         }
 
         // All objects scanned — cycle complete.
         info!("AL read-on-init: cycle complete ({} objects scanned)", entry_count);
-        self.read_on_init = ReadOnInitState::Done;
+        self.lctx.read_on_init.set(ReadOnInitState::Done);
+    }
+}
+
+// ============================================================================
+// Capability impl — GroupValueSender
+// ============================================================================
+
+impl<D: StackDefinition> GroupValueSender for GroupDataProvider<'_, D> {
+    #[inline]
+    fn request_group_write(&self, asap: u16) -> bool {
+        self.send_group_value_request(asap, false)
+    }
+
+    #[inline]
+    fn request_group_read(&self, asap: u16) -> bool {
+        self.send_group_value_request(asap, true)
     }
 }
 

@@ -34,10 +34,13 @@ pub use crate::objects::comm::{
 
 // Interface objects (traits + response/error types)
 pub use crate::objects::interface::{
-    FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, HasMaxRetryCount, HasRoutingCount,
-    InterfaceObject, PropertyDescriptionResponse, PropertyError, PropertyReadRequest, PropertyServiceHandler,
-    PropertyWriteRequest, WriteResponse,
+    AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, HasMaxRetryCount,
+    HasRoutingCount, InterfaceObject, InterfaceObjectAugment, PropertyDescriptionResponse, PropertyError,
+    PropertyReadRequest, PropertyServiceHandler, PropertyWriteRequest, WriteResponse,
 };
+
+// Application-layer capabilities (augments and services call these)
+pub use crate::layers::application::capabilities::GroupValueSender;
 
 // Table accessor traits
 pub use crate::objects::tables::{
