@@ -874,7 +874,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
             layer_ctx,
             platform,
             &CONFORMANCE_MEMORY_LAYOUT,
-            (CertificationObjectAugment::new(), DiagnosticsAugment::new(&state.inner.operation_mode, &layer_ctx.buffer_manager, &layer_ctx.outbox)),
+            (CertificationObjectAugment::new(), DiagnosticsAugment::new(&state.inner.operation_mode)),
         )
     }
 

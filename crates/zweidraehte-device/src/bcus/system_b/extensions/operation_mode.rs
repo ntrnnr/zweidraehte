@@ -22,17 +22,16 @@ use core::cell::Cell;
 
 use embassy_time::Instant;
 
-use crate::StackState;
 use crate::access::AccessPolicy;
 use crate::dpt::{InterfaceObjectType, PDT_Function, PropertyDataDefinition};
 use crate::messages::builder::MessageBuilder;
 use crate::messages::knx::{ApciCode, DestinationAddress, Priority, ServiceType, offsets};
 use crate::objects::comm::{ComObjects, HasCommObjects};
-use crate::StackDefinition;
 use crate::objects::interface::{
     AugmentContext, FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess,
     PropertyBuf, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, pid,
 };
+use crate::{StackDefinition, StackState};
 use crate::objects::tables::{
     AddressTable, AssociationTable, CommunicationObjectTable, HasAddressTable, HasApplication, HasAssociationTable,
     HasCommunicationObjectTable, HasRunStateMachine,
@@ -231,19 +230,19 @@ fn go_diag_success(service_id: u8, go_idx: u16, status: u8, value: &[u8]) -> Fun
 ///
 /// This augment does NOT add additional objects — it extends existing
 /// objects with function properties for diagnostic mode and GO control.
+///
+/// Telegram emission is done through the shared [`AugmentContext`]
+/// (outbox + buffer manager accessors) or, for the `transmit`
+/// diagnostic that maps onto a normal CO send, through the
+/// [`GroupValueSender`] capability. The augment itself holds only
+/// its own operation-mode state.
 pub struct DiagnosticsAugment<'a> {
     state: &'a OperationModeState,
-    buffer_manager: &'a crate::messages::buffers::DynBufferManager<'static>,
-    outbox: &'a core::cell::RefCell<crate::router::Outbox>,
 }
 
 impl<'a> DiagnosticsAugment<'a> {
-    pub fn new(
-        state: &'a OperationModeState,
-        buffer_manager: &'a crate::messages::buffers::DynBufferManager<'static>,
-        outbox: &'a core::cell::RefCell<crate::router::Outbox>,
-    ) -> Self {
-        Self { state, buffer_manager, outbox }
+    pub fn new(state: &'a OperationModeState) -> Self {
+        Self { state }
     }
 
     // ================================================================
@@ -376,17 +375,18 @@ impl<'a> DiagnosticsAugment<'a> {
     // ================================================================
 
     /// Handle FunctionPropertyExtCommand for PID_GO_DIAGNOSTICS.
-    fn handle_go_diag_command<
-        S: StackState
+    fn handle_go_diag_command<D: crate::StackDefinition>(
+        &self,
+        ctx: &AugmentContext<'_, D>,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult
+    where
+        D::State: StackState
             + HasCommunicationObjectTable
             + HasCommObjects
             + HasAddressTable
             + HasAssociationTable,
-    >(
-        &self,
-        state: &S,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    {
         // Minimum: [reserved, service_id]
         if req.service_data.len() < 2 {
             return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
@@ -407,10 +407,10 @@ impl<'a> DiagnosticsAugment<'a> {
         }
 
         match service_id {
-            0x00 => self.handle_go_diag_write_local(state, req),
-            0x01 => self.handle_go_diag_direct_write(state, req),
-            0x02 => self.handle_go_diag_transmit(state, req),
-            0x03 => self.handle_go_diag_direct_read(state, req),
+            0x00 => self.handle_go_diag_write_local(ctx.state, req),
+            0x01 => self.handle_go_diag_direct_write(ctx, req),
+            0x02 => self.handle_go_diag_transmit(ctx, req),
+            0x03 => self.handle_go_diag_direct_read(ctx, req),
             0x04 => self.handle_go_diag_set_filter(req),
             _ => {
                 // Invalid WriteServiceID → F2 (E_COMMAND_INVALID).
@@ -526,16 +526,14 @@ impl<'a> DiagnosticsAugment<'a> {
     ///
     /// On success, builds and pushes a GroupValue_Write telegram to the
     /// outbox before returning the response.
-    fn handle_go_diag_direct_write<
-        S: StackState
-            + HasCommunicationObjectTable
-            + HasCommObjects
-            + HasAddressTable,
-    >(
+    fn handle_go_diag_direct_write<D: crate::StackDefinition>(
         &self,
-        state: &S,
+        ctx: &AugmentContext<'_, D>,
         req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    ) -> FunctionPropertyResult
+    where
+        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable,
+    {
         let data = req.service_data;
         // Need at least: reserved(1) + serviceID(1) + flags(1) + GA(2) + value(1)
         if data.len() < 6 {
@@ -556,7 +554,7 @@ impl<'a> DiagnosticsAugment<'a> {
 
         // Validate that the GA exists in the device's address table.
         let ga = crate::address::GroupAddress([data[3], data[4]]);
-        let tsap = state.adt().borrow().get_tsap(ga);
+        let tsap = ctx.state.adt().borrow().get_tsap(ga);
 
         let Some(tsap) = tsap else {
             return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
@@ -564,12 +562,17 @@ impl<'a> DiagnosticsAugment<'a> {
 
         // When security bits are non-zero, check that a group key is
         // available for the GA's TSAP.
-        if sec_bits != 0 && !state.has_group_key(tsap) {
+        if sec_bits != 0 && !ctx.state.has_group_key(tsap) {
             return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
         }
 
         // ================================================================
         // Build and send GroupValue_Write telegram
+        //
+        // Unlike the "transmit current value of a GO" path (service 0x02),
+        // this is an arbitrary GA-addressed write with a caller-supplied
+        // value, so the `GroupValueSender` ASAP-based capability doesn't
+        // apply. We push a raw telegram via the shared outbox instead.
         // ================================================================
 
         let value = &data[5..];
@@ -582,7 +585,7 @@ impl<'a> DiagnosticsAugment<'a> {
             (offsets::MSG_APDU, offsets::MSG_APDU + value.len())
         };
 
-        let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(msg_len) else {
+        let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(msg_len) else {
             warn!("GO diag: no buffer for GroupValue_Write");
             return FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) };
         };
@@ -607,7 +610,7 @@ impl<'a> DiagnosticsAugment<'a> {
             tsap,
             u16::from_be_bytes([data[3], data[4]])
         );
-        self.outbox.borrow_mut().push_deferred(msg.into_inner());
+        ctx.outbox().borrow_mut().push_deferred(msg.into_inner());
 
         FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) }
     }
@@ -623,16 +626,14 @@ impl<'a> DiagnosticsAugment<'a> {
     ///
     /// On success, builds and pushes a GroupValue_Write telegram with the
     /// GO's current value and configured priority.
-    fn handle_go_diag_transmit<
-        S: StackState
-            + HasCommunicationObjectTable
-            + HasCommObjects
-            + HasAssociationTable,
-    >(
+    fn handle_go_diag_transmit<D: crate::StackDefinition>(
         &self,
-        state: &S,
+        ctx: &AugmentContext<'_, D>,
         req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    ) -> FunctionPropertyResult
+    where
+        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAssociationTable,
+    {
         let data = req.service_data;
         // Need exactly: reserved(1) + serviceID(1) + GO_idx(2)
         if data.len() != 4 {
@@ -642,7 +643,7 @@ impl<'a> DiagnosticsAugment<'a> {
         let go_idx = u16::from_be_bytes([data[2], data[3]]);
         let asap = go_idx;
 
-        let cot = state.cot().borrow();
+        let cot = ctx.state.cot().borrow();
 
         // Validate GO exists.
         let Some(entry) = cot.get_object(go_idx) else {
@@ -659,21 +660,27 @@ impl<'a> DiagnosticsAugment<'a> {
         drop(cot);
 
         // Look up the sending TSAP for this ASAP.
-        let tsap = state.ast().borrow().get_sending_tsap(asap);
-        let Some(tsap) = tsap else {
+        let Some(tsap) = ctx.state.ast().borrow().get_sending_tsap(asap) else {
             debug!("GO diag: no sending TSAP for ASAP {}", asap);
             return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x02]) };
         };
 
-        // Build success response with current value (before building the telegram,
-        // since we need the borrow for the value data).
-        let co = state.comm_objects().borrow();
+        // Build success response with current value (before building the
+        // telegram, since we need the borrow for the value data).
+        let co = ctx.state.comm_objects().borrow();
         let status = co.status(go_idx).to_flags_byte() & 0x0F;
         let value = co.value(go_idx);
         let resp = go_diag_success(0x02, go_idx, status, value);
 
         // ================================================================
         // Build and send GroupValue_Write telegram
+        //
+        // This transmits the current CO value bypassing the normal
+        // queueing / request-status flow — diagnostic behaviour, not a
+        // user-initiated send — so the `GroupValueSender` capability
+        // (which honours `ComObjectStatus::WriteRequest` gating) is
+        // intentionally not used here. We push a raw telegram to the
+        // shared outbox instead.
         // ================================================================
 
         let (msg_offset, msg_len) = if short_format {
@@ -682,7 +689,7 @@ impl<'a> DiagnosticsAugment<'a> {
             (offsets::MSG_APDU, offsets::MSG_APDU + object_size)
         };
 
-        if let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(msg_len) {
+        if let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(msg_len) {
             let msg = MessageBuilder::new_request(
                 msg_buf,
                 ServiceType::T_GroupData_Req,
@@ -700,7 +707,7 @@ impl<'a> DiagnosticsAugment<'a> {
 
             debug!("GO diag: stashing GroupValue_Write (transmit) ASAP {} TSAP {}", asap, tsap);
             drop(co);
-            self.outbox.borrow_mut().push_deferred(msg.into_inner());
+            ctx.outbox().borrow_mut().push_deferred(msg.into_inner());
         } else {
             warn!("GO diag: no buffer for GroupValue_Write (transmit)");
         }
@@ -719,16 +726,14 @@ impl<'a> DiagnosticsAugment<'a> {
     ///
     /// On success, builds and pushes a GroupValue_Read telegram to the
     /// outbox before returning the response.
-    fn handle_go_diag_direct_read<
-        S: StackState
-            + HasCommunicationObjectTable
-            + HasCommObjects
-            + HasAddressTable,
-    >(
+    fn handle_go_diag_direct_read<D: crate::StackDefinition>(
         &self,
-        state: &S,
+        ctx: &AugmentContext<'_, D>,
         req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    ) -> FunctionPropertyResult
+    where
+        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable,
+    {
         let data = req.service_data;
         if data.len() != 5 {
             return FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[0x03]) };
@@ -748,7 +753,7 @@ impl<'a> DiagnosticsAugment<'a> {
 
         // Validate that the GA exists in the device's address table.
         let ga = crate::address::GroupAddress([data[3], data[4]]);
-        let tsap = state.adt().borrow().get_tsap(ga);
+        let tsap = ctx.state.adt().borrow().get_tsap(ga);
 
         let Some(tsap) = tsap else {
             return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) };
@@ -756,16 +761,20 @@ impl<'a> DiagnosticsAugment<'a> {
 
         // When security bits are non-zero, check that a group key is
         // available for the GA's TSAP.
-        if sec_bits != 0 && !state.has_group_key(tsap) {
+        if sec_bits != 0 && !ctx.state.has_group_key(tsap) {
             return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) };
         }
 
         // ================================================================
         // Build and send GroupValue_Read telegram
+        //
+        // Like the direct write above, this is GA-addressed rather than
+        // ASAP-addressed, so the `GroupValueSender` capability does not
+        // apply. Push a raw read telegram to the shared outbox.
         // ================================================================
 
         let msg_len = offsets::MSG_APCI + 1 + 1;
-        if let Some(msg_buf) = self.buffer_manager.try_alloc_with_size(msg_len) {
+        if let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(msg_len) {
             let msg = MessageBuilder::new_request(
                 msg_buf,
                 ServiceType::T_GroupData_Req,
@@ -780,7 +789,7 @@ impl<'a> DiagnosticsAugment<'a> {
                 tsap,
                 u16::from_be_bytes([data[3], data[4]])
             );
-            self.outbox.borrow_mut().push_deferred(msg.into_inner());
+            ctx.outbox().borrow_mut().push_deferred(msg.into_inner());
         } else {
             warn!("GO diag: no buffer for GroupValue_Read");
         }
@@ -978,7 +987,7 @@ where
         if object_type == InterfaceObjectType::ApplicationProgram && req.prop_id == pid::OPERATION_MODE {
             Some(self.handle_command(ctx.state, req))
         } else if object_type == InterfaceObjectType::GroupObjectTable && req.prop_id == pid::GO_DIAGNOSTICS {
-            Some(self.handle_go_diag_command(ctx.state, req))
+            Some(self.handle_go_diag_command(ctx, req))
         } else {
             None
         }
